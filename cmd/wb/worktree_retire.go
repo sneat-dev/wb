@@ -22,8 +22,9 @@ Apply commits tracked and nonignored untracked source changes on the original
 branch with normal Git hooks, then publishes the exact commit as a retired/*
 ref in the source repository. It pushes the actual Work Log and checkout
 metadata as plain files to the configured private organization retirement
-repository. Only after both remote receipts verify does it delete the old
-remote ref with an exact lease and remove the local checkout and branch.
+repository. Only after both remote receipts verify does it atomically delete
+the old remote ref with an exact lease and create a deletion-proof tag at the
+source commit, then remove the local checkout and branch.
 An open pull request, changed remote ref, competing claim, or unavailable or
 public retirement repository refuses retirement. Retry the same command to
 resume an interrupted apply. A coordinated task with multiple repositories

@@ -91,7 +91,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 }
 
 func TestRetireResumesAfterRemotePhases(t *testing.T) {
-	for _, phase := range []string{"source_committed", "source_published", "archive_published", "original_deleted", "worktree_removed"} {
+	for _, phase := range []string{"source_committed", "source_published", "archive_published", "original_delete_intent", "original_delete_pushed", "original_deleted", "worktree_removed"} {
 		t.Run(phase, func(t *testing.T) {
 			fixture := newGitFixture(t)
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-resume", WorkLog: WorkLogOptions{Model: "unknown"}})
@@ -126,8 +126,20 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 			if phase == "worktree_removed" {
 				wantPartialPhase = "original_deleted"
 			}
+			if phase == "original_delete_intent" || phase == "original_delete_pushed" {
+				wantPartialPhase = "archive_published"
+				if partial.DeleteIntentSHA != partial.OriginalRemoteSHA || partial.DeleteIntentSHA == "" {
+					t.Fatalf("missing durable deletion intent: %#v", partial)
+				}
+			}
 			if err == nil || !strings.Contains(err.Error(), "simulated interruption") || partial.Phase != wantPartialPhase {
 				t.Fatalf("partial phase=%s err=%v", partial.Phase, err)
+			}
+			if phase == "original_delete_pushed" {
+				proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial))
+				if !strings.HasPrefix(proof, partial.SourceSHA+"\t") {
+					t.Fatalf("atomic deletion proof missing after push: %s", proof)
+				}
 			}
 			options.afterPhase = nil
 			finished, err := Retire(context.Background(), options)
@@ -180,6 +192,84 @@ func TestRetirePreservesUnpushedCommits(t *testing.T) {
 	}
 	if body := gitTestOutput(t, fixture.canonical, "show", result.SourceSHA+":ahead.txt"); body != "unpublished" {
 		t.Fatalf("retired source lost unpushed commit: %q", body)
+	}
+}
+
+func TestRetireRefusesExternallyDeletedOriginalWithoutAtomicProof(t *testing.T) {
+	for _, interruptedAt := range []string{"archive_published", "original_delete_intent"} {
+		t.Run(interruptedAt, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-external", WorkLog: WorkLogOptions{Model: "unknown"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			worktree := created[0].WorktreeDir
+			gitTest(t, worktree, "push", "-u", "origin", "retire-external")
+			archive := filepath.Join(t.TempDir(), "archive.git")
+			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-external", ArchiveRemote: archive, Apply: true,
+				RemoteOwnership: retireAllowRemoteOwner,
+				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+					return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+				},
+				OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+				afterPhase: func(phase string) error {
+					if phase == interruptedAt {
+						return errors.New("pause before WB deletion")
+					}
+					return nil
+				},
+			}
+			partial, err := Retire(context.Background(), options)
+			if err == nil || !strings.Contains(err.Error(), "pause before WB deletion") {
+				t.Fatalf("interruption: %#v %v", partial, err)
+			}
+			gitTest(t, worktree, "push", "origin", ":refs/heads/retire-external")
+			options.afterPhase = nil
+			_, err = Retire(context.Background(), options)
+			if err == nil {
+				t.Fatal("external deletion without atomic WB proof was accepted")
+			}
+			if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+				t.Fatalf("external deletion produced WB proof: %s", proof)
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Fatalf("external deletion removed local checkout: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetireRefusesRemoteWithoutAtomicPush(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-atomic", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "push", "-u", "origin", "retire-atomic")
+	originalSHA := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	gitTest(t, fixture.remote, "config", "receive.advertiseAtomic", "false")
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	partial, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-atomic", ArchiveRemote: archive, Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "atomic") {
+		t.Fatalf("non-atomic remote accepted: partial=%#v err=%v", partial, err)
+	}
+	if original := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retire-atomic"); !strings.HasPrefix(original, originalSHA+"\t") {
+		t.Fatalf("non-atomic remote lost original: %s", original)
+	}
+	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+		t.Fatalf("non-atomic remote created proof: %s", proof)
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("non-atomic remote removed checkout: %v", err)
 	}
 }
 

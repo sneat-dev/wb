@@ -51,6 +51,7 @@ type RetireResult struct {
 	Local             bool      `json:"local"`
 	Branch            string    `json:"branch"`
 	OriginalRemoteSHA string    `json:"original_remote_sha,omitempty"`
+	DeleteIntentSHA   string    `json:"delete_intent_sha,omitempty"`
 	SourceSHA         string    `json:"source_sha"`
 	IntentParentSHA   string    `json:"intent_parent_sha,omitempty"`
 	IntentTreeSHA     string    `json:"intent_tree_sha,omitempty"`
@@ -223,7 +224,11 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return RetireResult{}, err
 	}
 	if priorErr == nil {
-		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || (prior.Phase != "original_deleted" && prior.OriginalRemoteSHA != remoteSHA) || (prior.Phase == "original_deleted" && remoteSHA != "") {
+		remoteMatchesReceipt := remoteSHA == prior.OriginalRemoteSHA || remoteSHA == "" && (prior.OriginalRemoteSHA == "" || prior.DeleteIntentSHA == prior.OriginalRemoteSHA)
+		if prior.Phase == "original_deleted" {
+			remoteMatchesReceipt = remoteSHA == ""
+		}
+		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || !remoteMatchesReceipt {
 			return RetireResult{}, fmt.Errorf("retirement receipt conflicts with current checkout")
 		}
 		result = prior
@@ -345,7 +350,26 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
 		return result, err
 	}
-	if err := retireDeleteOriginal(ctx, &result); err != nil {
+	if result.OriginalRemoteSHA != "" && result.DeleteIntentSHA == "" {
+		current, err := retireRemoteSHA(ctx, result.Canonical, "origin", "refs/heads/"+result.Branch)
+		if err != nil || current != result.OriginalRemoteSHA {
+			return result, fmt.Errorf("original remote branch disappeared or moved before deletion intent: %w", err)
+		}
+		proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", retireDeletionProofRef(result))
+		if err != nil || proof != "" {
+			return result, fmt.Errorf("retirement deletion proof ref is already present or cannot be inspected: %w", err)
+		}
+		result.DeleteIntentSHA = result.OriginalRemoteSHA
+		if err := writeRetireReport(result); err != nil {
+			return result, err
+		}
+		if options.afterPhase != nil {
+			if err := options.afterPhase("original_delete_intent"); err != nil {
+				return result, err
+			}
+		}
+	}
+	if err := retireDeleteOriginal(ctx, &result, options.afterPhase); err != nil {
 		return result, err
 	}
 	if err := writeRetireReport(result); err != nil {
@@ -527,6 +551,12 @@ func retireResumeRemoved(ctx context.Context, home string, options RetireOptions
 	}
 	if source, err := retireRemoteSHA(ctx, result.Canonical, "origin", "refs/heads/"+result.Branch); err != nil || source != "" {
 		return result, fmt.Errorf("original remote branch remains or changed: %w", err)
+	}
+	if result.OriginalRemoteSHA != "" {
+		proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", retireDeletionProofRef(result))
+		if err != nil || proof != result.SourceSHA {
+			return result, fmt.Errorf("original remote branch deletion proof changed: %w", err)
+		}
 	}
 	if _, err := os.Lstat(result.Worktree); !errors.Is(err, os.ErrNotExist) {
 		return result, fmt.Errorf("checkout path still exists or cannot be inspected: %w", err)
@@ -774,8 +804,14 @@ func readRetireReport(path string) (RetireResult, error) {
 	if result.Version != 1 || !isGitObjectID(result.SourceSHA) {
 		return result, fmt.Errorf("invalid retirement receipt")
 	}
+	if result.DeleteIntentSHA != "" && (result.DeleteIntentSHA != result.OriginalRemoteSHA || !isGitObjectID(result.DeleteIntentSHA)) {
+		return result, fmt.Errorf("invalid retirement original-ref deletion intent")
+	}
+	if (result.Phase == "original_deleted" || result.Phase == "complete") && result.OriginalRemoteSHA != "" && result.DeleteIntentSHA != result.OriginalRemoteSHA {
+		return result, fmt.Errorf("retirement deletion receipt has no durable intent")
+	}
 	if result.Phase == "commit_intent" {
-		if result.SourceSHA != result.IntentParentSHA || !isGitObjectID(result.IntentTreeSHA) || result.IntentMessage == "" || result.IntentAt.IsZero() || result.RetiredRef != "" || result.ArchiveRef != "" {
+		if result.SourceSHA != result.IntentParentSHA || !isGitObjectID(result.IntentTreeSHA) || result.IntentMessage == "" || result.IntentAt.IsZero() || result.RetiredRef != "" || result.ArchiveRef != "" || result.DeleteIntentSHA != "" {
 			return result, fmt.Errorf("invalid retirement commit intent")
 		}
 		return result, nil
@@ -864,28 +900,55 @@ func retireVerifyReceipts(ctx context.Context, canonical, archiveRemote string, 
 	return nil
 }
 
-func retireDeleteOriginal(ctx context.Context, result *RetireResult) error {
+func retireDeletionProofRef(result RetireResult) string {
+	return "refs/tags/wb-retirement-deleted/" + strings.TrimPrefix(result.RetiredRef, "retired/")
+}
+
+func retireDeleteOriginal(ctx context.Context, result *RetireResult, afterPhase func(string) error) error {
 	ref := "refs/heads/" + result.Branch
 	current, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
 	if err != nil {
 		return err
 	}
-	if current != "" && current != result.OriginalRemoteSHA {
-		return fmt.Errorf("original remote branch moved before deletion")
+	if result.OriginalRemoteSHA != "" && result.DeleteIntentSHA != result.OriginalRemoteSHA {
+		return fmt.Errorf("original remote deletion has no durable exact-SHA intent")
 	}
-	if current != "" {
+	proofRef := retireDeletionProofRef(*result)
+	proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", proofRef)
+	if err != nil {
+		return err
+	}
+	switch {
+	case result.OriginalRemoteSHA == "" && current == "" && proof == "":
+		// A source branch that never existed remotely needs no delete proof.
+	case current == result.OriginalRemoteSHA && current != "" && proof == "":
 		canonical, err := openCanonicalRepository(result.Canonical)
 		if err != nil {
 			return err
 		}
 		defer canonical.close()
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--force-with-lease="+ref+":"+current, "origin", ":"+ref); err != nil {
-			return fmt.Errorf("delete original remote branch with exact lease: %w", err)
+		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--atomic", "--force-with-lease="+ref+":"+current, "--force-with-lease="+proofRef+":", "origin", ":"+ref, result.SourceSHA+":"+proofRef); err != nil {
+			return fmt.Errorf("delete original remote branch with exact lease and atomic proof: %w", err)
 		}
+	case current == "" && result.OriginalRemoteSHA != "" && proof == result.SourceSHA:
+		// A retry can prove that WB's atomic delete created this exact marker.
+	default:
+		return fmt.Errorf("original remote branch or deletion proof changed before exact-lease deletion")
 	}
 	verified, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
 	if err != nil || verified != "" {
 		return fmt.Errorf("original branch deletion verification failed: %w", err)
+	}
+	if result.OriginalRemoteSHA != "" {
+		verifiedProof, err := retireRemoteSHA(ctx, result.Canonical, "origin", proofRef)
+		if err != nil || verifiedProof != result.SourceSHA {
+			return fmt.Errorf("atomic original deletion proof verification failed: %w", err)
+		}
+	}
+	if current != "" && afterPhase != nil {
+		if err := afterPhase("original_delete_pushed"); err != nil {
+			return err
+		}
 	}
 	result.Phase = "original_deleted"
 	return nil

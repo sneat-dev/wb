@@ -202,7 +202,11 @@ with hooks enabled, create the deterministic retired source ref, and commit
 actual plain Work Log and checkout metadata files to the configured private
 retirement repository. The archive MUST exclude source checkout code files.
 WB MUST verify both remote refs and the archive file digests before deleting
-the original remote ref with an exact SHA lease. It MUST then remove the local
+the original remote ref with an exact SHA lease. The deletion and creation of
+`refs/tags/wb-retirement-deleted/<retired-ref-stem>` at the exact source commit
+MUST be one atomic push. On retry, an absent original ref is accepted only
+with the exact proof tag and a durable local deletion intent; an absent tag or
+an unsupported atomic push fails closed. It MUST then remove the local
 worktree and branch while retaining the retired source ref. An interrupted
 apply MUST resume from its durable receipt and recheck remote identities.
 After the last repository is removed, WB MUST release its remote task claim;
