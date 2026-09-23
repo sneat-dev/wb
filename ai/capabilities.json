@@ -17007,6 +17007,43 @@
       "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
+      "id": "wb.worktree.retire",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb worktree retire",
+            "flags": ["--apply", "--format", "--json", "--message"],
+            "modes": [
+              "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
+              "Pushes the exact source commit to a retired/* ref in the original repository and actual plain Work Log files and worktree metadata to the configured private organization retirement repository",
+              "Verifies both remote receipts before deleting the original remote ref with an exact lease and removing the local worktree and branch",
+              "Refuses open pull requests, competing ownership, changed refs, and unavailable or public retirement repositories; interrupted applies resume from durable intent"
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "wb worktree retire", "examples": ["wb worktree retire <task> --apply"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [{"path": "internal/worktrees/retire_test.go", "name": "TestRetireBareRemotePreservesSourceAndPlainWorkLog", "kind": "integration"}],
+          "limitation": null
+        }
+      },
+      "notes": "Retirement preserves the source commit in the original repository and records actual plain Work Log files and worktree metadata in a separate private organization repository."
+    },
+    {
       "id": "wb.worktree.set",
       "feature_refs": [
         "spec/features/work-log/README.md"

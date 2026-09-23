@@ -354,14 +354,29 @@ the exact journaled local ref. Run `wb worktree list` and a final cleanup/abort
 dry run afterwards and resolve every live entry or durable backlog record. The
 normal terminal state is zero cleanup backlog, not apparently-finished branches.
 
+## Retire a worktree while preserving its source and Work Log
+
+`wb worktree retire <task>` previews a retirement. After checking the plan,
+run `wb worktree retire <task> --apply`. For a coordinated task, use
+`--filter <owner/repository>` to select one repository at a time. WB commits
+remaining source changes with normal hooks, pushes the exact source commit to
+`retired/*` in its original repository, and pushes plain Work Log and worktree
+metadata to the configured private organization retirement repository. The
+archive contains the actual plain Work Log files, including the claim,
+terminal, and original prompt records. It
+verifies both remote receipts before deleting the original ref and removing
+the local checkout and branch. Rerun the same command to resume an interrupted
+apply. Open pull requests, competing ownership, changed refs, and a public or
+unavailable retirement repository cause refusal.
+
 ## Planned coordination surfaces (not commands)
 
 Portable merger-agent adapters, plan-overlap and migration-scope detection,
 hourly/target-change refresh notification, distributed Synchestra fencing, and
 Git-repository communication fallback are planned. So are the full `worktree
 log` init/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
-group and authorized encrypted private-prompt export. The current WB CLI does
-not implement or advertise those mutating coordination verbs.
+group. The current WB CLI does not implement or advertise those mutating
+coordination verbs.
 `wb worktree info` is the safe redacted inspect surface (identity, digests,
 Git state). `wb worktree log` is the shipped read-only agent bootstrap dump of
 the local journal and original prompt. Later mutating verbs under `log` remain

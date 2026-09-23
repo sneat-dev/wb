@@ -14,7 +14,7 @@ import (
 // basename when user configuration has no override.
 const DefaultRetiredArchiveRepository = "backstage-retired"
 
-// RetiredArchiveTarget identifies the private repository that a future remote
+// RetiredArchiveTarget identifies the private repository that a remote
 // retirement flow must use for one organization. The organization is always
 // prepended; configuration never permits a source repository to choose another
 // organization's archive.
@@ -68,9 +68,8 @@ type RetiredArchiveInspection struct {
 
 type RetiredArchiveInspector func(context.Context, string) (RetiredArchiveInspection, error)
 
-// RetiredArchivePlan is a read-only preflight for a future remote/worktree
-// retirement. It intentionally has no ref or filesystem operation fields that
-// can be applied: local branch quarantine remains the only implemented action.
+// RetiredArchivePlan is a read-only archive-target preflight. It has no ref or
+// filesystem operation fields that can be applied by this plan itself.
 type RetiredArchivePlan struct {
 	GeneratedAt       time.Time `json:"generated_at"`
 	SourceRepository  string    `json:"source_repository"`
@@ -131,7 +130,7 @@ func PlanRetiredArchivePreflight(ctx context.Context, sourceRepository string, i
 		return plan, nil
 	}
 	plan.Outcome = "planned"
-	plan.WorkLogExport = "future sealed export requires explicit authorization before remote retirement"
+	plan.WorkLogExport = "plain private Work Log capture is available through wb worktree retire --apply"
 	return plan, nil
 }
 
