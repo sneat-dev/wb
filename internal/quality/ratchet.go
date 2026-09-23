@@ -160,6 +160,35 @@ func BaselineFromProfile(blocks []CoverageBlock, modulePath, sha string) Package
 	}
 }
 
+// baselineSchemaVersion is the only PackageBaseline schema ValidateBaseline
+// accepts.
+const baselineSchemaVersion = 1
+
+// ValidateBaseline reports whether baseline is usable against expectedSHA. A
+// wrong schema version, an empty package map, or (when expectedSHA is
+// non-empty) a SHA that does not match expectedSHA each make the baseline
+// unusable: EvaluateRatchet treats a package missing from Packages as having
+// no baseline and passes the count rule for it by design, so a baseline that
+// silently lost its contents (an empty `{}` artifact, a schema drift, or one
+// published for the wrong commit) would otherwise disable the per-package
+// count rule for every package without failing anything
+// (spec/plans/coverage-to-100/README.md task-3(b)). Callers must treat a
+// non-nil error as "this baseline cannot be trusted", not "no baseline
+// available" — the caller falls back to measuring the merge base directly,
+// or fails loudly, either way never using the untrusted baseline as-is.
+func ValidateBaseline(baseline PackageBaseline, expectedSHA string) error {
+	if baseline.SchemaVersion != baselineSchemaVersion {
+		return fmt.Errorf("baseline schema_version %d is not the supported %d", baseline.SchemaVersion, baselineSchemaVersion)
+	}
+	if len(baseline.Packages) == 0 {
+		return fmt.Errorf("baseline has no package counts")
+	}
+	if expectedSHA != "" && baseline.SHA != expectedSHA {
+		return fmt.Errorf("baseline sha %q does not match merge base %q", baseline.SHA, expectedSHA)
+	}
+	return nil
+}
+
 // LoadBaseline reads a PackageBaseline written by WriteBaseline. A missing
 // file is reported as os.ErrNotExist so callers can distinguish "no baseline
 // available yet" from a malformed one.
@@ -179,6 +208,12 @@ func LoadBaseline(path string) (PackageBaseline, error) {
 func WriteBaseline(path string, baseline PackageBaseline) error {
 	encoded, err := json.MarshalIndent(baseline, "", "  ")
 	if err != nil {
+		// PackageBaseline holds only an int, a string, and a
+		// map[string]int, all directly JSON-marshalable; MarshalIndent
+		// fails only on cycles, channels/funcs, or NaN/Inf floats, none of
+		// which this type can hold. Kept (not removed) as defense in
+		// depth if the type ever grows a field that can fail, but it is
+		// untested because it is provably unreachable today.
 		return err
 	}
 	encoded = append(encoded, '\n')
@@ -228,7 +263,15 @@ func GitChangedLines(ctx context.Context, repoRoot, mergeBase string) (ChangedLi
 		"-c", "color.diff.newMovedDim=cyan",
 		"-c", "color.diff.newMovedAlternative=cyan",
 		"-c", "color.diff.newMovedAlternativeDim=cyan",
+		// core.quotePath=false and an explicit a/ b/ prefix pair keep file
+		// names parseable regardless of the caller's own git config: a
+		// quoted path (spaces, non-ASCII) would otherwise come back
+		// C-style-escaped, and diff.mnemonicPrefix=true would rename the
+		// "b/" prefix this parser strips to "w/" (or "i/"/"c/"/"o/").
+		"-c", "core.quotePath=false",
+		"-c", "diff.mnemonicPrefix=false",
 		"diff", "--merge-base", mergeBase, "-U0", "--color-moved=plain", "--color=always", "--no-ext-diff",
+		"--src-prefix=a/", "--dst-prefix=b/",
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoRoot
@@ -252,6 +295,11 @@ func parseColorMovedDiff(raw string) ChangedLines {
 		switch {
 		case strings.HasPrefix(stripped, "+++ "):
 			currentFile = strings.TrimPrefix(stripped, "+++ ")
+			// A trailing "\t" (old diff timestamp suffix) never appears with
+			// this exact flag set, but stripping it is a one-line defense in
+			// depth against a mismatched file key that would otherwise
+			// silently exempt every line in the file from the ratchet.
+			currentFile = strings.TrimSuffix(currentFile, "\t")
 			currentFile = strings.TrimPrefix(currentFile, "b/")
 			if currentFile == "/dev/null" {
 				currentFile = ""
@@ -266,8 +314,9 @@ func parseColorMovedDiff(raw string) ChangedLines {
 				changed.add(currentFile, newLine)
 			}
 			newLine++
-		case currentFile != "" && strings.HasPrefix(stripped, "-") && !strings.HasPrefix(stripped, "---"):
-			// Removed lines never advance the new-file counter.
+			// Removed ("-") lines never advance the new-file counter, and no
+			// other line kind needs handling under -U0 (no unprefixed context
+			// lines), so every other case is a deliberate no-op.
 		}
 	}
 	return changed
@@ -333,7 +382,13 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 		relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
 		for line := block.StartLine; line <= block.EndLine; line++ {
 			if changed.Contains(relativeFile, line) {
-				findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: block.File, Line: block.StartLine})
+				// Report the first changed, uncovered line inside this
+				// block (one finding per uncovered block, as before), not
+				// the block's StartLine, and the repo-relative path git
+				// diff uses, not the module-qualified import path — so a
+				// finding can be matched against `git diff` output and
+				// opened directly.
+				findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: relativeFile, Line: line})
 				break
 			}
 		}

@@ -94,15 +94,34 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		defer func() { _ = os.Remove(profilePath) }()
 	}
 
-	testCmd := exec.CommandContext(ctx, "go", "test", "-coverprofile="+profilePath, "./...")
-	testCmd.Dir = repoPath
-	if output, err := testCmd.CombinedOutput(); err != nil {
-		return &exitError{code: exitFindings, message: fmt.Sprintf("go test -coverprofile failed: %v\n%s", err, output)}
+	// Measure through the same sharded, retried, hermetically-wrapped runner
+	// the plain `wb coverage` path uses, instead of a bare `go test ./...`:
+	// that keeps .wb/quality.yaml's shard policy, --timeout/--retry, and
+	// coverage-diagnostics-on-failure working for --changed too
+	// (spec/plans/coverage-to-100/README.md task-3, review item 5).
+	base := runOptions(options)
+	base.CoverageProfile = profilePath
+	runOpts, err := quality.RepositoryRunOptions(repoPath, base)
+	if err != nil {
+		return err
+	}
+	coverageReport := quality.CoverWithOptions(ctx, filepath.Base(repoPath), repoPath, runOpts)
+	if coverageReport.Status == quality.StatusFailed {
+		message := "coverage could not be measured: " + coverageReport.Error
+		// coverageDiagnosticFor (internal/quality/go_coverage_runner.go)
+		// only finds a manifest on disk for a process-isolated shard
+		// failure; --changed never sets GoTestShards, so this branch is
+		// untested here and only reachable once --changed grows its own
+		// sharding support.
+		if coverageReport.Diagnostic != nil {
+			message += fmt.Sprintf(" (diagnostic manifest %s)", coverageReport.Diagnostic.Manifest)
+		}
+		return &exitError{code: exitFindings, message: message}
 	}
 
 	blocks, err := quality.ParseCoverageProfile(profilePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse coverage profile %s produced by go test: %w", profilePath, err)
 	}
 
 	baseline, err := loadOrMeasureBaseline(ctx, cmd.ErrOrStderr(), repoPath, mergeBase, options)
@@ -137,13 +156,22 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, mergeBase string, options qualityOptions) (quality.PackageBaseline, error) {
 	if options.baselineFile != "" {
 		baseline, err := quality.LoadBaseline(options.baselineFile)
-		if err == nil {
+		switch {
+		case err == nil:
+			if validateErr := quality.ValidateBaseline(baseline, mergeBase); validateErr != nil {
+				// A baseline that parses as JSON but is not usable (wrong
+				// schema, empty, or measured for a different commit) must
+				// never pass the ratchet silently: fall back to measuring
+				// the merge base directly, the same as a missing artifact.
+				_, _ = fmt.Fprintf(stderr, "baseline artifact at %s is unusable (%v); measuring merge base %s directly (bounded by --baseline-timeout %s)\n", options.baselineFile, validateErr, mergeBase, options.baselineTimeout)
+				break
+			}
 			return baseline, nil
-		}
-		if !os.IsNotExist(err) {
+		case os.IsNotExist(err):
+			_, _ = fmt.Fprintf(stderr, "no baseline artifact at %s; measuring merge base %s directly (bounded by --baseline-timeout %s)\n", options.baselineFile, mergeBase, options.baselineTimeout)
+		default:
 			return quality.PackageBaseline{}, fmt.Errorf("--baseline-file %s: %w", options.baselineFile, err)
 		}
-		fmt.Fprintf(stderr, "no baseline artifact at %s; measuring merge base %s directly (bounded by --baseline-timeout %s)\n", options.baselineFile, mergeBase, options.baselineTimeout)
 	}
 	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout)
 }
@@ -221,6 +249,12 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		}
 		encoded, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
+			// changedCoverageReport holds only strings, ints, bools, and
+			// slices of quality.PackageRatchet (the same directly
+			// JSON-marshalable shapes as quality.PackageBaseline); kept as
+			// defense in depth but untested because it is provably
+			// unreachable today, the same as WriteBaseline's identical
+			// branch (internal/quality/ratchet.go).
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(reportDir, "coverage-ratchet.json"), append(encoded, '\n'), 0o644); err != nil {
@@ -232,7 +266,7 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
 	}
-	fmt.Fprintf(out, "coverage ratchet against %s (merge base %s)\n", report.Target, report.MergeBase)
+	_, _ = fmt.Fprintf(out, "coverage ratchet against %s (merge base %s)\n", report.Target, report.MergeBase)
 	for _, result := range report.Packages {
 		status := "PASS"
 		if !result.Pass {
@@ -242,9 +276,9 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		if result.HasBaseline {
 			baselineText = fmt.Sprintf("baseline %d", result.BaselineUncovered)
 		}
-		fmt.Fprintf(out, "  %s %s: uncovered %d (%s)\n", status, result.Package, result.Uncovered, baselineText)
+		_, _ = fmt.Fprintf(out, "  %s %s: uncovered %d (%s)\n", status, result.Package, result.Uncovered, baselineText)
 		for _, finding := range result.NewlyUncoveredChanged {
-			fmt.Fprintf(out, "    %s:%d: added or changed statement is not covered by a test\n", finding.File, finding.Line)
+			_, _ = fmt.Fprintf(out, "    %s:%d: added or changed statement is not covered by a test\n", finding.File, finding.Line)
 		}
 	}
 	return nil

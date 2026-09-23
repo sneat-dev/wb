@@ -197,9 +197,10 @@ func NewlyAdded(a, b int) int {
 		t.Fatalf("NewlyUncoveredChanged = %#v, want exactly one finding", got.NewlyUncoveredChanged)
 	}
 	finding := got.NewlyUncoveredChanged[0]
-	wantFile := repo.modulePath + "/app.go"
-	if finding.File != wantFile {
-		t.Fatalf("finding.File = %q, want %q", finding.File, wantFile)
+	// The finding names the repo-relative path git diff uses, not the
+	// module-qualified import path.
+	if finding.File != "app.go" {
+		t.Fatalf("finding.File = %q, want %q", finding.File, "app.go")
 	}
 	// NewlyAdded's body ("return a * b") is on the line after the func line
 	// appended at the end of fixtureBaseSource (11 lines) plus the blank
@@ -528,9 +529,9 @@ func TestEvaluateRatchetSortsFindingsByFileThenLine(t *testing.T) {
 		t.Fatalf("findings = %#v, want 3", findings)
 	}
 	want := []RatchetFinding{
-		{File: "m/pkg/a.go", Line: 2},
-		{File: "m/pkg/a.go", Line: 9},
-		{File: "m/pkg/b.go", Line: 5},
+		{File: "pkg/a.go", Line: 2},
+		{File: "pkg/a.go", Line: 9},
+		{File: "pkg/b.go", Line: 5},
 	}
 	for i, w := range want {
 		if findings[i] != w {
@@ -644,19 +645,79 @@ func TestComputeBaselineAtRefFailsClosedWhenTempDirIsUnwritable(t *testing.T) {
 	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	previous, hadPrevious := os.LookupEnv("TMPDIR")
-	if err := os.Setenv("TMPDIR", notADir); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if hadPrevious {
-			_ = os.Setenv("TMPDIR", previous)
-		} else {
-			_ = os.Unsetenv("TMPDIR")
-		}
-	}()
+	// t.Setenv (not os.Setenv) restores TMPDIR automatically and asserts
+	// this test never runs in parallel, so the process-wide mutation cannot
+	// leak into another test's temp-file creation.
+	t.Setenv("TMPDIR", notADir)
 
 	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute); err == nil {
 		t.Fatal("want error when the temp directory cannot be created")
+	}
+}
+
+func TestValidateBaselineRejectsWrongSchemaVersion(t *testing.T) {
+	t.Parallel()
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
+	if err == nil {
+		t.Fatal("want error for an unsupported schema_version")
+	}
+}
+
+func TestValidateBaselineRejectsEmptyPackages(t *testing.T) {
+	t.Parallel()
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "abc", Packages: map[string]int{}}, "abc")
+	if err == nil {
+		t.Fatal("want error for an empty package map")
+	}
+}
+
+func TestValidateBaselineRejectsSHAMismatch(t *testing.T) {
+	t.Parallel()
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "deadbeef", Packages: map[string]int{".": 0}}, "abc")
+	if err == nil {
+		t.Fatal("want error when the baseline's sha does not match the merge base")
+	}
+}
+
+func TestValidateBaselineAcceptsMatchingSHA(t *testing.T) {
+	t.Parallel()
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
+	if err != nil {
+		t.Fatalf("want no error for a matching baseline, got %v", err)
+	}
+}
+
+func TestValidateBaselineToleratesUnknownExpectedSHA(t *testing.T) {
+	t.Parallel()
+	// An empty expectedSHA means "no specific commit to check against"
+	// (used when a caller has not yet resolved one); it must not itself
+	// make an otherwise-usable baseline fail.
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "whatever", Packages: map[string]int{".": 0}}, "")
+	if err != nil {
+		t.Fatalf("want no error when expectedSHA is empty, got %v", err)
+	}
+}
+
+// TestGitChangedLinesHandlesPathsWithSpaces guards against the file-name
+// key mismatch a quoted or mnemonic-prefixed diff path would otherwise
+// cause: --no-... flags pin core.quotePath and diff.mnemonicPrefix off
+// explicitly, and this fixture is the one most likely to expose a
+// regression, since git quotes a path containing a space by default.
+func TestGitChangedLinesHandlesPathsWithSpaces(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("my file.go", fixtureBaseSource)
+	repo.writeFile("app_test.go", fixtureTestSource)
+	baseSHA := repo.commitAll("base")
+
+	repo.writeFile("my file.go", fixtureBaseSource+"\nfunc NewlyAdded(a, b int) int {\n\treturn a * b\n}\n")
+	repo.commitAll("add NewlyAdded to a spaced file name")
+
+	changed, err := GitChangedLines(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed.Contains("my file.go", strings.Count(fixtureBaseSource, "\n")+2) {
+		t.Fatalf("changed = %#v, want it to key the appended lines under the exact spaced file name", changed)
 	}
 }

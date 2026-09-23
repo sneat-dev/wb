@@ -301,17 +301,23 @@ jobs:
           cache: true
       - name: wb ci audit --strict against the PR base branch
         if: ${{ github.event_name == 'pull_request' }}
-        run: go run ./cmd/wb ci audit . --target "${{ github.base_ref }}" --strict --non-interactive
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: go run ./cmd/wb ci audit . --target "$BASE_REF" --strict --non-interactive
       - name: Fetch coverage baseline for the merge base
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          # --commit filters server-side by exact commit, so an old merge
+          # base is still found precisely instead of falling out of a
+          # branch listing's default recency window; --status success is
+          # deliberately not required, since a baseline can exist even when
+          # some unrelated job on that run later failed.
           RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow go-ci.yml \
-            --branch "${{ github.base_ref }}" --status success --json headSha,databaseId \
-            --jq "[.[] | select(.headSha==\"$BASE_SHA\")][0].databaseId" || true)
+            --commit "$BASE_SHA" --json databaseId --jq '.[0].databaseId' || true)
           if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
             gh run download "$RUN_ID" --repo "${{ github.repository }}" --name wb-coverage-baseline --dir . || true
           fi
@@ -330,10 +336,12 @@ jobs:
           --timeout 35m
       - name: Test with the per-change coverage ratchet
         if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: >-
           go run ./cmd/wb coverage .
           --changed
-          --target "${{ github.event.pull_request.base.sha }}"
+          --target "$BASE_SHA"
           --baseline-file coverage-baseline.json
           --baseline-timeout 20m
           --coverage-profile profile.cov

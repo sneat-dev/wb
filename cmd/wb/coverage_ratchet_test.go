@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,9 +126,13 @@ func TestCoverageChangedFixturePRAddingUncoveredStatementFailsAndNamesLine(t *te
 	if code == 0 {
 		t.Fatalf("code = 0, want nonzero: an added uncovered statement must fail\nstdout:\n%s", stdout.String())
 	}
-	wantFile := repo.modulePath + "/app.go"
-	if !strings.Contains(stderr.String(), wantFile) {
-		t.Fatalf("stderr = %q, want it to name %s", stderr.String(), wantFile)
+	// The finding names the repo-relative path git diff uses ("app.go"), not
+	// the module-qualified import path ("fixture.test/cliapp/app.go").
+	if !strings.Contains(stderr.String(), "app.go:") {
+		t.Fatalf("stderr = %q, want it to name app.go:<line>", stderr.String())
+	}
+	if strings.Contains(stderr.String(), repo.modulePath+"/app.go") {
+		t.Fatalf("stderr = %q, want the repo-relative path, not the module-qualified import path", stderr.String())
 	}
 }
 
@@ -202,10 +207,19 @@ func TestCoverageChangedFailsWhenGoTestFails(t *testing.T) {
 	repo.writeFile("app.go", "package app\n\nfunc Broken() int {\n") // syntax error
 	baseSHA := repo.commitAll("broken")
 
+	// --report-dir exercises the same quality.CoverWithOptions failure path
+	// the sharded coverage-diagnostics manifest uses (review item 5); the
+	// manifest itself is only written for process-isolated shard failures,
+	// so it does not appear here (see the "diagnostic manifest" append in
+	// runChangedCoverage).
+	reportDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--report-dir", reportDir, "--non-interactive"}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero when go test fails to build")
+	}
+	if !strings.Contains(stderr.String(), "coverage could not be measured") {
+		t.Fatalf("stderr = %q, want it to report the measurement failure", stderr.String())
 	}
 }
 
@@ -460,17 +474,9 @@ func TestCoverageChangedFailsClosedWhenTempProfileCannotBeCreated(t *testing.T) 
 	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	previous, hadPrevious := os.LookupEnv("TMPDIR")
-	if err := os.Setenv("TMPDIR", notADir); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if hadPrevious {
-			_ = os.Setenv("TMPDIR", previous)
-		} else {
-			_ = os.Unsetenv("TMPDIR")
-		}
-	}()
+	// t.Setenv (not os.Setenv) restores TMPDIR automatically and asserts
+	// this test never runs in parallel.
+	t.Setenv("TMPDIR", notADir)
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
@@ -496,5 +502,237 @@ func TestCoverageChangedFailsClosedWhenReportDirIsBlocked(t *testing.T) {
 	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--report-dir", reportDir, "--non-interactive"}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero when --report-dir cannot be created")
+	}
+}
+
+// TestCoverageChangedFailsClosedWhenWorkingDirectoryIsGone exercises
+// runChangedCoverage's filepath.Abs error branch: Abs only calls os.Getwd
+// for a relative path, and only a removed working directory makes Getwd
+// fail. Not parallel-safe (mutates the process-wide working directory), so
+// it runs serially and always restores it.
+func TestCoverageChangedFailsClosedWhenWorkingDirectoryIsGone(t *testing.T) {
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(original); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", ".", "--changed", "--target", "main", "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when the working directory has been removed")
+	}
+}
+
+// TestCoverageChangedFailsClosedWhenGitDiffCannotRun exercises
+// runChangedCoverage's quality.GitChangedLines error branch with a `git`
+// shim that fails only its `diff` invocation and forwards every other
+// subcommand (merge-base, rev-parse, ...) to the real binary, so
+// gitMergeBase still succeeds and GitChangedLines fails on its own. Not
+// parallel-safe (t.Setenv mutates the process-wide PATH).
+func TestCoverageChangedFailsClosedWhenGitDiffCannotRun(t *testing.T) {
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	baseSHA := repo.commitAll("base")
+	runCommand(t, repo.dir, "git", "checkout", "-q", "-b", "feature")
+	repo.writeFile("README.md", "x\n")
+	repo.commitAll("doc change")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = diff ]; then\n" +
+		"    echo 'fake git diff failure' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + realGit + " \"$@\"\n"
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when git diff cannot run")
+	}
+	if !strings.Contains(stderr.String(), "fake git diff failure") {
+		t.Fatalf("stderr = %q, want it to surface the git diff failure", stderr.String())
+	}
+}
+
+// TestCoverageChangedFailsClosedOnMalformedRepositoryQualityPolicy exercises
+// runChangedCoverage's quality.RepositoryRunOptions error branch: --changed
+// now reuses the same .wb/quality.yaml-aware sharded runner the plain
+// `wb coverage` path uses, so a malformed policy must fail it closed too.
+func TestCoverageChangedFailsClosedOnMalformedRepositoryQualityPolicy(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	repo.writeFile(".wb/quality.yaml", "version: 2\n")
+	baseSHA := repo.commitAll("base")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero for a malformed .wb/quality.yaml policy")
+	}
+	if !strings.Contains(stderr.String(), "quality.yaml") {
+		t.Fatalf("stderr = %q, want it to name the malformed policy file", stderr.String())
+	}
+}
+
+// TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed exercises
+// runChangedCoverage's quality.ParseCoverageProfile error branch after a
+// successful quality.CoverWithOptions run. profileTotals (used inside
+// CoverWithOptions to decide pass/fail) accepts any three
+// whitespace-separated fields with numeric counts; ParseCoverageProfile
+// additionally requires field 1 to be
+// "file:startLine.startCol,endLine.endCol". This `go` shim fakes `go test
+// -coverprofile` to write a profile that satisfies the first parser but not
+// the second, so CoverWithOptions reports success while the ratchet's own
+// stricter parse still fails closed. Not parallel-safe (t.Setenv mutates
+// the process-wide PATH).
+func TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) {
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	baseSHA := repo.commitAll("base")
+	runCommand(t, repo.dir, "git", "checkout", "-q", "-b", "feature")
+	repo.writeFile("README.md", "x\n")
+	repo.commitAll("doc change")
+
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = test ]; then\n" +
+		"  for a in \"$@\"; do\n" +
+		"    case \"$a\" in -coverprofile=*) p=\"${a#-coverprofile=}\";; esac\n" +
+		"  done\n" +
+		"  printf 'mode: set\\nbadformat 1 1\\n' > \"$p\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exec " + realGo + " \"$@\"\n"
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when the coverage profile fails the ratchet's stricter parse")
+	}
+	if !strings.Contains(stderr.String(), "produced by go test") {
+		t.Fatalf("stderr = %q, want it to name the parse failure", stderr.String())
+	}
+}
+
+// TestCoverageChangedRejectsFormatsOtherThanMarkdownOrJSON is the CLI-level
+// counterpart of --changed's ignored-flags rule (AGENTS.md): an unsupported
+// --format must be a usage error, not silently printed as plain text.
+func TestCoverageChangedRejectsFormatsOtherThanMarkdownOrJSON(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	baseSHA := repo.commitAll("base")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--format", "yaml", "--non-interactive"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("code = %d, want %d (rejected before work started) for an unsupported --format under --changed", code, exitFindings)
+	}
+}
+
+// TestCoverageRejectsBaselineTimeoutWithoutChanged is the CLI-level
+// counterpart of --baseline-timeout's ignored-flags rule (AGENTS.md):
+// --baseline-timeout has no effect outside --changed and must be rejected,
+// not silently accepted.
+func TestCoverageRejectsBaselineTimeoutWithoutChanged(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	repo.commitAll("base")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--baseline-timeout", "5m", "--non-interactive"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("code = %d, want %d (rejected before work started) for --baseline-timeout without --changed", code, exitFindings)
+	}
+}
+
+// TestValidateBaselineRejectsUnusableArtifacts is the CLI-level regression
+// for review item 3: a baseline that parses as JSON but is unusable (wrong
+// schema, empty, or measured for a different commit) must never pass the
+// ratchet silently. Each fixture PR raises a package's uncovered count from
+// 0 to 1 with no non-test line changed, so only the count rule can catch
+// it; a baseline treated as valid-but-generous would let it through.
+func TestCoverageChangedFailsClosedOnUnusableBaselineArtifacts(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		contents string
+	}{
+		{name: "empty object", contents: "{}"},
+		{name: "wrong schema version and sha", contents: `{"schema_version":2,"sha":"deadbeef","packages":{".":0}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			repo := newRatchetFixtureRepo(t)
+			repo.writeFile("app.go", ratchetFixtureBaseSource)
+			repo.writeFile("app_test.go", ratchetFixtureTestSource)
+			baseSHA := repo.commitAll("base")
+
+			runCommand(t, repo.dir, "git", "checkout", "-q", "-b", "feature")
+			// Delete the package's only test: the uncovered count goes from
+			// 0 to 1 and no non-test line changes, so only the baseline
+			// count rule can catch it.
+			if err := os.Remove(filepath.Join(repo.dir, "app_test.go")); err != nil {
+				t.Fatal(err)
+			}
+			repo.commitAll("delete the only test")
+
+			baselinePath := filepath.Join(t.TempDir(), "baseline.json")
+			if err := os.WriteFile(baselinePath, []byte(c.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--baseline-file", baselinePath, "--non-interactive"}, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("code = 0, want nonzero: an unusable baseline (%s) must not silently pass a rising uncovered count\nstdout:\n%s\nstderr:\n%s", c.name, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "rose above baseline") {
+				t.Fatalf("stderr = %q, want it to report the uncovered count rising once the unusable baseline is discarded", stderr.String())
+			}
+		})
 	}
 }

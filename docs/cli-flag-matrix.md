@@ -12,7 +12,14 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--target <branch-or-ref>` (required with `--changed`), `--baseline-file`, and
 `--baseline-timeout` all apply only to `coverage`, are rejected without
 `--changed`, and are incompatible with `--fleet`, `--resume`, and
-`--test-shards`.
+`--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
+`json`.
+
+`coverage baseline <coverage-profile>` (the per-change coverage ratchet's
+baseline publisher) is also command-specific: `--module` (the Go module
+root, default `.`), `--sha` (the commit the profile was measured at, for
+traceability), and `--out` (the output baseline JSON path, default
+`coverage-baseline.json`).
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge

@@ -77,6 +77,9 @@ func newCoverageCmd() *cobra.Command {
 			if options.fleet && len(args) > 0 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
+			if !options.changed && cmd.Flags().Changed("baseline-timeout") {
+				return fmt.Errorf("--baseline-timeout requires --changed")
+			}
 			if err := validateCoverageExecutionOptions(options); err != nil {
 				return err
 			}
@@ -166,6 +169,9 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 		}
 		if options.testShards > 1 {
 			return fmt.Errorf("--changed cannot be combined with --test-shards")
+		}
+		if options.format != "markdown" && options.format != "json" {
+			return fmt.Errorf("--changed supports --format markdown or json only, not %q", options.format)
 		}
 	} else if options.target != "" {
 		return fmt.Errorf("--target requires --changed")
