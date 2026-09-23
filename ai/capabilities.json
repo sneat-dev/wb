@@ -1712,6 +1712,9 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--baseline-file",
+                "--baseline-timeout",
+                "--changed",
                 "--coverage-profile",
                 "--fleet",
                 "--format",
@@ -1723,6 +1726,7 @@
                 "--resume",
                 "--retry",
                 "--shard-package",
+                "--target",
                 "--test-shards",
                 "--timeout"
               ],
@@ -1730,7 +1734,8 @@
                 "Measures statement-weighted Go coverage for one repository or a selected local fleet.",
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
-                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications."
+                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
+                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
               ]
             }
           ],
@@ -1802,12 +1807,96 @@
               "path": "internal/orchestrate/worktree_merge_test.go",
               "name": "TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation",
               "kind": "integration"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
+      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume. --changed applies the per-change coverage ratchet (spec/plans/coverage-to-100/README.md task-3): a package fails when its uncovered-statement count rises against its baseline, or when a statement a diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
+    },
+    {
+      "id": "wb.coverage.baseline",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage baseline",
+              "flags": [
+                "--module",
+                "--out",
+                "--sha"
+              ],
+              "modes": [
+                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON go-ci's coverage job publishes as a build artifact on every push to main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage baseline --help",
+              "contains": [
+                "--module",
+                "--out"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Consumed by go-ci.yml directly; no standalone operator runbook is published yet."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineWritesPerPackageUncoveredCounts",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineRejectsMissingProfile",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineRejectsMissingGoMod",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "go-ci.yml's coverage job runs this on every push to main and uploads its output as the wb-coverage-baseline artifact; wb coverage --changed --baseline-file reads it back for pull requests."
     },
     {
       "id": "wb.create",

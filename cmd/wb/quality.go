@@ -39,6 +39,18 @@ type qualityOptions struct {
 	shardPackages   []string
 	coverageProfile string
 	minimumCoverage float64
+	// changed selects the per-change coverage ratchet
+	// (spec/plans/coverage-to-100/README.md task-3): a package fails when its
+	// uncovered-statement count rises against its baseline, or when a changed,
+	// non-moved line is uncovered.
+	changed bool
+	// target is the merge-base branch/ref --changed diffs against.
+	target string
+	// baselineFile is the per-package uncovered-count baseline published by
+	// go-ci's coverage job as a build artifact. When empty or missing, the
+	// merge base is measured directly instead, bounded by baselineTimeout.
+	baselineFile    string
+	baselineTimeout time.Duration
 	// allowEmpty lets fleet mode return zero targets instead of erroring.
 	// an empty fleet with no filter publishes an empty-but-valid snapshot;
 	// an unmatched filter is still an error. Quality commands (coverage/verify/check/fleet)
@@ -52,7 +64,7 @@ type qualityTarget struct {
 }
 
 func newCoverageCmd() *cobra.Command {
-	options := qualityOptions{testShards: 1, minimumCoverage: -1}
+	options := qualityOptions{testShards: 1, minimumCoverage: -1, baselineTimeout: 20 * time.Minute}
 	command := &cobra.Command{
 		Use:   "coverage [repository-path]",
 		Short: "Measure Go test coverage for one repository or the local fleet",
@@ -67,6 +79,9 @@ func newCoverageCmd() *cobra.Command {
 			}
 			if err := validateCoverageExecutionOptions(options); err != nil {
 				return err
+			}
+			if options.changed {
+				return runChangedCoverage(cmd, path, options)
 			}
 			targets, err := qualityTargets(path, projectsRoot, filterFlag, options)
 			if err != nil {
@@ -112,6 +127,11 @@ func newCoverageCmd() *cobra.Command {
 	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name (repeatable)")
 	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
+	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
+	command.Flags().StringVar(&options.target, "target", "", "merge-base branch or ref for --changed (required with --changed)")
+	command.Flags().StringVar(&options.baselineFile, "baseline-file", "", "per-package uncovered-count baseline JSON for --changed; measures the merge base directly when empty or missing")
+	command.Flags().DurationVar(&options.baselineTimeout, "baseline-timeout", 20*time.Minute, "wall-time budget for measuring the merge base directly when --baseline-file is empty or missing")
+	command.AddCommand(newCoverageBaselineCmd())
 	return command
 }
 
@@ -133,6 +153,24 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 	}
 	if len(options.shardPackages) > 0 && options.fleet {
 		return fmt.Errorf("--shard-package is repository-specific and cannot be combined with --fleet")
+	}
+	if options.changed {
+		if options.target == "" {
+			return fmt.Errorf("--changed requires --target <merge-base branch or ref>")
+		}
+		if options.fleet {
+			return fmt.Errorf("--changed is repository-specific and cannot be combined with --fleet")
+		}
+		if options.resume {
+			return fmt.Errorf("--changed cannot be combined with --resume")
+		}
+		if options.testShards > 1 {
+			return fmt.Errorf("--changed cannot be combined with --test-shards")
+		}
+	} else if options.target != "" {
+		return fmt.Errorf("--target requires --changed")
+	} else if options.baselineFile != "" {
+		return fmt.Errorf("--baseline-file requires --changed")
 	}
 	return nil
 }
