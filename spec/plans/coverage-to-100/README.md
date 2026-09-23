@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Blocked
+status: Executing
 ---
 # Plan: wb test coverage to 100%
 
-**Status:** Blocked
+**Status:** Executing
 **Source:** idea:quality-diff-and-thresholds
 **Date:** 2026-09-23
 **Owner:** alex
@@ -25,7 +25,7 @@ Coverage is falling today. In the five days before 2026-09-23, 9,467 new stateme
 
 The plan changes the gate first, so progress sticks. Next it makes the suite fast and hermetic, then adds the seams that make error paths testable. Only then do package-by-package test waves close the gap. The last step switches to a hard 100% gate like specscore-cli's.
 
-**Start condition — blocked.** The founder said: "Record plan now and wait for #10 to finish before starting implementation wb coverage increase." Task 1 records this gate where tooling can see it: no other task in this plan may start before `sneat-co/storygrapher#10` is merged. *Inference, not a founder quote:* the plan's author reads the reason as the founder's stated VM lane cap (see the `VM resource limits` / `Alex working preferences` memory: at most 3 concurrent lanes on the 4-core VM, at most 2 Go) — storygrapher#10 is itself occupying a Go lane. The founder did not state this reason; treat it as unconfirmed until the founder says otherwise.
+**Start condition — met 2026-09-23.** sneat-co/storygrapher#10 merged as 831f757, so task-1 is complete and the plan is Executing. The founder said: "Record plan now and wait for #10 to finish before starting implementation wb coverage increase." Task 1 records this gate where tooling can see it: no other task in this plan may start before `sneat-co/storygrapher#10` is merged. *Inference, not a founder quote:* the plan's author reads the reason as the founder's stated VM lane cap (see the `VM resource limits` / `Alex working preferences` memory: at most 3 concurrent lanes on the 4-core VM, at most 2 Go) — storygrapher#10 is itself occupying a Go lane. The founder did not state this reason; treat it as unconfirmed until the founder says otherwise.
 
 **Readiness caveat.** `specscore plan readiness coverage-to-100` reports `ready: true` even while this plan's own `Status:` is `Blocked` and task-1 is unmet — it does not read this Plan's Status field or GitHub PR state (verified 2026-09-23; see task-1). Agents check this plan's `Status:` field and task-1 directly, not `specscore plan readiness`. Filed as [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216).
 
@@ -90,10 +90,13 @@ Generated proto/connect code is already at 100% and needs no exclusion. Darwin a
 
 **Id:** task-1
 **Depends-On:** —
-**Status:** blocked
+**Status:** complete
+**Implemented-by:** sneat-co/storygrapher@831f7573c9e6e25a2285a2aa51f0a9b85f93d055
+**Note:** Start gate met: sneat-co/storygrapher#10 MERGED 2026-09-23 (831f757). Trust this task and the plan Status, not specscore plan readiness (specscore/specscore-cli#216).
+**Evidence:** https://github.com/sneat-co/storygrapher/pull/10
 **Verifies:** `gh pr view 10 -R sneat-co/storygrapher --json state` reports `"state":"MERGED"`.
 
-No other task in this plan may start until `sneat-co/storygrapher#10` is merged. As of 2026-09-23 it is open (`gh pr view 10 -R sneat-co/storygrapher` → `OPEN`, "Port StoryGrapher CLI to Go, harden per design review #8"). `specscore plan readiness coverage-to-100` currently reports `ready: true` because readiness does not read GitHub PR state or this plan's own `Status:` field (see the Readiness caveat above and [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216)); check this plan's `Status:` field and this task, not `specscore plan readiness`, before starting any other task.
+No other task in this plan may start until `sneat-co/storygrapher#10` is merged. It merged on 2026-09-23 as 831f757 ("Port StoryGrapher CLI to Go, harden per design review #8"), so this gate is met. `specscore plan readiness coverage-to-100` currently reports `ready: true` because readiness does not read GitHub PR state or this plan's own `Status:` field (see the Readiness caveat above and [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216)); check this plan's `Status:` field and this task, not `specscore plan readiness`, before starting any other task.
 
 ### Task 2: Fix `wb ci audit --target main --strict` findings
 
