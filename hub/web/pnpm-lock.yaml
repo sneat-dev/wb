@@ -31,7 +31,7 @@ importers:
         specifier: ^22.10.0
         version: 22.20.2
       '@vitest/coverage-v8':
-        specifier: ^3.2.7
+        specifier: 3.2.7
         version: 3.2.7(supports-color@7.2.0)(vitest@3.2.7(@types/node@22.20.2)(lightningcss@1.33.0)(supports-color@7.2.0)(yaml@2.9.0))
       typescript:
         specifier: ^5.9.3
