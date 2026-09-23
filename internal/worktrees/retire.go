@@ -143,7 +143,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return RetireResult{}, fmt.Errorf("retirement requires a corroborated active Work Log: %w", err)
 	}
 	if claim.Task != entry.Task || claim.Repository != entry.Repository || claim.Branch != entry.Branch || projection.ClaimID != claim.ClaimID {
-		return RetireResult{}, fmt.Errorf("Work Log claim does not bind the selected checkout")
+		return RetireResult{}, fmt.Errorf("work log claim does not bind the selected checkout")
 	}
 	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
 		return RetireResult{}, err
@@ -176,7 +176,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return RetireResult{}, fmt.Errorf("acquire retirement task lock: %w", err)
 	}
 	defer task.close()
-	defer task.lock.release()
+	defer func() { _ = task.lock.release() }()
 	if err := task.validate(); err != nil {
 		return RetireResult{}, err
 	}
@@ -405,7 +405,7 @@ func retireReadClaim(home, worktree string) (workLogClaim, workLogProjection, er
 		return workLogClaim{}, projection, err
 	}
 	if projection.Lifecycle != "active" && projection.Lifecycle != "terminal" {
-		return workLogClaim{}, projection, fmt.Errorf("Work Log has unsupported lifecycle %s", projection.Lifecycle)
+		return workLogClaim{}, projection, fmt.Errorf("work log has unsupported lifecycle %s", projection.Lifecycle)
 	}
 	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
 		return workLogClaim{}, projection, err
@@ -414,12 +414,12 @@ func retireReadClaim(home, worktree string) (workLogClaim, workLogProjection, er
 	if err != nil {
 		return workLogClaim{}, projection, err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	claims, err := openPrivateChild(run, "claims", false)
 	if err != nil {
 		return workLogClaim{}, projection, err
 	}
-	defer claims.Close()
+	defer func() { _ = claims.Close() }()
 	var claim workLogClaim
 	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, projection, err
@@ -536,7 +536,7 @@ func retireResumeRemoved(ctx context.Context, home string, options RetireOptions
 		return result, err
 	}
 	defer task.close()
-	defer task.lock.release()
+	defer func() { _ = task.lock.release() }()
 	if err := task.validate(); err != nil {
 		return result, err
 	}
@@ -595,12 +595,12 @@ func retireValidateRemovedClaim(home string, result RetireResult) error {
 	if err != nil {
 		return err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	claims, err := openPrivateChild(run, "claims", false)
 	if err != nil {
 		return err
 	}
-	defer claims.Close()
+	defer func() { _ = claims.Close() }()
 	var claim workLogClaim
 	if err := readJSONAt(claims, result.ClaimID+".json", &claim); err != nil {
 		return err
@@ -612,7 +612,7 @@ func retireValidateRemovedClaim(home string, result RetireResult) error {
 	if err != nil {
 		return err
 	}
-	defer terminals.Close()
+	defer func() { _ = terminals.Close() }()
 	var terminal workLogTerminalRecord
 	if err := readJSONAt(terminals, result.ClaimID+".json", &terminal); err != nil {
 		return err
@@ -744,7 +744,7 @@ func retireCheckUntrackedPath(worktree, relative string) error {
 	if err != nil {
 		return err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	var stat unix.Stat_t
 	if err := unix.Fstatat(int(parent.Fd()), filepath.Base(relative), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
@@ -780,7 +780,7 @@ func readRetireReport(path string) (RetireResult, error) {
 	if err != nil {
 		return result, err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	fd, err := unix.Openat(int(parent.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return result, err
@@ -842,17 +842,17 @@ func writeRetireReport(result RetireResult) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temporary.Name())
+	defer func() { _ = os.Remove(temporary.Name()) }()
 	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if _, err := temporary.Write(append(body, '\n')); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Sync(); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {
@@ -999,13 +999,13 @@ func retireCaptureFile(source, destination string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	fd, err := unix.Openat(int(parent.Fd()), filepath.Base(source), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
 	input := os.NewFile(uintptr(fd), source)
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	info, err := input.Stat()
 	if err != nil {
 		return "", err
@@ -1037,7 +1037,7 @@ func retireCaptureTree(source, destination string, include func(string) bool, ha
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1090,7 +1090,7 @@ func retirePublishArchive(ctx context.Context, home, remote string, result *Reti
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(working)
+	defer func() { _ = os.RemoveAll(working) }()
 	if _, err := git(ctx, working, "init", "--initial-branch=main"); err != nil {
 		return err
 	}
