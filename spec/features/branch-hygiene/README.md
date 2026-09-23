@@ -126,6 +126,24 @@ selectors (`--org`, `--repo`, `--scope`, `--only`, `--name`, and `--older-than`)
 renders concise active-disposition and retired-ref counts. It must not launch a
 second fleet sweep. JSON and YAML preserve the same machine-readable outcome.
 
+#### REQ: retired-namespace-inventory
+
+`--only retired`, an exact `--branch retired/...`, or a `--name` glob rooted
+at `retired/` MUST inventory the retired namespace without fetching
+`origin/<base>`. A local-scope inventory reads only `refs/heads/retired/*` and
+is offline. Remote scope refreshes and prunes only
+`refs/heads/retired/*` into `refs/remotes/origin/retired/*` before reporting
+remote refs, so it never presents a stale tracking ref as current remote
+truth. A failed scoped remote refresh MUST leave the remote count unknown,
+record the diagnostic, and set `retired_remote_unavailable`; text output MUST
+say unavailable rather than zero.
+
+Retired refs have the fixed `retired` disposition. When a retired exact/glob
+selector is combined with any other `--only` disposition, the intersection is
+empty and MUST return no rows or counts without a base or remote fetch. The
+inventory still reports per-repository progress to stderr and emits diagnostics
+to stderr in text mode; JSON and YAML retain diagnostics in the outcome.
+
 `wb branch quarantine` accepts one exact local `--repo`, `--branch`, optional
 `--sha`, and required `--reason`, or a JSON `--manifest` whose every row names
 exact repository, ref, SHA, and reason. It plans by default. Under `--apply`

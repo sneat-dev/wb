@@ -44,7 +44,10 @@ func newBranchCountCmd() *cobra.Command {
 			}
 			switch format {
 			case "text":
-				return printBranchCount(command.OutOrStdout(), outcome)
+				if err := printBranchCount(command.OutOrStdout(), outcome); err != nil {
+					return err
+				}
+				return printBranchDiagnostics(command.ErrOrStderr(), outcome.Diagnostics)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -124,6 +127,13 @@ origin/<base> during this run, never a stale local branch or tracking ref. A
 repository whose target cannot be fetched yields the unreadable disposition
 for its branches without blocking the rest of the sweep.
 
+--only retired, an exact retired --branch, or a retired/* --name selector
+uses a bounded quarantine inventory instead: local scope reads only local
+retired refs and does not fetch origin/<base>; remote scope refreshes only
+origin's retired namespace before reading its tracking refs. The report names
+the skipped base fetch, and a failed remote namespace refresh sets
+retired_remote_unavailable with its diagnostic.
+
 The default --scope local inventories local refs. Use --scope remote or --scope
 all to include known origin refs; --org narrows only locally discovered
 canonical clones and never queries every repository on GitHub.
@@ -168,7 +178,10 @@ reserved for the report.`,
 			}
 			switch format {
 			case "text":
-				return printBranchList(command, outcome)
+				if err := printBranchList(command, outcome); err != nil {
+					return err
+				}
+				return printBranchDiagnostics(command.ErrOrStderr(), outcome.Diagnostics)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -364,7 +377,7 @@ func printRetiredBranchSummary(out io.Writer, outcome worktrees.BranchListOutcom
 	if outcome.RetiredBranches == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%d); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%s); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
 	return err
 }
 
@@ -375,8 +388,27 @@ func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error 
 	if err := printDispositionTotals(out, outcome.Totals); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %d remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %s remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
 	return err
+}
+
+func printBranchDiagnostics(out io.Writer, diagnostics []string) error {
+	for _, diagnostic := range diagnostics {
+		if _, err := fmt.Fprintf(out, "diagnostic: %s\n", diagnostic); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {
+	if outcome.RetiredRemoteUnavailable {
+		return "unavailable"
+	}
+	if count, ok := outcome.RetiredRefs[worktrees.BranchScopeRemote]; ok {
+		return fmt.Sprintf("%d", count)
+	}
+	return "0"
 }
 
 // yamlCompatibleBranchList preserves the machine contract's JSON field names.
