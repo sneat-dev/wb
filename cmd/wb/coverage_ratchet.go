@@ -78,6 +78,15 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 	if err != nil {
 		return err
 	}
+	// touchedFiles (added, modified, deleted, or renamed against mergeBase)
+	// decides which packages the PR "changes" for the per-package ratchet's
+	// scope (founder decision 2026-09-23, review B1): a pure deletion (for
+	// example removing a test) never appears in changedLines (it added no
+	// line) but still makes the PR own that package.
+	touchedFiles, err := quality.GitTouchedFiles(ctx, repoPath, mergeBase)
+	if err != nil {
+		return err
+	}
 
 	profilePath := options.coverageProfile
 	removeProfile := false
@@ -132,12 +141,13 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return err
 	}
 
-	results := quality.EvaluateRatchet(blocks, changedLines, baseline, modulePath)
+	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, baseline, modulePath)
 
 	report := changedCoverageReport{
 		MergeBase: mergeBase,
 		Target:    options.target,
 		Packages:  results,
+		Warnings:  warnings,
 	}
 	if err := writeChangedCoverageOutputTo(cmd.OutOrStdout(), report, options.format, options.reportDir); err != nil {
 		return err
@@ -196,6 +206,9 @@ type changedCoverageReport struct {
 	MergeBase string                   `yaml:"merge_base" json:"merge_base"`
 	Target    string                   `yaml:"target" json:"target"`
 	Packages  []quality.PackageRatchet `yaml:"packages" json:"packages"`
+	// Warnings are count rises in packages the PR did not itself change
+	// (founder decision 2026-09-23, review B1): reported, never failed on.
+	Warnings []quality.RatchetWarning `yaml:"warnings" json:"warnings"`
 }
 
 func changedCoverageRatchetError(results []quality.PackageRatchet) error {
@@ -279,6 +292,9 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		for _, finding := range result.NewlyUncoveredChanged {
 			_, _ = fmt.Fprintf(out, "    %s:%d: added or changed statement is not covered by a test\n", finding.File, finding.Line)
 		}
+	}
+	for _, warning := range report.Warnings {
+		_, _ = fmt.Fprintf(out, "  WARN %s %s:%d: uncovered count rose in a package this PR did not change\n", warning.Package, warning.File, warning.Line)
 	}
 	return nil
 }

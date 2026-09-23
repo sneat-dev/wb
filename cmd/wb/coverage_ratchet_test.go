@@ -425,6 +425,33 @@ func TestCoverageChangedPassesUnderALenientMinimum(t *testing.T) {
 	}
 }
 
+// TestWriteChangedCoverageOutputToPrintsWarningsInMarkdownFormat covers the
+// markdown/text renderer's warnings loop (founder decision 2026-09-23,
+// review B1): a count rise in a package the PR did not change prints as a
+// WARN line naming its package and file:line, separate from the pass/fail
+// package lines above it.
+func TestWriteChangedCoverageOutputToPrintsWarningsInMarkdownFormat(t *testing.T) {
+	t.Parallel()
+	report := changedCoverageReport{
+		MergeBase: "deadbeef",
+		Target:    "main",
+		Packages: []quality.PackageRatchet{
+			{Package: ".", Uncovered: 1, HasBaseline: true, BaselineUncovered: 1, Pass: true},
+		},
+		Warnings: []quality.RatchetWarning{
+			{Package: "legacy", File: "legacy/old.go", Line: 42},
+		},
+	}
+	var out bytes.Buffer
+	if err := writeChangedCoverageOutputTo(&out, report, "markdown", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "WARN legacy legacy/old.go:42") {
+		t.Fatalf("output = %q, want a WARN line naming the package and file:line", got)
+	}
+}
+
 func TestWriteChangedCoverageOutputToFailsClosedWhenReportDirIsBlocked(t *testing.T) {
 	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
@@ -579,6 +606,49 @@ func TestCoverageChangedFailsClosedWhenGitDiffCannotRun(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "fake git diff failure") {
 		t.Fatalf("stderr = %q, want it to surface the git diff failure", stderr.String())
+	}
+}
+
+// TestCoverageChangedFailsClosedWhenGitTouchedFilesCannotRun exercises
+// runChangedCoverage's quality.GitTouchedFiles error branch specifically: a
+// `git` shim that only fails the `--name-only` invocation (GitTouchedFiles),
+// forwarding every other diff (GitChangedLines' own -U0 --color-moved run,
+// which must succeed first) and every other subcommand to the real binary.
+// Not parallel-safe (t.Setenv mutates the process-wide PATH).
+func TestCoverageChangedFailsClosedWhenGitTouchedFilesCannotRun(t *testing.T) {
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	baseSHA := repo.commitAll("base")
+	runCommand(t, repo.dir, "git", "checkout", "-q", "-b", "feature")
+	repo.writeFile("README.md", "x\n")
+	repo.commitAll("doc change")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = --name-only ]; then\n" +
+		"    echo 'fake git diff --name-only failure' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + realGit + " \"$@\"\n"
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when git diff --name-only cannot run")
+	}
+	if !strings.Contains(stderr.String(), "fake git diff --name-only failure") {
+		t.Fatalf("stderr = %q, want it to surface the git diff --name-only failure", stderr.String())
 	}
 }
 

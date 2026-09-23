@@ -339,6 +339,35 @@ func GitChangedLines(ctx context.Context, repoRoot, mergeBase string) (ChangedLi
 	return parseColorMovedDiff(string(output)), nil
 }
 
+// GitTouchedFiles reports every repository-relative file path a diff touches
+// against mergeBase — added, modified, deleted, or renamed — independent of
+// whether the diff added any line at all. A pure deletion (for example
+// removing a test function) never appears in ChangedLines (it added no
+// line), but it must still count as "the PR changed this package"
+// (founder decision 2026-09-23, review B1): the caller uses this, not
+// ChangedLines, to decide per-package ratchet ownership.
+func GitTouchedFiles(ctx context.Context, repoRoot, mergeBase string) (map[string]bool, error) {
+	cmd := exec.CommandContext(ctx, "git",
+		"-c", "core.quotePath=false",
+		"diff", "--merge-base", mergeBase, "--name-only", "--no-ext-diff")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("git diff --merge-base %s --name-only: %w: %s", mergeBase, err, string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("git diff --merge-base %s --name-only: %w", mergeBase, err)
+	}
+	files := make(map[string]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files[line] = true
+		}
+	}
+	return files, nil
+}
+
 func parseColorMovedDiff(raw string) ChangedLines {
 	changed := make(ChangedLines)
 	currentFile := ""
@@ -412,6 +441,16 @@ type RatchetFinding struct {
 	Line int
 }
 
+// RatchetWarning names one newly uncovered statement in a package the PR did
+// not itself change (review B1, founder decision 2026-09-23: "only packages
+// the PR changes" are hard-gated on their uncovered count; every other
+// package's count rise is reported, never failed on).
+type RatchetWarning struct {
+	Package string `json:"package"`
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+}
+
 // PackageRatchet is one package's ratchet verdict.
 type PackageRatchet struct {
 	Package               string
@@ -419,15 +458,26 @@ type PackageRatchet struct {
 	BaselineUncovered     int
 	HasBaseline           bool
 	Rose                  bool
+	Changed               bool // true when the PR itself touches a file (including _test.go) in this package
 	NewlyUncoveredChanged []RatchetFinding
 	Pass                  bool
 }
 
 // EvaluateRatchet applies the per-change coverage ratchet
-// (spec/plans/coverage-to-100/README.md task-3): a package fails when its
-// uncovered-statement count rises against baseline, or when a changed,
-// non-moved line is uncovered.
-func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline PackageBaseline, modulePath string) []PackageRatchet {
+// (spec/plans/coverage-to-100/README.md task-3): a package the PR changes
+// fails when its uncovered-statement count rises against baseline, or when a
+// changed, non-moved line is uncovered anywhere. A package the PR does not
+// change only ever warns on a count rise (founder decision 2026-09-23,
+// review B1) — touchedFiles (repository-relative paths, including files the
+// diff only deletes lines from or deletes entirely) decides package
+// ownership. Attributing a count-only rise to an exact statement
+// (uncoveredBlockKey against baseline.UncoveredBlocks) is skipped for any
+// block inside a touchedFiles path: editing a file shifts every later
+// line's position, so the baseline's stored positions in that same file are
+// not safely comparable — the direct changed-line check above already
+// covers genuinely new uncovered statements inside a touched file, so
+// nothing is lost, only false positives from line drift are avoided.
+func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, baseline PackageBaseline, modulePath string) ([]PackageRatchet, []RatchetWarning) {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
 	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
@@ -441,6 +491,11 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 		}
 		reported[pkg][key] = true
 		findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: file, Line: line})
+	}
+
+	changedPackages := make(map[string]bool, len(touchedFiles))
+	for file := range touchedFiles {
+		changedPackages[PackageOf(modulePath+"/"+file, modulePath)] = true
 	}
 
 	blocksByPackage := make(map[string][]CoverageBlock)
@@ -487,22 +542,37 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 	}
 	sort.Strings(names)
 
+	var warnings []RatchetWarning
 	results := make([]PackageRatchet, 0, len(names))
 	for _, pkg := range names {
 		baselineCount, hasBaseline := baseline.Packages[pkg]
 		count := uncovered[pkg]
 		rose := hasBaseline && count > baselineCount
+		isChangedPkg := changedPackages[pkg]
 		if rose {
 			// A count-only rise still needs a file:line an author can act
 			// on (review item B2): every currently-uncovered block in this
 			// package that the baseline did not already record as
-			// uncovered is one of the statements behind the rise.
+			// uncovered is one of the statements behind the rise. Skip any
+			// block whose file the PR itself touched: an edit shifts every
+			// later line in that file, so the baseline's stored positions
+			// there are not safely comparable, and the direct changed-line
+			// check above already covers genuinely new statements in a
+			// touched file.
 			base := baselineBlocks[pkg]
 			for _, block := range blocksByPackage[pkg] {
+				relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
+				if touchedFiles[relativeFile] {
+					continue
+				}
 				if base[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] {
 					continue
 				}
-				report(pkg, strings.TrimPrefix(block.File, modulePath+"/"), block.StartLine)
+				if isChangedPkg {
+					report(pkg, relativeFile, block.StartLine)
+				} else {
+					warnings = append(warnings, RatchetWarning{Package: pkg, File: relativeFile, Line: block.StartLine})
+				}
 			}
 		}
 		findings := append([]RatchetFinding(nil), findingsByPackage[pkg]...)
@@ -518,11 +588,21 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 			BaselineUncovered:     baselineCount,
 			HasBaseline:           hasBaseline,
 			Rose:                  rose,
+			Changed:               isChangedPkg,
 			NewlyUncoveredChanged: findings,
-			Pass:                  !rose && len(findings) == 0,
+			Pass:                  (!rose || !isChangedPkg) && len(findings) == 0,
 		})
 	}
-	return results
+	sort.Slice(warnings, func(i, j int) bool {
+		if warnings[i].Package != warnings[j].Package {
+			return warnings[i].Package < warnings[j].Package
+		}
+		if warnings[i].File != warnings[j].File {
+			return warnings[i].File < warnings[j].File
+		}
+		return warnings[i].Line < warnings[j].Line
+	})
+	return results, warnings
 }
 
 // uncoveredBlockKey identifies one uncovered statement range the same way

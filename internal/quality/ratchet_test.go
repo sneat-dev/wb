@@ -144,8 +144,12 @@ func Add(a, b int) int {
 	if err != nil {
 		t.Fatal(err)
 	}
+	touched, err := GitTouchedFiles(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blocks := repo.coverProfile()
-	results := EvaluateRatchet(blocks, changed, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, baseline, repo.modulePath)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -186,8 +190,12 @@ func NewlyAdded(a, b int) int {
 	if err != nil {
 		t.Fatal(err)
 	}
+	touched, err := GitTouchedFiles(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blocks := repo.coverProfile()
-	results := EvaluateRatchet(blocks, changed, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, baseline, repo.modulePath)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -220,8 +228,12 @@ func TestEvaluateRatchetFailsWhenPackageUncoveredCountRisesWithoutChangedLineOve
 		{File: "fixture.test/app/app.go", StartLine: 10, EndLine: 12, Statements: 2, Count: 0},
 	}
 	changed := ChangedLines{} // no changed lines at all: this models a rebase that only shifted line numbers
+	// app_test.go (not app.go, whose uncovered block's position must stay
+	// trustworthy for the Rose-fallback match below) is what the PR
+	// touched, which is enough to make "." a changed package.
+	touched := map[string]bool{"app_test.go": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results := EvaluateRatchet(blocks, changed, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, baseline, "fixture.test/app")
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -229,7 +241,45 @@ func TestEvaluateRatchetFailsWhenPackageUncoveredCountRisesWithoutChangedLineOve
 		t.Fatalf("Rose = false, want true: uncovered count grew from 1 to 2 against baseline")
 	}
 	if results[0].Pass {
-		t.Fatal("Pass = true, want false when the package's uncovered count rose")
+		t.Fatal("Pass = true, want false when a changed package's uncovered count rose")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none: a changed package's rise is a failure, not a warning", warnings)
+	}
+}
+
+// TestEvaluateRatchetWarnsInsteadOfFailingWhenAnUnchangedPackagesCountRises
+// is the founder's 2026-09-23 B1 decision: the hard "count must never rise"
+// rule applies only to packages the PR itself changes; every other
+// package's rise is a warning, and the package still passes.
+func TestEvaluateRatchetWarnsInsteadOfFailingWhenAnUnchangedPackagesCountRises(t *testing.T) {
+	t.Parallel()
+	blocks := []CoverageBlock{
+		{File: "fixture.test/app/app.go", StartLine: 10, StartCol: 1, EndLine: 12, EndCol: 2, Statements: 2, Count: 0},
+	}
+	changed := ChangedLines{}
+	// The PR touches a wholly different package ("other"), not "." (app.go).
+	touched := map[string]bool{"other/thing.go": true}
+	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
+	results, warnings := EvaluateRatchet(blocks, changed, touched, baseline, "fixture.test/app")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	got := results[0]
+	if got.Changed {
+		t.Fatal("Changed = true, want false: the PR did not touch this package")
+	}
+	if !got.Pass {
+		t.Fatalf("package ratchet = %#v, want Pass: an unchanged package's rise must never fail", got)
+	}
+	if len(got.NewlyUncoveredChanged) != 0 {
+		t.Fatalf("NewlyUncoveredChanged = %#v, want none: an unchanged package's rise is a warning, not a finding", got.NewlyUncoveredChanged)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want exactly one", warnings)
+	}
+	if warnings[0] != (RatchetWarning{Package: ".", File: "app.go", Line: 10}) {
+		t.Fatalf("warnings[0] = %#v, want {.  app.go 10}", warnings[0])
 	}
 }
 
@@ -238,9 +288,12 @@ func TestEvaluateRatchetPassesForNewPackageWithNoBaseline(t *testing.T) {
 	blocks := []CoverageBlock{
 		{File: "fixture.test/app/new/pkg.go", StartLine: 1, EndLine: 1, Statements: 1, Count: 1},
 	}
-	results := EvaluateRatchet(blocks, ChangedLines{}, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
 	if len(results) != 1 || !results[0].Pass || results[0].HasBaseline {
 		t.Fatalf("results = %#v, want one passing package with no baseline entry", results)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
 	}
 }
 
@@ -456,6 +509,53 @@ func TestGitChangedLinesFailsWithoutExitErrorWhenGitCannotEvenStart(t *testing.T
 	}
 }
 
+func TestGitTouchedFilesRejectsUnknownMergeBase(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.commitAll("base")
+	if _, err := GitTouchedFiles(context.Background(), repo.dir, "does-not-exist"); err == nil {
+		t.Fatal("want error for an unresolvable merge base")
+	}
+}
+
+// TestGitTouchedFilesFailsWithoutExitErrorWhenGitCannotEvenStart exercises
+// the non-*exec.ExitError branch, mirroring
+// TestGitChangedLinesFailsWithoutExitErrorWhenGitCannotEvenStart.
+func TestGitTouchedFilesFailsWithoutExitErrorWhenGitCannotEvenStart(t *testing.T) {
+	t.Parallel()
+	_, err := GitTouchedFiles(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), "main")
+	if err == nil {
+		t.Fatal("want error when repoRoot does not exist")
+	}
+}
+
+// TestGitTouchedFilesIncludesAPureDeletion is the review B1 case
+// GitChangedLines cannot cover: deleting a file (or every line in it) adds
+// no line, so it never appears in ChangedLines, but it must still count as
+// "the PR touched this file" for per-package ratchet scoping.
+func TestGitTouchedFilesIncludesAPureDeletion(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.writeFile("app_test.go", fixtureTestSource)
+	baseSHA := repo.commitAll("base")
+
+	repo.runGit("checkout", "-b", "feature")
+	if err := os.Remove(filepath.Join(repo.dir, "app_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	repo.commitAll("delete app_test.go")
+
+	touched, err := GitTouchedFiles(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !touched["app_test.go"] {
+		t.Fatalf("touched = %#v, want app_test.go present even though its deletion added no line", touched)
+	}
+}
+
 // TestGitChangedLinesExcludesDeletedFile exercises the "+++ /dev/null"
 // (file-deleted) branch of the diff parser using a real deletion.
 func TestGitChangedLinesExcludesDeletedFile(t *testing.T) {
@@ -559,7 +659,7 @@ func TestEvaluateRatchetSortsFindingsByFileThenLine(t *testing.T) {
 		"pkg/b.go": {5: true},
 		"pkg/a.go": {9: true, 2: true},
 	}
-	results := EvaluateRatchet(blocks, changed, PackageBaseline{Packages: map[string]int{}}, "m")
+	results, _ := EvaluateRatchet(blocks, changed, nil, PackageBaseline{Packages: map[string]int{}}, "m")
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want 1 package", results)
 	}
@@ -840,9 +940,16 @@ func TestEvaluateRatchetNamesFileLineForACountOnlyRise(t *testing.T) {
 	currentBlocks := []CoverageBlock{
 		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
 	}
-	results := EvaluateRatchet(currentBlocks, ChangedLines{}, baseline, "m")
+	// pkg/a_test.go (not a.go itself) is what the PR deleted: enough to make
+	// "pkg" a changed package, while leaving a.go's block position
+	// trustworthy for the exact-match attribution below.
+	touched := map[string]bool{"pkg/a_test.go": true}
+	results, warnings := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, baseline, "m")
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none: a changed package's rise is a failure, not a warning", warnings)
 	}
 	got := results[0]
 	if !got.Rose || got.Pass {
@@ -854,6 +961,99 @@ func TestEvaluateRatchetNamesFileLineForACountOnlyRise(t *testing.T) {
 	finding := got.NewlyUncoveredChanged[0]
 	if finding.File != "pkg/a.go" || finding.Line != 5 {
 		t.Fatalf("finding = %#v, want pkg/a.go:5", finding)
+	}
+}
+
+// TestEvaluateRatchetDoesNotBlameLineShiftedBlocksInFilesThePRTouched is a
+// regression for a false positive review-696 CI hit for real: inserting
+// lines anywhere in a file the PR edits shifts every later uncovered
+// block's line number in that same file, so it can no longer exact-match
+// the baseline's stored position — the Rose-fallback must not mistake that
+// shifted, pre-existing statement for a newly uncovered one. A genuinely
+// new uncovered statement in a different, untouched file in the same
+// package must still be named.
+func TestEvaluateRatchetDoesNotBlameLineShiftedBlocksInFilesThePRTouched(t *testing.T) {
+	t.Parallel()
+	baseline := BaselineFromProfile([]CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
+	}, "m", "base-sha")
+
+	currentBlocks := []CoverageBlock{
+		// Same statement as the baseline's, only shifted to line 20 by an
+		// edit earlier in a.go (which this PR made).
+		{File: "m/pkg/a.go", StartLine: 20, StartCol: 1, EndLine: 20, EndCol: 10, Statements: 1, Count: 0},
+		// A genuinely new uncovered statement, in a file the PR did not
+		// touch at all.
+		{File: "m/pkg/b.go", StartLine: 3, StartCol: 1, EndLine: 3, EndCol: 10, Statements: 1, Count: 0},
+	}
+	touched := map[string]bool{"pkg/a.go": true}
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, baseline, "m")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	got := results[0]
+	if !got.Rose || got.Pass {
+		t.Fatalf("package ratchet = %#v, want Rose and not Pass", got)
+	}
+	if len(got.NewlyUncoveredChanged) != 1 || got.NewlyUncoveredChanged[0] != (RatchetFinding{File: "pkg/b.go", Line: 3}) {
+		t.Fatalf("NewlyUncoveredChanged = %#v, want only pkg/b.go:3 (a.go's shifted-but-pre-existing block must not be blamed)", got.NewlyUncoveredChanged)
+	}
+}
+
+// TestEvaluateRatchetDedupesAFindingReportedByBothTheDirectAndRoseRules
+// covers report()'s "already reported" early return: a statement in a file
+// the PR did not itself touch can be caught both by the direct
+// changed-line rule and by the Rose-fallback block-diff (its package is
+// "changed" via a different file), and must appear once, not twice.
+func TestEvaluateRatchetDedupesAFindingReportedByBothTheDirectAndRoseRules(t *testing.T) {
+	t.Parallel()
+	blocks := []CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
+	}
+	changed := ChangedLines{"pkg/a.go": {5: true}}
+	baseline := PackageBaseline{Packages: map[string]int{"pkg": 0}}
+	// pkg/other.go (not a.go) is what the PR touched, so "pkg" is a changed
+	// package, but a.go's own block position is still trustworthy.
+	touched := map[string]bool{"pkg/other.go": true}
+	results, warnings := EvaluateRatchet(blocks, changed, touched, baseline, "m")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none: pkg is a changed package", warnings)
+	}
+	if len(results[0].NewlyUncoveredChanged) != 1 {
+		t.Fatalf("NewlyUncoveredChanged = %#v, want exactly one finding (deduped, not reported twice)", results[0].NewlyUncoveredChanged)
+	}
+}
+
+// TestEvaluateRatchetSortsWarningsByPackageThenFileThenLine covers the
+// warnings slice's full three-way sort comparator.
+func TestEvaluateRatchetSortsWarningsByPackageThenFileThenLine(t *testing.T) {
+	t.Parallel()
+	blocks := []CoverageBlock{
+		{File: "m/y/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 2, Statements: 1, Count: 0},
+		{File: "m/x/b.go", StartLine: 1, StartCol: 1, EndLine: 1, EndCol: 2, Statements: 1, Count: 0},
+		{File: "m/x/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 2, Statements: 1, Count: 0},
+		{File: "m/x/a.go", StartLine: 2, StartCol: 1, EndLine: 2, EndCol: 2, Statements: 1, Count: 0},
+	}
+	baseline := PackageBaseline{Packages: map[string]int{"x": 0, "y": 0}}
+	// touchedFiles is nil: neither package is one the PR changes, so every
+	// rise becomes a warning, exercising all three tie-break levels.
+	_, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, baseline, "m")
+	want := []RatchetWarning{
+		{Package: "x", File: "x/a.go", Line: 2},
+		{Package: "x", File: "x/a.go", Line: 9},
+		{Package: "x", File: "x/b.go", Line: 1},
+		{Package: "y", File: "y/a.go", Line: 9},
+	}
+	if len(warnings) != len(want) {
+		t.Fatalf("warnings = %#v, want %#v", warnings, want)
+	}
+	for i := range want {
+		if warnings[i] != want[i] {
+			t.Fatalf("warnings[%d] = %#v, want %#v", i, warnings[i], want[i])
+		}
 	}
 }
 
@@ -872,7 +1072,8 @@ func TestEvaluateRatchetDoesNotRefindABlockTheBaselineAlreadyHad(t *testing.T) {
 		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
 		{File: "m/pkg/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 10, Statements: 1, Count: 0},
 	}
-	results := EvaluateRatchet(currentBlocks, ChangedLines{}, baseline, "m")
+	touched := map[string]bool{"pkg/a_test.go": true}
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, baseline, "m")
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
