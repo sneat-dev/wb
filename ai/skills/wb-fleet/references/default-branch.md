@@ -19,8 +19,8 @@ Apply writes a durable report before every mutation and verifies the observed
 default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
 archived repositories unless `--temporarily-unarchive` is explicit, open source-branch pull requests, divergent targets,
-Pages/protection/rules impacts, and concrete workflow references to the old
-branch. Repositories without an initial commit are also exception rows, even
+protection/rules impacts, and concrete workflow references to the old
+branch. `--migrate-pages-source` admits only a legacy Pages source on the observed default branch with path `/` or `/docs`; it preserves that path and verifies it after the branch migration. Every other Pages source remains an exception row. Repositories without an initial commit are also exception rows, even
 when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
 blindly.
 
