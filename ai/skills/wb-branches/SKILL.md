@@ -52,10 +52,13 @@ retirement repository before cleanup. It must verify the archive repository is
 private and the archive commit is pushed. The current local command does not
 retire remote refs, worktrees, or logs.
 
-Flags on both: `--base` (default `main`), `--scope` (`local`, `remote`, or
-`all`; default `local`), `--format` (`text` or `json`), plus root `--filter`
-and `--projects-root`. `wb branch list` adds `--only <disposition>` and
-`--older-than` (default `0`, shows every age). `wb branch cleanup` adds
+`wb branch list` and `wb branch count` accept `--base` (default `main`),
+`--scope` (`local`, `remote`, or `all`; default `local`), `--format`
+(`text`, `json`, or `yaml`), root `--filter` and `--projects-root`, plus exact
+`--repo`, exact-owner `--org`, `--name` glob, `--only <disposition>`, and
+`--older-than` (default `0`, shows every age). List also accepts exact
+`--branch` and `--include-retired`; count reports retired refs separately.
+`wb branch cleanup` accepts its established `text` or `json` format and adds
 `--apply`, `--older-than` (default `24h`, `0` disables the grace window),
 `--report-dir`, `--receipts`, `--absorbed-by <pr-or-commit>`, and the reviewed
 retirement inputs `--superseded-by <receipt.json>`, exact `--repo` and
