@@ -975,10 +975,6 @@ func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired strin
 	return inspectDefaultBranchWithOptions(ctx, repo, desired, false, false)
 }
 
-func inspectDefaultBranchWithArchive(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive bool) defaultBranchRepository {
-	return inspectDefaultBranchWithOptions(ctx, repo, desired, temporarilyUnarchive, false)
-}
-
 func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool) defaultBranchRepository {
 	result := defaultBranchRepository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
@@ -1209,7 +1205,7 @@ func inspectDefaultBranchPages(ctx context.Context, result *defaultBranchReposit
 		return errors.New("pages, classic protection, or effective rules require an explicit migration; WB will not weaken or assume renamed coverage")
 	}
 	if pages.BuildType != "legacy" || pages.Branch != old || !validDefaultBranchPagesPath(pages.Path) {
-		return errors.New("Pages source is not a complete legacy source on the observed default branch; WB will not change it")
+		return errors.New("pages source is not a complete legacy source on the observed default branch; WB will not change it")
 	}
 	result.PagesBefore, result.PagesPhase = &pages, "prepared"
 	return nil

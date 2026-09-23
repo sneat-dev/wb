@@ -84,7 +84,7 @@ func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.
 			}
 			defaultBranchPagesFixture(t, path, test.buildType, test.branch, false, false)
 			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
-			if result.Disposition != "blocked" || !strings.Contains(result.Error, "Pages source") {
+			if result.Disposition != "blocked" || !strings.Contains(result.Error, "pages source") {
 				t.Fatalf("result = %#v", result)
 			}
 		})
