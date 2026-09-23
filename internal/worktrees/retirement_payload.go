@@ -28,12 +28,14 @@ const (
 	retirementMaxFiles            = 4096
 )
 
-// RetirementPayloadExpectation must come from a trusted inventory or caller,
-// independently of the sealed bytes and their public metadata. An age
-// recipient is public and does not authenticate the archive producer.
+// RetirementPayloadExpectation must be persisted by the caller from a trusted
+// Pack result or source receipt independently of the payload being verified.
+// In particular, never copy PlaintextSHA256 from untrusted payload metadata:
+// an age recipient is public and does not authenticate the archive producer.
 type RetirementPayloadExpectation struct {
 	EffortID, RunID, ClaimID string
 	Worktree, Repository     string
+	PlaintextSHA256          string
 }
 
 // RetirementPayload is the private, claim-scoped input for a later archive
@@ -63,7 +65,7 @@ func PackRetirementPayload(worktree, home string, recipient age.Recipient) (Reti
 	if recipient == nil {
 		return RetirementPayload{}, fmt.Errorf("retirement payload requires an age recipient")
 	}
-	localProjection, err := readLocalProjection(worktree)
+	localProjection, err := readRetirementLocalProjection(worktree)
 	if err != nil {
 		return RetirementPayload{}, fmt.Errorf("read claim-scoped work-log projection: %w", err)
 	}
@@ -106,7 +108,8 @@ func PackRetirementPayload(worktree, home string, recipient age.Recipient) (Reti
 func VerifyRetirementPayload(payload RetirementPayload, identity age.Identity, expected RetirementPayloadExpectation) error {
 	if identity == nil || payload.Metadata.Version != 1 || payload.Metadata.Retention != "retain-until-explicit-private-archive-policy-decision" || payload.Metadata.FileCount < 1 ||
 		payload.Metadata.FileCount > retirementMaxFiles || !validSafeSegment(expected.EffortID) || !validSafeSegment(expected.RunID) || !validSafeSegment(expected.ClaimID) ||
-		expected.Worktree == "" || expected.Repository == "" || payload.Metadata.EffortID != expected.EffortID || payload.Metadata.RunID != expected.RunID || payload.Metadata.ClaimID != expected.ClaimID {
+		expected.Worktree == "" || expected.Repository == "" || len(expected.PlaintextSHA256) != sha256.Size*2 || payload.Metadata.PlaintextSHA256 != expected.PlaintextSHA256 ||
+		payload.Metadata.EffortID != expected.EffortID || payload.Metadata.RunID != expected.RunID || payload.Metadata.ClaimID != expected.ClaimID {
 		return fmt.Errorf("invalid retirement payload metadata")
 	}
 	reader, err := age.Decrypt(bytes.NewReader(payload.Sealed), identity)
@@ -114,7 +117,7 @@ func VerifyRetirementPayload(payload RetirementPayload, identity age.Identity, e
 		return fmt.Errorf("decrypt retirement payload: %w", err)
 	}
 	hasher := sha256.New()
-	limited := &io.LimitedReader{R: reader, N: retirementMaxTotalBytes + int64(retirementMaxFiles)*1024 + 2048}
+	limited := &io.LimitedReader{R: reader, N: retirementMaxTotalBytes + int64(retirementMaxFiles)*4096 + 4096}
 	tr := tar.NewReader(io.TeeReader(limited, hasher))
 	seen := map[string]struct{}{}
 	contents := map[string][]byte{}
@@ -225,6 +228,17 @@ func retirementPayloadFiles(worktree, home string, projection workLogProjection,
 			return nil, nil, fmt.Errorf("retirement payload missing required source %q", required)
 		}
 	}
+	hasPrompt := false
+	for name := range seen {
+		if strings.HasPrefix(name, "journal/prompts/") && promptFileName.MatchString(path.Base(name)) {
+			hasPrompt = true
+			break
+		}
+	}
+	if !hasPrompt {
+		closeSources()
+		return nil, nil, fmt.Errorf("retirement payload missing local prompt")
+	}
 	if terminal.FinalizeReport != nil {
 		if _, ok := seen["run/reports/"+filepath.Base(terminal.FinalizeReport.ReportPath)]; !ok {
 			closeSources()
@@ -331,6 +345,8 @@ func skipSiblingRetirementEntry(rel, claimID string, terminal workLogTerminalRec
 			return false
 		}
 		return terminal.FinalizeReport == nil || parts[1] != filepath.Base(terminal.FinalizeReport.ReportPath)
+	case "relocations":
+		return len(parts) == 2 && !strings.HasPrefix(parts[1], claimID+"-") && validSafeSegment(parts[1])
 	}
 	return false
 }
@@ -370,13 +386,9 @@ func openRetirementRelative(root *os.File, rel string) (*os.File, error) {
 }
 
 func validateRetirementPayloadSource(worktree, home string, projection workLogProjection) (workLogTerminalRecord, error) {
-	manifest, err := ReadManifest(worktree)
+	manifest, err := readRetirementManifest(worktree)
 	if err != nil || manifest.EffortID != projection.EffortID || manifest.RunID != projection.RunID || manifest.ClaimID != projection.ClaimID {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload requires matching local manifest")
-	}
-	prompts, err := ListPrompts(worktree)
-	if err != nil || len(prompts) == 0 {
-		return workLogTerminalRecord{}, fmt.Errorf("retirement payload requires at least one local prompt")
 	}
 	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
@@ -388,23 +400,31 @@ func validateRetirementPayloadSource(worktree, home string, projection workLogPr
 		return workLogTerminalRecord{}, err
 	}
 	var claim workLogClaim
-	err = readJSONAt(claims, projection.ClaimID+".json", &claim)
+	err = readRetirementJSONAt(claims, projection.ClaimID+".json", &claim)
 	_ = claims.Close()
 	if err != nil || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload requires matching private claim")
 	}
-	if manifest.Worktree != claim.Worktree || manifest.Repository != claim.Repository || claim.Worktree != worktree {
+	if manifest.Worktree != claim.Worktree || manifest.Repository != claim.Repository {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload source identity mismatch")
 	}
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload private claim is invalid: %w", err)
+	}
+	journal, err := readRetirementRelocationJournal(run, claim)
+	if err != nil {
+		return workLogTerminalRecord{}, fmt.Errorf("retirement payload relocation evidence: %w", err)
+	}
+	currentPath, _, err := resolveRetirementLocation(claim, journal)
+	if err != nil || currentPath != filepath.Clean(worktree) {
+		return workLogTerminalRecord{}, fmt.Errorf("retirement payload current worktree lacks completed relocation binding: %v", err)
 	}
 	terminals, err := openPrivateChild(run, "terminals", false)
 	if err != nil {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload requires terminal claim: %w", err)
 	}
 	var terminal workLogTerminalRecord
-	err = readJSONAt(terminals, projection.ClaimID+".json", &terminal)
+	err = readRetirementJSONAt(terminals, projection.ClaimID+".json", &terminal)
 	_ = terminals.Close()
 	if err != nil || terminal.EffortID != claim.EffortID || terminal.RunID != claim.RunID || terminal.ClaimID != claim.ClaimID {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload requires matching terminal claim")
@@ -417,10 +437,202 @@ func validateRetirementPayloadSource(worktree, home string, projection workLogPr
 	if !reflect.DeepEqual(terminal.workLogClaim, expectedTerminalClaim) {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload terminal does not match private claim")
 	}
-	if terminal.FinalizeReport != nil && !validRetirementReportPath(terminal.FinalizeReport.ReportPath, RetirementPayloadExpectation{EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Worktree: claim.Worktree, Repository: claim.Repository}) {
+	if terminal.FinalizeReport != nil && !validRetirementReportPath(terminal.FinalizeReport.ReportPath, claim) {
 		return workLogTerminalRecord{}, fmt.Errorf("retirement payload terminal report path mismatch")
 	}
 	return terminal, nil
+}
+
+// Retirement preflight reads only small identity records. The later inventory
+// enforces the payload-wide size limits before any prompt or report is copied.
+func readRetirementBytesAt(directory *os.File, name string) ([]byte, error) {
+	file, err := openRetirementFile(directory, name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	const maxIdentityRecord = 2 << 20
+	if info.Size() > maxIdentityRecord {
+		return nil, fmt.Errorf("retirement payload identity record exceeds %d-byte limit: %s", maxIdentityRecord, name)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxIdentityRecord+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxIdentityRecord {
+		return nil, fmt.Errorf("retirement payload identity record exceeds %d-byte limit: %s", maxIdentityRecord, name)
+	}
+	return content, nil
+}
+
+func readRetirementJSONAt(directory *os.File, name string, target any) error {
+	content, err := readRetirementBytesAt(directory, name)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(content, target)
+}
+
+func readRetirementLocalProjection(worktree string) (LocalWorkLogProjection, error) {
+	journal, err := openJournalDirectory(worktree, false)
+	if err != nil {
+		return LocalWorkLogProjection{}, err
+	}
+	defer func() { _ = journal.Close() }()
+	worklog, err := openPrivateChild(journal, worklogDirectory, false)
+	if err != nil {
+		return LocalWorkLogProjection{}, err
+	}
+	defer func() { _ = worklog.Close() }()
+	var projection LocalWorkLogProjection
+	if err := readRetirementJSONAt(worklog, localWorkLogProjectionName, &projection); err != nil {
+		return LocalWorkLogProjection{}, err
+	}
+	return projection, nil
+}
+
+func readRetirementManifest(worktree string) (Manifest, error) {
+	journal, err := openJournalDirectory(worktree, false)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer func() { _ = journal.Close() }()
+	content, err := readRetirementBytesAt(journal, manifestName)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var manifest Manifest
+	if err := yaml.Unmarshal(content, &manifest); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateManifest(manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func newRetirementRelocationJournal() relocationJournal {
+	return relocationJournal{intents: map[string]workLogRelocationIntent{}, receipts: map[string]workLogRelocationReceipt{}}
+}
+
+func addRetirementRelocationRecord(journal *relocationJournal, claim workLogClaim, name string, content []byte) error {
+	if !validRetirementRelocationName(name, claim.ClaimID) {
+		return fmt.Errorf("unsafe relocation record %q", name)
+	}
+	var record workLogRelocationIntent
+	if err := json.Unmarshal(content, &record); err != nil {
+		return fmt.Errorf("decode relocation record %s: %w", name, err)
+	}
+	intent := strings.HasSuffix(name, ".intent.json")
+	if err := validateRelocationRecord(record, claim, intent); err != nil {
+		return fmt.Errorf("validate relocation record %s: %w", name, err)
+	}
+	want := relocationReceiptName(claim.ClaimID, record.OperationID)
+	if intent {
+		want = relocationIntentName(claim.ClaimID, record.OperationID)
+	}
+	if name != want {
+		return fmt.Errorf("relocation filename does not bind operation %s", record.OperationID)
+	}
+	if intent {
+		if _, duplicate := journal.intents[record.OperationID]; duplicate {
+			return fmt.Errorf("duplicate relocation intent %s", record.OperationID)
+		}
+		journal.intents[record.OperationID] = record
+	} else {
+		if _, duplicate := journal.receipts[record.OperationID]; duplicate {
+			return fmt.Errorf("duplicate relocation receipt %s", record.OperationID)
+		}
+		journal.receipts[record.OperationID] = record
+	}
+	return nil
+}
+
+func resolveRetirementLocation(claim workLogClaim, journal relocationJournal) (string, string, error) {
+	current, repository := filepath.Clean(claim.Worktree), claim.Repository
+	receipts := make([]workLogRelocationReceipt, 0, len(journal.receipts))
+	for operationID, receipt := range journal.receipts {
+		intent, ok := journal.intents[operationID]
+		if !ok || !sameRelocationBinding(intent, receipt) {
+			return "", "", fmt.Errorf("relocation receipt %s lacks its binding intent", operationID)
+		}
+		receipts = append(receipts, receipt)
+	}
+	sort.Slice(receipts, func(i, j int) bool {
+		if receipts[i].At.Equal(receipts[j].At) {
+			return receipts[i].OperationID < receipts[j].OperationID
+		}
+		return receipts[i].At.Before(receipts[j].At)
+	})
+	for _, receipt := range receipts {
+		if filepath.Clean(receipt.Source) != current {
+			return "", "", fmt.Errorf("relocation receipt %s breaks claim path chain", receipt.OperationID)
+		}
+		if receipt.To == "repository" || receipt.To == workLogRelocationLegacyCheckout {
+			if receipt.SourceRepository != repository {
+				return "", "", fmt.Errorf("relocation receipt %s breaks repository chain", receipt.OperationID)
+			}
+			repository = receipt.DestinationRepository
+		}
+		current = filepath.Clean(receipt.Destination)
+	}
+	return current, repository, nil
+}
+
+func readRetirementRelocationJournal(run *os.File, claim workLogClaim) (relocationJournal, error) {
+	journal := newRetirementRelocationJournal()
+	directory, err := openPrivateChild(run, "relocations", false)
+	if errors.Is(err, os.ErrNotExist) {
+		return journal, nil
+	}
+	if err != nil {
+		return journal, err
+	}
+	defer func() { _ = directory.Close() }()
+	names, err := directory.Readdirnames(retirementMaxFiles + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return journal, err
+	}
+	if len(names) > retirementMaxFiles {
+		return journal, fmt.Errorf("too many relocation records")
+	}
+	var total int64
+	for _, name := range names {
+		if !strings.HasPrefix(name, claim.ClaimID+"-") {
+			continue
+		}
+		content, err := readRetirementBytesAt(directory, name)
+		if err != nil {
+			return journal, err
+		}
+		total += int64(len(content))
+		if total > retirementMaxTotalBytes {
+			return journal, fmt.Errorf("relocation records exceed aggregate limit")
+		}
+		if err := addRetirementRelocationRecord(&journal, claim, name, content); err != nil {
+			return journal, err
+		}
+	}
+	_, _, err = resolveRetirementLocation(claim, journal)
+	return journal, err
+}
+
+func archivedRetirementRelocationJournal(files map[string][]byte, claim workLogClaim) (relocationJournal, error) {
+	journal := newRetirementRelocationJournal()
+	for name, content := range files {
+		if !strings.HasPrefix(name, "run/relocations/") {
+			continue
+		}
+		if err := addRetirementRelocationRecord(&journal, claim, path.Base(name), content); err != nil {
+			return journal, err
+		}
+	}
+	_, _, err := resolveRetirementLocation(claim, journal)
+	return journal, err
 }
 
 func validRetirementPayloadName(name, claimID string) bool {
@@ -441,7 +653,21 @@ func validRetirementPayloadName(name, claimID string) bool {
 		rel == "claims/"+claimID+".json" || rel == "terminals/"+claimID+".json" || rel == "cleanups/"+claimID+".json" || rel == "locks/"+claimID+".lock" ||
 		(path.Dir(rel) == "corrections/"+claimID && strings.HasSuffix(rel, ".json") && validSafeSegment(strings.TrimSuffix(path.Base(rel), ".json"))) ||
 		(path.Dir(rel) == "reports" && strings.HasSuffix(rel, ".md") && validSafeSegment(strings.TrimSuffix(path.Base(rel), ".md"))) ||
+		(path.Dir(rel) == "relocations" && validRetirementRelocationName(path.Base(rel), claimID)) ||
 		(path.Dir(rel) == "dirty-discard/"+claimID && validSafeSegment(path.Base(rel)))
+}
+
+func validRetirementRelocationName(name, claimID string) bool {
+	if !strings.HasPrefix(name, claimID+"-") {
+		return false
+	}
+	rel := strings.TrimPrefix(name, claimID+"-")
+	for _, suffix := range []string{".intent.json", ".completed.json"} {
+		if strings.HasSuffix(rel, suffix) {
+			return validSafeSegment(strings.TrimSuffix(rel, suffix))
+		}
+	}
+	return false
 }
 
 func validRetirementTerminalPath(name string, terminal workLogTerminalRecord) bool {
@@ -463,7 +689,7 @@ func retirementRecordForValidation(name, claimID string) bool {
 	case "journal/manifest.yaml", "journal/worklog/projection.json", "run/run.json", "run/original-prompt.json", "run/claims/" + claimID + ".json", "run/terminals/" + claimID + ".json", "run/dirty-discard/" + claimID + "/manifest.json":
 		return true
 	}
-	return false
+	return strings.HasPrefix(name, "run/relocations/") && validRetirementRelocationName(path.Base(name), claimID)
 }
 
 func validateRetirementPayloadContents(seen map[string]struct{}, files map[string][]byte, digests map[string]string, sizes map[string]int64, metadata RetirementPayloadMetadata, expected RetirementPayloadExpectation) error {
@@ -501,7 +727,7 @@ func validateRetirementPayloadContents(seen map[string]struct{}, files map[strin
 	if json.Unmarshal(files["run/original-prompt.json"], &prompt) != nil || prompt.Version != 1 || prompt.SHA256 == "" || prompt.SHA256 != digests["run/original-prompt.txt"] {
 		return fmt.Errorf("retirement payload original prompt digest mismatch")
 	}
-	if manifest.EffortID != expected.EffortID || manifest.RunID != expected.RunID || manifest.ClaimID != expected.ClaimID || manifest.Worktree != expected.Worktree || manifest.Repository != expected.Repository || projection.EffortID != expected.EffortID || projection.RunID != expected.RunID || projection.ClaimID != expected.ClaimID || claim.EffortID != expected.EffortID || claim.RunID != expected.RunID || claim.ClaimID != expected.ClaimID || claim.Worktree != expected.Worktree || claim.Repository != expected.Repository || terminal.EffortID != claim.EffortID || terminal.RunID != claim.RunID || terminal.ClaimID != claim.ClaimID || terminal.Worktree != claim.Worktree || terminal.Repository != claim.Repository || terminal.SealedAt.IsZero() || run.Version != 1 || run.EffortID != expected.EffortID || run.RunID != expected.RunID {
+	if manifest.EffortID != expected.EffortID || manifest.RunID != expected.RunID || manifest.ClaimID != expected.ClaimID || manifest.Worktree != claim.Worktree || manifest.Repository != claim.Repository || projection.EffortID != expected.EffortID || projection.RunID != expected.RunID || projection.ClaimID != expected.ClaimID || claim.EffortID != expected.EffortID || claim.RunID != expected.RunID || claim.ClaimID != expected.ClaimID || terminal.EffortID != claim.EffortID || terminal.RunID != claim.RunID || terminal.ClaimID != claim.ClaimID || terminal.Worktree != claim.Worktree || terminal.Repository != claim.Repository || terminal.SealedAt.IsZero() || run.Version != 1 || run.EffortID != expected.EffortID || run.RunID != expected.RunID {
 		return fmt.Errorf("retirement payload claim records do not bind metadata")
 	}
 	if claim.PromptDigest != "" && claim.PromptDigest != prompt.SHA256 {
@@ -510,13 +736,21 @@ func validateRetirementPayloadContents(seen map[string]struct{}, files map[strin
 	if err := validateStaticWorkLogClaim(claim, expected.EffortID, expected.RunID); err != nil {
 		return fmt.Errorf("retirement payload private claim is invalid: %w", err)
 	}
+	journal, err := archivedRetirementRelocationJournal(files, claim)
+	if err != nil {
+		return fmt.Errorf("retirement payload relocation evidence: %w", err)
+	}
+	currentPath, currentRepository, err := resolveRetirementLocation(claim, journal)
+	if err != nil || currentPath != filepath.Clean(expected.Worktree) || currentRepository != expected.Repository {
+		return fmt.Errorf("retirement payload current source does not match trusted expectation: %v", err)
+	}
 	expectedTerminalClaim := claim
 	expectedTerminalClaim.Lifecycle = "terminal"
 	if !reflect.DeepEqual(terminal.workLogClaim, expectedTerminalClaim) {
 		return fmt.Errorf("retirement payload terminal does not match private claim")
 	}
 	if terminal.FinalizeReport != nil {
-		if !validRetirementReportPath(terminal.FinalizeReport.ReportPath, expected) {
+		if !validRetirementReportPath(terminal.FinalizeReport.ReportPath, claim) {
 			return fmt.Errorf("retirement payload report path does not bind claim")
 		}
 		if _, ok := seen["run/reports/"+filepath.Base(terminal.FinalizeReport.ReportPath)]; !ok {
@@ -569,15 +803,19 @@ func validateRetirementPayloadContents(seen map[string]struct{}, files map[strin
 	return nil
 }
 
-func validRetirementReportPath(reportPath string, expected RetirementPayloadExpectation) bool {
+func validRetirementReportPath(reportPath string, claim workLogClaim) bool {
 	if reportPath == "" || filepath.Clean(reportPath) != reportPath {
 		return false
 	}
-	wantFile, err := finalizeReportFileName(expected.EffortID, expected.Repository)
+	task := strings.TrimSpace(claim.Task)
+	if task == "" {
+		task = claim.EffortID
+	}
+	wantFile, err := finalizeReportFileName(task, claim.Repository)
 	if err != nil || filepath.Base(reportPath) != wantFile {
 		return false
 	}
-	return strings.Contains(reportPath, filepath.Join("worklogs", expected.EffortID, "runs", expected.RunID, "reports")+string(os.PathSeparator))
+	return strings.Contains(reportPath, filepath.Join("worklogs", claim.EffortID, "runs", claim.RunID, "reports")+string(os.PathSeparator))
 }
 
 func writeRetirementTar(files []retirementPayloadFile, destination io.Writer) error {
@@ -592,7 +830,7 @@ func writeRetirementTar(files []retirementPayloadFile, destination io.Writer) er
 			_ = reader.Close()
 			return fmt.Errorf("retirement source changed: %s", file.name)
 		}
-		header := &tar.Header{Name: file.name, Mode: 0o600, Size: file.size, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}
+		header := &tar.Header{Name: file.name, Mode: 0o600, Size: file.size, ModTime: time.Unix(0, 0), Format: tar.FormatPAX}
 		if err := tw.WriteHeader(header); err != nil {
 			_ = reader.Close()
 			return err

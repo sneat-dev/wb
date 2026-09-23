@@ -21,12 +21,15 @@ func TestRetirementPayloadPackVerifyAndPrivacy(t *testing.T) {
 	fixture := newGitFixture(t)
 	const prompt = "private retirement prompt: glass-orchid\n"
 	promptPath := writeWorkLogPromptFile(t, prompt)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retirement-payload", WorkLog: WorkLogOptions{RunID: "retirement-run", Model: "unknown", OriginalPrompt: promptPath, RequireOriginalPrompt: true}})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retirement-payload", WorkLog: WorkLogOptions{EffortID: "retirement-effort", RunID: "retirement-run", Model: "unknown", OriginalPrompt: promptPath, RequireOriginalPrompt: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	finalizeRetirementPayload(t, fixture.projectsRoot, created[0].WorktreeDir, []byte("final private report\n"))
 	expected := retirementPayloadExpectation(t, created[0].WorktreeDir)
+	if expected.EffortID == "retirement-payload" {
+		t.Fatal("fixture did not separate task from effort")
+	}
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +38,7 @@ func TestRetirementPayloadPackVerifyAndPrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected.PlaintextSHA256 = payload.Metadata.PlaintextSHA256 // trusted direct Pack result; retained independently for Verify
 	if payload.Metadata.FileCount == 0 || payload.Metadata.Retention == "" || payload.Metadata.ClaimID == "" {
 		t.Fatalf("metadata = %#v", payload.Metadata)
 	}
@@ -122,6 +126,7 @@ func TestRetirementPayloadCapturesDirtyEvidenceAndSkipsSiblingClaims(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected.PlaintextSHA256 = payload.Metadata.PlaintextSHA256
 	if err := VerifyRetirementPayload(payload, identity, expected); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +148,71 @@ func TestRetirementPayloadCapturesDirtyEvidenceAndSkipsSiblingClaims(t *testing.
 	}
 	entries[blob] = []byte("dirty archive byte!\n")
 	forged := sealedRetirementEntries(t, identity.Recipient(), entries, payload.Metadata)
-	if err := VerifyRetirementPayload(forged, identity, expected); err == nil || !strings.Contains(err.Error(), "dirty blob digest mismatch") {
+	if err := VerifyRetirementPayload(forged, identity, expected); err == nil || !strings.Contains(err.Error(), "metadata") {
+		t.Fatalf("resealed substitution accepted against trusted digest: %v", err)
+	}
+	forgedExpected := expected
+	forgedExpected.PlaintextSHA256 = forged.Metadata.PlaintextSHA256
+	if err := VerifyRetirementPayload(forged, identity, forgedExpected); err == nil || !strings.Contains(err.Error(), "dirty blob digest mismatch") {
 		t.Fatalf("forged dirty blob accepted: %v", err)
+	}
+}
+
+func TestRetirementPayloadBindsCompletedWorktreeRelocation(t *testing.T) {
+	fixture := newGitFixture(t)
+	promptPath := writeWorkLogPromptFile(t, "relocated private prompt\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retirement-relocated", WorkLog: WorkLogOptions{RunID: "retirement-relocated-run", Model: "unknown", OriginalPrompt: promptPath, RequireOriginalPrompt: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := created[0].WorktreeDir
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "worktrees.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	move, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: fixture.projectsRoot, Task: "retirement-relocated", To: "shared", Apply: true})
+	if err != nil || len(move.Results) != 1 || !move.Results[0].Applied {
+		t.Fatalf("relocate = %#v, err=%v", move, err)
+	}
+	current := move.Results[0].Destination
+	if current == original {
+		t.Fatal("fixture did not move checkout")
+	}
+	finalizeRetirementPayload(t, fixture.projectsRoot, current, []byte("relocated private report\n"))
+	expected := retirementPayloadExpectation(t, current)
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := PackRetirementPayload(current, fixture.home, identity.Recipient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected.PlaintextSHA256 = payload.Metadata.PlaintextSHA256
+	if err := VerifyRetirementPayload(payload, identity, expected); err != nil {
+		t.Fatal(err)
+	}
+	entries := retirementPayloadEntries(t, payload, identity)
+	hasIntent, hasReceipt := false, false
+	for name := range entries {
+		if strings.HasPrefix(name, "run/relocations/"+expected.ClaimID+"-") && strings.HasSuffix(name, ".intent.json") {
+			hasIntent = true
+		}
+		if strings.HasPrefix(name, "run/relocations/"+expected.ClaimID+"-") && strings.HasSuffix(name, ".completed.json") {
+			hasReceipt = true
+		}
+	}
+	if !hasIntent || !hasReceipt {
+		t.Fatalf("relocation evidence missing: intent=%t receipt=%t", hasIntent, hasReceipt)
+	}
+	wrongPath := expected
+	wrongPath.Worktree = original
+	if err := VerifyRetirementPayload(payload, identity, wrongPath); err == nil {
+		t.Fatal("archive accepted obsolete source path")
 	}
 }
 
@@ -223,6 +291,7 @@ func TestRetirementPayloadRejectsTamperWrongKeyAndUnsafeEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected.PlaintextSHA256 = payload.Metadata.PlaintextSHA256
 	tampered := payload
 	tampered.Sealed = append([]byte(nil), payload.Sealed...)
 	tampered.Sealed[len(tampered.Sealed)-1] ^= 1
@@ -238,11 +307,15 @@ func TestRetirementPayloadRejectsTamperWrongKeyAndUnsafeEntries(t *testing.T) {
 	}
 
 	unsafe := sealedTestPayload(t, identity.Recipient(), "../escape", []byte("x"), payload.Metadata)
-	if err := VerifyRetirementPayload(unsafe, identity, expected); err == nil || !strings.Contains(err.Error(), "unsafe") {
+	unsafeExpected := expected
+	unsafeExpected.PlaintextSHA256 = unsafe.Metadata.PlaintextSHA256
+	if err := VerifyRetirementPayload(unsafe, identity, unsafeExpected); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("traversal error = %v", err)
 	}
 	duplicate := sealedTestPayload(t, identity.Recipient(), "journal/manifest.yaml", []byte("x"), payload.Metadata, "journal/manifest.yaml")
-	if err := VerifyRetirementPayload(duplicate, identity, expected); err == nil || !strings.Contains(err.Error(), "duplicate") {
+	duplicateExpected := expected
+	duplicateExpected.PlaintextSHA256 = duplicate.Metadata.PlaintextSHA256
+	if err := VerifyRetirementPayload(duplicate, identity, duplicateExpected); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate error = %v", err)
 	}
 }
@@ -357,9 +430,22 @@ func TestRetirementPayloadRejectsOversizeSourceBeforeEncryption(t *testing.T) {
 		t.Fatal(err)
 	}
 	finalizeRetirementPayload(t, fixture.projectsRoot, created[0].WorktreeDir, nil)
-	expected := retirementPayloadExpectation(t, created[0].WorktreeDir)
-	original := filepath.Join(fixture.home, "worklogs", expected.EffortID, "runs", expected.RunID, "original-prompt.txt")
-	if err := os.Truncate(original, retirementMaxFileBytes+1); err != nil {
+	promptDir := filepath.Join(created[0].WorktreeDir, ".wb", "local", "prompts")
+	entries, err := os.ReadDir(promptDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var promptFile string
+	for _, entry := range entries {
+		if promptFileName.MatchString(entry.Name()) {
+			promptFile = filepath.Join(promptDir, entry.Name())
+			break
+		}
+	}
+	if promptFile == "" {
+		t.Fatal("fixture has no local prompt")
+	}
+	if err := os.Truncate(promptFile, retirementMaxFileBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	identity, err := age.GenerateX25519Identity()
