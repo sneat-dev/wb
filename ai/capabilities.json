@@ -17015,7 +17015,7 @@
           "status": "Full",
           "commands": [{
             "path": "wb worktree retire",
-            "flags": ["--apply", "--format", "--json", "--message"],
+            "flags": ["--apply", "--format", "--json", "--message", "--mode", "--initiator"],
             "modes": [
               "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
               "Pushes the exact source commit to a retired/* ref in the original repository and actual plain Work Log files and worktree metadata to the configured private organization retirement repository",
@@ -17027,7 +17027,7 @@
         },
         "help": {
           "status": "Full",
-          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply"]}],
+          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply", "--mode", "--initiator"]}],
           "limitation": null
         },
         "ai_skill": {

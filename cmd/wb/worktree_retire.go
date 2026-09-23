@@ -81,6 +81,7 @@ planning, again under the task lock, and before deleting the original ref.`,
 	command.Flags().StringVarP(&message, "message", "m", "", "source commit message when changes remain")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonShortcut, "json", false, "shorthand for --format=json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
