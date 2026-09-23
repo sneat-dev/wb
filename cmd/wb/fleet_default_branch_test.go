@@ -2465,6 +2465,167 @@ func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	current := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Archived: true, Fork: true}
+	verified := defaultBranchRepository{
+		Repository: "acme/app", RepositoryID: 77, Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Archived: true, Fork: true,
+		Actions: []string{"renamed master to main", "verified default branch and head", "restored archived state"},
+		Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: sha, FinalHead: sha, Phase: "restored", UnarchiveAccepted: true, RestoreAccepted: true},
+	}
+	if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{verified}}, current); source != "master" || head != sha || reason != "" {
+		t.Fatalf("terminal archived receipt = %q %q %q", source, head, reason)
+	}
+	for name, mutate := range map[string]func(*defaultBranchRepository, *defaultBranchRepository){
+		"prior id missing":     func(v, _ *defaultBranchRepository) { v.RepositoryID = 0 },
+		"current id changed":   func(_, c *defaultBranchRepository) { c.RepositoryID++ },
+		"fork changed":         func(_, c *defaultBranchRepository) { c.Fork = false },
+		"current not archived": func(_, c *defaultBranchRepository) { c.Archived = false },
+		"prior not archived":   func(v, _ *defaultBranchRepository) { v.Archived = false },
+		"archive omitted":      func(v, _ *defaultBranchRepository) { v.Archive = nil },
+		"archive omitted ordinary actions": func(v, _ *defaultBranchRepository) {
+			v.Archive = nil
+			v.Actions = []string{"renamed master to main", "verified default branch and head"}
+		},
+		"archive id changed":       func(v, _ *defaultBranchRepository) { v.Archive.RepositoryID++ },
+		"original archive missing": func(v, _ *defaultBranchRepository) { v.Archive.OriginalArchived = false },
+		"initial default changed":  func(v, _ *defaultBranchRepository) { v.Archive.InitialDefault = "trunk" },
+		"desired default changed":  func(v, _ *defaultBranchRepository) { v.Archive.DesiredDefault = "trunk" },
+		"initial head changed":     func(v, _ *defaultBranchRepository) { v.Archive.InitialHead = strings.Repeat("a", 40) },
+		"final head changed":       func(v, _ *defaultBranchRepository) { v.Archive.FinalHead = strings.Repeat("a", 40) },
+		"not restored":             func(v, _ *defaultBranchRepository) { v.Archive.Phase = "restore_pending" },
+		"unarchive not accepted":   func(v, _ *defaultBranchRepository) { v.Archive.UnarchiveAccepted = false },
+		"restore not accepted":     func(v, _ *defaultBranchRepository) { v.Archive.RestoreAccepted = false },
+		"recovery required":        func(v, _ *defaultBranchRepository) { v.Archive.RecoveryRequired = true },
+		"restore error":            func(v, _ *defaultBranchRepository) { v.Archive.RestoreError = "network" },
+		"forged action":            func(v, _ *defaultBranchRepository) { v.Actions[1] = "forged" },
+		"reordered action":         func(v, _ *defaultBranchRepository) { v.Actions[0], v.Actions[1] = v.Actions[1], v.Actions[0] },
+		"suffixed action":          func(v, _ *defaultBranchRepository) { v.Actions = append(v.Actions, "extra") },
+		"malformed receipt SHA": func(v, _ *defaultBranchRepository) {
+			v.OldHead = "short"
+			v.NewHead = "short"
+			v.Archive.InitialHead = "short"
+			v.Archive.FinalHead = "short"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate, refreshed := verified, current
+			archive := *verified.Archive
+			candidate.Archive = &archive
+			candidate.Actions = append([]string(nil), verified.Actions...)
+			mutate(&candidate, &refreshed)
+			if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{candidate}}, refreshed); source != "" || head != "" || !strings.Contains(reason, "verified successful") {
+				t.Fatalf("invalid archived receipt = %q %q %q", source, head, reason)
+			}
+		})
+	}
+}
+
+func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects
+	})
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	projectsRoot = t.TempDir()
+	clone := filepath.Join(projectsRoot, "acme", "app")
+	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", RepositoryID: 77, Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Archived: true, Fork: true,
+		Actions: []string{"renamed master to main", "verified default branch and head", "restored archived state"},
+		Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: sha, FinalHead: sha, Phase: "restored", UnarchiveAccepted: true, RestoreAccepted: true},
+	}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "mac-archived-apply.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+	metadataID, metadataArchived, metadataFork, remoteHead := int64(77), true, true, sha
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":%d,"default_branch":"main","archived":%t,"fork":%t}`, metadataID, metadataArchived, metadataFork)), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"` + remoteHead + `"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutations := 0
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{Err: errors.New("remote mutation during reconciliation")}
+	}
+	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
+	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
+	var calls []string
+	defaultBranchGit = func(_ context.Context, dir string, args ...string) (string, error) {
+		if dir != clone {
+			return "", errors.New("unexpected clone " + dir)
+		}
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "remote get-url origin":
+			return "git@github.com:acme/app.git", nil
+		case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain", "log --branches --not --remotes --format=%H", "branch --set-upstream-to=origin/main main":
+			return "", nil
+		case "worktree list --porcelain":
+			return "worktree " + clone + "\nbranch refs/heads/master", nil
+		case "branch --show-current":
+			return "master", nil
+		case "rev-parse origin/main", "rev-parse master", "rev-parse main", "rev-parse HEAD":
+			return remoteHead, nil
+		case "for-each-ref --format=%(refname:strip=2) refs/heads":
+			return "master", nil
+		case "branch -m master main":
+			return "", nil
+		default:
+			return "", errors.New("unexpected git " + call)
+		}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 0 || len(report.Repositories[0].CanonicalClones) != 1 || report.Repositories[0].CanonicalClones[0].Disposition != "compliant" {
+		t.Fatalf("archived VM reconciliation = %#v mutations=%d", report.Repositories[0], mutations)
+	}
+	for name, mutate := range map[string]func(*defaultBranchRepository){
+		"repository id changed": func(_ *defaultBranchRepository) { metadataID = 78 },
+		"archive changed":       func(_ *defaultBranchRepository) { metadataArchived = false },
+		"fork changed":          func(_ *defaultBranchRepository) { metadataFork = false },
+		"default SHA changed":   func(_ *defaultBranchRepository) { remoteHead = strings.Repeat("a", 40) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			metadataID, metadataArchived, metadataFork, remoteHead = 77, true, true, sha
+			mutate(&prior.Repositories[0])
+			raw, err := json.Marshal(prior)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidatePath := filepath.Join(t.TempDir(), "invalid-archived-receipt.json")
+			if err := os.WriteFile(candidatePath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			calls, mutations = nil, 0
+			blocked, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: candidatePath, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mutations != 0 || len(blocked.Repositories[0].CanonicalClones) != 1 || blocked.Repositories[0].CanonicalClones[0].Disposition != "blocked" || strings.Contains(strings.Join(calls, "\n"), "branch -m") {
+				t.Fatalf("invalid archived receipt mutated state: report=%#v mutations=%d calls=%v", blocked.Repositories[0], mutations, calls)
+			}
+		})
+	}
+}
+
 func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testing.T) {
 	original := defaultBranchRead
 	t.Cleanup(func() { defaultBranchRead = original })
