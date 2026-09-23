@@ -60,6 +60,26 @@ type Holder struct {
 // it.
 var staleAfter = 30 * time.Second
 
+// clockNow is the wall clock isLive, Announce, and Heartbeat read for
+// staleness comparisons and recorded timestamps. Production code always
+// reads the real clock; SetClockForTest lets a test replace it with a fake,
+// manually advanced one so a heartbeat-refresh assertion never has to race
+// a real sleep against real scheduling jitter on a loaded CI runner (issue
+// #505). Behaviour-preserving: nothing here changes what production code
+// does.
+var clockNow = time.Now
+
+// SetClockForTest overrides the wall clock isLive, Announce, and Heartbeat
+// read, returning a restore func. It exists only so a test can drive
+// staleness and timestamp comparisons deterministically instead of relying
+// on real sleeps racing a slow or loaded machine; production code must
+// never call it.
+func SetClockForTest(fn func() time.Time) (restore func()) {
+	previous := clockNow
+	clockNow = fn
+	return func() { clockNow = previous }
+}
+
 // isLive reports whether a registered PID should still be trusted: the
 // process must actually exist, per processAlive (a bare FindProcess is not
 // enough on Unix — it always succeeds), and its record must have been
@@ -74,7 +94,7 @@ func isLive(pid int, updatedAt time.Time) bool {
 	if updatedAt.IsZero() {
 		return true
 	}
-	return time.Since(updatedAt) < staleAfter
+	return clockNow().Sub(updatedAt) < staleAfter
 }
 
 // State is a point-in-time snapshot of the CPU lease queue relevant to one
@@ -479,7 +499,7 @@ func (lease *Lease) Announce(self Participant) *Announcement {
 	if lease == nil || len(lease.files) == 0 {
 		return &Announcement{}
 	}
-	started := time.Now().UTC()
+	started := clockNow().UTC()
 	announcement := &Announcement{self: self, started: started}
 	for _, file := range lease.files {
 		holderPath := holderPathFor(file.Name())
@@ -503,7 +523,7 @@ func (announcement *Announcement) Heartbeat() {
 	if announcement == nil || len(announcement.paths) == 0 {
 		return
 	}
-	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: time.Now().UTC()})
+	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: clockNow().UTC()})
 	if err != nil {
 		return
 	}
