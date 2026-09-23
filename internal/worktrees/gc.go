@@ -196,6 +196,16 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	if strings.TrimSpace(options.SupersededBy) != "" && len(options.Tasks) != 1 {
 		return GCOutcome{}, fmt.Errorf("--superseded-by names one trusted receipt for one task; supply exactly one task")
 	}
+	// GC delegates every deletion to Cleanup. Resolve the same Work Log home
+	// before classification so a dry-run never calls a checkout eligible when
+	// Cleanup's read-only seal preflight will refuse it. This does not replace
+	// the apply-time reinspection: Cleanup still re-fetches and validates the
+	// exact branch, remote lease, and Work Log immediately before removal.
+	resolution, err := wbhome.Resolve(options.ProjectsRoot)
+	if err != nil {
+		return GCOutcome{}, err
+	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot:    options.ProjectsRoot,
 		Tasks:           options.Tasks,
@@ -237,6 +247,12 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	}
 	for _, result := range listed.Results {
 		entry := classifyForGC(result, options, now())
+		if entry.Eligible {
+			if err := preflightWorkLogSealForCleanup(ctx, resolution.Write.Home, resolution.Root, result); err != nil {
+				entry.Eligible = false
+				entry.Reason = fmt.Sprintf("preflight Work Log for %s: %v", result.Repository, err)
+			}
+		}
 		if entry.Eligible && !options.SkipSizes {
 			if usage, measureErr := walk.Measure(ctx, result.WorktreeDir); measureErr == nil {
 				entry.Size = usage
