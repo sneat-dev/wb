@@ -12,6 +12,12 @@ status: Approved
 **Supersedes:** —
 **Related Ideas:** —
 
+**Approved 2026-09-23** on the founder's decision 1 in
+[`spec/plans/coverage-to-100/README.md`](../plans/coverage-to-100/README.md#founder-decisions-2026-09-23),
+quoted verbatim: 1. **Per-change ratchet.** "Yes, per-change ratchet": every
+PR must cover 100% of the statements it adds or changes, and no package's
+uncovered count may go up. `--minimum` stays only as a backstop.
+
 ## Problem Statement
 
 How might WB make coverage results actionable by comparing them with a Git ref

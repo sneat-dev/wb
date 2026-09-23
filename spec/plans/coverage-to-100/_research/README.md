@@ -23,6 +23,16 @@ Not copied here (large raw working files from the research session, not
 needed to reproduce the findings above): `local.cov`, `local.json`,
 `nightly/`, `src295/`, `ss/`, `hist/`.
 
+**Reproduction inputs, not copied here.** The scripts and classification
+files above reproduce only against two inputs neither of which is in this
+directory: the `wb-nightly-go-coverage` artifact of nightly run 35836520378
+(workflow "Nightly coverage", head SHA `295e503f3105c7deb4456f5adfc180d1b03bacd5`
+— verified 2026-09-23 via `gh run view 35836520378 -R sneat-dev/wb` and
+`gh api repos/sneat-dev/wb/actions/runs/35836520378/artifacts`), and a
+checkout of the repository at that same SHA (`295e503f`). Fetch the artifact
+while it is still retained, or re-run the scripts against a fresh nightly
+run and a current checkout instead.
+
 ## Open Questions
 
 None at this time.
