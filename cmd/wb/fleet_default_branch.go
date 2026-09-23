@@ -620,7 +620,7 @@ func defaultBranchResumeSource(prior *defaultBranchReport, current defaultBranch
 		if !strings.EqualFold(previous.Repository, current.Repository) {
 			continue
 		}
-		if previous.Disposition != "compliant" || previous.ObservedDefault == "" || previous.ObservedDefault == current.Desired || !validDefaultBranch(previous.ObservedDefault) || !validDefaultBranch(previous.Desired) || previous.Desired != current.Desired || previous.VerifiedDefault != current.Desired || previous.OldHead == "" || previous.NewHead != previous.OldHead || !defaultBranchMigrationActionsVerified(previous) {
+		if previous.Disposition != "compliant" || previous.ObservedDefault == "" || previous.ObservedDefault == current.Desired || !validDefaultBranch(previous.ObservedDefault) || !validDefaultBranch(previous.Desired) || previous.Desired != current.Desired || previous.VerifiedDefault != current.Desired || previous.OldHead == "" || previous.NewHead != previous.OldHead || !defaultBranchVerifiedMigrationReceipt(previous, current) {
 			return "", "", "--reconcile-from does not contain a verified successful migration record for this repository"
 		}
 		if previous.OldHead != current.OldHead {
@@ -699,6 +699,27 @@ func defaultBranchMigrationActionsVerified(repository defaultBranchRepository) b
 	switchDefault := append([]string{"set default branch to existing same-SHA " + repository.Desired}, verified...)
 	prior := []string{"verified prior rename " + repository.ObservedDefault + " to " + repository.Desired, "verified current default branch and head"}
 	return slicesEqual(repository.Actions, rename) || slicesEqual(repository.Actions, switchDefault) || (repository.RecoveredFrom != "" && validDefaultBranchDigest(repository.RecoveredSHA256) && slicesEqual(repository.Actions, prior))
+}
+
+// defaultBranchVerifiedMigrationReceipt accepts the normal completed migration
+// record, or the strictly terminal form emitted by --temporarily-unarchive.
+// The latter needs additional identity and archive-state evidence because its
+// action list ends with the restored-archive checkpoint.
+func defaultBranchVerifiedMigrationReceipt(previous, current defaultBranchRepository) bool {
+	if previous.Archive == nil {
+		return !previous.Archived && !current.Archived && defaultBranchMigrationActionsVerified(previous)
+	}
+	transition := previous.Archive
+	if previous.RepositoryID <= 0 || current.RepositoryID != previous.RepositoryID || previous.Archived != current.Archived || !previous.Archived || previous.Fork != current.Fork ||
+		transition.RepositoryID != previous.RepositoryID || !transition.OriginalArchived || transition.InitialDefault != previous.ObservedDefault || transition.DesiredDefault != current.Desired || transition.InitialHead != previous.OldHead || transition.FinalHead != previous.NewHead || transition.Phase != "restored" || !transition.UnarchiveAccepted || !transition.RestoreAccepted || transition.RecoveryRequired || transition.RestoreError != "" || !validDefaultBranchCommit(previous.OldHead) || previous.NewHead != previous.OldHead {
+		return false
+	}
+	if len(previous.Actions) < 2 || previous.Actions[len(previous.Actions)-1] != "restored archived state" {
+		return false
+	}
+	base := previous
+	base.Actions = append([]string(nil), previous.Actions[:len(previous.Actions)-1]...)
+	return defaultBranchMigrationActionsVerified(base)
 }
 
 func slicesEqual(left, right []string) bool {
