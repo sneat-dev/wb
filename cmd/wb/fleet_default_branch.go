@@ -1426,6 +1426,8 @@ func rewriteWorkflowFlowBranchList(line string, indent int, old, desired string)
 		return line, false
 	}
 	valueStart += indent + 1
+	type replacement struct{ start, end int }
+	var replacements []replacement
 	for offset, remaining := 0, items; ; {
 		item := remaining
 		if comma := strings.IndexByte(remaining, ','); comma >= 0 {
@@ -1438,8 +1440,7 @@ func rewriteWorkflowFlowBranchList(line string, indent int, old, desired string)
 		if scalar == old {
 			itemStart := valueStart + offset
 			leading := len(item) - len(strings.TrimLeft(item, " \t"))
-			scalarEnd := itemStart + leading + len(scalar)
-			return line[:itemStart+leading] + desired + line[scalarEnd:], true
+			replacements = append(replacements, replacement{start: itemStart + leading, end: itemStart + leading + len(scalar)})
 		}
 		comma := strings.IndexByte(remaining, ',')
 		if comma < 0 {
@@ -1448,7 +1449,19 @@ func rewriteWorkflowFlowBranchList(line string, indent int, old, desired string)
 		offset += comma + 1
 		remaining = remaining[comma+1:]
 	}
-	return line, false
+	if len(replacements) == 0 {
+		return line, false
+	}
+	var rewritten strings.Builder
+	rewritten.Grow(len(line) + len(replacements)*(len(desired)-len(old)))
+	previous := 0
+	for _, replacement := range replacements {
+		rewritten.WriteString(line[previous:replacement.start])
+		rewritten.WriteString(desired)
+		previous = replacement.end
+	}
+	rewritten.WriteString(line[previous:])
+	return rewritten.String(), true
 }
 
 func workflowPlainFlowBranchScalar(value string) bool {

@@ -1881,11 +1881,16 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 	if got, changed := rewriteWorkflowBranchTriggers(flowBefore, "master", "main"); !changed || got != flowAfter {
 		t.Fatalf("flow-list rewrite changed=%t\ngot=%q\nwant=%q", changed, got, flowAfter)
 	}
+	duplicates := "on:\n  push:\n    branches: [master, master]\n"
+	if got, changed := rewriteWorkflowBranchTriggers(duplicates, "master", "main"); !changed || got != "on:\n  push:\n    branches: [main, main]\n" {
+		t.Fatalf("duplicate flow-list rewrite changed=%t got=%q", changed, got)
+	}
 	for _, unsupported := range []string{
 		"on:\n  push:\n    branches: [master] # comment\n",
 		"on:\n  push:\n    branches: ['master']\n",
 		"on:\n  push:\n    branches: [${{ github.ref }}]\n",
 		"on:\n  push:\n    branches: [&old master]\n",
+		"on:\n  push:\n    branches: [master, \"quoted\"]\n",
 		"on:\n  push:\n    branches: [true, master]\n",
 		"on:\n  push:\n    branches: [123, master]\n",
 		"on:\n  push:\n    filters: &f\n      branches: [master]\n",
