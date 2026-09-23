@@ -112,7 +112,10 @@ No other task in this plan may start until `sneat-co/storygrapher#10` is merged.
 
 **Id:** task-2
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
+**Implemented-by:** b658697abc0a7b3e7a94272909db76cdfadb0505
+**Note:** wb ci audit --target main --strict exits 0 on main at b658697 (was 34 findings): 33 actions pinned to SHA + version comment; hub/web vitest coverage thresholds 20/20/72/65 (measured 20.59/20.59/72.41/65.36, rounded down). Re-verified by the supervisor on canonical main.
+**Evidence:** https://github.com/sneat-dev/wb/pull/693
 **Verifies:** `wb ci audit --target main --strict` exits 0 with zero findings.
 
 As measured 2026-09-23, `wb ci audit --target main --strict` fails with 34 findings: 33 `unpinned-tool-install` (every floating-major `uses:` in `.github/workflows/go-ci.yml`, `hub-web.yml`, `nightly-coverage.yml` and `race.yml`) and 1 `frontend-coverage-threshold`. Fix all 34 in their own commit, separate from any coverage-ratchet change, so task-3 can wire `--strict` into CI without an unrelated backlog failing every PR on day one.
@@ -121,7 +124,8 @@ As measured 2026-09-23, `wb ci audit --target main --strict` fails with 34 findi
 
 **Id:** task-3
 **Depends-On:** task-2
-**Status:** planning
+**Status:** in_progress
+**Note:** Sonnet lane cov-task3-ratchet started 2026-09-23 after founder decisions 6-9.
 **Verifies:** a fixture PR that moves an uncovered function unchanged passes; a fixture PR that adds one uncovered statement fails and names its file:line; `wb coverage` reports counts, not rounded percentages.
 
 `wb coverage` fails when any package's uncovered count rises against its baseline (below), or when a statement added or changed against the merge base is uncovered and is not a moved, unmodified line (moved-code rule, below). It reports counts rather than rounded percentages. Wire it into `.github/workflows/go-ci.yml` with `--minimum=87` kept as a backstop and `wb ci audit --target <base> --strict` enabled (task-2 lands first so this starts clean; `<base>` is the PR's target branch, not the literal word "main"). Add `fetch-depth: 0` to the coverage job's checkout step (`.github/workflows/go-ci.yml:280`, today a shallow clone with no `fetch-depth`, unlike the eligibility job at `:176`), so the merge base is resolvable.
