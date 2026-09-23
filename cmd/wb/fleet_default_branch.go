@@ -418,7 +418,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 						summarizeDefaultBranch(&report)
 						return persistDefaultBranchReport(report)
 					})
-					if report.Repositories[i].Disposition == "compliant" {
+					if report.Repositories[i].Disposition == "drift" {
 						report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
 							report.Repositories[i] = updated
 							summarizeDefaultBranch(&report)

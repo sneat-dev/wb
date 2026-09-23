@@ -1957,6 +1957,75 @@ func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
 	}
 }
 
+func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalProjects, originalWait := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot, defaultBranchRenameWait
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot, defaultBranchRenameWait = originalRead, originalExecute, originalConfig, originalProjects, originalWait
+	})
+	projectsRoot = t.TempDir()
+	config := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return config }
+	defaultBranchRenameWait = func(context.Context, time.Duration) error { return nil }
+	old, workflowHead := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	defaultName, head, workflowDone, renames := "master", old, false, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte("{\"id\":1,\"default_branch\":\"" + defaultName + "\"}"), nil
+		case "repos/acme/app/branches/master":
+			if defaultName == "main" {
+				return nil, errors.New("HTTP 404")
+			}
+			return []byte("{\"commit\":{\"sha\":\"" + head + "\"}}"), nil
+		case "repos/acme/app/branches/main":
+			if defaultName != "main" {
+				return nil, errors.New("HTTP 404")
+			}
+			return []byte("{\"commit\":{\"sha\":\"" + head + "\"}}"), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/rules/branches/master?per_page=100":
+			return []byte("[]"), nil
+		case "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte("[{\"path\":\".github/workflows/ci.yml\",\"sha\":\"blob\",\"type\":\"file\"}]"), nil
+		case "repos/acme/app/git/blobs/blob":
+			content := "on:\n  push:\n    branches:\n      - master\n"
+			if workflowDone {
+				content = "on:\n  push:\n    branches:\n      - main\n"
+			}
+			return []byte("{\"encoding\":\"base64\",\"content\":\"" + base64.StdEncoding.EncodeToString([]byte(content)) + "\"}"), nil
+		case "repos/acme/app/branches/master/protection", "repos/acme/app/pages":
+			return nil, errors.New("HTTP 404")
+		case "repos/acme/app/commits/" + workflowHead:
+			return []byte("{\"parents\":[{\"sha\":\"" + old + "\"}]}"), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "createCommitOnBranch"):
+			workflowDone, head = true, workflowHead
+			return githubobserver.CommandResponse{Stdout: []byte("{\"data\":{\"createCommitOnBranch\":{\"commit\":{\"oid\":\"" + workflowHead + "\"}}}}")}
+		case strings.Contains(joined, "/branches/master/rename"):
+			renames++
+			defaultName = "main"
+			return githubobserver.CommandResponse{}
+		default:
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + joined)}
+		}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, rewriteWorkflowTriggers: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renames != 1 || report.Repositories[0].Disposition != "compliant" || report.Repositories[0].VerifiedDefault != "main" {
+		t.Fatalf("report=%#v renames=%d", report.Repositories[0], renames)
+	}
+}
+
 func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T) {
 	original := defaultBranchListRemote
 	t.Cleanup(func() { defaultBranchListRemote = original })
