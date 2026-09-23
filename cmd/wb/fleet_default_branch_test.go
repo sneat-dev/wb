@@ -2470,6 +2470,51 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 	}
 }
 
+func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived, branch := true, "master"
+	mutations := []string{}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":%q,"archived":%t}`, branch, archived)), nil
+		case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutation := strings.Join(args, " ")
+		mutations = append(mutations, mutation)
+		switch mutation {
+		case "api --method PATCH repos/acme/app -f archived=false":
+			archived = false
+		case "api --method PATCH repos/acme/app -f default_branch=main":
+			branch = "main"
+		case "api --method PATCH repos/acme/app -f archived=true":
+			archived = true
+		default:
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NewHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TargetExists: true, Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if !archived || branch != "main" || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || len(mutations) != 3 {
+		t.Fatalf("same-head archived migration = %#v mutations=%v", result, mutations)
+	}
+}
+
 func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
 	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
 	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
