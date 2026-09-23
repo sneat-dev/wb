@@ -977,7 +977,7 @@ func (controller daemonController) stateLock() (func(), error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("validate daemon state lock permissions: %w", err)
 	}
-	deadline := time.Now().Add(daemonReadyTimeout)
+	deadline := controller.deps.now().Add(daemonReadyTimeout)
 	for {
 		locked, err := tryLockDaemonFile(file)
 		if err != nil {
@@ -990,11 +990,11 @@ func (controller daemonController) stateLock() (func(), error) {
 				_ = file.Close()
 			}, nil
 		}
-		if time.Now().After(deadline) {
+		if controller.deps.now().After(deadline) {
 			_ = file.Close()
 			return nil, fmt.Errorf("another process held the daemon state lock for %s", daemonReadyTimeout)
 		}
-		time.Sleep(20 * time.Millisecond)
+		controller.deps.sleep(20 * time.Millisecond)
 	}
 }
 
