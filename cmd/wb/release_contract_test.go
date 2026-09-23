@@ -199,7 +199,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("Go validation scope steps=%v", goScope["steps"])
 	}
 	goScopeFilter, _ := goScopeSteps[0].(map[string]any)
-	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@v4")
+	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d")
 	// Push, tag and manual runs always validate, so they must not depend on a
 	// git-history diff that can fail after a force-push.
 	assert("Go scope filter only on pull requests", goScopeFilter["if"], "github.event_name == 'pull_request'")
@@ -237,7 +237,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("native Windows scope steps=%v", windowsScope["steps"])
 	}
 	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
-	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@v6")
+	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
@@ -264,7 +264,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if _, conditional := checkout["if"]; conditional {
 		t.Fatalf("eligibility checkout=%v", checkout)
 	}
-	assert("eligibility checkout action", checkout["uses"], "actions/checkout@v6")
+	assert("eligibility checkout action", checkout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	assert("eligibility history", checkout["with"], map[string]any{"fetch-depth": 0})
 	assert("eligibility output", eligibility["outputs"], map[string]any{"eligible": "${{ steps.eligibility.outputs.eligible }}"})
 	if _, err := os.Stat(filepath.Join(repoRoot, ".github", "workflows", "release.yml")); !os.IsNotExist(err) {
