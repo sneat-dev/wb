@@ -107,16 +107,13 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 	}
 	coverageReport := quality.CoverWithOptions(ctx, filepath.Base(repoPath), repoPath, runOpts)
 	if coverageReport.Status == quality.StatusFailed {
-		message := "coverage could not be measured: " + coverageReport.Error
+		// coverageReport.Diagnostic is deliberately not surfaced here:
 		// coverageDiagnosticFor (internal/quality/go_coverage_runner.go)
 		// only finds a manifest on disk for a process-isolated shard
-		// failure; --changed never sets GoTestShards, so this branch is
-		// untested here and only reachable once --changed grows its own
-		// sharding support.
-		if coverageReport.Diagnostic != nil {
-			message += fmt.Sprintf(" (diagnostic manifest %s)", coverageReport.Diagnostic.Manifest)
-		}
-		return &exitError{code: exitFindings, message: message}
+		// failure, and validateCoverageExecutionOptions (cmd/wb/quality.go)
+		// rejects --test-shards greater than 1 under --changed, so
+		// Diagnostic can never be non-nil on this path today.
+		return &exitError{code: exitFindings, message: "coverage could not be measured: " + coverageReport.Error}
 	}
 
 	blocks, err := quality.ParseCoverageProfile(profilePath)
@@ -247,16 +244,12 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		if err := os.MkdirAll(reportDir, 0o755); err != nil {
 			return err
 		}
-		encoded, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			// changedCoverageReport holds only strings, ints, bools, and
-			// slices of quality.PackageRatchet (the same directly
-			// JSON-marshalable shapes as quality.PackageBaseline); kept as
-			// defense in depth but untested because it is provably
-			// unreachable today, the same as WriteBaseline's identical
-			// branch (internal/quality/ratchet.go).
-			return err
-		}
+		// changedCoverageReport holds only strings, ints, bools, and slices
+		// of quality.PackageRatchet — the same directly JSON-marshalable
+		// shapes as quality.PackageBaseline — so MarshalIndent's error is
+		// discarded rather than kept as an untestable dead branch, the
+		// same as WriteBaseline (internal/quality/ratchet.go).
+		encoded, _ := json.MarshalIndent(report, "", "  ")
 		if err := os.WriteFile(filepath.Join(reportDir, "coverage-ratchet.json"), append(encoded, '\n'), 0o644); err != nil {
 			return err
 		}

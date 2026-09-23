@@ -208,10 +208,10 @@ func TestCoverageChangedFailsWhenGoTestFails(t *testing.T) {
 	baseSHA := repo.commitAll("broken")
 
 	// --report-dir exercises the same quality.CoverWithOptions failure path
-	// the sharded coverage-diagnostics manifest uses (review item 5); the
-	// manifest itself is only written for process-isolated shard failures,
-	// so it does not appear here (see the "diagnostic manifest" append in
-	// runChangedCoverage).
+	// the sharded coverage-diagnostics manifest uses (review item 5);
+	// runChangedCoverage never surfaces that manifest, since --changed
+	// cannot combine with --test-shards (validateCoverageExecutionOptions),
+	// so no manifest is ever written for it to find.
 	reportDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--report-dir", reportDir, "--non-interactive"}, &stdout, &stderr)

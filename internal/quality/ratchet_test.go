@@ -721,3 +721,40 @@ func TestGitChangedLinesHandlesPathsWithSpaces(t *testing.T) {
 		t.Fatalf("changed = %#v, want it to key the appended lines under the exact spaced file name", changed)
 	}
 }
+
+// TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
+// exercises ComputeBaselineAtRef's ParseCoverageProfile error branch with a
+// `go` shim that fakes `go test -coverprofile` to exit 0 while writing a
+// profile ParseCoverageProfile rejects (a line with no "file:range"
+// separator) — real `go test` cannot produce this, but a hermetic shim
+// proves the branch fails closed rather than leaving it untested. Not
+// parallel-safe (t.Setenv mutates the process-wide PATH).
+func TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) {
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.writeFile("app_test.go", fixtureTestSource)
+	repo.commitAll("base")
+
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = test ]; then\n" +
+		"  for a in \"$@\"; do\n" +
+		"    case \"$a\" in -coverprofile=*) p=\"${a#-coverprofile=}\";; esac\n" +
+		"  done\n" +
+		"  printf 'mode: set\\nbadformat 1 1\\n' > \"$p\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exec " + realGo + " \"$@\"\n"
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute); err == nil {
+		t.Fatal("want error when the measured profile fails ParseCoverageProfile's stricter parse")
+	}
+}

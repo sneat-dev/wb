@@ -206,16 +206,12 @@ func LoadBaseline(path string) (PackageBaseline, error) {
 
 // WriteBaseline writes baseline as deterministic, indented JSON.
 func WriteBaseline(path string, baseline PackageBaseline) error {
-	encoded, err := json.MarshalIndent(baseline, "", "  ")
-	if err != nil {
-		// PackageBaseline holds only an int, a string, and a
-		// map[string]int, all directly JSON-marshalable; MarshalIndent
-		// fails only on cycles, channels/funcs, or NaN/Inf floats, none of
-		// which this type can hold. Kept (not removed) as defense in
-		// depth if the type ever grows a field that can fail, but it is
-		// untested because it is provably unreachable today.
-		return err
-	}
+	// PackageBaseline holds only an int, a string, and a map[string]int, all
+	// directly JSON-marshalable; MarshalIndent fails only on cycles,
+	// channels/funcs, or NaN/Inf floats, none of which this type can hold,
+	// so its error is discarded rather than kept as an untestable dead
+	// branch.
+	encoded, _ := json.MarshalIndent(baseline, "", "  ")
 	encoded = append(encoded, '\n')
 	return os.WriteFile(path, encoded, 0o644)
 }
