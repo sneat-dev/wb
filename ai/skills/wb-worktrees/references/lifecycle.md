@@ -361,7 +361,9 @@ run `wb worktree retire <task> --apply`. For a coordinated task, use
 `--filter <owner/repository>` to select one repository at a time. WB commits
 remaining source changes with normal hooks, pushes the exact source commit to
 `retired/*` in its original repository, and pushes plain Work Log and worktree
-metadata to the configured private organization retirement repository. It
+metadata to the configured private organization retirement repository. The
+archive contains the actual plain Work Log files, including the claim,
+terminal, and original prompt records. It
 verifies both remote receipts before deleting the original ref and removing
 the local checkout and branch. Rerun the same command to resume an interrupted
 apply. Open pull requests, competing ownership, changed refs, and a public or
