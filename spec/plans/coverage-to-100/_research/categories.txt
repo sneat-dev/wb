@@ -1,0 +1,18 @@
+  3664  34.6% other behaviour (untested path)
+  3226  30.5% error propagation: internal function
+  1500  14.2% refusal/validation error return
+   988   9.3% error propagation: filesystem/OS
+   316   3.0% error propagation: git/gh/exec call
+   221   2.1% error propagation: (un)marshal/encode
+   182   1.7% time/retry/timeout/ctx
+   161   1.5% platform-specific file
+   154   1.5% switch case/default
+    59   0.6% TTY/interactive
+    49   0.5% error propagation: network/GitHub API
+    44   0.4% goroutine/concurrency
+    13   0.1% os.Exit/log.Fatal/panic
+
+long tail (94 pkgs) 1582 other behaviour (untested path)=440; errprop: internal function=414; errprop: filesystem/OS=324; refusal/validation error return=217; errprop: (un)marshal/encode=69; platform-specific file=35
+cmd/wb 2837 other behaviour (untested path)=1125; errprop: internal function=919; errprop: filesystem/OS=224; refusal/validation error return=190; errprop: (un)marshal/encode=89; switch case/default=70
+internal/orchestrate 1934 other behaviour (untested path)=663; errprop: internal function=527; refusal/validation error return=359; errprop: filesystem/OS=179; errprop: git/gh/exec call=83; time/retry/timeout/ctx=62
+internal/worktrees 4224 other behaviour (untested path)=1436; errprop: internal function=1366; refusal/validation error return=734; errprop: filesystem/OS=261; errprop: git/gh/exec call=187; platform-specific file=84
