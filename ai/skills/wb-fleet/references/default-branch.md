@@ -12,6 +12,7 @@ wb fleet default-branch --all-orgs --apply --report-dir reports/default-branch
 wb fleet default-branch --repo acme/app --apply --reconcile-from reports/default-branch/previous.json --reconcile-sha256 <sha256>
 wb fleet default-branch --repo acme/app --apply --temporarily-unarchive
 wb fleet default-branch --repo acme/app --branch main --migrate-pages-source --apply
+wb fleet default-branch --repo acme/app --branch main --rewrite-workflow-triggers --apply
 wb fleet default-branch --repo acme/app --apply --restore-archive-from reports/default-branch/partial.json --restore-archive-sha256 <sha256>
 ```
 
@@ -20,9 +21,8 @@ default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
 archived repositories unless `--temporarily-unarchive` is explicit, open source-branch pull requests, divergent targets,
 protection/rules impacts, and concrete workflow references to the old
-branch. `--migrate-pages-source` admits a legacy Pages source on the observed default branch with path `/` or `/docs`, preserving and verifying that path after branch migration. It also repairs an already-`main` default only when its Pages source is legacy `master` with one of those paths. Every other Pages source remains an exception row. Repositories without an initial commit are also exception rows, even
-when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
-blindly.
+branch. `--migrate-pages-source` admits a legacy Pages source on the observed default branch with path `/` or `/docs`, preserving and verifying that path after branch migration. It also repairs an already-`main` default only when its Pages source is legacy `master` with one of those paths. `--rewrite-workflow-triggers` accepts only plain multiline `master` scalars in top-level `on.push` or `on.pull_request` branch lists. It makes one expected-head workflow commit and verifies the replacement bytes and commit parent before branch rename. Every other workflow shape remains an exception row. Repositories without an initial commit are also exception rows, even
+when GitHub advertises a default-branch name.
 
 GitHub can make an accepted branch rename visible asynchronously. WB records
 that accepted response, performs bounded read-only convergence checks, and

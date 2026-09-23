@@ -33,7 +33,7 @@ func (writer *defaultBranchFailWriter) Write(value []byte) (int, error) {
 
 func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	command := newFleetDefaultBranchCmd()
-	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "migrate-pages-source", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
+	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "migrate-pages-source", "rewrite-workflow-triggers", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}
