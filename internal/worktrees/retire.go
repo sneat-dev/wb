@@ -786,7 +786,7 @@ func readRetireReport(path string) (RetireResult, error) {
 		return result, err
 	}
 	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return result, err
