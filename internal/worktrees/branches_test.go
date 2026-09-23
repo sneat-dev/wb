@@ -467,6 +467,58 @@ func TestRetiredCountHonoursExactBranchAndAgeSelectors(t *testing.T) {
 	}
 }
 
+func TestRetiredNamespaceInventoryIsOfflineForLocalRetiredGlob(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "retired/local-only")
+	writeAndCommit(t, fixture.canonical, "retired.txt", "local\n", "retire local branch")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	// An unavailable origin proves this selector never asks for origin/main.
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeLocal, Name: "retired/*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].Branch != "retired/local-only" || outcome.Entries[0].Disposition != BranchRetired {
+		t.Fatalf("retired local inventory = %#v", outcome.Entries)
+	}
+	if outcome.Entries[0].TargetSHA != "" {
+		t.Fatalf("retired offline inventory unexpectedly resolved a base target: %#v", outcome.Entries[0])
+	}
+	if outcome.RetiredRefs[BranchScopeLocal] != 1 || outcome.RetiredBranches != 1 {
+		t.Fatalf("retired counts = refs=%#v names=%d", outcome.RetiredRefs, outcome.RetiredBranches)
+	}
+	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "skipped fetch of origin/main") {
+		t.Fatalf("offline diagnostic missing: %#v", outcome.Diagnostics)
+	}
+}
+
+func TestRetiredNamespaceRemoteInventoryFetchesOnlyRetiredRefs(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "retired/remote-only")
+	writeAndCommit(t, fixture.canonical, "retired-remote.txt", "remote\n", "retire remote branch")
+	gitTest(t, fixture.canonical, "push", "origin", "retired/remote-only")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	// A generic branch sweep needs origin/main. Removing it from the fixture
+	// proves the retired selector refreshes only its own remote namespace.
+	gitTest(t, fixture.remote, "update-ref", "-d", "refs/heads/main")
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Only: BranchRetired,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].Scope != BranchScopeRemote || outcome.Entries[0].Branch != "retired/remote-only" || outcome.Entries[0].Disposition != BranchRetired {
+		t.Fatalf("retired remote inventory = %#v", outcome.Entries)
+	}
+	if outcome.RetiredRefs[BranchScopeRemote] != 1 || outcome.RetiredBranches != 1 {
+		t.Fatalf("retired counts = refs=%#v names=%d", outcome.RetiredRefs, outcome.RetiredBranches)
+	}
+}
+
 // TestBranchCleanupDeletesOnlyContainedAndRefusesInUse is the AC-2 core: a
 // contained branch is deleted with --apply, but a branch checked out in a
 // linked worktree is never deleted even though its content is contained.

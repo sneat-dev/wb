@@ -685,7 +685,7 @@
       "feature_refs": ["spec/features/branch-hygiene/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb branch count", "flags": ["--base", "--format", "--name", "--older-than", "--only", "--org", "--repo", "--scope"], "modes": ["Shares one locally discovered branch inventory with list", "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb branch count", "flags": ["--base", "--format", "--name", "--older-than", "--only", "--org", "--repo", "--scope"], "modes": ["Shares one locally discovered branch inventory with list", "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory", "Retired-only selectors read local retired refs without fetching origin/main; remote scope refreshes only origin retired refs and reports failures as unreadable"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb branch count --help", "contains": ["retired", "local, remote, or all"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch count --org sneat-co --only retired --format yaml"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchCountUsesTheSharedInventorySelectors", "kind": "unit"}], "limitation": null}

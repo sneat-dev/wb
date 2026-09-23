@@ -94,6 +94,36 @@ func TestBranchCountUsesTheSharedInventorySelectors(t *testing.T) {
 	}
 }
 
+func TestBranchCountRetiredTextFormatKeepsScopedRefTotals(t *testing.T) {
+	var out bytes.Buffer
+	if err := printBranchCount(&out, worktrees.BranchListOutcome{
+		Totals:          map[string]int{worktrees.BranchRetired: 2},
+		RetiredBranches: 1,
+		RetiredRefs:     map[string]int{worktrees.BranchScopeLocal: 1, worktrees.BranchScopeRemote: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "STATUS       REFS\nretired     2\nretired      1 names (1 local refs, 1 remote refs)\n"; got != want {
+		t.Fatalf("retired count text = %q, want %q", got, want)
+	}
+}
+
+func TestBranchCountDoesNotRenderAnUnavailableRemoteRetiredInventoryAsZero(t *testing.T) {
+	var out bytes.Buffer
+	if err := printBranchCount(&out, worktrees.BranchListOutcome{
+		Scope:       worktrees.BranchScopeRemote,
+		RetiredRefs: map[string]int{},
+		Entries: []worktrees.BranchEntry{{
+			Scope: worktrees.BranchScopeRemote, Disposition: worktrees.BranchUnreadable,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "unavailable remote refs") {
+		t.Fatalf("remote retired failure rendered as a count: %q", out.String())
+	}
+}
+
 func TestYAMLBranchListSemanticallyMatchesJSON(t *testing.T) {
 	outcome := worktrees.BranchListOutcome{Org: "acme", RetiredBranches: 1, RetiredRefs: map[string]int{"local": 1}, Entries: []worktrees.BranchEntry{{Repository: "acme/app", Branch: "retired/example", Author: "Alex", Title: "old work"}}}
 	raw, err := yamlCompatibleBranchList(outcome)
@@ -128,6 +158,7 @@ func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 	for _, wanted := range []string{
 		"contained", "absorbed", "unique", "protected", "in-use", "unreadable",
 		"never eligible for --apply", "read-only in every configuration", "[n/N] repository",
+		"bounded quarantine inventory", "does not fetch origin/<base>",
 	} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("branch list help does not mention %q", wanted)

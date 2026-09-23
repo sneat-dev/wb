@@ -124,6 +124,12 @@ origin/<base> during this run, never a stale local branch or tracking ref. A
 repository whose target cannot be fetched yields the unreadable disposition
 for its branches without blocking the rest of the sweep.
 
+--only retired, an exact retired --branch, or a retired/* --name selector
+uses a bounded quarantine inventory instead: local scope reads only local
+retired refs and does not fetch origin/<base>; remote scope refreshes only
+origin's retired namespace before reading its tracking refs. The report names
+the skipped base fetch, and a failed remote namespace refresh is unreadable.
+
 The default --scope local inventories local refs. Use --scope remote or --scope
 all to include known origin refs; --org narrows only locally discovered
 canonical clones and never queries every repository on GitHub.
@@ -364,7 +370,7 @@ func printRetiredBranchSummary(out io.Writer, outcome worktrees.BranchListOutcom
 	if outcome.RetiredBranches == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%d); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%s); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
 	return err
 }
 
@@ -375,8 +381,22 @@ func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error 
 	if err := printDispositionTotals(out, outcome.Totals); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %d remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %s remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
 	return err
+}
+
+func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {
+	if count, ok := outcome.RetiredRefs[worktrees.BranchScopeRemote]; ok {
+		return fmt.Sprintf("%d", count)
+	}
+	if outcome.Scope != worktrees.BranchScopeLocal {
+		for _, entry := range outcome.Entries {
+			if entry.Scope == worktrees.BranchScopeRemote && entry.Disposition == worktrees.BranchUnreadable {
+				return "unavailable"
+			}
+		}
+	}
+	return "0"
 }
 
 // yamlCompatibleBranchList preserves the machine contract's JSON field names.
