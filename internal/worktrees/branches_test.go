@@ -536,6 +536,29 @@ func TestRetiredNamespaceInventoryIsOfflineForLocalRetiredGlob(t *testing.T) {
 	}
 }
 
+func TestRetiredNamespaceListsAndCountsTagsSeparately(t *testing.T) {
+	fixture := newGitFixture(t)
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "tag", "retired/tag-only", sha)
+	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/tag-only")
+	// No origin/main read is needed for a retired-only tag selector.
+	gitTest(t, fixture.remote, "update-ref", "-d", "refs/heads/main")
+	for _, scope := range []string{BranchScopeLocal, BranchScopeRemote, BranchScopeAll} {
+		outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: scope, Name: "retired/*"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.RetiredBranches != 0 || outcome.RetiredTagNames != 1 || len(outcome.Entries) != map[string]int{BranchScopeLocal: 1, BranchScopeRemote: 1, BranchScopeAll: 2}[scope] {
+			t.Fatalf("scope %s outcome = %#v", scope, outcome)
+		}
+		for _, entry := range outcome.Entries {
+			if entry.RefKind != "tag" || entry.Branch != "retired/tag-only" || entry.Disposition != BranchRetired {
+				t.Fatalf("tag entry = %#v", entry)
+			}
+		}
+	}
+}
+
 func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
