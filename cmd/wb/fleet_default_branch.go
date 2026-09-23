@@ -279,9 +279,6 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 			if options.migratePagesSource && options.temporarilyUnarchive {
 				return usageError("--migrate-pages-source does not support archived repositories; complete the separately reviewed archive transition first")
 			}
-			if options.rewriteWorkflowTriggers && options.temporarilyUnarchive {
-				return usageError("--rewrite-workflow-triggers does not support archived repositories; complete the separately reviewed archive transition first")
-			}
 			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
 			if err != nil {
 				return err
@@ -1606,7 +1603,10 @@ func applyArchivedDefaultBranch(ctx context.Context, repo defaultBranchRepositor
 		repo.Error = "invalid repository observation"
 		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
-	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil)
+	// The initial inspection has already accepted only the narrow trigger
+	// grammar. Reinspect it after unarchiving, so a concurrent workflow change
+	// cannot be committed or renamed from a stale archive transition.
+	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil, len(repo.WorkflowFiles) > 0)
 	if fresh.RepositoryID != transition.RepositoryID || fresh.Archived {
 		repo.Disposition = "error"
 		repo.Error = "temporary unarchive did not preserve the planned repository identity and active state"
@@ -1616,6 +1616,18 @@ func applyArchivedDefaultBranch(ctx context.Context, repo defaultBranchRepositor
 	if fresh.Disposition != "drift" {
 		repo = fresh
 		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	if len(fresh.WorkflowFiles) > 0 {
+		repo = applyDefaultBranchWorkflowTriggers(ctx, fresh, func(updated defaultBranchRepository) error {
+			updated.Archive = transition
+			repo = updated
+			return checkpoint(repo)
+		})
+		repo.Archive = transition
+		if repo.Disposition != "drift" {
+			return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		}
+		fresh = repo
 	}
 	repo = applyDefaultBranchWithCheckpoint(ctx, fresh, func(updated defaultBranchRepository) error {
 		updated.Archive = transition
@@ -1682,6 +1694,11 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo defaultBranchReposit
 	expectedDefault, expectedHead := transition.InitialDefault, transition.InitialHead
 	if transition.FinalHead != "" {
 		expectedDefault, expectedHead = repo.Desired, transition.FinalHead
+	} else if repo.WorkflowCommit != "" {
+		// A workflow commit may have succeeded before the subsequent branch
+		// rename failed. Restore archival at that verified child head on the
+		// original default; restore-only never rolls back the workflow commit.
+		expectedHead = repo.WorkflowCommit
 	}
 	if metadataErr != nil || metadata.ID != transition.RepositoryID || !metadata.Archived || metadata.DefaultBranch != expectedDefault {
 		transition.Phase, transition.RecoveryRequired = "failed", true

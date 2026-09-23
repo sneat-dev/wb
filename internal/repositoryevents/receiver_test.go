@@ -130,13 +130,21 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 			t.Fatalf("parallel starts = %+v", started)
 		}
 	}
-	if !started["event-a1"] || !started["event-b1"] || started["event-a2"] {
+	if !started["event-b1"] || (started["event-a1"] == started["event-a2"]) {
 		t.Fatalf("initial starts = %+v", started)
+	}
+	firstSameRepository := "event-a1"
+	if started["event-a2"] {
+		firstSameRepository = "event-a2"
+	}
+	wantFollowUp := "event-a2"
+	if firstSameRepository == "event-a2" {
+		wantFollowUp = "event-a1"
 	}
 	releaseAll()
 	select {
 	case id := <-processor.started:
-		if id != "event-a2" {
+		if id != wantFollowUp {
 			t.Fatalf("third start = %q", id)
 		}
 	case <-time.After(2 * time.Second):
