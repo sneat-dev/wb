@@ -78,7 +78,12 @@ func newCoverageCmd() *cobra.Command {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
 			if !options.changed && cmd.Flags().Changed("baseline-timeout") {
-				return fmt.Errorf("--baseline-timeout requires --changed")
+				// exitUsage (not the plain fmt.Errorf the surrounding
+				// validation uses): --baseline-timeout is flatly ignored
+				// without --changed, which AGENTS.md's ignored-flags rule
+				// treats as a usage error (exit 2), the same contract
+				// cobra's own flag-parse errors already get.
+				return &exitError{code: exitUsage, message: "--baseline-timeout requires --changed"}
 			}
 			if err := validateCoverageExecutionOptions(options); err != nil {
 				return err
@@ -171,7 +176,10 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 			return fmt.Errorf("--changed cannot be combined with --test-shards")
 		}
 		if options.format != "markdown" && options.format != "json" {
-			return fmt.Errorf("--changed supports --format markdown or json only, not %q", options.format)
+			// exitUsage for the same reason as --baseline-timeout above: an
+			// unsupported --format under --changed is rejected, not
+			// silently ignored, so it is a usage error.
+			return &exitError{code: exitUsage, message: fmt.Sprintf("--changed supports --format markdown or json only, not %q", options.format)}
 		}
 	} else if options.target != "" {
 		return fmt.Errorf("--target requires --changed")

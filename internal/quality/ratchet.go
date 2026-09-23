@@ -23,7 +23,9 @@ import (
 type CoverageBlock struct {
 	File       string
 	StartLine  int
+	StartCol   int
 	EndLine    int
+	EndCol     int
 	Statements int
 	Count      int
 }
@@ -79,11 +81,11 @@ func parseCoverageProfileLine(line string) (CoverageBlock, error) {
 	if len(rangeFields) != 2 {
 		return CoverageBlock{}, fmt.Errorf("missing start,end range")
 	}
-	startLine, err := parsePosition(rangeFields[0])
+	startLine, startCol, err := parsePosition(rangeFields[0])
 	if err != nil {
 		return CoverageBlock{}, fmt.Errorf("start position: %w", err)
 	}
-	endLine, err := parsePosition(rangeFields[1])
+	endLine, endCol, err := parsePosition(rangeFields[1])
 	if err != nil {
 		return CoverageBlock{}, fmt.Errorf("end position: %w", err)
 	}
@@ -98,18 +100,28 @@ func parseCoverageProfileLine(line string) (CoverageBlock, error) {
 	return CoverageBlock{
 		File:       fileName,
 		StartLine:  startLine,
+		StartCol:   startCol,
 		EndLine:    endLine,
+		EndCol:     endCol,
 		Statements: statements,
 		Count:      int(count),
 	}, nil
 }
 
-func parsePosition(position string) (line int, err error) {
+func parsePosition(position string) (line, col int, err error) {
 	dot := strings.Index(position, ".")
 	if dot < 0 {
-		return 0, fmt.Errorf("missing line.column")
+		return 0, 0, fmt.Errorf("missing line.column")
 	}
-	return strconv.Atoi(position[:dot])
+	line, err = strconv.Atoi(position[:dot])
+	if err != nil {
+		return 0, 0, err
+	}
+	col, err = strconv.Atoi(position[dot+1:])
+	if err != nil {
+		return 0, 0, err
+	}
+	return line, col, nil
 }
 
 // PackageOf maps a coverage profile's module-qualified file path (for example
@@ -140,29 +152,75 @@ func PackageUncoveredCounts(blocks []CoverageBlock, modulePath string) map[strin
 	return counts
 }
 
-// PackageBaseline is the per-package uncovered-statement-count baseline the
+// UncoveredBlock names one uncovered statement range in the baseline,
+// keyed the same way a Go coverage profile line names it, so a later
+// EvaluateRatchet run can tell which of a package's currently-uncovered
+// blocks are new against the baseline and which already existed there
+// (spec/plans/coverage-to-100/README.md task-3, review item B2: a
+// count-only failure must still name file:line).
+type UncoveredBlock struct {
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+	StartCol  int    `json:"start_col"`
+	EndLine   int    `json:"end_line"`
+	EndCol    int    `json:"end_col"`
+}
+
+// PackageBaseline is the per-package uncovered-statement baseline the
 // ratchet compares against. It has no committed file of its own: go-ci's
 // coverage job publishes it as a build artifact on every push to the default
-// branch (spec/plans/coverage-to-100/README.md task-3(b)).
+// branch (spec/plans/coverage-to-100/README.md task-3(b)). Packages holds
+// each package's uncovered statement count for the rise check;
+// UncoveredBlocks holds the exact uncovered statement ranges behind that
+// count, so a rise can be attributed to specific newly-uncovered
+// statements instead of only reported as a number.
 type PackageBaseline struct {
-	SchemaVersion int            `json:"schema_version"`
-	SHA           string         `json:"sha,omitempty"`
-	Packages      map[string]int `json:"packages"`
+	SchemaVersion   int                         `json:"schema_version"`
+	SHA             string                      `json:"sha,omitempty"`
+	Packages        map[string]int              `json:"packages"`
+	UncoveredBlocks map[string][]UncoveredBlock `json:"uncovered_blocks,omitempty"`
 }
 
 // BaselineFromProfile builds a PackageBaseline from a measured coverage
 // profile, for publishing as the baseline artifact.
 func BaselineFromProfile(blocks []CoverageBlock, modulePath, sha string) PackageBaseline {
+	uncoveredBlocks := make(map[string][]UncoveredBlock)
+	for _, block := range blocks {
+		if block.Count != 0 {
+			continue
+		}
+		pkg := PackageOf(block.File, modulePath)
+		uncoveredBlocks[pkg] = append(uncoveredBlocks[pkg], UncoveredBlock{
+			File: block.File, StartLine: block.StartLine, StartCol: block.StartCol,
+			EndLine: block.EndLine, EndCol: block.EndCol,
+		})
+	}
+	for pkg := range uncoveredBlocks {
+		sort.Slice(uncoveredBlocks[pkg], func(i, j int) bool {
+			a, b := uncoveredBlocks[pkg][i], uncoveredBlocks[pkg][j]
+			if a.File != b.File {
+				return a.File < b.File
+			}
+			if a.StartLine != b.StartLine {
+				return a.StartLine < b.StartLine
+			}
+			return a.StartCol < b.StartCol
+		})
+	}
 	return PackageBaseline{
-		SchemaVersion: 1,
-		SHA:           sha,
-		Packages:      PackageUncoveredCounts(blocks, modulePath),
+		SchemaVersion:   baselineSchemaVersion,
+		SHA:             sha,
+		Packages:        PackageUncoveredCounts(blocks, modulePath),
+		UncoveredBlocks: uncoveredBlocks,
 	}
 }
 
 // baselineSchemaVersion is the only PackageBaseline schema ValidateBaseline
-// accepts.
-const baselineSchemaVersion = 1
+// accepts. It is 2, not 1: schema 1 baselines (published before
+// UncoveredBlocks existed) cannot attribute a count rise to specific
+// statements, so ValidateBaseline treats them the same as any other
+// unusable baseline — fall back to measuring the merge base directly.
+const baselineSchemaVersion = 2
 
 // ValidateBaseline reports whether baseline is usable against expectedSHA. A
 // wrong schema version, an empty package map, or (when expectedSHA is
@@ -291,10 +349,12 @@ func parseColorMovedDiff(raw string) ChangedLines {
 		switch {
 		case strings.HasPrefix(stripped, "+++ "):
 			currentFile = strings.TrimPrefix(stripped, "+++ ")
-			// A trailing "\t" (old diff timestamp suffix) never appears with
-			// this exact flag set, but stripping it is a one-line defense in
-			// depth against a mismatched file key that would otherwise
-			// silently exempt every line in the file from the ratchet.
+			// git appends a trailing "\t" to a path containing a space (or
+			// other characters unified diff needs to disambiguate), even
+			// with core.quotePath=false; stripping it keeps a spaced path a
+			// clean key instead of silently exempting the whole file from
+			// the ratchet. TestGitChangedLinesHandlesPathsWithSpaces covers
+			// this.
 			currentFile = strings.TrimSuffix(currentFile, "\t")
 			currentFile = strings.TrimPrefix(currentFile, "b/")
 			if currentFile == "/dev/null" {
@@ -370,11 +430,26 @@ type PackageRatchet struct {
 func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline PackageBaseline, modulePath string) []PackageRatchet {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
+	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
+	report := func(pkg, file string, line int) {
+		key := file + ":" + strconv.Itoa(line)
+		if reported[pkg] == nil {
+			reported[pkg] = make(map[string]bool)
+		}
+		if reported[pkg][key] {
+			return
+		}
+		reported[pkg][key] = true
+		findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: file, Line: line})
+	}
+
+	blocksByPackage := make(map[string][]CoverageBlock)
 	for _, block := range blocks {
 		if block.Count != 0 {
 			continue
 		}
 		pkg := PackageOf(block.File, modulePath)
+		blocksByPackage[pkg] = append(blocksByPackage[pkg], block)
 		relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
 		for line := block.StartLine; line <= block.EndLine; line++ {
 			if changed.Contains(relativeFile, line) {
@@ -384,10 +459,19 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 				// diff uses, not the module-qualified import path — so a
 				// finding can be matched against `git diff` output and
 				// opened directly.
-				findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: relativeFile, Line: line})
+				report(pkg, relativeFile, line)
 				break
 			}
 		}
+	}
+
+	baselineBlocks := make(map[string]map[string]bool)
+	for pkg, blocks := range baseline.UncoveredBlocks {
+		set := make(map[string]bool, len(blocks))
+		for _, block := range blocks {
+			set[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] = true
+		}
+		baselineBlocks[pkg] = set
 	}
 
 	packages := make(map[string]bool)
@@ -407,6 +491,20 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 	for _, pkg := range names {
 		baselineCount, hasBaseline := baseline.Packages[pkg]
 		count := uncovered[pkg]
+		rose := hasBaseline && count > baselineCount
+		if rose {
+			// A count-only rise still needs a file:line an author can act
+			// on (review item B2): every currently-uncovered block in this
+			// package that the baseline did not already record as
+			// uncovered is one of the statements behind the rise.
+			base := baselineBlocks[pkg]
+			for _, block := range blocksByPackage[pkg] {
+				if base[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] {
+					continue
+				}
+				report(pkg, strings.TrimPrefix(block.File, modulePath+"/"), block.StartLine)
+			}
+		}
 		findings := append([]RatchetFinding(nil), findingsByPackage[pkg]...)
 		sort.Slice(findings, func(i, j int) bool {
 			if findings[i].File != findings[j].File {
@@ -414,7 +512,6 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 			}
 			return findings[i].Line < findings[j].Line
 		})
-		rose := hasBaseline && count > baselineCount
 		results = append(results, PackageRatchet{
 			Package:               pkg,
 			Uncovered:             count,
@@ -428,12 +525,24 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, baseline Pack
 	return results
 }
 
+// uncoveredBlockKey identifies one uncovered statement range the same way
+// EvaluateRatchet and BaselineFromProfile both derive it from a
+// CoverageBlock, so the two can be compared for exact identity.
+func uncoveredBlockKey(file string, startLine, startCol, endLine, endCol int) string {
+	return fmt.Sprintf("%s:%d.%d,%d.%d", file, startLine, startCol, endLine, endCol)
+}
+
 // ComputeBaselineAtRef checks out ref into a throwaway git worktree and
 // measures its per-package uncovered-statement counts, for the fallback path
 // when no published baseline artifact exists yet
 // (spec/plans/coverage-to-100/README.md task-3(b)). It is bounded by timeout
 // so a missing artifact cannot make every PR pay for an open-ended run.
-func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout time.Duration) (PackageBaseline, error) {
+// options carries the same Retry/CoverageDiagnosticsDir a normal `wb
+// coverage` run uses; RepositoryRunOptions is applied to the checked-out
+// worktree so the merge base is measured through the identical
+// .wb/quality.yaml-aware sharded, retried CoverWithOptions runner the head
+// measurement uses (review item 5/non-blocking #1), not a bare `go test`.
+func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout time.Duration, options RunOptions) (PackageBaseline, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -468,10 +577,18 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	}()
 
 	profilePath := filepath.Join(worktreeDir, "wb-coverage-baseline.out")
-	testCmd := exec.CommandContext(ctx, "go", "test", "-coverprofile="+profilePath, "./...")
-	testCmd.Dir = worktreeDir
-	if output, err := testCmd.CombinedOutput(); err != nil {
-		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("go test -coverprofile at merge base %s: %w: %s", sha, err, string(output)))
+	runOptions := options
+	runOptions.CoverageProfile = profilePath
+	if runOptions.Timeout <= 0 || runOptions.Timeout > timeout {
+		runOptions.Timeout = timeout
+	}
+	repoOptions, err := RepositoryRunOptions(worktreeDir, runOptions)
+	if err != nil {
+		return PackageBaseline{}, err
+	}
+	report := CoverWithOptions(ctx, "merge-base", worktreeDir, repoOptions)
+	if report.Status == StatusFailed {
+		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("measure coverage at merge base %s: %s", sha, report.Error))
 	}
 
 	blocks, err := ParseCoverageProfile(profilePath)

@@ -117,6 +117,10 @@ func TestGitChangedLinesFixturePRMovingUncoveredFunctionUnchangedPasses(t *testi
 	repo.writeFile("app.go", fixtureBaseSource)
 	repo.writeFile("app_test.go", fixtureTestSource)
 	baseSHA := repo.commitAll("base")
+	// A real baseline built from the base commit's own profile (not a
+	// hand-typed count), so its UncoveredBlocks matches what BaselineFromProfile
+	// actually publishes.
+	baseline := BaselineFromProfile(repo.coverProfile(), repo.modulePath, baseSHA)
 
 	// Move Uncovered above Add, unchanged, on a feature branch.
 	moved := `package app
@@ -141,7 +145,6 @@ func Add(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	baseline := PackageBaseline{Packages: map[string]int{".": 3}} // Uncovered's 3 statements, from before the move
 	results := EvaluateRatchet(blocks, changed, baseline, repo.modulePath)
 
 	if len(results) != 1 {
@@ -168,6 +171,7 @@ func TestGitChangedLinesFixturePRAddingUncoveredStatementFailsAndNamesLine(t *te
 	repo.writeFile("app.go", fixtureBaseSource)
 	repo.writeFile("app_test.go", fixtureTestSource)
 	baseSHA := repo.commitAll("base")
+	baseline := BaselineFromProfile(repo.coverProfile(), repo.modulePath, baseSHA)
 
 	repo.runGit("checkout", "-b", "feature")
 	withNewUncoveredStatement := fixtureBaseSource + `
@@ -183,7 +187,6 @@ func NewlyAdded(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	baseline := PackageBaseline{Packages: map[string]int{".": 3}}
 	results := EvaluateRatchet(blocks, changed, baseline, repo.modulePath)
 
 	if len(results) != 1 {
@@ -258,10 +261,10 @@ func TestParseCoverageProfileParsesRangesAndCounts(t *testing.T) {
 	if len(blocks) != 2 {
 		t.Fatalf("blocks = %#v, want 2", blocks)
 	}
-	if blocks[0] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 3, EndLine: 5, Statements: 1, Count: 1}) {
+	if blocks[0] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 3, StartCol: 30, EndLine: 5, EndCol: 2, Statements: 1, Count: 1}) {
 		t.Fatalf("blocks[0] = %#v", blocks[0])
 	}
-	if blocks[1] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 7, EndLine: 10, Statements: 3, Count: 0}) {
+	if blocks[1] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 7, StartCol: 34, EndLine: 10, EndCol: 2, Statements: 3, Count: 0}) {
 		t.Fatalf("blocks[1] = %#v", blocks[1])
 	}
 }
@@ -314,11 +317,41 @@ func TestPackageUncoveredCountsSumsOnlyZeroCountBlocks(t *testing.T) {
 	}
 }
 
+// TestBaselineFromProfileSortsUncoveredBlocksByFileThenLineThenColumn covers
+// BaselineFromProfile's tie-break comparator across all three of its
+// dimensions: two uncovered blocks in the same package but different files
+// (the File tie-break), and two uncovered blocks sharing a file and start
+// line but different start columns (the StartCol tie-break, reached once
+// File and StartLine are both equal).
+func TestBaselineFromProfileSortsUncoveredBlocksByFileThenLineThenColumn(t *testing.T) {
+	t.Parallel()
+	blocks := []CoverageBlock{
+		{File: "m/z.go", StartLine: 1, StartCol: 1, EndLine: 1, EndCol: 5, Statements: 1, Count: 0},
+		{File: "m/a.go", StartLine: 5, StartCol: 9, EndLine: 5, EndCol: 12, Statements: 1, Count: 0},
+		{File: "m/a.go", StartLine: 5, StartCol: 2, EndLine: 5, EndCol: 5, Statements: 1, Count: 0},
+	}
+	baseline := BaselineFromProfile(blocks, "m", "deadbeef")
+	got := baseline.UncoveredBlocks["."]
+	if len(got) != 3 {
+		t.Fatalf("uncovered blocks = %#v, want 3", got)
+	}
+	want := []UncoveredBlock{
+		{File: "m/a.go", StartLine: 5, StartCol: 2, EndLine: 5, EndCol: 5},
+		{File: "m/a.go", StartLine: 5, StartCol: 9, EndLine: 5, EndCol: 12},
+		{File: "m/z.go", StartLine: 1, StartCol: 1, EndLine: 1, EndCol: 5},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("uncovered blocks[%d] = %#v, want %#v (want file, then line, then column order)", i, got[i], want[i])
+		}
+	}
+}
+
 func TestBaselineRoundTripsThroughWriteAndLoad(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")
-	want := PackageBaseline{SchemaVersion: 1, SHA: "deadbeef", Packages: map[string]int{"internal/quality": 4, ".": 0}}
+	want := PackageBaseline{SchemaVersion: 2, SHA: "deadbeef", Packages: map[string]int{"internal/quality": 4, ".": 0}}
 	if err := WriteBaseline(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +395,7 @@ func TestComputeBaselineAtRefMeasuresMergeBaseUnderTimeout(t *testing.T) {
 	repo.writeFile("app_test.go", fixtureTestSource)
 	repo.commitAll("base")
 
-	baseline, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute)
+	baseline, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +414,7 @@ func TestComputeBaselineAtRefFailsLoudOnTimeout(t *testing.T) {
 	repo.writeFile("app_test.go", fixtureTestSource)
 	repo.commitAll("base")
 
-	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Nanosecond)
+	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Nanosecond, RunOptions{})
 	if err == nil {
 		t.Fatal("want error when the wall-time budget is exceeded")
 	}
@@ -397,7 +430,7 @@ func TestComputeBaselineAtRefRejectsUnknownRef(t *testing.T) {
 	repo.writeFile("app_test.go", fixtureTestSource)
 	repo.commitAll("base")
 
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "does-not-exist", time.Minute); err == nil {
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "does-not-exist", time.Minute, RunOptions{}); err == nil {
 		t.Fatal("want error for an unresolvable ref")
 	}
 }
@@ -488,6 +521,12 @@ func TestParseCoverageProfileLineRejectsEveryMalformedShape(t *testing.T) {
 		{"missing comma range", "file.go:1.2 1 1"},
 		{"bad start position", "file.go:bad,3.4 1 1"},
 		{"bad end position", "file.go:1.2,bad 1 1"},
+		// These two have a "." (so parsePosition passes its missing-dot
+		// check) but a non-numeric line or column component, exercising
+		// parsePosition's two strconv.Atoi error returns separately from
+		// the "no dot at all" shape above.
+		{"non-numeric start line", "file.go:x.2,3.4 1 1"},
+		{"non-numeric start column", "file.go:1.x,3.4 1 1"},
 		{"non-numeric statement count", "file.go:1.2,3.4 x 1"},
 		{"non-numeric hit count", "file.go:1.2,3.4 1 y"},
 	}
@@ -576,7 +615,7 @@ func TestComputeBaselineAtRefRejectsMissingGoMod(t *testing.T) {
 	}
 	repo.writeFile("app.go", "package app\n")
 	repo.commitAll("base without go.mod")
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute); err == nil {
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
 		t.Fatal("want error when the repository has no go.mod")
 	}
 }
@@ -588,7 +627,7 @@ func TestComputeBaselineAtRefFailsWhenGoTestFails(t *testing.T) {
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", "package app\n\nfunc Broken() int {\n") // syntax error
 	repo.commitAll("broken")
-	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute)
+	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{})
 	if err == nil {
 		t.Fatal("want error when go test fails to build")
 	}
@@ -599,12 +638,12 @@ func TestComputeBaselineAtRefFailsWhenGoTestFails(t *testing.T) {
 
 // A module with no _test.go files still produces a valid (all-zero-count)
 // coverage profile: `go test -coverprofile` instruments and reports on every
-// matched package regardless of whether it has its own tests. That leaves
-// ComputeBaselineAtRef's ParseCoverageProfile-error branch unreachable
-// through the real `go test` contract it depends on (a matched build either
-// fails, taking the "go test failed" branch above, or succeeds and always
-// writes a well-formed profile) — see the PR description for why no fixture
-// exercises it.
+// matched package regardless of whether it has its own tests. Real `go test`
+// therefore never reaches ComputeBaselineAtRef's ParseCoverageProfile-error
+// branch on its own (a matched build either fails, taking the "go test
+// failed" branch above, or succeeds and always writes a well-formed
+// profile); TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
+// exercises it with a `go` shim instead.
 
 // TestComputeBaselineAtRefFailsWhenGitWorktreeAddFails exercises the plain
 // (non-timeout) branch of "git worktree add" failing, by making .git
@@ -623,7 +662,7 @@ func TestComputeBaselineAtRefFailsWhenGitWorktreeAddFails(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(gitDir, 0o755) }()
 
-	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute)
+	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{})
 	if err == nil {
 		t.Fatal("want error when git cannot create the worktree's administrative files")
 	}
@@ -650,14 +689,18 @@ func TestComputeBaselineAtRefFailsClosedWhenTempDirIsUnwritable(t *testing.T) {
 	// leak into another test's temp-file creation.
 	t.Setenv("TMPDIR", notADir)
 
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute); err == nil {
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
 		t.Fatal("want error when the temp directory cannot be created")
 	}
 }
 
 func TestValidateBaselineRejectsWrongSchemaVersion(t *testing.T) {
 	t.Parallel()
-	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
+	// SchemaVersion 1 baselines carry counts only, not the per-package
+	// uncovered-block identities EvaluateRatchet needs to attribute a
+	// count-only rise to exact statements, so they are rejected the same
+	// as any other unsupported version.
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
 	if err == nil {
 		t.Fatal("want error for an unsupported schema_version")
 	}
@@ -665,7 +708,7 @@ func TestValidateBaselineRejectsWrongSchemaVersion(t *testing.T) {
 
 func TestValidateBaselineRejectsEmptyPackages(t *testing.T) {
 	t.Parallel()
-	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "abc", Packages: map[string]int{}}, "abc")
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "abc", Packages: map[string]int{}}, "abc")
 	if err == nil {
 		t.Fatal("want error for an empty package map")
 	}
@@ -673,7 +716,7 @@ func TestValidateBaselineRejectsEmptyPackages(t *testing.T) {
 
 func TestValidateBaselineRejectsSHAMismatch(t *testing.T) {
 	t.Parallel()
-	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "deadbeef", Packages: map[string]int{".": 0}}, "abc")
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "deadbeef", Packages: map[string]int{".": 0}}, "abc")
 	if err == nil {
 		t.Fatal("want error when the baseline's sha does not match the merge base")
 	}
@@ -681,7 +724,7 @@ func TestValidateBaselineRejectsSHAMismatch(t *testing.T) {
 
 func TestValidateBaselineAcceptsMatchingSHA(t *testing.T) {
 	t.Parallel()
-	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "abc", Packages: map[string]int{".": 0}}, "abc")
 	if err != nil {
 		t.Fatalf("want no error for a matching baseline, got %v", err)
 	}
@@ -692,7 +735,7 @@ func TestValidateBaselineToleratesUnknownExpectedSHA(t *testing.T) {
 	// An empty expectedSHA means "no specific commit to check against"
 	// (used when a caller has not yet resolved one); it must not itself
 	// make an otherwise-usable baseline fail.
-	err := ValidateBaseline(PackageBaseline{SchemaVersion: 1, SHA: "whatever", Packages: map[string]int{".": 0}}, "")
+	err := ValidateBaseline(PackageBaseline{SchemaVersion: 2, SHA: "whatever", Packages: map[string]int{".": 0}}, "")
 	if err != nil {
 		t.Fatalf("want no error when expectedSHA is empty, got %v", err)
 	}
@@ -754,7 +797,87 @@ func TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed(t *testin
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute); err == nil {
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
 		t.Fatal("want error when the measured profile fails ParseCoverageProfile's stricter parse")
+	}
+}
+
+// TestComputeBaselineAtRefFailsClosedWhenRepositoryQualityPolicyIsMalformed
+// covers ComputeBaselineAtRef's RepositoryRunOptions error branch (review
+// item 3: the merge-base fallback now reuses the sharded, policy-aware
+// runner, so a malformed .wb/quality.yaml checked out at the ref must fail
+// the baseline measurement the same way it fails the head measurement).
+func TestComputeBaselineAtRefFailsClosedWhenRepositoryQualityPolicyIsMalformed(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.writeFile("app_test.go", fixtureTestSource)
+	// go_test.shards below the required minimum of 2 is a malformed policy
+	// RepositoryRunOptions rejects (internal/quality/config.go).
+	repo.writeFile(".wb/quality.yaml", "version: 1\ngo_test:\n  shards: 1\n  packages: [\"./...\"]\n")
+	repo.commitAll("base with a malformed repository quality policy")
+
+	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
+		t.Fatal("want error when the ref's own .wb/quality.yaml is malformed")
+	}
+}
+
+// TestEvaluateRatchetNamesFileLineForACountOnlyRise is the review B2
+// regression: a package that fails only on its count (no changed line
+// overlaps a diff hunk, as when a PR deletes the package's only test) must
+// still report the exact file:line of the newly uncovered statement, not
+// just a count.
+func TestEvaluateRatchetNamesFileLineForACountOnlyRise(t *testing.T) {
+	t.Parallel()
+	baseBlocks := []CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 1},
+	}
+	baseline := BaselineFromProfile(baseBlocks, "m", "base-sha")
+
+	// No overlapping changed lines at all: this models deleting the
+	// package's only test, which raises the uncovered count without
+	// touching any line a diff would flag.
+	currentBlocks := []CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
+	}
+	results := EvaluateRatchet(currentBlocks, ChangedLines{}, baseline, "m")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	got := results[0]
+	if !got.Rose || got.Pass {
+		t.Fatalf("package ratchet = %#v, want Rose and not Pass", got)
+	}
+	if len(got.NewlyUncoveredChanged) != 1 {
+		t.Fatalf("NewlyUncoveredChanged = %#v, want exactly one finding even though no diff line overlaps", got.NewlyUncoveredChanged)
+	}
+	finding := got.NewlyUncoveredChanged[0]
+	if finding.File != "pkg/a.go" || finding.Line != 5 {
+		t.Fatalf("finding = %#v, want pkg/a.go:5", finding)
+	}
+}
+
+// TestEvaluateRatchetDoesNotRefindABlockTheBaselineAlreadyHad guards
+// against over-reporting: a package whose count rose because of one truly
+// new uncovered block must not also re-report every pre-existing uncovered
+// block that the baseline already recorded.
+func TestEvaluateRatchetDoesNotRefindABlockTheBaselineAlreadyHad(t *testing.T) {
+	t.Parallel()
+	baseBlocks := []CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
+	}
+	baseline := BaselineFromProfile(baseBlocks, "m", "base-sha")
+
+	currentBlocks := []CoverageBlock{
+		{File: "m/pkg/a.go", StartLine: 5, StartCol: 1, EndLine: 5, EndCol: 10, Statements: 1, Count: 0},
+		{File: "m/pkg/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 10, Statements: 1, Count: 0},
+	}
+	results := EvaluateRatchet(currentBlocks, ChangedLines{}, baseline, "m")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	got := results[0]
+	if len(got.NewlyUncoveredChanged) != 1 || got.NewlyUncoveredChanged[0].Line != 9 {
+		t.Fatalf("NewlyUncoveredChanged = %#v, want only line 9 (the pre-existing line-5 block must not be re-reported)", got.NewlyUncoveredChanged)
 	}
 }

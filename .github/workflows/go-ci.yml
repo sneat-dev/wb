@@ -344,6 +344,7 @@ jobs:
           --target "$BASE_SHA"
           --baseline-file coverage-baseline.json
           --baseline-timeout 20m
+          --timeout 20m
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
           --minimum=87

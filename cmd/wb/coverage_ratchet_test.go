@@ -164,7 +164,7 @@ func TestCoverageChangedUsesPublishedBaselineFileWhenPresent(t *testing.T) {
 	// A baseline claiming a much higher already-uncovered count must not by
 	// itself make the run pass: the changed-line rule still fires.
 	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
-	baseline := quality.PackageBaseline{SchemaVersion: 1, SHA: baseSHA, Packages: map[string]int{".": 100}}
+	baseline := quality.PackageBaseline{SchemaVersion: 2, SHA: baseSHA, Packages: map[string]int{".": 100}}
 	if err := quality.WriteBaseline(baselinePath, baseline); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestCoverageChangedEnforcesMinimumBackstop(t *testing.T) {
 	repo.commitAll("unrelated doc change")
 
 	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
-	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 1, Packages: map[string]int{".": 3}}); err != nil {
+	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 2, Packages: map[string]int{".": 3}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,7 +263,7 @@ func TestCoverageChangedJSONFormatAndReportDir(t *testing.T) {
 	repo.commitAll("unrelated doc change")
 
 	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
-	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 1, Packages: map[string]int{".": 3}}); err != nil {
+	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 2, Packages: map[string]int{".": 3}}); err != nil {
 		t.Fatal(err)
 	}
 	reportDir := t.TempDir()
@@ -414,7 +414,7 @@ func TestCoverageChangedPassesUnderALenientMinimum(t *testing.T) {
 	repo.commitAll("unrelated doc change")
 
 	baselinePath := filepath.Join(t.TempDir(), "baseline.json")
-	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 1, Packages: map[string]int{".": 3}}); err != nil {
+	if err := quality.WriteBaseline(baselinePath, quality.PackageBaseline{SchemaVersion: 2, Packages: map[string]int{".": 3}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -665,8 +665,8 @@ func TestCoverageChangedRejectsFormatsOtherThanMarkdownOrJSON(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--format", "yaml", "--non-interactive"}, &stdout, &stderr)
-	if code != exitFindings {
-		t.Fatalf("code = %d, want %d (rejected before work started) for an unsupported --format under --changed", code, exitFindings)
+	if code != exitUsage {
+		t.Fatalf("code = %d, want %d (usage error) for an unsupported --format under --changed", code, exitUsage)
 	}
 }
 
@@ -683,8 +683,8 @@ func TestCoverageRejectsBaselineTimeoutWithoutChanged(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"coverage", repo.dir, "--baseline-timeout", "5m", "--non-interactive"}, &stdout, &stderr)
-	if code != exitFindings {
-		t.Fatalf("code = %d, want %d (rejected before work started) for --baseline-timeout without --changed", code, exitFindings)
+	if code != exitUsage {
+		t.Fatalf("code = %d, want %d (usage error) for --baseline-timeout without --changed", code, exitUsage)
 	}
 }
 
@@ -734,5 +734,32 @@ func TestCoverageChangedFailsClosedOnUnusableBaselineArtifacts(t *testing.T) {
 				t.Fatalf("stderr = %q, want it to report the uncovered count rising once the unusable baseline is discarded", stderr.String())
 			}
 		})
+	}
+}
+
+// TestCoverageChangedSurfacesTheShardDiagnosticManifestOnFailure is the
+// review non-blocking #3 regression: quality.RepositoryRunOptions applies
+// .wb/quality.yaml's own go_test.shards policy independently of --changed's
+// CLI --test-shards restriction, so a repository that shards a package can
+// still fail with a coverage-diagnostics manifest on disk, and
+// runChangedCoverage must still point at it.
+func TestCoverageChangedSurfacesTheShardDiagnosticManifestOnFailure(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	repo.writeFile("pkg/pkg.go", "package pkg\n\nfunc Foo() int { return 1 }\n")
+	repo.writeFile("pkg/pkg_test.go", "package pkg\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tt.Fatal(\"boom\")\n}\n")
+	repo.writeFile(".wb/quality.yaml", "version: 1\ngo_test:\n  shards: 2\n  packages: [\"./pkg\"]\n")
+	baseSHA := repo.commitAll("base")
+
+	reportDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--report-dir", reportDir, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when a sharded package's test fails")
+	}
+	if !strings.Contains(stderr.String(), "diagnostic manifest") {
+		t.Fatalf("stderr = %q, want it to point at the coverage-diagnostics manifest", stderr.String())
 	}
 }

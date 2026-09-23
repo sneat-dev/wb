@@ -107,13 +107,19 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 	}
 	coverageReport := quality.CoverWithOptions(ctx, filepath.Base(repoPath), repoPath, runOpts)
 	if coverageReport.Status == quality.StatusFailed {
-		// coverageReport.Diagnostic is deliberately not surfaced here:
-		// coverageDiagnosticFor (internal/quality/go_coverage_runner.go)
-		// only finds a manifest on disk for a process-isolated shard
-		// failure, and validateCoverageExecutionOptions (cmd/wb/quality.go)
-		// rejects --test-shards greater than 1 under --changed, so
-		// Diagnostic can never be non-nil on this path today.
-		return &exitError{code: exitFindings, message: "coverage could not be measured: " + coverageReport.Error}
+		message := "coverage could not be measured: " + coverageReport.Error
+		// coverageReport.Diagnostic is non-nil for a process-isolated shard
+		// failure (coverageDiagnosticFor,
+		// internal/quality/go_coverage_runner.go): although
+		// validateCoverageExecutionOptions rejects --test-shards under
+		// --changed, runOpts above still picks up .wb/quality.yaml's own
+		// go_test.shards policy through quality.RepositoryRunOptions, so a
+		// repository that shards internal/worktrees or internal/orchestrate
+		// can still fail with a manifest on disk here.
+		if coverageReport.Diagnostic != nil {
+			message += fmt.Sprintf(" (diagnostic manifest %s)", coverageReport.Diagnostic.Manifest)
+		}
+		return &exitError{code: exitFindings, message: message}
 	}
 
 	blocks, err := quality.ParseCoverageProfile(profilePath)
@@ -170,7 +176,7 @@ func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, merg
 			return quality.PackageBaseline{}, fmt.Errorf("--baseline-file %s: %w", options.baselineFile, err)
 		}
 	}
-	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout)
+	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout, runOptions(options))
 }
 
 func gitMergeBase(ctx context.Context, repoPath, target string) (string, error) {
