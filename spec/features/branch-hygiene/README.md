@@ -103,7 +103,8 @@ retirement, and the same durable audit-report discipline.
 #### REQ: top-level-branch-family
 
 WB MUST expose a top-level `wb branch` command family with `wb branch list`,
-`wb branch count`, `wb branch cleanup`, and `wb branch quarantine`. The family
+`wb branch count`, `wb branch cleanup`, `wb branch quarantine`, and the
+read-only `wb branch archive-target`. The family
 MUST NOT be nested under `wb worktree`, and `wb worktree cleanup` MUST NOT gain
 a branch-scope or remote-only flag.
 
@@ -155,14 +156,35 @@ leased mutation exist.
 This local-only command does not retire worktrees, Work Logs, or remote refs.
 The remote-retirement follow-up will persist original path/ref/SHA, pull-request
 state, operator reason, and WB receipts in a recovery manifest. Its archive
-target is a WB-configured private retirement repository per organization, never
-a universal hard-coded name (for example, `sneat-co/backstage-retired`). Before
+target is a user-only WB configuration in `~/.config/wb/worktrees.yaml` (or
+`$XDG_CONFIG_HOME/wb/worktrees.yaml`): `retirement.archive_repository` selects
+the per-organization basename, defaulting to `backstage-retired`, and
+`retirement.organizations.<owner>.archive_repository` overrides it for one
+owner. Thus `sneat-co` resolves to `sneat-co/backstage-retired` by default.
+Repository-tracked `.wb/worktrees.yaml` MUST NOT select this target. Before
 `wb worktree cleanup`, that follow-up must archive worktree metadata and Work
-Log pointers there and verify the archive commit reached its remote. Sensitive
-or bulky logs remain in the configured private archive; Backstage carries only
-a summary and index, never raw logs. The configured retirement repository is
-private by default; WB must verify that privacy before writing. A public target
-fails closed unless an explicit policy authorizes it.
+Log pointers there and verify the archive commit reached its remote. A future
+full-log export requires separate explicit authorization for an encrypted,
+sealed payload and declared retention; local exact retention remains mandatory.
+Backstage carries only a summary and index, never raw logs. A preflight must
+confirm that the exact configured target exists and is private. A public,
+missing, mismatched, or unavailable target fails closed; there is no
+public-target override.
+
+`wb branch archive-target --repo owner/repository` resolves the configured
+target and performs the private-target preflight in text, JSON, or YAML. It
+has no apply flag and performs no branch, worktree, or Work Log mutation.
+
+#### REQ: retired-archive-preflight
+
+WB MUST expose an internal read-only retirement preflight that resolves the
+user-only target and inspects its exact remote repository visibility before any
+future remote ref rename, Work Log export, or worktree deletion. Its result
+MUST preserve local quarantine and report those operations as unperformed. It
+MUST refuse a public, missing, mismatched, or unavailable target without
+including remote transport errors or credentials in output. `wb branch
+archive-target` exposes this preflight; `wb branch quarantine` remains
+local-only.
 
 `wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,

@@ -88,6 +88,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |
 | `branch cleanup`, `quarantine` | yes | yes | rejected | yes |
+| `branch archive-target` | rejected | rejected | rejected | yes |
 | `version`, `self-update`, `install`, `upgrade` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |

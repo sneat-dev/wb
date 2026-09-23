@@ -50,6 +50,18 @@ type branchConfigFile struct {
 		// in repository-local mode, which has no configurable store root.
 		Root *string `yaml:"root"`
 	} `yaml:"worktrees"`
+	// Retirement is user-only policy for a future remote/worktree retirement
+	// flow. It is intentionally absent from repository policy: an arbitrary
+	// source repository must never choose where a developer exports its private
+	// Work Log evidence.
+	Retirement struct {
+		ArchiveRepository *string                                     `yaml:"archive_repository"`
+		Organizations     map[string]retiredArchiveOrganizationConfig `yaml:"organizations"`
+	} `yaml:"retirement"`
+}
+
+type retiredArchiveOrganizationConfig struct {
+	ArchiveRepository *string `yaml:"archive_repository"`
 }
 
 // worktreePlacement is the physical placement selected for one canonical
@@ -408,6 +420,9 @@ func repositoryPlacementPolicy(config branchConfigFile, baseRevision, userConfig
 	if config.Worktrees.Root != nil {
 		return fmt.Errorf("repository worktrees policy at %s must not set worktrees.root; the store root is machine-local user policy, set it in %s", baseRevision, userConfigPath)
 	}
+	if config.Retirement.ArchiveRepository != nil || len(config.Retirement.Organizations) != 0 {
+		return fmt.Errorf("repository worktrees policy at %s must not set retirement; retired archive selection is machine-local user policy, set it in %s", baseRevision, userConfigPath)
+	}
 	return nil
 }
 
@@ -637,6 +652,21 @@ func parseBranchConfig(path string, contents []byte) (branchConfigFile, bool, er
 		}
 		if *config.Worktrees.Root == "" {
 			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s root must not be empty", path)
+		}
+	}
+	if config.Retirement.ArchiveRepository != nil {
+		if err := validateRetiredArchiveRepositoryName(*config.Retirement.ArchiveRepository); err != nil {
+			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.archive_repository: %w", path, err)
+		}
+	}
+	for organization, policy := range config.Retirement.Organizations {
+		if !validSafeSegment(organization) {
+			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.organizations has invalid organization %q", path, organization)
+		}
+		if policy.ArchiveRepository != nil {
+			if err := validateRetiredArchiveRepositoryName(*policy.ArchiveRepository); err != nil {
+				return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.organizations.%s.archive_repository: %w", path, organization, err)
+			}
 		}
 	}
 	return config, true, nil
