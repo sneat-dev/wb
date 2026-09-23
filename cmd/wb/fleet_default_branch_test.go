@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1855,6 +1856,78 @@ func TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences(t *te
 	}
 	if workflowReferencesDefaultBranch("branches: [main]\n", "master") {
 		t.Fatal("unrelated branch was reported")
+	}
+}
+
+func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
+	before := "# keep this comment\non:\n  push:\n    branches:\n      - master\n      - release\n  pull_request:\n    branches:\n      - master\nname: unchanged\n"
+	after, changed := rewriteWorkflowBranchTriggers(before, "master", "main")
+	want := "# keep this comment\non:\n  push:\n    branches:\n      - main\n      - release\n  pull_request:\n    branches:\n      - main\nname: unchanged\n"
+	if !changed || after != want {
+		t.Fatalf("changed=%t\\nafter=%q\\nwant=%q", changed, after, want)
+	}
+	for _, unsupported := range []string{
+		"on:\n  push:\n    branches: [master]\n",
+		"on:\n  push:\n    branches:\n      - 'master'\n",
+		"uses: acme/action@master\n",
+		"ref: master\n",
+		"# master\n",
+		"url: https://example.invalid/master\n",
+	} {
+		if got, changed := rewriteWorkflowBranchTriggers(unsupported, "master", "main"); changed || got != unsupported {
+			t.Fatalf("unsupported shape was rewritten: %q => %q", unsupported, got)
+		}
+	}
+}
+
+func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	old, next := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	workflow, rewritten := "on:\n  push:\n    branches:\n      - master\n", "on:\n  push:\n    branches:\n      - main\n"
+	head, committed, mutations := old, false, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte("{\"id\":1,\"default_branch\":\"master\"}"), nil
+		case "repos/acme/app/branches/master":
+			return []byte("{\"commit\":{\"sha\":\"" + head + "\"}}"), nil
+		case "repos/acme/app/branches/main", "repos/acme/app/pages", "repos/acme/app/branches/master/protection":
+			return nil, errors.New("HTTP 404")
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster":
+			return []byte("[]"), nil
+		case "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte("[{\"path\":\".github/workflows/ci.yml\",\"sha\":\"blob\",\"type\":\"file\"}]"), nil
+		case "repos/acme/app/git/blobs/blob":
+			contents := workflow
+			if committed {
+				contents = rewritten
+			}
+			return []byte("{\"encoding\":\"base64\",\"content\":\"" + base64.StdEncoding.EncodeToString([]byte(contents)) + "\"}"), nil
+		case "repos/acme/app/rules/branches/master?per_page=100":
+			return []byte("[]"), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		joined := strings.Join(args, "\n")
+		for _, required := range []string{"api\ngraphql", "expected=" + old, "branch[repositoryNameWithOwner]=acme/app", "branch[branchName]=master", "additions[][path]=.github/workflows/ci.yml", "additions[][contents]=" + base64.StdEncoding.EncodeToString([]byte(rewritten))} {
+			if !strings.Contains(joined, required) {
+				return githubobserver.CommandResponse{Err: errors.New("missing GraphQL argument " + required)}
+			}
+		}
+		head, committed = next, true
+		return githubobserver.CommandResponse{Stdout: []byte("{\"data\":{\"createCommitOnBranch\":{\"commit\":{\"oid\":\"" + next + "\"}}}}")}
+	}
+	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
+	if planned.Disposition != "drift" || len(planned.WorkflowFiles) != 1 {
+		t.Fatalf("planned=%#v", planned)
+	}
+	got := applyDefaultBranchWorkflowTriggers(context.Background(), planned, func(defaultBranchRepository) error { return nil })
+	if mutations != 1 || got.Disposition != "drift" || got.WorkflowPhase != "verified" || got.WorkflowCommit != next || got.OldHead != next {
+		t.Fatalf("got=%#v mutations=%d", got, mutations)
 	}
 }
 

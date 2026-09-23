@@ -32,11 +32,11 @@ import (
 const defaultBranchSchemaVersion = 1
 
 type defaultBranchOptions struct {
-	apply, json, includeUser, allOrgs, temporarilyUnarchive, migratePagesSource bool
-	branch, reportDir, reconcileFrom, restoreArchiveFrom                        string
-	reconcileSHA256, restoreArchiveSHA256                                       string
-	owners, repositories                                                        []string
-	parallel                                                                    int
+	apply, json, includeUser, allOrgs, temporarilyUnarchive, migratePagesSource, rewriteWorkflowTriggers bool
+	branch, reportDir, reconcileFrom, restoreArchiveFrom                                                 string
+	reconcileSHA256, restoreArchiveSHA256                                                                string
+	owners, repositories                                                                                 []string
+	parallel                                                                                             int
 }
 type defaultBranchConfig struct {
 	Fleet struct {
@@ -85,9 +85,24 @@ type defaultBranchRepository struct {
 	PagesAfter      *defaultBranchPagesSource `json:"pages_after,omitempty"`
 	PagesPhase      string                    `json:"pages_phase,omitempty"`
 	PagesAccepted   bool                      `json:"pages_mutation_accepted,omitempty"`
+	WorkflowFiles   []defaultBranchWorkflow   `json:"workflow_files,omitempty"`
+	WorkflowPhase   string                    `json:"workflow_phase,omitempty"`
+	WorkflowCommit  string                    `json:"workflow_commit_oid,omitempty"`
 	Impacts         []string                  `json:"impacts,omitempty"`
 	Actions         []string                  `json:"actions,omitempty"`
 	CanonicalClones []defaultBranchCanonical  `json:"canonical_clones,omitempty"`
+}
+
+// defaultBranchWorkflow records a byte-preserving proposed replacement.  The
+// contents themselves never enter a report: the before/after SHA-256 values
+// bind the report to the exact bytes that were read and verified.
+type defaultBranchWorkflow struct {
+	Path         string `json:"path"`
+	BlobBefore   string `json:"blob_before"`
+	SHA256Before string `json:"sha256_before"`
+	SHA256After  string `json:"sha256_after"`
+	contents     string
+	rewritten    string
 }
 type defaultBranchPagesSource struct {
 	BuildType string `json:"build_type"`
@@ -264,6 +279,9 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 			if options.migratePagesSource && options.temporarilyUnarchive {
 				return usageError("--migrate-pages-source does not support archived repositories; complete the separately reviewed archive transition first")
 			}
+			if options.rewriteWorkflowTriggers && options.temporarilyUnarchive {
+				return usageError("--rewrite-workflow-triggers does not support archived repositories; complete the separately reviewed archive transition first")
+			}
 			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
 			if err != nil {
 				return err
@@ -293,6 +311,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
 	command.Flags().BoolVar(&options.temporarilyUnarchive, "temporarily-unarchive", false, "allow a safe archived repository to be temporarily unarchived and restored")
 	command.Flags().BoolVar(&options.migratePagesSource, "migrate-pages-source", false, "migrate or verify a supported legacy GitHub Pages source transition")
+	command.Flags().BoolVar(&options.rewriteWorkflowTriggers, "rewrite-workflow-triggers", false, "rewrite only supported multiline workflow branch trigger scalars before a default-branch rename")
 	command.Flags().StringVar(&options.restoreArchiveFrom, "restore-archive-from", "", "restore archival only from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.restoreArchiveSHA256, "restore-archive-sha256", "", "required SHA-256 of the exact --restore-archive-from report bytes")
 	addJSONFormatFlags(command, &options.json)
@@ -333,7 +352,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 			defer wg.Done()
 			for i := range jobs {
 				desired := effectiveDefaultBranch(options.branch, config, repos[i].Org)
-				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithOptions(ctx, repos[i], desired, options.temporarilyUnarchive, options.migratePagesSource)
+				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithOptions(ctx, repos[i], desired, options.temporarilyUnarchive, options.migratePagesSource, options.rewriteWorkflowTriggers)
 			}
 		}()
 	}
@@ -390,6 +409,23 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 				} else if report.Repositories[i].ObservedDefault == report.Repositories[i].Desired && report.Repositories[i].PagesBefore != nil && report.Repositories[i].PagesPhase == "unfinished" {
 					report.Repositories[i].Disposition = "blocked"
 					report.Repositories[i].Error = "unfinished Pages source is outside the supported legacy master root or /docs repair; WB will not infer or overwrite it"
+					if err := persistDefaultBranchReport(report); err != nil {
+						return report, err
+					}
+				} else if len(report.Repositories[i].WorkflowFiles) > 0 {
+					report.Repositories[i] = applyDefaultBranchWorkflowTriggers(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+						report.Repositories[i] = updated
+						summarizeDefaultBranch(&report)
+						return persistDefaultBranchReport(report)
+					})
+					if report.Repositories[i].Disposition == "compliant" {
+						report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+							report.Repositories[i] = updated
+							summarizeDefaultBranch(&report)
+							return persistDefaultBranchReport(report)
+						})
+					}
+					summarizeDefaultBranch(&report)
 					if err := persistDefaultBranchReport(report); err != nil {
 						return report, err
 					}
@@ -1027,7 +1063,8 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	sort.Slice(failures, func(i, j int) bool { return failures[i].Repository < failures[j].Repository })
 	return repos, failures, nil
 }
-func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool) defaultBranchRepository {
+func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool, rewriteWorkflowTriggers ...bool) defaultBranchRepository {
+	rewriteWorkflows := len(rewriteWorkflowTriggers) > 0 && rewriteWorkflowTriggers[0]
 	result := defaultBranchRepository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
 		result.Disposition = "blocked"
@@ -1071,6 +1108,18 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 	result.OldHead = oldRef
 	if meta.DefaultBranch == desired {
 		result.NewHead = oldRef
+		if rewriteWorkflows {
+			if err := inspectDefaultBranchWorkflows(ctx, &result, meta.DefaultBranch, desired); err != nil {
+				result.Disposition, result.Error = "blocked", err.Error()
+				return result
+			}
+			if len(result.WorkflowFiles) > 0 {
+				result.Disposition = "drift"
+				result.WorkflowPhase = "unfinished"
+				result.Error = "default branch already matches desired branch, but supported workflow trigger migration remains unfinished"
+				return result
+			}
+		}
 		if migratePagesSource {
 			inspectDefaultBranchPagesAtDesired(ctx, &result, meta)
 			return result
@@ -1106,7 +1155,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 		result.Error = err.Error()
 		return result
 	}
-	if err := defaultBranchSafetyWithOptions(ctx, &result, meta, meta.DefaultBranch, migratePagesSource); err != nil {
+	if err := defaultBranchSafetyWithOptions(ctx, &result, meta, meta.DefaultBranch, migratePagesSource, rewriteWorkflows); err != nil {
 		result.Disposition = "blocked"
 		result.Error = err.Error()
 		return result
@@ -1125,7 +1174,8 @@ func readDefaultBranchRef(ctx context.Context, slug, branch string) (string, err
 	}
 	return ref.Commit.SHA, nil
 }
-func defaultBranchSafetyWithOptions(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool) error {
+func defaultBranchSafetyWithOptions(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool, rewriteWorkflowTriggers ...bool) error {
+	rewriteWorkflows := len(rewriteWorkflowTriggers) > 0 && rewriteWorkflowTriggers[0]
 	slug := result.Repository
 	headOwner := strings.Split(slug, "/")[0]
 	querySlugs := []string{slug}
@@ -1149,56 +1199,11 @@ func defaultBranchSafetyWithOptions(ctx context.Context, result *defaultBranchRe
 			return fmt.Errorf("open pull request in %s uses %q as head; GitHub closes it when that branch is renamed", querySlug, old)
 		}
 	}
-	// Raw workflow URLs and actions `uses: owner/repo@branch` do not follow a
-	// renamed branch. Read each workflow and block only a concrete old-branch
-	// reference; workflows without one remain eligible.
-	workflows, err := defaultBranchRead(ctx, "repos/"+slug+"/contents/.github/workflows?ref="+url.QueryEscape(old))
-	if err != nil {
-		if isDefaultBranchNotFound(err) {
-			workflows = []byte("[]")
-		} else {
-			return fmt.Errorf("list workflows at source branch: %w", err)
-		}
+	if err := inspectDefaultBranchWorkflows(ctx, result, old, result.Desired); err != nil {
+		return err
 	}
-	var listing []struct {
-		Path string `json:"path"`
-		SHA  string `json:"sha"`
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(workflows, &listing); err != nil {
-		return fmt.Errorf("decode workflow listing: %w", err)
-	}
-	for _, entry := range listing {
-		if entry.Type == "file" && (strings.HasSuffix(entry.Path, ".yml") || strings.HasSuffix(entry.Path, ".yaml")) {
-			blob, err := defaultBranchRead(ctx, "repos/"+slug+"/git/blobs/"+entry.SHA)
-			if err != nil {
-				return fmt.Errorf("read workflow %s: %w", entry.Path, err)
-			}
-			var value struct {
-				Content  string `json:"content"`
-				Encoding string `json:"encoding"`
-			}
-			if err := json.Unmarshal(blob, &value); err != nil {
-				return fmt.Errorf("decode workflow %s: %w", entry.Path, err)
-			}
-			contents := value.Content
-			switch value.Encoding {
-			case "base64":
-				decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(contents, "\n", ""))
-				if err != nil {
-					return fmt.Errorf("decode workflow %s content: %w", entry.Path, err)
-				}
-				contents = string(decoded)
-			case "":
-				return fmt.Errorf("workflow %s did not declare a content encoding", entry.Path)
-			default:
-				return fmt.Errorf("workflow %s uses unsupported content encoding %q", entry.Path, value.Encoding)
-			}
-			if workflowReferencesDefaultBranch(contents, old) {
-				result.Impacts = append(result.Impacts, "workflow old-branch reference: "+entry.Path)
-				return fmt.Errorf("workflow %s references %q; WB will not blindly rewrite it", entry.Path, old)
-			}
-		}
+	if len(result.WorkflowFiles) > 0 && !rewriteWorkflows {
+		return fmt.Errorf("workflow trigger references %q; pass --rewrite-workflow-triggers only after reviewing the proposed byte-preserving replacements", old)
 	}
 	if err := inspectDefaultBranchPages(ctx, result, old, migratePagesSource); err != nil {
 		return err
@@ -1316,6 +1321,177 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 	// free-form occurrences: a false positive is reviewable, while a missed
 	// reference could be broken by the branch rename.
 	return regexp.MustCompile(`(?mi)(^|[^[:alnum:]_.-])` + escaped + `($|[^[:alnum:]_.-])`).MatchString(contents)
+}
+
+// rewriteWorkflowBranchTriggers accepts only plain scalar list members under
+// on.<push|pull_request>.branches. It deliberately refuses every other old
+// branch token, including comments, URLs, action refs, expressions, anchors,
+// aliases and flow-style lists. Splitting with After preserves the original
+// line terminators and every byte outside the scalar token.
+func rewriteWorkflowBranchTriggers(contents, old, desired string) (string, bool) {
+	lines := strings.SplitAfter(contents, "\n")
+	onIndent, eventIndent, branchesIndent := -1, -1, -1
+	changed := false
+	for i, raw := range lines {
+		line := strings.TrimSuffix(raw, "\n")
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		trim := strings.TrimSpace(line)
+		if trim == "on:" {
+			onIndent, eventIndent, branchesIndent = indent, -1, -1
+			continue
+		}
+		if onIndent < 0 {
+			continue
+		}
+		if indent <= onIndent && trim != "" {
+			onIndent, eventIndent, branchesIndent = -1, -1, -1
+			continue
+		}
+		if eventIndent >= 0 && indent <= eventIndent && trim != "" {
+			eventIndent, branchesIndent = -1, -1
+		}
+		if eventIndent < 0 && indent > onIndent && (trim == "push:" || trim == "pull_request:") {
+			eventIndent = indent
+			continue
+		}
+		if eventIndent < 0 {
+			continue
+		}
+		if branchesIndent >= 0 && indent <= branchesIndent && trim != "" {
+			branchesIndent = -1
+		}
+		if branchesIndent < 0 && indent > eventIndent && trim == "branches:" {
+			branchesIndent = indent
+			continue
+		}
+		if branchesIndent < 0 || indent <= branchesIndent {
+			continue
+		}
+		prefix := line[:indent]
+		if strings.TrimSpace(line) == "- "+old || strings.TrimSpace(line) == "-"+old {
+			middle := strings.TrimLeft(line[indent:], " \t")
+			if strings.HasPrefix(middle, "- ") {
+				lines[i] = prefix + "- " + desired + raw[len(line):]
+				changed = true
+			}
+		}
+	}
+	return strings.Join(lines, ""), changed
+}
+
+func inspectDefaultBranchWorkflows(ctx context.Context, result *defaultBranchRepository, old, desired string) error {
+	workflows, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/contents/.github/workflows?ref="+url.QueryEscape(old))
+	if isDefaultBranchNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list workflows at source branch: %w", err)
+	}
+	var listing []struct {
+		Path string `json:"path"`
+		SHA  string `json:"sha"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(workflows, &listing); err != nil {
+		return fmt.Errorf("decode workflow listing: %w", err)
+	}
+	for _, entry := range listing {
+		if entry.Type != "file" || (!strings.HasSuffix(entry.Path, ".yml") && !strings.HasSuffix(entry.Path, ".yaml")) {
+			continue
+		}
+		blob, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/git/blobs/"+entry.SHA)
+		if err != nil {
+			return fmt.Errorf("read workflow %s: %w", entry.Path, err)
+		}
+		var value struct {
+			Content  string `json:"content"`
+			Encoding string `json:"encoding"`
+		}
+		if err := json.Unmarshal(blob, &value); err != nil {
+			return fmt.Errorf("decode workflow %s: %w", entry.Path, err)
+		}
+		if value.Encoding != "base64" {
+			return fmt.Errorf("workflow %s uses unsupported content encoding %q", entry.Path, value.Encoding)
+		}
+		contents, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(value.Content, "\n", ""))
+		if err != nil {
+			return fmt.Errorf("decode workflow %s content: %w", entry.Path, err)
+		}
+		rewritten, changed := rewriteWorkflowBranchTriggers(string(contents), old, desired)
+		if workflowReferencesDefaultBranch(rewritten, old) {
+			result.Impacts = append(result.Impacts, "workflow old-branch reference: "+entry.Path)
+			return fmt.Errorf("workflow %s has an unsupported reference to %q; WB will not rewrite it", entry.Path, old)
+		}
+		if changed {
+			result.WorkflowFiles = append(result.WorkflowFiles, defaultBranchWorkflow{Path: entry.Path, BlobBefore: entry.SHA, SHA256Before: defaultBranchDigest(contents), SHA256After: defaultBranchDigest([]byte(rewritten)), contents: string(contents), rewritten: rewritten})
+		}
+	}
+	return nil
+}
+
+const defaultBranchWorkflowMutation = `mutation($branch: CommittableBranch!, $expected: GitObjectID!, $message: CommitMessage!, $additions: [FileAddition!]!) { createCommitOnBranch(input: {branch: $branch, expectedHeadOid: $expected, message: $message, fileChanges: {additions: $additions}}) { commit { oid } } }`
+
+// applyDefaultBranchWorkflowTriggers creates one CAS-protected commit before
+// the branch rename. It rereads every planned blob and the source head before
+// submitting the mutation; a failed or ambiguous response is accepted only
+// after the exact new head and all replacement hashes are observed.
+func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {
+	owner, name, ok := strings.Cut(repo.Repository, "/")
+	if !ok || owner == "" || name == "" {
+		repo.Disposition, repo.Error = "error", "invalid repository observation"
+		return repo
+	}
+	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, false, true)
+	if fresh.Disposition != "drift" || fresh.ObservedDefault != repo.ObservedDefault || fresh.OldHead != repo.OldHead || len(fresh.WorkflowFiles) != len(repo.WorkflowFiles) {
+		repo.Disposition, repo.Error = "blocked", "workflow source changed after planning; rerun the audit"
+		return repo
+	}
+	for i := range repo.WorkflowFiles {
+		if fresh.WorkflowFiles[i].Path != repo.WorkflowFiles[i].Path || fresh.WorkflowFiles[i].BlobBefore != repo.WorkflowFiles[i].BlobBefore || fresh.WorkflowFiles[i].SHA256Before != repo.WorkflowFiles[i].SHA256Before || fresh.WorkflowFiles[i].SHA256After != repo.WorkflowFiles[i].SHA256After {
+			repo.Disposition, repo.Error = "blocked", "workflow bytes changed after planning; rerun the audit"
+			return repo
+		}
+	}
+	repo.WorkflowPhase, repo.Error = "pending", "workflow commit pending"
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition, repo.Error = "error", "persist pending workflow commit: "+err.Error()
+			return repo
+		}
+	}
+	args := []string{"api", "graphql", "-f", "query=" + defaultBranchWorkflowMutation, "-F", "branch[repositoryNameWithOwner]=" + repo.Repository, "-F", "branch[branchName]=" + repo.ObservedDefault, "-F", "expected=" + repo.OldHead, "-F", "message[headline]=chore: update default-branch workflow triggers"}
+	for _, file := range fresh.WorkflowFiles {
+		args = append(args, "-F", fmt.Sprintf("additions[][path]=%s", file.Path), "-F", fmt.Sprintf("additions[][contents]=%s", base64.StdEncoding.EncodeToString([]byte(file.rewritten))))
+	}
+	response := defaultBranchExecute(ctx, args...)
+	var payload struct {
+		Data struct {
+			CreateCommitOnBranch struct {
+				Commit struct {
+					OID string `json:"oid"`
+				} `json:"commit"`
+			} `json:"createCommitOnBranch"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(response.Stdout, &payload)
+	newHead, readErr := readDefaultBranchRef(ctx, repo.Repository, repo.ObservedDefault)
+	if readErr != nil || !validDefaultBranchCommit(newHead) || (payload.Data.CreateCommitOnBranch.Commit.OID != "" && payload.Data.CreateCommitOnBranch.Commit.OID != newHead) || newHead == repo.OldHead {
+		repo.Disposition, repo.Error = "error", "workflow commit response did not produce a verified new source head"
+		return repo
+	}
+	verified := defaultBranchRepository{Repository: repo.Repository}
+	if err := inspectDefaultBranchWorkflows(ctx, &verified, repo.ObservedDefault, repo.Desired); err != nil || len(verified.WorkflowFiles) != 0 {
+		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove every replacement: "+fmt.Sprint(err)
+		return repo
+	}
+	repo.OldHead, repo.NewHead, repo.WorkflowCommit, repo.WorkflowPhase, repo.Disposition, repo.Error = newHead, "", newHead, "verified", "drift", ""
+	repo.Actions = append(repo.Actions, "rewrote supported workflow triggers in one commit "+newHead)
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition, repo.Error = "error", "persist verified workflow commit: "+err.Error()
+		}
+	}
+	return repo
 }
 
 // applyArchivedDefaultBranch permits one guarded temporary unarchive. Every
