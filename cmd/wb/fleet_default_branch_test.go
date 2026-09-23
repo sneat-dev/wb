@@ -332,11 +332,11 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	archived := inspectDefaultBranch(context.Background(), repo("acme/old"), "main")
+	archived := inspectDefaultBranchWithOptions(context.Background(), repo("acme/old"), "main", false, false)
 	if archived.Disposition != "blocked" || !strings.Contains(archived.Error, "archived") {
 		t.Fatalf("archived = %#v", archived)
 	}
-	diverged := inspectDefaultBranch(context.Background(), repo("acme/diverged"), "main")
+	diverged := inspectDefaultBranchWithOptions(context.Background(), repo("acme/diverged"), "main", false, false)
 	if diverged.Disposition != "blocked" || !strings.Contains(diverged.Error, "different SHA") {
 		t.Fatalf("diverged = %#v", diverged)
 	}
@@ -449,11 +449,11 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	planned := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 	if planned.Disposition != "drift" || planned.OldHead != "source" {
 		t.Fatalf("plan = %#v", planned)
 	}
-	result := applyDefaultBranch(context.Background(), planned)
+	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || result.NewHead != "source" {
 		t.Fatalf("rename proof = %#v", result)
 	}
@@ -507,8 +507,8 @@ func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *tes
 		state = 2
 		return nil
 	}
-	planned := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
-	result := applyDefaultBranch(context.Background(), planned)
+	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || mutations != 1 || waits != 1 {
 		t.Fatalf("delayed visibility result=%#v mutations=%d waits=%d", result, mutations, waits)
 	}
@@ -669,7 +669,7 @@ func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
 		mutated = true
 		return githubobserver.CommandResponse{}
 	}
-	result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"})
+	result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 	if result.Disposition != "blocked" || !strings.Contains(result.Error, "changed after planning") || mutated {
 		t.Fatalf("fresh plan drift = %#v mutated=%t", result, mutated)
 	}
@@ -708,7 +708,7 @@ func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T)
 			t.Cleanup(func() { defaultBranchRead = original })
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return configure(endpoint) }
 			result := defaultBranchRepository{Repository: "acme/app"}
-			if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err == nil {
+			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil {
 				t.Fatalf("unsafe %s was accepted", name)
 			}
 		})
@@ -757,7 +757,7 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 				}
 			}
 			result := defaultBranchRepository{Repository: "acme/app"}
-			if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err == nil || !strings.Contains(err.Error(), want) {
+			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("active dependency was accepted: %v", err)
 			}
 		})
@@ -810,7 +810,7 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 				}
 				return nil, errors.New("unexpected endpoint " + endpoint)
 			}
-			result := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unsafe repository state = %#v", result)
 			}
@@ -1549,7 +1549,7 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 }
 
 func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T) {
-	if result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "not-a-slug"}); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
+	if result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "not-a-slug"}, nil); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
 		t.Fatalf("invalid repository = %#v", result)
 	}
 	for name, test := range map[string]struct {
@@ -1593,7 +1593,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 				test.mutate(&observedDefault)
 				return githubobserver.CommandResponse{}
 			}
-			result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"})
+			result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unproven mutation = %#v", result)
 			}
@@ -1653,13 +1653,13 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 			original := defaultBranchRead
 			t.Cleanup(func() { defaultBranchRead = original })
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return test.read(endpoint) }
-			result := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("untrusted observation = %#v", result)
 			}
 		})
 	}
-	if result := inspectDefaultBranch(context.Background(), repo("acme/app"), "bad ref"); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
+	if result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "bad ref", false, false); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
 		t.Fatalf("invalid desired branch = %#v", result)
 	}
 }
@@ -1829,15 +1829,15 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	empty := inspectDefaultBranch(context.Background(), repo("acme/empty"), "main")
+	empty := inspectDefaultBranchWithOptions(context.Background(), repo("acme/empty"), "main", false, false)
 	if empty.Disposition != "blocked" || !strings.Contains(empty.Error, "empty repository") {
 		t.Fatalf("empty = %#v", empty)
 	}
-	noInitialCommit := inspectDefaultBranch(context.Background(), repo("acme/no-initial-commit"), "main")
+	noInitialCommit := inspectDefaultBranchWithOptions(context.Background(), repo("acme/no-initial-commit"), "main", false, false)
 	if noInitialCommit.Disposition != "blocked" || !strings.Contains(noInitialCommit.Error, "no initial commit") {
 		t.Fatalf("no initial commit = %#v", noInitialCommit)
 	}
-	fork := inspectDefaultBranch(context.Background(), repo("fork/app"), "main")
+	fork := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 	if fork.Disposition != "drift" || len(fork.Impacts) == 0 {
 		t.Fatalf("fork = %#v", fork)
 	}
@@ -1868,7 +1868,7 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 					return nil, errors.New("unexpected endpoint " + endpoint)
 				}
 			}
-			result := inspectDefaultBranch(context.Background(), repo("fork/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, "open pull request") {
 				t.Fatalf("result = %#v", result)
 			}
@@ -3261,7 +3261,7 @@ func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
 		}
 	}
 	result := defaultBranchRepository{Repository: "acme/app"}
-	if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err != nil {
+	if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err != nil {
 		t.Fatalf("whitespace empty rules array blocked migration: %v", err)
 	}
 }

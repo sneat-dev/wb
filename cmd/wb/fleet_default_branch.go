@@ -971,10 +971,6 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	sort.Slice(failures, func(i, j int) bool { return failures[i].Repository < failures[j].Repository })
 	return repos, failures, nil
 }
-func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired string) defaultBranchRepository {
-	return inspectDefaultBranchWithOptions(ctx, repo, desired, false, false)
-}
-
 func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool) defaultBranchRepository {
 	result := defaultBranchRepository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
@@ -1073,10 +1069,6 @@ func readDefaultBranchRef(ctx context.Context, slug, branch string) (string, err
 	}
 	return ref.Commit.SHA, nil
 }
-func defaultBranchSafety(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string) error {
-	return defaultBranchSafetyWithOptions(ctx, result, meta, old, false)
-}
-
 func defaultBranchSafetyWithOptions(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool) error {
 	slug := result.Repository
 	headOwner := strings.Split(slug, "/")[0]
@@ -1267,9 +1259,6 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 	// free-form occurrences: a false positive is reviewable, while a missed
 	// reference could be broken by the branch rename.
 	return regexp.MustCompile(`(?mi)(^|[^[:alnum:]_.-])` + escaped + `($|[^[:alnum:]_.-])`).MatchString(contents)
-}
-func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defaultBranchRepository {
-	return applyDefaultBranchWithCheckpoint(ctx, repo, nil)
 }
 
 // applyArchivedDefaultBranch permits one guarded temporary unarchive. Every
