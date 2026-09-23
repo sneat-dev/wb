@@ -681,6 +681,18 @@
       "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
     },
     {
+      "id": "wb.branch.count",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb branch count", "flags": ["--base", "--format", "--name", "--older-than", "--only", "--org", "--repo", "--scope"], "modes": ["Shares one locally discovered branch inventory with list", "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb branch count --help", "contains": ["retired", "local, remote, or all"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch count --org sneat-co --only retired --format yaml"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchCountUsesTheSharedInventorySelectors", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Count is a presentation over one branch inventory, not a separate fleet scan."
+    },
+    {
       "id": "wb.branch.list",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -696,8 +708,11 @@
                 "--base",
                 "--branch",
                 "--format",
+				"--include-retired",
+				"--name",
                 "--older-than",
                 "--only",
+				"--org",
                 "--repo",
                 "--scope"
               ],
@@ -705,7 +720,9 @@
                 "Read-only in every configuration; the only permitted remote interaction is fetching",
                 "Every disposition is computed against the exact commit SHA fetched from origin/<base> during the run",
                 "A repository whose target cannot be fetched yields unreadable for its branches without blocking the rest of the sweep",
-                "Closed evidence taxonomy: contained, absorbed, unique, protected, in-use, unreadable"
+				"Retired branches are excluded from the active backlog by default but counted separately; --only retired and --include-retired expose them",
+                "Closed evidence taxonomy: contained, absorbed, retired, unique, protected, in-use, unreadable",
+                "--org selects locally discovered canonical clones only; it is not a GitHub-wide organization query"
               ]
             }
           ],
@@ -722,6 +739,7 @@
                 "unique",
                 "protected",
                 "in-use",
+				"retired",
                 "unreadable",
                 "never eligible for --apply"
               ]
@@ -756,6 +774,31 @@
         }
       },
       "notes": "Progress streams to stderr as '[n/N] repository' plus a closing per-disposition summary; stdout stays reserved for the report so --format json stays machine-parseable."
+    },
+    {
+      "id": "wb.branch.quarantine",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb branch quarantine",
+            "flags": ["--apply", "--branch", "--manifest", "--reason", "--repo", "--report-dir", "--sha"],
+            "modes": [
+              "Dry-run plan is the default; --apply uses one local compare-and-swap update-ref transaction",
+              "Every manifest row binds exact repository, source ref, SHA, and reason; per-row outcomes are durably reported before and after mutation",
+              "Open pull requests using the source as either head or base, protected/current refs, checked-out refs, live claims, moved sources, and destination collisions are refused",
+              "Remote quarantine is unavailable by design until independent peer evidence and leased remote mutation are implemented"
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {"status": "Full", "anchors": [{"command": "wb branch quarantine --help", "contains": ["dry-run", "Remote quarantine"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch quarantine --repo owner/repository --branch old/topic --reason superseded-work"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/branches_test.go", "name": "TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Retired refs are explicit operator quarantine and are never automatic cleanup candidates."
     },
     {
       "id": "wb.check",

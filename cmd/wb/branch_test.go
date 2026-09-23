@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"gopkg.in/yaml.v3"
 )
 
 func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
@@ -49,6 +54,72 @@ func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
 	}
 	if command.Flags().Lookup("apply") != nil {
 		t.Fatal("wb branch list must be read-only and must not accept --apply")
+	}
+}
+
+func TestBranchListSupportsRetiredAndOrganizationSelectors(t *testing.T) {
+	command := newBranchListCmd()
+	if command.Flags().Lookup("org") == nil || command.Flags().Lookup("include-retired") == nil {
+		t.Fatal("branch list is missing organization or retired selector")
+	}
+	if command.Flags().Lookup("format").DefValue != "text" {
+		t.Fatal("branch list no longer defaults to table text")
+	}
+	if err := requireOutputFormat("yaml", "text", "json", "yaml"); err != nil {
+		t.Fatalf("yaml format rejected: %v", err)
+	}
+}
+
+func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
+	command := newBranchQuarantineCmd()
+	if flag := command.Flags().Lookup("apply"); flag == nil || flag.DefValue != "false" {
+		t.Fatal("quarantine must default to dry-run")
+	}
+	for _, name := range []string{"repo", "branch", "sha", "reason", "manifest", "report-dir"} {
+		if command.Flags().Lookup(name) == nil {
+			t.Fatalf("missing --%s", name)
+		}
+	}
+}
+
+func TestBranchCountUsesTheSharedInventorySelectors(t *testing.T) {
+	command := newBranchCountCmd()
+	for _, name := range []string{"org", "repo", "scope", "only", "name", "older-than", "format"} {
+		if command.Flags().Lookup(name) == nil {
+			t.Fatalf("count missing --%s", name)
+		}
+	}
+	if command.Flags().Lookup("include-retired") != nil {
+		t.Fatal("count must share list's one-pass inventory rather than request a second presentation mode")
+	}
+}
+
+func TestYAMLBranchListSemanticallyMatchesJSON(t *testing.T) {
+	outcome := worktrees.BranchListOutcome{Org: "acme", RetiredBranches: 1, RetiredRefs: map[string]int{"local": 1}, Entries: []worktrees.BranchEntry{{Repository: "acme/app", Branch: "retired/example", Author: "Alex", Title: "old work"}}}
+	raw, err := yamlCompatibleBranchList(outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonRaw, err := json.Marshal(outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got any
+	if err := json.Unmarshal(jsonRaw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("yaml differs from JSON\nwant=%#v\ngot=%#v", want, got)
 	}
 }
 
@@ -103,7 +174,7 @@ func TestBranchListRejectsUnsupportedScopeAndOnlyAsUsageErrors(t *testing.T) {
 	}{
 		{"bad scope", []string{"branch", "list", "--scope", "bogus", "--projects-root", t.TempDir()}, "unsupported --scope"},
 		{"bad only", []string{"branch", "list", "--only", "bogus", "--projects-root", t.TempDir()}, "unsupported --only"},
-		{"bad format", []string{"branch", "list", "--format", "yaml", "--projects-root", t.TempDir()}, "unsupported format"},
+		{"bad format", []string{"branch", "list", "--format", "toml", "--projects-root", t.TempDir()}, "unsupported format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
