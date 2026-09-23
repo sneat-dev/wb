@@ -11,6 +11,7 @@ wb fleet default-branch --all-orgs --format json
 wb fleet default-branch --all-orgs --apply --report-dir reports/default-branch
 wb fleet default-branch --repo acme/app --apply --reconcile-from reports/default-branch/previous.json --reconcile-sha256 <sha256>
 wb fleet default-branch --repo acme/app --apply --temporarily-unarchive
+wb fleet default-branch --repo acme/app --branch main --migrate-pages-source --apply
 wb fleet default-branch --repo acme/app --apply --restore-archive-from reports/default-branch/partial.json --restore-archive-sha256 <sha256>
 ```
 
