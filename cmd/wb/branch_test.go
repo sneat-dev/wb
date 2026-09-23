@@ -162,6 +162,20 @@ func TestYAMLBranchListSemanticallyMatchesJSON(t *testing.T) {
 	}
 }
 
+func TestBranchOutcomeAlwaysSerializesZeroRetiredBranchNames(t *testing.T) {
+	raw, err := json.Marshal(worktrees.BranchListOutcome{RetiredRefs: map[string]int{worktrees.BranchScopeLocal: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome map[string]any
+	if err := json.Unmarshal(raw, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := outcome["retired_branches"]; !ok || got != float64(0) {
+		t.Fatalf("retired_branches = %#v (present=%t), want explicit zero", got, ok)
+	}
+}
+
 func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 	list := newBranchListCmd()
 	for _, wanted := range []string{

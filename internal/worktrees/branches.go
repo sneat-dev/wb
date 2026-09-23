@@ -138,7 +138,7 @@ type BranchListOutcome struct {
 	// RetiredRefs is a count of refs, deliberately split by scope. With
 	// --scope all a local and remote ref of the same name are two refs.
 	RetiredRefs     map[string]int `json:"retired_refs,omitempty"`
-	RetiredBranches int            `json:"retired_branches,omitempty"`
+	RetiredBranches int            `json:"retired_branches"`
 	// RetiredRemoteUnavailable distinguishes an unknown remote retired count
 	// from zero when the narrowly scoped remote refresh fails.
 	RetiredRemoteUnavailable bool `json:"retired_remote_unavailable,omitempty"`
