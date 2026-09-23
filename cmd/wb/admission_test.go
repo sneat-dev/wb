@@ -21,6 +21,7 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 	}{
 		{name: "adopt", flagPresent: func(name string) bool { return newWorktreeAdoptCmd().Flags().Lookup(name) != nil }},
 		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd().Flags().Lookup(name) != nil }},
+		{name: "retire", flagPresent: func(name string) bool { return newWorktreeRetireCmd().Flags().Lookup(name) != nil }},
 		{name: "own", flagPresent: func(name string) bool { return newWorktreeOwnCmd().Flags().Lookup(name) != nil }},
 		{name: "correct-identity", flagPresent: func(name string) bool { return newWorktreeCorrectIdentityCmd().Flags().Lookup(name) != nil }},
 	}
@@ -63,6 +64,10 @@ func TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome(t *testing.T) {
 	}{
 		{name: "adopt", args: []string{"worktree", "adopt", "/tmp/external", "--apply", "--mode", "agent"}},
 		{name: "rename", args: []string{"--projects-root", projects, "worktree", "rename", "old", "new", "--apply", "--mode", "agent", "--original-prompt-file", prompt}},
+		// This must reach admission before Retire accesses WB state or performs
+		// retirement planning. It regressed when retire called
+		// requireMutationAdmission without registering the shared flags.
+		{name: "retire", args: []string{"--projects-root", projects, "worktree", "retire", "retirement-pilot", "--apply", "--mode", "agent"}},
 		{name: "own", args: []string{"--projects-root", projects, "worktree", "own", ".", "--mode", "agent"}},
 		{name: "correct-identity", args: []string{"worktree", "correct-identity", "effort", "run", strings.Repeat("a", 64), "--mode", "agent"}},
 		{name: "log-init", args: []string{"--projects-root", projects, "worktree", "log", "init", ".", "--mode", "agent"}},
