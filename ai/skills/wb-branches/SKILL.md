@@ -54,12 +54,21 @@ reason; `--apply` creates the retired ref at the observed SHA and deletes the
 source in one local compare-and-swap transaction. A JSON `--manifest` can
 contain multiple exact `repository`, `ref`, `sha`, and `reason` rows.
 
-Remote retirement is explicitly unavailable in this command. A future remote
-flow must prove peer and pull-request state, use a leased remote mutation, and
-archive worktree metadata and log pointers in the configured private per-org
-retirement repository before cleanup. It must verify the archive repository is
-private and the archive commit is pushed. The current local command does not
-retire remote refs, worktrees, or logs.
+Remote retirement is explicitly unavailable in this command. The future flow
+will resolve an archive target from user-only
+`~/.config/wb/worktrees.yaml`: `retirement.archive_repository` defaults to
+`backstage-retired`, with `retirement.organizations.<owner>.archive_repository`
+for per-organization overrides. It must prove peer and pull-request state, use
+a leased remote mutation, and archive worktree metadata and log pointers in the
+configured private per-org retirement repository before cleanup. The preflight
+refuses public, missing, mismatched, and unavailable targets. The current local
+command does not use this preflight and does not retire remote refs, worktrees,
+or logs.
+
+Use `wb branch archive-target --repo owner/repository` to inspect the selected
+target and its current private/public/missing/unavailable status. For machine
+output, run `wb branch archive-target --repo sneat-co/app --format json`. It is
+read-only and accepts `--format text|json|yaml`.
 
 `wb branch list` and `wb branch count` accept `--base` (default `main`),
 `--scope` (`local`, `remote`, or `all`; default `local`), `--format`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -79,6 +80,72 @@ func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
 		if command.Flags().Lookup(name) == nil {
 			t.Fatalf("missing --%s", name)
 		}
+	}
+}
+
+func TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight(t *testing.T) {
+	original := branchArchiveTargetPreflight
+	t.Cleanup(func() { branchArchiveTargetPreflight = original })
+	branchArchiveTargetPreflight = func(_ context.Context, repository string) (worktrees.RetiredArchivePlan, error) {
+		return worktrees.RetiredArchivePlan{SourceRepository: repository, ArchiveRepository: "sneat-co/backstage-retired", Outcome: "refused", Refusal: "archive repository is public"}, nil
+	}
+	command := newBranchArchiveTargetCmd()
+	if command.Flags().Lookup("apply") != nil || command.Flags().Lookup("repo") == nil || command.Flags().Lookup("format") == nil {
+		t.Fatal("archive-target must expose only repo and format, with no apply path")
+	}
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetArgs([]string{"--repo", "sneat-co/app"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "archive-target: sneat-co/backstage-retired") || !strings.Contains(got, "refusal: archive repository is public") {
+		t.Fatalf("text output = %q", got)
+	}
+	var help bytes.Buffer
+	command = newBranchArchiveTargetCmd()
+	command.SetOut(&help)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil || !strings.Contains(help.String(), "read-only") || !strings.Contains(help.String(), "--repo") {
+		t.Fatalf("help = %q, err=%v", help.String(), err)
+	}
+}
+
+func TestBranchArchiveTargetYAMLSemanticallyMatchesJSON(t *testing.T) {
+	original := branchArchiveTargetPreflight
+	t.Cleanup(func() { branchArchiveTargetPreflight = original })
+	branchArchiveTargetPreflight = func(_ context.Context, repository string) (worktrees.RetiredArchivePlan, error) {
+		return worktrees.RetiredArchivePlan{SourceRepository: repository, ArchiveRepository: "sneat-co/backstage-retired", Outcome: "refused", Refusal: "archive repository is unavailable", LocalQuarantine: "preserved", WorkLogExport: "not_started"}, nil
+	}
+	execute := func(format string) []byte {
+		t.Helper()
+		command := newBranchArchiveTargetCmd()
+		var out bytes.Buffer
+		command.SetOut(&out)
+		command.SetArgs([]string{"--repo", "sneat-co/app", "--format", format})
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	jsonRaw := execute("json")
+	yamlRaw := execute("yaml")
+	var want, got any
+	if err := json.Unmarshal(jsonRaw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(yamlRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("archive-target YAML differs from JSON\nwant=%#v\ngot=%#v", want, got)
 	}
 }
 

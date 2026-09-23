@@ -27,6 +27,7 @@ func newBranchCmd() *cobra.Command {
 	command.AddCommand(newBranchCountCmd())
 	command.AddCommand(newBranchCleanupCmd())
 	command.AddCommand(newBranchQuarantineCmd())
+	command.AddCommand(newBranchArchiveTargetCmd())
 	return command
 }
 
@@ -415,7 +416,11 @@ func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {
 // yaml.v3 does not use json tags, so marshal through JSON rather than allowing
 // generatedat-style YAML keys to drift from the JSON API.
 func yamlCompatibleBranchList(outcome worktrees.BranchListOutcome) ([]byte, error) {
-	data, err := json.Marshal(outcome)
+	return yamlCompatibleJSON(outcome)
+}
+
+func yamlCompatibleJSON(value any) ([]byte, error) {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
