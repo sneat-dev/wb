@@ -308,7 +308,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
 	command.Flags().BoolVar(&options.temporarilyUnarchive, "temporarily-unarchive", false, "allow a safe archived repository to be temporarily unarchived and restored")
 	command.Flags().BoolVar(&options.migratePagesSource, "migrate-pages-source", false, "migrate or verify a supported legacy GitHub Pages source transition")
-	command.Flags().BoolVar(&options.rewriteWorkflowTriggers, "rewrite-workflow-triggers", false, "rewrite only supported multiline workflow branch trigger scalars before a default-branch rename")
+	command.Flags().BoolVar(&options.rewriteWorkflowTriggers, "rewrite-workflow-triggers", false, "rewrite only supported plain workflow branch trigger scalars before a default-branch rename")
 	command.Flags().StringVar(&options.restoreArchiveFrom, "restore-archive-from", "", "restore archival only from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.restoreArchiveSHA256, "restore-archive-sha256", "", "required SHA-256 of the exact --restore-archive-from report bytes")
 	addJSONFormatFlags(command, &options.json)
@@ -1308,14 +1308,35 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 	return regexp.MustCompile(`(?mi)(^|[^[:alnum:]_.-])` + escaped + `($|[^[:alnum:]_.-])`).MatchString(contents)
 }
 
+// workflowReferencesRepositoryDefaultBranch retains the conservative reference
+// check, except for an exact ref segment in a raw.githubusercontent.com URL
+// belonging to another repository. That URL cannot be changed by renaming this
+// repository's default branch and is deliberately left byte-for-byte intact.
+func workflowReferencesRepositoryDefaultBranch(contents, branch, repository string) bool {
+	masked := []byte(contents)
+	for _, match := range rawGitHubContentURL.FindAllStringSubmatchIndex(contents, -1) {
+		owner, name, ref := contents[match[2]:match[3]], contents[match[4]:match[5]], contents[match[6]:match[7]]
+		if ref != branch || strings.EqualFold(owner+"/"+name, repository) {
+			continue
+		}
+		for i := match[6]; i < match[7]; i++ {
+			masked[i] = '_'
+		}
+	}
+	return workflowReferencesDefaultBranch(string(masked), branch)
+}
+
+var rawGitHubContentURL = regexp.MustCompile(`https://raw\.githubusercontent\.com/([[:alnum:]_.-]+)/([[:alnum:]_.-]+)/([[:alnum:]_.-]+)/`)
+
 // rewriteWorkflowBranchTriggers accepts only plain scalar list members under
 // on.<push|pull_request>.branches. It deliberately refuses every other old
 // branch token, including comments, URLs, action refs, expressions, anchors,
-// aliases and flow-style lists. Splitting with After preserves the original
+// aliases. It also accepts a fully plain flow-style list under the same two
+// trigger nodes. Splitting with After preserves the original
 // line terminators and every byte outside the scalar token.
 func rewriteWorkflowBranchTriggers(contents, old, desired string) (string, bool) {
 	lines := strings.SplitAfter(contents, "\n")
-	onIndent, eventIndent, branchesIndent := -1, -1, -1
+	onIndent, eventIndent, eventChildIndent, branchesIndent := -1, -1, -1, -1
 	changed := false
 	for i, raw := range lines {
 		line, ending := raw, ""
@@ -1328,46 +1349,129 @@ func rewriteWorkflowBranchTriggers(contents, old, desired string) (string, bool)
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 		trim := strings.TrimSpace(line)
 		if indent == 0 && trim == "on:" {
-			onIndent, eventIndent, branchesIndent = indent, -1, -1
+			onIndent, eventIndent, eventChildIndent, branchesIndent = indent, -1, -1, -1
 			continue
 		}
 		if onIndent < 0 {
 			continue
 		}
 		if indent <= onIndent && trim != "" {
-			onIndent, eventIndent, branchesIndent = -1, -1, -1
+			onIndent, eventIndent, eventChildIndent, branchesIndent = -1, -1, -1, -1
 			continue
 		}
 		if eventIndent >= 0 && indent <= eventIndent && trim != "" {
-			eventIndent, branchesIndent = -1, -1
+			eventIndent, eventChildIndent, branchesIndent = -1, -1, -1
 		}
 		if eventIndent < 0 && indent > onIndent && (trim == "push:" || trim == "pull_request:") {
-			eventIndent = indent
+			eventIndent, eventChildIndent = indent, -1
 			continue
 		}
 		if eventIndent < 0 {
 			continue
 		}
-		if branchesIndent >= 0 && indent <= branchesIndent && trim != "" {
-			branchesIndent = -1
+		if branchesIndent >= 0 {
+			if indent <= branchesIndent && trim != "" {
+				branchesIndent = -1
+			} else if indent > branchesIndent {
+				prefix := line[:indent]
+				if strings.TrimSpace(line) == "- "+old || strings.TrimSpace(line) == "-"+old {
+					middle := strings.TrimLeft(line[indent:], " \t")
+					if strings.HasPrefix(middle, "- ") {
+						lines[i] = prefix + "- " + desired + ending
+						changed = true
+					}
+				}
+				continue
+			}
 		}
-		if branchesIndent < 0 && indent > eventIndent && trim == "branches:" {
-			branchesIndent = indent
+		if eventChildIndent < 0 && indent > eventIndent && trim != "" {
+			eventChildIndent = indent
+		}
+		if indent != eventChildIndent {
 			continue
 		}
-		if branchesIndent < 0 || indent <= branchesIndent {
-			continue
-		}
-		prefix := line[:indent]
-		if strings.TrimSpace(line) == "- "+old || strings.TrimSpace(line) == "-"+old {
-			middle := strings.TrimLeft(line[indent:], " \t")
-			if strings.HasPrefix(middle, "- ") {
-				lines[i] = prefix + "- " + desired + ending
+		if branchesIndent < 0 {
+			if trim == "branches:" {
+				branchesIndent = indent
+				continue
+			}
+			if rewritten, replaced := rewriteWorkflowFlowBranchList(line, indent, old, desired); replaced {
+				lines[i] = rewritten + ending
 				changed = true
+				continue
 			}
 		}
 	}
 	return strings.Join(lines, ""), changed
+}
+
+// rewriteWorkflowFlowBranchList changes one exact plain scalar in
+// "branches: [ ... ]". It rejects comments, quotes, YAML decorations, and
+// expressions by accepting only a complete list of unquoted branch scalars.
+func rewriteWorkflowFlowBranchList(line string, indent int, old, desired string) (string, bool) {
+	trim := strings.TrimSpace(line)
+	if !strings.HasPrefix(trim, "branches:") {
+		return line, false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(trim, "branches:"))
+	if len(value) < 2 || value[0] != '[' || value[len(value)-1] != ']' {
+		return line, false
+	}
+	items := value[1 : len(value)-1]
+	if items == "" || strings.ContainsAny(items, "#'\"&*!${}[]") {
+		return line, false
+	}
+	valueStart := strings.Index(line[indent:], "[")
+	if valueStart < 0 {
+		return line, false
+	}
+	valueStart += indent + 1
+	for offset, remaining := 0, items; ; {
+		item := remaining
+		if comma := strings.IndexByte(remaining, ','); comma >= 0 {
+			item = remaining[:comma]
+		}
+		scalar := strings.TrimSpace(item)
+		if !workflowPlainFlowBranchScalar(scalar) {
+			return line, false
+		}
+		if scalar == old {
+			itemStart := valueStart + offset
+			leading := len(item) - len(strings.TrimLeft(item, " \t"))
+			scalarEnd := itemStart + leading + len(scalar)
+			return line[:itemStart+leading] + desired + line[scalarEnd:], true
+		}
+		comma := strings.IndexByte(remaining, ',')
+		if comma < 0 {
+			break
+		}
+		offset += comma + 1
+		remaining = remaining[comma+1:]
+	}
+	return line, false
+}
+
+func workflowPlainFlowBranchScalar(value string) bool {
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch lower {
+	case "true", "false", "null", "~", "yes", "no", "on", "off", ".nan", ".inf", "-.inf", "+.inf":
+		return false
+	}
+	hasLetter := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasLetter = true
+			continue
+		}
+		if (r >= '0' && r <= '9') || strings.ContainsRune("._/-", r) {
+			continue
+		}
+		return false
+	}
+	return hasLetter
 }
 
 func inspectDefaultBranchWorkflows(ctx context.Context, result *defaultBranchRepository, old, desired string) error {
@@ -1409,7 +1513,7 @@ func inspectDefaultBranchWorkflows(ctx context.Context, result *defaultBranchRep
 			return fmt.Errorf("decode workflow %s content: %w", entry.Path, err)
 		}
 		rewritten, changed := rewriteWorkflowBranchTriggers(string(contents), old, desired)
-		if workflowReferencesDefaultBranch(rewritten, old) {
+		if workflowReferencesRepositoryDefaultBranch(rewritten, old, result.Repository) {
 			result.Impacts = append(result.Impacts, "workflow old-branch reference: "+entry.Path)
 			return fmt.Errorf("workflow %s has an unsupported reference to %q; WB will not rewrite it", entry.Path, old)
 		}
@@ -1462,7 +1566,7 @@ func verifyDefaultBranchWorkflowBytes(ctx context.Context, repository, branch, o
 		if defaultBranchDigest(contents) != plannedFile.SHA256After {
 			return fmt.Errorf("workflow %s bytes differ from the planned replacement", plannedFile.Path)
 		}
-		if workflowReferencesDefaultBranch(string(contents), old) {
+		if workflowReferencesRepositoryDefaultBranch(string(contents), old, repository) {
 			return fmt.Errorf("workflow %s still references %q after commit", plannedFile.Path, old)
 		}
 	}
