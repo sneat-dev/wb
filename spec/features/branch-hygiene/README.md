@@ -154,18 +154,20 @@ receipt. Remote quarantine is refused until equivalent remote peer proof and
 leased mutation exist.
 
 This local-only command does not retire worktrees, Work Logs, or remote refs.
-The remote-retirement follow-up will persist original path/ref/SHA, pull-request
-state, operator reason, and WB receipts in a recovery manifest. Its archive
-target is a user-only WB configuration in `~/.config/wb/worktrees.yaml` (or
+`wb worktree retire <task> --apply` persists original path/ref/SHA and WB
+receipts in a recovery manifest. Its archive target is a user-only WB
+configuration in `~/.config/wb/worktrees.yaml` (or
 `$XDG_CONFIG_HOME/wb/worktrees.yaml`): `retirement.archive_repository` selects
 the per-organization basename, defaulting to `backstage-retired`, and
 `retirement.organizations.<owner>.archive_repository` overrides it for one
 owner. Thus `sneat-co` resolves to `sneat-co/backstage-retired` by default.
-Repository-tracked `.wb/worktrees.yaml` MUST NOT select this target. Before
-`wb worktree cleanup`, that follow-up must archive worktree metadata and Work
-Log pointers there and verify the archive commit reached its remote. A future
-full-log export requires separate explicit authorization for an encrypted,
-sealed payload and declared retention; local exact retention remains mandatory.
+Repository-tracked `.wb/worktrees.yaml` MUST NOT select this target. Retirement
+commits tracked and nonignored untracked source changes on the original branch
+with hooks, publishes that exact commit at a deterministic `retired/*` source
+ref, and pushes the plain actual Work Log files and checkout metadata into the
+configured private retirement repository. It verifies both remote refs before
+deleting the original branch with an exact SHA lease and removing the local
+checkout and branch. Local exact Work Log retention remains mandatory.
 Backstage carries only a summary and index, never raw logs. A preflight must
 confirm that the exact configured target exists and is private. A public,
 missing, mismatched, or unavailable target fails closed; there is no
@@ -179,12 +181,27 @@ has no apply flag and performs no branch, worktree, or Work Log mutation.
 
 WB MUST expose an internal read-only retirement preflight that resolves the
 user-only target and inspects its exact remote repository visibility before any
-future remote ref rename, Work Log export, or worktree deletion. Its result
+remote ref creation, Work Log export, or worktree deletion. Its result
 MUST preserve local quarantine and report those operations as unperformed. It
 MUST refuse a public, missing, mismatched, or unavailable target without
 including remote transport errors or credentials in output. `wb branch
 archive-target` exposes this preflight; `wb branch quarantine` remains
 local-only.
+
+#### REQ: guarded-worktree-retirement
+
+`wb worktree retire <task>` MUST plan without mutation by default. Apply MUST
+hold the task lock and refuse a competing live claim, an open pull request,
+a changed source or remote ref, a secret-looking source commit path, or a
+missing, public, mismatched, or unavailable private archive target. It MUST
+commit tracked and nonignored untracked source changes on the original branch
+with hooks enabled, create the deterministic retired source ref, and commit
+actual plain Work Log and checkout metadata files to the configured private
+retirement repository. The archive MUST exclude source checkout code files.
+WB MUST verify both remote refs and the archive file digests before deleting
+the original remote ref with an exact SHA lease. It MUST then remove the local
+worktree and branch while retaining the retired source ref. An interrupted
+apply MUST resume from its durable receipt and recheck remote identities.
 
 `wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,

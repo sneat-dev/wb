@@ -360,7 +360,8 @@ Portable merger-agent adapters, plan-overlap and migration-scope detection,
 hourly/target-change refresh notification, distributed Synchestra fencing, and
 Git-repository communication fallback are planned. So are the full `worktree
 log` init/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
-group and authorized encrypted private-prompt export. The current WB CLI does
+group. `wb worktree retire` separately archives plain Work Log files in a
+configured private organization repository. The current WB CLI does
 not implement or advertise those mutating coordination verbs.
 `wb worktree info` is the safe redacted inspect surface (identity, digests,
 Git state). `wb worktree log` is the shipped read-only agent bootstrap dump of
