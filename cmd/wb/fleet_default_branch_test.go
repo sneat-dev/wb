@@ -2389,19 +2389,39 @@ func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
 	}
 }
 
-func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
+func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
 	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
 	archived, branch := true, "master"
+	old, child := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	head, workflowDone, renameFailed := old, false, false
 	mutations := []string{}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
 			return []byte(fmt.Sprintf(`{"id":77,"default_branch":%q,"archived":%t}`, branch, archived)), nil
-		case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
-			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
-		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+		case "repos/acme/app/branches/master":
+			if branch == "main" {
+				return nil, errors.New("HTTP 404")
+			}
+			return []byte(fmt.Sprintf(`{"commit":{"sha":%q}}`, head)), nil
+		case "repos/acme/app/branches/main":
+			if branch != "main" {
+				return nil, errors.New("HTTP 404")
+			}
+			return []byte(fmt.Sprintf(`{"commit":{"sha":%q}}`, head)), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster":
 			return []byte(`[]`), nil
+		case "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[{"path":".github/workflows/ci.yml","sha":"blob","type":"file"}]`), nil
+		case "repos/acme/app/git/blobs/blob":
+			contents := "name: remaster check\non:\n  push:\n    branches:\n      - master\n"
+			if workflowDone {
+				contents = "name: remaster check\non:\n  push:\n    branches:\n      - main\n"
+			}
+			return []byte(fmt.Sprintf(`{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte(contents)))), nil
+		case "repos/acme/app/commits/" + child:
+			return []byte(fmt.Sprintf(`{"parents":[{"sha":%q}]}`, old)), nil
 		default:
 			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
 				return nil, errors.New("HTTP 404")
@@ -2418,7 +2438,13 @@ func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
 		switch mutation {
 		case "api --method PATCH repos/acme/app -f archived=false":
 			archived = false
-		case "api --method PATCH repos/acme/app -f default_branch=main":
+		case "api graphql -f query=" + defaultBranchWorkflowMutation + " -F branch[repositoryNameWithOwner]=acme/app -F branch[branchName]=master -F expected=" + old + " -F message[headline]=chore: update default-branch workflow triggers -F additions[][path]=.github/workflows/ci.yml -F additions[][contents]=" + base64.StdEncoding.EncodeToString([]byte("name: remaster check\non:\n  push:\n    branches:\n      - main\n")):
+			workflowDone, head = true, child
+			return githubobserver.CommandResponse{Stdout: []byte(fmt.Sprintf(`{"data":{"createCommitOnBranch":{"commit":{"oid":%q}}}}`, child))}
+		case "api --method POST repos/acme/app/branches/master/rename -f new_name=main":
+			if renameFailed {
+				return githubobserver.CommandResponse{Err: errors.New("rename rejected")}
+			}
 			branch = "main"
 		case "api --method PATCH repos/acme/app -f archived=true":
 			archived = true
@@ -2427,10 +2453,20 @@ func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
 		}
 		return githubobserver.CommandResponse{}
 	}
-	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NewHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TargetExists: true, Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: old, Disposition: "drift", WorkflowFiles: []defaultBranchWorkflow{{Path: ".github/workflows/ci.yml"}}, Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: old, Phase: "prepared"}}
 	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
-	if !archived || branch != "main" || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || len(mutations) != 3 {
-		t.Fatalf("same-head archived migration = %#v mutations=%v", result, mutations)
+	if !archived || branch != "main" || !workflowDone || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != child || len(mutations) != 4 {
+		t.Fatalf("archived workflow migration = %#v mutations=%v", result, mutations)
+	}
+	if !strings.Contains(mutations[1], "createCommitOnBranch") || !strings.Contains(mutations[2], "/branches/master/rename") || !strings.Contains(mutations[3], "archived=true") {
+		t.Fatalf("wrong archived workflow order: %v", mutations)
+	}
+	renameFailed, archived, branch = true, true, "master"
+	head, workflowDone, mutations = old, false, nil
+	repository.Archive = &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: old, Phase: "prepared"}
+	result = applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if !archived || !workflowDone || result.Archive.Phase != "restored" || result.Disposition != "error" || len(mutations) != 4 || !strings.Contains(mutations[3], "archived=true") {
+		t.Fatalf("failed post-workflow rename did not restore archive: %#v mutations=%v", result, mutations)
 	}
 }
 

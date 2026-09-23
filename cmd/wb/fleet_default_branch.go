@@ -1694,6 +1694,11 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo defaultBranchReposit
 	expectedDefault, expectedHead := transition.InitialDefault, transition.InitialHead
 	if transition.FinalHead != "" {
 		expectedDefault, expectedHead = repo.Desired, transition.FinalHead
+	} else if repo.WorkflowCommit != "" {
+		// A workflow commit may have succeeded before the subsequent branch
+		// rename failed. Restore archival at that verified child head on the
+		// original default; restore-only never rolls back the workflow commit.
+		expectedHead = repo.WorkflowCommit
 	}
 	if metadataErr != nil || metadata.ID != transition.RepositoryID || !metadata.Archived || metadata.DefaultBranch != expectedDefault {
 		transition.Phase, transition.RecoveryRequired = "failed", true
