@@ -1,11 +1,11 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Approved
 ---
 
 # Idea: Quality diff and thresholds
 
-**Status:** Draft
+**Status:** Approved
 **Date:** 2026-07-21
 **Owner:** alex
 **Promotes To:** —
