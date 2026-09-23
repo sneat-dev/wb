@@ -8,6 +8,7 @@ require (
 	charm.land/fang/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
 	connectrpc.com/connect v1.20.0
+	filippo.io/age v1.2.1
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/dal-go/dalgo v0.80.0
@@ -63,6 +64,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zclconf/go-cty v1.16.3 // indirect
 	go.starlark.net v0.0.0-20260708150628-5395d018f003 // indirect
+	golang.org/x/crypto v0.38.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
