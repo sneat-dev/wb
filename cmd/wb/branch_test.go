@@ -122,6 +122,17 @@ func TestBranchCountDoesNotRenderAnUnavailableRemoteRetiredInventoryAsZero(t *te
 	}
 }
 
+func TestPrintBranchDiagnosticsUsesSeparateStream(t *testing.T) {
+	var diagnostics bytes.Buffer
+	if err := printBranchDiagnostics(&diagnostics, []string{"retired namespace inventory skipped fetch of origin/main", "acme/app: retired remote refs: unavailable"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "diagnostic: retired namespace inventory skipped fetch of origin/main\ndiagnostic: acme/app: retired remote refs: unavailable\n"
+	if diagnostics.String() != want {
+		t.Fatalf("diagnostics = %q, want %q", diagnostics.String(), want)
+	}
+}
+
 func TestYAMLBranchListSemanticallyMatchesJSON(t *testing.T) {
 	outcome := worktrees.BranchListOutcome{Org: "acme", RetiredBranches: 1, RetiredRefs: map[string]int{"local": 1}, Entries: []worktrees.BranchEntry{{Repository: "acme/app", Branch: "retired/example", Author: "Alex", Title: "old work"}}}
 	raw, err := yamlCompatibleBranchList(outcome)

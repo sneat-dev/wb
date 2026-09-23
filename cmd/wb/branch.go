@@ -44,7 +44,10 @@ func newBranchCountCmd() *cobra.Command {
 			}
 			switch format {
 			case "text":
-				return printBranchCount(command.OutOrStdout(), outcome)
+				if err := printBranchCount(command.OutOrStdout(), outcome); err != nil {
+					return err
+				}
+				return printBranchDiagnostics(command.ErrOrStderr(), outcome.Diagnostics)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -175,7 +178,10 @@ reserved for the report.`,
 			}
 			switch format {
 			case "text":
-				return printBranchList(command, outcome)
+				if err := printBranchList(command, outcome); err != nil {
+					return err
+				}
+				return printBranchDiagnostics(command.ErrOrStderr(), outcome.Diagnostics)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -384,6 +390,15 @@ func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error 
 	}
 	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %s remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
 	return err
+}
+
+func printBranchDiagnostics(out io.Writer, diagnostics []string) error {
+	for _, diagnostic := range diagnostics {
+		if _, err := fmt.Fprintf(out, "diagnostic: %s\n", diagnostic); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {

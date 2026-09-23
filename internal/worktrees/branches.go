@@ -290,9 +290,6 @@ func retiredNamespaceSelected(sweep branchSweepOptions) bool {
 	if sweep.Only == BranchRetired {
 		return true
 	}
-	if sweep.Only != "" {
-		return false
-	}
 	return strings.HasPrefix(sweep.Branch, "retired/") || strings.HasPrefix(sweep.Name, "retired/")
 }
 
@@ -310,11 +307,27 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	retiredNames := map[string]bool{}
 	retiredRemoteUnavailable := false
 	diagnostics := []string{fmt.Sprintf("retired namespace inventory skipped fetch of origin/%s", sweep.Base)}
+	selected := make([]discover.Repo, 0, len(repositories))
 	for _, repository := range repositories {
 		owner, _, _ := strings.Cut(repository.Slug(), "/")
 		if (sweep.Repository != "" && repository.Slug() != sweep.Repository) || (sweep.Org != "" && owner != sweep.Org) {
 			continue
 		}
+		selected = append(selected, repository)
+	}
+	if sweep.Repository != "" && len(selected) == 0 {
+		return BranchListOutcome{}, fmt.Errorf("selected repository %q was not discovered", sweep.Repository)
+	}
+	if sweep.Only != "" && sweep.Only != BranchRetired {
+		diagnostics = append(diagnostics, fmt.Sprintf("retired namespace cannot match --only %s", sweep.Only))
+		return BranchListOutcome{
+			Host: branchEvidenceHost(), GeneratedAt: generatedAt, Repository: sweep.Repository, Org: sweep.Org, Branch: sweep.Branch,
+			Base: sweep.Base, Scope: sweep.Scope, Entries: entries, Diagnostics: diagnostics,
+			Totals: tallyDispositions(entries), RetiredRefs: retiredRefs, ElapsedMS: time.Since(generatedAt).Milliseconds(),
+		}, nil
+	}
+	for index, repository := range selected {
+		reportBranchProgress(sweep.Progress, index+1, len(selected), repository.Slug())
 		if sweep.Scope == BranchScopeLocal || sweep.Scope == BranchScopeAll {
 			refs, diagnostic := listRefs(ctx, repository.Path, "refs/heads/retired/", "")
 			if diagnostic != "" {
@@ -334,6 +347,7 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 		}
 	}
 	sortBranchEntries(entries)
+	reportBranchSummary(sweep.Progress, tallyDispositions(entries), time.Since(generatedAt))
 	return BranchListOutcome{
 		Host: branchEvidenceHost(), GeneratedAt: generatedAt, Repository: sweep.Repository, Org: sweep.Org, Branch: sweep.Branch,
 		Base: sweep.Base, Scope: sweep.Scope, Entries: entries, Diagnostics: diagnostics,
