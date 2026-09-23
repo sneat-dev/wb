@@ -46,10 +46,10 @@ retirement:
 
 func TestRepositoryTrackedRetirementPolicyIsRejected(t *testing.T) {
 	fixture := newGitFixture(t)
-	canonical, base := synchronizedBranchConfigBase(t, fixture)
+	canonical, _ := synchronizedBranchConfigBase(t, fixture)
 	defer canonical.close()
 	commitRepositoryBranchConfig(t, fixture, "version: 1\nretirement:\n  archive_repository: hostile\n", "hostile archive policy")
-	base = synchronizedBranchConfigBaseValue(t, fixture, canonical)
+	base := synchronizedBranchConfigBaseValue(t, fixture, canonical)
 	userConfigPath, pathErr := defaultWorktreesConfigPath()
 	if pathErr != nil {
 		t.Fatal(pathErr)
