@@ -110,6 +110,125 @@ func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismat
 	}
 }
 
+func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/"}}`), nil
+		case "repos/acme/app/git/ref/heads/master":
+			return nil, errors.New("HTTP 404")
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutated := false
+	defaultBranchExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "same", Disposition: "compliant", PagesBefore: &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "prepared"}
+	got := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(defaultBranchRepository) error { return nil })
+	if got.Disposition != "compliant" || got.PagesPhase != "verified" || got.PagesAfter == nil || mutated {
+		t.Fatalf("got=%#v mutated=%t", got, mutated)
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/"}}`), nil
+		case "repos/acme/app/git/ref/heads/master":
+			return []byte(`{"ref":"refs/heads/master"}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	got = applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
+	if got.Disposition != "error" || !strings.Contains(got.Error, "old master ref still exists") || got.PagesPhase == "verified" || mutated {
+		t.Fatalf("present old ref accepted: %#v mutated=%t", got, mutated)
+	}
+	repo.ObservedDefault = "release"
+	repo.PagesBefore.Branch = "release"
+	got = applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
+	if got.Disposition != "error" || got.PagesPhase == "verified" || mutated {
+		t.Fatalf("foreign source accepted as automatic transition: %#v mutated=%t", got, mutated)
+	}
+}
+
+func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *testing.T) {
+	originalRead := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = originalRead })
+	sha := "04188cc2ba6c039f3b6eb65b429c3b7e1810f2bd"
+	previous := defaultBranchRepository{
+		Repository: "RxStore/rxstore.github.io", RepositoryID: 209892346,
+		ObservedDefault: "master", VerifiedDefault: "main", Desired: "main",
+		OldHead: sha, NewHead: sha, Disposition: "error",
+		Error:          "Pages source changed after planning; WB will not overwrite it",
+		RenameAccepted: true, PagesBefore: &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"},
+		PagesPhase: "prepared", Actions: []string{"renamed master to main", "verified default branch and head"},
+	}
+	prior := &defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{previous}}
+	current := defaultBranchRepository{Repository: previous.Repository, RepositoryID: previous.RepositoryID, ObservedDefault: "main", Desired: "main", OldHead: sha, Disposition: "compliant"}
+	reads := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		reads++
+		switch endpoint {
+		case "repos/RxStore/rxstore.github.io/git/ref/heads/master":
+			return nil, errors.New("HTTP 404")
+		case "repos/RxStore/rxstore.github.io/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 2 {
+		t.Fatalf("automatic resume = %q %q %q reads=%d", source, head, reason, reads)
+	}
+	for name, mutate := range map[string]func(*defaultBranchRepository, *defaultBranchRepository){
+		"forged actions":          func(p, _ *defaultBranchRepository) { p.Actions[0] = "set default to main" },
+		"different repository ID": func(_, c *defaultBranchRepository) { c.RepositoryID++ },
+		"changed target head":     func(_, c *defaultBranchRepository) { c.OldHead = strings.Repeat("a", 40) },
+		"Pages write accepted":    func(p, _ *defaultBranchRepository) { p.PagesAccepted = true },
+		"target preexisted":       func(p, _ *defaultBranchRepository) { p.TargetExists = true },
+		"unsupported Pages path":  func(p, _ *defaultBranchRepository) { p.PagesBefore.Path = "/site" },
+		"different destination": func(p, c *defaultBranchRepository) {
+			p.Desired, p.VerifiedDefault, p.Actions[0] = "trunk", "trunk", "renamed master to trunk"
+			c.Desired, c.ObservedDefault = "trunk", "trunk"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyPrevious := previous
+			copyPrevious.Actions = append([]string(nil), previous.Actions...)
+			copyPages := *previous.PagesBefore
+			copyPrevious.PagesBefore = &copyPages
+			copyCurrent := current
+			mutate(&copyPrevious, &copyCurrent)
+			reads = 0
+			receipt := &defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{copyPrevious}}
+			if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), receipt, copyCurrent); source != "" || head != "" || reason == "" || reads != 0 {
+				t.Fatalf("forged automatic resume = %q %q %q reads=%d", source, head, reason, reads)
+			}
+		})
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.HasSuffix(endpoint, "/git/ref/heads/master") {
+			return nil, errors.New("HTTP 404")
+		}
+		return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/docs"}}`), nil
+	}
+	if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "Pages source") {
+		t.Fatalf("changed Pages path accepted: %q %q %q", source, head, reason)
+	}
+}
+
 func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t *testing.T) {
 	originalRead := defaultBranchRead
 	t.Cleanup(func() { defaultBranchRead = originalRead })

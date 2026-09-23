@@ -292,7 +292,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	command.Flags().StringVar(&options.reconcileFrom, "reconcile-from", "", "resume canonical-clone reconciliation from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
 	command.Flags().BoolVar(&options.temporarilyUnarchive, "temporarily-unarchive", false, "allow a safe archived repository to be temporarily unarchived and restored")
-	command.Flags().BoolVar(&options.migratePagesSource, "migrate-pages-source", false, "migrate a verified legacy GitHub Pages source after the default branch rename")
+	command.Flags().BoolVar(&options.migratePagesSource, "migrate-pages-source", false, "migrate or verify a supported legacy GitHub Pages source transition")
 	command.Flags().StringVar(&options.restoreArchiveFrom, "restore-archive-from", "", "restore archival only from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.restoreArchiveSHA256, "restore-archive-sha256", "", "required SHA-256 of the exact --restore-archive-from report bytes")
 	addJSONFormatFlags(command, &options.json)
@@ -426,7 +426,10 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 			if sourceDefault == "" && report.Repositories[i].Disposition == "compliant" && prior != nil {
 				sourceDefault, sourceHead, resumeReason = defaultBranchResumeSource(prior, report.Repositories[i])
 				if sourceDefault == "" {
-					legacySource, legacyHead, legacyReason := defaultBranchLegacyRenameResume(ctx, prior, report.Repositories[i])
+					legacySource, legacyHead, legacyReason := defaultBranchPagesAutomaticResume(ctx, prior, report.Repositories[i])
+					if legacySource == "" {
+						legacySource, legacyHead, legacyReason = defaultBranchLegacyRenameResume(ctx, prior, report.Repositories[i])
+					}
 					if legacySource != "" {
 						sourceDefault, sourceHead, resumeReason = legacySource, legacyHead, legacyReason
 						recordDefaultBranchLegacyRenameProof(&report.Repositories[i], legacySource, legacyHead, options.reconcileFrom, options.reconcileSHA256)
@@ -714,6 +717,38 @@ func defaultBranchLegacyRenameResume(ctx context.Context, prior *defaultBranchRe
 		return previous.ObservedDefault, previous.OldHead, ""
 	}
 	return "", "", "--reconcile-from has no applied migration record for this repository"
+}
+
+func defaultBranchPagesAutomaticResume(ctx context.Context, prior *defaultBranchReport, current defaultBranchRepository) (string, string, string) {
+	if prior == nil || prior.SchemaVersion != 1 || prior.Mode != "apply" || current.Disposition != "compliant" || current.Desired != "main" || current.ObservedDefault != current.Desired {
+		return "", "", "--reconcile-from does not contain a verified automatic Pages transition record"
+	}
+	for _, previous := range prior.Repositories {
+		if !strings.EqualFold(previous.Repository, current.Repository) {
+			continue
+		}
+		p := previous.PagesBefore
+		if previous.Disposition != "error" || previous.Error != "Pages source changed after planning; WB will not overwrite it" || !previous.RenameAccepted || previous.TargetExists || previous.VerifiedDefault != current.Desired || previous.NewHead != previous.OldHead || !validDefaultBranchCommit(previous.OldHead) || previous.OldHead != current.OldHead || previous.ObservedDefault != "master" || previous.Desired != current.Desired || previous.RepositoryID == 0 || previous.RepositoryID != current.RepositoryID || p == nil || p.BuildType != "legacy" || p.Branch != "master" || !validDefaultBranchPagesPath(p.Path) || previous.PagesPhase != "prepared" || previous.PagesAccepted || previous.PagesAfter != nil || !slicesEqual(previous.Actions, []string{"renamed master to " + current.Desired, "verified default branch and head"}) {
+			return "", "", "--reconcile-from does not contain the exact automatic Pages transition record"
+		}
+		_, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/git/ref/heads/master")
+		if err == nil {
+			return "", "", "--reconcile-from old source ref still exists; do not infer a completed rename"
+		}
+		if !isDefaultBranchNotFound(err) {
+			return "", "", "--reconcile-from could not prove the old source ref is absent: " + err.Error()
+		}
+		body, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/pages")
+		if err != nil {
+			return "", "", "--reconcile-from could not read Pages source: " + err.Error()
+		}
+		pages, err := decodeDefaultBranchPages(body)
+		if err != nil || pages.BuildType != "legacy" || pages.Branch != current.Desired || pages.Path != p.Path {
+			return "", "", "--reconcile-from Pages source does not prove the automatic transition"
+		}
+		return previous.ObservedDefault, previous.OldHead, ""
+	}
+	return "", "", "--reconcile-from has no automatic Pages transition record for this repository"
 }
 
 func defaultBranchLegacyRenamePendingRecord(previous defaultBranchRepository) bool {
@@ -1556,6 +1591,27 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo defaultBran
 		return repo
 	}
 	before, err := decodeDefaultBranchPages(body)
+	automatic := err == nil && repo.PagesPhase != "unfinished" && repo.ObservedDefault == "master" && repo.PagesBefore.Branch == "master" && repo.Desired == "main" && repo.PagesBefore.BuildType == "legacy" && before.BuildType == "legacy" && validDefaultBranchPagesPath(before.Path) && before.Path == repo.PagesBefore.Path && before.Branch == repo.Desired
+	if automatic {
+		_, oldRefErr := defaultBranchRead(ctx, "repos/"+repo.Repository+"/git/ref/heads/master")
+		if oldRefErr == nil {
+			repo.Disposition, repo.Error = "error", "old master ref still exists after Pages source transition"
+			return repo
+		}
+		if !isDefaultBranchNotFound(oldRefErr) {
+			repo.Disposition, repo.Error = "error", "could not prove old master ref is absent after Pages source transition: "+oldRefErr.Error()
+			return repo
+		}
+		repo.PagesAfter, repo.PagesPhase = &before, "verified"
+		repo.Disposition, repo.Error = "compliant", ""
+		repo.Actions = append(repo.Actions, "verified GitHub automatic Pages source transition to "+repo.Desired+" with path "+before.Path)
+		if checkpoint != nil {
+			if err := checkpoint(repo); err != nil {
+				repo.Disposition, repo.Error = "error", "persist verified automatic Pages transition: "+err.Error()
+			}
+		}
+		return repo
+	}
 	if err != nil || before != *repo.PagesBefore || before.BuildType != "legacy" || !validDefaultBranchPagesPath(before.Path) || (repo.PagesPhase == "unfinished" && before.Branch != "master") || (repo.PagesPhase != "unfinished" && before.Branch != repo.ObservedDefault) {
 		repo.Disposition = "error"
 		if err != nil {
