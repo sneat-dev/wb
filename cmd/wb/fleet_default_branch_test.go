@@ -1857,6 +1857,12 @@ func TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences(t *te
 	if workflowReferencesDefaultBranch("branches: [main]\n", "master") {
 		t.Fatal("unrelated branch was reported")
 	}
+	if workflowReferencesRepositoryDefaultBranch("run: curl https://raw.githubusercontent.com/golang/dep/master/install.sh\n", "master", "sneat-co/mockingo") {
+		t.Fatal("external raw GitHub content URL was reported")
+	}
+	if !workflowReferencesRepositoryDefaultBranch("run: curl https://raw.githubusercontent.com/sneat-co/mockingo/master/install.sh\n", "master", "sneat-co/mockingo") {
+		t.Fatal("same-repository raw GitHub content URL was missed")
+	}
 }
 
 func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
@@ -1870,8 +1876,24 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 	if got, changed := rewriteWorkflowBranchTriggers(crlf, "master", "main"); !changed || got != "on:\r\n  push:\r\n    branches:\r\n      - main\r\n" {
 		t.Fatalf("CRLF rewrite changed line endings: %q", got)
 	}
+	flowBefore := "on:\n  push:\n    branches: [ release, master ]\n  pull_request:\n    branches: [master]\n"
+	flowAfter := "on:\n  push:\n    branches: [ release, main ]\n  pull_request:\n    branches: [main]\n"
+	if got, changed := rewriteWorkflowBranchTriggers(flowBefore, "master", "main"); !changed || got != flowAfter {
+		t.Fatalf("flow-list rewrite changed=%t\ngot=%q\nwant=%q", changed, got, flowAfter)
+	}
+	duplicates := "on:\n  push:\n    branches: [master, master]\n"
+	if got, changed := rewriteWorkflowBranchTriggers(duplicates, "master", "main"); !changed || got != "on:\n  push:\n    branches: [main, main]\n" {
+		t.Fatalf("duplicate flow-list rewrite changed=%t got=%q", changed, got)
+	}
 	for _, unsupported := range []string{
-		"on:\n  push:\n    branches: [master]\n",
+		"on:\n  push:\n    branches: [master] # comment\n",
+		"on:\n  push:\n    branches: ['master']\n",
+		"on:\n  push:\n    branches: [${{ github.ref }}]\n",
+		"on:\n  push:\n    branches: [&old master]\n",
+		"on:\n  push:\n    branches: [master, \"quoted\"]\n",
+		"on:\n  push:\n    branches: [true, master]\n",
+		"on:\n  push:\n    branches: [123, master]\n",
+		"on:\n  push:\n    filters: &f\n      branches: [master]\n",
 		"on:\n  push:\n    branches:\n      - 'master'\n",
 		"uses: acme/action@master\n",
 		"ref: master\n",
@@ -2415,9 +2437,9 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 		case "repos/acme/app/contents/.github/workflows?ref=master":
 			return []byte(`[{"path":".github/workflows/ci.yml","sha":"blob","type":"file"}]`), nil
 		case "repos/acme/app/git/blobs/blob":
-			contents := "name: remaster check\non:\n  push:\n    branches:\n      - master\n"
+			contents := "name: remaster check\non:\n  push:\n    branches: [ master ]\n  pull_request:\n    branches: [master]\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl https://raw.githubusercontent.com/golang/dep/master/install.sh\n"
 			if workflowDone {
-				contents = "name: remaster check\non:\n  push:\n    branches:\n      - main\n"
+				contents = "name: remaster check\non:\n  push:\n    branches: [ main ]\n  pull_request:\n    branches: [main]\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl https://raw.githubusercontent.com/golang/dep/master/install.sh\n"
 			}
 			return []byte(fmt.Sprintf(`{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte(contents)))), nil
 		case "repos/acme/app/commits/" + child:
@@ -2438,7 +2460,7 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 		switch mutation {
 		case "api --method PATCH repos/acme/app -f archived=false":
 			archived = false
-		case "api graphql -f query=" + defaultBranchWorkflowMutation + " -F branch[repositoryNameWithOwner]=acme/app -F branch[branchName]=master -F expected=" + old + " -F message[headline]=chore: update default-branch workflow triggers -F additions[][path]=.github/workflows/ci.yml -F additions[][contents]=" + base64.StdEncoding.EncodeToString([]byte("name: remaster check\non:\n  push:\n    branches:\n      - main\n")):
+		case "api graphql -f query=" + defaultBranchWorkflowMutation + " -F branch[repositoryNameWithOwner]=acme/app -F branch[branchName]=master -F expected=" + old + " -F message[headline]=chore: update default-branch workflow triggers -F additions[][path]=.github/workflows/ci.yml -F additions[][contents]=" + base64.StdEncoding.EncodeToString([]byte("name: remaster check\non:\n  push:\n    branches: [ main ]\n  pull_request:\n    branches: [main]\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl https://raw.githubusercontent.com/golang/dep/master/install.sh\n")):
 			workflowDone, head = true, child
 			return githubobserver.CommandResponse{Stdout: []byte(fmt.Sprintf(`{"data":{"createCommitOnBranch":{"commit":{"oid":%q}}}}`, child))}
 		case "api --method POST repos/acme/app/branches/master/rename -f new_name=main":
