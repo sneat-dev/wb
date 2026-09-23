@@ -401,7 +401,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 					if err := persistDefaultBranchReport(report); err != nil {
 						return report, err
 					}
-					if report.Repositories[i].Disposition == "compliant" {
+					if report.Repositories[i].Disposition == "drift" {
 						if _, err := fmt.Fprintf(progress, "default-branch: applied %s\n", report.Repositories[i].Repository); err != nil {
 							return report, err
 						}
@@ -1108,18 +1108,6 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 	result.OldHead = oldRef
 	if meta.DefaultBranch == desired {
 		result.NewHead = oldRef
-		if rewriteWorkflows {
-			if err := inspectDefaultBranchWorkflows(ctx, &result, meta.DefaultBranch, desired); err != nil {
-				result.Disposition, result.Error = "blocked", err.Error()
-				return result
-			}
-			if len(result.WorkflowFiles) > 0 {
-				result.Disposition = "drift"
-				result.WorkflowPhase = "unfinished"
-				result.Error = "default branch already matches desired branch, but supported workflow trigger migration remains unfinished"
-				return result
-			}
-		}
 		if migratePagesSource {
 			inspectDefaultBranchPagesAtDesired(ctx, &result, meta)
 			return result
@@ -1333,10 +1321,16 @@ func rewriteWorkflowBranchTriggers(contents, old, desired string) (string, bool)
 	onIndent, eventIndent, branchesIndent := -1, -1, -1
 	changed := false
 	for i, raw := range lines {
-		line := strings.TrimSuffix(raw, "\n")
+		line, ending := raw, ""
+		if strings.HasSuffix(line, "\n") {
+			line, ending = strings.TrimSuffix(line, "\n"), "\n"
+		}
+		if strings.HasSuffix(line, "\r") {
+			line, ending = strings.TrimSuffix(line, "\r"), "\r"+ending
+		}
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 		trim := strings.TrimSpace(line)
-		if trim == "on:" {
+		if indent == 0 && trim == "on:" {
 			onIndent, eventIndent, branchesIndent = indent, -1, -1
 			continue
 		}
@@ -1371,7 +1365,7 @@ func rewriteWorkflowBranchTriggers(contents, old, desired string) (string, bool)
 		if strings.TrimSpace(line) == "- "+old || strings.TrimSpace(line) == "-"+old {
 			middle := strings.TrimLeft(line[indent:], " \t")
 			if strings.HasPrefix(middle, "- ") {
-				lines[i] = prefix + "- " + desired + raw[len(line):]
+				lines[i] = prefix + "- " + desired + ending
 				changed = true
 			}
 		}
@@ -1429,6 +1423,55 @@ func inspectDefaultBranchWorkflows(ctx context.Context, result *defaultBranchRep
 	return nil
 }
 
+func verifyDefaultBranchWorkflowBytes(ctx context.Context, repository, branch, old string, planned []defaultBranchWorkflow) error {
+	listingBody, err := defaultBranchRead(ctx, "repos/"+repository+"/contents/.github/workflows?ref="+url.QueryEscape(branch))
+	if err != nil {
+		return fmt.Errorf("list workflows after commit: %w", err)
+	}
+	var listing []struct {
+		Path string `json:"path"`
+		SHA  string `json:"sha"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(listingBody, &listing); err != nil {
+		return fmt.Errorf("decode workflows after commit: %w", err)
+	}
+	byPath := map[string]string{}
+	for _, entry := range listing {
+		if entry.Type == "file" {
+			byPath[entry.Path] = entry.SHA
+		}
+	}
+	for _, plannedFile := range planned {
+		sha := byPath[plannedFile.Path]
+		if sha == "" {
+			return fmt.Errorf("workflow %s is missing after commit", plannedFile.Path)
+		}
+		blob, err := defaultBranchRead(ctx, "repos/"+repository+"/git/blobs/"+sha)
+		if err != nil {
+			return fmt.Errorf("read workflow %s after commit: %w", plannedFile.Path, err)
+		}
+		var value struct {
+			Content  string `json:"content"`
+			Encoding string `json:"encoding"`
+		}
+		if err := json.Unmarshal(blob, &value); err != nil || value.Encoding != "base64" {
+			return fmt.Errorf("decode workflow %s after commit", plannedFile.Path)
+		}
+		contents, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(value.Content, "\n", ""))
+		if err != nil {
+			return fmt.Errorf("decode workflow %s bytes after commit: %w", plannedFile.Path, err)
+		}
+		if defaultBranchDigest(contents) != plannedFile.SHA256After {
+			return fmt.Errorf("workflow %s bytes differ from the planned replacement", plannedFile.Path)
+		}
+		if workflowReferencesDefaultBranch(string(contents), old) {
+			return fmt.Errorf("workflow %s still references %q after commit", plannedFile.Path, old)
+		}
+	}
+	return nil
+}
+
 const defaultBranchWorkflowMutation = `mutation($branch: CommittableBranch!, $expected: GitObjectID!, $message: CommitMessage!, $additions: [FileAddition!]!) { createCommitOnBranch(input: {branch: $branch, expectedHeadOid: $expected, message: $message, fileChanges: {additions: $additions}}) { commit { oid } } }`
 
 // applyDefaultBranchWorkflowTriggers creates one CAS-protected commit before
@@ -1473,15 +1516,22 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo defaultBranchR
 			} `json:"createCommitOnBranch"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(response.Stdout, &payload)
+	decodeErr := json.Unmarshal(response.Stdout, &payload)
 	newHead, readErr := readDefaultBranchRef(ctx, repo.Repository, repo.ObservedDefault)
-	if readErr != nil || !validDefaultBranchCommit(newHead) || (payload.Data.CreateCommitOnBranch.Commit.OID != "" && payload.Data.CreateCommitOnBranch.Commit.OID != newHead) || newHead == repo.OldHead {
+	if readErr != nil || !validDefaultBranchCommit(newHead) || newHead == repo.OldHead {
 		repo.Disposition, repo.Error = "error", "workflow commit response did not produce a verified new source head"
 		return repo
 	}
-	verified := defaultBranchRepository{Repository: repo.Repository}
-	if err := inspectDefaultBranchWorkflows(ctx, &verified, repo.ObservedDefault, repo.Desired); err != nil || len(verified.WorkflowFiles) != 0 {
-		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove every replacement: "+fmt.Sprint(err)
+	if response.Err == nil && (decodeErr != nil || payload.Data.CreateCommitOnBranch.Commit.OID == "" || payload.Data.CreateCommitOnBranch.Commit.OID != newHead) {
+		repo.Disposition, repo.Error = "error", "workflow commit response lacks the exact created commit OID"
+		return repo
+	}
+	if err := verifyDefaultBranchWorkflowBytes(ctx, repo.Repository, repo.ObservedDefault, repo.ObservedDefault, fresh.WorkflowFiles); err != nil {
+		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove every replacement: "+err.Error()
+		return repo
+	}
+	if err := verifyDefaultBranchWorkflowCommitParent(ctx, repo.Repository, newHead, repo.OldHead); err != nil {
+		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove the expected parent: "+err.Error()
 		return repo
 	}
 	repo.OldHead, repo.NewHead, repo.WorkflowCommit, repo.WorkflowPhase, repo.Disposition, repo.Error = newHead, "", newHead, "verified", "drift", ""
@@ -1492,6 +1542,22 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo defaultBranchR
 		}
 	}
 	return repo
+}
+
+func verifyDefaultBranchWorkflowCommitParent(ctx context.Context, repository, commit, expectedParent string) error {
+	body, err := defaultBranchRead(ctx, "repos/"+repository+"/commits/"+commit)
+	if err != nil {
+		return fmt.Errorf("read new commit: %w", err)
+	}
+	var value struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := json.Unmarshal(body, &value); err != nil || len(value.Parents) != 1 || value.Parents[0].SHA != expectedParent {
+		return errors.New("new workflow commit is not a one-parent child of the planned source head")
+	}
+	return nil
 }
 
 // applyArchivedDefaultBranch permits one guarded temporary unarchive. Every

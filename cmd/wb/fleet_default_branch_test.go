@@ -1866,6 +1866,10 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 	if !changed || after != want {
 		t.Fatalf("changed=%t\\nafter=%q\\nwant=%q", changed, after, want)
 	}
+	crlf := "on:\r\n  push:\r\n    branches:\r\n      - master\r\n"
+	if got, changed := rewriteWorkflowBranchTriggers(crlf, "master", "main"); !changed || got != "on:\r\n  push:\r\n    branches:\r\n      - main\r\n" {
+		t.Fatalf("CRLF rewrite changed line endings: %q", got)
+	}
 	for _, unsupported := range []string{
 		"on:\n  push:\n    branches: [master]\n",
 		"on:\n  push:\n    branches:\n      - 'master'\n",
@@ -1873,6 +1877,7 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 		"ref: master\n",
 		"# master\n",
 		"url: https://example.invalid/master\n",
+		"jobs:\n  build:\n    steps:\n      - run: |\n          on:\n            push:\n              branches:\n                - master\n",
 	} {
 		if got, changed := rewriteWorkflowBranchTriggers(unsupported, "master", "main"); changed || got != unsupported {
 			t.Fatalf("unsupported shape was rewritten: %q => %q", unsupported, got)
@@ -1892,6 +1897,8 @@ func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testin
 			return []byte("{\"id\":1,\"default_branch\":\"master\"}"), nil
 		case "repos/acme/app/branches/master":
 			return []byte("{\"commit\":{\"sha\":\"" + head + "\"}}"), nil
+		case "repos/acme/app/commits/" + next:
+			return []byte("{\"parents\":[{\"sha\":\"" + old + "\"}]}"), nil
 		case "repos/acme/app/branches/main", "repos/acme/app/pages", "repos/acme/app/branches/master/protection":
 			return nil, errors.New("HTTP 404")
 		case "repos/acme/app/pulls?state=open&head=acme%3Amaster":
@@ -1928,6 +1935,25 @@ func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testin
 	got := applyDefaultBranchWorkflowTriggers(context.Background(), planned, func(defaultBranchRepository) error { return nil })
 	if mutations != 1 || got.Disposition != "drift" || got.WorkflowPhase != "verified" || got.WorkflowCommit != next || got.OldHead != next {
 		t.Fatalf("got=%#v mutations=%d", got, mutations)
+	}
+}
+
+func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
+	originalRead := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = originalRead })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte("{\"id\":1,\"default_branch\":\"main\"}"), nil
+		case "repos/acme/app/branches/main":
+			return []byte("{\"commit\":{\"sha\":\"same\"}}"), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	got := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
+	if got.Disposition != "compliant" || got.Error != "" {
+		t.Fatalf("already-main workflow rewrite = %#v", got)
 	}
 }
 
