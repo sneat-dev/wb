@@ -577,6 +577,24 @@ func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.
 	}
 }
 
+func TestOrdinaryRemoteInventoryMarksUnavailableRetiredTags(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.RetiredRemoteUnavailable {
+		t.Fatalf("remote tag failure was rendered as a known count: %#v", outcome)
+	}
+	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "count retired remote tags") {
+		t.Fatalf("remote tag diagnostic missing: %#v", outcome.Diagnostics)
+	}
+}
+
 func TestRetiredNamespaceRemoteInventoryFetchesOnlyRetiredRefs(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "retired/remote-only")

@@ -278,13 +278,13 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 	}
 	filtered := applyListDisplayFilters(entries, sweep)
 	totals := tallyDispositions(filtered)
-	retiredRefs, retiredBranches, retiredTags, retiredTagNames, retiredDiagnostics := countRetiredBranches(ctx, sweep)
+	retiredRefs, retiredBranches, retiredTags, retiredTagNames, retiredRemoteUnavailable, retiredDiagnostics := countRetiredBranches(ctx, sweep)
 	diagnostics = append(diagnostics, retiredDiagnostics...)
 	sortBranchEntries(filtered)
 	return BranchListOutcome{
 		Host: branchEvidenceHost(), GeneratedAt: started, Repository: options.Repository, Org: options.Org, Branch: options.Branch,
 		Base: options.Base, Scope: options.Scope, Entries: filtered,
-		Diagnostics: diagnostics, Totals: totals, RetiredRefs: retiredRefs, RetiredBranches: retiredBranches, RetiredTags: retiredTags, RetiredTagNames: retiredTagNames, ElapsedMS: time.Since(started).Milliseconds(),
+		Diagnostics: diagnostics, Totals: totals, RetiredRefs: retiredRefs, RetiredBranches: retiredBranches, RetiredTags: retiredTags, RetiredTagNames: retiredTagNames, RetiredRemoteUnavailable: retiredRemoteUnavailable, ElapsedMS: time.Since(started).Milliseconds(),
 	}, nil
 }
 
@@ -543,15 +543,16 @@ func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOption
 	return entries, diagnostics, paths, nil
 }
 
-func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[string]int, int, map[string]int, int, []string) {
+func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[string]int, int, map[string]int, int, bool, []string) {
 	repositories, err := discoverBranchRepositories(sweep.ProjectsRoot, sweep.Filter)
 	if err != nil {
-		return nil, 0, nil, 0, []string{fmt.Sprintf("count retired branches: discover repositories: %v", err)}
+		return nil, 0, nil, 0, false, []string{fmt.Sprintf("count retired branches: discover repositories: %v", err)}
 	}
 	names := map[string]bool{}
 	counts := map[string]int{}
 	tagNames := map[string]bool{}
 	tagCounts := map[string]int{}
+	retiredRemoteUnavailable := false
 	var diagnostics []string
 	for _, repository := range repositories {
 		owner, _, _ := strings.Cut(repository.Slug(), "/")
@@ -603,6 +604,7 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 			tags, diagnostic := listRetiredTags(ctx, repository.Path, true)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote tags: %s", repository.Slug(), diagnostic))
+				retiredRemoteUnavailable = true
 			}
 			for _, tag := range tags {
 				if retiredRefSelected(sweep, tag) {
@@ -612,7 +614,7 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 			}
 		}
 	}
-	return counts, len(names), tagCounts, len(tagNames), diagnostics
+	return counts, len(names), tagCounts, len(tagNames), retiredRemoteUnavailable, diagnostics
 }
 
 func retiredRefSelected(sweep branchSweepOptions, ref branchRef) bool {
