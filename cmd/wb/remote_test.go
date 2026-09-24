@@ -42,15 +42,77 @@ func remoteGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// disableBareRepoAutoMaintenance turns off gc.auto/maintenance.auto/
+// receive.autogc inside one bare repository's own config file.
+//
+// setGitIdentity's GIT_CONFIG_COUNT/KEY_N/VALUE_N environment variables
+// only reach the git subprocess a Go test starts directly (remoteGit here,
+// or gitops in production); they do not reach receive-pack, which the
+// *server side* of a same-host `git push` (remoteGit(..., "push", ...))
+// spawns as its own child process reading `origin.git`'s own config, not
+// this test process's environment. Review traced that gap directly:
+// receive-pack in origin.git still started `gc --auto` 34 times with the
+// env config alone, while every clone's directly-started `git` subprocess
+// dropped to 0 maintenance starts. Setting these three keys in the bare
+// repo's own `config` file closes that gap, since receive-pack reads it
+// like any other git command running inside that repository.
+func disableBareRepoAutoMaintenance(t *testing.T, bareRepoPath string) {
+	t.Helper()
+	remoteGit(t, bareRepoPath, "config", "gc.auto", "0")
+	remoteGit(t, bareRepoPath, "config", "maintenance.auto", "false")
+	remoteGit(t, bareRepoPath, "config", "receive.autogc", "false")
+}
+
 // setGitIdentity gives Publish's commits (made through the process env, not
 // remoteGit's explicit env) a valid author/committer so tests work under a
 // HOME with no git config.
+//
+// It also disables every directly-started git subprocess's opportunistic
+// background maintenance, test-only, for
+// TestRemoteClaimForceOnUnreadableFile's "TempDir RemoveAll cleanup:
+// unlinkat .../origin.git/objects: directory not empty" failure. These
+// fixtures are too small to ever cross `gc --auto`'s own loose-object/
+// pack-count thresholds — traced locally with GIT_TRACE2_EVENT across
+// every TestRemoteClaim* test, `gc --auto` started 34 times but never once
+// did any repack, prune, pack-refs or reflog work, so it never detaches a
+// writer via that path. `git maintenance run --auto` started 129 times in
+// the same trace; on a git new enough to run scheduled maintenance by
+// default (the CI runners' git; this could not be reproduced against the
+// VM's older git 2.43, which does not run maintenance automatically), a
+// detached maintenance process taking objects/maintenance.lock before it
+// even evaluates whether there is work to do is a plausible writer that
+// outlives the git command that spawned it and races t.TempDir()'s
+// cleanup — not a proven one, since the failure could not be reproduced
+// locally to confirm it directly.
+//
+// GIT_CONFIG_COUNT/KEY_N/VALUE_N only reach a git subprocess this test
+// process starts directly (remoteGit below, and production's `gitops`,
+// which builds its command env from `console.Env()`/os.Environ()); git
+// deliberately strips every GIT_CONFIG_* variable from the environment it
+// hands to a server-side `receive-pack` it spawns for a same-host push, so
+// this env config never reaches `origin.git`. A traced same-host push
+// confirmed the gap directly: receive-pack inside origin.git kept starting
+// `gc --auto` 34 times with the env config alone in place, while every
+// directly-started git subprocess (the clones) dropped to 0 maintenance
+// starts. disableBareRepoAutoMaintenance (above) closes that remaining gap
+// by writing the same three keys into each bare repo's own `config` file,
+// which receive-pack reads like any other git command running inside that
+// repository; the env config here is kept for the clones. Both are
+// purely test-fixture hardening — nothing in production relies on or sets
+// gc/maintenance behaviour.
 func setGitIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	t.Setenv("GIT_CONFIG_COUNT", "3")
+	t.Setenv("GIT_CONFIG_KEY_0", "gc.auto")
+	t.Setenv("GIT_CONFIG_VALUE_0", "0")
+	t.Setenv("GIT_CONFIG_KEY_1", "maintenance.auto")
+	t.Setenv("GIT_CONFIG_VALUE_1", "false")
+	t.Setenv("GIT_CONFIG_KEY_2", "receive.autogc")
+	t.Setenv("GIT_CONFIG_VALUE_2", "false")
 }
 
 // remoteFixture builds a projects root holding one dirty fleet repo, a bare
@@ -108,6 +170,7 @@ func newRemoteFixture(t *testing.T, machine string) remoteFixture {
 	}
 	origin := filepath.Join(base, "origin.git")
 	remoteGit(t, base, "init", "-q", "--bare", "-b", "main", origin)
+	disableBareRepoAutoMaintenance(t, origin)
 	seed := filepath.Join(base, "seed")
 	remoteGit(t, base, "clone", "-q", origin, seed)
 	remoteGit(t, seed, "commit", "-q", "--allow-empty", "-m", "init")
@@ -200,6 +263,7 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	// origin/<base>, which fails outright without one.
 	upstream := filepath.Join(base, "widgets-origin.git")
 	remoteGit(t, base, "init", "-q", "--bare", "-b", "main", upstream)
+	disableBareRepoAutoMaintenance(t, upstream)
 	remoteGit(t, base, "clone", "-q", upstream, canonical)
 	remoteGit(t, canonical, "commit", "-q", "--allow-empty", "-m", "seed")
 	remoteGit(t, canonical, "push", "-q", "-u", "origin", "main")
@@ -210,6 +274,7 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 
 	stateOrigin := filepath.Join(base, "origin.git")
 	remoteGit(t, base, "init", "-q", "--bare", "-b", "main", stateOrigin)
+	disableBareRepoAutoMaintenance(t, stateOrigin)
 	seed := filepath.Join(base, "seed")
 	remoteGit(t, base, "clone", "-q", stateOrigin, seed)
 	remoteGit(t, seed, "commit", "-q", "--allow-empty", "-m", "init")
