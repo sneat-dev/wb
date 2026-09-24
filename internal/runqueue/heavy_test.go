@@ -476,3 +476,113 @@ func TestExternalHeartbeatTickerJoinedBeforeReleaseLeavesNoGhostHolder(t *testin
 		}
 	}
 }
+
+// TestTryLockHeavyAdmissionReportsContentionWhenAlreadyLocked forces
+// tryLockHeavyAdmission's "someone else holds it right now" branch
+// deterministically, by holding the machine-wide admission lock itself
+// (via a second, independent open of the same lock file — flock contends
+// on the open file description, not the process, so this reproduces real
+// cross-process contention) before making a second attempt. Flaky-coverage
+// found this branch covered on only 3 of 8 CI runs, because the only prior
+// coverage of it came from two goroutines in
+// TestAdmitHeavySimultaneousArrivalsRespectTheCap happening to race for the
+// flock within the 100ms retry cadence, which only sometimes collided.
+func TestTryLockHeavyAdmissionReportsContentionWhenAlreadyLocked(t *testing.T) {
+	root := t.TempDir()
+
+	holder, locked, err := tryLockHeavyAdmission(root)
+	if err != nil || !locked {
+		t.Fatalf("first lock = locked=%t err=%v, want an uncontended lock to succeed", locked, err)
+	}
+
+	contender, contended, err := tryLockHeavyAdmission(root)
+	if err != nil {
+		t.Fatalf("contended lock err = %v, want nil (contention is not an error)", err)
+	}
+	if contended {
+		t.Fatal("contended lock reported locked=true, want false while the first holder still holds it")
+	}
+	if contender != nil {
+		t.Fatal("contended lock returned a non-nil file, want nil on contention")
+	}
+
+	unlockHeavyAdmission(holder)
+
+	// Once released, a fresh attempt must succeed again.
+	third, locked, err := tryLockHeavyAdmission(root)
+	if err != nil || !locked {
+		t.Fatalf("post-release lock = locked=%t err=%v, want it to succeed once free", locked, err)
+	}
+	unlockHeavyAdmission(third)
+}
+
+// waitForHeavyTicketHeartbeats blocks until the single heavy waiter's
+// ticket has heartbeated at least `count` times, observed via its on-disk
+// UpdatedAt advancing to `count` distinct values. admitHeavy heartbeats its
+// ticket at the very top of every loop iteration, before its admission-lock
+// attempt (heavy.go), so this is a real barrier proving the loop has
+// actually iterated `count` times — never a fixed sleep and a hope that
+// enough iterations happened within it. A prior version of this test's
+// caller used a fixed 350ms wait instead; with that wait forced to 0 the
+// contended lines it was meant to cover went uncovered on every attempt,
+// because releasing the lock could race admitHeavy's very first iteration
+// rather than actually exercising its retry loop.
+func waitForHeavyTicketHeartbeats(t *testing.T, root string, count int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastUpdatedAt time.Time
+	seen := 0
+	for {
+		tickets := readTicketsIn(heavyWaitingDir(root))
+		if len(tickets) == 1 && !tickets[0].UpdatedAt.Equal(lastUpdatedAt) {
+			lastUpdatedAt = tickets[0].UpdatedAt
+			seen++
+			if seen >= count {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ticket heartbeated %d/%d times within %s, want %d", seen, count, timeout, count)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestAdmitHeavyWaitsWhileAdmissionLockIsHeldByAnother forces admitHeavy's
+// "the head-of-queue waiter could not acquire the admission lock, so it
+// sleeps and retries" branch (heavy.go:241-245) deterministically: the test
+// seizes the machine-wide admission lock itself before the only heavy
+// waiter even registers, then uses waitForHeavyTicketHeartbeats as a real
+// barrier — proving admitHeavy's loop has actually run at least twice while
+// contended — before releasing the lock. Flaky-coverage found this branch
+// covered on only 3 of 8 CI runs, for the same reason as the sibling test
+// above: the only prior coverage came from two goroutines happening to race
+// for the same lock, which only sometimes collided within the retry
+// cadence.
+func TestAdmitHeavyWaitsWhileAdmissionLockIsHeldByAnother(t *testing.T) {
+	defer SetNumCPUForTest(18)()
+	root := t.TempDir()
+	ctx := context.Background()
+
+	holder, locked, err := tryLockHeavyAdmission(root)
+	if err != nil || !locked {
+		t.Fatalf("could not seize the admission lock for the test: locked=%t err=%v", locked, err)
+	}
+
+	firstCh, firstTicket := admitHeavyAsync(t, ctx, root, broadArgv, "first")
+	defer firstTicket.Forget()
+
+	waitForHeavyTicketHeartbeats(t, root, 2, 2*time.Second)
+	// The barrier above already proves admitHeavy looped at least twice
+	// while contended; this check adds no additional wait of its own (0
+	// duration) and only confirms the lock is still genuinely held.
+	mustNotAdmitYet(t, firstCh, 0)
+
+	unlockHeavyAdmission(holder)
+
+	first := mustAdmit(t, firstCh, 2*time.Second)
+	if first.Units != 18 {
+		t.Fatalf("first alone once the admission lock is free = %d units, want 18", first.Units)
+	}
+	first.Lease.Release()
+}
