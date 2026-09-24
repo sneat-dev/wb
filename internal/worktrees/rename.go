@@ -211,11 +211,22 @@ func RunSecureRenameGitHelper(args []string) int {
 	// the equivalent Landlock capability binds the same paths. The
 	// descriptor-anchored worktree plus explicit admin/common paths mean hostile
 	// .git and commondir replacements are never consulted.
-	capability, err := newGitFilesystemCapability(
+	writeRoots := []gitFilesystemCapabilityRoot{
 		gitFilesystemCapabilityRoot{path: commonPath, directory: common},
 		gitFilesystemCapabilityRoot{path: adminPath, directory: admin},
 		gitFilesystemCapabilityRoot{path: args[2], directory: parent},
-	)
+	}
+	// Retirement also uses this descriptor-bound linked-worktree helper for
+	// ordinary commits. Its hooks need the same narrowly held runtime roots as
+	// cleanup's Git helper; otherwise a healthy managed hook can be denied by
+	// the filesystem capability before the source is preserved.
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: prepare hook runtime layout: %v\n", err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
+	capability, err := newGitFilesystemCapability(writeRoots...)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: %v\n", err)
 		return 1

@@ -128,15 +128,64 @@ func TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects(t *tes
 	}
 }
 
+// TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation
+// proves that a submit whose response is lost can be retried and recovered
+// once the bridge's owner token and scheduler generation rotate.
+//
+// It used to force the "lost response" case with a 600ms client timeout
+// racing the bridge's 250ms poll interval, then read the durable operations
+// directory once, immediately, hoping the bridge had already written the
+// record (sneat-dev/wb#504: flaky under CI load, because that race assumed
+// scheduling was fast enough on an idle machine).
+//
+// The race is not in the client's timeout itself: the file bridge always
+// drops this procedure's response, so the client is always going to time
+// out, deterministically, once its own deadline elapses -- cancelling the
+// request context instead does not help, because connectrpc.com/connect's
+// unary send path checks ctx.Err() after the round trip and, if it is
+// non-nil, discards whatever detailed error the transport returned in favor
+// of a bare "context canceled"/"context deadline exceeded" (see
+// duplexHTTPCall.sendUnary / wrapIfContextError in
+// connectrpc.com/connect@v1.20.0/duplex_http_call.go and error.go), so a
+// cancelled context here would silently break the "wbfb-...retry the exact
+// command" assertion instead of fixing a flake. The real race was in
+// checking the durable operations directory immediately after that timeout,
+// hoping the bridge had already noticed the request and written the record
+// within the same short window.
+//
+// server.dispatch in daemon_file_bridge.go runs server.handler.ServeHTTP
+// (which durably writes the operation record) *before* it consults
+// dropResponse (the dropResponse check follows the ServeHTTP call). So the
+// moment the test's dropResponse hook is invoked for SubmitOperation is
+// itself the exact, race-free signal that the record already exists. The
+// test captures the operations directory listing right there, event-driven,
+// instead of polling for it after the fact; the client is left to reach its
+// own real (generous, non-racing) deadline on an unmodified background
+// context, which is what preserves the informative timeout error connect
+// would otherwise discard.
 func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *testing.T) {
 	root := daemonTestRoot(t)
 	service1, err := daemonTestService(t, root, "old-build", "30", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
+	responseDropped := make(chan struct{})
+	var dropOnce sync.Once
+	var operationEntries []os.DirEntry
+	var operationsErr error
 	first, stop1 := startTestDaemonFileBridgeWithServiceAndTimeout(t, root, "old-owner-token", "30", service1, func(procedure string) bool {
-		return procedure == daemonv1connect.DaemonServiceSubmitOperationProcedure
-	}, 600*time.Millisecond)
+		if procedure != daemonv1connect.DaemonServiceSubmitOperationProcedure {
+			return false
+		}
+		dropOnce.Do(func() {
+			// The bridge has already durably written the operation record for
+			// this submit by this point (see the function comment), so this
+			// snapshot is race-free: no poll can ever observe a partial write.
+			operationEntries, operationsErr = os.ReadDir(filepath.Join(root, ".wb", "runtime", "daemon", "operations"))
+			close(responseDropped)
+		})
+		return true
+	}, 2*time.Second)
 	_, firstErr := first.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{WorkingDirectory: root, Argv: []string{"go", "version"}, TargetWorkerId: "stable-worker"}))
 	if firstErr == nil {
 		t.Fatal("dropped submission response unexpectedly succeeded")
@@ -144,7 +193,15 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 	if !strings.Contains(firstErr.Error(), "wbfb-") || !strings.Contains(firstErr.Error(), "retry the exact command") {
 		t.Fatalf("lost-submit recovery guidance = %v", firstErr)
 	}
-	operationEntries := waitForDaemonOperations(t, root, 1)
+	// The client only stops waiting after its own deadline elapses with no
+	// response ever written, and the bridge only ever reaches that state by
+	// first calling dropResponse (there is no other way for this procedure
+	// to resolve), so this receive cannot block: it exists to establish the
+	// happens-before edge for the snapshot below, not to wait for anything.
+	<-responseDropped
+	if operationsErr != nil || len(operationEntries) != 1 {
+		t.Fatalf("old daemon operation count = %d, %v", len(operationEntries), operationsErr)
+	}
 	wantOperationID := strings.TrimSuffix(operationEntries[0].Name(), ".json")
 	stop1()
 
@@ -164,7 +221,9 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 	if recovered.Msg.OperationId != wantOperationID {
 		t.Fatalf("recovered operation = %q, want %q", recovered.Msg.OperationId, wantOperationID)
 	}
-	waitForDaemonOperations(t, root, 1)
+	if entries, err := os.ReadDir(filepath.Join(root, ".wb", "runtime", "daemon", "operations")); err != nil || len(entries) != 1 {
+		t.Fatalf("durable operation count = %d, %v", len(entries), err)
+	}
 }
 
 func TestDaemonFileBridgeIdenticalSubmitReusesUnresolvedEnvelope(t *testing.T) {
@@ -634,45 +693,6 @@ func registerTestBridgeWorker(t *testing.T, ctx context.Context, client daemonv1
 		t.Fatal(err)
 	}
 	return response.Msg.Registration
-}
-
-// waitForDaemonOperations polls the durable operations directory until it holds
-// exactly want records.
-//
-// The submit that creates the first record is deliberately failed by a short
-// client timeout, and that timeout bounds the client, not the bridge's write.
-// Reading the directory once, immediately, asserts that the bridge won a race
-// the test never arranged for it to win.
-//
-// The arithmetic is the whole defect. The bridge polls for requests every
-// daemonFileBridgePoll (250ms) and the client gives up after 600ms, so the
-// bridge gets exactly two chances to notice the request before the test looks.
-// Lose both to scheduler jitter on a loaded runner and no operation record is
-// ever written, which is the observed "old daemon operation count = 0" on a
-// pull request that touched none of this code. Waiting here keeps the first
-// bridge alive for eight more chances; stop1 is still ahead of us.
-//
-// Not reproduced locally: this machine's bridge picked the request up on the
-// first tick in 16 runs, including under eight busy loops at GOMAXPROCS=1. The
-// fix is argued from the interval arithmetic above, not from a local failure.
-//
-// The deadline matches waitForBridgeRequest, which already solved the same
-// problem for the request directory a few hundred lines below.
-func waitForDaemonOperations(t *testing.T, root string, want int) []os.DirEntry {
-	t.Helper()
-	operations := filepath.Join(root, ".wb", "runtime", "daemon", "operations")
-	deadline := time.Now().Add(2 * time.Second)
-	var entries []os.DirEntry
-	var err error
-	for time.Now().Before(deadline) {
-		entries, err = os.ReadDir(operations)
-		if err == nil && len(entries) == want {
-			return entries
-		}
-		time.Sleep(daemonFileBridgePoll)
-	}
-	t.Fatalf("daemon operation count = %d, want %d: %v", len(entries), want, err)
-	return nil
 }
 
 func waitForBridgeRequest(t *testing.T, root string) {
