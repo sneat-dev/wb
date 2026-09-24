@@ -34,3 +34,14 @@ func TestReportedSupervisorNormalizesUnrecognizedValue(t *testing.T) {
 		t.Fatalf("ReportedSupervisor() = %q, want %q for an unrecognized recorded value", got, SupervisorNone)
 	}
 }
+
+// TestReportedSupervisorPassesThroughARecognizedValue drives the valid-value
+// passthrough branch of ReportedSupervisor: a recorded value this build does
+// recognize is reported as-is, not normalized away.
+func TestReportedSupervisorPassesThroughARecognizedValue(t *testing.T) {
+	t.Parallel()
+	state := State{Supervisor: SupervisorSystemd}
+	if got := state.ReportedSupervisor(); got != SupervisorSystemd {
+		t.Fatalf("ReportedSupervisor() = %q, want %q for a recognized recorded value", got, SupervisorSystemd)
+	}
+}

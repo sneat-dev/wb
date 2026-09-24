@@ -52,24 +52,18 @@ func TestValidatePrivateParkPlanRejectsNonCanonicalEnvelope(t *testing.T) {
 // test reproduces that for a relative WorktreeDir without any new
 // production seam: it chdirs into a scratch directory it then deletes.
 //
-// Not run in parallel: os.Chdir is process-wide.
+// Not run in parallel: t.Chdir is process-wide (and panics if combined with
+// t.Parallel).
 func TestInspectPreparedRejectsWorktreeWhenCurrentDirectoryIsGone(t *testing.T) {
 	fixture := slCovNewAuthorityFixture(t)
 	options := fixture.options()
 	options.WorktreeDir = "relative/worktree"
 
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
 	gone := filepath.Join(t.TempDir(), "gone")
 	if err := os.Mkdir(gone, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(gone); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
+	t.Chdir(gone)
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
 	}
