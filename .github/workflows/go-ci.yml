@@ -338,12 +338,20 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # --baseline-timeout and --timeout bound two runs that can both
+        # execute in the worst case (no published baseline artifact, so the
+        # fallback measures the merge base, then the PR head is measured):
+        # 15m + 20m = 35m, leaving 10m of this job's 45-minute
+        # timeout-minutes for checkout, setup-go, the audit step above and
+        # the diagnostics upload below (review-696 also-fix #3: 20m + 20m
+        # left only 5m of headroom, so a slow shard could have the job
+        # killed by GitHub instead of the ratchet failing loudly).
         run: >-
           go run ./cmd/wb coverage .
           --changed
           --target "$BASE_SHA"
           --baseline-file coverage-baseline.json
-          --baseline-timeout 20m
+          --baseline-timeout 15m
           --timeout 20m
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics

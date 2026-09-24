@@ -758,6 +758,41 @@ func TestCoverageRejectsBaselineTimeoutWithoutChanged(t *testing.T) {
 	}
 }
 
+// TestCoverageRejectsTargetWithoutChanged is the CLI-level counterpart of
+// --target's ignored-flags rule (AGENTS.md, review item 4): --target has no
+// effect outside --changed and must be a usage error, not exit 1.
+func TestCoverageRejectsTargetWithoutChanged(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	repo.commitAll("base")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--target", "main", "--non-interactive"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("code = %d, want %d (usage error) for --target without --changed", code, exitUsage)
+	}
+}
+
+// TestCoverageRejectsBaselineFileWithoutChanged is the CLI-level counterpart
+// of --baseline-file's ignored-flags rule (AGENTS.md, review item 4):
+// --baseline-file has no effect outside --changed and must be a usage
+// error, not exit 1.
+func TestCoverageRejectsBaselineFileWithoutChanged(t *testing.T) {
+	t.Parallel()
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	repo.commitAll("base")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--baseline-file", "baseline.json", "--non-interactive"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("code = %d, want %d (usage error) for --baseline-file without --changed", code, exitUsage)
+	}
+}
+
 // TestValidateBaselineRejectsUnusableArtifacts is the CLI-level regression
 // for review item 3: a baseline that parses as JSON but is unusable (wrong
 // schema, empty, or measured for a different commit) must never pass the

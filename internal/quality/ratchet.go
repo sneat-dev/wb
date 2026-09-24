@@ -349,7 +349,13 @@ func GitChangedLines(ctx context.Context, repoRoot, mergeBase string) (ChangedLi
 func GitTouchedFiles(ctx context.Context, repoRoot, mergeBase string) (map[string]bool, error) {
 	cmd := exec.CommandContext(ctx, "git",
 		"-c", "core.quotePath=false",
-		"diff", "--merge-base", mergeBase, "--name-only", "--no-ext-diff")
+		// --no-renames: with rename detection on (git's default for `diff`
+		// once similarity is high enough), --name-only prints only a
+		// rename's destination path, silently dropping the source path —
+		// so `git mv a/ext_test.go c/ext_test.go` never marked package a as
+		// touched (review-696 blocking #1). --no-renames always lists both
+		// the old (now-deleted) and new paths as separate entries.
+		"diff", "--merge-base", mergeBase, "--no-renames", "--name-only", "--no-ext-diff")
 	cmd.Dir = repoRoot
 	output, err := cmd.Output()
 	if err != nil {
@@ -366,6 +372,114 @@ func GitTouchedFiles(ctx context.Context, repoRoot, mergeBase string) (map[strin
 		}
 	}
 	return files, nil
+}
+
+// FileLineOffsets maps one file's merge-base (old) line numbers to its
+// current (new) line numbers, built from that file's own unified-diff
+// hunks. EvaluateRatchet uses it (review-696 non-blocking #3) to find the
+// current position of a baseline-recorded statement whose file was edited
+// elsewhere, instead of treating every uncovered block in a touched file as
+// unattributable.
+type FileLineOffsets struct {
+	hunks []lineOffsetHunk
+}
+
+type lineOffsetHunk struct {
+	oldStart, oldCount, newStart, newCount int
+}
+
+// Map translates a merge-base line to its current line. ok is false when
+// oldLine falls inside a hunk's old range: the diff itself touched that
+// exact line, so there is no single current line to point to for it — the
+// direct changed-line rule (GitChangedLines) already covers whatever
+// replaced it.
+func (offsets FileLineOffsets) Map(oldLine int) (newLine int, ok bool) {
+	offset := 0
+	for _, hunk := range offsets.hunks {
+		if oldLine < hunk.oldStart {
+			break
+		}
+		if oldLine < hunk.oldStart+hunk.oldCount {
+			return 0, false
+		}
+		offset += hunk.newCount - hunk.oldCount
+	}
+	return oldLine + offset, true
+}
+
+// lineOffsetHunkRegexp matches one unified-diff hunk header's full range on
+// both sides, e.g. "@@ -12,3 +13,2 @@ func Foo()" -> (12,3,13,2). A count
+// omitted from the header (bare "-12" or "+13") means 1, and an explicit
+// ",0" means an empty range (a pure insertion has old count 0; a pure
+// deletion has new count 0).
+var lineOffsetHunkRegexp = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// GitLineOffsets computes FileLineOffsets for every file a diff against
+// mergeBase touches (review-696 non-blocking #3). --no-renames matches
+// GitTouchedFiles: a rename is a plain delete-then-add pair, so its old
+// path's hunks (an entire "delete everything") never falsely offset the new
+// path's line numbers.
+func GitLineOffsets(ctx context.Context, repoRoot, mergeBase string) (map[string]FileLineOffsets, error) {
+	args := []string{
+		"-c", "core.quotePath=false",
+		"-c", "diff.mnemonicPrefix=false",
+		"diff", "--merge-base", mergeBase, "-U0", "--no-renames", "--no-ext-diff",
+		"--src-prefix=a/", "--dst-prefix=b/",
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("git diff --merge-base %s -U0: %w: %s", mergeBase, err, string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("git diff --merge-base %s -U0: %w", mergeBase, err)
+	}
+	return parseLineOffsets(string(output)), nil
+}
+
+func parseLineOffsets(raw string) map[string]FileLineOffsets {
+	result := make(map[string]FileLineOffsets)
+	currentFile := ""
+	for _, line := range strings.Split(raw, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ "):
+			currentFile = strings.TrimPrefix(line, "+++ ")
+			currentFile = strings.TrimSuffix(currentFile, "\t")
+			currentFile = strings.TrimPrefix(currentFile, "b/")
+			if currentFile == "/dev/null" {
+				currentFile = ""
+			}
+		case lineOffsetHunkRegexp.MatchString(line):
+			if currentFile == "" {
+				continue
+			}
+			match := lineOffsetHunkRegexp.FindStringSubmatch(line)
+			entry := result[currentFile]
+			entry.hunks = append(entry.hunks, lineOffsetHunk{
+				oldStart: atoiOrDefault(match[1], 1),
+				oldCount: atoiOrDefault(match[2], 1),
+				newStart: atoiOrDefault(match[3], 1),
+				newCount: atoiOrDefault(match[4], 1),
+			})
+			result[currentFile] = entry
+		}
+	}
+	return result
+}
+
+// atoiOrDefault parses s as a unified-diff hunk-header count, returning def
+// (1, always, at every call site) when s is empty because the header omitted
+// it (a count of exactly 1).
+func atoiOrDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func parseColorMovedDiff(raw string) ChangedLines {
@@ -435,10 +549,25 @@ func containsCode(codes []string, want string) bool {
 	return false
 }
 
-// RatchetFinding names one newly uncovered, changed statement.
+// Ratchet finding/warning reasons (review-696 non-blocking #4): a genuinely
+// added or changed line and a pre-existing statement whose *coverage*
+// changed are different situations and must read differently, since the
+// first names something the diff shows and the second does not.
+const (
+	// ReasonChangedStatementUncovered is a statement the diff itself adds or
+	// modifies, found via GitChangedLines.
+	ReasonChangedStatementUncovered = "added or changed statement is not covered by a test"
+	// ReasonNewlyUncoveredAtBase is a statement the diff does not touch at
+	// all, found only because the package's uncovered count rose (review
+	// B2): it was covered when baseline was measured and is not now.
+	ReasonNewlyUncoveredAtBase = "newly uncovered (was covered at base)"
+)
+
+// RatchetFinding names one newly uncovered statement that fails the ratchet.
 type RatchetFinding struct {
-	File string
-	Line int
+	File   string
+	Line   int
+	Reason string
 }
 
 // RatchetWarning names one newly uncovered statement in a package the PR did
@@ -449,6 +578,7 @@ type RatchetWarning struct {
 	Package string `json:"package"`
 	File    string `json:"file"`
 	Line    int    `json:"line"`
+	Reason  string `json:"reason"`
 }
 
 // PackageRatchet is one package's ratchet verdict.
@@ -464,24 +594,35 @@ type PackageRatchet struct {
 }
 
 // EvaluateRatchet applies the per-change coverage ratchet
-// (spec/plans/coverage-to-100/README.md task-3): a package the PR changes
-// fails when its uncovered-statement count rises against baseline, or when a
-// changed, non-moved line is uncovered anywhere. A package the PR does not
-// change only ever warns on a count rise (founder decision 2026-09-23,
-// review B1) — touchedFiles (repository-relative paths, including files the
-// diff only deletes lines from or deletes entirely) decides package
-// ownership. Attributing a count-only rise to an exact statement
-// (uncoveredBlockKey against baseline.UncoveredBlocks) is skipped for any
-// block inside a touchedFiles path: editing a file shifts every later
-// line's position, so the baseline's stored positions in that same file are
-// not safely comparable — the direct changed-line check above already
-// covers genuinely new uncovered statements inside a touched file, so
-// nothing is lost, only false positives from line drift are avoided.
-func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, baseline PackageBaseline, modulePath string) ([]PackageRatchet, []RatchetWarning) {
+// (spec/plans/coverage-to-100/README.md task-3, founder decisions 11 and 12):
+// a package the PR changes fails when its uncovered-statement count rises
+// against baseline, or when a changed, non-moved line is uncovered anywhere.
+// A package the PR does not change only ever warns on a count rise —
+// touchedFiles (repository-relative paths, including files the diff only
+// deletes lines from, deletes entirely, or a rename's old AND new path)
+// decides package ownership; a changed package with no baseline entry at
+// all is treated as a baseline of 0 (review-696 blocking #2: the merge-base
+// measurement covers every package that existed then, so a missing entry
+// means the package did not exist, not that it is exempt).
+//
+// Attributing a count-only rise to an exact statement (uncoveredBlockKey
+// against baseline.UncoveredBlocks) can land on a block inside a file the
+// PR itself touched: editing a file shifts every later line's position, so
+// the baseline's raw stored position there does not directly compare. Set
+// lineOffsets (from GitLineOffsets) maps each baseline block's stored line
+// through that file's own diff hunks to its current line first: a current
+// block landing on that mapped line is the same pre-existing statement,
+// just shifted, not new (review-696 non-blocking #3) — pass nil to skip
+// this mapping entirely, which means no touched-file block can be matched
+// to a shifted baseline position, so every uncovered block in a touched
+// file is reported as attributable (the original, pre-5a7d0df6 behavior,
+// before the blanket touched-file skip existed — this is the LEAST
+// conservative option, not a conservative one).
+func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string) ([]PackageRatchet, []RatchetWarning) {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
 	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
-	report := func(pkg, file string, line int) {
+	report := func(pkg, file string, line int, reason string) {
 		key := file + ":" + strconv.Itoa(line)
 		if reported[pkg] == nil {
 			reported[pkg] = make(map[string]bool)
@@ -490,7 +631,7 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 			return
 		}
 		reported[pkg][key] = true
-		findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: file, Line: line})
+		findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: file, Line: line, Reason: reason})
 	}
 
 	changedPackages := make(map[string]bool, len(touchedFiles))
@@ -514,17 +655,31 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 				// diff uses, not the module-qualified import path — so a
 				// finding can be matched against `git diff` output and
 				// opened directly.
-				report(pkg, relativeFile, line)
+				report(pkg, relativeFile, line, ReasonChangedStatementUncovered)
 				break
 			}
 		}
 	}
 
 	baselineBlocks := make(map[string]map[string]bool)
-	for pkg, blocks := range baseline.UncoveredBlocks {
-		set := make(map[string]bool, len(blocks))
-		for _, block := range blocks {
+	// shiftedLines[file] holds every CURRENT line a baseline-uncovered block
+	// in that same file maps to through the diff's own hunks: a currently
+	// uncovered block landing there is that same pre-existing statement,
+	// not a new one (review-696 non-blocking #3).
+	shiftedLines := make(map[string]map[int]bool)
+	for pkg, pkgBlocks := range baseline.UncoveredBlocks {
+		set := make(map[string]bool, len(pkgBlocks))
+		for _, block := range pkgBlocks {
 			set[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] = true
+			relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
+			if offsets, ok := lineOffsets[relativeFile]; ok {
+				if newLine, ok := offsets.Map(block.StartLine); ok {
+					if shiftedLines[relativeFile] == nil {
+						shiftedLines[relativeFile] = make(map[int]bool)
+					}
+					shiftedLines[relativeFile][newLine] = true
+				}
+			}
 		}
 		baselineBlocks[pkg] = set
 	}
@@ -547,31 +702,35 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 	for _, pkg := range names {
 		baselineCount, hasBaseline := baseline.Packages[pkg]
 		count := uncovered[pkg]
-		rose := hasBaseline && count > baselineCount
 		isChangedPkg := changedPackages[pkg]
+		if !hasBaseline && isChangedPkg {
+			// The merge base was measured for every package that existed
+			// then; a changed package absent from it is new, and a new
+			// package is held to the same "must not rise" rule as any
+			// other changed package, starting from 0 (review-696 blocking
+			// #2) — otherwise moving covered code into a brand-new package
+			// and dropping its test would pass silently.
+			baselineCount, hasBaseline = 0, true
+		}
+		rose := hasBaseline && count > baselineCount
 		if rose {
 			// A count-only rise still needs a file:line an author can act
 			// on (review item B2): every currently-uncovered block in this
 			// package that the baseline did not already record as
-			// uncovered is one of the statements behind the rise. Skip any
-			// block whose file the PR itself touched: an edit shifts every
-			// later line in that file, so the baseline's stored positions
-			// there are not safely comparable, and the direct changed-line
-			// check above already covers genuinely new statements in a
-			// touched file.
+			// uncovered is one of the statements behind the rise.
 			base := baselineBlocks[pkg]
 			for _, block := range blocksByPackage[pkg] {
 				relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
-				if touchedFiles[relativeFile] {
-					continue
-				}
 				if base[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] {
 					continue
 				}
+				if touchedFiles[relativeFile] && shiftedLines[relativeFile][block.StartLine] {
+					continue
+				}
 				if isChangedPkg {
-					report(pkg, relativeFile, block.StartLine)
+					report(pkg, relativeFile, block.StartLine, ReasonNewlyUncoveredAtBase)
 				} else {
-					warnings = append(warnings, RatchetWarning{Package: pkg, File: relativeFile, Line: block.StartLine})
+					warnings = append(warnings, RatchetWarning{Package: pkg, File: relativeFile, Line: block.StartLine, Reason: ReasonNewlyUncoveredAtBase})
 				}
 			}
 		}

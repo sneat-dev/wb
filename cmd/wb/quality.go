@@ -182,9 +182,12 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 			return &exitError{code: exitUsage, message: fmt.Sprintf("--changed supports --format markdown or json only, not %q", options.format)}
 		}
 	} else if options.target != "" {
-		return fmt.Errorf("--target requires --changed")
+		// exitUsage: --target is a flag this PR added, and every ignored or
+		// misused flag this PR added exits 2 (AGENTS.md's ignored-flags
+		// rule), matching --baseline-timeout and --format above.
+		return &exitError{code: exitUsage, message: "--target requires --changed"}
 	} else if options.baselineFile != "" {
-		return fmt.Errorf("--baseline-file requires --changed")
+		return &exitError{code: exitUsage, message: "--baseline-file requires --changed"}
 	}
 	return nil
 }
