@@ -654,11 +654,12 @@ func TestCoverageChangedFailsClosedWhenGitTouchedFilesCannotRun(t *testing.T) {
 
 // TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun exercises
 // runChangedCoverage's quality.GitLineOffsets error branch specifically: a
-// `git` shim that only fails the invocation carrying --src-prefix=a/, which
-// only GitLineOffsets passes (GitChangedLines also passes -U0, but with
-// --color-moved=plain instead, and GitTouchedFiles passes neither), so
-// GitChangedLines and GitTouchedFiles (which must succeed first) still run
-// against the real binary. Not parallel-safe (t.Setenv mutates the
+// `git` shim that only fails the invocation carrying both -U0 and
+// --no-renames together. GitChangedLines also passes -U0 (paired with
+// --color-moved=plain, not --no-renames) and GitTouchedFiles also passes
+// --no-renames (without -U0), but only GitLineOffsets passes both at once,
+// so GitChangedLines and GitTouchedFiles (which must succeed first) still
+// run against the real binary. Not parallel-safe (t.Setenv mutates the
 // process-wide PATH).
 func TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun(t *testing.T) {
 	repo := newRatchetFixtureRepo(t)
@@ -674,12 +675,15 @@ func TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\n" +
+		"has_u0=0; has_norenames=0\n" +
 		"for a in \"$@\"; do\n" +
-		"  if [ \"$a\" = --src-prefix=a/ ]; then\n" +
-		"    echo 'fake git diff --src-prefix failure' >&2\n" +
-		"    exit 1\n" +
-		"  fi\n" +
+		"  [ \"$a\" = -U0 ] && has_u0=1\n" +
+		"  [ \"$a\" = --no-renames ] && has_norenames=1\n" +
 		"done\n" +
+		"if [ \"$has_u0\" = 1 ] && [ \"$has_norenames\" = 1 ]; then\n" +
+		"  echo 'fake git diff -U0 --no-renames failure' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
 		"exec " + realGit + " \"$@\"\n"
 	shimDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
@@ -690,10 +694,10 @@ func TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
 	if code == 0 {
-		t.Fatal("code = 0, want nonzero when git diff --src-prefix cannot run")
+		t.Fatal("code = 0, want nonzero when git diff -U0 --no-renames cannot run")
 	}
-	if !strings.Contains(stderr.String(), "fake git diff --src-prefix failure") {
-		t.Fatalf("stderr = %q, want it to surface the git diff --src-prefix failure", stderr.String())
+	if !strings.Contains(stderr.String(), "fake git diff -U0 --no-renames failure") {
+		t.Fatalf("stderr = %q, want it to surface the git diff -U0 --no-renames failure", stderr.String())
 	}
 }
 
