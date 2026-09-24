@@ -783,6 +783,16 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 	return created, nil
 }
 
+// repairPendingLinkAtBeforeOpenPending is a test-only seam. It is a no-op
+// in production and runs right before repairPendingLinkAt opens one
+// pending-name entry its own directory listing already found. A test can
+// set it to unlink that exact entry first (by name), deterministically
+// forcing that open to lose to ENOENT instead of depending on a real
+// concurrent repair racing the same directory. Never set outside a test;
+// the production default is call-and-do-nothing, so production behaviour
+// is unchanged.
+var repairPendingLinkAtBeforeOpenPending = func(*os.File, string) {}
+
 func repairPendingLinkAt(directory *os.File, finalName string) error {
 	finalFD, err := unix.Openat(int(directory.Fd()), finalName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
@@ -823,6 +833,7 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 		if !isPendingPublicationName(entry.Name()) {
 			continue
 		}
+		repairPendingLinkAtBeforeOpenPending(directory, entry.Name())
 		pendingFD, err := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) {

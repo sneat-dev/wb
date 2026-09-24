@@ -3542,6 +3542,17 @@ func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent
 	return writeBytesImmutableAt(directory, name, content, 0o600, idempotent)
 }
 
+// writeBytesImmutableAtBeforeRename is a test-only seam. It is a no-op in
+// production (the nil-safe default below does nothing) and runs after the
+// temporary file is fully written, synced and closed but before the atomic
+// rename-without-replace onto name. A test can set it to create a competing
+// file at name at exactly that point, deterministically forcing the rename
+// to lose to EEXIST instead of depending on real goroutine contention —
+// the same pattern hub's PeerAdminService.Random barrier uses. Never set
+// outside a test; the production default is call-and-do-nothing, so
+// production behaviour is unchanged.
+var writeBytesImmutableAtBeforeRename = func(*os.File, string) {}
+
 func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool) error {
 	if strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe immutable filename %q", name)
@@ -3580,6 +3591,7 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 	if err := file.Close(); err != nil {
 		return err
 	}
+	writeBytesImmutableAtBeforeRename(directory, name)
 	if err := renameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name); err != nil {
 		if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
 			return nil
