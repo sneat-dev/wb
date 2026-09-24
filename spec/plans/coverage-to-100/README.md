@@ -57,6 +57,14 @@ Decisions 11 and 12 were asked one at a time while #696 was in review, and the c
 12. **Flaky lines in a changed package.** `cmd/wb/daemon.go:2554` (a four-goroutine shutdown race) failed #696, which changes `cmd/wb`. The founder first chose "Both", then corrected it within minutes: "Keep rule, fix race". The per-package rule stays (no per-file scoping); the race is fixed at source in its own refactor PR (#699).
 13. **Flaky tests.** Free-text instruction: "Fix all flaky tests". *The plan's reading (not a founder quote):* every statement whose coverage varies between identical runs, and every open flaky-test issue (#504, #505, #539), is fixed at source rather than exempted. See task-21.
 
+## Founder decisions (2026-09-24, scheduling)
+
+Asked one at a time; the chosen option label is quoted verbatim, except decision 15, a free-text instruction quoted verbatim.
+
+14. **Coverage lane before task-7.** "Start wave 1 early (Recommended)": task-14 (W1) starts before task-7 for `internal/sessionmove`, `internal/sessionpark`, `internal/runqueue`, `internal/sessionlaunch` and `internal/daemon`, provided every new test is hermetic and deterministic from day one. `internal/deps` and `internal/layout` waited for the testenv cutover lane.
+15. **Lane cap.** Free-text instruction: "I allow 3d Go lane". Up to 3 Go lanes run concurrently. The per-run `free -m` ≥1500 MB check stays in every brief.
+16. **Seams before waves.** W1 showed that most uncovered statements in fd-heavy packages are error returns after syscalls that need a seam. "Seam right after #646 (Recommended)": task-9 (file-write primitive) starts as soon as #646 (task-4) lands, ahead of tasks 5–7, which follow in their usual order in the other lanes.
+
 ## Journey
 
 **Actors:** the PR author, CI, the nightly job, the reviewer, and the supervisor re-measuring coverage.
@@ -266,10 +274,24 @@ Add a shared failing `io.Writer` test helper, worth about 160 statements. Run `-
 
 **Id:** task-14
 **Depends-On:** task-3, task-7
-**Status:** planning
+**Status:** in_progress
+**Note:** Early start (founder decision 14); #719 and #720 landed
+**Evidence:** https://github.com/sneat-dev/wb/pull/720
 **Verifies:** each of the following 7 packages reports 0 uncovered statements in the CI coverage profile at the wave's merge SHA (uncovered counts as measured 2026-09-23, from `_research/pkgs_all.txt`, summing to the 731 cited below): `internal/sessionmove` (155), `internal/layout` (148), `internal/deps` (107), `internal/runqueue` (96), `internal/sessionlaunch` (91), `internal/sessionpark` (76), `internal/daemon` (58).
 
 Seven smaller packages, 731 uncovered statements, to 100%. This wave needs no refactor seam (tasks 8–13): it depends only on the ratchet (task-3) and hermetic tests (task-7). Production-code edits in this wave are forbidden except where a package's own existing structure already supports a test without a shared seam; if a package turns out to need one of tasks 8–13's seams, it moves to a later wave rather than improvising a local one. `internal/hooks` (85 uncovered) is such a package — it contains `RunSecureHooksGitHelper`, one of task-8's allow-listed fd-inheriting helpers, so it moved to task-15 (W2), which depends on task-11, instead of staying here; that move is what keeps this wave seam-free.
+
+Progress (early start, founder decision 14): #719 and #720 landed on 2026-09-24. Uncovered statements, measured from CI coverage profiles against main's baseline:
+
+| Package | Before | After |
+|---|---:|---:|
+| `internal/sessionmove` | 154 | 146 |
+| `internal/sessionpark` | 75 | 71 |
+| `internal/runqueue` | 92 | 18 |
+| `internal/sessionlaunch` | 91 | 84 |
+| `internal/daemon` | 58 | 50 |
+
+The "needs no refactor seam" premise above turned out to be wrong for the fd-heavy packages. Most of what remains is error returns after `Mkdirat`/`Sync`/`Fchmod`/write calls, which need task-9's seam (decision 16). Cgroup and supervisor code in runqueue and daemon needs OS-integration seams that no current task names. The lines reachable without a seam are tracked in #729. `internal/deps` and `internal/layout` are not started.
 
 ### Task 15: Wave W2, long tail B
 
@@ -311,7 +333,9 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 
 **Id:** task-19
 **Depends-On:** task-3
-**Status:** planning
+**Status:** complete
+**Note:** Landed #726 (807267f): wb run --changed and a shared changed-package computation; wb coverage --changed keeps its ratchet semantics
+**Evidence:** https://github.com/sneat-dev/wb/pull/726
 **Verifies:** `wb run --changed -- go test` runs only the packages a local diff touched (measured against a fixture branch with a known changed-package set); `wb coverage --changed` reuses the same changed-package computation.
 
 Promote the changed-package computation that today lives embedded as shell inside the pre-commit hook template (`internal/hooks/config.go:476`) into a first-class, tested Go verb per issue #570, and expose it as `wb run --changed -- <command>`. Wire `wb coverage --changed` to reuse the same changed-package detection so task-20's pre-push invocation has one implementation to call. This is test-scoping (which packages a local run touches), distinct from task-3's changed-*statement* ratchet design — see task-3's citation note.
@@ -332,7 +356,16 @@ Once every package is at 100%, replace the per-change ratchet and its 87 backsto
 **Status:** in_progress
 **Verifies:** eight identical full-suite coverage runs on one main commit show 0 statements whose coverage differs between runs (`_research/flaky_analyze.py`), and issues #504, #505 and #539 are closed with linked fix commits.
 
-Founder decision 13. The ratchet (task-3) turns coverage that varies between identical runs into random PR failures, so every such statement is made deterministic at source, never exempted. Inventory ([`_research/flaky-coverage-2026-09-24.txt`](_research/flaky-coverage-2026-09-24.txt)): eight parallel `nightly-coverage.yml` runs dispatched on main 825693b (one throwaway branch per run, since the workflow's concurrency group is per ref; the branches are deleted afterwards), with each run's `profile.cov` compared by `_research/flaky_analyze.py`, found 21 blocks / 22 statements in 7 packages, and no failing tests: `internal/orchestrate/ciwait.go` (9), `internal/runqueue/heavy.go` (4), `cmd/wb/daemon.go` (3), `internal/worktrees/worklog.go` (3), `hub/peer_admin.go:173`, `internal/sessionmove/store.go:829`, `internal/sessionpark/target_store.go:558`. Landed so far: #699 (`serveDashboard` shutdown race, 6fd993d), #700 (state-lock clock seam, a538dd1), #703 (#504, 4d43c4b). In review: #702 (`ciwait.go`), #705 (`runqueue/heavy.go`, #505). Queued: the `*At` file helpers, `hub`, and #539. Production changes go through their own behaviour-preserving refactor PRs first (decision 3); a fix that makes coverage depend on a sleep instead of a barrier does not count. This pulls #504/#539 forward from task-7 and #505 forward from task-10.
+Founder decision 13. The ratchet (task-3) turns coverage that varies between identical runs into random PR failures, so every such statement is made deterministic at source, never exempted. Inventory ([`_research/flaky-coverage-2026-09-24.txt`](_research/flaky-coverage-2026-09-24.txt)): eight parallel `nightly-coverage.yml` runs dispatched on main 825693b (one throwaway branch per run, since the workflow's concurrency group is per ref; the branches are deleted afterwards), with each run's `profile.cov` compared by `_research/flaky_analyze.py`, found 21 blocks / 22 statements in 7 packages, and no failing tests: `internal/orchestrate/ciwait.go` (9), `internal/runqueue/heavy.go` (4), `cmd/wb/daemon.go` (3), `internal/worktrees/worklog.go` (3), `hub/peer_admin.go:173`, `internal/sessionmove/store.go:829`, `internal/sessionpark/target_store.go:558`. Landed so far (2026-09-24):
+- Race and flaky-line fixes: #699 (`serveDashboard` shutdown race), #700 (state-lock clock seam), #702 (`ciwait.go`), #703 (closes #504), #705 (`runqueue/heavy.go`), #710 (closes #539), #712/#714 (worklog race hooks), #713 (`hub`), #715 (sessionmove/sessionpark race hooks).
+- The systemic git auto-maintenance TempDir fix. Detached `gc --auto`/`maintenance run --auto` wrote into `.git/objects` after test cleanup had started. #711 and #717 add the shared `internal/testenv` helpers; #724, #727 and #730 switch every git-creating test package over to them.
+- #718 (go-ci summary expected coverage to be skipped on reused pushes, which turned main red).
+
+Still open:
+- #505's `cmd/wb` half.
+- #728: the full race workflow is red on main, from a data race in a `prinventory` test fake and `orchestrate` exceeding 40m under `-race`.
+- The flaky `cmd/wb/daemon_file_bridge.go:307` (fixed in #726) and `internal/runqueue/visibility.go:232`.
+- A final eight-run re-probe. Production changes go through their own behaviour-preserving refactor PRs first (decision 3); a fix that makes coverage depend on a sleep instead of a barrier does not count. This pulls #504/#539 forward from task-7 and #505 forward from task-10.
 
 ## Estimates
 
