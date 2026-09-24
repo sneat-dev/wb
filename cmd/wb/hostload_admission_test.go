@@ -93,23 +93,27 @@ func TestRunCommandAdmitsCPUHeavyWorkBelowFloor(t *testing.T) {
 // hit on this VM: it, and every other test in this package, invoke `wb run
 // --` in-process while an outer `wb run -- go test ./cmd/wb/...` is itself
 // the process executing this test binary — and outer and inner used to
-// share the very same machine-wide CPU admission queue (rooted at
-// WB_PROJECTS_ROOT), so the inner call waited behind its own outer holder
-// forever.
+// share the very same machine-wide CPU admission queue (rooted at whatever
+// projectsRoot this process resolves by default), so the inner call waited
+// behind its own outer holder forever.
 //
-// This test reproduces the outer holder directly: it takes every budget
-// slot in the queue directory the real (non-overridden) formula would
-// derive for machineRoot — exactly as an outer `wb run` holds them, and
-// exactly what this package's own TestMain would otherwise also resolve to
-// via WB_PROJECTS_ROOT — by flock'ing the same slot files Acquire itself
-// uses, deliberately bypassing this test binary's TestMain-installed queue
-// isolation (runqueue.SetQueueRootForTest) so the "outer" holder sits in
-// the un-isolated, shared location. It then runs `wb run --` in a
-// goroutine, bounded by a context deadline (never a sleep): with the fix
-// (TestMain's isolation) it completes immediately, because the inner call's
-// own admission is routed to this binary's isolated queue root instead of
-// machineRoot's; if that isolation ever regressed, this would time out
-// exactly as the removed goroutine's deadline below demonstrates.
+// This test reproduces that shape without ever touching the real,
+// actively-shared machine-wide queue directory other concurrent lanes on
+// this VM use: simulatedDefaultRoot stands in for "whatever projectsRoot
+// this test binary would resolve by default" and is redirected there via
+// WB_PROJECTS_ROOT, so the inner `wb run --` call below (no explicit
+// --projects-root) resolves to it exactly as a real default-rooted
+// invocation would. The outer holder takes every budget slot in
+// simulatedDefaultRoot's real, unoverridden queue directory — exactly as a
+// genuine outer `wb run` would — before this test installs its own
+// isolation override keyed to simulatedDefaultRoot (mirroring TestMain's
+// real one, which is keyed to the real default root instead, see
+// main_test.go). With that override installed, the inner call's admission
+// is routed away from the slots just locked, exactly as TestMain's real
+// isolation routes the real default root away from a genuine outer holder;
+// if that isolation ever regressed (or lost its key match), the inner call
+// would contend for the very same locked slots and this test would time out
+// instead.
 func TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
@@ -119,10 +123,10 @@ func TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder(t *
 	t.Chdir(dir)
 	withHostLoad(t, 0.01)
 
-	machineRoot := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, machineRoot)
+	simulatedDefaultRoot := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, simulatedDefaultRoot)
 
-	queueDir := filepath.Join(machineRoot, ".wb", "runtime", "cpu")
+	queueDir := filepath.Join(simulatedDefaultRoot, ".wb", "runtime", "cpu")
 	if err := os.MkdirAll(queueDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -139,12 +143,8 @@ func TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder(t *
 		}
 		lockFiles = append(lockFiles, file)
 	}
-	t.Cleanup(func() {
-		for _, file := range lockFiles {
-			_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-			_ = file.Close()
-		}
-	})
+
+	restore := runqueue.SetQueueRootForTest(simulatedDefaultRoot, t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -153,13 +153,110 @@ func TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder(t *
 		var stdout, stderr bytes.Buffer
 		done <- run([]string{"run", "--", "go", "vet", "./..."}, &stdout, &stderr)
 	}()
+	drained := false
+
+	// Registered as a single Cleanup, in this exact order, so a regression
+	// (the select below falling to ctx.Done()) can never leak the
+	// goroutine above into later tests: release the isolation override and
+	// the outer locks first — unblocking whatever the goroutine is stuck
+	// on — then drain done, itself bounded, rather than trusting a bare
+	// background goroutine to finish on its own time. The success path
+	// below already drains done itself, so drained skips a redundant
+	// (otherwise always-timing-out) second wait in the common case.
+	t.Cleanup(func() {
+		restore()
+		for _, file := range lockFiles {
+			_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+			_ = file.Close()
+		}
+		if drained {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Log("inner `wb run --` goroutine did not finish after cleanup released the outer locks; it may leak past this test")
+		}
+	})
+
 	select {
 	case code := <-done:
+		drained = true
 		if code != exitOK {
 			t.Fatalf("inner `wb run --` exit code = %d, want 0", code)
 		}
 	case <-ctx.Done():
 		t.Fatal("inner `wb run --` deadlocked behind the outer machine-wide CPU admission holder — the run-queue test isolation seam regressed")
+	}
+}
+
+// TestRunCommandHonorsExplicitProjectsRootForCPUAdmission pins PR #736
+// review finding B1 directly: `wb run --projects-root <root>` must contend
+// for CPU admission against slots held under that exact root — never
+// against cwd, this binary's default root, or an isolated test queue. If
+// cmd/wb/run.go ever passed something other than the caller's own
+// --projects-root value into CPU admission (the reviewer's own mutation:
+// swapping projectsRoot for cwd in the admitWithQueueVisibility call), the
+// inner call below would be admitted immediately instead of staying queued
+// behind the pre-held slots, and this test would fail.
+func TestRunCommandHonorsExplicitProjectsRootForCPUAdmission(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	// Force the small-machine legacy budget-sum pool so a small, fixed
+	// budget is easy to fully occupy — see the same comment on
+	// TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted.
+	defer runqueue.SetNumCPUForTest(4)()
+	dir := t.TempDir()
+	trivialGoModule(t, dir)
+	t.Chdir(dir)
+	withHostLoad(t, 0.01)
+
+	root := t.TempDir()
+	budget := runqueue.Budget()
+	held, _, err := runqueue.Acquire(context.Background(), root, budget, budget)
+	if err != nil {
+		t.Fatalf("simulate an outer holder of root's own queue: %v", err)
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		done <- run([]string{"run", "--projects-root", root, "--", "go", "vet", "./..."}, &stdout, &stderr)
+	}()
+	drained := false
+	t.Cleanup(func() {
+		held.Release()
+		if drained {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Log("inner `wb run --projects-root` goroutine did not finish after cleanup released the held slots; it may leak past this test")
+		}
+	})
+
+	// The inner call must NOT be admitted while every slot under root is
+	// held: give it a short, generous window to prove it stays queued
+	// rather than racing a real admission decision.
+	select {
+	case code := <-done:
+		drained = true
+		t.Fatalf("inner `wb run --projects-root %s` was admitted (exit %d) while every slot under that exact root was held — it is not contending against the root it was told to use", root, code)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	held.Release()
+
+	select {
+	case code := <-done:
+		drained = true
+		if code != exitOK {
+			t.Fatalf("inner `wb run --projects-root` exit code = %d, want 0 after the held slots were released", code)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("inner `wb run --projects-root` never completed after the held slots were released")
 	}
 }
 

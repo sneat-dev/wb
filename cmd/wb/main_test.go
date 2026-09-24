@@ -67,23 +67,34 @@ func TestMain(m *testing.M) {
 	testenv.GitAutoMaintenanceOffProcess()
 	// Give this whole test binary its own CPU admission queue, isolated
 	// from the real, machine-wide one (internal/runqueue) rooted at
-	// whatever projectsRoot this process would otherwise resolve. Without
-	// this, a test that itself invokes `wb run --` in-process (e.g.
+	// whatever projectsRoot this process would otherwise resolve by
+	// default (no explicit --projects-root). Without this, a test that
+	// itself invokes `wb run --` in-process with no explicit root (e.g.
 	// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins the very same
 	// queue an outer `wb run -- go test ./cmd/wb/...` already holds a
 	// slot in, and waits behind its own outer holder forever — the known
 	// deadlock this package's own tests hit on this VM (sneat-dev/wb#623).
-	// See runqueue.SetQueueRootForTest.
+	// The override is keyed to defaultProjectsRoot()'s result, captured
+	// here before any test runs, so a test that passes its OWN explicit
+	// --projects-root (e.g. TestRunCommandReportsQueueVisibilityOnStderr)
+	// is unaffected and keeps contending for its own real, unoverridden
+	// queue directory (PR #736 review finding B1). See
+	// runqueue.SetQueueRootForTest.
+	//
+	// A failure to create the isolation directory must not let the suite
+	// run un-isolated — that silently brings back the deadlock this
+	// isolation exists to prevent (a hang, not a clean failure) — so exit
+	// non-zero instead of merely warning.
+	fromRoot := defaultProjectsRoot()
 	queueDir, queueDirErr := os.MkdirTemp("", "wb-test-cpu-queue-")
 	if queueDirErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not isolate test CPU admission queue: %v\n", queueDirErr)
-	} else {
-		runqueue.SetQueueRootForTest(queueDir)
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate test CPU admission queue: %v\n", queueDirErr)
+		os.Exit(1)
 	}
+	restoreQueueRoot := runqueue.SetQueueRootForTest(fromRoot, queueDir)
 	code := m.Run()
-	if queueDir != "" {
-		_ = os.RemoveAll(queueDir)
-	}
+	restoreQueueRoot()
+	_ = os.RemoveAll(queueDir)
 	os.Exit(code)
 }
 

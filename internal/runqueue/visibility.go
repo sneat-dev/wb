@@ -96,34 +96,47 @@ type State struct {
 
 var ticketSeq int64
 
-// queueRootOverride, when non-empty, replaces the projectsRoot-derived
-// directory every admission call in this package (Acquire, Admit,
-// AdmitExplicit, Register, RegisterHeavy, and their read-only Peek/Snapshot
-// counterparts) resolves its queue state against, regardless of the
-// projectsRoot each caller passes. It exists only so cmd/wb's own tests can
-// give the whole test binary an isolated CPU admission queue, separate
-// from the real, machine-wide one an outer `wb run -- go test
-// ./cmd/wb/...` invocation already holds a slot in — without it, a test
-// that itself calls into `wb run --` (e.g.
+// queueRootOverrideFrom/queueRootOverrideTo, when queueRootOverrideFrom is
+// non-empty, replace the projectsRoot-derived directory every admission call
+// in this package (Acquire, Admit, AdmitExplicit, Register, RegisterHeavy,
+// and their read-only Peek/Snapshot counterparts) resolves its queue state
+// against, but ONLY when the projectsRoot a caller passes is exactly equal
+// to queueRootOverrideFrom — every other projectsRoot keeps resolving to its
+// own, real, unoverridden directory. It exists only so cmd/wb's own tests
+// can give the one, specific projectsRoot the test binary would otherwise
+// default to (see TestMain, which keys it to defaultProjectsRoot()) an
+// isolated CPU admission queue, separate from the real, machine-wide one an
+// outer `wb run -- go test ./cmd/wb/...` invocation already holds a slot in
+// — without it, a test that itself calls into `wb run --` (e.g.
 // TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins that same queue and
 // waits behind its own outer holder forever (sneat-dev/wb#623's own
-// deadlock on this VM). Production code must never assign it; only
-// SetQueueRootForTest, meant to be called from a package's TestMain, does.
-var queueRootOverride string
+// deadlock on this VM). The override is keyed, rather than blanket, so a
+// test that explicitly passes its own `--projects-root`/t.TempDir() (e.g.
+// TestRunCommandReportsQueueVisibilityOnStderr) keeps contending for that
+// root's real, unoverridden queue directory — proving `wb run` still wires
+// --projects-root into CPU admission (PR #736 review finding B1). Production
+// code must never assign either var; only SetQueueRootForTest, meant to be
+// called from a package's TestMain or from a test itself, does.
+var (
+	queueRootOverrideFrom string
+	queueRootOverrideTo   string
+)
 
-// SetQueueRootForTest overrides the directory queueRoot resolves to for
-// every projectsRoot, returning a restore func. See queueRootOverride.
-// Production code must never call this; it exists for TestMain the same
-// way SetNumCPUForTest exists for tests that need a specific NumCPU.
-func SetQueueRootForTest(dir string) (restore func()) {
-	previous := queueRootOverride
-	queueRootOverride = dir
-	return func() { queueRootOverride = previous }
+// SetQueueRootForTest overrides the directory queueRoot resolves to, but
+// only for the exact fromProjectsRoot given — every other projectsRoot is
+// unaffected. It returns a restore func. See queueRootOverrideFrom/
+// queueRootOverrideTo. Production code must never call this; it exists for
+// TestMain and for tests the same way SetNumCPUForTest exists for tests
+// that need a specific NumCPU.
+func SetQueueRootForTest(fromProjectsRoot, dir string) (restore func()) {
+	previousFrom, previousTo := queueRootOverrideFrom, queueRootOverrideTo
+	queueRootOverrideFrom, queueRootOverrideTo = fromProjectsRoot, dir
+	return func() { queueRootOverrideFrom, queueRootOverrideTo = previousFrom, previousTo }
 }
 
 func queueRoot(projectsRoot string) string {
-	if queueRootOverride != "" {
-		return queueRootOverride
+	if queueRootOverrideFrom != "" && projectsRoot == queueRootOverrideFrom {
+		return queueRootOverrideTo
 	}
 	return filepath.Join(projectsRoot, ".wb", "runtime", "cpu")
 }
