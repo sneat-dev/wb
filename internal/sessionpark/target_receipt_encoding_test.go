@@ -2,6 +2,7 @@ package sessionpark
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,7 +25,8 @@ func TestTargetStoreSaveReceiptUnderLockReportsEncodingFailure(t *testing.T) {
 	receipt := spCovTargetReceipt(t, admission)
 	receipt.StartedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, _, err := store.SaveReceiptUnderLock(lock, request, admission.Digest, receipt); err == nil {
-		t.Fatal("SaveReceiptUnderLock accepted a started_at year outside [0, 9999], want an encoding error")
+	if _, _, err := store.SaveReceiptUnderLock(lock, request, admission.Digest, receipt); err == nil ||
+		!strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
+		t.Fatalf("SaveReceiptUnderLock(started_at year 10000) = %v, want a %q error", err, wantYearOutOfRangeSubstring)
 	}
 }

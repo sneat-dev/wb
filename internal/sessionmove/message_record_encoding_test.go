@@ -2,9 +2,16 @@ package sessionmove
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
+
+// wantYearOutOfRangeSubstring is the substring encoding/json's
+// time.Time.MarshalJSON puts in its error when a time.Time's year falls
+// outside [0, 9999] -- the shared assertion every encoding-failure test in
+// this file checks for, instead of a bare err != nil.
+const wantYearOutOfRangeSubstring = "year outside of range"
 
 // TestAdmitIncomingMessageReportsRecordEncodingFailure drives
 // admitMessageUnderLock's marshalJSON(record) error branch (message.go):
@@ -40,8 +47,9 @@ func TestAdmitIncomingMessageReportsRecordEncodingFailure(t *testing.T) {
 	}
 	unencodableRecordedAt := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, err := store.AdmitIncomingMessageUnderLock(lock, request.HandoffID, digest, messageRaw, unencodableRecordedAt); err == nil {
-		t.Fatal("AdmitIncomingMessageUnderLock accepted a recorded_at year outside [0, 9999], want an encoding error")
+	if _, err := store.AdmitIncomingMessageUnderLock(lock, request.HandoffID, digest, messageRaw, unencodableRecordedAt); err == nil ||
+		!strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
+		t.Fatalf("AdmitIncomingMessageUnderLock(recorded_at year 10000) = %v, want a %q error", err, wantYearOutOfRangeSubstring)
 	}
 }
 
@@ -87,8 +95,9 @@ func TestSaveIncomingPasteIntentReportsEncodingFailure(t *testing.T) {
 		RecipientWBSessionID: message.RecipientWBSessionID, TmuxName: "wb-session-wbs-successor",
 		PaneID: "%7", PID: 1234, IntendedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	if _, _, err := store.SaveIncomingPasteIntentUnderLock(lock, request.HandoffID, digest, intent); err == nil {
-		t.Fatal("SaveIncomingPasteIntentUnderLock accepted an intended_at year outside [0, 9999], want an encoding error")
+	if _, _, err := store.SaveIncomingPasteIntentUnderLock(lock, request.HandoffID, digest, intent); err == nil ||
+		!strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
+		t.Fatalf("SaveIncomingPasteIntentUnderLock(intended_at year 10000) = %v, want a %q error", err, wantYearOutOfRangeSubstring)
 	}
 }
 
@@ -130,7 +139,8 @@ func TestSaveOutgoingMessageReceiptReportsEncodingFailure(t *testing.T) {
 
 	receipt := validMessageReceipt(message, messageDigest)
 	receipt.PastedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, _, err := store.SaveOutgoingMessageReceiptUnderLock(lock, request.HandoffID, digest, receipt); err == nil {
-		t.Fatal("SaveOutgoingMessageReceiptUnderLock accepted a pasted_at year outside [0, 9999], want an encoding error")
+	if _, _, err := store.SaveOutgoingMessageReceiptUnderLock(lock, request.HandoffID, digest, receipt); err == nil ||
+		!strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
+		t.Fatalf("SaveOutgoingMessageReceiptUnderLock(pasted_at year 10000) = %v, want a %q error", err, wantYearOutOfRangeSubstring)
 	}
 }
