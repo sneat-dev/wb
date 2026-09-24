@@ -25,8 +25,22 @@ import (
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
+// osExit is os.Exit behind a seam: main is otherwise a single statement that
+// no in-process test could observe, since a real os.Exit would tear down the
+// test binary before it could report the result. Every other exit path lives
+// in run, which is tested directly; this seam exists only so main's own
+// statement is exercised too, matching this package's from-zero coverage
+// baseline (spec/plans/coverage-to-100/README.md task-3: a brand-new package
+// has no grandfathered-uncovered lines, unlike cmd/wb/main.go's main).
+var osExit = os.Exit
+
+// moduleRootResolver is quality.ParallelGuardModuleRoot behind a seam so a
+// test can force run's error path without depending on the real working
+// directory being outside any Go module.
+var moduleRootResolver = quality.ParallelGuardModuleRoot
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run implements the whole command against injected argv and output
@@ -40,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	root, err := quality.ParallelGuardModuleRoot()
+	root, err := moduleRootResolver()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "parallelbaseline:", err)
 		return 2

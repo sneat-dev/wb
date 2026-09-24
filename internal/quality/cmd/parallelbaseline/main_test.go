@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,5 +218,64 @@ func TestRunReportsAnUnknownFlag(t *testing.T) {
 	code := run([]string{"-not-a-real-flag"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("run([-not-a-real-flag]) = %d, want 2", code)
+	}
+}
+
+// TestRunReportsAModuleRootResolutionFailure exercises run's own error
+// branch around moduleRootResolver, which the real ParallelGuardModuleRoot
+// only takes when go.mod cannot be found walking up from the caller -- not
+// reproducible from inside this module's own test binary. The seam lets the
+// failure be forced directly instead.
+//
+// concurrent test resolving the real root during this window would race it.
+//
+//nolint:paralleltest // mutates the package-level moduleRootResolver seam; a
+func TestRunReportsAModuleRootResolutionFailure(t *testing.T) {
+	original := moduleRootResolver
+	defer func() { moduleRootResolver = original }()
+	moduleRootResolver = func() (string, error) {
+		return "", errors.New("no go.mod found")
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(nil, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("run(nil) = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "no go.mod found") {
+		t.Fatalf("stderr = %q, want the resolver error", stderr.String())
+	}
+}
+
+// TestMainExitsWithRunsReturnCode exercises main's own statement, the one
+// line this package's from-zero coverage baseline (task-3) does not
+// grandfather away the way cmd/wb/main.go's main is: see the osExit seam's
+// doc comment. It forces an argv that makes run return a known, non-zero
+// code so the assertion is unambiguous.
+//
+//nolint:paralleltest // mutates os.Args and the package-level osExit seam.
+func TestMainExitsWithRunsReturnCode(t *testing.T) {
+	originalArgs := os.Args
+	originalExit := osExit
+	defer func() {
+		os.Args = originalArgs
+		osExit = originalExit
+	}()
+
+	os.Args = []string{"parallelbaseline", "-not-a-real-flag"}
+	var gotCode int
+	exited := false
+	osExit = func(code int) {
+		gotCode = code
+		exited = true
+	}
+
+	main()
+
+	if !exited {
+		t.Fatal("main() never called osExit")
+	}
+	if gotCode != 2 {
+		t.Fatalf("main() exit code = %d, want 2", gotCode)
 	}
 }
