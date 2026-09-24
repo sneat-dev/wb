@@ -99,7 +99,8 @@ The sequence follows from that ranking. Task 1 is the start gate. The CI-policy 
 **Lane cap (amended 2026-09-24 by founder decisions 14–16; these amendments supersede the original scheduling text below).**
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
 - Task-9 starts as soon as task-4 lands, ahead of tasks 5–7 (decision 16).
-- W1 (task-14) already started early for five packages (decision 14).
+- W1 (task-14) already started early for five packages (decision 14); its lanes finished with #719/#720, so task-14 has no running lane until a wave slot frees.
+- As of #646 landing (2026-09-24), the 3 Go lanes are task-5, task-6 and task-9. The #731 race-workflow lane (task-21) edits CI YAML and waits on CI; it runs no local Go tests.
 - The original text follows for its reasoning.
 
 *Original:* The founder's standing VM cap applies to every task in this plan, not only the waves: at most 3 concurrent lanes, at most 2 of them Go lanes (`VM resource limits` memory). A concrete scheduling risk: once task-4 (#646) lands, task-5 (cmd/wb context refactor) and task-6 (run-queue seam + #582 fix) both become ready at once — that is already 2 Go lanes, so nothing else Go-lane-sized should start until one of them frees a lane. Once task-7 (hermetic tests) then lands, tasks 8, 9, 10 (three more Go refactor lanes), task-13 (failing-writer helper + cross-package diagnostic), and wave W1 (task-14, long-tail A) all become ready at once — more than 2 Go lanes' worth of ready work. Wave W2 (task-15, long-tail B) is not among them: it depends on task-11 for its one seam-needing package (`internal/hooks`), so it is not ready until task-11 lands. Schedule Go lanes in this order to respect the cap: land task-5 and task-6 together first (2 Go lanes); once task-7 lands, land task-8 (git/exec runner) and task-9 (file-write primitive) together next (2 Go lanes), then task-10 (clock/sleep seam) or task-13 (failing-writer + diagnostic) once one of those frees a lane, then start wave W1 (task-14) opportunistically in whatever Go lane is free — it needs no refactor seam. Wave W2 (task-15) becomes startable once task-11 lands. Do not start task-11, task-12 or task-19 until their own `Depends-On` tasks are landed, even if a lane is idle.
@@ -172,7 +173,7 @@ Docs this task must also update, because tests enforce them: `AGENTS.md:84` (the
 **Id:** task-4
 **Depends-On:** task-3
 **Status:** complete
-**Note:** Landed #646 (80c880f): injected retry/backoff delays, t.Parallel() by default
+**Note:** Landed #646 (80c880f): injected retry/backoff delays, t.Parallel() by default. Post-merge Go CI push run 36061108352 on 80c880f is green; Tests and coverage (8 shards) took 7m41s against its 45m budget.
 **Evidence:** https://github.com/sneat-dev/wb/pull/646
 **Verifies:** PR #646 is merged; `wb ci audit --target main --strict` still exits 0 after the merge; the coverage-shard jobs it touches complete within their `timeout-minutes` budget.
 
@@ -291,7 +292,7 @@ Add a shared failing `io.Writer` test helper, worth about 160 statements. Run `-
 
 Seven smaller packages, 731 uncovered statements, to 100%. This wave needs no refactor seam (tasks 8–13): it depends only on the ratchet (task-3) and hermetic tests (task-7). Production-code edits in this wave are forbidden except where a package's own existing structure already supports a test without a shared seam; if a package turns out to need one of tasks 8–13's seams, it moves to a later wave rather than improvising a local one. `internal/hooks` (85 uncovered) is such a package — it contains `RunSecureHooksGitHelper`, one of task-8's allow-listed fd-inheriting helpers, so it moved to task-15 (W2), which depends on task-11, instead of staying here; that move is what keeps this wave seam-free.
 
-Progress (early start, founder decision 14): #719 and #720 landed on 2026-09-24. Uncovered statements, measured from CI coverage profiles against main's published baseline. These CI counts differ by one to four statements from the 2026-09-23 local counts in the Verifies line above:
+Progress (early start, founder decision 14): #719 and #720 landed on 2026-09-24. Uncovered statements, measured from CI coverage profiles against main's published baseline. These CI counts differ by at most four statements from the 2026-09-23 local counts in the Verifies line above (runqueue: 96 local vs 92 CI; sessionlaunch and daemon match):
 
 | Package | Before | After |
 |---|---:|---:|
@@ -374,7 +375,7 @@ Founder decision 13. The ratchet (task-3) turns coverage that varies between ide
 Still open:
 - #505's `cmd/wb` half.
 - #728: the full race workflow is red on main, from a data race in a `prinventory` test fake and `orchestrate` exceeding 40m under `-race`. #731 (in review) shards it and fixes the fake.
-- #733: parallel `cmd/wb` tests race on the five package-level invocation globals in `cmd/wb/main.go`, so the race workflow's non-orchestrate/worktrees shard stays red until task-5 removes them.
+- #733: parallel `cmd/wb` tests race on the five package-level invocation globals in `cmd/wb/main.go`, so the race workflow's `cmd/wb` run can stay red (the race is scheduling-dependent) until task-5 removes them.
 - A final eight-run re-probe.
 
 Production changes go through their own behaviour-preserving refactor PRs first (decision 3); a fix that makes coverage depend on a sleep instead of a barrier does not count. This pulls #504/#539 forward from task-7 and #505 forward from task-10.
