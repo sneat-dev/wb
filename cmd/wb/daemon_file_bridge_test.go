@@ -533,6 +533,40 @@ func TestDaemonFileBridgeCleansStaleValidAndOrphanedEnvelopes(t *testing.T) {
 	}
 }
 
+func TestDaemonFileBridgeStaleRequestSweepLeavesNonRequestEntries(t *testing.T) {
+	root := daemonTestRoot(t)
+	server, err := newDaemonFileBridgeServer(root, "owner-token", "50", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The requests directory can also hold diagnostics and nested directories.
+	// Neither is a request envelope, even when it is older than the sweep age.
+	textPath := filepath.Join(server.requests, "notes.txt")
+	if err := os.WriteFile(textPath, []byte("keep diagnostics\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directoryPath := filepath.Join(server.requests, "nested.json")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-daemonFileBridgeRequestAge - time.Hour)
+	if err := os.Chtimes(textPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(directoryPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.cleanupStale(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(textPath); err != nil || string(content) != "keep diagnostics\n" {
+		t.Fatalf("non-JSON diagnostic changed during request sweep: %q, %v", content, err)
+	}
+	if info, err := os.Stat(directoryPath); err != nil || !info.IsDir() {
+		t.Fatalf("nested directory changed during request sweep: %v, %v", info, err)
+	}
+}
+
 func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
 	root := daemonTestRoot(t)
 	called := 0
