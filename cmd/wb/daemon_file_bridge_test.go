@@ -567,6 +567,60 @@ func TestDaemonFileBridgeStaleRequestSweepLeavesNonRequestEntries(t *testing.T) 
 	}
 }
 
+// TestDaemonFileBridgeScanIgnoresNonRequestEntriesButProcessesValidRequest
+// proves scan's directory/non-".json" guard is not just defensive: a
+// subdirectory and a stray non-".json" file can legitimately sit in the
+// requests directory (diagnostics, a temp file mid-write elsewhere) at the
+// same time as a real request envelope, and scan must skip the former
+// untouched while still discovering and processing the latter.
+func TestDaemonFileBridgeScanIgnoresNonRequestEntriesButProcessesValidRequest(t *testing.T) {
+	root := daemonTestRoot(t)
+	called := 0
+	server, err := newDaemonFileBridgeServer(root, "owner-token", "52", http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		called++
+		writer.WriteHeader(http.StatusOK)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Mkdir(filepath.Join(server.requests, "a-subdirectory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(server.requests, "foo.tmp"), []byte("not a request\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := proto.Marshal(&daemonv1.GetDaemonInfoRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "ignores-non-request-entries", SchedulerGeneration: "52", Procedure: daemonv1connect.DaemonServiceGetDaemonInfoProcedure, Header: map[string][]string{"Content-Type": {"application/proto"}}, Body: body}
+	envelope.PayloadSHA256 = daemonFilePayloadDigest(envelope)
+	envelope.MAC = daemonFileEnvelopeMAC(envelope, server.key)
+	if err := writeDaemonFileEnvelope(server.requests, envelope.ID, envelope); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := server.scan(); err != nil {
+		t.Fatal(err)
+	}
+	server.wg.Wait()
+
+	if called != 1 {
+		t.Fatalf("handler calls = %d, want 1: the valid request must still be processed alongside the ignored entries", called)
+	}
+	if _, err := os.Stat(filepath.Join(server.responses, envelope.ID+".json")); err != nil {
+		t.Fatalf("valid request produced no response: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(server.requests, "a-subdirectory")); err != nil || !info.IsDir() {
+		t.Fatalf("directory entry in requests was disturbed by scan: %v, %v", info, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(server.requests, "foo.tmp")); err != nil || string(content) != "not a request\n" {
+		t.Fatalf("non-.json file in requests was disturbed by scan: %q, %v", content, err)
+	}
+}
+
 func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
 	root := daemonTestRoot(t)
 	called := 0
