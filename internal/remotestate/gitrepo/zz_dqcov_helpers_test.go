@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // dqCovBlockedLockClonePath returns a ClonePath whose parent directory is a
@@ -63,6 +65,7 @@ func dqCovEmptyBareOrigin(t *testing.T) string {
 	setGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	return origin
 }
 
