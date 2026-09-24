@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseNormalizesHostedAndExactLocalIdentities(t *testing.T) {
+	t.Parallel()
 	httpsRemote := mustParse(t, "https://github.com/acme/app.git")
 	sshRemote := mustParse(t, "ssh://github.com/acme/app.git")
 	sshGitRemote := mustParse(t, "ssh://git@github.com/acme/app.git")
@@ -32,6 +33,7 @@ func TestParseNormalizesHostedAndExactLocalIdentities(t *testing.T) {
 }
 
 func TestParseRejectsUnsafeRemoteWithoutEchoingIt(t *testing.T) {
+	t.Parallel()
 	remotes := []string{
 		"ssh://other@github.com/acme/app.git",
 		"ssh://git:top-secret@github.com/acme/app.git",
@@ -46,6 +48,7 @@ func TestParseRejectsUnsafeRemoteWithoutEchoingIt(t *testing.T) {
 	}
 	for _, raw := range remotes {
 		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
 			if _, err := Parse(raw); err == nil {
 				t.Fatal("unsafe remote was accepted")
 			} else if strings.Contains(err.Error(), raw) || strings.Contains(err.Error(), "top-secret") {
@@ -69,6 +72,7 @@ func mustParse(t *testing.T, raw string) Remote {
 // reports no host at all. Callers rely on the empty string to tell a
 // published remote from a path that exists only on one machine.
 func TestIdentityHostSeparatesHostedFromLocalRemotes(t *testing.T) {
+	t.Parallel()
 	hosted := map[string]string{
 		"git@github.com:sneat-dev/wb.git":          "github.com",
 		"https://GitHub.com/sneat-dev/wb.git":      "github.com",

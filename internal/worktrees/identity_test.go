@@ -77,6 +77,7 @@ func TestAgentComposition(t *testing.T) {
 // The warning has to be actionable on its own: an agent reading it should not
 // need to consult docs to comply.
 func TestUndeclaredOwnerWarningNamesBothRoutes(t *testing.T) {
+	t.Parallel()
 	warning := UndeclaredOwnerWarning("/tmp/wt")
 
 	for _, want := range []string{

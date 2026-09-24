@@ -98,6 +98,7 @@ func TestLifecycleBacklogAcceptsIssue338DetachedReviewRecord(t *testing.T) {
 }
 
 func TestLifecycleBacklogRejectsIssue338RecordWithoutDetachedMarker(t *testing.T) {
+	t.Parallel()
 	_, poisoned := issue338RecordWithoutDetachedMarker(t)
 	var record lifecycleBacklogRecord
 	if err := json.Unmarshal(poisoned, &record); err != nil {

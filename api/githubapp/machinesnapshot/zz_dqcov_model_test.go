@@ -29,6 +29,7 @@ func dqCovRepositories(n int) []string {
 }
 
 func TestDqCovResolveLatestRejectsCrossMachineComparison(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	current := StoredSnapshot{Snapshot: validSnapshot(at), Digest: "current"}
 	candidate := current
@@ -45,6 +46,7 @@ func TestDqCovResolveLatestRejectsCrossMachineComparison(t *testing.T) {
 }
 
 func TestDqCovSnapshotValidateRejectsMalformedEnvelopeFields(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	for name, mutate := range map[string]func(*Snapshot){
 		"schema version":        func(snapshot *Snapshot) { snapshot.SchemaVersion = SchemaVersion + 1 },
@@ -58,6 +60,7 @@ func TestDqCovSnapshotValidateRejectsMalformedEnvelopeFields(t *testing.T) {
 		"too many repositories": func(snapshot *Snapshot) { snapshot.Repositories = dqCovRepositories(MaxRepositories + 1) },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			snapshot := validSnapshot(at)
 			mutate(&snapshot)
 			err := snapshot.Validate()
@@ -69,6 +72,7 @@ func TestDqCovSnapshotValidateRejectsMalformedEnvelopeFields(t *testing.T) {
 }
 
 func TestDqCovWorktreeValidateRejectsEachMalformedField(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(*Worktree){
 		"blank task":                     func(worktree *Worktree) { worktree.Task = "   " },
 		"blank repository":               func(worktree *Worktree) { worktree.Repository = "\t" },
@@ -102,6 +106,7 @@ func TestDqCovWorktreeValidateRejectsEachMalformedField(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			worktree := dqCovWorktree()
 			mutate(&worktree)
 			if err := worktree.validate(); err == nil {
@@ -112,6 +117,7 @@ func TestDqCovWorktreeValidateRejectsEachMalformedField(t *testing.T) {
 }
 
 func TestDqCovWorktreeValidateAcceptsACompleteWorktree(t *testing.T) {
+	t.Parallel()
 	worktree := dqCovWorktree()
 	worktree.TaskSummary = "one line summary"
 	worktree.Stream = "stream-1"
@@ -126,6 +132,7 @@ func TestDqCovWorktreeValidateAcceptsACompleteWorktree(t *testing.T) {
 }
 
 func TestDqCovNormalizeAttentionReasonMapsToTheHostedAllowlist(t *testing.T) {
+	t.Parallel()
 	for name, test := range map[string]struct {
 		needsAttention bool
 		value          string
@@ -140,6 +147,7 @@ func TestDqCovNormalizeAttentionReasonMapsToTheHostedAllowlist(t *testing.T) {
 		"unknown reason becomes the default":   {true, "/Users/alice/private output", AttentionReviewRequired},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := NormalizeAttentionReason(test.needsAttention, test.value); got != test.want {
 				t.Fatalf("NormalizeAttentionReason(%v, %q) = %q, want %q", test.needsAttention, test.value, got, test.want)
 			}
@@ -148,6 +156,7 @@ func TestDqCovNormalizeAttentionReasonMapsToTheHostedAllowlist(t *testing.T) {
 }
 
 func TestDqCovLooksLikeAbsolutePathRecognizesHostPathForms(t *testing.T) {
+	t.Parallel()
 	for value, want := range map[string]bool{
 		"/Users/alice/wb":   true,
 		"/":                 true,
@@ -167,6 +176,7 @@ func TestDqCovLooksLikeAbsolutePathRecognizesHostPathForms(t *testing.T) {
 }
 
 func TestDqCovPrintableRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
+	t.Parallel()
 	for name, test := range map[string]struct {
 		value string
 		want  bool
@@ -180,6 +190,7 @@ func TestDqCovPrintableRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
 		"invalid utf8":       {"latin1-\xff-byte", false},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := printable(test.value); got != test.want {
 				t.Fatalf("printable(%q) = %v, want %v", test.value, got, test.want)
 			}
@@ -188,6 +199,7 @@ func TestDqCovPrintableRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
 }
 
 func TestDqCovValidateIdentityEnforcesTheHostedIdentifier(t *testing.T) {
+	t.Parallel()
 	if err := ValidateIdentity("alice-1.2_3"); err != nil {
 		t.Fatalf("ValidateIdentity rejected a safe identity: %v", err)
 	}
@@ -200,6 +212,7 @@ func TestDqCovValidateIdentityEnforcesTheHostedIdentifier(t *testing.T) {
 		"with slash":  "ali/ce",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := ValidateIdentity(value); !errors.Is(err, ErrInvalidSnapshot) {
 				t.Fatalf("ValidateIdentity(%q) = %v, want ErrInvalidSnapshot", value, err)
 			}
@@ -208,6 +221,7 @@ func TestDqCovValidateIdentityEnforcesTheHostedIdentifier(t *testing.T) {
 }
 
 func TestDqCovSnapshotKeyRejectsAnInvalidMachine(t *testing.T) {
+	t.Parallel()
 	key, err := SnapshotKey("alice", "laptop-1")
 	if err != nil || !strings.HasPrefix(key, "machine_") {
 		t.Fatalf("SnapshotKey = (%q, %v), want a machine_ key", key, err)
@@ -218,6 +232,7 @@ func TestDqCovSnapshotKeyRejectsAnInvalidMachine(t *testing.T) {
 }
 
 func TestDqCovSortPublishedOrdersBySnapshotKey(t *testing.T) {
+	t.Parallel()
 	snapshots := []PublishedSnapshot{
 		{Snapshot: Snapshot{Login: "zoe", Machine: "laptop"}},
 		{Snapshot: Snapshot{Login: "alice", Machine: "laptop"}},

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // gpCovMakeUnreadable turns path into an entry every reader in this package
@@ -87,6 +89,7 @@ func gpCovRepo(t *testing.T, files map[string]string) string {
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	targetGit(t, root, "init", "-q", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	targetGit(t, root, "remote", "add", "origin", remote)
 	targetGit(t, root, "push", "-q", "origin", "main")
 	return root

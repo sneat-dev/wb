@@ -514,6 +514,7 @@ func TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath(t *testing.T) {
 // type itself must not grow a force. This is a contract test, not a style
 // preference — a force flag here would be a way to delete unpushed work.
 func TestGCHasNoForceShapedOption(t *testing.T) {
+	t.Parallel()
 	forbidden := []string{"force", "yes", "skipchecks", "noverify", "override"}
 	value := reflect.TypeOf(GCOptions{})
 	for index := 0; index < value.NumField(); index++ {
@@ -1283,6 +1284,7 @@ func TestActivityIgnoresATimestampInTheFuture(t *testing.T) {
 // A negative window is a mistake, and a silently inverted safety rule is the
 // worst possible response to one.
 func TestNegativeSessionFreshnessDisablesRatherThanInverts(t *testing.T) {
+	t.Parallel()
 	result := ListResult{LastActivityAt: time.Now()}
 	if checkoutIsInUse(result, GCOptions{SessionFreshness: -time.Hour}, time.Now()) {
 		t.Fatal("a negative window must disable the rule, not invert it")

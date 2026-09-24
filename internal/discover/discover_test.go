@@ -8,6 +8,7 @@ import (
 )
 
 func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{{Org: "oldco", Name: "app", Path: "/projects/oldco/app"}},
 		[]Repo{{Org: "newco", Name: "renamed", CloneURL: "git@github.com:newco/renamed.git"}},
@@ -22,6 +23,7 @@ func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.
 }
 
 func TestReconcileTransfersFoldsAnExistingDestinationClone(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{
 			{Org: "oldco", Name: "app", Path: "/projects/oldco/app"},
@@ -92,6 +94,7 @@ func TestIsArchivedFailsClosedOnGhError(t *testing.T) {
 }
 
 func TestReconcile(t *testing.T) {
+	t.Parallel()
 	local := []Repo{
 		{Org: "sneat-dev", Name: "wb", Path: "/p/sneat-dev/wb"},
 		{Org: "dalgo", Name: "only-local", Path: "/p/dalgo/only-local"},
@@ -133,6 +136,7 @@ func TestReconcile(t *testing.T) {
 }
 
 func TestReconcileSortedDeterministic(t *testing.T) {
+	t.Parallel()
 	got := Reconcile([]Repo{{Org: "z", Name: "b"}, {Org: "a", Name: "a"}}, nil)
 	if got[0].Slug() != "a/a" || got[1].Slug() != "z/b" {
 		t.Errorf("not sorted by slug: %v", got)
@@ -140,6 +144,7 @@ func TestReconcileSortedDeterministic(t *testing.T) {
 }
 
 func TestScanLocalExcludesLinkedWorktrees(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	organization := filepath.Join(projectsRoot, "acme")
 	canonical := filepath.Join(organization, "widgets")

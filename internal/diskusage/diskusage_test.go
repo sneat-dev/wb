@@ -18,6 +18,7 @@ func writeFile(t *testing.T, path string, size int) {
 }
 
 func TestMeasureCountsRegularFilesOnce(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.bin"), 4096)
 	writeFile(t, filepath.Join(root, "nested", "b.bin"), 8192)
@@ -38,6 +39,7 @@ func TestMeasureCountsRegularFilesOnce(t *testing.T) {
 }
 
 func TestMeasureCountsAHardLinkedInodeOnlyOnce(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	original := filepath.Join(root, "store", "pkg.bin")
 	writeFile(t, original, 16384)
@@ -67,6 +69,7 @@ func TestMeasureCountsAHardLinkedInodeOnlyOnce(t *testing.T) {
 // is hard-linked into a store outside the worktree, so the apparent size
 // promises a reclaim the deletion cannot deliver.
 func TestMeasureExcludesBytesSharedWithAnInodeOutsideTheTree(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	store := filepath.Join(parent, "store")
 	writeFile(t, filepath.Join(store, "pkg.bin"), 32768)
@@ -95,6 +98,7 @@ func TestMeasureExcludesBytesSharedWithAnInodeOutsideTheTree(t *testing.T) {
 }
 
 func TestMeasureIgnoresSymlinksAndDoesNotFollowThem(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	writeFile(t, filepath.Join(parent, "outside", "big.bin"), 65536)
 	tree := filepath.Join(parent, "tree")
@@ -116,6 +120,7 @@ func TestMeasureIgnoresSymlinksAndDoesNotFollowThem(t *testing.T) {
 }
 
 func TestMeasureReportsZeroForAMissingPath(t *testing.T) {
+	t.Parallel()
 	usage, err := Measure(context.Background(), filepath.Join(t.TempDir(), "absent"))
 	if err != nil {
 		t.Fatalf("a path that is not there is an answer, not a failure: %v", err)
@@ -126,6 +131,7 @@ func TestMeasureReportsZeroForAMissingPath(t *testing.T) {
 }
 
 func TestMeasureStopsWhenTheContextIsCancelled(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for i := 0; i < 64; i++ {
 		writeFile(t, filepath.Join(root, "d", string(rune('a'+i%26)), "f.bin"), 128)
@@ -138,6 +144,7 @@ func TestMeasureStopsWhenTheContextIsCancelled(t *testing.T) {
 }
 
 func TestAddSumsTwoMeasurements(t *testing.T) {
+	t.Parallel()
 	total := Usage{ApparentBytes: 10, UnsharedBytes: 4, SharedBytes: 6, Files: 1}
 	total = total.Add(Usage{ApparentBytes: 5, UnsharedBytes: 5, Files: 2})
 	if total != (Usage{ApparentBytes: 15, UnsharedBytes: 9, SharedBytes: 6, Files: 3}) {
@@ -146,6 +153,7 @@ func TestAddSumsTwoMeasurements(t *testing.T) {
 }
 
 func TestHumanBytesRendersBothFigures(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		bytes int64
 		want  string
@@ -167,6 +175,7 @@ func TestHumanBytesRendersBothFigures(t *testing.T) {
 // counted twice; and because neither tree owns every link, neither counts it as
 // unshared even though removing both would return the blocks.
 func TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	first := filepath.Join(parent, "worktree-a")
 	second := filepath.Join(parent, "worktree-b")
@@ -208,6 +217,7 @@ func TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce(t *testing.T) {
 }
 
 func TestWalkTotalForASubsetKeepsTheSharedInodeShared(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	first := filepath.Join(parent, "worktree-a")
 	second := filepath.Join(parent, "worktree-b")

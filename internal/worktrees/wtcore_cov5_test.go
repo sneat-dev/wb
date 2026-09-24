@@ -99,6 +99,7 @@ func TestWTCoreCovResidueRemovesOnlyTheExactHeldCheckout(t *testing.T) {
 // the exact cause a caller inspects with errors.Is, and a nil error unwraps to
 // nothing.
 func TestWTCoreCovCreatePublicationErrorUnwrap(t *testing.T) {
+	t.Parallel()
 	var absent *CreatePublicationError
 	if absent.Unwrap() != nil {
 		t.Fatal("a nil publication error unwrapped to a cause")
@@ -191,6 +192,7 @@ func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t
 // identity gate routes each recorded successor acquisition through the digest
 // rule that owns it, accepting none of them when the recorded ID is wrong.
 func TestWTCoreCovValidateOrphanedClaimIdentitySuccessorShapes(t *testing.T) {
+	t.Parallel()
 	successor := func(version int, via string) workLogClaim {
 		return workLogClaim{
 			Version: version, Lifecycle: "active", EffortID: "task", RunID: "run",
@@ -211,6 +213,7 @@ func TestWTCoreCovValidateOrphanedClaimIdentitySuccessorShapes(t *testing.T) {
 		{name: "recycled failure", via: "recycle_failed"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if err := validateOrphanedClaimIdentity(successor(2, testCase.via)); err == nil {
 				t.Fatal("a successor claim with a mismatched digest was accepted")
 			}

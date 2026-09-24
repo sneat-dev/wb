@@ -55,6 +55,7 @@ func (reader *dqCovRecordReader) Next() (record.Record, error) {
 // caller's element type: Query must report the failure and leave the target
 // slice untouched rather than storing a half-decoded result.
 func TestDqCovQueryReportsAGenericRowItCannotDecode(t *testing.T) {
+	t.Parallel()
 	store := dalgostore.New(dqCovGenericRowsDB{rows: []any{
 		map[string]any{"name": "alpha", "kind": "gear", "count": 3},
 		map[string]any{"name": "beta", "kind": "spring", "count": "not-a-number"},
@@ -76,6 +77,7 @@ func TestDqCovQueryReportsAGenericRowItCannotDecode(t *testing.T) {
 // the same contract: an adapter that returns generic map rows still produces
 // the caller's structs.
 func TestDqCovQueryDecodesGenericRowsIntoTheTargetSlice(t *testing.T) {
+	t.Parallel()
 	store := dalgostore.New(dqCovGenericRowsDB{rows: []any{
 		map[string]any{"name": "alpha", "kind": "gear", "count": 3},
 		map[string]any{"name": "beta", "kind": "spring", "count": 5},

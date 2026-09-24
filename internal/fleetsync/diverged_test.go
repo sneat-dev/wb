@@ -48,6 +48,7 @@ func clone(t *testing.T, origin, dest string) {
 }
 
 func TestSyncReportsDivergenceRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	before := revParse(t, local, "HEAD")
 
@@ -71,6 +72,7 @@ func TestSyncReportsDivergenceRatherThanFailing(t *testing.T) {
 // The local commit must survive: --ff-only means sync can never absorb a
 // divergence into a merge commit, whatever pull.rebase says on this machine.
 func TestSyncLeavesDivergedLocalCommitInPlace(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	git(t, local, "config", "pull.rebase", "false")
 
@@ -91,6 +93,7 @@ func TestSyncLeavesDivergedLocalCommitInPlace(t *testing.T) {
 
 // A branch tracking nothing has nowhere to pull from. Reportable, not fatal.
 func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	git(t, local, "switch", "-q", "-c", "detour")
 
@@ -110,6 +113,7 @@ func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
 // Behind-only is the ordinary case; the new classification must not stop it
 // from fast-forwarding.
 func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -134,6 +138,7 @@ func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
 }
 
 func TestDivergedAndNoUpstreamStatusStrings(t *testing.T) {
+	t.Parallel()
 	if got := Diverged.String(); got != "diverged" {
 		t.Fatalf("Diverged.String() = %q, want %q", got, "diverged")
 	}

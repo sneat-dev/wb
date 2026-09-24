@@ -52,6 +52,7 @@ func gitFixture(t *testing.T) (root string, git ExecGit) {
 }
 
 func TestExecGitReadsBranchesTagsAndUnabsorbedCommits(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
@@ -107,6 +108,7 @@ func TestExecGitReadsBranchesTagsAndUnabsorbedCommits(t *testing.T) {
 // Every child a stream verb starts is bounded: a hang is reported as a
 // failure, never left to hold the captured output pipe forever.
 func TestRunBoundedReportsATimeoutRatherThanHanging(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("sleep is not installed")
 	}
@@ -150,6 +152,7 @@ func TestRunBoundedRedactsCredentialsFromCommandArguments(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			mode := "fail"
 			if test.wantTimeout {
 				mode = "timeout"
@@ -174,6 +177,7 @@ func TestRunBoundedRedactsCredentialsFromCommandArguments(t *testing.T) {
 }
 
 func TestRunBoundedCredentialHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("WB_RUN_BOUNDED_CREDENTIAL_HELPER") != "1" {
 		return
 	}
@@ -188,6 +192,7 @@ func TestRunBoundedCredentialHelper(t *testing.T) {
 }
 
 func TestPullRequestJSONMapsOntoThePort(t *testing.T) {
+	t.Parallel()
 	raw := pullRequestJSON{
 		Number: 7, URL: "https://example.test/pull/7", Title: "t",
 		IsDraft: true, State: "OPEN", HeadRefName: "stream/x", BaseRefName: "main",
@@ -201,6 +206,7 @@ func TestPullRequestJSONMapsOntoThePort(t *testing.T) {
 }
 
 func TestPreflightChecksDeclaresItsPlanInRunOrder(t *testing.T) {
+	t.Parallel()
 	checks := PreflightChecks()
 	want := []string{CheckHooks, CheckNpmProviderIdentity, CheckRedMain, CheckStreamConcurrency}
 	if len(checks) != len(want) {
@@ -214,6 +220,7 @@ func TestPreflightChecksDeclaresItsPlanInRunOrder(t *testing.T) {
 }
 
 func TestInstalledHooksCheckerReportsAnUnreadableCheckoutAsAnError(t *testing.T) {
+	t.Parallel()
 	checker := InstalledHooksChecker("/nonexistent/wb", t.TempDir())
 	if _, err := checker(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("checking a checkout that does not exist reported no error")
@@ -244,6 +251,7 @@ func TestOpenResolvesTheStoreBelowTheProjectsRoot(t *testing.T) {
 // the intended commit landed, so PushBranch compares the local SHA with
 // origin's after pushing. Exercised against a real local bare remote.
 func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -304,8 +312,10 @@ func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
 }
 
 func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing.T) {
+	t.Parallel()
 	const branch = "stream/recovery"
 	t.Run("already absent is retired", func(t *testing.T) {
+		t.Parallel()
 		local, other := newPublishedStreamFixture(t)
 		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
 		runStreamGit(t, other, "push", "origin", "--delete", branch)
@@ -326,6 +336,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 	})
 
 	t.Run("advanced ref remains protected", func(t *testing.T) {
+		t.Parallel()
 		local, other := newPublishedStreamFixture(t)
 		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
 		runStreamGit(t, other, "checkout", branch)
@@ -348,6 +359,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 	})
 
 	t.Run("separate push destination remains protected", func(t *testing.T) {
+		t.Parallel()
 		local, fetchPeer := newPublishedStreamFixture(t)
 		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
 
@@ -385,6 +397,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 	})
 
 	t.Run("every configured push destination is verified", func(t *testing.T) {
+		t.Parallel()
 		local, _ := newPublishedStreamFixture(t)
 		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
 		pushRemotes := []string{
@@ -423,6 +436,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 // `wb stream join` must absorb that strictly newer remote head before it opens
 // the missing pull request; a plain push only reports non-fast-forward forever.
 func TestPushBranchFastForwardsABehindStreamCheckout(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	runStreamGit(t, other, "checkout", "stream/recovery")
 	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
@@ -445,6 +459,7 @@ func TestPushBranchFastForwardsABehindStreamCheckout(t *testing.T) {
 // Recovery may publish local work when it extends the fetched remote branch;
 // the remote-ahead repair must not turn that normal case into a no-op.
 func TestPushBranchPublishesALocalAheadStreamCheckout(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	commitStreamFile(t, local, "local.txt", "local\n", "feat: local advance")
 	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
@@ -460,6 +475,7 @@ func TestPushBranchPublishesALocalAheadStreamCheckout(t *testing.T) {
 }
 
 func TestPushBranchAcceptsAnAlreadyPublishedStreamCheckout(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	headBefore := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
 
@@ -474,6 +490,7 @@ func TestPushBranchAcceptsAnAlreadyPublishedStreamCheckout(t *testing.T) {
 }
 
 func TestPushBranchRefusesToFastForwardOverDirtyWork(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	runStreamGit(t, other, "checkout", "stream/recovery")
 	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
@@ -501,6 +518,7 @@ func TestPushBranchRefusesToFastForwardOverDirtyWork(t *testing.T) {
 // must neither force-push nor silently choose one while recovering a missing
 // pull request.
 func TestPushBranchRefusesADivergedStreamCheckout(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	commitStreamFile(t, local, "local.txt", "local\n", "feat: local advance")
 	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
@@ -570,6 +588,7 @@ func commitStreamFile(t *testing.T, dir, name, contents, message string) {
 // A push that cannot reach the remote is a failure, not a silently reported
 // success — and the error carries no credential.
 func TestPushBranchFailsWhenTheRemoteIsUnreachable(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}

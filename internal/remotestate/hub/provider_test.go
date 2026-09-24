@@ -22,6 +22,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
 
 func TestProviderPublishesPrivacySafeSnapshotAndRetriesGatewayFailure(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	attempts := 0
 	var published machinesnapshot.Snapshot
@@ -76,6 +77,7 @@ func TestProviderPublishesPrivacySafeSnapshotAndRetriesGatewayFailure(t *testing
 }
 
 func TestProviderPollsAndAcknowledgesRepositoryEventsWithStrictBounds(t *testing.T) {
+	t.Parallel()
 	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
@@ -113,6 +115,7 @@ func TestProviderPollsAndAcknowledgesRepositoryEventsWithStrictBounds(t *testing
 }
 
 func TestProviderUsesTokenFileAndListsSafeEntries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	tokenFile := filepath.Join(dir, "token")
 	if err := os.WriteFile(tokenFile, []byte("rotated-token\n"), 0o600); err != nil {
@@ -147,6 +150,7 @@ func TestProviderUsesTokenFileAndListsSafeEntries(t *testing.T) {
 }
 
 func TestProviderRejectsInsecureOrAmbiguousConfiguration(t *testing.T) {
+	t.Parallel()
 	for name, options := range map[string]Options{
 		"http":               {BaseURL: "http://hub.example", Machine: "laptop", Token: "token"},
 		"missing credential": {BaseURL: "https://hub.example", Machine: "laptop"},
@@ -160,11 +164,13 @@ func TestProviderRejectsInsecureOrAmbiguousConfiguration(t *testing.T) {
 }
 
 func TestProviderRejectsOversizedOrTrailingSuccessfulResponse(t *testing.T) {
+	t.Parallel()
 	for name, body := range map[string]string{
 		"oversized": strings.Repeat(" ", maxResponseBytes) + "{}",
 		"trailing":  `{"snapshots":[]} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return response(http.StatusOK, body), nil
 			})}
@@ -180,6 +186,7 @@ func TestProviderRejectsOversizedOrTrailingSuccessfulResponse(t *testing.T) {
 }
 
 func TestProviderDoesNotRetryAuthenticationFailureOrLeakCredential(t *testing.T) {
+	t.Parallel()
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		attempts++
@@ -203,6 +210,7 @@ func response(status int, body string) *http.Response {
 // the in-process provider a self-hosted daemon configures talks plain HTTP to
 // its own listener, and nothing else.
 func TestNewAcceptsALoopbackHTTPHub(t *testing.T) {
+	t.Parallel()
 	tokenFile := filepath.Join(t.TempDir(), "hub.token")
 	if err := os.WriteFile(tokenFile, []byte("token\n"), 0o600); err != nil {
 		t.Fatal(err)

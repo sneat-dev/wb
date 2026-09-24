@@ -21,6 +21,7 @@ func testExecutable(t *testing.T) string {
 }
 
 func TestBuildProducesAFixedArgvShape(t *testing.T) {
+	t.Parallel()
 	got := Build("hetzner-vm1", "", []string{"wb", "--internal"})
 	want := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "hetzner-vm1", "wb", "--internal"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
@@ -34,6 +35,7 @@ func TestBuildProducesAFixedArgvShape(t *testing.T) {
 }
 
 func TestResolveRefusesAnUnusableSSHExecutable(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	missing := filepath.Join(directory, "absent")
 
@@ -57,6 +59,7 @@ func TestResolveRefusesAnUnusableSSHExecutable(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := Resolve(testCase.lookPath); err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("Resolve error = %v, want it to mention %q", err, testCase.want)
 			}
@@ -73,6 +76,7 @@ func TestResolveRefusesAnUnusableSSHExecutable(t *testing.T) {
 }
 
 func TestExecRunnerCapturesOutputAndErrors(t *testing.T) {
+	t.Parallel()
 	runner := ExecRunner{}
 	stdout := NewLimitedBuffer(1024)
 	stderr := NewLimitedBuffer(1024)
@@ -89,6 +93,7 @@ func TestExecRunnerCapturesOutputAndErrors(t *testing.T) {
 }
 
 func TestLimitedBufferBoundsAndReportsOverflow(t *testing.T) {
+	t.Parallel()
 	buffer := NewLimitedBuffer(4)
 	written, err := buffer.Write([]byte("abcdef"))
 	if err != nil || written != 6 {
@@ -118,6 +123,7 @@ func TestLimitedBufferBoundsAndReportsOverflow(t *testing.T) {
 }
 
 func TestSanitizeDiagnosticIsOneBoundedLine(t *testing.T) {
+	t.Parallel()
 	got := SanitizeDiagnostic([]byte("line one\nline two\ttabbed"), false)
 	if got != "line one line two tabbed" {
 		t.Fatalf("SanitizeDiagnostic = %q", got)

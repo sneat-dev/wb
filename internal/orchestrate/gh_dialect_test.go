@@ -26,6 +26,7 @@ import (
 // both of those are exactly how the call would come back — reformatted by a
 // tool, or added below one that was already there.
 func TestNoSourceFileShellsOutToAGHDialectTheInstalledClientLacks(t *testing.T) {
+	t.Parallel()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	for _, directory := range []string{"internal", "cmd"} {
 		walkGoSourceFiles(t, filepath.Join(repoRoot, directory), func(path string, file *ast.File, fset *token.FileSet) {
@@ -148,6 +149,7 @@ func walkGoSourceFiles(t *testing.T, root string, visit func(path string, file *
 // Both evasions the previous line-based scanner allowed, as regressions: an
 // argument list split across lines, and a second occurrence in the same file.
 func TestDialectGuardCatchesSplitAndRepeatedArgumentLists(t *testing.T) {
+	t.Parallel()
 	source := `package sample
 
 func run(args ...string) {}

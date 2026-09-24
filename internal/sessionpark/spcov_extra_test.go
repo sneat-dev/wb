@@ -14,6 +14,7 @@ import (
 )
 
 func TestSpCovResumeSurfaceFailsClosed(t *testing.T) {
+	t.Parallel()
 	store := NewStore(spCovStoreRoot(t))
 	if _, err := store.Resume("..", session.Record{PID: 1, WBSessionID: "wbs-x"}, time.Now()); err == nil {
 		t.Fatal("resume with an invalid park ID accepted")
@@ -36,6 +37,7 @@ func TestSpCovResumeSurfaceFailsClosed(t *testing.T) {
 }
 
 func TestSpCovSourceAcquireRejectsMissingAggregateInPrivateStore(t *testing.T) {
+	t.Parallel()
 	store := NewStore(spCovStoreRoot(t))
 	if _, err := store.Acquire(context.Background(), "park-test"); err == nil {
 		t.Fatal("missing aggregate acquired from a valid private store root")
@@ -43,7 +45,9 @@ func TestSpCovSourceAcquireRejectsMissingAggregateInPrivateStore(t *testing.T) {
 }
 
 func TestSpCovLoadRejectsTamperedBundleEncoding(t *testing.T) {
+	t.Parallel()
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		path := filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceBundleFileName)
 		spCovWriteRaw(t, path, []byte("{not json"), 0o600)
@@ -52,6 +56,7 @@ func TestSpCovLoadRejectsTamperedBundleEncoding(t *testing.T) {
 		}
 	})
 	t.Run("noncanonical JSON", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		compact, err := json.Marshal(bundle)
 		if err != nil {
@@ -66,6 +71,7 @@ func TestSpCovLoadRejectsTamperedBundleEncoding(t *testing.T) {
 }
 
 func TestSpCovClaimResumeRouteRefusesResumedAggregateWithoutMarker(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
@@ -85,6 +91,7 @@ func TestSpCovClaimResumeRouteRefusesResumedAggregateWithoutMarker(t *testing.T)
 }
 
 func TestSpCovRemoteAdmissionRequiresClaimedRoute(t *testing.T) {
+	t.Parallel()
 	store := NewStore(spCovStoreRoot(t))
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -104,6 +111,7 @@ func TestSpCovRemoteAdmissionRequiresClaimedRoute(t *testing.T) {
 }
 
 func TestSpCovUnderLockLoadFailsWhenEventEvidenceIsMissing(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	eventsDir := filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceEventsDirName)

@@ -61,6 +61,7 @@ func providerDocument(public bool) ProjectionDocument {
 }
 
 func TestProjectionKeyAndValidation(t *testing.T) {
+	t.Parallel()
 	key := ProjectionKey(ScopeRepository, "github.com/acme/widgets")
 	if key == "" || key == ProjectionKey(ScopeRepository, "github.com/acme/other") {
 		t.Fatal("projection key is not stable or unique")
@@ -77,6 +78,7 @@ func TestProjectionKeyAndValidation(t *testing.T) {
 }
 
 func TestProjectionEligibilityHasExplicitFirestoreSchema(t *testing.T) {
+	t.Parallel()
 	for _, typeAndFields := range []struct {
 		value  any
 		fields []string
@@ -98,6 +100,7 @@ func TestProjectionEligibilityHasExplicitFirestoreSchema(t *testing.T) {
 }
 
 func TestStoreReadModelAggregatesAndDiscloses(t *testing.T) {
+	t.Parallel()
 	store := providerStore{documents: []ProjectionDocument{providerDocument(true), {Scope: ScopeRepository, ID: "github.com/acme/private", DisplayName: "private", UpdatedAt: time.Unix(20, 0), Summary: Summary{Repositories: 2}}}, series: SeriesDocument{Points: []SeriesPoint{{Value: 7}}}, board: LeaderboardDocument{Metric: "landed", Entries: []LeaderboardEntry{{Rank: 1}}, PublicOnly: true}, merges: PublicLatestMerges{Entries: []LatestMerge{{Repository: "acme/widgets"}}}}
 	model := StoreReadModel{Store: store, Membership: providerMembership{member: true}}
 	public := Viewer{Authenticated: true, Member: true, UserID: "u1"}
@@ -146,6 +149,7 @@ func TestStoreReadModelAggregatesAndDiscloses(t *testing.T) {
 }
 
 func TestStoreReadModelFailsClosedAndPropagatesMembership(t *testing.T) {
+	t.Parallel()
 	if _, err := (StoreReadModel{}).Dashboard(context.Background(), Viewer{}); !errors.Is(err, ErrNoReadModel) {
 		t.Fatalf("nil dashboard err = %v", err)
 	}

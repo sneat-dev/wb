@@ -23,6 +23,7 @@ func writeCredentialFile(t *testing.T, mode os.FileMode, content string) string 
 }
 
 func TestReadCredentialFileAcceptsAPrivateFile(t *testing.T) {
+	t.Parallel()
 	path := writeCredentialFile(t, 0o600, "  sk-from-a-file\n")
 	value, err := ReadCredentialFile(path)
 	if err != nil {
@@ -34,6 +35,7 @@ func TestReadCredentialFileAcceptsAPrivateFile(t *testing.T) {
 }
 
 func TestReadCredentialFileRefusesAnythingNotPrivate(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		prepare func(t *testing.T) string
 		want    string
@@ -78,6 +80,7 @@ func TestReadCredentialFileRefusesAnythingNotPrivate(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := ReadCredentialFile(testCase.prepare(t))
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %v, want it to mention %q", err, testCase.want)
@@ -115,6 +118,7 @@ func TestResolveCredentialUsesWhicheverSourceTheProviderNames(t *testing.T) {
 }
 
 func TestProviderCredentialSourceMustBeExactlyOneCleanPath(t *testing.T) {
+	t.Parallel()
 	// One agents mapping with both sections: YAML forbids a second top-level key.
 	withProvider := func(provider string) string {
 		return "agents:\n  providers:\n" + provider + "  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: m\n"
@@ -149,6 +153,7 @@ func TestProviderCredentialSourceMustBeExactlyOneCleanPath(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			config, err := LoadConfigFile(writeConfig(t, testCase.body))
 			if testCase.expect == "" {
 				if err != nil {

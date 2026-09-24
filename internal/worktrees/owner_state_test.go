@@ -15,6 +15,7 @@ func viewFor(pid int) OwnerView {
 // Silence is not evidence of abandonment. Reporting it as orphaned is what
 // made `wb worktree list` contradict `wb worktree orphans`.
 func TestWorktreeOwnerStateReportsSilenceAsUnknown(t *testing.T) {
+	t.Parallel()
 	if got := worktreeOwnerState(nil); got != "unknown" {
 		t.Fatalf("worktreeOwnerState(no records) = %q, want unknown", got)
 	}
@@ -22,18 +23,21 @@ func TestWorktreeOwnerStateReportsSilenceAsUnknown(t *testing.T) {
 
 // An entry WB wrote without a declaration is provenance, not a dead session.
 func TestWorktreeOwnerStateTreatsProvenanceOnlyAsUnknown(t *testing.T) {
+	t.Parallel()
 	if got := worktreeOwnerState([]OwnerView{viewFor(0)}); got != "unknown" {
 		t.Fatalf("worktreeOwnerState(provenance only) = %q, want unknown", got)
 	}
 }
 
 func TestWorktreeOwnerStateReportsALiveSession(t *testing.T) {
+	t.Parallel()
 	if got := worktreeOwnerState([]OwnerView{viewFor(os.Getpid())}); got != "active" {
 		t.Fatalf("worktreeOwnerState(live) = %q, want active", got)
 	}
 }
 
 func TestWorktreeOwnerStateReportsAnExitedSession(t *testing.T) {
+	t.Parallel()
 	if got := worktreeOwnerState([]OwnerView{viewFor(424242)}); got != "orphaned" {
 		t.Fatalf("worktreeOwnerState(exited) = %q, want orphaned", got)
 	}
@@ -41,6 +45,7 @@ func TestWorktreeOwnerStateReportsAnExitedSession(t *testing.T) {
 
 // A dead session must not mask a live one, whichever order they were recorded.
 func TestWorktreeOwnerStateFindsALiveSessionAnywhereInTheChain(t *testing.T) {
+	t.Parallel()
 	cases := map[string][]OwnerView{
 		"live last":  {viewFor(424242), viewFor(os.Getpid())},
 		"live first": {viewFor(os.Getpid()), viewFor(424242)},
@@ -50,6 +55,7 @@ func TestWorktreeOwnerStateFindsALiveSessionAnywhereInTheChain(t *testing.T) {
 	}
 	for name, owners := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := worktreeOwnerState(owners); got != "active" {
 				t.Fatalf("worktreeOwnerState = %q, want active", got)
 			}
@@ -60,6 +66,7 @@ func TestWorktreeOwnerStateFindsALiveSessionAnywhereInTheChain(t *testing.T) {
 // The two commands answer the same question and must never disagree about the
 // same worktree. This is the regression guard for the contradiction itself.
 func TestListAndOrphansAgreeOnOwnerState(t *testing.T) {
+	t.Parallel()
 	equivalent := map[string]string{
 		OwnerLive:     "active",
 		OwnerGone:     "orphaned",
@@ -73,6 +80,7 @@ func TestListAndOrphansAgreeOnOwnerState(t *testing.T) {
 	}
 	for name, owners := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			listState := worktreeOwnerState(owners)
 
 			// Mirror DeclaredOwner's rules over the same records.

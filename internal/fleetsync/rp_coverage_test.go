@@ -14,6 +14,7 @@ import (
 )
 
 func TestRPCovStatusStringNamesEveryConstant(t *testing.T) {
+	t.Parallel()
 	for status, want := range map[Status]string{
 		Cloned:                     "cloned",
 		Pulled:                     "pulled",
@@ -42,6 +43,7 @@ func TestRPCovStatusStringNamesEveryConstant(t *testing.T) {
 }
 
 func TestRPCovPullSummaryDescribesEveryPullState(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		result Result
@@ -60,6 +62,7 @@ func TestRPCovPullSummaryDescribesEveryPullState(t *testing.T) {
 }
 
 func TestRPCovSyncReportsTransferPreparationFailure(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "newco", Name: "renamed", Remote: true, TransferFrom: "oldco/app", TransferError: "repository transfer lookup failed"}
 	res := Sync(context.Background(), repo, t.TempDir(), false, false)
 	if res.Status != Failed || res.Err == nil || !strings.Contains(res.Err.Error(), "transfer lookup failed") {
@@ -68,6 +71,7 @@ func TestRPCovSyncReportsTransferPreparationFailure(t *testing.T) {
 }
 
 func TestRPCovSyncReportsUnidentifiableDestinationRemote(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "newco", Name: "renamed", Remote: true, TransferFrom: "oldco/app", CloneURL: "not a remote url"}
 	res := Sync(context.Background(), repo, t.TempDir(), false, false)
 	if res.Status != Failed || res.Err == nil || !strings.Contains(res.Err.Error(), "destination remote") {
@@ -233,6 +237,7 @@ func TestRPCovSyncArchivedPruneWithNoCloneReportsAbsent(t *testing.T) {
 }
 
 func TestRPCovSyncCloneFailureIsReportedAsFailed(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{
 		Org: "acme", Name: "widgets", Remote: true,
 		CloneURL: filepath.Join(t.TempDir(), "no-such-remote.git"),
@@ -247,6 +252,7 @@ func TestRPCovSyncCloneFailureIsReportedAsFailed(t *testing.T) {
 }
 
 func TestRPCovSyncWorkingTreeInspectionFailureIsReported(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	write(t, dir, "f.txt", "v1\n")
@@ -270,6 +276,7 @@ func TestRPCovSyncWorkingTreeInspectionFailureIsReported(t *testing.T) {
 }
 
 func TestRPCovSplitAttentionKeepsUnclassifiedAttentionAsDefect(t *testing.T) {
+	t.Parallel()
 	// needsAttention only selects the five defect statuses or a benign
 	// archived-not-pruned result, so this defensive arm is not reachable
 	// through IssuesMarkdown; it must still keep an unexpected shape visible
@@ -287,6 +294,7 @@ func TestRPCovSplitAttentionKeepsUnclassifiedAttentionAsDefect(t *testing.T) {
 }
 
 func TestRPCovIssuesMarkdownRendersTransferRequiredEntry(t *testing.T) {
+	t.Parallel()
 	results := []Result{{
 		Repo:    discover.Repo{Org: "newco", Name: "renamed", Path: "/p/newco/renamed", TransferFrom: "oldco/app"},
 		Status:  RepositoryTransferRequired,
@@ -309,6 +317,7 @@ func TestRPCovIssuesMarkdownRendersTransferRequiredEntry(t *testing.T) {
 }
 
 func TestRPCovInspectCommandsIncludeTheDefaultStatusForm(t *testing.T) {
+	t.Parallel()
 	commands := inspectCommands(Result{Repo: discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"}, Status: Cloned})
 	if len(commands) != 1 || commands[0] != "git -C /p/o/r status -sb" {
 		t.Fatalf("default inspect commands = %v, want the plain status probe", commands)
@@ -316,6 +325,7 @@ func TestRPCovInspectCommandsIncludeTheDefaultStatusForm(t *testing.T) {
 }
 
 func TestRPCovResolveOptionsCoverTransferredAndDefaultShapes(t *testing.T) {
+	t.Parallel()
 	transfer := resolveOptions(Result{Status: RepositoryTransferRequired, Repo: discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"}})
 	if len(transfer) != 1 || !strings.Contains(transfer[0], "managed repository relocation") {
 		t.Fatalf("transfer resolve options = %v", transfer)
@@ -327,6 +337,7 @@ func TestRPCovResolveOptionsCoverTransferredAndDefaultShapes(t *testing.T) {
 }
 
 func TestRPCovRunMetaCompleteRequiresAnUnscopedFinishedRealRun(t *testing.T) {
+	t.Parallel()
 	if !(RunMeta{}).Complete() {
 		t.Fatal("a plain finished run must be able to speak for the fleet")
 	}
@@ -343,12 +354,14 @@ func TestRPCovRunMetaCompleteRequiresAnUnscopedFinishedRealRun(t *testing.T) {
 }
 
 func TestRPCovSummaryGroupByLabelReportsAMissingLabel(t *testing.T) {
+	t.Parallel()
 	if _, ok := SummaryGroupByLabel(Summary(nil), "No such group"); ok {
 		t.Fatal("SummaryGroupByLabel found a label that does not exist")
 	}
 }
 
 func TestRPCovWriteRemovalReceiptReportsAnUnusableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("regular file\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -377,6 +390,7 @@ func TestRPCovWriteRemovalReceiptReportsAnUnwritableReceiptDirectory(t *testing.
 }
 
 func TestRPCovOverwriteRemovalReceiptReportsMissingDirectory(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "missing", "receipt.json")
 	err := overwriteRemovalReceipt(path, RemovalReceipt{Repository: "o/r"})
 	if err == nil || !strings.Contains(err.Error(), "stage prune receipt") {
@@ -385,6 +399,7 @@ func TestRPCovOverwriteRemovalReceiptReportsMissingDirectory(t *testing.T) {
 }
 
 func TestRPCovOverwriteRemovalReceiptReportsRenameRefusal(t *testing.T) {
+	t.Parallel()
 	// The target is a non-empty directory, so the atomic rename cannot replace
 	// it: the receipt must be reported as unwritten rather than half-published.
 	path := filepath.Join(t.TempDir(), "receipt.json")
@@ -401,6 +416,7 @@ func TestRPCovOverwriteRemovalReceiptReportsRenameRefusal(t *testing.T) {
 }
 
 func TestRPCovRemovalReceiptNameIsStablePerRepositoryAndTime(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	receipt := RemovalReceipt{Repository: "owner/old-repo", CreatedAt: created}
 	first := removalReceiptName(receipt)

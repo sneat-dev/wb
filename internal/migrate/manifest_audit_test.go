@@ -6,6 +6,7 @@ import (
 )
 
 func TestAuditGoDependencyDecisionsExplainsPreservedVersion(t *testing.T) {
+	t.Parallel()
 	goMod := []byte("module github.com/acme/consumer\n\ngo 1.24\n\nrequire github.com/acme/stable v1.2.3\n")
 	decisions, err := auditGoDependencyDecisions(t.TempDir(), "local_verification", goMod, goMod, nil, nil, true)
 	if err != nil {
@@ -25,6 +26,7 @@ func TestAuditGoDependencyDecisionsExplainsPreservedVersion(t *testing.T) {
 }
 
 func TestAuditGoDependencyDecisionsExplainsPublishedReplacement(t *testing.T) {
+	t.Parallel()
 	before := []byte("module github.com/acme/consumer\n\ngo 1.24\n\nrequire github.com/acme/provider v0.4.0\n\nreplace github.com/acme/provider => ../provider\n")
 	after := []byte("module github.com/acme/consumer\n\ngo 1.24\n\nrequire github.com/acme/provider v0.5.0\n")
 	decisions, err := auditGoDependencyDecisions(

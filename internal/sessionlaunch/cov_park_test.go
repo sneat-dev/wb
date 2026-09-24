@@ -370,7 +370,7 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 	if err := os.Chdir(repo); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chdir(previous) }()
+	t.Cleanup(func() { _ = os.Chdir(previous) })
 	if gitErr != nil {
 		t.Setenv("PATH", t.TempDir())
 		if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "git executable is unavailable") {
@@ -390,6 +390,7 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 		t.Fatalf("exact parked-local plan = %v", err)
 	}
 	t.Run("member HEAD changed", func(t *testing.T) {
+		t.Parallel()
 		slCovWrite(t, filepath.Join(repo, "extra.txt"), 0o644, "extra\n")
 		slCovGit(t, repo, "add", "extra.txt")
 		slCovGit(t, repo, "commit", "-q", "-m", "extra")

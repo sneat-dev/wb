@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // addLandWorktree creates a linked git worktree of fixture.canonical checked
@@ -137,6 +139,7 @@ func TestLandDoesNotErrorWithNoWorktreeForTheBranch(t *testing.T) {
 // fixture — the mismatch is trivial to construct this way and the assertion
 // is exactly the same code path.
 func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -149,6 +152,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runEngineGit(t, root, "clone", remote, worktree)
 	runEngineGit(t, worktree, "config", "user.name", "WB Test")
 	runEngineGit(t, worktree, "config", "user.email", "wb@example.test")

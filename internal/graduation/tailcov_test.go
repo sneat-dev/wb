@@ -15,6 +15,7 @@ import (
 // decoder entry points that had no caller at all, and asserts each one returns
 // the closed producer envelope it was given rather than merely not erroring.
 func TestTailCovDecodeProducerEnvelopesRoundTripsEveryDecoder(t *testing.T) {
+	t.Parallel()
 	inputs, _ := validInputs()
 
 	ciRaw, err := json.Marshal(inputs.CIWait)
@@ -69,6 +70,7 @@ func TestTailCovDecodeProducerEnvelopesRoundTripsEveryDecoder(t *testing.T) {
 // TestTailCovDecodeRejectsTrailingJSONValues pins the shared decoder contract
 // that exactly one JSON document is accepted.
 func TestTailCovDecodeRejectsTrailingJSONValues(t *testing.T) {
+	t.Parallel()
 	var value RemoteTargetEvidence
 
 	if err := decode([]byte(`{} {}`), &value); err == nil || !strings.Contains(err.Error(), "unexpected trailing JSON value") {
@@ -86,6 +88,7 @@ func TestTailCovDecodeRejectsTrailingJSONValues(t *testing.T) {
 // happy-path table never reached. Each case leaves the rest of the evidence
 // valid so the asserted message identifies the exact rule that fired.
 func TestTailCovComposeRejectsMalformedEvidence(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		change func(*Inputs, time.Time) time.Time
 		want   string
@@ -199,6 +202,7 @@ func TestTailCovComposeRejectsMalformedEvidence(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			inputs, now := validInputs()
 			now = test.change(&inputs, now)
 			if _, err := Compose(inputs, now); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -212,6 +216,7 @@ func TestTailCovComposeRejectsMalformedEvidence(t *testing.T) {
 // navigation: escape sequences are decoded, a pointer may not cross a scalar,
 // and a resolved value must still be a Git revision string.
 func TestTailCovJSONPointerResolvesEscapesAndRejectsNonObjects(t *testing.T) {
+	t.Parallel()
 	// gitRevision only accepts lowercase hex, so the resolved leaf must be a
 	// real lowercase revision for the escape path to return a value.
 	revision := strings.Repeat("a", 40)
@@ -250,6 +255,7 @@ func TestTailCovJSONPointerResolvesEscapesAndRejectsNonObjects(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			got, err := jsonPointerString(test.root, test.pointer)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
@@ -273,6 +279,7 @@ func TestTailCovJSONPointerResolvesEscapesAndRejectsNonObjects(t *testing.T) {
 // TestTailCovComposeAcceptsEscapedRevisionPointer proves the escape handling is
 // reachable through the public composer, not only the helper.
 func TestTailCovComposeAcceptsEscapedRevisionPointer(t *testing.T) {
+	t.Parallel()
 	inputs, now := validInputs()
 	payload := `{"deploy~ment":{"revision":"` + inputs.DeployedRevision.Revision + `"}}`
 	inputs.DeployedRevision.PayloadJSON = payload
@@ -286,6 +293,7 @@ func TestTailCovComposeAcceptsEscapedRevisionPointer(t *testing.T) {
 // TestTailCovValidDigestAcceptsOnlyCanonicalSha256 pins the digest shape check
 // independently of Compose's error wrapping.
 func TestTailCovValidDigestAcceptsOnlyCanonicalSha256(t *testing.T) {
+	t.Parallel()
 	canonical := Digest([]byte("payload"))
 	if !validDigest(canonical) {
 		t.Fatalf("validDigest(%q) = false, want true", canonical)
@@ -306,6 +314,7 @@ func TestTailCovValidDigestAcceptsOnlyCanonicalSha256(t *testing.T) {
 // TestTailCovComposeRequiresPassedLocalMechanisms pins the per-mechanism loop
 // so each required mechanism is checked individually.
 func TestTailCovComposeRequiresPassedLocalMechanisms(t *testing.T) {
+	t.Parallel()
 	for _, missing := range []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild} {
 		inputs, now := validInputs()
 		results := inputs.LocalCheck.Repositories[0].Results[:0]

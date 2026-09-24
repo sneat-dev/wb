@@ -18,6 +18,7 @@ import (
 )
 
 func TestReportWorktreeMergeQualityProgressPreservesShardProgress(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	reporter := reportWorktreeMergeQualityProgress(func(event progress.Event) {
 		events = append(events, event)
@@ -62,6 +63,7 @@ func TestReportWorktreeMergeQualityProgressPreservesShardProgress(t *testing.T) 
 }
 
 func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		subjects []string
@@ -77,6 +79,7 @@ func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := worktreeMergePRTitle(test.subjects, test.sources); got != test.want {
 				t.Fatalf("title = %q, want %q", got, test.want)
 			}
@@ -85,6 +88,7 @@ func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
 }
 
 func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	reporter := func(event progress.Event) { events = append(events, event) }
 	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(PullRequestWaitProgress{
@@ -111,6 +115,7 @@ func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
 }
 
 func TestWorktreeMergeValidationTimeoutsPreserveExplicitPreparePolicy(t *testing.T) {
+	t.Parallel()
 	if got := worktreeMergeValidationTimeouts(0, 0); got != nil {
 		t.Fatalf("zero limits = %+v, want omitted legacy receipt field", got)
 	}
@@ -366,6 +371,7 @@ func TestLandWorktreeMergeAllowsUnchangedFailingAdvancedTargetValidation(t *test
 }
 
 func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(t *testing.T) {
+	t.Parallel()
 	failing := func(detail string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
 			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test ./...", Status: quality.StatusFailed, Detail: detail,
@@ -401,6 +407,7 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 		{name: "specscore same identity changed detail", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: now requires a configured remote")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := worktreeMergeValidationRegression(test.baseline, test.candidate)
 			if (err != nil) != test.wantError {
 				t.Fatalf("regression error = %v, want error=%t", err, test.wantError)
@@ -410,6 +417,7 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 }
 
 func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t *testing.T) {
+	t.Parallel()
 	detail := "WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\noutput"
 	entry := func(command string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
@@ -428,6 +436,7 @@ func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t
 }
 
 func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
+	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
 			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
@@ -471,6 +480,7 @@ Have you run npm/yarn install?
 }
 
 func TestWorktreeMergeValidationRegressionMatchesExactContactusTruncatedTail(t *testing.T) {
+	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
 			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
@@ -555,6 +565,7 @@ Have you run npm/yarn install?
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if sameWorktreeMergeFailure(nodeFailing(baseline.Results[0].Detail).Results[0], nodeFailing(test.mutate(baseline.Results[0].Detail)).Results[0]) {
 				t.Fatalf("normalized comparison erased %s", test.name)
 			}
@@ -563,6 +574,7 @@ Have you run npm/yarn install?
 }
 
 func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testing.T) {
+	t.Parallel()
 	const marker = "… output truncated; final 750 bytes:\n"
 	for _, test := range []struct {
 		name string
@@ -576,6 +588,7 @@ func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testi
 		{name: "marker without tail line", in: marker, want: strings.TrimSpace(marker)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := normalizeWorktreeMergeFailureDetail(test.in); got != test.want {
 				t.Fatalf("normalized detail = %q, want %q", got, test.want)
 			}
@@ -584,6 +597,7 @@ func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testi
 }
 
 func TestWorktreeMergeValidationRegressionMatchesYardiusEnvironmentFailures(t *testing.T) {
+	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationEntry {
 		return quality.VerificationEntry{Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail}
 	}
@@ -624,6 +638,7 @@ Have you run npm/yarn install?
 }
 
 func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(t *testing.T) {
+	t.Parallel()
 	baseline := `03:53:52 [types] Generated 51ms at /private/var/folders/c6/target/tree/frontend".`
 	candidate := `03:53:43 [types] Generated 49ms at /Users/alex/.wb/worktrees/candidate/tree/frontend".`
 	if got, want := normalizeWorktreeMergeFailureDetail(baseline), normalizeWorktreeMergeFailureDetail(candidate); got != want {
@@ -646,6 +661,7 @@ func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(
 		{name: "added diagnostic", baseline: "Nx modules missing", candidate: "Nx modules missing; install dependencies first"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if left, right := normalizeWorktreeMergeFailureDetail(test.baseline), normalizeWorktreeMergeFailureDetail(test.candidate); left == right {
 				t.Fatalf("normalized comparison erased %s: %q", test.name, left)
 			}
@@ -1008,6 +1024,7 @@ func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t 
 }
 
 func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktree(t *testing.T) {
+	t.Parallel()
 	candidate := t.TempDir()
 	receipt := WorktreeMergeReceipt{
 		Status:    WorktreeMergePrepared,
@@ -1555,6 +1572,7 @@ func TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes(
 // including the founder-approved carve-out for an already-published
 // candidate advancing atop its own open pull request.
 func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *testing.T) {
+	t.Parallel()
 	base := WorktreeMergeReceipt{
 		ReceiptPath: "/tmp/receipt.json",
 		Status:      WorktreeMergePrepared,
@@ -1749,6 +1767,7 @@ func writeFailedCleanupReport(t *testing.T, task, repository string, generatedAt
 }
 
 func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureWithoutTerminalEvidence(t *testing.T) {
+	t.Parallel()
 	receipt := WorktreeMergeReceipt{
 		Status: WorktreeMergeComplete, Cleanup: true, Failure: "cleanup task remains unapplied", ReceiptPath: "receipt.json",
 		Candidate: WorktreeMergeCandidate{Task: "candidate"},
@@ -1767,6 +1786,7 @@ func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureWithoutTerminalEv
 }
 
 func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureForDuplicateTask(t *testing.T) {
+	t.Parallel()
 	receipt := WorktreeMergeReceipt{
 		Status: WorktreeMergeComplete, Cleanup: true, Failure: "cleanup task remains unapplied", ReceiptPath: "receipt.json",
 		Candidate: WorktreeMergeCandidate{Task: "candidate"}, Sources: []WorktreeMergeSource{{Task: "source"}},
@@ -1782,6 +1802,7 @@ func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureForDuplicateTask(
 }
 
 func TestValidateTerminalCleanupReportsRejectsMalformedSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "cleanup.json")
 	contents, err := json.Marshal(map[string]any{"generated_at": time.Now().UTC(), "phase": "applied"})
 	if err != nil {
@@ -1797,6 +1818,7 @@ func TestValidateTerminalCleanupReportsRejectsMalformedSchema(t *testing.T) {
 }
 
 func TestValidateTerminalCleanupReportsAcceptsHistoricalPartialProgress(t *testing.T) {
+	t.Parallel()
 	task := "source"
 	repository := "acme/app"
 	historical := writeCleanupReportFixture(t, task, repository, time.Now().UTC().Add(-time.Hour), false, true, false, "remote branch was retired before the interrupted worktree removal")

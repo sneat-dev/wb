@@ -18,6 +18,7 @@ type sourceFake struct {
 }
 
 func TestQueueCoalescesQueuedDefaultBranchEventsDurably(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -84,6 +85,7 @@ func (processor *concurrencyProcessor) Process(_ context.Context, event reposito
 }
 
 func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +149,7 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		t.Fatalf("third start = %q", id)
 	}
 	processor.mu.Lock()
-	defer processor.mu.Unlock()
+	t.Cleanup(func() { processor.mu.Unlock() })
 	if processor.maxByRepo[first.Repository] != 1 || processor.maxActiveTotal < 2 {
 		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
 	}
@@ -156,6 +158,7 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 }
 
 func TestQueueOrdersOldPushRenameAndNewPushAcrossCaseInsensitiveAliases(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +207,7 @@ func (source *sourceFake) AckRepositoryEvents(_ context.Context, request reposit
 }
 
 func TestReceiveOnceResumesDurablePendingAcknowledgementBeforePolling(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{
 		response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "cursor-2", Events: []repositoryevent.Event{receiverEvent("event-1")}},
 		ackErr:   errors.New("provider unavailable"),
@@ -246,6 +250,7 @@ func receiverEvent(id string) repositoryevent.Event {
 }
 
 func TestReceiveOnceAcknowledgesOnlyAfterEveryDurableEnqueue(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "cursor-2", Events: []repositoryevent.Event{receiverEvent("event-1"), receiverEvent("event-2")}}}
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	failing := &enqueueFake{failOn: "event-2"}
@@ -274,6 +279,7 @@ func TestReceiveOnceAcknowledgesOnlyAfterEveryDurableEnqueue(t *testing.T) {
 }
 
 func TestReceiveOncePersistsInitialCursorWithoutAcknowledgingEmptyPoll(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "initial-cursor", Events: nil}}
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	receiver := Receiver{Source: source, Queue: &enqueueFake{}, Cursor: cursor}
@@ -286,6 +292,7 @@ func TestReceiveOncePersistsInitialCursorWithoutAcknowledgingEmptyPoll(t *testin
 }
 
 func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -321,6 +328,7 @@ func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
 }
 
 func TestQueuePersistsExactTransferCleanupStateBeforeRetry(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -347,6 +355,7 @@ func TestQueuePersistsExactTransferCleanupStateBeforeRetry(t *testing.T) {
 }
 
 func TestCompletionPersistenceFailureReleasesWorkerAndRetainsCleanupAcrossRestart(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {

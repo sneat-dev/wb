@@ -60,6 +60,7 @@ func TestLgCovContentHashFailurePaths(t *testing.T) {
 	})
 
 	t.Run("not a repository", func(t *testing.T) {
+		t.Parallel()
 		lgCovRequireGit(t)
 		if _, _, err := git.ContentHash(ctx, t.TempDir()); err == nil ||
 			!strings.Contains(err.Error(), "prepare a temporary index") {
@@ -68,6 +69,7 @@ func TestLgCovContentHashFailurePaths(t *testing.T) {
 	})
 
 	t.Run("bare repository has no working tree", func(t *testing.T) {
+		t.Parallel()
 		lgCovRequireGit(t)
 		bare := t.TempDir()
 		command := exec.Command("git", "init", "--bare", ".")
@@ -85,6 +87,7 @@ func TestLgCovContentHashFailurePaths(t *testing.T) {
 // TrackedChanges on a directory that is not a repository must report the git
 // failure rather than an empty change list.
 func TestLgCovTrackedChangesReportsGitFailure(t *testing.T) {
+	t.Parallel()
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	_, err := git.TrackedChanges(context.Background(), t.TempDir())
@@ -101,6 +104,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("not a repository", func(t *testing.T) {
+		t.Parallel()
 		if err := git.ExcludePath(ctx, t.TempDir(), "/go.work"); err == nil ||
 			!strings.Contains(err.Error(), "resolve the exclude file") {
 			t.Fatalf("error = %v, want an exclude-file resolution failure", err)
@@ -159,6 +163,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 	})
 
 	t.Run("exclude path parent cannot be created", func(t *testing.T) {
+		t.Parallel()
 		root := initRepository(t)
 		info := filepath.Join(root, ".git", "info")
 		if err := os.RemoveAll(info); err != nil {
@@ -174,6 +179,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 	})
 
 	t.Run("exclude path cannot be opened", func(t *testing.T) {
+		t.Parallel()
 		root := initRepository(t)
 		exclude := filepath.Join(root, ".git", "info", "exclude")
 		if err := os.Remove(exclude); err != nil && !os.IsNotExist(err) {
@@ -189,6 +195,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 	})
 
 	t.Run("no trailing newline in an existing exclude file", func(t *testing.T) {
+		t.Parallel()
 		root := initRepository(t)
 		exclude := filepath.Join(root, ".git", "info", "exclude")
 		if err := os.WriteFile(exclude, []byte("first"), 0o644); err != nil {
@@ -210,6 +217,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 // ExcludedPatterns surfaces a missing exclude file as "no patterns" and an
 // unreadable one as an error — the two must not be spelled the same way.
 func TestLgCovExcludedPatternsMissingVersusUnreadable(t *testing.T) {
+	t.Parallel()
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -325,6 +333,7 @@ func TestLgCovFrozenInstallDrivesTheSelectedManager(t *testing.T) {
 }
 
 func TestLgCovFrozenInstallCommandSelectsByLockfile(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		file    string
 		manager string
@@ -351,6 +360,7 @@ func TestLgCovFrozenInstallCommandSelectsByLockfile(t *testing.T) {
 }
 
 func TestLgCovPackageManagerDefaultsToNpm(t *testing.T) {
+	t.Parallel()
 	if got := packageManager(t.TempDir()); got != "npm" {
 		t.Fatalf("packageManager with no lockfile = %q, want npm", got)
 	}
@@ -478,6 +488,7 @@ func TestLgCovBuildRunsAndRecordsTheCachedDist(t *testing.T) {
 }
 
 func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
+	t.Parallel()
 	newWorkspace := func(t *testing.T) (workspace, packageDir string) {
 		t.Helper()
 		workspace = t.TempDir()
@@ -495,6 +506,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	}
 
 	t.Run("malformed project.json", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		writeProject(t, packageDir, `{"name":`)
 		if _, _, err := nodeBuildCommand(workspace, packageDir); err == nil || !strings.Contains(err.Error(), "parse") {
@@ -503,6 +515,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("build target without a project name", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		writeProject(t, packageDir, `{"targets":{"build":{"executor":"@nx/angular:package"}}}`)
 		if _, _, err := nodeBuildCommand(workspace, packageDir); err == nil || !strings.Contains(err.Error(), "without a project name") {
@@ -511,6 +524,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("yarn nx target", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		if err := os.WriteFile(filepath.Join(workspace, "yarn.lock"), []byte("# lock\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -526,6 +540,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("npm nx target", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		writeProject(t, packageDir, `{"name":"core","targets":{"build":{}}}`)
 		command, args, err := nodeBuildCommand(workspace, packageDir)
@@ -538,6 +553,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("unreadable project.json", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		if err := os.Mkdir(filepath.Join(packageDir, "project.json"), 0o755); err != nil {
 			t.Fatal(err)
@@ -548,6 +564,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("malformed workspace manifest", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"scripts":`), 0o644); err != nil {
 			t.Fatal(err)
@@ -558,6 +575,7 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 	})
 
 	t.Run("no build script at all", func(t *testing.T) {
+		t.Parallel()
 		workspace, packageDir := newWorkspace(t)
 		if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"scripts":{"test":"vitest"}}`), 0o644); err != nil {
 			t.Fatal(err)
@@ -569,7 +587,9 @@ func TestLgCovNodeBuildCommandFailureAndManagerBranches(t *testing.T) {
 }
 
 func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
+	t.Parallel()
 	t.Run("package dist wins", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		packageDir := filepath.Join(library, "libs", "core")
 		dist := filepath.Join(packageDir, "dist")
@@ -586,6 +606,7 @@ func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
 	})
 
 	t.Run("library dist by relative package path", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		packageDir := filepath.Join(library, "libs", "core")
 		dist := filepath.Join(library, "dist", "libs", "core")
@@ -602,6 +623,7 @@ func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
 	})
 
 	t.Run("library dist by package base name", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		packageDir := filepath.Join(library, "elsewhere", "core")
 		dist := filepath.Join(library, "dist", "core")
@@ -618,6 +640,7 @@ func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
 	})
 
 	t.Run("a directory without a manifest still counts", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		packageDir := filepath.Join(library, "libs", "core")
 		dist := filepath.Join(library, "dist", "libs", "core")
@@ -631,6 +654,7 @@ func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
 	})
 
 	t.Run("no output reports every candidate", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		packageDir := filepath.Join(library, "libs", "core")
 		_, err := builtDist(library, packageDir)
@@ -640,6 +664,7 @@ func TestLgCovBuiltDistLocatesAndReports(t *testing.T) {
 	})
 
 	t.Run("an unresolvable relative path falls back to the base name", func(t *testing.T) {
+		t.Parallel()
 		library := filepath.Join("relative-library")
 		packageDir := filepath.Join(t.TempDir(), "core")
 		if err := os.MkdirAll(packageDir, 0o755); err != nil {

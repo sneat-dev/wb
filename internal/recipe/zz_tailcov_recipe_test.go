@@ -11,6 +11,7 @@ import (
 // TestTailCovAppliesToReportsStatFailures pins that a path that cannot be
 // inspected at all is an error, not silently "no matching file".
 func TestTailCovAppliesToReportsStatFailures(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "regular")
 	if err := os.WriteFile(file, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
@@ -23,6 +24,7 @@ func TestTailCovAppliesToReportsStatFailures(t *testing.T) {
 }
 
 func TestTailCovPreviewCommandRejectsInvalidCountRegex(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Command: "fix-it", DryRunCommand: "exit 1", CountRegex: "("}
 	_, err := previewCommand(r, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "invalid count_regex") {
@@ -34,7 +36,9 @@ func TestTailCovPreviewCommandRejectsInvalidCountRegex(t *testing.T) {
 // fails hard: the command itself is missing (shell exit 127) and the worktree
 // cannot be inspected for changes.
 func TestTailCovCommandMutatorPropagatesFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("command not found", func(t *testing.T) {
+		t.Parallel()
 		r := Recipe{Name: "missing", Command: "tailcov-command-that-does-not-exist"}
 		changed, detail, err := commandMutator(r)(t.TempDir())
 		if err == nil || changed || detail != "" {
@@ -42,6 +46,7 @@ func TestTailCovCommandMutatorPropagatesFailures(t *testing.T) {
 		}
 	})
 	t.Run("worktree is not a repository", func(t *testing.T) {
+		t.Parallel()
 		r := Recipe{Name: "noop", Command: "true"}
 		changed, detail, err := commandMutator(r)(t.TempDir())
 		if err == nil || changed || detail != "" {
@@ -51,6 +56,7 @@ func TestTailCovCommandMutatorPropagatesFailures(t *testing.T) {
 }
 
 func TestTailCovIsCommandNotFoundRejectsNonExitErrors(t *testing.T) {
+	t.Parallel()
 	if isCommandNotFound(errors.New("failed to start")) {
 		t.Fatal("a launch failure must not be reported as command-not-found")
 	}
@@ -70,6 +76,7 @@ func TestTailCovExpandPathLeavesTildeWhenHomeIsUnresolvable(t *testing.T) {
 }
 
 func TestTailCovEvaluateRejectsUnknownRecipeType(t *testing.T) {
+	t.Parallel()
 	_, err := Evaluate(Recipe{Type: Kind("teleport")}, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "unknown recipe type") {
 		t.Fatalf("err = %v, want the unknown type rejected", err)
@@ -77,6 +84,7 @@ func TestTailCovEvaluateRejectsUnknownRecipeType(t *testing.T) {
 }
 
 func TestTailCovEvaluateCommandRecipePreviewsDryRun(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Type: KindCommand, Command: "fix-it", DryRunCommand: "exit 1"}
 	p, err := Evaluate(r, t.TempDir())
 	if err != nil {
@@ -89,12 +97,14 @@ func TestTailCovEvaluateCommandRecipePreviewsDryRun(t *testing.T) {
 
 func TestTailCovEvaluateTemplateSectionFailures(t *testing.T) {
 	t.Run("template cannot be read", func(t *testing.T) {
+		t.Parallel()
 		r := Recipe{Type: KindTemplateSection, Marker: "tailcov", Template: filepath.Join(t.TempDir(), "missing.md")}
 		if _, err := Evaluate(r, t.TempDir()); err == nil || !strings.Contains(err.Error(), "read template") {
 			t.Fatalf("err = %v, want the unreadable template reported", err)
 		}
 	})
 	t.Run("fetch fails", func(t *testing.T) {
+		t.Parallel()
 		r := writeTemplate(t, "tailcov", "block body")
 		r.Target = "README.md"
 		if _, err := Evaluate(r, t.TempDir()); err == nil {
@@ -124,6 +134,7 @@ func TestTailCovEvaluateTemplateSectionFailures(t *testing.T) {
 }
 
 func TestTailCovLandRejectsUnknownRecipeType(t *testing.T) {
+	t.Parallel()
 	_, err := Land(Recipe{Type: Kind("teleport")}, t.TempDir(), "main")
 	if err == nil || !strings.Contains(err.Error(), "unknown recipe type") {
 		t.Fatalf("err = %v, want the unknown type rejected", err)
@@ -131,6 +142,7 @@ func TestTailCovLandRejectsUnknownRecipeType(t *testing.T) {
 }
 
 func TestTailCovLandReportsTemplateLoadFailure(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Type: KindTemplateSection, Marker: "tailcov", Template: filepath.Join(t.TempDir(), "missing.md")}
 	_, err := Land(r, t.TempDir(), "main")
 	if err == nil || !strings.Contains(err.Error(), "read template") {
@@ -139,6 +151,7 @@ func TestTailCovLandReportsTemplateLoadFailure(t *testing.T) {
 }
 
 func TestTailCovLandTemplateSectionMissingTargetIsASkip(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := writeTemplate(t, "tailcov", "block body")
 	r.Name = "tailcov"
@@ -156,6 +169,7 @@ func TestTailCovLandTemplateSectionMissingTargetIsASkip(t *testing.T) {
 }
 
 func TestTailCovLoadTemplateRejectsVersionOverflow(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "template.md")
 	content := "<!-- tailcov:v99999999999999999999999999 -->\nbody\n<!-- /tailcov -->\n"

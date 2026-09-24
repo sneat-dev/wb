@@ -47,6 +47,7 @@ func newCreatedManifest(effort string) Manifest {
 }
 
 func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		path string
@@ -59,6 +60,7 @@ func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := effortFromWorktreePath(test.path); got != test.want {
 				t.Fatalf("effortFromWorktreePath(%q) = %q, want %q", test.path, got, test.want)
 			}
@@ -311,6 +313,7 @@ func TestExcludeRuleDoesNotSwallowTrackedRepositoryPolicy(t *testing.T) {
 }
 
 func TestEffortPathParentageIsLexicalAndValidated(t *testing.T) {
+	t.Parallel()
 	for _, valid := range []string{"feature", "feature.task", "feature.task1.subtask2.level4"} {
 		if !ValidEffortPath(valid) {
 			t.Fatalf("%q must be a valid effort path", valid)

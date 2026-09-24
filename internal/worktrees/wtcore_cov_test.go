@@ -19,6 +19,7 @@ import (
 // (fetch failure, missing target, drift, ahead/behind classification) is
 // asserted on the returned receipt rather than merely executed.
 func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
+	t.Parallel()
 	const target = "main"
 
 	type wtCoreCovFreshnessStub struct {
@@ -180,6 +181,7 @@ func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := inspectCanonicalFreshnessWith(context.Background(), "/canonical", target, run(testCase.stub))
 			if result.Target != target || result.RemoteRef != "origin/"+target {
 				t.Fatalf("receipt identity = %#v", result)
@@ -213,6 +215,7 @@ func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
 // behaviours: a real exit error gains the child's own stderr text, and an
 // ordinary error is returned unchanged.
 func TestWTCoreCovDescribeExitErrorKeepsStderrAndPlainErrors(t *testing.T) {
+	t.Parallel()
 	command := exec.Command("git", "-C", filepath.Join(t.TempDir(), "absent"), "rev-parse", "HEAD")
 	command.Env = console.Env()
 	_, err := command.Output()
@@ -237,6 +240,7 @@ func TestWTCoreCovDescribeExitErrorKeepsStderrAndPlainErrors(t *testing.T) {
 // a replayed patch is recognised across rewritten commits, an unrelated patch
 // is not, and an empty sealed range proves nothing.
 func TestWTCoreCovPatchIDHelpers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 
@@ -470,6 +474,7 @@ func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
 // TestWTCoreCovExtraStringTrimsOnlyStrings asserts the helper reports an empty
 // string for a missing key and for a non-string value, and trims a real one.
 func TestWTCoreCovExtraStringTrimsOnlyStrings(t *testing.T) {
+	t.Parallel()
 	extra := map[string]any{"present": "  value  ", "number": 7, "null": nil}
 	if got := extraString(extra, "present"); got != "value" {
 		t.Fatalf("extraString(present) = %q, want %q", got, "value")

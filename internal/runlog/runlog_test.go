@@ -12,6 +12,7 @@ import (
 )
 
 func TestRecorderWritesPrivacySafeLifecycleEvents(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +120,7 @@ func TestBeginStampsProvenanceFromEnv(t *testing.T) {
 }
 
 func TestRecorderDoesNotCreateStateOutsideManagedWorktree(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	recorder, err := Begin(root, []string{"git", "status"}, time.Now())
 	if err != nil {
@@ -137,6 +139,7 @@ func TestRecorderDoesNotCreateStateOutsideManagedWorktree(t *testing.T) {
 // QueueWaitMS without disturbing any other recorded field or the existing
 // event shape.
 func TestRecordQueueAdmittedAtIsAdditive(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

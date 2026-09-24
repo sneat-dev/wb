@@ -8,6 +8,7 @@ import (
 )
 
 func TestSummaryIsOrderedSharedAccountingModel(t *testing.T) {
+	t.Parallel()
 	results := []Result{
 		{Repo: discover.Repo{Org: "z", Name: "current"}, Status: Pulled, PullAttempted: true, PullSucceeded: true},
 		{Repo: discover.Repo{Org: "a", Name: "updated"}, Status: Pulled, PullAttempted: true, PullSucceeded: true, Updated: true},
@@ -52,6 +53,7 @@ func TestSummaryIsOrderedSharedAccountingModel(t *testing.T) {
 // selecting it here counted one repository twice and let a renderer call a
 // failure "archived, not pruned".
 func TestNeedsAttentionExcludesBrokenArchivedRepositories(t *testing.T) {
+	t.Parallel()
 	results := []Result{
 		{Repo: discover.Repo{Org: "o", Name: "broken"}, Status: Failed, Archived: true, ArchivedNotPruned: true},
 		{Repo: discover.Repo{Org: "o", Name: "dirty"}, Status: SkippedDirty, Archived: true, ArchivedNotPruned: true},

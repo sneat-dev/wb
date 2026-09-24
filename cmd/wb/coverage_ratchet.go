@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -69,7 +68,7 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return fmt.Errorf("--changed requires exactly one Go module at %s: %w", repoPath, err)
 	}
 
-	mergeBase, err := gitMergeBase(ctx, repoPath, options.target)
+	mergeBase, err := quality.GitMergeBase(ctx, repoPath, options.target)
 	if err != nil {
 		return err
 	}
@@ -195,19 +194,6 @@ func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, merg
 		}
 	}
 	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout, runOptions(options))
-}
-
-func gitMergeBase(ctx context.Context, repoPath, target string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "HEAD", target)
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("git merge-base HEAD %s: %w: %s", target, err, string(exitErr.Stderr))
-		}
-		return "", fmt.Errorf("git merge-base HEAD %s: %w", target, err)
-	}
-	return strings.TrimSpace(string(output)), nil
 }
 
 type changedCoverageReport struct {

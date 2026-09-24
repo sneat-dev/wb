@@ -10,6 +10,7 @@ import (
 )
 
 func TestLoadRejectsSymlinkedOrGroupWritableConfig(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := filepath.Join(root, "indexer")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {

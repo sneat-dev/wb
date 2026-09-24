@@ -22,6 +22,7 @@ func tailCovWriteFile(t *testing.T, path, content string) {
 // the failure contract: a config file that is not valid YAML must be reported
 // as a parse failure naming the file, and must not be rewritten.
 func TestTailCovSetRemoteHubRejectsUnparseableConfig(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	// A duplicated mapping key is not a YAML error, so use a hard syntax
 	// error instead: an unclosed flow sequence.
@@ -49,6 +50,7 @@ func TestTailCovSetRemoteHubRejectsUnparseableConfig(t *testing.T) {
 // (here, a directory) must surface as a read failure, not be treated as a
 // fresh config and overwritten.
 func TestTailCovSetRemoteHubReportsReadFailure(t *testing.T) {
+	t.Parallel()
 	path := t.TempDir() // an existing directory, not a config file
 
 	err := SetRemoteHub(path, "https://hub.example", "machine", "/tmp/token")
@@ -64,11 +66,13 @@ func TestTailCovSetRemoteHubReportsReadFailure(t *testing.T) {
 // config whose top level is a scalar or sequence cannot carry a remote
 // section, so it is refused rather than silently reshaped.
 func TestTailCovSetRemoteHubRejectsNonMappingTopLevel(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, content string }{
 		{"scalar", "just-a-string\n"},
 		{"sequence", "- parallel\n- remote\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(t.TempDir(), "wb.yaml")
 			tailCovWriteFile(t, path, tc.content)
 
@@ -94,6 +98,7 @@ func TestTailCovSetRemoteHubRejectsNonMappingTopLevel(t *testing.T) {
 // guard: `remote:` holding a scalar cannot be updated in place without
 // destroying the operator's other remote settings, so it is refused.
 func TestTailCovSetRemoteHubRejectsNonMappingRemote(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	tailCovWriteFile(t, path, "parallel: 3\nremote: git\n")
 
@@ -111,6 +116,7 @@ func TestTailCovSetRemoteHubRejectsNonMappingRemote(t *testing.T) {
 // intermediate path component that is a dangling symlink) must not be
 // mistaken for a missing config.
 func TestTailCovSetRemoteHubReportsUncreatableDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dangling := filepath.Join(root, "dangling")
 	if err := os.Symlink(filepath.Join(root, "no-such-target"), dangling); err != nil {
@@ -132,6 +138,7 @@ func TestTailCovSetRemoteHubReportsUncreatableDirectory(t *testing.T) {
 // update must fail loudly instead of leaving the config half-written (or
 // silently reporting success).
 func TestTailCovSetRemoteHubReportsUnstageableConfig(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permission bits, so the staging write cannot fail")
 	}

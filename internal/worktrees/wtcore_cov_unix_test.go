@@ -14,6 +14,7 @@ import (
 // own untracked listing never reports a FIFO, so this defensive branch is
 // reachable only through the reader that decides how a changed path is stored.
 func TestWTCoreCovDirtyCaptureRejectsUnsupportedType(t *testing.T) {
+	t.Parallel()
 	repository := newJournalWorktree(t)
 	fifo := filepath.Join(repository, "pipe")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {

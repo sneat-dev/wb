@@ -65,6 +65,7 @@ func newRemote(t *testing.T) string {
 }
 
 func TestSyncCloneMissing(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	root := t.TempDir()
 	repo := discover.Repo{Org: "acme", Name: "widgets", CloneURL: remote, Remote: true}
@@ -81,6 +82,7 @@ func TestSyncCloneMissing(t *testing.T) {
 }
 
 func TestSyncCloneMissingDryRun(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	root := t.TempDir()
 	repo := discover.Repo{Org: "acme", Name: "widgets", CloneURL: remote, Remote: true}
@@ -96,6 +98,7 @@ func TestSyncCloneMissingDryRun(t *testing.T) {
 }
 
 func TestSyncPullClean(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	cloneDir := filepath.Join(t.TempDir(), "widgets")
 	cmd := exec.Command("git", "clone", "-q", remote, cloneDir)
@@ -140,6 +143,7 @@ func TestSyncPullClean(t *testing.T) {
 }
 
 func TestSyncSkipDirty(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	cloneDir := t.TempDir()
 	cmd := exec.Command("git", "clone", "-q", remote, cloneDir)
@@ -166,6 +170,7 @@ func TestSyncSkipDirty(t *testing.T) {
 // deleted on nothing more than gitops.RepoStatus.Dirty(), gated by no flag at
 // all — this exact fixture would have been removed.
 func TestSyncArchivedDefaultDoesNotPrune(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	write(t, dir, "f.txt", "v1\n")
@@ -322,6 +327,7 @@ func TestSyncArchivedWithFlagRefusesLinkedWorktree(t *testing.T) {
 }
 
 func TestSyncArchivedAbsent(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "acme", Name: "widgets", Remote: true, Archived: true}
 	// AbsentArchived does not depend on pruneArchived: there is nothing to
 	// prune or pull either way.
@@ -332,6 +338,7 @@ func TestSyncArchivedAbsent(t *testing.T) {
 }
 
 func TestSyncForkNoOp(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "acme", Name: "widgets", Remote: true, IsFork: true}
 	res := Sync(context.Background(), repo, "", false, false)
 	if res.Status != NoOp {
@@ -340,6 +347,7 @@ func TestSyncForkNoOp(t *testing.T) {
 }
 
 func TestSyncLocalOnlyNoOp(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "acme", Name: "widgets", Remote: false}
 	res := Sync(context.Background(), repo, "", false, false)
 	if res.Status != NoOp {

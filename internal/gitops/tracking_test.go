@@ -25,6 +25,7 @@ func setupTracking(t *testing.T) (local, seed string) {
 }
 
 func TestTrackingCountsAheadAndBehind(t *testing.T) {
+	t.Parallel()
 	local, seed := setupTracking(t)
 	git(t, local, "commit", "-q", "--allow-empty", "-m", "local only")
 	git(t, seed, "commit", "-q", "--allow-empty", "-m", "remote only")
@@ -50,6 +51,7 @@ func TestTrackingCountsAheadAndBehind(t *testing.T) {
 }
 
 func TestTrackingBehindOnlyIsNotDiverged(t *testing.T) {
+	t.Parallel()
 	local, seed := setupTracking(t)
 	git(t, seed, "commit", "-q", "--allow-empty", "-m", "remote only")
 	git(t, seed, "push", "-q", "origin", "main")
@@ -68,6 +70,7 @@ func TestTrackingBehindOnlyIsNotDiverged(t *testing.T) {
 // longer resolves must be distinguishable: the first has nowhere to pull
 // from, the second is a renamed or deleted branch that needs a human.
 func TestTrackingSeparatesUnconfiguredFromUnresolvableUpstream(t *testing.T) {
+	t.Parallel()
 	local, _ := setupTracking(t)
 	git(t, local, "switch", "-q", "-c", "detour")
 
@@ -105,6 +108,7 @@ func TestTrackingSeparatesUnconfiguredFromUnresolvableUpstream(t *testing.T) {
 // yields the whole history. Reporting that as unlanded work would be worse
 // than silence.
 func TestUnpushedCommitsIsSilentWithoutRemoteRefs(t *testing.T) {
+	t.Parallel()
 	local := t.TempDir()
 	git(t, local, "init", "-q", "-b", "main")
 	git(t, local, "commit", "-q", "--allow-empty", "-m", "one")
@@ -120,6 +124,7 @@ func TestUnpushedCommitsIsSilentWithoutRemoteRefs(t *testing.T) {
 }
 
 func TestUnpushedCommitsListsWorkOnAnyLocalBranch(t *testing.T) {
+	t.Parallel()
 	local, _ := setupTracking(t)
 	git(t, local, "switch", "-q", "-c", "side")
 	git(t, local, "commit", "-q", "--allow-empty", "-m", "only here")

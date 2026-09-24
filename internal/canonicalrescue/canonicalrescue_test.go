@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type fixture struct {
@@ -23,6 +25,7 @@ func newFixture(t *testing.T) fixture {
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
 	run(t, root, "git", "init", "-q", "--bare", origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "sneat-co", "backstage")
@@ -47,7 +50,7 @@ func run(t *testing.T, directory, name string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command(name, arguments...)
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(arguments, " "), err, output)
@@ -97,6 +100,7 @@ func options(repositories fixture) Options {
 // TestInspectFindsUncommittedWorkAndIgnoresIgnoredPaths keeps a generated
 // marker from ever reading as work needing rescue.
 func TestInspectFindsUncommittedWorkAndIgnoresIgnoredPaths(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))
@@ -125,6 +129,7 @@ func TestInspectFindsUncommittedWorkAndIgnoresIgnoredPaths(t *testing.T) {
 // TestInspectRefusesALinkedWorktree keeps rescue pointed at the checkout where
 // uncommitted work is actually at risk.
 func TestInspectRefusesALinkedWorktree(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	if _, err := Inspect(context.Background(), repositories.Worktree, options(repositories)); err == nil {
 		t.Fatal("a linked worktree was accepted for rescue")
@@ -134,6 +139,7 @@ func TestInspectRefusesALinkedWorktree(t *testing.T) {
 // TestCaptureLeavesTheCloneExactlyAsItFoundIt is the property that makes a
 // rescue safe to run on a clone somebody else is looking at.
 func TestCaptureLeavesTheCloneExactlyAsItFoundIt(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	beforeHead := gitIn(t, repositories.Canonical, "rev-parse", "HEAD")
@@ -184,6 +190,7 @@ func TestCaptureLeavesTheCloneExactlyAsItFoundIt(t *testing.T) {
 // capture, review, restore — work without capturing twice, while refusing to
 // write over a branch holding somebody else's work.
 func TestCaptureReusesItsOwnBranchButNeverAnotherOne(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))
@@ -213,6 +220,7 @@ func TestCaptureReusesItsOwnBranchButNeverAnotherOne(t *testing.T) {
 // TestRestoreRefusesUntilTheContentIsProvablySomewhereElse is the guard on the
 // only destructive step in the package.
 func TestRestoreRefusesUntilTheContentIsProvablySomewhereElse(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))
@@ -240,6 +248,7 @@ func TestRestoreRefusesUntilTheContentIsProvablySomewhereElse(t *testing.T) {
 // TestRestoreCleansTheCloneAndKeepsIgnoredPaths completes the journey and
 // checks the one thing a `git clean -fdx` would have destroyed.
 func TestRestoreCleansTheCloneAndKeepsIgnoredPaths(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))
@@ -284,6 +293,7 @@ func TestRestoreCleansTheCloneAndKeepsIgnoredPaths(t *testing.T) {
 // being indistinguishable from a complete one at the exact moment that
 // difference destroys work.
 func TestRestoreRefusesWhenTheCaptureIsIncomplete(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))

@@ -14,6 +14,7 @@ import (
 )
 
 func TestSSHMessageDelivererUsesFixedReceiverAndExactCanonicalBytes(t *testing.T) {
+	t.Parallel()
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
 	receiptRaw, err := sessionmove.EncodeMessageReceipt(receipt)
@@ -43,6 +44,7 @@ func TestSSHMessageDelivererUsesFixedReceiverAndExactCanonicalBytes(t *testing.T
 }
 
 func TestSynchestraMessageDelivererUsesFixedHandlerAndPersistsDispatch(t *testing.T) {
+	t.Parallel()
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
 	receiptRaw, err := sessionmove.EncodeMessageReceipt(receipt)
@@ -79,6 +81,7 @@ func TestSynchestraMessageDelivererUsesFixedHandlerAndPersistsDispatch(t *testin
 }
 
 func TestSynchestraMessageDelivererResumesPersistedDispatchWithoutReinvoking(t *testing.T) {
+	t.Parallel()
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
 	receiptRaw, err := sessionmove.EncodeMessageReceipt(receipt)

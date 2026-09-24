@@ -12,6 +12,7 @@ import (
 )
 
 func TestComposeBindsClosedProducerEvidenceToOneCleanRevision(t *testing.T) {
+	t.Parallel()
 	inputs, now := validInputs()
 	receipt, err := Compose(inputs, now)
 	if err != nil {
@@ -26,6 +27,7 @@ func TestComposeBindsClosedProducerEvidenceToOneCleanRevision(t *testing.T) {
 }
 
 func TestComposeAcceptsRemoteBranchAlreadyAbsentAtCleanup(t *testing.T) {
+	t.Parallel()
 	inputs, now := validInputs()
 	result := &inputs.TerminalCleanup.Results[0]
 	result.RemoteHeadSHA = ""
@@ -36,6 +38,7 @@ func TestComposeAcceptsRemoteBranchAlreadyAbsentAtCleanup(t *testing.T) {
 }
 
 func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		change func(*Inputs, time.Time) time.Time
 		want   string
@@ -210,6 +213,7 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			inputs, now := validInputs()
 			now = test.change(&inputs, now)
 			if _, err := Compose(inputs, now); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -220,6 +224,7 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 }
 
 func TestDecodeEvidenceRejectsUnknownFieldsAndProse(t *testing.T) {
+	t.Parallel()
 	if _, err := DecodeVerificationIndex([]byte("this is not machine-readable evidence")); err == nil {
 		t.Fatal("prose decoded as local-check evidence")
 	}
@@ -280,6 +285,7 @@ func validInputs() (Inputs, time.Time) {
 // host, which is the worse failure for a check whose only job is proving
 // remote identity.
 func TestValidateRemoteURLIsHostNeutral(t *testing.T) {
+	t.Parallel()
 	const repository = "sneat-dev/wb"
 	accepted := []string{
 		"git@github.com:sneat-dev/wb.git",

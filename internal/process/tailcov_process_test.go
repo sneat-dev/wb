@@ -59,6 +59,7 @@ func tailCovProcessGroupOf(t *testing.T) int {
 // group, cancellation signals that group, and a descendant that keeps an output
 // pipe alive cannot block the caller past the grace period.
 func TestTailCovCommandContextOwnsTheProcessTree(t *testing.T) {
+	t.Parallel()
 	command := CommandContext(context.Background(), "/bin/echo", "owned")
 	if command.Path != "/bin/echo" {
 		t.Fatalf("Path = %q, want /bin/echo", command.Path)
@@ -113,6 +114,7 @@ func TestTailCovCommandContextOwnsTheProcessTree(t *testing.T) {
 // process group, so Ctrl-C reaches it through the terminal instead of being
 // intercepted by group ownership.
 func TestTailCovCommandContextInteractivePreservesTheForegroundGroup(t *testing.T) {
+	t.Parallel()
 	command := CommandContextInteractive(context.Background(), true, "/bin/echo", "foreground")
 	if command.SysProcAttr != nil {
 		t.Fatalf("SysProcAttr = %#v, want nil so the caller's process group is preserved", command.SysProcAttr)
@@ -138,6 +140,7 @@ func TestTailCovCommandContextInteractivePreservesTheForegroundGroup(t *testing.
 // has no process to signal, so cancellation is a no-op rather than a nil
 // dereference.
 func TestTailCovCommandContextNonInteractiveHasNoGroupBeforeStart(t *testing.T) {
+	t.Parallel()
 	command := CommandContext(context.Background(), "/bin/sleep", "30")
 	if err := command.Cancel(); err != nil {
 		t.Fatalf("Cancel before Start = %v, want nil", err)
@@ -151,6 +154,7 @@ func TestTailCovCommandContextNonInteractiveHasNoGroupBeforeStart(t *testing.T) 
 // that cannot be signalled is reported rather than swallowed: only ESRCH ("the
 // group is already gone") is a success.
 func TestTailCovTerminateProcessGroupReportsASignalFailure(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		// Root may signal every process group, so EPERM is unreachable and any
 		// group this test picked would really receive SIGTERM.
@@ -178,6 +182,7 @@ func TestTailCovTerminateProcessGroupReportsASignalFailure(t *testing.T) {
 // of a brand-new session, so a later process-group signal aimed at the parent
 // cannot reach it.
 func TestTailCovConfigureDetachedStartsANewSession(t *testing.T) {
+	t.Parallel()
 	sleeper, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatalf("sleep: %v", err)

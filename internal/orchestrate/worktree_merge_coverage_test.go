@@ -173,6 +173,9 @@ func TestOrchCovValidateExactPreparingReceiptAdmitsOnlyAnExactResume(t *testing.
 			},
 		},
 	} {
+		// Left serial: several cases and the trailing dirty-worktree check
+		// below share the same real sourceWorktree on disk (git pushes,
+		// uncommitted writes), which a parallel sibling would race.
 		t.Run(test.name, func(t *testing.T) {
 			candidate := base
 			test.mutate(&candidate)
@@ -238,6 +241,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := receipt
 			candidate.Sources = append([]WorktreeMergeSource(nil), receipt.Sources...)
 			test.mutate(&candidate)
@@ -250,6 +254,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 }
 
 func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing.T) {
+	t.Parallel()
 	valid := WorktreeMergeReceipt{
 		Status:    WorktreeMergePrepared,
 		TargetSHA: strings.Repeat("b", 40),
@@ -289,6 +294,7 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := valid
 			test.mutate(&candidate)
 			if ok, err := preparedValidationStillValid(candidate, worktreeMergeValidationPlan{}); err != nil || ok {
@@ -380,6 +386,10 @@ func TestOrchCovCanRefreshWorktreeMergeReceiptRequiresAnAdditiveAdvance(t *testi
 			r.PublishedCandidateSHA = oldSHA
 		}},
 	} {
+		// Left serial: the trailing checks below mutate the same real
+		// source.WorktreeDir on disk (dirty write, git push) that
+		// canRefreshWorktreeMergeReceipt inspects here, and parallel
+		// subtests return before their body runs, so it would race.
 		t.Run(test.name, func(t *testing.T) {
 			candidate := prior
 			candidate.Sources = append([]WorktreeMergeSource(nil), prior.Sources...)

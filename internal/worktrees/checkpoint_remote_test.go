@@ -7,6 +7,7 @@ import (
 )
 
 func TestCheckpointRemoteRefRejectsUnsafeOrEmptyTask(t *testing.T) {
+	t.Parallel()
 	for _, task := range []string{"", "  ", "../escape", "a/b", "task with spaces"} {
 		if _, err := CheckpointRemoteRef(task); err == nil {
 			t.Errorf("task %q was accepted as a safe ref segment", task)

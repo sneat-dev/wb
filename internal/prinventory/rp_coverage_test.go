@@ -52,6 +52,7 @@ func rpCovSearchItem(id, number, repository string, extra ...string) string {
 }
 
 func TestRPCovParsePagesAcceptsBothProviderShapes(t *testing.T) {
+	t.Parallel()
 	array := `[` + rpCovSearchPage(1, rpCovSearchItem(`"1"`, "1", "acme/app")) + `,` +
 		rpCovSearchPage(2, rpCovSearchItem(`"2"`, "2", "acme/app")) + `]`
 	pages, err := parsePages([]byte(array))
@@ -75,6 +76,7 @@ func TestRPCovParsePagesAcceptsBothProviderShapes(t *testing.T) {
 }
 
 func TestRPCovParsePagesRejectsUndecodableResponses(t *testing.T) {
+	t.Parallel()
 	if _, err := parsePages(nil); err == nil || !strings.Contains(err.Error(), "no decodable page") {
 		t.Fatalf("empty response error = %v, want no-decodable-page refusal", err)
 	}
@@ -87,6 +89,7 @@ func TestRPCovParsePagesRejectsUndecodableResponses(t *testing.T) {
 }
 
 func TestRPCovInventoryAppliesProviderDetailsToEachPullRequest(t *testing.T) {
+	t.Parallel()
 	details := `{"number":7,"title":"Detailed","url":"https://github.com/acme/app/pull/7",` +
 		`"author":{"login":"detail-author"},"isDraft":true,` +
 		`"createdAt":"2026-02-01T00:00:00Z","updatedAt":"2026-02-02T00:00:00Z",` +
@@ -127,6 +130,7 @@ func TestRPCovInventoryAppliesProviderDetailsToEachPullRequest(t *testing.T) {
 }
 
 func TestRPCovApplyDetailsKeepsExistingValuesForEmptyDetailFields(t *testing.T) {
+	t.Parallel()
 	pr := PullRequest{
 		Number: 3, Title: "original", URL: "https://github.com/acme/app/pull/3", Author: "original-author",
 		Draft: true, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -144,6 +148,7 @@ func TestRPCovApplyDetailsKeepsExistingValuesForEmptyDetailFields(t *testing.T) 
 }
 
 func TestRPCovApplyDetailsMarksDirtyMergeStateAsConflict(t *testing.T) {
+	t.Parallel()
 	pr := PullRequest{}
 	applyDetails(&pr, rawDetails{MergeStateStatus: "DIRTY"})
 	if !pr.Conflict {
@@ -152,6 +157,7 @@ func TestRPCovApplyDetailsMarksDirtyMergeStateAsConflict(t *testing.T) {
 }
 
 func TestRPCovDetailsPropagatesCommandAndDecodeFailures(t *testing.T) {
+	t.Parallel()
 	failing := &rpCovRunner{fn: func([]string) ([]byte, error) { return nil, errors.New("gh offline") }}
 	if _, err := details(context.Background(), failing, "acme/app", 1); err == nil || !strings.Contains(err.Error(), "offline") {
 		t.Fatalf("details command error = %v", err)
@@ -168,6 +174,7 @@ func TestRPCovDetailsPropagatesCommandAndDecodeFailures(t *testing.T) {
 }
 
 func TestRPCovRepositorySlugRejectsUnparseableAndUnrelatedURLs(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string]string{
 		"https://api.github.com/repos/acme/app": "acme/app",
 		"http://[::1":                           "",
@@ -181,6 +188,7 @@ func TestRPCovRepositorySlugRejectsUnparseableAndUnrelatedURLs(t *testing.T) {
 }
 
 func TestRPCovInventoryOwnerReportsCutoffParseFailureWithoutQuerying(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovRunner{fn: func([]string) ([]byte, error) {
 		t.Fatal("an unparseable cutoff must not reach the provider")
 		return nil, nil
@@ -200,6 +208,7 @@ func TestRPCovInventoryOwnerReportsCutoffParseFailureWithoutQuerying(t *testing.
 }
 
 func TestRPCovInventoryOwnerReportsUndecodableProviderResponse(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovRunner{fn: func([]string) ([]byte, error) { return []byte("not json"), nil }}
 	result := Inventory(context.Background(), Options{Owners: []Owner{{Login: "acme", Qualifier: "org"}}, Runner: runner})
 	if result.Complete {
@@ -211,6 +220,7 @@ func TestRPCovInventoryOwnerReportsUndecodableProviderResponse(t *testing.T) {
 }
 
 func TestRPCovInventoryOwnerReportsIncompletePagination(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovRunner{fn: func([]string) ([]byte, error) {
 		return []byte(`[` + rpCovSearchPage(5, rpCovSearchItem(`"1"`, "1", "acme/app")) + `]`), nil
 	}}
@@ -227,6 +237,7 @@ func TestRPCovInventoryOwnerReportsIncompletePagination(t *testing.T) {
 }
 
 func TestRPCovInventoryOwnerRejectsPRWithoutRepositoryIdentity(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovRunner{fn: func([]string) ([]byte, error) {
 		return []byte(`[{"total_count":1,"items":[{"id":"1","number":4,"title":"nowhere",` +
 			`"html_url":"https://github.com/x/y/pull/4","repository_url":"https://api.github.com/user/4",` +
@@ -242,6 +253,7 @@ func TestRPCovInventoryOwnerRejectsPRWithoutRepositoryIdentity(t *testing.T) {
 }
 
 func TestRPCovInventoryOwnerRejectsDuplicatePRIdentityAcrossPages(t *testing.T) {
+	t.Parallel()
 	item := rpCovSearchItem(`"1"`, "5", "acme/app")
 	runner := &rpCovRunner{fn: func([]string) ([]byte, error) {
 		return []byte(`[` + rpCovSearchPage(2, item, item) + `]`), nil
@@ -256,6 +268,7 @@ func TestRPCovInventoryOwnerRejectsDuplicatePRIdentityAcrossPages(t *testing.T) 
 }
 
 func TestRPCovNormalizeOwnersDefaultsQualifierTrimmsAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	owners := normalizeOwners([]Owner{
 		{Login: "  acme  "},
 		{Login: "acme", Qualifier: "org"},
@@ -275,6 +288,7 @@ func TestRPCovNormalizeOwnersDefaultsQualifierTrimmsAndDeduplicates(t *testing.T
 }
 
 func TestRPCovInventoryDeduplicatesSortsAndOrdersDiagnostics(t *testing.T) {
+	t.Parallel()
 	duplicate := rpCovSearchItem(`"4"`, "4", "acme/zebra")
 	runner := &rpCovRunner{fn: func(args []string) ([]byte, error) {
 		query := strings.Join(args, " ")
@@ -335,6 +349,7 @@ func TestRPCovInventoryDeduplicatesSortsAndOrdersDiagnostics(t *testing.T) {
 }
 
 func TestRPCovRenderMarkdownExcludesArchivedAndRendersCutoffAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		SnapshotAt:       time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC),
 		Complete:         false,
@@ -366,6 +381,7 @@ func TestRPCovRenderMarkdownExcludesArchivedAndRendersCutoffAndDiagnostics(t *te
 }
 
 func TestRPCovIdStringHandlesEmptyStringNumericAndInvalidValues(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		raw  json.RawMessage
@@ -383,6 +399,7 @@ func TestRPCovIdStringHandlesEmptyStringNumericAndInvalidValues(t *testing.T) {
 }
 
 func TestRPCovOwnerStringAndInventoryOwnerQueryIncludesQualifier(t *testing.T) {
+	t.Parallel()
 	if got := (Owner{Login: "acme", Qualifier: "org"}).String(); got != "org:acme" {
 		t.Fatalf("Owner.String() = %q", got)
 	}

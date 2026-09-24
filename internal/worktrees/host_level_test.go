@@ -38,6 +38,7 @@ func TestClonePathInvertsToRemoteURL(t *testing.T) {
 // multi-segment hosted paths and for the owner/repository pairs actually
 // present in this fleet, including an explicit-port forge.
 func TestExpectedRemoteURLInvertsTheFleetSlugs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, slug := range []string{
 		"github.com/dal-go/dalgo",
@@ -62,6 +63,7 @@ func TestExpectedRemoteURLInvertsTheFleetSlugs(t *testing.T) {
 // WB refuses to invent a remote for it. `wb layout audit` reports it as a
 // layout finding.
 func TestExpectedRemoteURLRefusesALegacyFirstLevel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, legacy := range []string{"sneat-dev/wb", "dal-go/dalgo", "acme/app"} {
 		if remote, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(legacy))); err == nil {
@@ -124,6 +126,7 @@ func TestUnqualifiedCoordinateStaysOnALegacyClone(t *testing.T) {
 // one case the flat legacy root could not represent: the same owner/repository
 // on two forges.
 func TestCanonicalRepositoryPathPrefersTheHostLevelAndRefusesAmbiguity(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	legacy := newLegacyClone(t, root, "acme", "app")
 	if got, err := CanonicalRepositoryPath(root, "acme/app"); err != nil || got != legacy {
@@ -158,6 +161,7 @@ func TestGuardAcceptsACanonicalCloneAtTheHostLevel(t *testing.T) {
 // TestCanonicalCoordinatesRecognizeBothPlacements pins the boundary-aware
 // interpretation of a canonical clone path.
 func TestCanonicalCoordinatesRecognizeBothPlacements(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, test := range []struct {
 		relative string
@@ -187,6 +191,7 @@ func TestCanonicalCoordinatesRecognizeBothPlacements(t *testing.T) {
 // TestSplitRepositoryAddressAcceptsTheLiteralHostLevel pins the extended
 // coordinate parser: an optional literal hostname, then owner/repository.
 func TestSplitRepositoryAddressAcceptsTheLiteralHostLevel(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		repository string
 		host       string
@@ -330,6 +335,7 @@ func TestHostLevelCloneLocalWorktreesAreDiscoverable(t *testing.T) {
 // check: a lifecycle backlog written before the host level existed must keep
 // validating, and a host-qualified coordinate must require its own host.
 func TestCanonicalDirMatchesRepositoryAcceptsBothPlacements(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(string(filepath.Separator), "projects")
 	for _, test := range []struct {
 		repository string

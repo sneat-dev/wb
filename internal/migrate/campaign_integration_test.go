@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -401,6 +402,7 @@ func TestLocalCampaignContinuesVerificationAfterProviderFailure(t *testing.T) {
 }
 
 func TestUpdateGoModuleTidiesUnusedMigrationRequirement(t *testing.T) {
+	t.Parallel()
 	moduleRoot := t.TempDir()
 	recordRoot := t.TempDir()
 	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/unused\n\ngo 1.24\n")
@@ -446,6 +448,7 @@ func TestCampaignPRRequiresPublishedVersionsBeforePush(t *testing.T) {
 }
 
 func TestPreflightPublishedReleasesRejectsUnrelatedLocalReplacement(t *testing.T) {
+	t.Parallel()
 	moduleRoot := t.TempDir()
 	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/consumer\n\ngo 1.24\n\nrequire example.com/unrelated v0.0.0\n\nreplace example.com/unrelated => ../unrelated\n")
 
@@ -555,6 +558,7 @@ func commitCampaignRepository(t *testing.T, source, remote string) {
 		t.Fatal(err)
 	}
 	runCampaignGit(t, filepath.Dir(source), "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runCampaignGit(t, source, "init", "--initial-branch=main")
 	runCampaignGit(t, source, "add", ".")
 	runCampaignGit(t, source, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "initial")

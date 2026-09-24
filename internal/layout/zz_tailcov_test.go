@@ -202,6 +202,7 @@ func TestTailCovOriginSlugPathShapes(t *testing.T) {
 		{name: "self hosted", url: "https://git.example.test/team/sub/app.git", want: "sub/app"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(root, test.name)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
@@ -232,6 +233,7 @@ func TestTailCovOriginSlugRejectsSingleElementRemotes(t *testing.T) {
 		{name: "github colon empty", url: "git@github.com:.git"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(root, test.name)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)

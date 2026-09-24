@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -253,6 +254,7 @@ func orchCovInstallDeleteGit(t *testing.T, state orchCovGHState) {
 }
 
 func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
+	t.Parallel()
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
@@ -396,7 +398,9 @@ func TestDeleteRemoteBranchIgnoresAPreexistingLandingRemote(t *testing.T) {
 	runEngineGit(t, seed, "add", "README.md")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	runEngineGit(t, root, "clone", "--bare", seed, malicious)
+	testenv.ConfigureGitAutoMaintenanceOff(t, malicious)
 	runEngineGit(t, root, "clone", origin, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
@@ -456,6 +460,7 @@ func TestOrchCovLandPreflightRefusalNamesEachBlockedState(t *testing.T) {
 		{name: "not mergeable", view: PullRequestView{State: "open", Mergeable: &notMergeable, MergeableState: "dirty"}, want: LandRefusalNotMergeable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			refusal := landPreflightRefusal(test.view, "acme/app", "7")
 			if refusal == nil || refusal.code != test.want {
 				t.Fatalf("preflight refusal = %+v, want %s", refusal, test.want)
@@ -816,6 +821,7 @@ func TestOrchCovAppendLandEventRecordsARefusalWithItsReason(t *testing.T) {
 }
 
 func TestOrchCovRefuseLinkedWorktreeIgnoresAnUnlinkedCheckout(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	checkout := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(checkout, 0o755); err != nil {

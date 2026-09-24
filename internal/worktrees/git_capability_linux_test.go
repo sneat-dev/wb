@@ -13,6 +13,7 @@ import (
 )
 
 func TestLandlockInstallPinsCallerThroughImmediateExecBoundary(t *testing.T) {
+	t.Parallel()
 	var installedOn int
 	if err := pinOSThreadThroughLandlock(func() error {
 		installedOn = unix.Gettid()
@@ -20,7 +21,7 @@ func TestLandlockInstallPinsCallerThroughImmediateExecBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.UnlockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
 	for range 100 {
 		runtime.Gosched()
 		if got := unix.Gettid(); got != installedOn {

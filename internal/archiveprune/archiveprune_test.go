@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixture is one local clone under a temp projects root, backed by a real
@@ -37,6 +39,7 @@ func newFixture(t *testing.T, owner, name string) *fixture {
 
 	remote := filepath.Join(remotesRoot, owner, name+".git")
 	run(t, remotesRoot, "git", "clone", "-q", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	canonical := filepath.Join(projectsRoot, owner, name)
 	mustMkdirAll(t, filepath.Dir(canonical))
@@ -92,10 +95,10 @@ func run(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.test",
 		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.test",
-		"HOME="+os.Getenv("HOME"))
+		"HOME="+os.Getenv("HOME")))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
@@ -332,6 +335,7 @@ func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
 }
 
 func TestPlanUntrackedRefusesSymlinkAndTraversal(t *testing.T) {
+	t.Parallel()
 	clone := t.TempDir()
 	mustWriteFile(t, filepath.Join(clone, "outside.txt"), "outside\n")
 	if err := os.Symlink("outside.txt", filepath.Join(clone, "linked.txt")); err != nil {
@@ -548,6 +552,7 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 }
 
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := filepath.Join(root, ".wb")
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
@@ -659,6 +664,7 @@ func newFixtureIn(t *testing.T, projectsRoot, owner, name string) *fixture {
 
 	remote := filepath.Join(remotesRoot, name+".git")
 	run(t, remotesRoot, "git", "clone", "-q", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	canonical := filepath.Join(projectsRoot, owner, name)
 	mustMkdirAll(t, filepath.Dir(canonical))

@@ -1131,6 +1131,7 @@ func localBranchExistsIn(t *testing.T, canonicalDir, branch string) bool {
 // blockDiagnosedTasks/blockUnsafeTasks — moving part of a task and leaving
 // the rest behind would strand the very recycling this verb exists for.
 func TestRenameEligibilityAndCoordination(t *testing.T) {
+	t.Parallel()
 	clean := ListResult{Repository: "acme/app", Clean: true}
 	if eligible, reason := renameEligibility(clean); !eligible || reason != "" {
 		t.Fatalf("clean entry eligibility = %v, %q", eligible, reason)
@@ -1170,6 +1171,7 @@ func TestRenameEligibilityAndCoordination(t *testing.T) {
 }
 
 func TestDefaultRenameReportDir(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
 	got := DefaultRenameReportDir("/home/.wb", now)
 	want := filepath.Join("/home/.wb", "reports", "worktree-rename", "20260810T120000.000000000Z")

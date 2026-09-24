@@ -26,6 +26,7 @@ func render(t *testing.T, result Result, format Format) string {
 }
 
 func TestWriteTextNamesFileLineAndFix(t *testing.T) {
+	t.Parallel()
 	output := render(t, violatingResult(t), FormatText)
 	for _, want := range []string{
 		"github.com/acme/cal/backend",
@@ -42,6 +43,7 @@ func TestWriteTextNamesFileLineAndFix(t *testing.T) {
 }
 
 func TestWriteTextOnACleanModule(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod": "module github.com/acme/cal/backend\n\ngo 1.26\n",
 	})
@@ -51,6 +53,7 @@ func TestWriteTextOnACleanModule(t *testing.T) {
 }
 
 func TestWriteJSONIsMachineReadable(t *testing.T) {
+	t.Parallel()
 	var payload resultJSON
 	if err := json.Unmarshal([]byte(render(t, violatingResult(t), FormatJSON)), &payload); err != nil {
 		t.Fatal(err)
@@ -67,6 +70,7 @@ func TestWriteJSONIsMachineReadable(t *testing.T) {
 }
 
 func TestWriteGitHubEmitsAnnotations(t *testing.T) {
+	t.Parallel()
 	output := render(t, violatingResult(t), FormatGitHub)
 	if strings.Count(output, "::error file=") != 2 {
 		t.Fatalf("expected two error annotations:\n%s", output)
@@ -77,6 +81,7 @@ func TestWriteGitHubEmitsAnnotations(t *testing.T) {
 }
 
 func TestWriteGitHubUsesNoticeForReportMode(t *testing.T) {
+	t.Parallel()
 	result := violatingResult(t)
 	for index := range result.Findings {
 		result.Findings[index].Mode = ModeReport
@@ -94,6 +99,7 @@ func TestWriteGitHubUsesNoticeForReportMode(t *testing.T) {
 // from the scanned repository — so it must not be able to forge or truncate a
 // workflow command.
 func TestWriteGitHubEscapesWorkflowDelimiters(t *testing.T) {
+	t.Parallel()
 	result := violatingResult(t)
 	result.Findings = result.Findings[:1]
 	result.Findings[0].Message = "line one\nline two ::error file=evil::pwned"
@@ -110,6 +116,7 @@ func TestWriteGitHubEscapesWorkflowDelimiters(t *testing.T) {
 }
 
 func TestParseFormat(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"text", "json", "github"} {
 		if _, err := ParseFormat(name); err != nil {
 			t.Fatalf("ParseFormat(%q): %v", name, err)
@@ -121,6 +128,7 @@ func TestParseFormat(t *testing.T) {
 }
 
 func TestApplyStrictPromotesReportFindings(t *testing.T) {
+	t.Parallel()
 	result := violatingResult(t)
 	for index := range result.Findings {
 		result.Findings[index].Mode = ModeReport
@@ -135,6 +143,7 @@ func TestApplyStrictPromotesReportFindings(t *testing.T) {
 }
 
 func TestSummaryCountsByRule(t *testing.T) {
+	t.Parallel()
 	if got := violatingResult(t).Summary(); got != "1 import, 1 layer" {
 		t.Fatalf("summary = %q", got)
 	}

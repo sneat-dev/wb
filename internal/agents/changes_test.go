@@ -39,6 +39,7 @@ func runGit(t *testing.T, dir string, arguments ...string) string {
 }
 
 func TestSummarizeChangesCountsTheArtefactAndNotAReview(t *testing.T) {
+	t.Parallel()
 	dir, base := initChangeRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("one\ntwo changed\nthree\nfour\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -67,6 +68,7 @@ func TestSummarizeChangesCountsTheArtefactAndNotAReview(t *testing.T) {
 }
 
 func TestSummarizeChangesCountsCommitsTheWorkerMade(t *testing.T) {
+	t.Parallel()
 	dir, base := initChangeRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("committed\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -81,6 +83,7 @@ func TestSummarizeChangesCountsCommitsTheWorkerMade(t *testing.T) {
 }
 
 func TestSummarizeChangesDegradesInsteadOfFailingARun(t *testing.T) {
+	t.Parallel()
 	// No directory: WB must report no summary rather than fail a run whose
 	// worktree is the actual artefact.
 	if summary := SummarizeChanges(context.Background(), "", "abc"); summary != nil {
@@ -107,6 +110,7 @@ func TestSummarizeChangesDegradesInsteadOfFailingARun(t *testing.T) {
 }
 
 func TestSummarizeChangesBoundsTheChangedFileList(t *testing.T) {
+	t.Parallel()
 	dir, base := initChangeRepo(t)
 	for index := 0; index < maxChangedFiles+5; index++ {
 		name := filepath.Join(dir, fmt.Sprintf("file-%03d.txt", index))
@@ -127,6 +131,7 @@ func TestSummarizeChangesBoundsTheChangedFileList(t *testing.T) {
 }
 
 func TestParseShortstatReadsGitOutput(t *testing.T) {
+	t.Parallel()
 	cases := map[string][2]int{
 		" 3 files changed, 12 insertions(+), 4 deletions(-)": {12, 4},
 		" 1 file changed, 2 insertions(+)":                   {2, 0},
@@ -143,6 +148,7 @@ func TestParseShortstatReadsGitOutput(t *testing.T) {
 }
 
 func TestGitOutputReportsFailures(t *testing.T) {
+	t.Parallel()
 	if _, err := gitOutput(context.Background(), t.TempDir(), "rev-parse", "HEAD"); err == nil {
 		t.Fatal("a Git failure must be reported")
 	}

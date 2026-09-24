@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -39,6 +40,7 @@ func newCreateFixture(t *testing.T) *createFixture {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runEngineGit(t, remote, "config", "user.name", "WB Test")
 	runEngineGit(t, remote, "config", "user.email", "wb@example.test")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

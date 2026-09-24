@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -187,13 +188,26 @@ func dapbWant[T comparable](t *testing.T, rpc, field string, got, want T) {
 // generated handler over the default Connect protocol and asserts that request
 // payloads reach the service and responses come back intact.
 func TestDapbConnectRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 
-	var intercepted int
+	// The ten subtests below are deliberately NOT t.Parallel(): the
+	// assertions after the loop (service call counts, the interceptor
+	// count) read state the subtests populate, and that only works because
+	// each t.Run call blocks until its subtest returns. Making a subtest
+	// parallel makes t.Run return as soon as it calls t.Parallel(), before
+	// its body has actually run -- the trailing assertions would then race
+	// the subtests themselves and, under -count=1, always read zeros (this
+	// exact failure mode shipped once, from an earlier, purely
+	// thread-safety-focused pass over this file, and was caught by a full
+	// `go test ./...` run, not by -race). intercepted is still atomic
+	// because that costs nothing and stays correct if this test is ever
+	// restructured to make the subtests independent.
+	var intercepted atomic.Int64
 	interceptor := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			intercepted++
+			intercepted.Add(1)
 			return next(ctx, req)
 		}
 	})
@@ -388,14 +402,15 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 			t.Errorf("service call count for %s = %d, want 1", rpc, got)
 		}
 	}
-	if intercepted != 10 {
-		t.Errorf("unary interceptor ran %d times, want 10", intercepted)
+	if got := intercepted.Load(); got != 10 {
+		t.Errorf("unary interceptor ran %d times, want 10", got)
 	}
 }
 
 // TestDapbConnectErrorPropagation asserts service-side Connect errors survive the
 // generated client round trip with their codes intact.
 func TestDapbConnectErrorPropagation(t *testing.T) {
+	t.Parallel()
 	srv := dapbMountHandler(t, dapbNewDaemonService())
 	client := NewDaemonServiceClient(srv.Client(), srv.URL)
 	ctx := context.Background()
@@ -419,6 +434,7 @@ func TestDapbConnectErrorPropagation(t *testing.T) {
 // TestDapbConnectGRPCWebClientOption asserts the generated client works with the
 // gRPC-Web protocol selected through connect.WithGRPCWeb.
 func TestDapbConnectGRPCWebClientOption(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 	client := NewDaemonServiceClient(srv.Client(), srv.URL, connect.WithGRPCWeb())
@@ -434,6 +450,7 @@ func TestDapbConnectGRPCWebClientOption(t *testing.T) {
 // TestDapbConnectGRPCClientOption asserts the generated client works with the
 // gRPC protocol selected through connect.WithGRPC over HTTP/2.
 func TestDapbConnectGRPCClientOption(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	path, handler := NewDaemonServiceHandler(svc)
 	mux := http.NewServeMux()
@@ -455,6 +472,7 @@ func TestDapbConnectGRPCClientOption(t *testing.T) {
 // TestDapbConnectHandlerUnknownPath asserts the generated handler 404s for paths
 // under the service prefix that are not one of its RPCs.
 func TestDapbConnectHandlerUnknownPath(t *testing.T) {
+	t.Parallel()
 	_, handler := NewDaemonServiceHandler(dapbNewDaemonService())
 
 	req := httptest.NewRequest(http.MethodPost, "/wb.daemon.v1.DaemonService/NoSuchRPC", strings.NewReader(""))
@@ -469,6 +487,7 @@ func TestDapbConnectHandlerUnknownPath(t *testing.T) {
 // TestDapbUnimplementedHandler asserts every generated method of the
 // Unimplemented helper fails with CodeUnimplemented and a helpful message.
 func TestDapbUnimplementedHandler(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := UnimplementedDaemonServiceHandler{}
 
@@ -567,6 +586,7 @@ func TestDapbUnimplementedHandler(t *testing.T) {
 // TestDapbConnectProcedureConstants pins the generated procedure names to the
 // paths the handler routes.
 func TestDapbConnectProcedureConstants(t *testing.T) {
+	t.Parallel()
 	dapbWant(t, "DaemonServiceName", "name", DaemonServiceName, "wb.daemon.v1.DaemonService")
 	want := map[string]string{
 		"GetDaemonInfo":      DaemonServiceGetDaemonInfoProcedure,

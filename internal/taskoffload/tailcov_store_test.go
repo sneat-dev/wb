@@ -50,6 +50,7 @@ func tailCovWriteRaw(t *testing.T, root, taskID, recordJSON, contextBody string)
 // a store written by a newer WB must be refused rather than silently
 // misinterpreted by an older binary.
 func TestTailCovStoreRejectsASchemaVersionItCannotRead(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	record := tailCovRecord("task-future")
 	record.SchemaVersion = schemaVersion + 1
@@ -70,6 +71,7 @@ func TestTailCovStoreRejectsASchemaVersionItCannotRead(t *testing.T) {
 // refuses to lose: an empty continuation task, an empty worktree, and a task ID
 // that would escape the store root. All three make the parked task unresumable.
 func TestTailCovStoreRejectsAnIncompleteRecord(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 
 	broken := map[string]func(*Record){
@@ -79,6 +81,7 @@ func TestTailCovStoreRejectsAnIncompleteRecord(t *testing.T) {
 	}
 	for name, breakIt := range broken {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			record := tailCovRecord("task-incomplete")
 			breakIt(&record)
 			err := store.Save(record, "continue the review")
@@ -96,6 +99,7 @@ func TestTailCovStoreRejectsAnIncompleteRecord(t *testing.T) {
 // context-size contract: a continuation larger than the documented maximum must
 // not be parked, because the offload prompt could never carry it.
 func TestTailCovStoreRejectsAnOversizedContinuation(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	err := store.Save(tailCovRecord("task-too-big"), strings.Repeat("x", maxContextBytes+1))
 	if err == nil {
@@ -111,7 +115,9 @@ func TestTailCovStoreRejectsAnOversizedContinuation(t *testing.T) {
 // cannot host a task directory, and a task directory the process cannot write
 // must fail before any record is reported as parked.
 func TestTailCovStoreSurfacesStorageFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("root is not a directory", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(t.TempDir(), "root-file")
 		if err := os.WriteFile(root, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -123,6 +129,7 @@ func TestTailCovStoreSurfacesStorageFailures(t *testing.T) {
 	})
 
 	t.Run("task directory is not writable", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		unwritable := filepath.Join(root, "task-locked")
 		if err := os.Mkdir(unwritable, 0o500); err != nil {
@@ -147,6 +154,7 @@ func TestTailCovStoreSurfacesStorageFailures(t *testing.T) {
 // TestTailCovStoreRefusesIDsOutsideTheNamespace keeps Load from being used as a
 // path traversal: only IDs that carry the task- prefix may name a directory.
 func TestTailCovStoreRefusesIDsOutsideTheNamespace(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	outside := filepath.Join(store.Root, "..", "elsewhere")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
@@ -169,9 +177,11 @@ func TestTailCovStoreRefusesIDsOutsideTheNamespace(t *testing.T) {
 // distinct filesystem state a crash, an editor, or a partial copy can leave
 // behind, and each must be reported rather than half-loaded.
 func TestTailCovStoreReportsUnreadableAndMalformedRecords(t *testing.T) {
+	t.Parallel()
 	valid := `{"schema_version":1,"task_id":"task-ok","task":"review-auth","worktree_dir":"/tmp/review","status":"parked","created_at":"1970-01-01T00:00:10Z"}`
 
 	t.Run("record file missing", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		_, _, err := store.Load("task-never-saved")
 		if !os.IsNotExist(err) {
@@ -180,6 +190,7 @@ func TestTailCovStoreReportsUnreadableAndMalformedRecords(t *testing.T) {
 	})
 
 	t.Run("record file is not JSON", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		tailCovWriteRaw(t, root, "task-corrupt", "{not json", "continue")
 		_, _, err := NewStore(root).Load("task-corrupt")
@@ -193,6 +204,7 @@ func TestTailCovStoreReportsUnreadableAndMalformedRecords(t *testing.T) {
 	})
 
 	t.Run("context file missing", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		tailCovWriteRaw(t, root, "task-no-context", valid, "")
 		_, _, err := NewStore(root).Load("task-no-context")
@@ -202,6 +214,7 @@ func TestTailCovStoreReportsUnreadableAndMalformedRecords(t *testing.T) {
 	})
 
 	t.Run("record is incomplete", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		incomplete := `{"schema_version":1,"task_id":"task-empty","task":"","worktree_dir":"/tmp/review","status":"parked"}`
 		tailCovWriteRaw(t, root, "task-empty", incomplete, "continue")
@@ -217,6 +230,7 @@ func TestTailCovStoreReportsUnreadableAndMalformedRecords(t *testing.T) {
 // written as a truncated or silently corrected record, and the refusal happens
 // before the record file is created.
 func TestTailCovStoreSurfacesAnUnencodableRecord(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	record := tailCovRecord("task-out-of-range")
 	record.CreatedAt = time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -237,6 +251,7 @@ func TestTailCovStoreSurfacesAnUnencodableRecord(t *testing.T) {
 // contract the store exists for: the continuation body comes back byte for byte
 // (trailing newlines included), because it is handed to another agent verbatim.
 func TestTailCovLoadRoundTripsTheExactBytesItSaved(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	record := tailCovRecord("task-exact")
 	body := "Continue the review.\n\n  * keep the indentation\n"

@@ -30,17 +30,20 @@ func spCovTargetMembers(t *testing.T, request RemoteRequest, digest sessionmove.
 }
 
 func TestSpCovTargetAdmitRejectsUnsafeAndConflictingArtifacts(t *testing.T) {
+	t.Parallel()
 	raw := targetEnvelopeForTest(t)
 	envelope, err := DecodeEnvelope(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Run("invalid envelope", func(t *testing.T) {
+		t.Parallel()
 		if _, err := NewTargetStore(filepath.Join(t.TempDir(), "store")).Admit([]byte("{}\n")); err == nil {
 			t.Fatal("invalid envelope admitted")
 		}
 	})
 	t.Run("noncanonical envelope", func(t *testing.T) {
+		t.Parallel()
 		compact, err := json.Marshal(envelope)
 		if err != nil {
 			t.Fatal(err)
@@ -50,11 +53,13 @@ func TestSpCovTargetAdmitRejectsUnsafeAndConflictingArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("relative root", func(t *testing.T) {
+		t.Parallel()
 		if _, err := NewTargetStore("relative-store").Admit(raw); err == nil {
 			t.Fatal("relative root admitted")
 		}
 	})
 	t.Run("root beneath regular file", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "blocker")
 		spCovWriteRaw(t, blocker, []byte("x"), 0o600)
 		if _, err := NewTargetStore(filepath.Join(blocker, "store")).Admit(raw); err == nil {
@@ -62,6 +67,7 @@ func TestSpCovTargetAdmitRejectsUnsafeAndConflictingArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("root symlink", func(t *testing.T) {
+		t.Parallel()
 		parent := t.TempDir()
 		real := filepath.Join(parent, "real")
 		if err := os.Mkdir(real, 0o700); err != nil {
@@ -76,6 +82,7 @@ func TestSpCovTargetAdmitRejectsUnsafeAndConflictingArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("admit lock is a directory", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(t.TempDir(), "store")
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
@@ -90,7 +97,9 @@ func TestSpCovTargetAdmitRejectsUnsafeAndConflictingArtifacts(t *testing.T) {
 }
 
 func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
+	t.Parallel()
 	t.Run("first admission and idle replay", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		if admission.Replay || admission.Receipt != nil {
 			t.Fatalf("first admission = %#v", admission)
@@ -101,6 +110,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 		}
 	})
 	t.Run("continuation conflict on replay", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		path := filepath.Join(store.Root, admission.Envelope.Request.ResumeID, ContinuationFileName)
 		spCovWriteRaw(t, path, []byte("a different continuation"), 0o600)
@@ -109,6 +119,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 		}
 	})
 	t.Run("receipt directory", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		path := filepath.Join(store.Root, admission.Envelope.Request.ResumeID, targetReceiptFileName)
 		if err := os.Mkdir(path, 0o700); err != nil {
@@ -119,6 +130,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 		}
 	})
 	t.Run("conflicting durable receipt", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		path := filepath.Join(store.Root, admission.Envelope.Request.ResumeID, targetReceiptFileName)
 		conflicting := spCovReceiptFixture("resume-other", admission.Digest)
@@ -132,6 +144,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 		}
 	})
 	t.Run("events path is a regular file", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		path := filepath.Join(store.Root, admission.Envelope.Request.ResumeID, targetEventsDirName)
 		if err := os.RemoveAll(path); err != nil {
@@ -143,6 +156,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 		}
 	})
 	t.Run("existing receipt is validated on replay", func(t *testing.T) {
+		t.Parallel()
 		store, admission := spCovTargetFixture(t)
 		lock := spCovTargetLock(t, store, admission)
 		receipt := spCovTargetReceipt(t, admission)
@@ -157,6 +171,7 @@ func TestSpCovTargetAdmitReplayAndDurableConflicts(t *testing.T) {
 }
 
 func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	id := admission.Envelope.Request.ResumeID
 	digest := admission.Digest
@@ -182,6 +197,8 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 	}
 
 	envelopePath := filepath.Join(store.Root, id, EnvelopeFileName)
+	// These three subtests share and mutate envelopePath in place, so they
+	// are left serial rather than racing each other.
 	t.Run("envelope missing", func(t *testing.T) {
 		moved := envelopePath + "-backup"
 		if err := os.Rename(envelopePath, moved); err != nil {
@@ -223,6 +240,7 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 		}
 	})
 	t.Run("receive lock is a directory", func(t *testing.T) {
+		t.Parallel()
 		lockPath := filepath.Join(store.Root, id, targetLockFileName)
 		_ = os.Remove(lockPath)
 		if err := os.Mkdir(lockPath, 0o700); err != nil {
@@ -236,6 +254,7 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 }
 
 func TestSpCovTargetLockAuthenticatesOnlyExactAggregateBytes(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	id := admission.Envelope.Request.ResumeID
 	digest := string(admission.Digest)
@@ -324,6 +343,7 @@ func TestSpCovTargetLockAuthenticatesOnlyExactAggregateBytes(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			store, admission := spCovTargetFixture(t)
 			id := admission.Envelope.Request.ResumeID
 			digest := string(admission.Digest)
@@ -337,6 +357,7 @@ func TestSpCovTargetLockAuthenticatesOnlyExactAggregateBytes(t *testing.T) {
 }
 
 func TestSpCovTargetRetainSessionDir(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	id := admission.Envelope.Request.ResumeID
 	digest := string(admission.Digest)
@@ -357,6 +378,7 @@ func TestSpCovTargetRetainSessionDir(t *testing.T) {
 }
 
 func TestSpCovTargetLoadReceiptUnderLock(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	request := admission.Envelope.Request
 	lock := spCovTargetLock(t, store, admission)
@@ -402,6 +424,7 @@ func TestSpCovTargetLoadReceiptUnderLock(t *testing.T) {
 }
 
 func TestSpCovTargetEnsureSuccessorContextUnderLock(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	request := admission.Envelope.Request
 	lock := spCovTargetLock(t, store, admission)
@@ -427,6 +450,9 @@ func TestSpCovTargetEnsureSuccessorContextUnderLock(t *testing.T) {
 		},
 		"member reference": func(value []ReceiptMember) { value[0].TargetWorkLogReference = "bogus" },
 	} {
+		// Left serial: the trailing checks below publish and then
+		// overwrite the same successor-context path on this store/lock,
+		// and must run only after every rejection case has executed.
 		t.Run(name, func(t *testing.T) {
 			candidate := append([]ReceiptMember(nil), members...)
 			mutate(candidate)
@@ -469,6 +495,7 @@ func TestSpCovTargetEnsureSuccessorContextUnderLock(t *testing.T) {
 }
 
 func TestSpCovTargetSaveReceiptUnderLock(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	request := admission.Envelope.Request
 	lock := spCovTargetLock(t, store, admission)
@@ -498,6 +525,7 @@ func TestSpCovTargetSaveReceiptUnderLock(t *testing.T) {
 }
 
 func TestSpCovTargetAppendAndReadEvents(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	request := admission.Envelope.Request
 	lock := spCovTargetLock(t, store, admission)
@@ -543,6 +571,7 @@ func TestSpCovTargetAppendAndReadEvents(t *testing.T) {
 }
 
 func TestSpCovListTargetEventsRejectsEveryMalformedArtifact(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	request := admission.Envelope.Request
 	eventsDir := filepath.Join(store.Root, request.ResumeID, targetEventsDirName)
@@ -626,6 +655,7 @@ func TestSpCovListTargetEventsRejectsEveryMalformedArtifact(t *testing.T) {
 }
 
 func TestSpCovCleanAbsoluteStoreRootRules(t *testing.T) {
+	t.Parallel()
 	if _, err := cleanAbsoluteStoreRoot(""); err == nil {
 		t.Fatal("empty root accepted")
 	}
@@ -646,13 +676,14 @@ func TestSpCovCleanAbsoluteStoreRootRules(t *testing.T) {
 }
 
 func TestSpCovOpenTargetLockCreatesAndRejectsDirectories(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	aggPath := filepath.Join(store.Root, admission.Envelope.Request.ResumeID)
 	aggregate, err := os.Open(aggPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = aggregate.Close() }()
+	t.Cleanup(func() { _ = aggregate.Close() })
 
 	fd, err := openTargetLock(int(aggregate.Fd()))
 	if err != nil {
@@ -679,6 +710,7 @@ func TestSpCovOpenTargetLockCreatesAndRejectsDirectories(t *testing.T) {
 }
 
 func TestSpCovReadBoundedRegularRejectsUnusableHandles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	regular := filepath.Join(dir, "regular")
 	spCovWriteRaw(t, regular, []byte("hello"), 0o600)
@@ -701,7 +733,7 @@ func TestSpCovReadBoundedRegularRejectsUnusableHandles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if _, err := readBoundedRegular(directory, 16); err == nil {
 		t.Fatal("directory accepted as a bounded regular file")
 	}
@@ -712,19 +744,20 @@ func TestSpCovReadBoundedRegularRejectsUnusableHandles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = oversizedFile.Close() }()
+	t.Cleanup(func() { _ = oversizedFile.Close() })
 	if _, err := readBoundedRegular(oversizedFile, 4); err == nil {
 		t.Fatal("oversized artifact accepted")
 	}
 }
 
 func TestSpCovWriteImmutableAndExactPrivateArtifacts(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	directory, err := os.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 
 	created, err := writeImmutableAt(directory, "first.json", []byte("body\n"), 0o600)
 	if err != nil || !created {
@@ -774,12 +807,13 @@ func TestSpCovWriteImmutableAndExactPrivateArtifacts(t *testing.T) {
 }
 
 func TestSpCovLoadReceiptAtBranches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	directory, err := os.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	receipt, err := loadReceiptAt(directory)
 	if err != nil || receipt != nil {
 		t.Fatalf("receipt=%#v err=%v", receipt, err)
@@ -813,6 +847,7 @@ func TestSpCovLoadReceiptAtBranches(t *testing.T) {
 }
 
 func TestSpCovTargetAcquireFenceHonoursCancelledContext(t *testing.T) {
+	t.Parallel()
 	store, admission := spCovTargetFixture(t)
 	_ = spCovTargetLock(t, store, admission)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -825,13 +860,14 @@ func TestSpCovTargetAcquireFenceHonoursCancelledContext(t *testing.T) {
 }
 
 func TestSpCovOpenOrCreateRegularAtRejectsNonRegularDeviceNode(t *testing.T) {
+	t.Parallel()
 	// /dev/null is the one portable non-regular node every unix host provides:
 	// it opens read-write but must be rejected by the descriptor shape check.
 	dev, err := os.Open("/dev")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = dev.Close() }()
+	t.Cleanup(func() { _ = dev.Close() })
 	fd, err := openOrCreateRegularAt(int(dev.Fd()), "null", 0o600)
 	if err == nil {
 		_ = unix.Close(fd)

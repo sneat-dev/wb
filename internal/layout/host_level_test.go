@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestAuditDoesNotReportAHostLevelCloneAsMisowned encodes the layout half of
@@ -182,6 +184,7 @@ func TestOriginAddressReportsTheLiteralHostAndSlug(t *testing.T) {
 		{name: "explicit port", url: "https://github.com:8443/team/app.git", host: "github.com:8443", slug: "team/app"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
@@ -320,6 +323,7 @@ func hostedClone(t *testing.T, root, host, org, name, originURL string) string {
 	run(t, seed, "git", "commit", "-m", "init")
 	remote := filepath.Join(seedRoot, "remote.git")
 	run(t, seedRoot, "git", "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(root, host, org, name)
 	cloneFrom(t, remote, canonical)
 	run(t, canonical, "git", "remote", "set-url", "origin", originURL)
@@ -345,6 +349,7 @@ func legacyClone(t *testing.T, root, org, name, originURL string) string {
 	run(t, seed, "git", "commit", "-m", "init")
 	remote := filepath.Join(seedRoot, "remote.git")
 	run(t, seedRoot, "git", "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(root, org, name)
 	cloneFrom(t, remote, canonical)
 	run(t, canonical, "git", "remote", "set-url", "origin", originURL)

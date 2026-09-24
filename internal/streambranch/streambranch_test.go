@@ -3,6 +3,7 @@ package streambranch
 import "testing"
 
 func TestIsRecognizesBothSpellingsAndNothingElse(t *testing.T) {
+	t.Parallel()
 	for _, ref := range []string{"stream/checkout", "refs/heads/stream/checkout", "stream/a/b"} {
 		if !Is(ref) {
 			t.Errorf("Is(%q) = false, want true", ref)
@@ -19,12 +20,14 @@ func TestIsRecognizesBothSpellingsAndNothingElse(t *testing.T) {
 }
 
 func TestNameRendersTheBranch(t *testing.T) {
+	t.Parallel()
 	if got := Name("checkout-rewrite"); got != "stream/checkout-rewrite" {
 		t.Fatalf("Name = %q", got)
 	}
 }
 
 func TestStreamNameExtractsOrRefuses(t *testing.T) {
+	t.Parallel()
 	name, ok := StreamName("refs/heads/stream/checkout-rewrite")
 	if !ok || name != "checkout-rewrite" {
 		t.Fatalf("StreamName = %q, %t", name, ok)

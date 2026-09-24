@@ -534,32 +534,46 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		Apply: true, Actor: "reviewer", Reason: "must not leak a candidate on pinned-evidence refusal",
 	}
 	for _, test := range []struct {
-		name   string
-		mutate func(*WorktreeMergePublishedForwardRepairOptions)
+		name    string
+		mutate  func(*WorktreeMergePublishedForwardRepairOptions)
+		wantErr string
 	}{
 		{name: "receipt", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedReceiptSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "receipt SHA256"},
 		{name: "claim", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedImmutableClaimSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "immutable claim SHA256"},
 		{name: "supersession", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSupersessionSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "supersession SHA256"},
 		{name: "target", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedCurrentTargetSHA = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "does not match pinned repair and self-supersession target evidence"},
 		{name: "source", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSourceSHAs[1] = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "does not match expected"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Not t.Parallel(): every subtest calls
+			// PreparePublishedValidationFailureForwardRepair against the
+			// same fixture.githubDir/receipt.Lane, which AcquireOperationLock
+			// (called at the top of that function) treats as one exclusive
+			// lane. Running these in parallel let siblings race for that
+			// lock; the loser failed with "operation ... is already active"
+			// before ever reaching the claim/supersession mismatch branch
+			// this subtest exists to exercise, and the assertion below
+			// (err == nil || ...) is loose enough to still pass -- so the
+			// test kept passing while silently, nondeterministically
+			// starving internal/orchestrate/worktree_merge_published_forward_repair.go:113-169
+			// of coverage depending on scheduling (sneat-dev/wb#646 task-4
+			// resume, CI run 35996224158's coverage ratchet).
 			refusal := options
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)
 			result, err := PreparePublishedValidationFailureForwardRepair(context.Background(), refusal)
-			if err == nil || result.Candidate.Worktree != "" {
-				t.Fatalf("%s evidence refusal = %+v err=%v", test.name, result, err)
+			if err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("%s evidence refusal = %+v err=%v, want an error containing %q", test.name, result, err, test.wantErr)
 			}
 			assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 		})

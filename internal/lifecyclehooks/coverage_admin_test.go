@@ -12,6 +12,7 @@ import (
 )
 
 func TestHkCovStatusDefaultsLimitAndFailsOnState(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	status, err := dispatcher.Status(0)
 	if err != nil || status.Worker != "idle" || status.StateDir == "" || status.ReceiptPath == "" {
@@ -27,6 +28,7 @@ func TestHkCovStatusDefaultsLimitAndFailsOnState(t *testing.T) {
 }
 
 func TestHkCovStatusReportsRunningWorkerAndFindings(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -35,7 +37,7 @@ func TestHkCovStatusReportsRunningWorkerAndFindings(t *testing.T) {
 	if err := worker.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worker.Unlock() }()
+	t.Cleanup(func() { _ = worker.Unlock() })
 	status, err := dispatcher.Status(5)
 	if err != nil || status.Worker != "running" {
 		t.Fatalf("status=%+v err=%v", status, err)
@@ -43,6 +45,7 @@ func TestHkCovStatusReportsRunningWorkerAndFindings(t *testing.T) {
 }
 
 func TestHkCovStatusRecordsWorkerHealthAndLockFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := os.MkdirAll(filepath.Join(dispatcher.StateDir, "worker-health.json", "child"), 0o700); err != nil {
 		t.Fatal(err)
@@ -63,6 +66,7 @@ func TestHkCovStatusRecordsWorkerHealthAndLockFailures(t *testing.T) {
 }
 
 func TestHkCovStatusReportsReceiptStreamFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	dispatcher.ReceiptPath = filepath.Join(blocker, "receipts.jsonl")
@@ -72,6 +76,7 @@ func TestHkCovStatusReportsReceiptStreamFailure(t *testing.T) {
 }
 
 func TestHkCovQuarantineSnapshotCountsAndLimits(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -95,6 +100,7 @@ func TestHkCovQuarantineSnapshotCountsAndLimits(t *testing.T) {
 }
 
 func TestHkCovQueueSnapshotLockAndReadFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -115,6 +121,7 @@ func TestHkCovQueueSnapshotLockAndReadFailures(t *testing.T) {
 }
 
 func TestHkCovListQueuedSortsAndReportsFindings(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -149,6 +156,7 @@ func TestHkCovListQueuedSortsAndReportsFindings(t *testing.T) {
 }
 
 func TestHkCovQueueSnapshotReturnsPendingAndRunning(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -162,6 +170,7 @@ func TestHkCovQueueSnapshotReturnsPendingAndRunning(t *testing.T) {
 }
 
 func TestHkCovRetryRejectsIneligibleReceipts(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if _, err := dispatcher.Retry("a/b"); err == nil || !strings.Contains(err.Error(), "invalid lifecycle hook receipt ID") {
 		t.Fatalf("invalid id error=%v", err)
@@ -181,6 +190,7 @@ func TestHkCovRetryRejectsIneligibleReceipts(t *testing.T) {
 }
 
 func TestHkCovRetryRejectsMissingOrBrokenConfiguration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dispatcher := hkCovEnvIn(t, root)
 	failed := hkCovReceipt("failed")
@@ -213,6 +223,7 @@ func TestHkCovRetryRejectsMissingOrBrokenConfiguration(t *testing.T) {
 }
 
 func TestHkCovRetrySurfacesEnqueueAndWorkerFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	failed := hkCovReceipt("retry-me")
 	if err := appendReceipt(dispatcher.ReceiptPath, failed); err != nil {
@@ -235,6 +246,7 @@ func TestHkCovRetrySurfacesEnqueueAndWorkerFailures(t *testing.T) {
 }
 
 func TestHkCovRetryEnqueuesFailedReceipt(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	failed := hkCovReceipt("retry-ok")
 	failed.Checkout = checkout
@@ -252,6 +264,7 @@ func TestHkCovRetryEnqueuesFailedReceipt(t *testing.T) {
 }
 
 func TestHkCovCheckReportsConfigurationAndExecutors(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	report, err := dispatcher.Check()
 	if err != nil || !report.Configured || len(report.Executors) != 1 || report.Executors[0].Status != "ready" || report.Executors[0].Resolved == "" {
@@ -273,6 +286,7 @@ func TestHkCovCheckReportsConfigurationAndExecutors(t *testing.T) {
 }
 
 func TestHkCovCheckReportsUnusableExecutable(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := hkCovWriteFile(t, filepath.Join(root, "indexer"), "#!/bin/sh\n", 0o755)
 	config := hkCovWriteFile(t, filepath.Join(root, "wb.yaml"), hkCovValidConfigYAML("tools/indexer"), 0o600)
@@ -291,6 +305,7 @@ func TestHkCovCheckReportsUnusableExecutable(t *testing.T) {
 }
 
 func TestHkCovStatusReportsWorkerLockFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)

@@ -22,6 +22,7 @@ import (
 // uncommitted changes" and "cannot lock ref ... but expected ..." failures
 // happened.
 func TestAcquireCloneLockSerializesConcurrentHolders(t *testing.T) {
+	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
 
 	first, err := acquireCloneLock(clonePath)

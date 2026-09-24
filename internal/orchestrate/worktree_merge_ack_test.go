@@ -87,6 +87,7 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 }
 
 func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSuccessorChains(t *testing.T) {
+	t.Parallel()
 	sources := []WorktreeMergeSource{{Task: "source", Worktree: "/worktrees/source", Branch: "feature/source", SHA: "0123456789abcdef"}}
 	lane := worktreeMergeLaneID("acme/app", "main")
 	root := worktreeMergeOperationID(lane, sources)
@@ -131,6 +132,7 @@ func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSucces
 		"unrelated refresh source":  func(r *WorktreeMergeReceipt) { r.SourceRefreshes[0].Sources[0].SHA = "deadbeefdeadbeef" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := refreshed
 			candidate.SourceRefreshes = append([]WorktreeMergeSourceRefresh(nil), refreshed.SourceRefreshes...)
 			candidate.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), refreshed.SourceRefreshes[0].Sources...)
@@ -160,6 +162,7 @@ func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSucces
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if err := validatePrepareFailureSupersessionReceipt(test.receipt, test.receipt.ReceiptPath); err == nil {
 				t.Fatal("invalid successor identity was accepted")
 			}
@@ -498,6 +501,7 @@ func TestAcknowledgeLandedFailedValidationPreservesAdvancedSources(t *testing.T)
 }
 
 func TestLandedFailureAcknowledgementRefusesLandedReceiptWithoutFailedValidation(t *testing.T) {
+	t.Parallel()
 	receipt := WorktreeMergeReceipt{
 		ReceiptPath: "/tmp/receipt.json", ID: "receipt", Repository: "acme/app", Target: "main",
 		Candidate: WorktreeMergeCandidate{SHA: strings.Repeat("a", 40)}, LandingSHA: strings.Repeat("a", 40),

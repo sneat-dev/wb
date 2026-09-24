@@ -12,6 +12,7 @@ import (
 )
 
 func TestMarkParkedKeepsRegistrationImmutableAndRemovesLiveLookup(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	source, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-park", Runtime: "codex", StartedAt: time.Now().UTC()})
 	if err != nil {
@@ -44,6 +45,7 @@ func TestMarkParkedKeepsRegistrationImmutableAndRemovesLiveLookup(t *testing.T) 
 }
 
 func TestMarkResumedAppendsProjectionAndListPrefersIt(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	source, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-resume-source", Runtime: "codex", StartedAt: time.Now().UTC()})
 	if err != nil {
@@ -89,6 +91,7 @@ func TestMarkResumedAppendsProjectionAndListPrefersIt(t *testing.T) {
 }
 
 func TestRegisterRecordsWhatWBKnowsAboutItself(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 
 	written, err := Register(dir, Record{PID: os.Getpid(), Runtime: "claude-code", Model: "m"})
@@ -108,6 +111,7 @@ func TestRegisterRecordsWhatWBKnowsAboutItself(t *testing.T) {
 }
 
 func TestRegisterAssignsStableWBIdentityAndMachine(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	pid := os.Getpid()
 
@@ -135,6 +139,7 @@ func TestRegisterAssignsStableWBIdentityAndMachine(t *testing.T) {
 }
 
 func TestRegisterRetainsPreallocatedLineageAndHarnessIdentity(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	want := Record{
 		PID:                    os.Getpid(),
@@ -179,6 +184,7 @@ func TestRegisterRetainsPreallocatedLineageAndHarnessIdentity(t *testing.T) {
 }
 
 func TestListKeepsLegacyPIDOnlyRecordsReadable(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -210,6 +216,7 @@ func TestListKeepsLegacyPIDOnlyRecordsReadable(t *testing.T) {
 }
 
 func TestRegisterRequiresAPID(t *testing.T) {
+	t.Parallel()
 	if _, err := Register(filepath.Join(t.TempDir(), "sessions"), Record{Runtime: "codex"}); err == nil {
 		t.Fatal("Register accepted a record with no PID")
 	}
@@ -218,6 +225,7 @@ func TestRegisterRequiresAPID(t *testing.T) {
 // Re-registering must replace, so a session correcting its model does not have
 // to find and delete the previous file.
 func TestRegisterReplacesTheRecordForOnePID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	pid := os.Getpid()
 
@@ -241,6 +249,7 @@ func TestRegisterReplacesTheRecordForOnePID(t *testing.T) {
 }
 
 func TestListReportsLiveness(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), Runtime: "claude-code"}); err != nil {
 		t.Fatal(err)
@@ -267,6 +276,7 @@ func TestListReportsLiveness(t *testing.T) {
 
 // A missing directory means nobody registered yet, which is not an error.
 func TestListToleratesAMissingDirectory(t *testing.T) {
+	t.Parallel()
 	views, err := List(filepath.Join(t.TempDir(), "absent"))
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -278,6 +288,7 @@ func TestListToleratesAMissingDirectory(t *testing.T) {
 
 // One corrupt file must not hide every other session.
 func TestListSkipsAMalformedRecord(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), Runtime: "claude-code"}); err != nil {
 		t.Fatal(err)
@@ -296,6 +307,7 @@ func TestListSkipsAMalformedRecord(t *testing.T) {
 }
 
 func TestPruneRemovesOnlyExitedSessions(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), Runtime: "claude-code"}); err != nil {
 		t.Fatal(err)
@@ -318,6 +330,7 @@ func TestPruneRemovesOnlyExitedSessions(t *testing.T) {
 }
 
 func TestLookupIgnoresAnExitedSession(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: 424242, Runtime: "codex"}); err != nil {
 		t.Fatal(err)
@@ -331,6 +344,7 @@ func TestLookupIgnoresAnExitedSession(t *testing.T) {
 // Resolution must find a session registered by an ancestor, which is the whole
 // point: WB runs as a grandchild of the agent, not as the agent itself.
 func TestResolveForProcessFindsAnAncestorSession(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Log("Windows does not expose a portable parent PID query; no ancestor match is expected")
 		return
@@ -352,6 +366,7 @@ func TestResolveForProcessFindsAnAncestorSession(t *testing.T) {
 // An unregistered ancestor is never treated as an owner: this confirms
 // declarations, it does not invent them.
 func TestResolveForProcessIgnoresUnregisteredAncestors(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 
 	if _, ok := ResolveForProcess(dir, os.Getpid()); ok {
@@ -360,6 +375,7 @@ func TestResolveForProcessIgnoresUnregisteredAncestors(t *testing.T) {
 }
 
 func TestResolveForProcessIgnoresARegisteredButExitedAncestor(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{
 		PID: 424242, Runtime: "codex", StartedAt: time.Now().UTC(),
@@ -373,6 +389,7 @@ func TestResolveForProcessIgnoresARegisteredButExitedAncestor(t *testing.T) {
 }
 
 func TestLookupExactRefusesLinkedRecordsAndRequiresLivePID(t *testing.T) {
+	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "sessions")
 	record, err := Register(directory, Record{
 		PID: os.Getpid(), WBSessionID: "wbs-successor", Machine: "target-vm", Runtime: "codex",

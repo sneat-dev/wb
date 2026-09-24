@@ -28,9 +28,11 @@ func lgCovWriteGoWork(t *testing.T, consumer, library string) {
 }
 
 func TestLgCovUndoRequiresReadableState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("no store", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{}
 		_, err := engine.Run(ctx, Options{Undo: true, Consumers: []string{t.TempDir()}})
 		if err == nil || !strings.Contains(err.Error(), "no stream state is available") {
@@ -39,6 +41,7 @@ func TestLgCovUndoRequiresReadableState(t *testing.T) {
 	})
 
 	t.Run("unreadable store", func(t *testing.T) {
+		t.Parallel()
 		notADirectory := filepath.Join(t.TempDir(), "store")
 		lgCovWriteFile(t, notADirectory, "not a directory\n")
 		engine := &Engine{Store: streams.OpenAt(notADirectory)}
@@ -49,6 +52,7 @@ func TestLgCovUndoRequiresReadableState(t *testing.T) {
 	})
 
 	t.Run("an unreadable stream refuses the undo", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		lgCovWriteFile(t, filepath.Join(store.Root, "broken", "stream.json"), "{not json")
 		engine := &Engine{Store: store}
@@ -63,6 +67,7 @@ func TestLgCovUndoRequiresReadableState(t *testing.T) {
 // acting on them, and an unmatched consumer with no go.work is reported as
 // skipped rather than failed.
 func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	library := filepath.Join(base, "library")
@@ -89,6 +94,11 @@ func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// These three subtests are not independent: they share one store and
+	// two consumer worktrees, and the second explicitly re-creates state
+	// the first removed ("Re-create the state the previous subtest
+	// removed" below), so they must run in declaration order, not in
+	// parallel with each other.
 	t.Run("a stream name filter skips other streams", func(t *testing.T) {
 		engine := &Engine{Store: store}
 		result, err := engine.Run(ctx, Options{Undo: true, Stream: "other"})
@@ -124,6 +134,7 @@ func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
 	})
 
 	t.Run("no records and no consumers reports a skipped result", func(t *testing.T) {
+		t.Parallel()
 		empty := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		if _, err := empty.Create(streams.Stream{Name: "fixture"}); err != nil {
 			t.Fatal(err)
@@ -142,6 +153,7 @@ func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
 // LinkedConsumers carry the same link shape as Members and must be undone the
 // same way, with non-matching and link-free bindings left alone.
 func TestLgCovUndoLinkedConsumersFiltering(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	library := filepath.Join(base, "library")
@@ -197,9 +209,11 @@ func TestLgCovUndoLinkedConsumersFiltering(t *testing.T) {
 // A record that cannot be cleared is reported; the record stays so the merge
 // guard keeps refusing.
 func TestLgCovUndoReportsUnclearableRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("an unlocked store refuses the clear", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		library := filepath.Join(base, "library")
 		consumer := filepath.Join(base, "consumer")
@@ -223,6 +237,7 @@ func TestLgCovUndoReportsUnclearableRecords(t *testing.T) {
 	})
 
 	t.Run("an unrecorded go.work that cannot be read is reported", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		consumer := t.TempDir()
 		if err := os.Mkdir(filepath.Join(consumer, streams.GoWorkFile), 0o755); err != nil {
@@ -239,6 +254,7 @@ func TestLgCovUndoReportsUnclearableRecords(t *testing.T) {
 	})
 
 	t.Run("an unrecorded go.work that cannot be removed is reported", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		consumer := t.TempDir()
 		lgCovWriteGoWork(t, consumer, filepath.Join(t.TempDir(), "library"))
@@ -265,9 +281,11 @@ func TestLgCovUndoReportsUnclearableRecords(t *testing.T) {
 // workspace, a failed removal, unknown states, a missing Node toolchain and an
 // unknown mechanism.
 func TestLgCovUndoLinksMechanismBranches(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("repeated go.work records are undone once", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		library := filepath.Join(base, "library")
 		consumer := filepath.Join(base, "consumer")
@@ -291,6 +309,7 @@ func TestLgCovUndoLinksMechanismBranches(t *testing.T) {
 	})
 
 	t.Run("an unreadable workspace is reported and kept", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		library := filepath.Join(base, "library")
 		consumer := filepath.Join(base, "consumer")
@@ -322,6 +341,7 @@ func TestLgCovUndoLinksMechanismBranches(t *testing.T) {
 	})
 
 	t.Run("a failed workspace removal is reported and kept", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		library := filepath.Join(base, "library")
 		consumer := filepath.Join(base, "consumer")
@@ -356,6 +376,7 @@ func TestLgCovUndoLinksMechanismBranches(t *testing.T) {
 	})
 
 	t.Run("unknown states, missing node and unknown mechanisms are refused", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		consumer := filepath.Join(base, "consumer")
 		if err := os.MkdirAll(consumer, 0o755); err != nil {
@@ -383,6 +404,7 @@ func TestLgCovUndoLinksMechanismBranches(t *testing.T) {
 }
 
 func TestLgCovFirstOrEmpty(t *testing.T) {
+	t.Parallel()
 	if got := firstOrEmpty(nil); got != "" {
 		t.Fatalf("firstOrEmpty(nil) = %q, want empty", got)
 	}

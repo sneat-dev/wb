@@ -12,6 +12,7 @@ import (
 )
 
 func TestDashboardServesUIAndHealth(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
 
 	for _, test := range []struct {
@@ -98,6 +99,7 @@ func TestPeersOptionOmittedLeavesTheRouteUnmounted(t *testing.T) {
 }
 
 func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
@@ -117,6 +119,7 @@ func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
 }
 
 func TestOverviewPersistsReadOnlyFleetIndex(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectsRoot, "acme", "widgets", ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -160,6 +163,7 @@ func TestOverviewPersistsReadOnlyFleetIndex(t *testing.T) {
 // host the bench hub and its dashboard on the same loopback listener without
 // moving anything that was already there.
 func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
+	t.Parallel()
 	mounted := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte("mounted " + request.URL.Path))
 	})
@@ -201,6 +205,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 // TestNoMountsLeavesTheHandlerUnchanged is the promise made to every operator
 // who does not self-host.
 func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workbench/dashboard/", nil))
@@ -210,6 +215,7 @@ func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 }
 
 func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
@@ -219,6 +225,7 @@ func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
 }
 
 func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "daemon.log")
 	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
@@ -261,6 +268,7 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 }
 
 func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))

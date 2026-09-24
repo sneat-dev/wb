@@ -26,6 +26,7 @@ func commitEvent(duration time.Duration, at time.Time, outcome string) Event {
 // recorded durations for both the stream-branch push and the other-branch push,
 // and prices the saving from the measured average rather than an estimate.
 func TestMeasureSeparatesStreamPushesFromEveryOtherPush(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	events := []Event{
 		commitEvent(900*time.Millisecond, now, "passed"),
@@ -64,6 +65,7 @@ func TestMeasureSeparatesStreamPushesFromEveryOtherPush(t *testing.T) {
 
 // A zero saving must never be readable as "the stream profile saved nothing".
 func TestMeasureNamesWhatItCouldNotPrice(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	delta := Measure([]Event{pushEvent("stream/only", 10*time.Millisecond, now)}, 7, "", now)
 	if delta.SavedDurationMS != 0 {
@@ -79,6 +81,7 @@ func TestMeasureNamesWhatItCouldNotPrice(t *testing.T) {
 }
 
 func TestMeasureRespectsTheRepositoryFilterAndWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	old := now.AddDate(0, 0, -30)
 	events := []Event{
@@ -96,6 +99,7 @@ func TestMeasureRespectsTheRepositoryFilterAndWindow(t *testing.T) {
 }
 
 func TestMeasureKeysStreamPushesOnThePushedRef(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	event := pushEvent("feature/checked-out", 40*time.Millisecond, now)
 	event.Ref = "refs/heads/stream/x"
@@ -109,6 +113,7 @@ func TestMeasureKeysStreamPushesOnThePushedRef(t *testing.T) {
 }
 
 func TestMeasureCollectsPerBlockCost(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	block := Event{
 		SchemaVersion: EventSchemaVersion, Timestamp: now, Repository: "acme/app",

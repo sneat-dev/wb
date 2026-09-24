@@ -220,3 +220,43 @@ echo "unexpected gh args: $*" >&2; exit 30
 		t.Fatalf("ObservedTargetHead = %q, want the matched exact target head to have already been recorded", result.ObservedTargetHead)
 	}
 }
+
+// TestWaitForCommitChecksTreatsExhaustedTransientCommitChecksReadAsPendingNotFailed
+// lets a direct-target wait's own target-head read succeed, then forces the
+// commit's check-runs read inside commitChecks to exhaust its in-process
+// transient-retry budget every single time. This deterministically drives
+// the fourth `if reason != ""` pending branch inside WaitForCommitChecks,
+// right after the direct-target/candidate branches converge and call
+// commitChecks — sibling to the three transient-read branches above, and
+// like them previously covered only by an accidental real transient failure
+// racing the slice deadline (sneat-dev/wb#646 task-4 resume, CI run
+// 36001509348's coverage ratchet: internal/orchestrate/ciwait.go:193-194).
+//
+//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
+func TestWaitForCommitChecksTreatsExhaustedTransientCommitChecksReadAsPendingNotFailed(t *testing.T) {
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"`+rereadTestHead+`"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  kill -9 $$
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want pending after exhausting in-process retries reading the commit's check runs", result)
+	}
+	if !strings.Contains(result.Reason, "resume the same exact target identity") {
+		t.Fatalf("reason = %q, want resumable guidance", result.Reason)
+	}
+	if result.ObservedTargetHead != rereadTestHead {
+		t.Fatalf("ObservedTargetHead = %q, want the matched exact target head to have already been recorded", result.ObservedTargetHead)
+	}
+}

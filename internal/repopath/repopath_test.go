@@ -14,6 +14,7 @@ import (
 // https://github.com/dal-go/dalgo without reading any configuration or the
 // repository's own remote.
 func TestClonePathInvertsToRemoteURL(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	canonical := filepath.Join(root, "github.com", "dal-go", "dalgo")
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
@@ -36,6 +37,7 @@ func TestClonePathInvertsToRemoteURL(t *testing.T) {
 // TestClonePathInversionDoesNotReadAnyRemote proves the inversion is pure path
 // arithmetic even when the clone has no origin remote at all.
 func TestClonePathInversionDoesNotReadAnyRemote(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	canonical := filepath.Join(root, "github.com", "acme", "app")
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
@@ -51,6 +53,7 @@ func TestClonePathInversionDoesNotReadAnyRemote(t *testing.T) {
 // multi-segment hosted paths and for the owner/repository pairs actually
 // present in this machine's fleet.
 func TestClonePathInversionCoversTheFleetSlugs(t *testing.T) {
+	t.Parallel()
 	root := "/projects"
 	for _, slug := range []string{
 		"github.com/dal-go/dalgo",
@@ -77,6 +80,7 @@ func TestClonePathInversionCoversTheFleetSlugs(t *testing.T) {
 // is not a valid hostname is never silently treated as a forge. The legacy
 // two-level placement this machine still uses is the motivating case.
 func TestFirstLevelEntryThatIsNotAForgeHostIsRejected(t *testing.T) {
+	t.Parallel()
 	root := "/projects"
 	for _, legacy := range []string{
 		"sneat-dev/wb",
@@ -99,6 +103,7 @@ func TestFirstLevelEntryThatIsNotAForgeHostIsRejected(t *testing.T) {
 }
 
 func TestIsForgeHostAcceptsLiteralHostnamesOnly(t *testing.T) {
+	t.Parallel()
 	for host, want := range map[string]bool{
 		"github.com":             true,
 		"GitHub.com":             true,
@@ -153,6 +158,7 @@ func TestIsForgeHostRejectsNameOverTwoHundredFiftyThreeCharacters(t *testing.T) 
 }
 
 func TestAddressPathAndSlug(t *testing.T) {
+	t.Parallel()
 	address := Address{Host: "github.com", Org: "dal-go", Repo: "dalgo"}
 	if got := address.Relative(); got != "github.com/dal-go/dalgo" {
 		t.Fatalf("Relative() = %q", got)
@@ -172,6 +178,7 @@ func TestAddressPathAndSlug(t *testing.T) {
 }
 
 func TestFromLocalPathRejectsPathsOutsideTheRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if _, err := FromLocalPath(root, filepath.Join(filepath.Dir(root), "github.com", "acme", "app")); err == nil {
 		t.Fatal("a path outside the projects root must be rejected")
@@ -179,6 +186,7 @@ func TestFromLocalPathRejectsPathsOutsideTheRoot(t *testing.T) {
 }
 
 func TestSafeSegmentMatchesRepositoryRules(t *testing.T) {
+	t.Parallel()
 	if SafeSegment(".github", true) != true || SafeSegment(".github", false) != false {
 		t.Fatal("a dot-leading segment is valid only for a repository")
 	}
@@ -237,6 +245,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 // from the URL the repository is cloned from, and that a URL naming no literal
 // forge keeps the legacy two-level placement rather than inventing a host.
 func TestFromCloneURLPlacesACloneOnItsOwnForge(t *testing.T) {
+	t.Parallel()
 	root := "/projects"
 	for _, test := range []struct {
 		cloneURL string
@@ -266,6 +275,7 @@ func TestFromCloneURLPlacesACloneOnItsOwnForge(t *testing.T) {
 // inventory walk shares: both the host-level and the legacy two-level shape
 // must be listed together, and only a literal hostname may be read through.
 func TestOwnersReadsThroughTheLiteralHostLevel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, directory := range []string{
 		"github.com/acme/",
@@ -308,6 +318,7 @@ func TestOwnersReadsThroughTheLiteralHostLevel(t *testing.T) {
 // placement rules already allow: a forge with an explicit port is a valid
 // first level, so discovery must not filter it out.
 func TestOwnersAcceptsAPortHostedForgeLevel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "github.com:8443", "acme", "app"), 0o755); err != nil {
 		t.Fatal(err)
@@ -325,6 +336,7 @@ func TestOwnersAcceptsAPortHostedForgeLevel(t *testing.T) {
 }
 
 func TestOwnersReportsUnreadableHostDirectoriesInsteadOfFailing(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: directory permission bits do not deny reads")
 	}

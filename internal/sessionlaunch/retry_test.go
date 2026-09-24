@@ -220,6 +220,7 @@ func (fixture *launcherRetryFixture) configureSuccessfulStart(t *testing.T) (Bef
 }
 
 func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	fixture.createReleasedAttempt(t, true, false)
 
@@ -275,7 +276,7 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -283,6 +284,7 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 }
 
 func TestInspectPreparedAuthenticatesExactPreReleaseAttempt(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {
@@ -324,6 +326,7 @@ func TestInspectPreparedAuthenticatesExactPreReleaseAttempt(t *testing.T) {
 }
 
 func TestInspectPreparedRecoversPriorCustodyWhenNewAttemptHasNoEvidence(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	fixture.createReleasedAttempt(t, true, false)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
@@ -350,6 +353,7 @@ func TestInspectPreparedRecoversPriorCustodyWhenNewAttemptHasNoEvidence(t *testi
 }
 
 func TestClaimedAttemptCrashCompletesSameAttemptWithoutSecondClaim(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {
@@ -378,6 +382,7 @@ func TestClaimedAttemptCrashCompletesSameAttemptWithoutSecondClaim(t *testing.T)
 }
 
 func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	fixture.tmux.startErr = errors.New("duplicate session")
 	before, released := fixture.configureSuccessfulStart(t)
@@ -395,7 +400,7 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	refs, err := state.listAttempts()
 	if err != nil || len(refs) != 1 {
 		t.Fatalf("attempts=%#v error=%v", refs, err)
@@ -403,6 +408,7 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 }
 
 func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		withFailure   bool
@@ -420,6 +426,7 @@ func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testi
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newLauncherRetryFixture(t)
 			_, pid := fixture.createReleasedAttempt(t, test.withFailure, test.holdFence)
 			fixture.deps.startTimeout = 10 * time.Millisecond
@@ -456,6 +463,7 @@ func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testi
 }
 
 func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {
@@ -491,7 +499,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -500,7 +508,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 	abandonment, err := first.loadAbandonment()
 	if err != nil || abandonment.PID != pid || abandonment.PlanDigest != fixture.planDigest || abandonment.ReadyDigest != "" {
 		t.Fatalf("abandonment=%#v error=%v", abandonment, err)
@@ -508,6 +516,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 }
 
 func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		holdFence    bool
@@ -525,6 +534,7 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newLauncherRetryFixture(t)
 			state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 			if err != nil {
@@ -589,6 +599,7 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 }
 
 func TestAbandonmentPublicationCrashReplaysExactlyOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {
@@ -701,12 +712,14 @@ func TestDelayedPrivateLauncherCannotRegisterAfterItsAttemptWasAbandoned(t *test
 }
 
 func TestReleasedAndStartedAttemptsRejectContradictoryAbandonment(t *testing.T) {
+	t.Parallel()
 	for _, withStarted := range []bool{false, true} {
 		name := "released"
 		if withStarted {
 			name = "started"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newLauncherRetryFixture(t)
 			fixture.createReleasedAttempt(t, false, false)
 			state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)

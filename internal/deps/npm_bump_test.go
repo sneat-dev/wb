@@ -148,6 +148,7 @@ exit 1
 }
 
 func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T) {
+	t.Parallel()
 	requirements, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "devDependencies": {"@acme/data": "1.0.0"},
@@ -171,6 +172,7 @@ func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T)
 }
 
 func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
+	t.Parallel()
 	_, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "peerDependencies": {"@acme/core": "2.0.0"}

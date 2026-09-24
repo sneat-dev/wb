@@ -132,6 +132,7 @@ func TestWTCoreCovDirtyCaptureRejectsUnsafePaths(t *testing.T) {
 // TestWTCoreCovDirtyCaptureRejectsInvalidDestination asserts publication never
 // begins without a private run directory and a valid claim identity.
 func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
+	t.Parallel()
 	material := dirtyCaptureMaterial{Manifest: dirtyCaptureManifest{Version: 1}}
 	if _, err := materializeDirtyCapture(nil, "claim", material); err == nil {
 		t.Fatal("nil run directory was accepted")
@@ -140,7 +141,7 @@ func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	if _, err := materializeDirtyCapture(runDir, "not a claim id", material); err == nil {
 		t.Fatal("invalid claim id was accepted")
 	}
@@ -150,6 +151,7 @@ func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
 // expectation never matches, and that a changed receipt produces the
 // diagnostic naming both sides.
 func TestWTCoreCovDirtyCaptureMatchesRequiresADigest(t *testing.T) {
+	t.Parallel()
 	actual := DirtyWorktreeEvidence{SHA256: "aa", Bytes: 1, Files: 1}
 	if dirtyCaptureMatches(DirtyWorktreeEvidence{}, actual) {
 		t.Fatal("an empty expectation must never match")

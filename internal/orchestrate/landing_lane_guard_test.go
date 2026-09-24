@@ -226,6 +226,7 @@ func TestPrepareWorktreeMergeReleasesLaneOnEarlyFailure(t *testing.T) {
 // (proving the ticker really ran, not merely that liveness alone happened to
 // carry the refusal).
 func TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait(t *testing.T) {
+	t.Parallel()
 	// startLandingLaneHeartbeat takes a *projectsRoot* (like every other
 	// orchestrate-level lane helper) and resolves the actual WB home from it
 	// via wbhome.Root, exactly as acquireLandingLane/releaseLandingLane do.
@@ -288,6 +289,7 @@ func TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait(t *
 // wbSessionID) must not panic or write anything, exactly like
 // acquireLandingLane/releaseLandingLane's own no-op contract.
 func TestStartLandingLaneHeartbeatNoOpsWithoutASession(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	stop := startLandingLaneHeartbeat(home, "acme/app", "main", "", time.Millisecond)
 	stop()

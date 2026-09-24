@@ -16,6 +16,7 @@ import (
 //
 // Requirements: dependency-streams#req:every-stream-verb-has-a-terminal-recovery.
 func TestAStartInterruptedAfterTheFirstPushIsRecoverableByEnd(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -81,6 +82,7 @@ func TestAStartInterruptedAfterTheFirstPushIsRecoverableByEnd(t *testing.T) {
 // before the first worktree is published, and a concurrent start on the same
 // name refuses without publishing anything of its own.
 func TestASecondStartOnTheSameNameRefusesBeforePublishingAnything(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -108,6 +110,7 @@ func TestASecondStartOnTheSameNameRefusesBeforePublishingAnything(t *testing.T) 
 //
 // Requirements: dependency-streams#req:stream-end-proves-absorption-and-removes-its-own-scaffolding.
 func TestEndRefusesWhenTheAbsorptionCheckCouldNotRun(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "unknown-absorption", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" stream/unknown-absorption"] = []PullRequest{
@@ -138,6 +141,7 @@ func TestEndRefusesWhenTheAbsorptionCheckCouldNotRun(t *testing.T) {
 // --force-unabsorbed is an audited step-over, not a silent bypass: it requires
 // a reason and records both the reason and what it stepped over.
 func TestForceUnabsorbedRequiresAReasonAndRecordsIt(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, stream := startedStream(t, "forced", "acme/library")
 	member := stream.Members[0]
 	git.notIn[member.Worktree+" stream/forced origin/main"] = []Commit{
@@ -178,6 +182,7 @@ func TestForceUnabsorbedRequiresAReasonAndRecordsIt(t *testing.T) {
 //
 // Requirements: dependency-streams#req:stream-verbs-re-read-state-before-mutating.
 func TestEndAndStatusReReadOriginBeforeTrustingALocalRef(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, stream := startedStream(t, "fresh", "acme/library")
 	member := stream.Members[0]
 	// The library must publish something, or status returns before it ever
@@ -211,6 +216,7 @@ func TestEndAndStatusReReadOriginBeforeTrustingALocalRef(t *testing.T) {
 //
 // Requirements: dependency-streams#req:redaction-runs-before-any-bytes-leave-the-process.
 func TestACredentialInAGitErrorNeverReachesTheStateFile(t *testing.T) {
+	t.Parallel()
 	engine, git, _, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -252,6 +258,7 @@ func TestACredentialInAGitErrorNeverReachesTheStateFile(t *testing.T) {
 // MF-6. An ended stream's name is reusable: start archives the old record —
 // keeping it, because the event log is evidence — and proceeds.
 func TestStartReusesTheNameOfAnEndedStreamByArchivingIt(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := startedStream(t, "recycled", "acme/library")
 	if _, err := engine.End(context.Background(), EndOptions{Name: "recycled", Apply: true}); err != nil {
 		t.Fatalf("end: %v", err)
@@ -285,6 +292,7 @@ func TestStartReusesTheNameOfAnEndedStreamByArchivingIt(t *testing.T) {
 
 // MF-6, the delete half.
 func TestDeleteRefusesAnOpenStreamAndRemovesAnEndedOne(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := startedStream(t, "removable", "acme/library")
 	if err := engine.Store.Delete("removable"); err == nil {
 		t.Fatal("deleting an open stream succeeded; its worktrees would be stranded")
@@ -302,6 +310,7 @@ func TestDeleteRefusesAnOpenStreamAndRemovesAnEndedOne(t *testing.T) {
 
 // SHOULD-FIX: one unreadable stream must not refuse every start on the machine.
 func TestAnUnreadableStreamIsReportedAndDoesNotBlockOthers(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -330,6 +339,7 @@ func TestAnUnreadableStreamIsReportedAndDoesNotBlockOthers(t *testing.T) {
 // SHOULD-FIX: join retries a member whose draft pull request never opened,
 // which is the recovery publishMember documents.
 func TestJoinRetriesAMemberWhoseDraftPullRequestNeverOpened(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -360,6 +370,7 @@ func TestJoinRetriesAMemberWhoseDraftPullRequestNeverOpened(t *testing.T) {
 // before its identity reaches stream.json. Recovery must adopt that exact open
 // PR rather than asking GitHub to create a duplicate and getting stuck again.
 func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "adopt-pr", "acme/library")
 	member := stream.Members[0]
 	createdBefore := len(hub.created)
@@ -396,6 +407,7 @@ func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
 }
 
 func TestJoinPersistsAnAdoptedPullRequestWhenLegacyTitleRepairFails(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "adopt-title-failure", "acme/library")
 	member := stream.Members[0]
 	existing := PullRequest{
@@ -428,6 +440,7 @@ func TestJoinPersistsAnAdoptedPullRequestWhenLegacyTitleRepairFails(t *testing.T
 }
 
 func TestJoinRepairsARecordedLegacyMemberPullRequestTitleIdempotently(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "repair-title", "acme/library")
 	member := stream.Members[0]
 	legacy := "stream(repair-title): acme/library"
@@ -455,6 +468,7 @@ func TestJoinRepairsARecordedLegacyMemberPullRequestTitleIdempotently(t *testing
 }
 
 func TestJoinPreservesAUserAuthoredMemberPullRequestTitle(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "custom-title", "acme/library")
 	member := stream.Members[0]
 	pullRequest := hub.byNumber[member.PullRequest]
@@ -471,6 +485,7 @@ func TestJoinPreservesAUserAuthoredMemberPullRequestTitle(t *testing.T) {
 }
 
 func TestJoinRechecksALegacyTitleBeforeEditing(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "concurrent-title", "acme/library")
 	member := stream.Members[0]
 	pullRequest := hub.byNumber[member.PullRequest]
@@ -504,6 +519,7 @@ func TestJoinRechecksALegacyTitleBeforeEditing(t *testing.T) {
 }
 
 func TestJoinReportsAndRedactsALegacyTitleUpdateFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "title-failure", "acme/library")
 	member := stream.Members[0]
 	pullRequest := hub.byNumber[member.PullRequest]
@@ -546,6 +562,7 @@ func TestJoinReportsAndRedactsALegacyTitleUpdateFailure(t *testing.T) {
 }
 
 func TestJoinClearsAnObsoleteTitleFailureWhenTheRecordedPullRequestNoLongerQualifies(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*fakeHub, Member)
@@ -565,6 +582,7 @@ func TestJoinClearsAnObsoleteTitleFailureWhenTheRecordedPullRequestNoLongerQuali
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			engine, _, hub, _, stream := startedStream(t, "obsolete-title-error", "acme/library")
 			member := stream.Members[0]
 			if _, err := engine.setMember("obsolete-title-error", member.Repository, func(stored *Member) {
@@ -590,6 +608,7 @@ func TestJoinClearsAnObsoleteTitleFailureWhenTheRecordedPullRequestNoLongerQuali
 // strictly behind its remote stream branch, join fast-forwards it, creates the
 // missing PR in that member context, and persists both remote head and PR.
 func TestJoinRecoversARemoteAheadMemberAndPersistsPublication(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	runStreamGit(t, other, "checkout", "stream/recovery")
 	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
@@ -632,6 +651,7 @@ func TestJoinRecoversARemoteAheadMemberAndPersistsPublication(t *testing.T) {
 // stale origin/stream/* tracking ref. A present different SHA remains guarded
 // by the deletion lease in the lower-level Git-port regression.
 func TestEndResumesAfterMultiMemberWorktreesAndRemoteRefsWereAlreadyRetired(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		absentMembers map[string]bool
@@ -640,6 +660,7 @@ func TestEndResumesAfterMultiMemberWorktreesAndRemoteRefsWereAlreadyRetired(t *t
 		{name: "both member refs absent", absentMembers: map[string]bool{"datatug/datatug-core": true, "datatug/datatug-cli": true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			const streamName = "incidentius-task1-store"
 			const branch = "stream/" + streamName
 			store := OpenAt(filepath.Join(t.TempDir(), "streams"))
@@ -713,6 +734,7 @@ func TestEndResumesAfterMultiMemberWorktreesAndRemoteRefsWereAlreadyRetired(t *t
 // SHOULD-FIX: end removes the remote stream branch, after the agent pull
 // requests targeting it are settled.
 func TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, _, stream := startedStream(t, "scaffolding", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" stream/scaffolding"] = []PullRequest{
@@ -736,6 +758,7 @@ func TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests(t *testing.
 // SHOULD-FIX: the tag read is scoped to the library's own module, so a
 // repository carrying tags for several modules cannot mis-report gap 3.
 func TestStatusReadsOnlyTheLibraryModulesTags(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, stream := startedStream(t, "tagscope", "acme/library")
 	library := stream.Members[0]
 	writeFiles(t, library.Worktree, map[string]string{
@@ -754,6 +777,7 @@ func TestStatusReadsOnlyTheLibraryModulesTags(t *testing.T) {
 // checks then ran against a possibly stale clone, and the operator has to know
 // that before trusting a green start.
 func TestAFailedPreflightFetchIsReportedNotDiscarded(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -778,6 +802,7 @@ func TestAFailedPreflightFetchIsReportedNotDiscarded(t *testing.T) {
 // A member left without a draft pull request is a FINDING, so the verb exits 1
 // rather than reporting success while that member's pushes run no CI.
 func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -842,6 +867,7 @@ func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
 // The one-open-stream guard reports records it could not read, so a "no stream
 // holds this repository" answer never looks more certain than it is.
 func TestStartReportsStreamRecordsItCouldNotRead(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,

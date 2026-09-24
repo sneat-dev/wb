@@ -9,6 +9,7 @@ import (
 const dqCovEligibilityREADMEURL = "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/README.md"
 
 func TestDQCovVerifyPublicEligibilityRequiresValidEvidence(t *testing.T) {
+	t.Parallel()
 	markdown := "## WB\n\n[Workbench dashboard](https://sneat.work/bench)\n"
 	_, err := VerifyPublicEligibility("acme/widgets", dqCovEligibilityREADMEURL, markdown, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "canonical") {
@@ -21,6 +22,7 @@ func TestDQCovVerifyPublicEligibilityRequiresValidEvidence(t *testing.T) {
 }
 
 func TestDQCovValidatePublicEligibilityRejectsUnparseableREADMEURL(t *testing.T) {
+	t.Parallel()
 	evidence := PublicEligibility{
 		Repository: "github.com/acme/widgets",
 		READMEURL:  dqCovEligibilityREADMEURL + "\x7f",
@@ -32,6 +34,7 @@ func TestDQCovValidatePublicEligibilityRejectsUnparseableREADMEURL(t *testing.T)
 }
 
 func TestDQCovReadmeOptInIgnoresShortFenceRuns(t *testing.T) {
+	t.Parallel()
 	markdown := "## WB\n\n``\n\n[Workbench](https://sneat.work/bench)\n"
 	evidence, err := VerifyPublicEligibility("github.com/acme/widgets", dqCovEligibilityREADMEURL, markdown, time.Now())
 	if err != nil {
@@ -43,6 +46,7 @@ func TestDQCovReadmeOptInIgnoresShortFenceRuns(t *testing.T) {
 }
 
 func TestDQCovWorkbenchURLRejectsMalformedButApprovedLinks(t *testing.T) {
+	t.Parallel()
 	if workbenchURL("https://sneat.work/bench\x7f") {
 		t.Fatal("a URL with a control character must not be accepted")
 	}

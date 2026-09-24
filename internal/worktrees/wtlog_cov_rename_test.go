@@ -11,6 +11,7 @@ import (
 )
 
 func TestWtLogCovRenameEligibility(t *testing.T) {
+	t.Parallel()
 	if eligible, reason := renameEligibility(ListResult{Clean: true}); !eligible || reason != "" {
 		t.Fatalf("clean worktree = %t/%q", eligible, reason)
 	}
@@ -26,6 +27,7 @@ func TestWtLogCovRenameEligibility(t *testing.T) {
 }
 
 func TestWtLogCovBlockRenameTask(t *testing.T) {
+	t.Parallel()
 	plans := []renamePlan{
 		{result: RenameResult{Repository: "acme/app", Eligible: true}},
 		{result: RenameResult{Repository: "acme/lib", Eligible: false, Reason: "dirty"}},
@@ -56,6 +58,7 @@ func TestWtLogCovBlockRenameTask(t *testing.T) {
 }
 
 func TestWtLogCovCollectAndFirstRenameReason(t *testing.T) {
+	t.Parallel()
 	plans := []renamePlan{
 		{result: RenameResult{Repository: "acme/app"}},
 		{result: RenameResult{Repository: "acme/lib", Reason: "second"}},
@@ -147,6 +150,7 @@ func TestWtLogCovNormalizeRenameOptions(t *testing.T) {
 }
 
 func TestWtLogCovDefaultRenameReportDir(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 	got := DefaultRenameReportDir("/home/wb", now)
 	want := filepath.Join("/home/wb", "reports", "worktree-rename", "20260203T040506.000000000Z")
@@ -299,6 +303,7 @@ func TestWtLogCovRenamePhysicalDestinationLocal(t *testing.T) {
 }
 
 func TestWtLogCovDeleteOldBranchIfSafe(t *testing.T) {
+	t.Parallel()
 	if deleted, reason, err := deleteOldBranchIfSafe(context.Background(), nil, "", "head", "new", "main", false); err != nil || deleted || !strings.Contains(reason, "nothing to delete") {
 		t.Fatalf("empty old branch = %t/%q/%v", deleted, reason, err)
 	}
@@ -308,6 +313,7 @@ func TestWtLogCovDeleteOldBranchIfSafe(t *testing.T) {
 }
 
 func TestWtLogCovRunSecureRenameGitHelperRejectsBadArguments(t *testing.T) {
+	t.Parallel()
 	for name, args := range map[string][]string{
 		"too few":        {"a", "b", "c", "d", "e"},
 		"relative root":  {"relative", "/b", "/c", "admin", "git"},
@@ -322,6 +328,7 @@ func TestWtLogCovRunSecureRenameGitHelperRejectsBadArguments(t *testing.T) {
 }
 
 func TestWtLogCovLinkedWorktreeGitFileAdminNameAndValidation(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"app-branch", "a", "with space", strings.Repeat("a", 300)} {
 		if !validLinkedWorktreeAdminName(name) {
 			t.Errorf("valid admin name %q was rejected", name)
@@ -341,7 +348,7 @@ func TestWtLogCovLinkedWorktreeGitFileAdminNameAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	canonical := &canonicalRepository{path: "/tmp/canonical"}
 	if _, err := linkedWorktreeGitFileAdminName(canonical, nil); err == nil {
 		t.Fatal("nil git file was accepted")
@@ -367,7 +374,7 @@ func TestWtLogCovLinkedWorktreeGitFileAdminNameAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = goodHandle.Close() }()
+	t.Cleanup(func() { _ = goodHandle.Close() })
 	name, err := linkedWorktreeGitFileAdminName(&canonicalRepository{path: canonicalRoot}, goodHandle)
 	if err != nil || name != "app-branch" {
 		t.Fatalf("admin name = %q err = %v", name, err)

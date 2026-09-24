@@ -37,6 +37,7 @@ func (verifier *stCovScriptedVerifier) Verify(context.Context, string) (Verifica
 }
 
 func TestVerifyBatchReportsAVerifierFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := newTestEngine()
 	engine.Verifier = stCovVerifierFunc(func(context.Context, string) (VerificationRun, error) {
 		return VerificationRun{}, errors.New("verifier exploded")
@@ -49,6 +50,7 @@ func TestVerifyBatchReportsAVerifierFailure(t *testing.T) {
 // With no elements there is nothing to bisect, so a failing run is the base's
 // failure rather than any element's.
 func TestVerifyBatchBlamesTheBaseWhenThereIsNothingToBisect(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, _ := newTestEngine()
 	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"backend: build failed"}}}
 
@@ -68,6 +70,7 @@ func TestVerifyBatchBlamesTheBaseWhenThereIsNothingToBisect(t *testing.T) {
 }
 
 func TestVerifyBatchReportsAnUnreadableHead(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{
 		Git:      &stCovHeadCounterGit{fakeGit: git, revision: "stream/checkout", failAt: 0, err: errors.New("head unreadable")},
@@ -81,10 +84,12 @@ func TestVerifyBatchReportsAnUnreadableHead(t *testing.T) {
 }
 
 func TestVerifyBatchReportsAFailedScratchBranchOrCheckout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	options := baseOptions()
 
 	t.Run("scratch branch creation", func(t *testing.T) {
+		t.Parallel()
 		git := newFakeGit()
 		engine := &Engine{
 			Git:      stCovCreateBranchErrGit{fakeGit: git, err: errors.New("branch refused")},
@@ -98,6 +103,7 @@ func TestVerifyBatchReportsAFailedScratchBranchOrCheckout(t *testing.T) {
 	})
 
 	t.Run("scratch checkout", func(t *testing.T) {
+		t.Parallel()
 		git := newFakeGit()
 		engine := &Engine{
 			Git:      stCovCheckoutErrGit{fakeGit: git, err: errors.New("checkout refused")},
@@ -112,6 +118,7 @@ func TestVerifyBatchReportsAFailedScratchBranchOrCheckout(t *testing.T) {
 }
 
 func TestVerifyBatchReportsAVerifierFailureDuringThePrefixScan(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := newTestEngine()
 	engine.Verifier = &stCovScriptedVerifier{runs: []stCovScriptedRun{
 		{run: VerificationRun{Passed: false, Details: []string{"boom"}}},
@@ -123,6 +130,7 @@ func TestVerifyBatchReportsAVerifierFailureDuringThePrefixScan(t *testing.T) {
 }
 
 func TestBatchBaseSkipsEmptySHAsAndFallsBackToHead(t *testing.T) {
+	t.Parallel()
 	engine := &Engine{Git: newFakeGit(), Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 	ctx := context.Background()
 	options := baseOptions()
@@ -148,6 +156,7 @@ func TestBatchBaseSkipsEmptySHAsAndFallsBackToHead(t *testing.T) {
 }
 
 func TestBatchBaseReportsAnUnreadableParent(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{
 		Git:      &stCovHeadCounterGit{fakeGit: git, revision: "sha-parent^", failAt: 0, err: errors.New("no such revision")},
@@ -162,6 +171,7 @@ func TestBatchBaseReportsAnUnreadableParent(t *testing.T) {
 }
 
 func TestElementSHAsCarryTheFamilysExtraCommits(t *testing.T) {
+	t.Parallel()
 	if got := (Element{Name: "empty"}).shas(); len(got) != 0 {
 		t.Fatalf("shas of an element with no commit = %v, want none", got)
 	}
@@ -177,6 +187,7 @@ func TestElementSHAsCarryTheFamilysExtraCommits(t *testing.T) {
 
 // A CI read that fails is "I could not tell", never "CI does not run it".
 func TestClassifySkippedTreatsAnUnreadableCIAsUnverified(t *testing.T) {
+	t.Parallel()
 	engine := &Engine{CI: stCovCIFunc(func(string) (map[string]bool, bool, error) {
 		return nil, false, errors.New("workflows unreadable")
 	})}
@@ -190,6 +201,7 @@ func TestClassifySkippedTreatsAnUnreadableCIAsUnverified(t *testing.T) {
 }
 
 func TestRefusalErrorListsItsSanctionedCommands(t *testing.T) {
+	t.Parallel()
 	_, err := JustifyPush(PushTrigger("because-i-said-so"), "")
 	if err == nil {
 		t.Fatal("an unrecognised push trigger was justified")
@@ -211,6 +223,7 @@ func TestRefusalErrorListsItsSanctionedCommands(t *testing.T) {
 }
 
 func TestDefaultReasonHasNoReasonForAnUnknownTrigger(t *testing.T) {
+	t.Parallel()
 	for trigger, want := range map[PushTrigger]string{
 		TriggerLanding: "landing after a green batch verification",
 		TriggerReview:  "making the draft stream pull request ready for review",
@@ -224,6 +237,7 @@ func TestDefaultReasonHasNoReasonForAnUnknownTrigger(t *testing.T) {
 }
 
 func TestUnpushedReportRendersBothStates(t *testing.T) {
+	t.Parallel()
 	if got := (UnpushedReport{Repository: "acme/app"}).String(); got != "acme/app: nothing unpushed" {
 		t.Fatalf("empty report = %q", got)
 	}
@@ -234,6 +248,7 @@ func TestUnpushedReportRendersBothStates(t *testing.T) {
 }
 
 func TestBelowRefusesAnUnparseableReleaseTriple(t *testing.T) {
+	t.Parallel()
 	if below("1.x.0", "2.0.0") {
 		t.Fatal("an unreadable required version was compared anyway")
 	}
@@ -246,6 +261,7 @@ func TestBelowRefusesAnUnparseableReleaseTriple(t *testing.T) {
 }
 
 func TestVerifyBatchReportsAnUnreadableBatchBase(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{
 		Git:      &stCovHeadCounterGit{fakeGit: git, revision: "sha-1^", failAt: 0, err: errors.New("no parent")},
