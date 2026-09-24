@@ -231,6 +231,8 @@ echo "unexpected gh args: $*" >&2; exit 30
 // like them previously covered only by an accidental real transient failure
 // racing the slice deadline (sneat-dev/wb#646 task-4 resume, CI run
 // 36001509348's coverage ratchet: internal/orchestrate/ciwait.go:193-194).
+//
+//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
 func TestWaitForCommitChecksTreatsExhaustedTransientCommitChecksReadAsPendingNotFailed(t *testing.T) {
 	installTransientReadTestGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then

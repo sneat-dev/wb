@@ -34,6 +34,7 @@ const calendariusPackageJSON = `{
 `
 
 func TestAnalyzeNpmDriftPrefersTheLockedVersionOverTheDeclaredRange(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := newNpmDriftRepository(t, root, "app", map[string]string{
 		"package.json": `{"name":"app","dependencies":{"@sneat/core":"^0.30.0"}}` + "\n",
@@ -68,6 +69,7 @@ func TestAnalyzeNpmDriftPrefersTheLockedVersionOverTheDeclaredRange(t *testing.T
 }
 
 func TestAnalyzeNpmDriftReportsDivergentLockedVersions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	lock := func(version string) string {
 		return "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      '@sneat/core':\n        specifier: ^0.30.0\n        version: " + version + "\n"
@@ -100,6 +102,7 @@ func TestAnalyzeNpmDriftReportsDivergentLockedVersions(t *testing.T) {
 }
 
 func TestAnalyzeNpmDriftReportsRepositoriesBehindTheRegistryLatest(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	calendarius := newNpmDriftRepository(t, root, "calendarius", map[string]string{
 		"package.json": calendariusPackageJSON,
@@ -151,6 +154,7 @@ func TestAnalyzeNpmDriftReportsRepositoriesBehindTheRegistryLatest(t *testing.T)
 }
 
 func TestAnalyzeNpmDriftNeverGuessesAnUnevaluableRange(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := newNpmDriftRepository(t, root, "workspace-app", map[string]string{
 		"package.json": `{"name":"workspace-app","dependencies":{"@sneat/core":"workspace:*"}}` + "\n",
@@ -174,6 +178,7 @@ func TestAnalyzeNpmDriftNeverGuessesAnUnevaluableRange(t *testing.T) {
 }
 
 func TestAnalyzeNpmDriftReadsPnpmWorkspaceOverridesAndPackageLock(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := newNpmDriftRepository(t, root, "overrides-app", map[string]string{
 		"package.json":        `{"name":"overrides-app","devDependencies":{"@sneat/core":"^0.30.0"}}` + "\n",
@@ -201,6 +206,7 @@ func TestAnalyzeNpmDriftReadsPnpmWorkspaceOverridesAndPackageLock(t *testing.T) 
 }
 
 func TestAnalyzeDriftExcludesRepositoriesByGlobAndReportsThem(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	kept := newNpmDriftRepository(t, root, "kept", map[string]string{
 		"package.json": `{"name":"kept","dependencies":{"@sneat/core":"0.30.1"}}` + "\n",
@@ -232,6 +238,7 @@ func TestAnalyzeDriftExcludesRepositoriesByGlobAndReportsThem(t *testing.T) {
 }
 
 func TestAnalyzeNpmDriftScopeRestrictsRetainedDependencies(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := newNpmDriftRepository(t, root, "scoped", map[string]string{
 		"package.json": `{"name":"scoped","dependencies":{"@sneat/core":"0.30.1","rxjs":"7.8.0","@angular/core":"20.0.0"}}` + "\n",
@@ -253,6 +260,7 @@ func TestAnalyzeNpmDriftScopeRestrictsRetainedDependencies(t *testing.T) {
 }
 
 func TestAnalyzeDriftRejectsAnUnknownEcosystem(t *testing.T) {
+	t.Parallel()
 	if _, err := AnalyzeDrift(context.Background(), nil, DriftOptions{Ecosystem: Ecosystem("cargo")}); err == nil {
 		t.Fatal("an unknown ecosystem must be refused rather than silently inspected as go")
 	}

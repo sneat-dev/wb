@@ -569,6 +569,7 @@ func TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesRevi
 }
 
 func TestOrchCovLandPullRequestRejectsUnusableOptions(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		options PullRequestLandOptions

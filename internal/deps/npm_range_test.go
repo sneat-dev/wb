@@ -6,6 +6,7 @@ import (
 )
 
 func TestNpmRangeAdmitsEvaluatesTheSupportedSubset(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name      string
 		specifier string
@@ -42,6 +43,7 @@ func TestNpmRangeAdmitsEvaluatesTheSupportedSubset(t *testing.T) {
 		{name: "union of conjunctions", specifier: ">=15.0.0 <16.0.0 || >=22.0.0 <23.0.0", version: "22.1.4", evaluated: true, admits: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			verdict := npmRangeAdmits(testCase.specifier, testCase.version)
 			if verdict.Evaluated != testCase.evaluated || verdict.Admits != testCase.admits {
 				t.Fatalf("npmRangeAdmits(%q, %q) = %+v, want evaluated=%v admits=%v",
@@ -52,6 +54,7 @@ func TestNpmRangeAdmitsEvaluatesTheSupportedSubset(t *testing.T) {
 }
 
 func TestNpmRangeAdmitsRefusesToGuessUnsupportedShapes(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name      string
 		specifier string
@@ -68,6 +71,7 @@ func TestNpmRangeAdmitsRefusesToGuessUnsupportedShapes(t *testing.T) {
 		{name: "candidate is not a version", specifier: "^1.0.0", version: "latest"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			verdict := npmRangeAdmits(testCase.specifier, testCase.version)
 			if verdict.Evaluated {
 				t.Fatalf("npmRangeAdmits(%q, %q) = %+v, want an unevaluated verdict", testCase.specifier, testCase.version, verdict)
@@ -100,6 +104,7 @@ func TestNpmCaretAndTildeCeilings(t *testing.T) {
 // question; otherwise WB reports that it could not read the range rather than
 // guessing — and it never guesses in the direction that hides a conflict.
 func TestNpmCompoundRangesNeverGuessInTheUnsafeDirection(t *testing.T) {
+	t.Parallel()
 
 	// A conjunction: one readable comparator that REJECTS is decisive, because
 	// AND means every comparator must hold.
@@ -131,6 +136,7 @@ func TestNpmCompoundRangesNeverGuessInTheUnsafeDirection(t *testing.T) {
 // never use commas, so a comma is more likely a manifest written for another
 // ecosystem than a range WB should interpret.
 func TestNpmRangeStillDeclinesHyphenAndCommaShapes(t *testing.T) {
+	t.Parallel()
 	hyphen := npmRangeAdmits("1.0.0 - 2.0.0", "1.5.0")
 	if hyphen.Evaluated || !strings.Contains(hyphen.Reason, "hyphen range") {
 		t.Fatalf("hyphen verdict = %+v", hyphen)

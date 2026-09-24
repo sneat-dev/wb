@@ -1744,14 +1744,17 @@ func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.
 		"wb --projects-root /tmp/projects run -- go test ./...",
 		"command -v go",
 	}
-	for _, command := range allowed {
-		t.Run(command, func(t *testing.T) {
-			t.Parallel()
-			if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
-				t.Fatalf("Inspect(%q) refused an allowed command:\n%s", command, decision.Reason)
-			}
-		})
-	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what makes the manifest removal below safe (sneat-dev/wb#646 B2 fix)
+	t.Run("allowed", func(t *testing.T) {
+		for _, command := range allowed {
+			t.Run(command, func(t *testing.T) {
+				t.Parallel()
+				if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+					t.Fatalf("Inspect(%q) refused an allowed command:\n%s", command, decision.Reason)
+				}
+			})
+		}
+	})
 
 	// A linked fixture without WB's manifest is outside this policy. The hook
 	// must not claim authority over worktrees owned by another tool.

@@ -566,6 +566,7 @@ func TestDepsCovRuntimeExactSetHandlerPullRequestBodyPerValidationMode(t *testin
 }
 
 func TestDepsCovRuntimeRunRejectsUnsupportedEcosystem(t *testing.T) {
+	t.Parallel()
 	_, err := Run(context.Background(),
 		Target{Ecosystem: Ecosystem("cargo"), Dependency: "serde", Version: "1.0.0"},
 		nil, Options{GitHubDir: t.TempDir(), DryRun: true})
@@ -575,6 +576,7 @@ func TestDepsCovRuntimeRunRejectsUnsupportedEcosystem(t *testing.T) {
 }
 
 func TestDepsCovRuntimeRunSurfacesOptionAndRefErrors(t *testing.T) {
+	t.Parallel()
 	if _, err := Run(context.Background(), Target{Ecosystem: EcosystemGo, Dependency: "example.com/mod", Version: "v1.0.0"}, nil, Options{}); err == nil || !strings.Contains(err.Error(), "GitHub directory is required") {
 		t.Fatalf("error = %v, want the normalized-options refusal", err)
 	}
@@ -591,6 +593,7 @@ func TestDepsCovRuntimeRunSurfacesOptionAndRefErrors(t *testing.T) {
 }
 
 func TestDepsCovRuntimeRunRecordsVerificationAndFailure(t *testing.T) {
+	t.Parallel()
 	report, err := Run(context.Background(),
 		Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"},
 		[]Repository{{Slug: "not-a-repository-slug", Path: filepath.Join(t.TempDir(), "app")}},
@@ -1095,6 +1098,7 @@ func TestDepsCovRuntimeFirstScopeReasonsBoundsAndFallback(t *testing.T) {
 }
 
 func TestDepsCovRuntimeDeriveLatestReleaseEventsDefaultsEcosystemAndSurfacesGraphErrors(t *testing.T) {
+	t.Parallel()
 	_, _, err := DeriveLatestReleaseEvents(context.Background(), nil, []string{"@acme/*"}, BumpOptions{})
 	if err == nil || !strings.Contains(err.Error(), "GitHub directory is required") {
 		t.Fatalf("error = %v, want the graph build's own failure", err)
@@ -1168,6 +1172,7 @@ func TestDepsCovRuntimePeerNowDefaultsToUTC(t *testing.T) {
 }
 
 func TestDepsCovRuntimeJudgePeerReportsRecordedEvidenceReason(t *testing.T) {
+	t.Parallel()
 	reason := "lockfile importers pin conflicting versions: 18.3.1, 19.0.0"
 	row := judgePeer("react", "^18.0.0", false, peerEvidence{Source: "pnpm-lock.yaml", Reason: reason})
 	if row.Verdict != PeerMissing || row.Reason != reason {
@@ -1227,6 +1232,7 @@ func TestDepsCovRuntimeInstalledNpmVersionsSurfacesManifestErrors(t *testing.T) 
 }
 
 func TestDepsCovRuntimeInspectPeersRejectsInvalidPackageName(t *testing.T) {
+	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{"package.json": peerTargetPackageJSON})
 	options := peerOptions(t, root, PublishedPeerSet{Version: "2.1.0"})
 	options.Package = "Not A Valid Name"
@@ -1236,6 +1242,7 @@ func TestDepsCovRuntimeInspectPeersRejectsInvalidPackageName(t *testing.T) {
 }
 
 func TestDepsCovRuntimeInspectPeersSurfacesTargetEvidenceErrors(t *testing.T) {
+	t.Parallel()
 	malformed := newPeerTargetCheckout(t, map[string]string{"package.json": "not json\n"})
 	options := peerOptions(t, malformed, PublishedPeerSet{Version: "2.1.0"})
 	if _, err := InspectPeers(context.Background(), options); err == nil || !strings.Contains(err.Error(), "parse package.json") {
@@ -1244,6 +1251,7 @@ func TestDepsCovRuntimeInspectPeersSurfacesTargetEvidenceErrors(t *testing.T) {
 }
 
 func TestDepsCovRuntimeInspectPeersReportsConflictingLockfileEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "package.json"), `{"name":"@acme/host"}`+"\n")
 	writeTestFile(t, filepath.Join(root, "pnpm-lock.yaml"), depsCovRuntimeConflictingPnpmLock)

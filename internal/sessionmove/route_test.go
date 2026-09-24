@@ -485,14 +485,17 @@ func TestSaveRouteRefusesRoutesThatDoNotMatchAdmittedRequest(t *testing.T) {
 		"missing ssh": func(route Route) Route { route.SSH = nil; return route },
 		"unsafe ssh":  func(route Route) Route { route.SSH = &SSHConfig{Host: "target;touch"}; return route },
 	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			if _, _, err := store.SaveRoute(mutate(valid)); err == nil {
-				t.Fatal("SaveRoute accepted a route that did not match its admitted request")
-			}
-		})
-	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what makes the durable-state check below safe (sneat-dev/wb#646 B2 fix)
+	t.Run("rejections", func(t *testing.T) {
+		for name, mutate := range tests {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				if _, _, err := store.SaveRoute(mutate(valid)); err == nil {
+					t.Fatal("SaveRoute accepted a route that did not match its admitted request")
+				}
+			})
+		}
+	})
 	if _, err := os.Stat(filepath.Join(store.Root, request.HandoffID, routeFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid route created durable state: %v", err)
 	}

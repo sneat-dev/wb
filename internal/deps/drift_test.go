@@ -10,6 +10,7 @@ import (
 )
 
 func TestAnalyzeDriftReportsDivergentFleetVersions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	api := newBumpRepository(t, root, githubDir, "api", "module example.com/api\n\ngo 1.22\n\nrequire example.com/sdk v1.8.0\n")
@@ -44,6 +45,7 @@ func TestAnalyzeDriftReportsDivergentFleetVersions(t *testing.T) {
 }
 
 func TestAnalyzeDriftClassifiesLocalReplace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	payments := newBumpRepository(t, root, githubDir, "payments", ""+
@@ -73,6 +75,7 @@ func TestAnalyzeDriftClassifiesLocalReplace(t *testing.T) {
 }
 
 func TestAnalyzeDriftReportsMajorPathSplit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	search := newBumpRepository(t, root, githubDir, "search", ""+
@@ -108,6 +111,7 @@ func TestAnalyzeDriftReportsMajorPathSplit(t *testing.T) {
 }
 
 func TestAnalyzeDriftFiltersExactDependency(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	app := newBumpRepository(t, root, githubDir, "app", ""+
@@ -131,6 +135,7 @@ func TestAnalyzeDriftFiltersExactDependency(t *testing.T) {
 }
 
 func TestDriftMarkdownAndReportsAreDeterministic(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repo := newBumpRepository(t, root, githubDir, "lib", "module example.com/lib\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n")

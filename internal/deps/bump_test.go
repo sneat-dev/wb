@@ -633,6 +633,7 @@ func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
 }
 
 func TestRunBumpReturnsPersistenceFailureBeforeDiscovery(t *testing.T) {
+	t.Parallel()
 	want := errors.New("disk full")
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}, nil, BumpOptions{
 		Options: Options{GitHubDir: t.TempDir(), DryRun: true},
@@ -644,6 +645,7 @@ func TestRunBumpReturnsPersistenceFailureBeforeDiscovery(t *testing.T) {
 }
 
 func TestRunBumpResumeRequiresPersistedReport(t *testing.T) {
+	t.Parallel()
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}, nil, BumpOptions{
 		Options: Options{GitHubDir: t.TempDir(), Resume: true},
 	})
@@ -701,6 +703,7 @@ func TestBumpReportRoundTrip(t *testing.T) {
 // planned; the broken one must show up as a discovery skip, not silently
 // vanish.
 func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	adapter := newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")

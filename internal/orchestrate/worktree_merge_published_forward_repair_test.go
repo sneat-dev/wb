@@ -534,24 +534,25 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		Apply: true, Actor: "reviewer", Reason: "must not leak a candidate on pinned-evidence refusal",
 	}
 	for _, test := range []struct {
-		name   string
-		mutate func(*WorktreeMergePublishedForwardRepairOptions)
+		name    string
+		mutate  func(*WorktreeMergePublishedForwardRepairOptions)
+		wantErr string
 	}{
 		{name: "receipt", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedReceiptSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "receipt SHA256"},
 		{name: "claim", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedImmutableClaimSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "immutable claim SHA256"},
 		{name: "supersession", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSupersessionSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "supersession SHA256"},
 		{name: "target", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedCurrentTargetSHA = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "does not match pinned repair and self-supersession target evidence"},
 		{name: "source", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSourceSHAs[1] = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "repair source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Not t.Parallel(): every subtest calls
@@ -571,8 +572,8 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)
 			result, err := PreparePublishedValidationFailureForwardRepair(context.Background(), refusal)
-			if err == nil || result.Candidate.Worktree != "" {
-				t.Fatalf("%s evidence refusal = %+v err=%v", test.name, result, err)
+			if err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("%s evidence refusal = %+v err=%v, want an error containing %q", test.name, result, err, test.wantErr)
 			}
 			assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 		})

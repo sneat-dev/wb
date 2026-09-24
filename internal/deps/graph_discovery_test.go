@@ -43,6 +43,7 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 // this repository is fully discovered at its actual default branch instead
 // of merely being excused from failing the campaign.
 func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -91,6 +92,7 @@ func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *t
 // this fallback exists to fix (7 master-default fleet repositories: e.g.
 // strongo/gamp, trakhimenok/badger).
 func TestBuildGraphFallsBackToDefaultBranchForGoRepositoryWithoutBaseRef(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -142,6 +144,7 @@ func deleteOriginHeadSymref(t *testing.T, canonical string) {
 // a symref that `git clone` happened to cache; it must refresh it from
 // origin when absent.
 func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -180,6 +183,7 @@ func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T
 // fallback substitutes a known-good alternative; it is never license to swallow
 // a repository WB genuinely cannot read.
 func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -221,6 +225,7 @@ func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testi
 // whole fleet. It is skipped with a warning naming the exact file and
 // repository instead.
 func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -261,6 +266,7 @@ func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
 // safely assume irrelevance about a repository's own module declaration the
 // way it can about a nested generator template.
 func TestBuildGraphFailsForUnparseableRootGoMod(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -317,6 +323,7 @@ func seedUnreadableCanonicalRepository(t *testing.T, fixture, name string, files
 // 'origin' remote configured — even though that repository has a go.mod and
 // would otherwise be a hard blocker.
 func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -353,6 +360,7 @@ func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
 // TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON is the npm
 // ecosystem's half of the same regression.
 func TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON(t *testing.T) {
+	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"package.json": `{"name": "@acme/app", "version": "1.0.0"}` + "\n",

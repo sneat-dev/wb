@@ -246,6 +246,7 @@ func TestRunWithoutOrderReportsNoLayerPlan(t *testing.T) {
 }
 
 func TestRunRejectsDependencyOrderForEcosystemsWithoutAModuleGraph(t *testing.T) {
+	t.Parallel()
 	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}
 	_, err := Run(context.Background(), target, []Repository{{Slug: "acme/app"}}, Options{
 		GitHubDir: t.TempDir(), DryRun: true, Order: true,

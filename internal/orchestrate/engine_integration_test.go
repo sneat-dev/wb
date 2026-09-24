@@ -446,6 +446,7 @@ func TestRunValidatesPublishabilityBeforeCommit(t *testing.T) {
 }
 
 func TestRunSkipsArchivedRepository(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	var events []progress.Event
 	results, err := Run(context.Background(), []Repository{{Slug: "acme/retired", Archived: true}}, textHandler{}, Options{

@@ -301,30 +301,33 @@ func TestHubProviderPollRepositoryEventsRejectsInvalidArgumentsWithoutARequest(t
 		t.Error("an invalid poll must not reach the hub")
 	})
 
-	for name, testCase := range map[string]struct {
-		cursor string
-		limit  int
-		wait   time.Duration
-		want   string
-	}{
-		"unsafe cursor":  {cursor: "bad\ncursor", limit: 1, want: "cursor"},
-		"zero limit":     {cursor: "before", limit: 0, want: "limit must be between 1 and 100"},
-		"over max limit": {cursor: "before", limit: repositoryevent.MaxLimit + 1, want: "limit must be between 1 and 100"},
-		"negative wait":  {cursor: "before", limit: 1, wait: -time.Second, want: "wait must be between 0 and 30 seconds"},
-		"wait over max":  {cursor: "before", limit: 1, wait: (repositoryevent.MaxWaitSeconds + 1) * time.Second, want: "wait must be between 0 and 30 seconds"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			response, err := provider.PollRepositoryEvents(context.Background(), testCase.cursor, testCase.limit, testCase.wait)
-			if err == nil || !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("PollRepositoryEvents(%q, %d, %v) = %+v, %v; want an error containing %q",
-					testCase.cursor, testCase.limit, testCase.wait, response, err, testCase.want)
-			}
-			if len(response.Events) != 0 {
-				t.Fatalf("rejected poll returned events: %+v", response)
-			}
-		})
-	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what makes the recorder assertion below safe (sneat-dev/wb#646 B2 fix)
+	t.Run("cases", func(t *testing.T) {
+		for name, testCase := range map[string]struct {
+			cursor string
+			limit  int
+			wait   time.Duration
+			want   string
+		}{
+			"unsafe cursor":  {cursor: "bad\ncursor", limit: 1, want: "cursor"},
+			"zero limit":     {cursor: "before", limit: 0, want: "limit must be between 1 and 100"},
+			"over max limit": {cursor: "before", limit: repositoryevent.MaxLimit + 1, want: "limit must be between 1 and 100"},
+			"negative wait":  {cursor: "before", limit: 1, wait: -time.Second, want: "wait must be between 0 and 30 seconds"},
+			"wait over max":  {cursor: "before", limit: 1, wait: (repositoryevent.MaxWaitSeconds + 1) * time.Second, want: "wait must be between 0 and 30 seconds"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				response, err := provider.PollRepositoryEvents(context.Background(), testCase.cursor, testCase.limit, testCase.wait)
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("PollRepositoryEvents(%q, %d, %v) = %+v, %v; want an error containing %q",
+						testCase.cursor, testCase.limit, testCase.wait, response, err, testCase.want)
+				}
+				if len(response.Events) != 0 {
+					t.Fatalf("rejected poll returned events: %+v", response)
+				}
+			})
+		}
+	})
 	if recorder.count() != 0 {
 		t.Fatalf("hub received %d requests for rejected polls", recorder.count())
 	}
