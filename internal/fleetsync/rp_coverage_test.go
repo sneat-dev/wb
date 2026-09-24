@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestRPCovStatusStringNamesEveryConstant(t *testing.T) {
@@ -97,6 +98,7 @@ func rpCovTransferFixture(t *testing.T) (discover.Repo, string, string, string) 
 		t.Fatal(err)
 	}
 	git(t, remotesRoot, "clone", "-q", "--bare", seed, oldRemote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, oldRemote)
 
 	projectsRoot := rpCovResolvedTempDir(t)
 	sourceDir := filepath.Join(projectsRoot, "oldco", "app")

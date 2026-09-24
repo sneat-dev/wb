@@ -2,10 +2,13 @@ package gitops
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // pushedClone builds a clone with a real origin, so upstream tracking behaves
@@ -14,6 +17,7 @@ func pushedClone(t testing.TB) (clone, origin string) {
 	t.Helper()
 	origin = t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main", origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main", seed)
@@ -22,7 +26,9 @@ func pushedClone(t testing.TB) (clone, origin string) {
 	git(t, seed, "push", "-q", "origin", "main")
 
 	clone = t.TempDir()
-	if out, err := exec.Command("git", "clone", "-q", origin, clone).CombinedOutput(); err != nil {
+	cloneCmd := exec.Command("git", "clone", "-q", origin, clone)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 	return clone, origin

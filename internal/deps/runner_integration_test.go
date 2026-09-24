@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -30,6 +31,7 @@ func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, fixture, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +147,7 @@ func newManagedGitHubActionsFixture(t *testing.T, canonicalWorkflow string) mana
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +238,7 @@ func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, fixture, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +276,7 @@ func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, fixture, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +328,7 @@ func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)

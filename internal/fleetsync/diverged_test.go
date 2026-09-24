@@ -2,10 +2,12 @@ package fleetsync
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // divergedClone reproduces the third shape that made sync red: a canonical
@@ -17,6 +19,7 @@ func divergedClone(t *testing.T) (discover.Repo, string) {
 	t.Helper()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
@@ -38,6 +41,7 @@ func divergedClone(t *testing.T) (discover.Repo, string) {
 func clone(t *testing.T, origin, dest string) {
 	t.Helper()
 	cmd := exec.Command("git", "clone", "-q", origin, dest)
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
@@ -108,6 +112,7 @@ func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
 func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
 	git(t, seed, "remote", "add", "origin", origin)

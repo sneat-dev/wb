@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // These tests exercise cleanup's recognition of a validated
@@ -32,10 +33,10 @@ import (
 func runAbsorbedConflictGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	command.Env = append(os.Environ(),
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
 		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com",
-	)
+	))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)

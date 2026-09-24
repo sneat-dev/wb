@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -64,6 +65,7 @@ func newSharedHostedOrigin(t *testing.T) string {
 	base := t.TempDir()
 	remote := filepath.Join(base, "remote.git")
 	gitTest(t, base, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	seed := filepath.Join(base, "seed")
 	gitTest(t, base, "clone", remote, seed)
 	configureGitUser(t, seed)
