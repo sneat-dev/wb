@@ -1475,7 +1475,8 @@ internal/orchestrate::TestPrepareConflictWorktreeMergeReplacementBreaksReceiptOw
 internal/orchestrate::TestPrepareConflictWorktreeMergeReplacementRefusesPublishedAndMismatchedSources	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestPrepareConflictWorktreeMergeReplacementRetiresNewCandidateAfterEvidenceDrift	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/orchestrate::TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate	kept serial because a nested subtest must stay serial: #1
+internal/orchestrate::TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCreation	kept serial because a nested subtest must stay serial: malformed historical self-supersession
 internal/orchestrate::TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCreation/current target drift	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCreation/dirty current source	serial pending case-by-case review (sneat-dev/wb#623 baseline)
