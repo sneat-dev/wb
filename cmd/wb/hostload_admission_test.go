@@ -237,14 +237,17 @@ func TestRunCommandHonorsExplicitProjectsRootForCPUAdmission(t *testing.T) {
 		}
 	})
 
-	// The inner call must NOT be admitted while every slot under root is
-	// held: give it a short, generous window to prove it stays queued
-	// rather than racing a real admission decision.
+	// Deterministically wait for the inner call to actually register as a
+	// waiter on root's own queue — never a fixed sleep window, which could
+	// pass silently on a slow/cold run even when admission is miswired
+	// (review finding N2) — then confirm it has not been admitted while
+	// every slot under that exact root is still held.
+	waitForWaiterQueued(t, root, budget)
 	select {
 	case code := <-done:
 		drained = true
 		t.Fatalf("inner `wb run --projects-root %s` was admitted (exit %d) while every slot under that exact root was held — it is not contending against the root it was told to use", root, code)
-	case <-time.After(500 * time.Millisecond):
+	default:
 	}
 
 	held.Release()

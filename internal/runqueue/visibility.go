@@ -117,7 +117,19 @@ var ticketSeq int64
 // --projects-root into CPU admission (PR #736 review finding B1). Production
 // code must never assign either var; only SetQueueRootForTest, meant to be
 // called from a package's TestMain or from a test itself, does.
+//
+// This is one (from, to) slot, not a map: it supports only one active
+// override at a time, from sequential (never parallel) tests, exactly like
+// any other single global variable a test seam overrides — the same
+// contract SetNumCPUForTest already carries. A second SetQueueRootForTest
+// call displaces whatever key is currently active (last writer wins), and
+// nested use must restore in LIFO (reverse) order, the same discipline a
+// nested defer/t.Cleanup chain already gives for free. queueRootOverrideMu
+// only makes concurrent reads and writes of the pair data-race-free; it
+// does not, and cannot, make two simultaneously active overrides coexist,
+// or make an out-of-order restore safe.
 var (
+	queueRootOverrideMu   sync.Mutex
 	queueRootOverrideFrom string
 	queueRootOverrideTo   string
 )
@@ -125,18 +137,40 @@ var (
 // SetQueueRootForTest overrides the directory queueRoot resolves to, but
 // only for the exact fromProjectsRoot given — every other projectsRoot is
 // unaffected. It returns a restore func. See queueRootOverrideFrom/
-// queueRootOverrideTo. Production code must never call this; it exists for
-// TestMain and for tests the same way SetNumCPUForTest exists for tests
-// that need a specific NumCPU.
+// queueRootOverrideTo for this override's sequential-only contract.
+// Production code must never call this; it exists for TestMain and for
+// tests the same way SetNumCPUForTest exists for tests that need a
+// specific NumCPU.
 func SetQueueRootForTest(fromProjectsRoot, dir string) (restore func()) {
+	queueRootOverrideMu.Lock()
 	previousFrom, previousTo := queueRootOverrideFrom, queueRootOverrideTo
 	queueRootOverrideFrom, queueRootOverrideTo = fromProjectsRoot, dir
-	return func() { queueRootOverrideFrom, queueRootOverrideTo = previousFrom, previousTo }
+	queueRootOverrideMu.Unlock()
+	return func() {
+		queueRootOverrideMu.Lock()
+		queueRootOverrideFrom, queueRootOverrideTo = previousFrom, previousTo
+		queueRootOverrideMu.Unlock()
+	}
+}
+
+// QueueDirForTest returns exactly the directory queueRoot resolves for
+// projectsRoot right now: the real, unoverridden path, or the active
+// override's target when projectsRoot matches its key. It exists only so
+// a test in another package — cmd/wb's TestMain, which installs the
+// binary-wide isolation this seam exists for — can assert that its own
+// isolation is actually in effect, rather than trusting it silently
+// (PR #736 review finding B1, round 3). Production code must never call
+// this.
+func QueueDirForTest(projectsRoot string) string {
+	return queueRoot(projectsRoot)
 }
 
 func queueRoot(projectsRoot string) string {
-	if queueRootOverrideFrom != "" && projectsRoot == queueRootOverrideFrom {
-		return queueRootOverrideTo
+	queueRootOverrideMu.Lock()
+	from, to := queueRootOverrideFrom, queueRootOverrideTo
+	queueRootOverrideMu.Unlock()
+	if from != "" && projectsRoot == from {
+		return to
 	}
 	return filepath.Join(projectsRoot, ".wb", "runtime", "cpu")
 }

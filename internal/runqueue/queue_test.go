@@ -348,6 +348,28 @@ func TestQueueRootOverrideOnlyRedirectsTheKeyedProjectsRoot(t *testing.T) {
 	}
 }
 
+// TestQueueDirForTestReturnsExactlyWhatQueueRootResolves pins
+// QueueDirForTest's own contract directly (PR #736 review finding B1,
+// round 3): it is a plain, read-only mirror of queueRoot, used by cmd/wb's
+// TestMain to assert its own installed isolation is actually in effect,
+// so it must track an active override precisely, both for the keyed root
+// and for any other root.
+func TestQueueDirForTestReturnsExactlyWhatQueueRootResolves(t *testing.T) {
+	keyedRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	overrideDir := t.TempDir()
+	restore := SetQueueRootForTest(keyedRoot, overrideDir)
+	t.Cleanup(restore)
+
+	if got := QueueDirForTest(keyedRoot); got != overrideDir {
+		t.Fatalf("QueueDirForTest(keyedRoot) = %q, want the override %q", got, overrideDir)
+	}
+	wantOther := filepath.Join(otherRoot, ".wb", "runtime", "cpu")
+	if got := QueueDirForTest(otherRoot); got != wantOther {
+		t.Fatalf("QueueDirForTest(otherRoot) = %q, want %q", got, wantOther)
+	}
+}
+
 // withTinyLeaseHeartbeatInterval shrinks leaseHeartbeatInterval for the
 // duration of a test, so armHeartbeat's ticker fires essentially
 // immediately and reliably races a Release called right after admission,
