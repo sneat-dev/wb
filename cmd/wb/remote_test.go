@@ -46,28 +46,45 @@ func remoteGit(t *testing.T, dir string, args ...string) string {
 // remoteGit's explicit env) a valid author/committer so tests work under a
 // HOME with no git config.
 //
-// It also disables git's opportunistic "gc --auto": a push or commit that
-// crosses git's loose-object threshold forks a detached background
-// `git gc --auto` that keeps writing into the repository's .git/objects
-// after the git command that spawned it returns and after the test that
-// owns the TempDir has finished — t.TempDir()'s cleanup RemoveAll then
-// races that still-running gc and fails with "unlinkat ...: directory not
-// empty" (seen on TestRemoteClaimForceOnUnreadableFile against
-// origin.git/objects). GIT_CONFIG_COUNT/KEY_N/VALUE_N apply to every git
+// It also disables every git subprocess's opportunistic background
+// maintenance, test-only, for TestRemoteClaimForceOnUnreadableFile's
+// "TempDir RemoveAll cleanup: unlinkat .../origin.git/objects: directory not
+// empty" failure. These fixtures are too small to ever cross `gc --auto`'s
+// own loose-object/pack-count thresholds — traced locally with
+// GIT_TRACE2_EVENT across every TestRemoteClaim* test, `gc --auto` started
+// 34 times but never once did any repack, prune, pack-refs or reflog work,
+// so it never detaches a writer here. `git maintenance run --auto` started
+// 129 times in the same trace; on a git new enough to run scheduled
+// maintenance by default (the CI runners' git; this could not be
+// reproduced against the VM's older git 2.43, which does not run
+// maintenance automatically), a detached maintenance process taking
+// objects/maintenance.lock before it even evaluates whether there is work
+// to do is the most plausible writer that outlives the git command that
+// spawned it and races t.TempDir()'s cleanup — not a proven one, since the
+// failure could not be reproduced locally to confirm it directly.
+// maintenance.auto=false stops that dispatch outright; receive.autogc=false
+// additionally stops receive-pack's own auto-gc call after a push, and
+// gc.auto=0 is kept as a second guard even though the trace shows it was
+// never the trigger. GIT_CONFIG_COUNT/KEY_N/VALUE_N apply to every git
 // subprocess this test (and any child it forks, such as `receive-pack` for
 // a same-host push) inherits this env from — both the explicit-env
 // `remoteGit` helper below and the production `gitops` package, which
 // builds its command env from `console.Env()` (os.Environ()) and so also
-// observes it.
+// observes it, though nothing in production relies on or sets gc/
+// maintenance behaviour; this is purely a test-fixture hardening.
 func setGitIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
-	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "3")
 	t.Setenv("GIT_CONFIG_KEY_0", "gc.auto")
 	t.Setenv("GIT_CONFIG_VALUE_0", "0")
+	t.Setenv("GIT_CONFIG_KEY_1", "maintenance.auto")
+	t.Setenv("GIT_CONFIG_VALUE_1", "false")
+	t.Setenv("GIT_CONFIG_KEY_2", "receive.autogc")
+	t.Setenv("GIT_CONFIG_VALUE_2", "false")
 }
 
 // remoteFixture builds a projects root holding one dirty fleet repo, a bare
