@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,8 @@ import (
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runlog"
+	"github.com/sneat-dev/wb/internal/runqueue"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -81,6 +85,81 @@ func TestRunCommandAdmitsCPUHeavyWorkBelowFloor(t *testing.T) {
 	code := run([]string{"run", "--", "go", "vet", "./..."}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit code = %d, want 0 when load is below the floor; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder
+// pins the sneat-dev/wb#623 deadlock TestRunCommandAdmitsCPUHeavyWorkBelowFloor
+// hit on this VM: it, and every other test in this package, invoke `wb run
+// --` in-process while an outer `wb run -- go test ./cmd/wb/...` is itself
+// the process executing this test binary — and outer and inner used to
+// share the very same machine-wide CPU admission queue (rooted at
+// WB_PROJECTS_ROOT), so the inner call waited behind its own outer holder
+// forever.
+//
+// This test reproduces the outer holder directly: it takes every budget
+// slot in the queue directory the real (non-overridden) formula would
+// derive for machineRoot — exactly as an outer `wb run` holds them, and
+// exactly what this package's own TestMain would otherwise also resolve to
+// via WB_PROJECTS_ROOT — by flock'ing the same slot files Acquire itself
+// uses, deliberately bypassing this test binary's TestMain-installed queue
+// isolation (runqueue.SetQueueRootForTest) so the "outer" holder sits in
+// the un-isolated, shared location. It then runs `wb run --` in a
+// goroutine, bounded by a context deadline (never a sleep): with the fix
+// (TestMain's isolation) it completes immediately, because the inner call's
+// own admission is routed to this binary's isolated queue root instead of
+// machineRoot's; if that isolation ever regressed, this would time out
+// exactly as the removed goroutine's deadline below demonstrates.
+func TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	dir := t.TempDir()
+	trivialGoModule(t, dir)
+	t.Chdir(dir)
+	withHostLoad(t, 0.01)
+
+	machineRoot := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, machineRoot)
+
+	queueDir := filepath.Join(machineRoot, ".wb", "runtime", "cpu")
+	if err := os.MkdirAll(queueDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	budget := runqueue.Budget()
+	var lockFiles []*os.File
+	for slot := 0; slot < budget; slot++ {
+		path := filepath.Join(queueDir, fmt.Sprintf("slot-%02d.lock", slot))
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatalf("open outer slot %d: %v", slot, err)
+		}
+		if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			t.Fatalf("hold outer slot %d: %v", slot, err)
+		}
+		lockFiles = append(lockFiles, file)
+	}
+	t.Cleanup(func() {
+		for _, file := range lockFiles {
+			_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+			_ = file.Close()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		done <- run([]string{"run", "--", "go", "vet", "./..."}, &stdout, &stderr)
+	}()
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Fatalf("inner `wb run --` exit code = %d, want 0", code)
+		}
+	case <-ctx.Done():
+		t.Fatal("inner `wb run --` deadlocked behind the outer machine-wide CPU admission holder — the run-queue test isolation seam regressed")
 	}
 }
 

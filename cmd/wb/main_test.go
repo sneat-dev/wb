@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -64,7 +65,26 @@ func TestMain(m *testing.M) {
 	// transport still needs its own testenv.ConfigureGitAutoMaintenanceOff
 	// call (see remote_test.go's setGitIdentity).
 	testenv.GitAutoMaintenanceOffProcess()
-	os.Exit(m.Run())
+	// Give this whole test binary its own CPU admission queue, isolated
+	// from the real, machine-wide one (internal/runqueue) rooted at
+	// whatever projectsRoot this process would otherwise resolve. Without
+	// this, a test that itself invokes `wb run --` in-process (e.g.
+	// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins the very same
+	// queue an outer `wb run -- go test ./cmd/wb/...` already holds a
+	// slot in, and waits behind its own outer holder forever — the known
+	// deadlock this package's own tests hit on this VM (sneat-dev/wb#623).
+	// See runqueue.SetQueueRootForTest.
+	queueDir, queueDirErr := os.MkdirTemp("", "wb-test-cpu-queue-")
+	if queueDirErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not isolate test CPU admission queue: %v\n", queueDirErr)
+	} else {
+		runqueue.SetQueueRootForTest(queueDir)
+	}
+	code := m.Run()
+	if queueDir != "" {
+		_ = os.RemoveAll(queueDir)
+	}
+	os.Exit(code)
 }
 
 func TestPropagateRuntimeWBExecutable(t *testing.T) {

@@ -273,6 +273,72 @@ func TestAcquireCoordinatesIndependentCallers(t *testing.T) {
 	second.Release()
 }
 
+// TestQueueRootOverrideIsolatesAdmissionFromAnOuterHolderOfTheSameProjectsRoot
+// pins the sneat-dev/wb#623 deadlock this seam exists to fix:
+// TestRunCommandAdmitsCPUHeavyWorkBelowFloor (and any test invoking `wb run
+// --` in-process) used to join the very same machine-wide CPU admission
+// queue an outer `wb run -- go test ./cmd/wb/...` already held every slot
+// in, for the very same projectsRoot, and would wait behind it forever.
+//
+// This test reproduces that shape directly against this package's own API
+// (cmd/wb's regression test, hostload_admission_test.go, exercises the same
+// fix at the `wb run --` level): an "outer holder" takes every budget slot
+// under a shared projectsRoot exactly as the real machine-wide queue would,
+// then an "inner" Admit call is made against that identical projectsRoot —
+// simulating what a test-binary-wide queue-root override (see TestMain's
+// SetQueueRootForTest call in cmd/wb) is meant to route away from that
+// contention. With the override active, the inner call is admitted
+// immediately despite the outer holder never releasing; without it (see the
+// skipped sibling below), the same call would block until ctx's deadline.
+func TestQueueRootOverrideIsolatesAdmissionFromAnOuterHolderOfTheSameProjectsRoot(t *testing.T) {
+	defer SetNumCPUForTest(4)()
+	sharedProjectsRoot := t.TempDir()
+
+	budget := Budget()
+	if budget < 1 {
+		t.Fatalf("Budget() at NumCPU=4 = %d, want at least 1", budget)
+	}
+	outer, _, err := Acquire(context.Background(), sharedProjectsRoot, budget, budget)
+	if err != nil {
+		t.Fatalf("simulate outer holder: %v", err)
+	}
+	defer outer.Release()
+
+	restore := SetQueueRootForTest(t.TempDir())
+	defer restore()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	self := Participant{PID: os.Getpid(), Summary: "inner-under-test"}
+	admission, err := Admit(ctx, sharedProjectsRoot, []string{"go", "test", "./..."}, self, nil)
+	if err != nil {
+		t.Fatalf("Admit with an isolated queue root still blocked behind the outer holder of the same projectsRoot (deadlock regressed): %v", err)
+	}
+	defer admission.Lease.Release()
+}
+
+// TestQueueRootOverrideAffectsEveryProjectsRootUniformly pins
+// queueRootOverride's own contract directly: once set, it wins regardless of
+// which projectsRoot a caller passes, and clearing it (the restore func)
+// returns callers to the projectsRoot-derived directory.
+func TestQueueRootOverrideAffectsEveryProjectsRootUniformly(t *testing.T) {
+	overrideDir := t.TempDir()
+	restore := SetQueueRootForTest(overrideDir)
+	if got := queueRoot(t.TempDir()); got != overrideDir {
+		t.Fatalf("queueRoot with an override set = %q, want the override %q", got, overrideDir)
+	}
+	if got := queueRoot(t.TempDir()); got != overrideDir {
+		t.Fatalf("a second, different projectsRoot resolved to %q, want the same override %q", got, overrideDir)
+	}
+	restore()
+
+	projectsRoot := t.TempDir()
+	want := filepath.Join(projectsRoot, ".wb", "runtime", "cpu")
+	if got := queueRoot(projectsRoot); got != want {
+		t.Fatalf("queueRoot after restore = %q, want %q", got, want)
+	}
+}
+
 // withTinyLeaseHeartbeatInterval shrinks leaseHeartbeatInterval for the
 // duration of a test, so armHeartbeat's ticker fires essentially
 // immediately and reliably races a Release called right after admission,

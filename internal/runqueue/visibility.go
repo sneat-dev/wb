@@ -96,7 +96,35 @@ type State struct {
 
 var ticketSeq int64
 
+// queueRootOverride, when non-empty, replaces the projectsRoot-derived
+// directory every admission call in this package (Acquire, Admit,
+// AdmitExplicit, Register, RegisterHeavy, and their read-only Peek/Snapshot
+// counterparts) resolves its queue state against, regardless of the
+// projectsRoot each caller passes. It exists only so cmd/wb's own tests can
+// give the whole test binary an isolated CPU admission queue, separate
+// from the real, machine-wide one an outer `wb run -- go test
+// ./cmd/wb/...` invocation already holds a slot in — without it, a test
+// that itself calls into `wb run --` (e.g.
+// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins that same queue and
+// waits behind its own outer holder forever (sneat-dev/wb#623's own
+// deadlock on this VM). Production code must never assign it; only
+// SetQueueRootForTest, meant to be called from a package's TestMain, does.
+var queueRootOverride string
+
+// SetQueueRootForTest overrides the directory queueRoot resolves to for
+// every projectsRoot, returning a restore func. See queueRootOverride.
+// Production code must never call this; it exists for TestMain the same
+// way SetNumCPUForTest exists for tests that need a specific NumCPU.
+func SetQueueRootForTest(dir string) (restore func()) {
+	previous := queueRootOverride
+	queueRootOverride = dir
+	return func() { queueRootOverride = previous }
+}
+
 func queueRoot(projectsRoot string) string {
+	if queueRootOverride != "" {
+		return queueRootOverride
+	}
 	return filepath.Join(projectsRoot, ".wb", "runtime", "cpu")
 }
 
