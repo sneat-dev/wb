@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func marshalManifestForLifeCov(manifest Manifest) (string, error) {
@@ -486,6 +488,7 @@ func TestWtLifeCovReconstructBaseFallsBackAndGivesUp(t *testing.T) {
 	}
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	wtLifeCovGit(t, worktree, "remote", "add", "origin", remote)
 	wtLifeCovGit(t, worktree, "push", "--quiet", "-u", "origin", "main")
 	base, sha, ok := reconstructBase(context.Background(), worktree, "main")
@@ -795,6 +798,7 @@ func TestWtLifeCovReconstructManifestInfersBaseFromRemoteTarget(t *testing.T) {
 	worktree := wtLifeCovJournalWorktree(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	wtLifeCovGit(t, worktree, "remote", "add", "origin", remote)
 	wtLifeCovGit(t, worktree, "push", "--quiet", "-u", "origin", "main")
 	wtLifeCovGit(t, worktree, "fetch", "--quiet", "origin")

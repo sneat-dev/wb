@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -751,6 +752,7 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -789,6 +791,7 @@ func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOw
 			t.Fatal(err)
 		}
 		runTestGit(t, root, "clone", "--bare", seed, remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	}
 	canonical := filepath.Join(githubDir, canonicalOwner, canonicalName)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

@@ -14,5 +14,6 @@ import (
 // internal/testenv and internal/envguard.
 func TestMain(m *testing.M) {
 	testenv.IsolateProcess()
+	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
 }
