@@ -837,7 +837,40 @@ func truncateCommandDetailTo(detail string, max int) string {
 	if idx := strings.LastIndexByte(detail[:headBytes], '\n'); idx >= 0 {
 		scanStart = idx + 1
 	}
+	// Review finding N3: a "--- FAIL"/"panic:" trigger line can end
+	// entirely before headBytes while its indented continuation (a
+	// sub-test line, an assertion, a stack frame) extends past it.
+	// failureEvidenceIn only recognizes a continuation line as evidence
+	// when it can see the trigger line that introduced it, so walk
+	// scanStart back over any run of indented continuation lines until a
+	// non-continuation line is reached — that line, if it is itself the
+	// trigger, is included in the scanned region too.
+	for scanStart > 0 {
+		lineEnd := strings.IndexByte(detail[scanStart:], '\n')
+		var line string
+		if lineEnd < 0 {
+			line = detail[scanStart:]
+		} else {
+			line = detail[scanStart : scanStart+lineEnd]
+		}
+		if !isIndentedContinuationLine(line) {
+			break
+		}
+		prevNewline := strings.LastIndexByte(detail[:scanStart-1], '\n')
+		if prevNewline < 0 {
+			scanStart = 0
+			break
+		}
+		scanStart = prevNewline + 1
+	}
 	evidenceLines := failureEvidenceIn(detail[scanStart:])
+	// Review finding N3 (continued): the walk-back above can pull a
+	// trigger line, or other lines, that are already fully reproduced
+	// verbatim in the head into the evidence scan. Drop any evidence line
+	// that is a complete, exact duplicate of a head line — a straddling
+	// line is a partial match here, never an exact one, so it is left
+	// alone — rather than showing it twice.
+	evidenceLines = excludeLinesPresentIn(evidenceLines, detail[:headBytes])
 
 	// legacyTailBytes and legacyMarker are the historical head+tail-only
 	// shape (unchanged formula). When nothing worth keeping was found,
@@ -865,7 +898,45 @@ func truncateCommandDetailTo(detail string, max int) string {
 	if tailBytes > 0 {
 		tail = detail[len(detail)-tailBytes:]
 	}
+
+	// Review finding N2: an evidence line that also appears, complete and
+	// unchanged, in the kept tail was never actually dropped — showing it
+	// again under the "dropped middle" header both misstates what
+	// happened and wastes bytes on a duplicate. Filter those out and
+	// rebuild the block; the result can only be the same size or smaller,
+	// so the tail computed above still fits.
+	if tail != "" {
+		filtered := excludeLinesPresentIn(evidenceLines, tail)
+		if len(filtered) != len(evidenceLines) {
+			evidenceLines = filtered
+			if len(evidenceLines) == 0 {
+				return detail[:headBytes] + marker + tail
+			}
+			evidenceBlock = fitEvidenceBlock(evidenceLines, available)
+		}
+	}
 	return detail[:headBytes] + evidenceBlock + marker + tail
+}
+
+// excludeLinesPresentIn drops every line from lines that appears, complete
+// and byte-identical, as one of verbatim's own lines — never a partial
+// match — leaving every other line (including empty ones, which are never
+// meaningful evidence on their own) in its original order.
+func excludeLinesPresentIn(lines []string, verbatim string) []string {
+	present := make(map[string]bool, strings.Count(verbatim, "\n")+1)
+	for _, line := range strings.Split(verbatim, "\n") {
+		if line != "" {
+			present[line] = true
+		}
+	}
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line != "" && present[line] {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return kept
 }
 
 // sizeTailAndMarker renders the truncation marker from the tail size it
@@ -896,9 +967,12 @@ func sizeTailAndMarker(budget int) (tailBytes int, marker string) {
 // never returning more than available bytes. When the full block does not
 // fit, it keeps as many whole lines (in the order found) as fit alongside
 // evidenceTruncatedNotice, so a cut always lands on a line boundary and
-// discloses that it happened; it never splits a line, and never splits a
-// multibyte rune even in the degenerate case where available is too small
-// to hold the header itself.
+// discloses that it happened. A single line too long to fit whole still
+// contributes its own rune-safe prefix rather than being dropped entirely
+// (review finding N5). When available is too small to fit even the header
+// and the omission notice together, fitEvidenceBlock emits nothing at all
+// (review finding N4): a truncated fragment of either would misstate what
+// happened, which is worse than showing no evidence at that budget.
 func fitEvidenceBlock(lines []string, available int) string {
 	full := evidenceHeader + strings.Join(lines, "\n") + "\n"
 	if len(full) <= available {
@@ -906,20 +980,28 @@ func fitEvidenceBlock(lines []string, available int) string {
 	}
 	budget := available - len(evidenceHeader) - len(evidenceTruncatedNotice)
 	if budget < 0 {
-		return truncateRuneSafe(evidenceHeader, available)
+		return ""
 	}
 	var kept []string
 	used := 0
 	for _, line := range lines {
-		add := len(line)
+		separator := 0
 		if len(kept) > 0 {
-			add++ // the "\n" strings.Join would place before it
+			separator = 1 // the "\n" strings.Join would place before it
 		}
-		if used+add > budget {
+		room := budget - used - separator
+		if room <= 0 {
 			break
 		}
-		kept = append(kept, line)
-		used += add
+		if len(line) <= room {
+			kept = append(kept, line)
+			used += separator + len(line)
+			continue
+		}
+		if partial := truncateRuneSafe(line, room); partial != "" {
+			kept = append(kept, partial)
+		}
+		break
 	}
 	return evidenceHeader + strings.Join(kept, "\n") + evidenceTruncatedNotice
 }
@@ -944,6 +1026,13 @@ var (
 	failBlockLinePattern = regexp.MustCompile(`^--- FAIL\b`)
 	bareFailLinePattern  = regexp.MustCompile(`^FAIL\b`)
 	panicLinePattern     = regexp.MustCompile(`^panic:`)
+	// goroutineHeaderPattern matches the line the Go runtime always prints
+	// to introduce a goroutine's frames in a panic dump, e.g. "goroutine 6
+	// [running]:". A real panic's stack is always followed by exactly one
+	// blank line before this header (review finding B, round 2 of #582):
+	// isEndOfPanicStack must not treat that blank line as the end of the
+	// stack before the header — and the frames after it — have been seen.
+	goroutineHeaderPattern = regexp.MustCompile(`^goroutine \d+ \[`)
 	// packageSummaryLinePattern matches the per-package result and status
 	// lines `go test` output is otherwise made of — "ok  \t<pkg>\t...",
 	// "--- PASS: ...", "=== RUN  ...", "PASS", "?   \t<pkg>\t[no test
@@ -982,7 +1071,11 @@ func failureEvidenceIn(region string) []string {
 		case panicLinePattern.MatchString(line):
 			kept = append(kept, line)
 			index++
-			for index < len(lines) && !isEndOfPanicStack(lines[index]) {
+			sawGoroutineHeader := false
+			for index < len(lines) && !isEndOfPanicStack(lines[index], sawGoroutineHeader) {
+				if goroutineHeaderPattern.MatchString(lines[index]) {
+					sawGoroutineHeader = true
+				}
 				kept = append(kept, lines[index])
 				index++
 			}
@@ -994,12 +1087,20 @@ func failureEvidenceIn(region string) []string {
 	return kept
 }
 
-// isEndOfPanicStack reports whether line ends a panic's stack trace: a
-// blank line (the usual end, immediately before "exit status N"), or any
-// go test result line that means normal package output has resumed.
-func isEndOfPanicStack(line string) bool {
-	return strings.TrimSpace(line) == "" ||
-		failBlockLinePattern.MatchString(line) ||
+// isEndOfPanicStack reports whether line ends a panic's stack trace: any go
+// test result line that means normal package output has resumed, or a
+// blank line — but only once sawGoroutineHeader is true. The Go runtime
+// always prints exactly one blank line right after "panic: ..." and before
+// "goroutine N [running]:" (review finding B, round 2 of #582); treating
+// that first blank line as the end of the stack drops the goroutine header
+// and every frame under it, even though nothing was actually done yet.
+// Once the header has been seen, a further blank line (the usual end,
+// immediately before "exit status N") does end the stack as before.
+func isEndOfPanicStack(line string, sawGoroutineHeader bool) bool {
+	if strings.TrimSpace(line) == "" {
+		return sawGoroutineHeader
+	}
+	return failBlockLinePattern.MatchString(line) ||
 		bareFailLinePattern.MatchString(line) ||
 		packageSummaryLinePattern.MatchString(line)
 }
