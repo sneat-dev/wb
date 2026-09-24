@@ -170,7 +170,7 @@ func TestBranchCountRetiredTextFormatKeepsScopedRefTotals(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "STATUS       REFS\nretired     2\nretired      1 names (1 local refs, 1 remote refs)\n"; got != want {
+	if got, want := out.String(), "STATUS       REFS\nretired     2\nretired branches 1 names (1 local refs, 1 remote refs)\nretired tags     0 names (0 local refs, 0 remote refs)\n"; got != want {
 		t.Fatalf("retired count text = %q, want %q", got, want)
 	}
 }

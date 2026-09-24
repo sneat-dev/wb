@@ -81,9 +81,23 @@ fleet-process, and governance work to `sneat-co/backstage`. Do not use this
 public WB repository as a fleet tracker or mirror upstream issues.
 
 - Build: `go build ./...`  ·  Test: `go test ./...`  ·  Lint: `golangci-lint run`
-- Total statement coverage must stay at or above the floor enforced in
-  `.github/workflows/go-ci.yml`. Do not reduce approved scope to satisfy it —
-  say so instead.
+- Coverage is a per-package ratchet, not one repository-wide total
+  (spec/plans/coverage-to-100/README.md task-3): for packages the PR changes,
+  the package's uncovered statement count must never rise against the
+  baseline go-ci's coverage job publishes on every push to main, and any
+  statement a PR adds or changes against its merge base must be covered
+  unless git marks the line moved and unmodified (`git diff --merge-base
+  origin/<base> -U0 --color-moved=plain`). A package the PR does not change
+  only warns on a count rise (founder decision 2026-09-23) — it never fails
+  the PR; that keeps the gate from flaking on coverage drift in unrelated
+  legacy packages. `wb coverage --changed --target <base>` enforces this and
+  names the exact `file:line` of every newly uncovered statement, changed-
+  package failures and unrelated-package warnings both. The `--minimum=87`
+  backstop in `.github/workflows/go-ci.yml` and
+  `.github/workflows/nightly-coverage.yml` stays alongside it, raised only,
+  in both files together, and the nightly job still measures every package
+  with no changed-package exemption. Do not reduce approved scope to satisfy
+  either gate — say so instead.
 - Every public command leaf needs a matching row in `ai/capabilities.json` and
   a line in `docs/cli-flag-matrix.md`; `cmd/wb/skills_test.go` enforces both.
 - Persistent flags a command ignores are rejected, not silently accepted. Add
@@ -91,3 +105,8 @@ public WB repository as a fleet tracker or mirror upstream issues.
   consumes one.
 - Exit codes are contract: `0` success, `1` findings, `2` usage. Nothing on the
   agent-hook path may ever reach exit 2 — see `cmd/wb/hooks_agent.go`.
+- Name tests after the behaviour they verify and assert an observable
+  outcome, never a filler `coverage:ignore`-style marker or a name that
+  reflects a coverage campaign instead of behaviour (`zz_cov_*`, `dqcov`,
+  `tailcov`-style names are forbidden). Tests are safe to run in parallel by
+  default (`t.Parallel()`), with no `t.Setenv`/`os.Chdir` in a parallel test.

@@ -536,6 +536,69 @@ func TestRetiredNamespaceInventoryIsOfflineForLocalRetiredGlob(t *testing.T) {
 	}
 }
 
+func TestRetiredNamespaceListsAndCountsTagsSeparately(t *testing.T) {
+	fixture := newGitFixture(t)
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "tag", "retired/tag-only", sha)
+	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/tag-only")
+	// No origin/main read is needed for a retired-only tag selector.
+	gitTest(t, fixture.remote, "update-ref", "-d", "refs/heads/main")
+	for _, scope := range []string{BranchScopeLocal, BranchScopeRemote, BranchScopeAll} {
+		outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: scope, Name: "retired/*"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.RetiredBranches != 0 || outcome.RetiredTagNames != 1 || len(outcome.Entries) != map[string]int{BranchScopeLocal: 1, BranchScopeRemote: 1, BranchScopeAll: 2}[scope] {
+			t.Fatalf("scope %s outcome = %#v", scope, outcome)
+		}
+		for _, entry := range outcome.Entries {
+			if entry.RefKind != "tag" || entry.Branch != "retired/tag-only" || entry.Disposition != BranchRetired {
+				t.Fatalf("tag entry = %#v", entry)
+			}
+		}
+	}
+}
+
+func TestRemoteRetiredTagFetchesMetadataAndHonoursAge(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "tag-source")
+	sha := writeAndCommit(t, fixture.canonical, "remote-tag.txt", "remote only\n", "remote retired tag source")
+	gitTest(t, fixture.canonical, "tag", "retired/remote-metadata", sha)
+	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/remote-metadata")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "branch", "-D", "tag-source")
+	gitTest(t, fixture.canonical, "tag", "-d", "retired/remote-metadata")
+	gitTest(t, fixture.canonical, "gc", "--prune=now")
+	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
+	beforeFetchHead, beforeFetchHeadErr := os.ReadFile(fetchHeadPath)
+	refs, diagnostic := listRetiredTags(context.Background(), fixture.canonical, true, true)
+	if diagnostic != "" || len(refs) != 1 || refs[0].CommitterDate.IsZero() || refs[0].Title != "remote retired tag source" {
+		t.Fatalf("temporary remote tag metadata = %#v, diagnostic=%q", refs, diagnostic)
+	}
+	if gitRefExists(fixture.canonical, "refs/tags/retired/remote-metadata") {
+		t.Fatal("remote metadata fetch created a local tag ref")
+	}
+	afterFetchHead, afterFetchHeadErr := os.ReadFile(fetchHeadPath)
+	if (beforeFetchHeadErr == nil) != (afterFetchHeadErr == nil) || (beforeFetchHeadErr == nil && string(beforeFetchHead) != string(afterFetchHead)) {
+		t.Fatalf("remote metadata fetch changed caller FETCH_HEAD: before=%q/%v after=%q/%v", beforeFetchHead, beforeFetchHeadErr, afterFetchHead, afterFetchHeadErr)
+	}
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].CommitterDate.IsZero() || outcome.Entries[0].Title != "remote retired tag source" {
+		t.Fatalf("remote tag metadata = %#v", outcome)
+	}
+	aged, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*", OlderThan: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aged.Entries) != 0 || aged.RetiredTagNames != 0 {
+		t.Fatalf("young remote tag bypassed age filter: %#v", aged)
+	}
+}
+
 func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
@@ -551,6 +614,24 @@ func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.
 	}
 	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "retired remote refs") {
 		t.Fatalf("remote failure diagnostic missing: %#v", outcome.Diagnostics)
+	}
+}
+
+func TestOrdinaryRemoteInventoryMarksUnavailableRetiredTags(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.RetiredRemoteUnavailable {
+		t.Fatalf("remote tag failure was rendered as a known count: %#v", outcome)
+	}
+	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "count retired remote tags") {
+		t.Fatalf("remote tag diagnostic missing: %#v", outcome.Diagnostics)
 	}
 }
 
