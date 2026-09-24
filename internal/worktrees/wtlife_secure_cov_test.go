@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ func wtLifeCovNewRepo(t *testing.T) *wtLifeCovRepo {
 func wtLifeCovGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0"))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
@@ -653,6 +655,7 @@ func TestWtLifeCovSecureCleanupHelperAuthorizesEveryHeldRoot(t *testing.T) {
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	remoteDescriptor := wtLifeCovOpenDirectory(t, remote)
 	withRemote := wtLifeCovRunSecureHelper(t, "cleanup",
 		[]*os.File{repo.root, repo.common, remoteDescriptor},
@@ -695,6 +698,7 @@ func TestWtLifeCovSecureCleanupHelperPushesToHeldLocalRemote(t *testing.T) {
 	git := wtLifeCovTrustedGit(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	remoteDescriptor := wtLifeCovOpenDirectory(t, remote)
 
 	result := wtLifeCovRunSecureHelper(t, "cleanup",
@@ -861,6 +865,7 @@ func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	directory, path, err := localOriginDirectoryForSecurePush(t.Context(), canonical, []string{"push", "--", remote, "HEAD:refs/heads/x"})
 	if err != nil {
 		t.Fatalf("local push remote: %v", err)

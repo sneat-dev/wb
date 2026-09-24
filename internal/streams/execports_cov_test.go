@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // stCovFakeGitHub installs a fake `gh` on PATH and returns the production
@@ -372,6 +374,7 @@ func TestExecGitDefaultBranchReadsRemoteHeadThenFallsBack(t *testing.T) {
 			base := t.TempDir()
 			remote := filepath.Join(base, "origin.git")
 			runStreamGit(t, "", "init", "--bare", "--initial-branch="+branch, remote)
+			testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 			work := filepath.Join(base, "work")
 			runStreamGit(t, "", "clone", remote, work)
 			commitStreamFile(t, work, "a.txt", "a\n", "feat: a")
@@ -401,6 +404,7 @@ func TestExecGitDefaultBranchReadsRemoteHeadThenFallsBack(t *testing.T) {
 		base := t.TempDir()
 		remote := filepath.Join(base, "origin.git")
 		runStreamGit(t, "", "init", "--bare", "--initial-branch=trunk", remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 		work := filepath.Join(base, "work")
 		runStreamGit(t, "", "clone", remote, work)
 		commitStreamFile(t, work, "a.txt", "a\n", "feat: a")
@@ -497,6 +501,7 @@ func TestPushBranchReportsAnUnbornHead(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "empty.git")
 	runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runStreamGit(t, "", "clone", remote, work)
 
@@ -689,6 +694,7 @@ func TestPushBranchReportsAFailedRereadAfterThePush(t *testing.T) {
 	pushRemote := filepath.Join(base, "push.git")
 	for _, remote := range []string{fetchRemote, pushRemote} {
 		runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	}
 	work := filepath.Join(base, "work")
 	runStreamGit(t, "", "clone", fetchRemote, work)
@@ -720,6 +726,7 @@ func TestPushBranchReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runStreamGit(t, "", "clone", remote, work)
 	commitStreamFile(t, work, "base.txt", "base\n", "feat: base")

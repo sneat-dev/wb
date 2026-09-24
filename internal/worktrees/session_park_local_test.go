@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) {
@@ -260,5 +261,6 @@ func useIdentityRemote(t *testing.T, fixture *gitFixture, worktree string) {
 		t.Fatal(err)
 	}
 	gitTest(t, filepath.Dir(fixture.remote), "clone", "--bare", fixture.remote, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	gitTest(t, worktree, "remote", "set-url", "origin", remote)
 }

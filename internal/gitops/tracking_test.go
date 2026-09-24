@@ -1,12 +1,17 @@
 package gitops
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+)
 
 // setupTracking returns a clone of a one-commit origin.
 func setupTracking(t *testing.T) (local, seed string) {
 	t.Helper()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed = t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")

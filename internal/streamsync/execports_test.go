@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // A stream member is persisted before its first push is proven. This exercises
@@ -21,6 +23,7 @@ func TestFastForwardToRemoteAllowsAMissingRemoteStreamBranch(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", remote, work)
 	if err := os.WriteFile(filepath.Join(work, "one.txt"), []byte("one\n"), 0o644); err != nil {
@@ -121,6 +124,7 @@ func newRemoteStreamFixture(t *testing.T) remoteStreamFixture {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	local := filepath.Join(base, "local")
 	runGit(t, "", "clone", remote, local)
 	commitFile(t, local, "one.txt", "one\n", "feat: initial")
@@ -145,11 +149,11 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(),
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
 		"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
+	))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)

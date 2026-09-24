@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -161,6 +162,7 @@ func dependencyReportGitFixture(t *testing.T, manifest, baseManifest, sourceMani
 	canonical = filepath.Join(root, "canonical")
 	source = filepath.Join(root, "source")
 	runDependencyGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runDependencyGit(t, root, "clone", remote, canonical)
 	runDependencyGit(t, canonical, "config", "user.email", "test@example.test")
 	runDependencyGit(t, canonical, "config", "user.name", "Test")
@@ -200,6 +202,7 @@ func runDependencyGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)

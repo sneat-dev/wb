@@ -122,7 +122,7 @@ var gitAutoMaintenanceValues = [3]string{"0", "false", "false"}
 // `git push` spawns as its own child process: git strips every
 // GIT_CONFIG_* variable from the environment it hands to that child (#711's
 // review traced this directly). A bare remote a test pushes to must also be
-// configured with SetGitAutoMaintenanceOff on the repository itself.
+// configured with ConfigureGitAutoMaintenanceOff on the repository itself.
 func GitAutoMaintenanceOffEnv(base []string) []string {
 	count := 0
 	for _, entry := range base {
@@ -161,8 +161,8 @@ func GitAutoMaintenanceOffEnv(base []string) []string {
 //
 // Like GitAutoMaintenanceOffEnv, this does not reach a server-side
 // `receive-pack` a same-host `git push` spawns for a bare remote (see its
-// doc comment); call SetGitAutoMaintenanceOff on that repository directly
-// as well.
+// doc comment); call ConfigureGitAutoMaintenanceOff on that repository
+// directly as well.
 func SetGitAutoMaintenanceOff(t testing.TB) {
 	t.Helper()
 	count := 0
@@ -174,6 +174,25 @@ func SetGitAutoMaintenanceOff(t testing.TB) {
 		t.Setenv("GIT_CONFIG_VALUE_"+strconv.Itoa(count+index), gitAutoMaintenanceValues[index])
 	}
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(count+len(gitAutoMaintenanceKeys)))
+}
+
+// GitAutoMaintenanceOffProcess performs SetGitAutoMaintenanceOff's work for a
+// caller with no *testing.T -- a package's TestMain -- so that every git
+// subprocess the test binary starts inherits gc.auto, maintenance.auto and
+// receive.autogc disabled. That includes git started by the production code
+// under test (a pull, fetch or commit against a fixture clone, or a clone or
+// temporary worktree production creates itself), which no per-command
+// GitAutoMaintenanceOffEnv reaches and no ConfigureGitAutoMaintenanceOff call
+// can name in advance. Like IsolateProcess this is not restored: TestMain's
+// process exits once m.Run() returns. A bare remote pushed to over a local
+// transport still needs ConfigureGitAutoMaintenanceOff (see its doc comment).
+func GitAutoMaintenanceOffProcess() {
+	for _, entry := range GitAutoMaintenanceOffEnv(os.Environ()) {
+		name, value, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GIT_CONFIG_") {
+			_ = os.Setenv(name, value)
+		}
+	}
 }
 
 // ConfigureGitAutoMaintenanceOff runs `git config` inside repoPath to

@@ -1,11 +1,16 @@
 package gitops
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+)
 
 func TestRemoteHasBranches(t *testing.T) {
 	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	local := t.TempDir()
 	git(t, local, "init", "-q", "-b", "main")

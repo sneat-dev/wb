@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -281,6 +282,7 @@ func seedCloneAt(t *testing.T, root, dest string) string {
 	}
 	remote := filepath.Join(remoteHolder, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
 	}

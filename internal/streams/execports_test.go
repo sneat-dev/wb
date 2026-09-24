@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // gitFixture builds a real repository with a base branch and a feature branch,
@@ -23,11 +25,11 @@ func gitFixture(t *testing.T) (root string, git ExecGit) {
 		t.Helper()
 		command := exec.Command("git", args...)
 		command.Dir = root
-		command.Env = append(os.Environ(),
+		command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 			"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
 			"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
 			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		)
+		))
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 		}
@@ -258,23 +260,26 @@ func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
 	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
 		t.Fatalf("init bare remote: %v: %s", err, output)
 	}
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runIn := func(dir string, args ...string) string {
 		t.Helper()
 		command := exec.Command("git", args...)
 		command.Dir = dir
-		command.Env = append(os.Environ(),
+		command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 			"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
 			"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
 			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		)
+		))
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)
 		}
 		return string(output)
 	}
-	if output, err := exec.Command("git", "clone", remote, work).CombinedOutput(); err != nil {
+	cloneCmd := exec.Command("git", "clone", remote, work)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, output)
 	}
 	if err := os.WriteFile(filepath.Join(work, "one.txt"), []byte("one\n"), 0o644); err != nil {
@@ -360,6 +365,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 
 		pushRemote := filepath.Join(t.TempDir(), "push.git")
 		runStreamGit(t, "", "init", "--bare", "--initial-branch=main", pushRemote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, pushRemote)
 		runStreamGit(t, local, "push", pushRemote, "main:main", branch+":"+branch)
 		runStreamGit(t, local, "remote", "set-url", "--push", "origin", pushRemote)
 
@@ -400,6 +406,7 @@ func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing
 		}
 		for _, remote := range pushRemotes {
 			runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+			testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 			runStreamGit(t, local, "push", remote, "main:main", branch+":"+branch)
 			runStreamGit(t, local, "remote", "set-url", "--add", "--push", "origin", remote)
 		}
@@ -541,6 +548,7 @@ func newPublishedStreamFixture(t *testing.T) (local, other string) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	local = filepath.Join(base, "local")
 	runStreamGit(t, "", "clone", remote, local)
 	commitStreamFile(t, local, "base.txt", "base\n", "feat: base")
@@ -556,11 +564,11 @@ func runStreamGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(),
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
 		"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
+	))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)
@@ -589,7 +597,7 @@ func TestPushBranchFailsWhenTheRemoteIsUnreachable(t *testing.T) {
 	command := exec.Command("git", "remote", "add", "origin",
 		"https://x-access-token:"+secret+"@127.0.0.1:1/acme/library.git")
 	command.Dir = root
-	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"))
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("add remote: %v: %s", err, output)
 	}
