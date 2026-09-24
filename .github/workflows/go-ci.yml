@@ -508,11 +508,26 @@ jobs:
           else
             expected=success
           fi
+          # The coverage job is deliberately exempt from the push-event reuse
+          # skip other jobs apply (it is the per-change ratchet's baseline
+          # producer, .github/workflows/go-ci.yml coverage job comment): its
+          # `if:` runs it on every push regardless of REUSE_RESULT, and on a
+          # pull request only when go-scope requires Go validation. Mirror
+          # that condition exactly here instead of reusing $expected, or a
+          # push that reuses validation expects "skipped" while the job
+          # actually runs and concludes "success".
+          if [ "$EVENT_NAME" = "push" ]; then
+            expected_coverage=success
+          else
+            expected_coverage=$expected
+          fi
           for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
             name=${check%%:*}
             result=${check#*:}
             if [ "$name" = "Eligibility" ]; then
               expected_for_check=success
+            elif [ "$name" = "Tests and coverage" ]; then
+              expected_for_check=$expected_coverage
             else
               expected_for_check=$expected
             fi
