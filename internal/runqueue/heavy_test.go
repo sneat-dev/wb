@@ -518,15 +518,31 @@ func TestTryLockHeavyAdmissionReportsContentionWhenAlreadyLocked(t *testing.T) {
 
 // waitForHeavyTicketHeartbeats blocks until the single heavy waiter's
 // ticket has heartbeated at least `count` times, observed via its on-disk
-// UpdatedAt advancing to `count` distinct values. admitHeavy heartbeats its
-// ticket at the very top of every loop iteration, before its admission-lock
-// attempt (heavy.go), so this is a real barrier proving the loop has
-// actually iterated `count` times — never a fixed sleep and a hope that
-// enough iterations happened within it. A prior version of this test's
-// caller used a fixed 350ms wait instead; with that wait forced to 0 the
-// contended lines it was meant to cover went uncovered on every attempt,
-// because releasing the lock could race admitHeavy's very first iteration
-// rather than actually exercising its retry loop.
+// UpdatedAt advancing to `count` distinct values. RegisterForAdmission's
+// initial write is itself the first distinct value, so `count` must be one
+// more than the number of admitHeavy loop iterations the caller actually
+// needs proven: `count=3` proves the ticket's initial registration write
+// (1) plus a first loop iteration's Heartbeat() call (2) plus a second
+// loop iteration's Heartbeat() call (3) — i.e., that the first full
+// iteration (heartbeat, head-of-queue check, lock attempt, contended,
+// sleep, loop back) has actually completed, not merely started. An
+// earlier version of this helper used count=2, which only proves a loop
+// iteration STARTED (it observes the Heartbeat() call at the top of the
+// first iteration, before that same iteration has necessarily reached its
+// lock attempt); with the poll interval below forced to 0, that let the
+// caller's admission-lock release race ahead of the first iteration's
+// actual lock attempt, and heavy.go's contended lines went uncovered 5/5
+// runs despite the test still passing (review finding).
+//
+// admitHeavy heartbeats its ticket at the very top of every loop
+// iteration, before its admission-lock attempt (heavy.go), so this is a
+// real barrier proving the loop has actually iterated — never a fixed
+// sleep and a hope that enough iterations happened within it. A prior
+// version of this test's caller used a fixed 350ms wait instead; with
+// that wait forced to 0 the contended lines it was meant to cover went
+// uncovered on every attempt, because releasing the lock could race
+// admitHeavy's very first iteration rather than actually exercising its
+// retry loop.
 func waitForHeavyTicketHeartbeats(t *testing.T, root string, count int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -553,8 +569,8 @@ func waitForHeavyTicketHeartbeats(t *testing.T, root string, count int, timeout 
 // sleeps and retries" branch (heavy.go:241-245) deterministically: the test
 // seizes the machine-wide admission lock itself before the only heavy
 // waiter even registers, then uses waitForHeavyTicketHeartbeats as a real
-// barrier — proving admitHeavy's loop has actually run at least twice while
-// contended — before releasing the lock. Flaky-coverage found this branch
+// barrier — proving admitHeavy's loop has actually completed a full
+// contended iteration before releasing the lock. Flaky-coverage found this branch
 // covered on only 3 of 8 CI runs, for the same reason as the sibling test
 // above: the only prior coverage came from two goroutines happening to race
 // for the same lock, which only sometimes collided within the retry
@@ -572,10 +588,10 @@ func TestAdmitHeavyWaitsWhileAdmissionLockIsHeldByAnother(t *testing.T) {
 	firstCh, firstTicket := admitHeavyAsync(t, ctx, root, broadArgv, "first")
 	defer firstTicket.Forget()
 
-	waitForHeavyTicketHeartbeats(t, root, 2, 2*time.Second)
-	// The barrier above already proves admitHeavy looped at least twice
-	// while contended; this check adds no additional wait of its own (0
-	// duration) and only confirms the lock is still genuinely held.
+	waitForHeavyTicketHeartbeats(t, root, 3, 2*time.Second)
+	// The barrier above already proves admitHeavy completed a full
+	// contended iteration; this check adds no additional wait of its own
+	// (0 duration) and only confirms the lock is still genuinely held.
 	mustNotAdmitYet(t, firstCh, 0)
 
 	unlockHeavyAdmission(holder)
