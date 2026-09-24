@@ -13,12 +13,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  race:
-    name: Full Go race detector
+  # internal/orchestrate and internal/worktrees each ran within a few minutes
+  # of the 40m go-test timeout (issue #728, run 35974691603: orchestrate hit
+  # the timeout at exactly 2400s, worktrees finished at 2301s) while sharing
+  # the runner's four vCPUs with every other package in ./.... Each gets its
+  # own job so it runs against a runner it is not contending for CPU with;
+  # the remaining packages, which finished in minutes even under that
+  # contention, share the last shard unchanged.
+  race-orchestrate:
+    name: Go race detector (internal/orchestrate)
     runs-on: ubuntu-latest
-    # This deliberately runs outside the release coordinator. It covers every
-    # package, including expensive worktree orchestration races, but never
-    # delays or authorizes a publication. Failures remain ordinary red checks.
+    # This deliberately runs outside the release coordinator. It covers
+    # expensive worktree orchestration races, but never delays or authorizes
+    # a publication. Failures remain ordinary red checks.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -race (internal/orchestrate)
+        run: go test -count=1 -race -timeout 55m ./internal/orchestrate/...
+
+  race-worktrees:
+    name: Go race detector (internal/worktrees)
+    runs-on: ubuntu-latest
+    # See race-orchestrate: same "never delays or authorizes a publication"
+    # semantics, its own runner for the same CPU-contention reason.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -race (internal/worktrees)
+        run: go test -count=1 -race -timeout 55m ./internal/worktrees/...
+
+  race-rest:
+    name: Go race detector (remaining packages)
+    runs-on: ubuntu-latest
+    # See race-orchestrate: same "never delays or authorizes a publication"
+    # semantics. Every package except the two sharded above; unchanged
+    # budget since these all finished in minutes even under the shared-runner
+    # contention that run 35974691603 observed.
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -28,5 +71,37 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: go test -race (all packages)
-        run: go test -count=1 -race -timeout 40m ./...
+      - name: go test -race (all packages except internal/orchestrate and internal/worktrees)
+        run: |
+          set -euo pipefail
+          packages=$(go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$')
+          go test -count=1 -race -timeout 40m $packages
+
+  race-shards-cover-all-packages:
+    name: Full race shard coverage check
+    runs-on: ubuntu-latest
+    # Fast, race-independent guard: the three shards above MUST union back to
+    # exactly `go list ./...`, so a package can never silently fall out of
+    # every shard (and out of the full race sweep) again.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify orchestrate + worktrees + rest == go list ./...
+        run: |
+          set -euo pipefail
+          go list ./... | sort > all.txt
+          {
+            go list ./internal/orchestrate/...
+            go list ./internal/worktrees/...
+            go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$'
+          } | sort -u > union.txt
+          if ! diff -u all.txt union.txt; then
+            echo "::error::race.yml shards do not cover every package; see the diff above" >&2
+            exit 1
+          fi

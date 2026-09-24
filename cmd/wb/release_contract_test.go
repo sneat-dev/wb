@@ -301,15 +301,44 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	})
 	assert("full race permissions", raceWorkflow["permissions"], map[string]any{"contents": "read"})
 	raceJobs, ok := raceWorkflow["jobs"].(map[string]any)
-	if !ok || len(raceJobs) != 1 {
-		t.Fatal("race jobs missing")
+	// The full race sweep is sharded across internal/orchestrate,
+	// internal/worktrees and everything else (issue #728: each of the first
+	// two ran within minutes of the single job's 40m go-test timeout, run
+	// 35974691603), plus a fast job that asserts the three shards still
+	// union back to exactly `go list ./...`.
+	if !ok || len(raceJobs) != 4 {
+		t.Fatalf("race jobs = %v, want race-orchestrate, race-worktrees, race-rest and race-shards-cover-all-packages", raceJobs)
 	}
-	raceJob, ok := raceJobs["race"].(map[string]any)
+	orchestrateJob, ok := raceJobs["race-orchestrate"].(map[string]any)
 	if !ok {
-		t.Fatalf("race job=%v", raceJob)
+		t.Fatalf("race-orchestrate job=%v", orchestrateJob)
 	}
-	assert("full race command", workflowContractTestCommands(t, raceJob), []string{"go test -count=1 -race -timeout 40m ./..."})
-	assert("full race timeout", raceJob["timeout-minutes"], 45)
+	assert("orchestrate race command", workflowContractTestCommands(t, orchestrateJob),
+		[]string{"go test -count=1 -race -timeout 55m ./internal/orchestrate/..."})
+	assert("orchestrate race timeout", orchestrateJob["timeout-minutes"], 60)
+	worktreesJob, ok := raceJobs["race-worktrees"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-worktrees job=%v", worktreesJob)
+	}
+	assert("worktrees race command", workflowContractTestCommands(t, worktreesJob),
+		[]string{"go test -count=1 -race -timeout 55m ./internal/worktrees/..."})
+	assert("worktrees race timeout", worktreesJob["timeout-minutes"], 60)
+	restJob, ok := raceJobs["race-rest"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-rest job=%v", restJob)
+	}
+	assert("rest race command", workflowContractTestCommands(t, restJob), []string{
+		"set -euo pipefail packages=$(go list ./... | grep -v -E '^github\\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$') go test -count=1 -race -timeout 40m $packages",
+	})
+	assert("rest race timeout", restJob["timeout-minutes"], 45)
+	shardCoverageJob, ok := raceJobs["race-shards-cover-all-packages"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-shards-cover-all-packages job=%v", shardCoverageJob)
+	}
+	assert("shard coverage command", workflowContractTestCommands(t, shardCoverageJob), []string{
+		"set -euo pipefail go list ./... | sort > all.txt { go list ./internal/orchestrate/... go list ./internal/worktrees/... go list ./... | grep -v -E '^github\\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$' } | sort -u > union.txt if ! diff -u all.txt union.txt; then echo \"::error::race.yml shards do not cover every package; see the diff above\" >&2 exit 1 fi",
+	})
+	assert("shard coverage timeout", shardCoverageJob["timeout-minutes"], 10)
 	var publishers []string
 	files, err := os.ReadDir(filepath.Dir(goCIPath))
 	if err != nil {
