@@ -51,7 +51,7 @@ func TestWriteExecutableFileNeverExposesAWriteOpenFDDuringAConcurrentFork(t *tes
 		t.Fatalf("seed WriteExecutableFile: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	errs := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {

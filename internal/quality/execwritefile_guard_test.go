@@ -60,8 +60,9 @@ func TestWritesAFakeExecutable(t *testing.T) {
 
 // TestScanExecWriteFileCallSitesIgnoresNonExecutableModes proves the
 // scanner does not flag ordinary data-file writes (0o600/0o644), a dynamic
-// mode expression it cannot classify, or a WriteFile call in a package that
-// merely happens to be named os in a different import.
+// mode expression it cannot classify, a WriteFile call whose receiver
+// package is not literally os, or a literal mode too large for int64 (so
+// strconv.ParseInt itself fails).
 func TestScanExecWriteFileCallSitesIgnoresNonExecutableModes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -73,11 +74,32 @@ import (
 	"testing"
 )
 
+type notOS struct{}
+
+func (notOS) WriteFile(string, []byte, int) error { return nil }
+
+func threeArgs(a, b, c int) int { return a + b + c }
+
 func TestWritesOrdinaryDataFiles(t *testing.T) {
 	_ = os.WriteFile("data.json", []byte("{}"), 0o600)
 	_ = os.WriteFile("wide.txt", []byte("x"), 0o644)
 	mode := os.FileMode(0o755)
 	_ = os.WriteFile("dynamic", []byte("x"), mode)
+	var other notOS
+	_ = other.WriteFile("script", []byte("#!/bin/sh\n"), 0o755)
+	_ = os.WriteFile("overflow", []byte("x"), 99999999999999999999999999)
+	_ = threeArgs(1, 2, 3)
+}
+`)
+	writeQualityFile(t, filepath.Join(dir, ".hidden", "fixture_test.go"), `package hidden
+
+import (
+	"os"
+	"testing"
+)
+
+func TestWritesAFakeExecutableUnderAHiddenDir(t *testing.T) {
+	_ = os.WriteFile("script", []byte("#!/bin/sh\n"), 0o755)
 }
 `)
 	violations, err := ScanExecWriteFileCallSites(dir)
