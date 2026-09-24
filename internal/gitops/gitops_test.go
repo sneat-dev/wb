@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestIsTransientPullFailure(t *testing.T) {
@@ -46,9 +48,9 @@ func git(t testing.TB, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
@@ -82,6 +84,7 @@ func TestLocalState(t *testing.T) {
 func TestPull(t *testing.T) {
 	remoteDir := t.TempDir()
 	git(t, remoteDir, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remoteDir)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
@@ -95,6 +98,7 @@ func TestPull(t *testing.T) {
 
 	clone := filepath.Join(t.TempDir(), "clone")
 	cloneCmd := exec.Command("git", "clone", "-q", remoteDir, clone)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
@@ -221,9 +225,9 @@ func TestStatusConflict(t *testing.T) {
 
 	mergeCmd := exec.Command("git", "merge", "other")
 	mergeCmd.Dir = dir
-	mergeCmd.Env = append(os.Environ(),
+	mergeCmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t"))
 	_, _ = mergeCmd.CombinedOutput() // expected to fail with a conflict
 
 	s, err := Status(dir)

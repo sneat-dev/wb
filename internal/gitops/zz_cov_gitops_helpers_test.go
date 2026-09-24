@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // lgCovGitIdentity pins git's identity and configuration to this test's own
@@ -50,6 +52,7 @@ func lgCovSeededClone(t *testing.T) (origin, clone string) {
 
 	origin = t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	gitIn(t, seed, "init", "-q", "-b", "main")

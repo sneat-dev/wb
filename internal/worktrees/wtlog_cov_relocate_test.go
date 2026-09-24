@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestWtLogCovRelocateValidation(t *testing.T) {
@@ -344,6 +346,7 @@ func TestWtLogCovDisposableDestinationReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	writer := filepath.Join(root, "writer")
 	gitTest(t, root, "clone", remote, writer)
 	configureGitUser(t, writer)

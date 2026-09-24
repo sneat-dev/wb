@@ -108,6 +108,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | hidden `skills hook run` | rejected | rejected | rejected | yes |
 | `commands` | rejected | rejected | rejected | yes |
 
+`branch list --with-prs` opts into GitHub PR history for selected remote branch rows, including in-use branches; protected, unreadable, and retired rows are excluded. Its default list path does not query PRs; `branch cleanup` checks open PRs for eligible remote deletion candidates.
+
 ## `archive clean` command flags
 
 `wb archive clean` plans by default. `--apply` deletes an archived clone only

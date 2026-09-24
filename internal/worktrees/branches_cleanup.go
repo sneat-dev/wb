@@ -150,6 +150,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		Receipts: normalized.Receipts, AbsorbedBy: normalized.AbsorbedBy,
 		Repository: normalized.Repository, Branch: normalized.Branch,
 		SupersededBy: normalized.SupersededBy,
+		Cleanup:      true,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
@@ -234,6 +235,8 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 			result.SkipReason = "remote pull-request evidence unavailable; refusing every remote deletion in this run"
 		case entry.Scope == BranchScopeRemote && entry.OpenPullRequest != nil:
 			result.SkipReason = fmt.Sprintf("branch is the head of open pull request %s", entry.OpenPullRequest.URL)
+		case entry.Scope == BranchScopeRemote && entry.OpenBasePullRequest != nil:
+			result.SkipReason = fmt.Sprintf("branch is the base of open pull request %s", entry.OpenBasePullRequest.URL)
 		default:
 			result.Eligible = true
 			result.Outcome = "planned"
@@ -567,13 +570,17 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 	if !recheckDeletionEvidence(ctx, repositoryPath, observedSHA, freshTarget, result) {
 		return
 	}
-	pullRequests, err := githubPullRequests(ctx, repositoryPath, result.Repository, observedSHA)
-	if err != nil {
-		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck pull-request evidence: %v", err)
+	prEvidence := openBranchPullRequests(ctx, repositoryPath, result.Repository, result.Branch)
+	if prEvidence.err != nil {
+		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck pull-request evidence: %v", prEvidence.err)
 		return
 	}
-	if open, _ := matchingPullRequests(pullRequests, result.Repository, result.Base, result.Branch, observedSHA); open != nil {
-		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the head of open pull request %s", open.URL)
+	if prEvidence.openHead != nil {
+		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the head of open pull request %s", prEvidence.openHead.URL)
+		return
+	}
+	if prEvidence.openBase != nil {
+		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the base of open pull request %s", prEvidence.openBase.URL)
 		return
 	}
 	if result.SupersededAtOrigin {

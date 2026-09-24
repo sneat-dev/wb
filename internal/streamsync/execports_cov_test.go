@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // stCovRequireGit skips only where Git itself is absent: the production port
@@ -848,6 +850,7 @@ func TestPushWithLeaseReportsAFailedRereadAfterThePush(t *testing.T) {
 	pushRemote := filepath.Join(base, "push.git")
 	for _, remote := range []string{fetchRemote, pushRemote} {
 		runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	}
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", fetchRemote, work)
@@ -876,6 +879,7 @@ func TestPushWithLeaseReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", remote, work)
 	commitFile(t, work, "base.txt", "base\n", "feat: base")

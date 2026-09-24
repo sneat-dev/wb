@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -400,6 +402,7 @@ func TestCreateSessionCheckpointUsesAuthenticatedExactPushURLDespiteOriginConfig
 		t.Fatal(err)
 	}
 	gitTest(t, filepath.Dir(wrongRemote), "init", "--bare", "--initial-branch=main", wrongRemote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, wrongRemote)
 	options := SessionCheckpointOptions{
 		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
 		TargetMachine: "hetzner-vm1", HandoffID: "handoff-push-toctou", SuccessorWBSessionID: "wbs-successor",
@@ -454,9 +457,26 @@ func newSessionCheckpointFixture(t *testing.T, operation string) (*gitFixture, s
 
 func neutralizeGitSigning(t *testing.T) {
 	t.Helper()
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgSign")
-	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+	// Append to the process's GIT_CONFIG_* sequence rather than resetting it:
+	// TestMain already carries the disabled gc/maintenance settings there.
+	for _, entry := range gitConfigEnvWith(os.Getenv("GIT_CONFIG_COUNT"), "commit.gpgSign", "false") {
+		name, value, _ := strings.Cut(entry, "=")
+		t.Setenv(name, value)
+	}
+}
+
+// gitConfigEnvWith returns the GIT_CONFIG_KEY_N/VALUE_N/COUNT entries that
+// append key=value after an existing sequence of length count.
+func gitConfigEnvWith(count, key, value string) []string {
+	index, err := strconv.Atoi(count)
+	if err != nil || index < 0 {
+		index = 0
+	}
+	return []string{
+		"GIT_CONFIG_KEY_" + strconv.Itoa(index) + "=" + key,
+		"GIT_CONFIG_VALUE_" + strconv.Itoa(index) + "=" + value,
+		"GIT_CONFIG_COUNT=" + strconv.Itoa(index+1),
+	}
 }
 
 func remoteBranchTip(t *testing.T, worktree, branch string) string {
@@ -486,6 +506,7 @@ func makeRemoteBranchAhead(t *testing.T, fixture *gitFixture, worktree string, _
 	gitTest(t, worktree, "push", "-u", "origin", "HEAD:refs/heads/"+branch)
 	writer := filepath.Join(filepath.Dir(fixture.projectsRoot), "session-move-remote-writer")
 	command := exec.Command("git", "clone", "--branch", branch, fixture.remote, writer)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("clone remote writer: %v\n%s", err, output)
 	}

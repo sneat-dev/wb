@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // addRepositoryToFixture gives a fixture a second (third, ...) canonical clone
@@ -23,6 +25,7 @@ func addRepositoryToFixture(t *testing.T, fixture *gitFixture, repository string
 	root := filepath.Dir(fixture.projectsRoot)
 	remote := filepath.Join(root, repository+"-remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(fixture.projectsRoot, "acme", repository)
 	gitTest(t, root, "clone", remote, canonical)
 	configureGitUser(t, canonical)
