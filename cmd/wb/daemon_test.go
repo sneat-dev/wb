@@ -840,7 +840,14 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 	alive := map[int]bool{}
 	pid := 900
 	deps := daemonDependencies{
-		now:        func() time.Time { return time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC) },
+		now: func() time.Time { return time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC) },
+		// lockNow defaults to the real, monotonic clock (like production),
+		// not the fixed now above: stateLock's contention tests that never
+		// override this field must still be bounded by a genuine
+		// daemonReadyTimeout deadline rather than spinning forever, so a
+		// test that forgets to release the lock fails in seconds instead of
+		// hanging until the suite's own timeout (sneat-dev/wb#700 review).
+		lockNow:    time.Now,
 		executable: func() (string, error) { return executable, nil },
 		alive:      func(pid int) bool { return alive[pid] },
 		stop:       func(pid int, _ daemon.Supervisor, _ string) error { alive[pid] = false; return nil },

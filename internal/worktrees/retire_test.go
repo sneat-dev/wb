@@ -90,6 +90,71 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	}
 }
 
+func TestRetireBareRemotePreservesSourceTagAndDeletesOriginalBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-tag", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "push", "-u", "origin", "retire-tag")
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-tag", Preserve: "tag", ArchiveRemote: archive, Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Preserve != "tag" || result.Phase != "complete" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/tags/"+result.RetiredRef); !strings.HasPrefix(got, result.SourceSHA+"\t") {
+		t.Fatalf("retired tag = %q", got)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/"+result.RetiredRef); got != "" {
+		t.Fatalf("retired branch = %q", got)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retire-tag"); got != "" {
+		t.Fatalf("original branch remains = %q", got)
+	}
+}
+
+func TestRetireTagModeRejectsResumeAsBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-mode", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "push", "-u", "origin", "retire-mode")
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-mode", Preserve: "tag", ArchiveRemote: archive, Apply: true, RemoteOwnership: retireAllowRemoteOwner,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+		afterPhase: func(phase string) error {
+			if phase == "source_published" {
+				return errors.New("stop")
+			}
+			return nil
+		},
+	}
+	if _, err := Retire(context.Background(), options); err == nil {
+		t.Fatal("expected interruption")
+	}
+	options.Preserve, options.afterPhase = "branch", nil
+	if _, err := Retire(context.Background(), options); err == nil || !strings.Contains(err.Error(), "receipt conflicts") {
+		t.Fatalf("mode switch error = %v", err)
+	}
+}
+
 func TestRetireResumesAfterRemotePhases(t *testing.T) {
 	for _, phase := range []string{"source_committed", "source_published", "archive_published", "original_delete_intent", "original_delete_pushed", "original_deleted", "worktree_removed"} {
 		t.Run(phase, func(t *testing.T) {

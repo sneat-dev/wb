@@ -34,7 +34,7 @@ func newBranchCmd() *cobra.Command {
 func newBranchCountCmd() *cobra.Command {
 	var base, scope, only, format, repository, org, name string
 	var olderThan time.Duration
-	command := &cobra.Command{Use: "count", Short: "Count active and retired branch refs in locally discovered clones", Args: cobra.NoArgs,
+	command := &cobra.Command{Use: "count", Short: "Count active branches plus retired branch and tag refs in locally discovered clones", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
 				return err
@@ -346,7 +346,7 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 		return printRetiredBranchSummary(out, outcome)
 	}
 	currentRepository := ""
-	if _, err := fmt.Fprintln(out, "  REPOSITORY         BRANCH                           SHORT SHA    STATUS      LAST COMMIT           AUTHOR           TITLE                    SCOPE    EVIDENCE"); err != nil {
+	if _, err := fmt.Fprintln(out, "  REPOSITORY         REF                              KIND     SHORT SHA    STATUS      LAST COMMIT           AUTHOR           TITLE                    SCOPE    EVIDENCE"); err != nil {
 		return err
 	}
 	for _, entry := range outcome.Entries {
@@ -360,8 +360,12 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 		if !entry.CommitterDate.IsZero() {
 			date = entry.CommitterDate.UTC().Format(time.RFC3339)
 		}
-		if _, err := fmt.Fprintf(out, "  %-18s %-32s %-12s %-11s %-21s %-16s %-24s %-8s %s\n",
-			entry.Repository, entry.Branch, entry.ShortSHA, entry.Disposition, date, entry.Author, entry.Title, entry.Scope, entry.Evidence); err != nil {
+		kind := entry.RefKind
+		if kind == "" {
+			kind = "branch"
+		}
+		if _, err := fmt.Fprintf(out, "  %-18s %-32s %-8s %-12s %-11s %-21s %-16s %-24s %-8s %s\n",
+			entry.Repository, entry.Branch, kind, entry.ShortSHA, entry.Disposition, date, entry.Author, entry.Title, entry.Scope, entry.Evidence); err != nil {
 			return err
 		}
 	}
@@ -375,10 +379,10 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 }
 
 func printRetiredBranchSummary(out io.Writer, outcome worktrees.BranchListOutcome) error {
-	if outcome.RetiredBranches == 0 {
+	if outcome.RetiredBranches == 0 && outcome.RetiredTagNames == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%s); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
+	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%s), tags %d (refs local=%d remote=%s); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome), outcome.RetiredTagNames, outcome.RetiredTags["local"], retiredRemoteTagCount(outcome))
 	return err
 }
 
@@ -389,7 +393,7 @@ func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error 
 	if err := printDispositionTotals(out, outcome.Totals); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %s remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome))
+	_, err := fmt.Fprintf(out, "retired branches %d names (%d local refs, %s remote refs)\nretired tags     %d names (%d local refs, %s remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], retiredRemoteRefCount(outcome), outcome.RetiredTagNames, outcome.RetiredTags["local"], retiredRemoteTagCount(outcome))
 	return err
 }
 
@@ -407,6 +411,16 @@ func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {
 		return "unavailable"
 	}
 	if count, ok := outcome.RetiredRefs[worktrees.BranchScopeRemote]; ok {
+		return fmt.Sprintf("%d", count)
+	}
+	return "0"
+}
+
+func retiredRemoteTagCount(outcome worktrees.BranchListOutcome) string {
+	if outcome.RetiredRemoteUnavailable {
+		return "unavailable"
+	}
+	if count, ok := outcome.RetiredTags[worktrees.BranchScopeRemote]; ok {
 		return fmt.Sprintf("%d", count)
 	}
 	return "0"
