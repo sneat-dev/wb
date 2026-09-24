@@ -17104,10 +17104,10 @@
           "status": "Full",
           "commands": [{
             "path": "wb worktree retire",
-            "flags": ["--apply", "--format", "--json", "--message", "--mode", "--initiator"],
+            "flags": ["--apply", "--format", "--json", "--message", "--preserve", "--mode", "--initiator"],
             "modes": [
               "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
-              "Pushes the exact source commit to a retired/* ref in the original repository and actual plain Work Log files and worktree metadata to the configured private organization retirement repository",
+              "Preserves the exact source commit at retired/* as a branch by default, or as refs/tags/retired/* with --preserve=tag, then archives actual plain Work Log files and worktree metadata in the configured private organization retirement repository",
               "Verifies both remote receipts before deleting the original remote ref with an exact lease and removing the local worktree and branch",
               "Refuses open pull requests, competing ownership, changed refs, and unavailable or public retirement repositories; interrupted applies resume from durable intent"
             ]
@@ -17116,7 +17116,7 @@
         },
         "help": {
           "status": "Full",
-          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply", "--mode", "--initiator"]}],
+          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply", "--preserve", "--mode", "--initiator"]}],
           "limitation": null
         },
         "ai_skill": {
