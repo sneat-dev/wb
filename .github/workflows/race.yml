@@ -13,20 +13,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # internal/orchestrate and internal/worktrees each ran within a few minutes
-  # of the 40m go-test timeout (issue #728, run 35974691603: orchestrate hit
-  # the timeout at exactly 2400s, worktrees finished at 2301s) while sharing
-  # the runner's four vCPUs with every other package in ./.... Each gets its
-  # own job so it runs against a runner it is not contending for CPU with;
-  # the remaining packages, which finished in minutes even under that
-  # contention, share the last shard unchanged.
+  # internal/orchestrate and internal/worktrees simply take longer than 40m
+  # under -race than the rest of the module (issue #728: orchestrate hit the
+  # shared 40m go-test timeout in run 35974691603 at exactly 2400s; measured
+  # in isolation on their own runners in run 36051478734, orchestrate's own
+  # `go test` took 2887s/48m07s and worktrees took 2399.873s/40m — worktrees
+  # got no faster running alone, so this is not CPU contention relief, it is
+  # giving each of the two slow packages its own -timeout budget instead of
+  # sharing one 40m budget with every other package in ./...). Each gets its
+  # own job, with headroom above its measured time (PR #731 review B2); the
+  # remaining, much faster packages share the last shard unchanged.
+  #
+  # All three test jobs and the coverage-check job below get their package
+  # list from .github/scripts/race-shards.sh, the single source of truth for
+  # shard membership (review B1): a job can never select a package the
+  # coverage check does not know about, because both read the same script.
   race-orchestrate:
     name: Go race detector (internal/orchestrate)
     runs-on: ubuntu-latest
     # This deliberately runs outside the release coordinator. It covers
     # expensive worktree orchestration races, but never delays or authorizes
     # a publication. Failures remain ordinary red checks.
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -36,14 +44,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: go test -race (internal/orchestrate)
-        run: go test -count=1 -race -timeout 55m ./internal/orchestrate/...
+        run: |
+          set -euo pipefail
+          packages=$(.github/scripts/race-shards.sh orchestrate)
+          go test -count=1 -race -timeout 80m $packages
 
   race-worktrees:
     name: Go race detector (internal/worktrees)
     runs-on: ubuntu-latest
     # See race-orchestrate: same "never delays or authorizes a publication"
-    # semantics, its own runner for the same CPU-contention reason.
-    timeout-minutes: 60
+    # semantics; its own job so its -timeout is not shared with every other
+    # package.
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -53,15 +65,19 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: go test -race (internal/worktrees)
-        run: go test -count=1 -race -timeout 55m ./internal/worktrees/...
+        run: |
+          set -euo pipefail
+          packages=$(.github/scripts/race-shards.sh worktrees)
+          go test -count=1 -race -timeout 70m $packages
 
   race-rest:
     name: Go race detector (remaining packages)
     runs-on: ubuntu-latest
     # See race-orchestrate: same "never delays or authorizes a publication"
     # semantics. Every package except the two sharded above; unchanged
-    # budget since these all finished in minutes even under the shared-runner
-    # contention that run 35974691603 observed.
+    # budget, since these all measured well under it (cmd/wb, the slowest
+    # package here, took 601-651s against this 40m/45m budget in runs
+    # 35974691603 and 36051478734).
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -74,15 +90,20 @@ jobs:
       - name: go test -race (all packages except internal/orchestrate and internal/worktrees)
         run: |
           set -euo pipefail
-          packages=$(go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$')
+          packages=$(.github/scripts/race-shards.sh rest)
           go test -count=1 -race -timeout 40m $packages
 
   race-shards-cover-all-packages:
     name: Full race shard coverage check
     runs-on: ubuntu-latest
-    # Fast, race-independent guard: the three shards above MUST union back to
-    # exactly `go list ./...`, so a package can never silently fall out of
-    # every shard (and out of the full race sweep) again.
+    # Fast, race-independent guard that reads .github/scripts/race-shards.sh
+    # itself (the same script the three jobs above call), so it fails if a
+    # future edit either leaves a package out of every shard or puts it in
+    # more than one: it asserts BOTH that the three shards union back to
+    # exactly `go list ./...` AND that no package appears in more than one
+    # shard (review B1 — a guard that recomputes its own copy of the shard
+    # lists, rather than reading the shared script, can never actually
+    # fail).
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -92,15 +113,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify orchestrate + worktrees + rest == go list ./...
+      - name: Verify race-shards.sh's shards are disjoint and cover go list ./... exactly
         run: |
           set -euo pipefail
           go list ./... | sort > all.txt
           {
-            go list ./internal/orchestrate/...
-            go list ./internal/worktrees/...
-            go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees)$'
-          } | sort -u > union.txt
+            .github/scripts/race-shards.sh orchestrate
+            .github/scripts/race-shards.sh worktrees
+            .github/scripts/race-shards.sh rest
+          } > shards.txt
+          duplicates=$(sort shards.txt | uniq -d || true)
+          if [ -n "$duplicates" ]; then
+            echo "::error::race.yml shards overlap; a package must belong to exactly one shard:" >&2
+            printf '%s\n' "$duplicates" >&2
+            exit 1
+          fi
+          sort -u shards.txt > union.txt
           if ! diff -u all.txt union.txt; then
             echo "::error::race.yml shards do not cover every package; see the diff above" >&2
             exit 1
