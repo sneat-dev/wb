@@ -8681,7 +8681,7 @@
               ],
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
-                "--changed appends the Go packages a local diff touches (staged/unstaged/committed since the merge base with --target, default: detected default branch) to the command, scoped to the Go module containing cwd; untracked files are never included; nothing changed prints that and exits 0 without running; -args or a nested -- in the command is rejected (issue #570, task-19).",
+                "--changed appends the Go packages a local diff touches (staged/unstaged/committed since the merge base with --target, default: detected default branch) to the command, scoped to the Go module containing cwd, excluding any module nested further inside it; untracked files are never included; nothing changed prints that and exits 0 without running; -args, --args, or a nested -- in the command is rejected (issue #570, task-19).",
                 "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
                 "An exact retry after a lost file-bridge response reattaches to the unresolved envelope-bound idempotency key; --idempotency-key distinguishes intentional identical submissions.",
                 "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",

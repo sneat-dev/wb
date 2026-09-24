@@ -206,8 +206,24 @@ func TestRunChangedRejectsArgsFlagInCommand(t *testing.T) {
 	if code != exitUsage {
 		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "cannot be combined with -args or a nested -- in the command") {
+	if !strings.Contains(stderr.String(), "cannot be combined with -args/--args or a nested -- in the command") {
 		t.Errorf("stderr = %q, want an explanation naming -args and --", stderr.String())
+	}
+}
+
+// TestRunChangedRejectsDoubleDashArgsFlagInCommand proves --changed refuses
+// a command containing "--args" the same way it refuses "-args": cmd/go
+// treats the two identically (both start the test binary's own argument
+// list), so "--args" would let the appended package patterns silently reach
+// the test binary instead of selecting packages (review-726 finding L3).
+func TestRunChangedRejectsDoubleDashArgsFlagInCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--changed", "--target", "main", "--", "go", "test", "--args", "-v"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cannot be combined with -args/--args or a nested -- in the command") {
+		t.Errorf("stderr = %q, want an explanation naming -args, --args and --", stderr.String())
 	}
 }
 
@@ -221,7 +237,7 @@ func TestRunChangedRejectsNestedDashDashInCommand(t *testing.T) {
 	if code != exitUsage {
 		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "cannot be combined with -args or a nested -- in the command") {
+	if !strings.Contains(stderr.String(), "cannot be combined with -args/--args or a nested -- in the command") {
 		t.Errorf("stderr = %q, want an explanation naming -args and --", stderr.String())
 	}
 }

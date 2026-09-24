@@ -22,10 +22,18 @@ type ChangedPackagesResult struct {
 	// package patterns the diff touches ("." for workingDir's own module
 	// root, "./internal/foo" or "../sibling" otherwise, always relative to
 	// workingDir). A directory outside the Go module that contains
-	// workingDir, a directory the diff empties out entirely (fully deleted
-	// or moved away), and a directory the go tool itself would never build
-	// (no buildable *.go file left in it, a "testdata" directory, or a
-	// "_"/"."-prefixed path segment) are never included.
+	// workingDir, a directory belonging to a DIFFERENT Go module nested
+	// inside that module (its own go.mod below workingDir's module root —
+	// a tools/, examples/, or <product>/backend-style subtree), a directory
+	// the diff empties out entirely (fully deleted or moved away), and a
+	// directory the go tool itself would never build (no buildable *.go
+	// file left in it, a "testdata"/"vendor" directory, or a "_"/"."-prefixed
+	// path segment) are never included. A directory whose only *.go files
+	// are excluded by build constraints on the current host (an
+	// architecture- or OS-specific file that does not match GOOS/GOARCH
+	// here) is not detected as such and may still be included — that would
+	// need actually loading the build graph, which this function
+	// deliberately does not do.
 	Packages []string
 }
 
@@ -70,7 +78,29 @@ func ChangedPackages(ctx context.Context, workingDir, target string) (ChangedPac
 	if err != nil {
 		return ChangedPackagesResult{}, err
 	}
+	// EvalSymlinks resolves workingDir to the same physical path `git
+	// rev-parse --show-toplevel` (below) already reports: on a macOS
+	// checkout under /tmp or /var (symlinks to /private/tmp, /private/var)
+	// or any other symlinked directory, os.Getwd/filepath.Abs return the
+	// logical, non-resolved path, while Git always resolves through
+	// symlinks first. Left unresolved, moduleRelativePath would find every
+	// changed directory "outside" the module (since the two paths share no
+	// usable prefix) and silently return zero packages — a false green, not
+	// an error (review-726 finding B2a).
+	workingDir, err = filepath.EvalSymlinks(workingDir)
+	if err != nil {
+		return ChangedPackagesResult{}, err
+	}
 	gitRoot, err := GitTopLevel(ctx, workingDir)
+	if err != nil {
+		return ChangedPackagesResult{}, err
+	}
+	// Git already reports a resolved, symlink-free path, but resolving it
+	// again is cheap and keeps every later comparison against gitRoot
+	// (findModuleRoot's ceiling check, changedCommandPatterns' path joins)
+	// working from the same physical path workingDir now uses, rather than
+	// depending on that being true only by convention.
+	gitRoot, err = filepath.EvalSymlinks(gitRoot)
 	if err != nil {
 		return ChangedPackagesResult{}, err
 	}
@@ -132,6 +162,12 @@ func packageDirsFromFiles(files map[string]bool, goOnly bool) map[string]bool {
 //   - outside the Go module that contains workingDir (moduleRoot) — a
 //     sibling module elsewhere in the same repository is not this
 //     invocation's concern;
+//   - inside moduleRoot, but itself belonging to a DIFFERENT, nested Go
+//     module (its own go.mod somewhere between it and moduleRoot) — `go
+//     test`/`go vet` invoked from moduleRoot cannot build a package that
+//     belongs to a different module at all ("main module does not contain
+//     package"), so a pattern naming one would just fail the command
+//     outright, not report on the diff;
 //   - the directory no longer exists at all (fully deleted, or every file
 //     moved elsewhere) — mirrors the pre-commit hook template's own
 //     `[ -d "$package" ]` check; note a `git mv` leaves its old, now-empty
@@ -153,6 +189,9 @@ func changedCommandPatterns(gitRoot, moduleRoot, workingDir string, dirs map[str
 		}
 		moduleRelativeDir, ok := moduleRelativePath(moduleRoot, absoluteDir)
 		if !ok {
+			continue
+		}
+		if isUnderNestedModule(moduleRoot, absoluteDir) {
 			continue
 		}
 		info, err := os.Stat(absoluteDir)
@@ -182,13 +221,14 @@ func changedCommandPatterns(gitRoot, moduleRoot, workingDir string, dirs map[str
 
 // hasGoToolIgnoredSegment reports whether any path segment of a module-root
 // relative directory is one the go tool itself always ignores: a directory
-// literally named "testdata", or one whose name starts with "_" or ".".
+// literally named "testdata" or "vendor", or one whose name starts with "_"
+// or ".".
 func hasGoToolIgnoredSegment(moduleRelativeDir string) bool {
 	if moduleRelativeDir == "." {
 		return false
 	}
 	for _, segment := range strings.Split(filepath.ToSlash(moduleRelativeDir), "/") {
-		if segment == "testdata" || strings.HasPrefix(segment, "_") || strings.HasPrefix(segment, ".") {
+		if segment == "testdata" || segment == "vendor" || strings.HasPrefix(segment, "_") || strings.HasPrefix(segment, ".") {
 			return true
 		}
 	}
@@ -196,18 +236,26 @@ func hasGoToolIgnoredSegment(moduleRelativeDir string) bool {
 }
 
 // hasBuildableGoFile reports whether absoluteDir currently contains at
-// least one "*.go" file (test or not) — the minimum the go tool needs to
-// treat it as a package at all, rather than fail with "no Go files in
-// <dir>" against a directory a diff left behind empty of Go source.
+// least one "*.go" file (test or not) the go tool would actually build —
+// the minimum it needs to treat the directory as a package at all, rather
+// than fail with "no Go files in <dir>" against a directory a diff left
+// behind empty of Go source. A file whose own name starts with "_" or "."
+// does not count: the go tool ignores those files even though they end in
+// ".go", the same way it ignores a "_"/"."-prefixed directory.
 func hasBuildableGoFile(absoluteDir string) bool {
 	entries, err := os.ReadDir(absoluteDir)
 	if err != nil {
 		return false
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
-			return true
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
 		}
+		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -218,9 +266,8 @@ func hasBuildableGoFile(absoluteDir string) bool {
 // of different absoluteness, which never occurs through ChangedPackages'
 // own call site; exercised directly in changed_packages_test.go). Computing
 // this once, here, means "is absoluteDir inside the module" and "what is
-// its module-relative path" can never disagree with each other the way two
-// separate filepath.Rel calls over the same inputs safely could not anyway,
-// but redundantly.
+// its module-relative path" can never disagree with each other, and avoids
+// a second, redundant filepath.Rel call over the same two inputs.
 func moduleRelativePath(moduleRoot, absoluteDir string) (rel string, ok bool) {
 	rel, err := filepath.Rel(moduleRoot, absoluteDir)
 	if err != nil {
@@ -267,7 +314,7 @@ func findModuleRoot(startDir, ceilingDir string) (string, error) {
 		if info, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !info.IsDir() {
 			return dir, nil
 		}
-		if dir == ceilingDir {
+		if samePath(dir, ceilingDir) {
 			break
 		}
 		parent := filepath.Dir(dir)
@@ -277,6 +324,42 @@ func findModuleRoot(startDir, ceilingDir string) (string, error) {
 		dir = parent
 	}
 	return "", fmt.Errorf("no go.mod found from %s up to the repository root %s", startDir, ceilingDir)
+}
+
+// isUnderNestedModule reports whether absoluteDir, or any directory
+// strictly between it and moduleRoot (walking up, exclusive of moduleRoot
+// itself), contains its own go.mod — meaning absoluteDir belongs to a
+// second Go module nested inside moduleRoot's subtree, not to moduleRoot's
+// own module (review-726 finding B3). The caller has already established
+// absoluteDir is inside moduleRoot (moduleRelativePath); a directory that
+// equals moduleRoot itself is moduleRoot's own package, never "nested".
+func isUnderNestedModule(moduleRoot, absoluteDir string) bool {
+	dir := absoluteDir
+	for !samePath(dir, moduleRoot) {
+		if info, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !info.IsDir() {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	return false
+}
+
+// samePath reports whether a and b name the same directory once each is
+// cleaned. Git and the go/filepath standard library can disagree on
+// separator style for otherwise-identical paths — on Windows, `git
+// rev-parse --show-toplevel` prints forward slashes ("C:/repo") while
+// filepath.Abs/os.Getwd use backslashes ("C:\repo") — so a plain string `==`
+// comparison between a git-reported path and a filepath-built one can be
+// false for the same directory. filepath.Clean accepts either separator as
+// input on Windows and normalizes to the OS-native one, making the
+// comparison correct there too; on POSIX systems it is equivalent to a
+// direct comparison of two already-clean absolute paths.
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // GitTopLevel resolves the repository's top-level working-tree directory

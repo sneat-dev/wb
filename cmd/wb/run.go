@@ -95,15 +95,18 @@ issue #570 / spec/plans/coverage-to-100/README.md task-19): staged,
 unstaged, and already-committed changes since the merge base, combined,
 scoped to the Go module that contains the current directory (a nested
 module such as <product>/backend/go.mod works the same as a repository
-whose module sits at its root) — untracked files are never included,
-because ` + "`git diff`" + ` itself never reports them. The command runs once
-with those package patterns appended (for example "go test ./internal/foo
-./cmd/wb"); when nothing changed, WB prints that and exits 0 without running
-the command at all. This is a smoke check scoped to what changed, never a
-prediction of a full/merged coverage or vet run. The package patterns are
-always the last arguments: --changed is rejected outright if the command
-itself contains -args or a nested --, rather than silently sending them to
-the wrong place.`,
+whose module sits at its root; a DIFFERENT Go module nested further inside
+that one, its own go.mod below the current directory, is excluded, since
+the go tool cannot build a package belonging to a different module) —
+untracked files are never included, because ` + "`git diff`" + ` itself
+never reports them. The command runs once with those package patterns
+appended (for example "go test ./internal/foo ./cmd/wb"); when nothing
+changed, WB prints that and exits 0 without running the command at all.
+This is a smoke check scoped to what changed, never a prediction of a
+full/merged coverage or vet run. The package patterns are always the last
+arguments: --changed is rejected outright if the command itself contains
+-args, --args, or a nested --, rather than silently sending them to the
+wrong place.`,
 		Example: `# Discover configured recipes
 wb run --list
 

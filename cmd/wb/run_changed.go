@@ -25,8 +25,11 @@ import (
 // never part of what "changed" here.
 func expandChangedRunArgs(cmd *cobra.Command, args []string, target string) ([]string, error) {
 	for _, argument := range args {
-		if argument == "-args" || argument == "--" {
-			return nil, usageError("--changed cannot be combined with -args or a nested -- in the command: WB appends the changed package patterns immediately after the given command and its own flags, and a -args/-- boundary would instead send them to the test binary or beyond")
+		// cmd/go treats "--args" identically to "-args" (both start the test
+		// binary's own argument list), so both must be rejected the same way
+		// (review-726 finding L3).
+		if argument == "-args" || argument == "--args" || argument == "--" {
+			return nil, usageError("--changed cannot be combined with -args/--args or a nested -- in the command: WB appends the changed package patterns immediately after the given command and its own flags, and a -args/--args/-- boundary would instead send them to the test binary or beyond")
 		}
 	}
 	repoRoot, err := os.Getwd()
