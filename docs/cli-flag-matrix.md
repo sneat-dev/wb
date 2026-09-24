@@ -7,6 +7,20 @@ Leaf help hides inherited selectors that the selected command would reject.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
+`coverage --changed` (the per-change coverage ratchet,
+spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
+`--target <branch-or-ref>` (required with `--changed`), `--baseline-file`, and
+`--baseline-timeout` all apply only to `coverage`, are rejected without
+`--changed`, and are incompatible with `--fleet`, `--resume`, and
+`--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
+`json`.
+
+`coverage baseline <coverage-profile>` (the per-change coverage ratchet's
+baseline publisher) is also command-specific: `--module` (the Go module
+root, default `.`), `--sha` (the commit the profile was measured at, for
+traceability), and `--out` (the output baseline JSON path, default
+`coverage-baseline.json`).
+
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
 acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
