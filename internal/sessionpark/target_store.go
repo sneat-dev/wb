@@ -549,10 +549,20 @@ func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
 	return nil
 }
 
+// openOrCreateRegularAtBeforeCreate is a test-only seam. It is a no-op in
+// production and runs after openOrCreateRegularAt finds name absent but
+// before it attempts to create it with O_CREAT|O_EXCL. A test can set it to
+// create name first, deterministically forcing that create to lose to
+// EEXIST instead of depending on a real concurrent creator racing the same
+// name. Never set outside a test; the production default is
+// call-and-do-nothing, so production behaviour is unchanged.
+var openOrCreateRegularAtBeforeCreate = func(int, string) {}
+
 func openOrCreateRegularAt(directoryFD int, name string, mode uint32) (int, error) {
 	const flags = unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	fd, err := unix.Openat(directoryFD, name, flags, 0)
 	if errors.Is(err, unix.ENOENT) {
+		openOrCreateRegularAtBeforeCreate(directoryFD, name)
 		fd, err = unix.Openat(directoryFD, name, flags|unix.O_CREAT|unix.O_EXCL, mode)
 		if errors.Is(err, unix.EEXIST) {
 			fd, err = unix.Openat(directoryFD, name, flags, 0)

@@ -114,23 +114,24 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		defer close(runDone)
 		queue.Run(ctx, processor, nil)
 	}()
+	// This test's synchronization is the channels themselves (started,
+	// runDone), not a wall-clock deadline: queue.acquire is a no-op mock and
+	// every goroutine here is otherwise unblocked, so each channel receive
+	// below is an explicit barrier that only ever unblocks once the queue
+	// has actually reached that state. A short time.After race alongside
+	// each receive used to fail this test under CI/VM CPU contention with
+	// no correctness bug involved (issue #539): a slow scheduler made a
+	// receive lose a race it was always going to win given enough time. The
+	// process-level `go test -timeout` remains the only backstop for an
+	// actual hang, exactly as it is for any other blocking channel receive.
 	t.Cleanup(func() {
 		releaseAll()
 		cancel()
-		select {
-		case <-runDone:
-		case <-time.After(2 * time.Second):
-			t.Error("queue did not stop")
-		}
+		<-runDone
 	})
 	started := map[string]bool{}
 	for len(started) < 2 {
-		select {
-		case id := <-processor.started:
-			started[id] = true
-		case <-time.After(2 * time.Second):
-			t.Fatalf("parallel starts = %+v", started)
-		}
+		started[<-processor.started] = true
 	}
 	if !started["event-b1"] || (started["event-a1"] == started["event-a2"]) {
 		t.Fatalf("initial starts = %+v", started)
@@ -144,13 +145,8 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		wantFollowUp = "event-a1"
 	}
 	releaseAll()
-	select {
-	case id := <-processor.started:
-		if id != wantFollowUp {
-			t.Fatalf("third start = %q", id)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("same-repository follow-up did not start")
+	if id := <-processor.started; id != wantFollowUp {
+		t.Fatalf("third start = %q", id)
 	}
 	processor.mu.Lock()
 	t.Cleanup(func() { processor.mu.Unlock() })
@@ -158,11 +154,7 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
 	}
 	cancel()
-	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("queue did not stop")
-	}
+	<-runDone
 }
 
 func TestQueueOrdersOldPushRenameAndNewPushAcrossCaseInsensitiveAliases(t *testing.T) {
