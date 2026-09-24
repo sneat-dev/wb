@@ -825,7 +825,7 @@ func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *Bra
 
 func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
 	return BranchEntry{Repository: repository.Slug(), Branch: ref.Name, RefKind: "branch", Scope: scope, SHA: ref.SHA,
-		ShortSHA: shortSHA(ref.SHA), CommitterDate: ref.CommitterDate, Base: sweep.Base, TargetSHA: targetSHA,
+		ShortSHA: shortSHA(ref.SHA), CommitterDate: ref.CommitterDate, Author: ref.Author, Title: ref.Title, Base: sweep.Base, TargetSHA: targetSHA,
 		Disposition: BranchRetired, Evidence: "user-selected retired quarantine; excluded from active backlog and never cleanup-eligible"}
 }
 
@@ -857,6 +857,8 @@ type branchRef struct {
 	SHA           string
 	CommitterDate time.Time
 	UnknownDate   bool
+	Author        string
+	Title         string
 }
 
 func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
@@ -899,26 +901,44 @@ func listRetiredTags(ctx context.Context, repositoryPath string, remote, metadat
 	if !metadata || len(refs) == 0 {
 		return refs, ""
 	}
-	// Fetch objects into FETCH_HEAD without writing local tag refs. Remote tag
-	// metadata must not rely on a source branch still existing locally.
-	for _, ref := range refs {
-		// An exact source ref is required here: Git rejects wildcard fetches
-		// without a destination. This updates FETCH_HEAD and the object store,
-		// never the local tag namespace.
-		if _, err := git(ctx, repositoryPath, "fetch", "--no-tags", "origin", "refs/tags/"+ref.Name); err != nil {
-			return nil, fmt.Sprintf("fetch retired tag object %s: %v", ref.Name, err)
-		}
+	// Metadata needs objects, but branch inventory is read-only with respect to
+	// the caller's clone: use one temporary bare repository and a bounded
+	// wildcard refspec rather than changing FETCH_HEAD, tags, or object storage.
+	origin, err := git(ctx, repositoryPath, "remote", "get-url", "origin")
+	if err != nil {
+		return nil, fmt.Sprintf("resolve origin for retired tags: %v", err)
+	}
+	temporary, err := os.MkdirTemp("", "wb-retired-tag-metadata-")
+	if err != nil {
+		return nil, fmt.Sprintf("create retired tag metadata repository: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(temporary) }()
+	if _, err := git(ctx, temporary, "init", "--bare"); err != nil {
+		return nil, fmt.Sprintf("initialize retired tag metadata repository: %v", err)
+	}
+	if _, err := git(ctx, temporary, "fetch", "--no-tags", strings.TrimSpace(origin), "+refs/tags/retired/*:refs/tags/retired/*"); err != nil {
+		return nil, fmt.Sprintf("fetch retired tag metadata: %v", err)
 	}
 	for i := range refs {
-		date, err := git(ctx, repositoryPath, "show", "-s", "--format=%cI", refs[i].SHA+"^{commit}")
+		observed, err := git(ctx, temporary, "rev-parse", "refs/tags/"+refs[i].Name)
+		if err != nil || observed != refs[i].SHA {
+			return nil, fmt.Sprintf("retired tag %s changed during metadata fetch", refs[i].Name)
+		}
+		const separator = "\x1f"
+		commit, err := git(ctx, temporary, "show", "-s", "--format=%cI%x1f%an%x1f%s", "refs/tags/"+refs[i].Name+"^{commit}")
 		if err != nil {
 			return nil, fmt.Sprintf("read retired tag commit metadata: %v", err)
 		}
-		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date))
+		parts := strings.SplitN(commit, separator, 3)
+		if len(parts) != 3 {
+			return nil, "invalid retired tag commit metadata"
+		}
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
 		if err != nil {
 			return nil, fmt.Sprintf("parse retired tag commit date: %v", err)
 		}
 		refs[i].CommitterDate, refs[i].UnknownDate = parsed, false
+		refs[i].Author, refs[i].Title = strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2])
 	}
 	return refs, ""
 }

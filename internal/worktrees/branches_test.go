@@ -569,6 +569,19 @@ func TestRemoteRetiredTagFetchesMetadataAndHonoursAge(t *testing.T) {
 	gitTest(t, fixture.canonical, "branch", "-D", "tag-source")
 	gitTest(t, fixture.canonical, "tag", "-d", "retired/remote-metadata")
 	gitTest(t, fixture.canonical, "gc", "--prune=now")
+	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
+	beforeFetchHead, beforeFetchHeadErr := os.ReadFile(fetchHeadPath)
+	refs, diagnostic := listRetiredTags(context.Background(), fixture.canonical, true, true)
+	if diagnostic != "" || len(refs) != 1 || refs[0].CommitterDate.IsZero() || refs[0].Title != "remote retired tag source" {
+		t.Fatalf("temporary remote tag metadata = %#v, diagnostic=%q", refs, diagnostic)
+	}
+	if gitRefExists(fixture.canonical, "refs/tags/retired/remote-metadata") {
+		t.Fatal("remote metadata fetch created a local tag ref")
+	}
+	afterFetchHead, afterFetchHeadErr := os.ReadFile(fetchHeadPath)
+	if (beforeFetchHeadErr == nil) != (afterFetchHeadErr == nil) || (beforeFetchHeadErr == nil && string(beforeFetchHead) != string(afterFetchHead)) {
+		t.Fatalf("remote metadata fetch changed caller FETCH_HEAD: before=%q/%v after=%q/%v", beforeFetchHead, beforeFetchHeadErr, afterFetchHead, afterFetchHeadErr)
+	}
 
 	outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*"})
 	if err != nil {
