@@ -72,7 +72,7 @@ func (s Store) SaveSynchestraDispatch(identity SynchestraDispatch) (SynchestraDi
 	if len(raw) > maxSynchestraDispatchBytes {
 		return SynchestraDispatch{}, false, fmt.Errorf("synchestra dispatch identity exceeds %d bytes", maxSynchestraDispatchBytes)
 	}
-	created, err := publishImmutableAt(handoff, synchestraDispatchFileName, raw, 0o600)
+	created, err := publishImmutableAt(handoff, synchestraDispatchFileName, raw, 0o600, nil)
 	if err != nil {
 		return SynchestraDispatch{}, false, fmt.Errorf("publish immutable synchestra dispatch identity: %w", err)
 	}

@@ -1293,29 +1293,29 @@ func TestSmCovStoreReadImmutableAtRefusals(t *testing.T) {
 
 func TestSmCovStorePublishImmutableAtRefusalsAndFirstWinner(t *testing.T) {
 	t.Parallel()
-	if _, err := publishImmutableAt(nil, "artifact", []byte("payload"), 0o600); err == nil || !strings.Contains(err.Error(), "directory authority is required") {
+	if _, err := publishImmutableAt(nil, "artifact", []byte("payload"), 0o600, nil); err == nil || !strings.Contains(err.Error(), "directory authority is required") {
 		t.Fatalf("publishImmutableAt(nil) error = %v", err)
 	}
 
 	directory := t.TempDir()
 	authority := smCovOpenDirectory(t, directory)
 	for _, name := range []string{"a/b", ".", "..", "../escape"} {
-		if _, err := publishImmutableAt(authority, name, []byte("payload"), 0o600); err == nil || !strings.Contains(err.Error(), "one base name") {
+		if _, err := publishImmutableAt(authority, name, []byte("payload"), 0o600, nil); err == nil || !strings.Contains(err.Error(), "one base name") {
 			t.Fatalf("publishImmutableAt(name=%q) error = %v", name, err)
 		}
 	}
 
 	regularPath := filepath.Join(t.TempDir(), "regular")
 	smCovWriteFile(t, regularPath, []byte("payload"), 0o600)
-	if _, err := publishImmutableAt(smCovOpenRegularFile(t, regularPath), "artifact", []byte("payload"), 0o600); err == nil || !strings.Contains(err.Error(), "immutable temporary file") {
+	if _, err := publishImmutableAt(smCovOpenRegularFile(t, regularPath), "artifact", []byte("payload"), 0o600, nil); err == nil || !strings.Contains(err.Error(), "immutable temporary file") {
 		t.Fatalf("publishImmutableAt(regular file authority) error = %v", err)
 	}
 
-	created, err := publishImmutableAt(authority, "artifact", []byte("first winner"), 0o600)
+	created, err := publishImmutableAt(authority, "artifact", []byte("first winner"), 0o600, nil)
 	if err != nil || !created {
 		t.Fatalf("first publishImmutableAt = (%t, %v)", created, err)
 	}
-	again, err := publishImmutableAt(authority, "artifact", []byte("second loser"), 0o600)
+	again, err := publishImmutableAt(authority, "artifact", []byte("second loser"), 0o600, nil)
 	if err != nil || again {
 		t.Fatalf("second publishImmutableAt = (%t, %v)", again, err)
 	}

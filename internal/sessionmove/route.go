@@ -180,7 +180,7 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 		return SuccessorAddress{}, false, fmt.Errorf("successor address exceeds %d bytes", maxSuccessorAddressBytes)
 	}
 	name := successorAddressFileName(receipt.SuccessorWBSessionID)
-	created, err := publishImmutableAt(addresses, name, raw, 0o600)
+	created, err := publishImmutableAt(addresses, name, raw, 0o600, nil)
 	if err != nil {
 		return SuccessorAddress{}, false, fmt.Errorf("publish immutable successor address: %w", err)
 	}
@@ -471,5 +471,5 @@ func publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
 	if len(raw) > maxRouteBytes {
 		return false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
 	}
-	return publishImmutableAt(directory, routeFileName, raw, 0o600)
+	return publishImmutableAt(directory, routeFileName, raw, 0o600, nil)
 }

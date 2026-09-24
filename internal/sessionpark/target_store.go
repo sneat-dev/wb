@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -86,7 +87,7 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 		return TargetAdmission{}, err
 	}
 	admitName := ".admit-" + envelope.Request.ResumeID + ".lock"
-	admitFD, err := openOrCreateRegularAt(rootFD, admitName, 0o600)
+	admitFD, err := filewrite.OpenOrCreateRegular(rootFD, admitName, 0o600, nil)
 	if err != nil {
 		return TargetAdmission{}, err
 	}
@@ -387,7 +388,7 @@ func (store TargetStore) SaveReceiptUnderLock(lock *TargetLock, request RemoteRe
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	created, err := writeImmutableAt(lock.aggregate, targetReceiptFileName, raw, 0o600)
+	created, err := filewrite.CreateExclusiveWriteSync(lock.aggregate, targetReceiptFileName, raw, 0o600, nil)
 	if err != nil {
 		return Receipt{}, false, err
 	}
@@ -427,7 +428,7 @@ func (store TargetStore) AppendEventUnderLock(lock *TargetLock, request RemoteRe
 	event := TargetEvent{SchemaVersion: 1, Sequence: uint64(len(history) + 1), ResumeID: request.ResumeID, Phase: phase, At: at.UTC()}
 	raw, _ := jsonMarshal(event)
 	name := fmt.Sprintf("%020d.json", event.Sequence)
-	if _, err := writeImmutableAt(events, name, raw, 0o600); err != nil {
+	if _, err := filewrite.CreateExclusiveWriteSync(events, name, raw, 0o600, nil); err != nil {
 		return TargetEvent{}, err
 	}
 	return event, nil
@@ -504,32 +505,21 @@ func readRegularAt(directory *os.File, name string, maximum int64) ([]byte, erro
 	return readBoundedRegular(file, maximum)
 }
 
-func writeImmutableAt(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
-	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode))
-	if errors.Is(err, unix.EEXIST) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	file := os.NewFile(uintptr(fd), name)
-	if _, err := file.Write(raw); err != nil {
-		_ = file.Close()
-		return false, err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return false, err
-	}
-	return true, file.Close()
-}
-
+// writeExactPrivateAt writes raw as name under directory (private,
+// 0600, write-once) through filewrite.CreateExclusiveWriteSync, then
+// reopens and verifies the on-disk artifact is exactly what was
+// admitted -- one 0600 regular file with exactly raw's bytes -- so a
+// losing writer (EEXIST) and a winning writer both end this call having
+// verified the same durable content. The syscall-level create/write/
+// sync/close sequence lives in internal/filewrite; this function keeps
+// the protocol-specific verification (mode, link count, byte-for-byte
+// identity) that is not part of that generic seam.
 func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
-	created, err := writeImmutableAt(directory, name, raw, 0o600)
+	created, err := filewrite.CreateExclusiveWriteSync(directory, name, raw, 0o600, nil)
 	if err != nil {
 		return err
 	}
-	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := filewrite.OpenReadOnly(int(directory.Fd()), name, nil)
 	if err != nil {
 		return err
 	}
@@ -544,43 +534,9 @@ func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
 		return fmt.Errorf("immutable private artifact %q conflicts with admitted bytes", name)
 	}
 	if created {
-		return directory.Sync()
+		return filewrite.SyncDir(directory, nil)
 	}
 	return nil
-}
-
-// openOrCreateRegularAtBeforeCreate is a test-only seam. It is a no-op in
-// production and runs after openOrCreateRegularAt finds name absent but
-// before it attempts to create it with O_CREAT|O_EXCL. A test can set it to
-// create name first, deterministically forcing that create to lose to
-// EEXIST instead of depending on a real concurrent creator racing the same
-// name. Never set outside a test; the production default is
-// call-and-do-nothing, so production behaviour is unchanged.
-var openOrCreateRegularAtBeforeCreate = func(int, string) {}
-
-func openOrCreateRegularAt(directoryFD int, name string, mode uint32) (int, error) {
-	const flags = unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Openat(directoryFD, name, flags, 0)
-	if errors.Is(err, unix.ENOENT) {
-		openOrCreateRegularAtBeforeCreate(directoryFD, name)
-		fd, err = unix.Openat(directoryFD, name, flags|unix.O_CREAT|unix.O_EXCL, mode)
-		if errors.Is(err, unix.EEXIST) {
-			fd, err = unix.Openat(directoryFD, name, flags, 0)
-		}
-	}
-	if err != nil {
-		return -1, err
-	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("%q is not one regular file", name)
-	}
-	if err := unix.Fchmod(fd, mode); err != nil {
-		_ = unix.Close(fd)
-		return -1, err
-	}
-	return fd, nil
 }
 
 var targetEventName = regexp.MustCompile(`^[0-9]{20}\.json$`)

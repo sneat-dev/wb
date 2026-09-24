@@ -25,7 +25,7 @@ func TestPublishImmutableAtRejectsNameThatCannotBeLinked(t *testing.T) {
 	t.Parallel()
 	directory := openTestDirectory(t, t.TempDir())
 	tooLong := strings.Repeat("a", 300)
-	if _, err := publishImmutableAt(directory, tooLong, []byte("payload"), 0o600); err == nil ||
+	if _, err := publishImmutableAt(directory, tooLong, []byte("payload"), 0o600, nil); err == nil ||
 		!strings.Contains(err.Error(), "publish immutable file") {
 		t.Fatalf("publishImmutableAt(name over NAME_MAX) = %v, want a \"publish immutable file\" link error", err)
 	}

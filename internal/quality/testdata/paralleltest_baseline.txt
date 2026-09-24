@@ -2114,7 +2114,6 @@ internal/sessionmove::TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatc
 internal/sessionmove::TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches/self-consistent forged pointer	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches/store root symlink	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestVersionedProtocolTypesRejectNewerSchemas	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/sessionpark::TestOpenOrCreateRegularAtFallsBackToOpenAfterACompetingCreate	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionpark::TestSpCovClaimResumeRouteRejectsUnsafeModesAndTargets/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionpark::TestSpCovPrepareRemoteUnderLockRejectsUnsafeRoutes/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionpark::TestSpCovResumeUnderLockValidatesSuccessorLineage/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
