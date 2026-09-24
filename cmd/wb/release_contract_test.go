@@ -301,15 +301,51 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	})
 	assert("full race permissions", raceWorkflow["permissions"], map[string]any{"contents": "read"})
 	raceJobs, ok := raceWorkflow["jobs"].(map[string]any)
-	if !ok || len(raceJobs) != 1 {
-		t.Fatal("race jobs missing")
+	// The full race sweep is sharded across internal/orchestrate,
+	// internal/worktrees and everything else (issue #728: orchestrate hit
+	// the shared 40m go-test timeout in run 35974691603; measured alone on
+	// its own runner in run 36051478734, orchestrate took 2887s and
+	// worktrees took 2399.873s — both packages simply take that long under
+	// -race), plus a fast job that asserts the three shards, as
+	// .github/scripts/race-shards.sh defines them, are disjoint and still
+	// union back to exactly `go list ./...` (PR #731 review B1: the guard
+	// must read the same shard-membership script the three jobs use, not
+	// recompute its own copy that can never disagree with itself).
+	if !ok || len(raceJobs) != 4 {
+		t.Fatalf("race jobs = %v, want race-orchestrate, race-worktrees, race-rest and race-shards-cover-all-packages", raceJobs)
 	}
-	raceJob, ok := raceJobs["race"].(map[string]any)
+	orchestrateJob, ok := raceJobs["race-orchestrate"].(map[string]any)
 	if !ok {
-		t.Fatalf("race job=%v", raceJob)
+		t.Fatalf("race-orchestrate job=%v", orchestrateJob)
 	}
-	assert("full race command", workflowContractTestCommands(t, raceJob), []string{"go test -count=1 -race -timeout 40m ./..."})
-	assert("full race timeout", raceJob["timeout-minutes"], 45)
+	assert("orchestrate race command", workflowContractTestCommands(t, orchestrateJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh orchestrate) go test -count=1 -race -timeout 80m $packages",
+	})
+	assert("orchestrate race timeout", orchestrateJob["timeout-minutes"], 90)
+	worktreesJob, ok := raceJobs["race-worktrees"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-worktrees job=%v", worktreesJob)
+	}
+	assert("worktrees race command", workflowContractTestCommands(t, worktreesJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh worktrees) go test -count=1 -race -timeout 70m $packages",
+	})
+	assert("worktrees race timeout", worktreesJob["timeout-minutes"], 75)
+	restJob, ok := raceJobs["race-rest"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-rest job=%v", restJob)
+	}
+	assert("rest race command", workflowContractTestCommands(t, restJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh rest) go test -count=1 -race -timeout 40m $packages",
+	})
+	assert("rest race timeout", restJob["timeout-minutes"], 45)
+	shardCoverageJob, ok := raceJobs["race-shards-cover-all-packages"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-shards-cover-all-packages job=%v", shardCoverageJob)
+	}
+	assert("shard coverage command", workflowContractTestCommands(t, shardCoverageJob), []string{
+		"set -euo pipefail go list ./... | sort > all.txt { .github/scripts/race-shards.sh orchestrate .github/scripts/race-shards.sh worktrees .github/scripts/race-shards.sh rest } > shards.txt duplicates=$(sort shards.txt | uniq -d || true) if [ -n \"$duplicates\" ]; then echo \"::error::race.yml shards overlap; a package must belong to exactly one shard:\" >&2 printf '%s\\n' \"$duplicates\" >&2 exit 1 fi sort -u shards.txt > union.txt if ! diff -u all.txt union.txt; then echo \"::error::race.yml shards do not cover every package; see the diff above\" >&2 exit 1 fi",
+	})
+	assert("shard coverage timeout", shardCoverageJob["timeout-minutes"], 10)
 	var publishers []string
 	files, err := os.ReadDir(filepath.Dir(goCIPath))
 	if err != nil {
@@ -336,6 +372,131 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		}
 	}
 	assert("only CLI publisher", publishers, []string{"go-ci.yml:release"})
+}
+
+// raceShardCoverageGuard is exactly the disjointness/coverage check
+// race.yml's race-shards-cover-all-packages job runs, reimplemented in Go so
+// it can be pointed at a real (or deliberately broken) race-shards.sh copy
+// and asserted against. It intentionally mirrors the workflow's shell
+// step, not `go list`'s own behaviour, so a change to the script's shard
+// membership can be size-checked here first.
+func raceShardCoverageGuard(t *testing.T, repoRoot, script string) error {
+	t.Helper()
+	all := workflowContractTestGoList(t, repoRoot, "./...")
+	var shards []string
+	for _, name := range []string{"orchestrate", "worktrees", "rest"} {
+		command := exec.Command("sh", script, name)
+		command.Dir = repoRoot
+		out, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("race-shards.sh %s: %w", name, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				shards = append(shards, line)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, pkg := range shards {
+		if seen[pkg] {
+			return fmt.Errorf("package %s appears in more than one shard", pkg)
+		}
+		seen[pkg] = true
+	}
+	allSet := map[string]bool{}
+	for _, pkg := range all {
+		allSet[pkg] = true
+		if !seen[pkg] {
+			return fmt.Errorf("package %s is in `go list ./...` but in no shard", pkg)
+		}
+	}
+	for _, pkg := range shards {
+		if !allSet[pkg] {
+			return fmt.Errorf("package %s is in a shard but not in `go list ./...`", pkg)
+		}
+	}
+	return nil
+}
+
+func workflowContractTestGoList(t *testing.T, dir, pattern string) []string {
+	t.Helper()
+	command := exec.Command("go", "list", pattern)
+	command.Dir = dir
+	out, err := command.Output()
+	if err != nil {
+		t.Fatalf("go list %s: %v", pattern, err)
+	}
+	var packages []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			packages = append(packages, line)
+		}
+	}
+	return packages
+}
+
+// TestRaceShardsScriptIsDisjointAndCompleteAndTheGuardCatchesDrift proves,
+// against the real repository, both that today's .github/scripts/race-shards.sh
+// passes race.yml's guard and that the guard genuinely fails when the
+// script drifts (PR #731 review B1: a guard that only recomputes its own
+// copy of the shard lists can never actually fail).
+func TestRaceShardsScriptIsDisjointAndCompleteAndTheGuardCatchesDrift(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoRoot, ".github", "scripts", "race-shards.sh")
+	if err := raceShardCoverageGuard(t, repoRoot, script); err != nil {
+		t.Fatalf("today's race-shards.sh must satisfy the guard: %v", err)
+	}
+
+	writeBrokenScript := func(t *testing.T, contents string) string {
+		t.Helper()
+		broken := filepath.Join(t.TempDir(), "race-shards.sh")
+		if err := os.WriteFile(broken, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return broken
+	}
+
+	t.Run("rest excluding an extra package leaves it in no shard", func(t *testing.T) {
+		broken := writeBrokenScript(t, `#!/bin/sh
+set -eu
+shard=${1:?}
+case "$shard" in
+  orchestrate) go list ./internal/orchestrate/... ;;
+  worktrees) go list ./internal/worktrees/... ;;
+  rest) go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees|deps)(/|$)' ;;
+esac
+`)
+		err := raceShardCoverageGuard(t, repoRoot, broken)
+		if err == nil {
+			t.Fatal("guard passed against a script that drops internal/deps from every shard")
+		}
+		if !strings.Contains(err.Error(), "internal/deps") {
+			t.Fatalf("guard error = %v, want it to name internal/deps", err)
+		}
+	})
+
+	t.Run("rest forgetting to exclude orchestrate duplicates it", func(t *testing.T) {
+		broken := writeBrokenScript(t, `#!/bin/sh
+set -eu
+shard=${1:?}
+case "$shard" in
+  orchestrate) go list ./internal/orchestrate/... ;;
+  worktrees) go list ./internal/worktrees/... ;;
+  rest) go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/worktrees(/|$)' ;;
+esac
+`)
+		err := raceShardCoverageGuard(t, repoRoot, broken)
+		if err == nil {
+			t.Fatal("guard passed against a script that runs internal/orchestrate in two shards")
+		}
+		if !strings.Contains(err.Error(), "internal/orchestrate") || !strings.Contains(err.Error(), "more than one shard") {
+			t.Fatalf("guard error = %v, want it to name the internal/orchestrate duplication", err)
+		}
+	})
 }
 
 func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
