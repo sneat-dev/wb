@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestArchiveCleanCLI exercises the real built binary against two local
@@ -113,7 +115,7 @@ func installArchivedFakeGh(t *testing.T) {
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	content := "#!/bin/sh\nset -eu\nprintf 'true\\n'\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

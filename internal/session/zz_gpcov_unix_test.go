@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // This file covers the parts of internal/session that need POSIX process and
@@ -65,7 +67,7 @@ func gpCovHarnessNamedProcess(t *testing.T, name string) (namedPID, childPID int
 		t.Fatalf("read the test binary: %v", err)
 	}
 	named := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(named, raw, 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(named, raw, 0o755); err != nil {
 		t.Fatalf("write the %s-named copy: %v", name, err)
 	}
 	pidFile := filepath.Join(t.TempDir(), "child.pid")

@@ -273,7 +273,7 @@ func installTransferredPullRequestFixture(t *testing.T, branch, head string, mer
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	content := "#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\nprintf '%s\\n' \"$WB_TEST_TRANSFERRED_PULL\"\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload := `[{"number":8,"html_url":"https://github.com/newco/renamed/pull/8","state":"closed","merged_at":"` + mergedAt.Format(time.RFC3339) + `","head":{"ref":"` + branch + `","sha":"` + head + `"},"base":{"ref":"main","sha":""},"merge_commit_sha":""}]`

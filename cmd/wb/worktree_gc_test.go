@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // initGCFixture builds a real canonical clone with one WB worktree whose branch
@@ -71,7 +73,7 @@ func installGCFakeGh(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nprintf '[]'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

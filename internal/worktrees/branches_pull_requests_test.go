@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func installBranchPullRequestFixture(t *testing.T, head, base string) {
@@ -18,7 +20,7 @@ func installBranchPullRequestFixture(t *testing.T, head, base string) {
 		"*base=*state=open*) printf '%s\\n' \"$WB_TEST_BASE_PRS\";;\n" +
 		"*) echo \"unexpected gh endpoint: $3\" >&2; exit 2;;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_HEAD_PRS", head)
@@ -243,7 +245,7 @@ func TestBranchCleanupRechecksOpenPullRequestsBeforeRemoteDeletion(t *testing.T)
 				"head) if [ \"$count\" -eq 3 ]; then printf '%s\\n' \"$WB_TEST_RACE_HEAD\"; else printf '[]\\n'; fi;;\n" +
 				"base) if [ \"$count\" -eq 4 ]; then printf '%s\\n' \"$WB_TEST_RACE_BASE\"; else printf '[]\\n'; fi;;\n" +
 				"esac\n"
-			if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+			if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("WB_TEST_GH_CALLS", calls)

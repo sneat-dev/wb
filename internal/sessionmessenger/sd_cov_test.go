@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // sdCovOutboxEntry returns the durable outgoing message entry directory for the
@@ -500,7 +501,7 @@ func TestSdCovNewDelivererRejectsIncompleteOrUnsupportedCouriers(t *testing.T) {
 	// real production constructors are reachable through the recorded route.
 	binDir := t.TempDir()
 	for _, name := range []string{"ssh", "synchestra"} {
-		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

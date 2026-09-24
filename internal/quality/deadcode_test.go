@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // stubAnalyzer writes an executable that ignores its arguments and emits the
@@ -22,7 +24,7 @@ func stubAnalyzer(t *testing.T, stdout string, code int) []string {
 		body += "echo 'analyzer failed' >&2\n"
 	}
 	body += "exit " + itoaTest(code) + "\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { // #nosec G306 -- test fixture.
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0o755); err != nil { // #nosec G306 -- test fixture.
 		t.Fatal(err)
 	}
 	return []string{script}
@@ -189,7 +191,7 @@ func TestDeadcodeAcceptsAnEmptyAnalysisAsClean(t *testing.T) {
 func TestDeadcodeHonoursItsTimeout(t *testing.T) {
 	t.Parallel()
 	script := filepath.Join(t.TempDir(), "slow")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil { // #nosec G306 -- test fixture.
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil { // #nosec G306 -- test fixture.
 		t.Fatal(err)
 	}
 	_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{

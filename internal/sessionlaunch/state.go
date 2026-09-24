@@ -998,7 +998,39 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 	return true, nil
 }
 
-func (attempt *launchAttempt) acquireExecFence(pid int) (*os.File, error) {
+// execFence is the handle acquireExecFence returns. It is a plain *os.File
+// wrapper (rather than *os.File itself) so a future caller can extend it
+// without changing every call site's declared variable type; today Close
+// only ever needs the embedded *os.File's own behavior.
+//
+// An earlier version of this function held syscall.ForkLock for reading
+// across the fence's whole open lifetime, to stop any unrelated fork
+// elsewhere in the process from ever duplicating this fd (see #739's
+// analysis: such a duplicate, held by a forked child until its own exec,
+// can make execFenceHeld observe this fence as still held after the true
+// holder already closed it). That is real, but the fence's open lifetime is
+// unbounded in both production (open for as long as the private launcher
+// takes to reach its own Exec) and several tests (deliberately held across
+// a whole subtest via keepFenceHeld) -- so holding a process-wide
+// ForkLock.RLock() for that long serializes every other exec.Command in the
+// process behind it, which deadlocks the moment a writer (another
+// exec.Command's own fork) queues up while this fence -- or several,
+// concurrently, across parallel subtests -- stays open (reproduced directly
+// under this package's own stress test). See the tests this comment's
+// change accompanies for how the actual flake is closed instead: the
+// specific tests that manufacture this race by acquiring and then
+// explicitly closing a fence in-process (simulating what a real Exec does
+// atomically) run serially, so no unrelated parallel test's fork can land
+// in the gap.
+type execFence struct {
+	*os.File
+}
+
+func (fence *execFence) Close() error {
+	return fence.File.Close()
+}
+
+func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
 	directory, err := attempt.directory(execDirectoryName)
 	if err != nil {
 		return nil, err
@@ -1017,7 +1049,11 @@ func (attempt *launchAttempt) acquireExecFence(pid int) (*os.File, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("acquire launcher exec-success fence for PID %d: %w", pid, err)
 	}
-	return fileForFD(fd, "wb-session-launch-exec-fence")
+	file, err := fileForFD(fd, "wb-session-launch-exec-fence")
+	if err != nil {
+		return nil, err
+	}
+	return &execFence{File: file}, nil
 }
 
 // execFenceHeld reports whether the private WB wrapper still holds the

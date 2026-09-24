@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixture is a projects root holding one canonical clone, one linked worktree
@@ -1411,7 +1413,7 @@ func TestRewrittenSimpleCommandsRunCorrectlyInARealShell(t *testing.T) {
 	recorded := filepath.Join(binDir, "recorded.txt")
 	stub := "#!/bin/sh\n{ printf 'ARGV:%s\\n' \"$*\"; printf 'GOOS:%s\\n' \"$GOOS\"; } > " + shellQuote(recorded) + "\n"
 	stubPath := filepath.Join(binDir, "wb")
-	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(stubPath, []byte(stub), 0o755); err != nil {
 		t.Fatalf("write stub wb: %v", err)
 	}
 

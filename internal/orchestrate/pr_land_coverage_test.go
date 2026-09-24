@@ -245,7 +245,7 @@ func orchCovInstallDeleteGit(t *testing.T, state orchCovGHState) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(gh), "git"), []byte(orchCovDeleteBranchGitScript), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(filepath.Dir(gh), "git"), []byte(orchCovDeleteBranchGitScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	state.answer(t, "git-stdout", "")

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // remoteConfigHome writes a machine map pointing at a target, so a test can
@@ -48,7 +49,7 @@ func fakeSSHOnPath(t *testing.T, response string) (requestPath string) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\ncat > " + requestPath + "\ncat " + responsePath + "\n"
-	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(script), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(directory, "ssh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))

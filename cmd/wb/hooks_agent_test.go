@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // agentGuardFixture builds a projects root with one canonical clone and one
@@ -452,7 +454,7 @@ func TestMergeAgentHookSettingsRefusesAnUnparseableFile(t *testing.T) {
 func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
-	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write self: %v", err)
 	}
 	onPath := filepath.Join(binDir, "wb")
@@ -473,11 +475,11 @@ func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) 
 func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
-	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write self: %v", err)
 	}
 	other := filepath.Join(binDir, "wb")
-	if err := os.WriteFile(other, []byte("#!/bin/sh\necho different\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(other, []byte("#!/bin/sh\necho different\n"), 0o755); err != nil {
 		t.Fatalf("write a different wb on PATH: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -505,7 +507,7 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 
 	binDir := t.TempDir()
 	onPath := filepath.Join(binDir, "wb")
-	if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write a wb on PATH: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

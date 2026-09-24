@@ -200,8 +200,8 @@ func TestSlCovSaveExecFailureHandlesCorruptExistingEvidence(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
-	t.Parallel()
 	t.Run("corrupt release", func(t *testing.T) {
 		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)

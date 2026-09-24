@@ -432,7 +432,7 @@ func TestRetireRefusesOpenPRSecretPathAndHookFailure(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(worktree, "change.txt"), []byte("content\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(fixture.canonical, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\nexit 37\n"), 0o755); err != nil {
+				if err := testenv.WriteExecutableFile(filepath.Join(fixture.canonical, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\nexit 37\n"), 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}

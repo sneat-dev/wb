@@ -76,7 +76,7 @@ func lgCovFakeBinary(t *testing.T, name, script string) string {
 		t.Skip("a fake " + name + " binary relies on a POSIX shell script")
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -182,7 +182,7 @@ func lgCovRejectPushesTo(t *testing.T, origin, ref string) {
 		"  fi\n" +
 		"done\n" +
 		"exit $status\n"
-	if err := os.WriteFile(filepath.Join(hooks, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

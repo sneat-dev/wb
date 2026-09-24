@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestSecureRenameHelperRejectsSubstitutedDescriptorsAndGitMetadata(t *testing.T) {
@@ -120,7 +122,7 @@ func TestSecureRenameHelperRejectsLateAdminPathRedirection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(`#!/bin/sh
 set -eu
 if mv "$WB_TEST_RENAME_ADMIN" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_ADMIN" 2>/dev/null; then
   echo wb-test-admin-swap-succeeded >&2
@@ -164,7 +166,7 @@ func TestSecureRenameHelperRejectsLateCommonPathRedirection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(`#!/bin/sh
 set -eu
 if mv "$WB_TEST_RENAME_COMMON" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_COMMON" 2>/dev/null; then
   echo wb-test-common-swap-succeeded >&2
@@ -208,7 +210,7 @@ func TestSecureRenameHelperUsesHeldWorktreeAfterLatePathSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(`#!/bin/sh
 set -eu
 if mv "$WB_TEST_RENAME_WORKTREE" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_WORKTREE" 2>/dev/null; then
   echo wb-test-worktree-swap-succeeded >&2
@@ -247,7 +249,7 @@ func TestSecureRenameHelperIgnoresLateCommondirReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(`#!/bin/sh
 set -eu
 if printf '%s\\n' /wb-test-hostile-common-dir > "$WB_TEST_RENAME_COMMONDIR" 2>/dev/null; then
   echo wb-test-commondir-swap-succeeded >&2

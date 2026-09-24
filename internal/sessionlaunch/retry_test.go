@@ -12,7 +12,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 type launcherRetryFixture struct {
@@ -60,7 +61,7 @@ func newLauncherRetryFixture(t *testing.T) *launcherRetryFixture {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,7 +116,7 @@ func (fixture *launcherRetryFixture) options(before BeforeRelease) Options {
 	}
 }
 
-func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFailure, keepFenceHeld bool) (*os.File, int) {
+func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFailure, keepFenceHeld bool) (*execFence, int) {
 	t.Helper()
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, true)
 	if err != nil {
@@ -168,7 +169,7 @@ func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFai
 
 func (fixture *launcherRetryFixture) configureSuccessfulStart(t *testing.T) (BeforeRelease, <-chan error) {
 	t.Helper()
-	var fence *os.File
+	var fence *execFence
 	var attemptID string
 	pid := os.Getpid()
 	fixture.tmux.onStart = func() {
@@ -407,8 +408,8 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name          string
 		withFailure   bool
@@ -598,8 +599,8 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestAbandonmentPublicationCrashReplaysExactlyOnce(t *testing.T) {
-	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 const (
@@ -1253,7 +1254,7 @@ fi
 	// Sharded package tests are separate processes. Isolate WB's private state
 	// too, so a concurrent shard cannot supply or replace observer evidence.
 	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
-	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -163,8 +163,8 @@ func TestSlCovLoadReadyValidation(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // kept serial: the "fence not held" subtest acquires and Closes an exec fence then relies on saveRelease observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestSlCovSaveReleaseGatesEveryPrecondition(t *testing.T) {
-	t.Parallel()
 	const pid = 6161
 	started := time.Date(2026, time.August, 25, 18, 0, 0, 0, time.UTC)
 
@@ -359,8 +359,8 @@ func injectSlCovAbandonment(t *testing.T, attempt *launchAttempt, plan launchPla
 	}
 }
 
+//nolint:paralleltest // kept serial: several subtests acquire and Close an exec fence then rely on saveAbandonment observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestSlCovSaveAbandonmentRequiresExactTerminalEvidence(t *testing.T) {
-	t.Parallel()
 	const pid = 7171
 	now := time.Date(2026, time.August, 25, 18, 0, 0, 0, time.UTC)
 
@@ -866,8 +866,8 @@ func TestSlCovPreReleaseProcessEvidenceBindsOneExactPID(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
 func TestSlCovExecFenceSemantics(t *testing.T) {
-	t.Parallel()
 	state, _ := slCovOpenState(t)
 	attempt, err := state.createAttempt()
 	if err != nil {
