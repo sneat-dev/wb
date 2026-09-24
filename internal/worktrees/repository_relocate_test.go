@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *testing.T) {
@@ -426,6 +428,7 @@ func TestRelocateRepositoryRefusesDirtyOrOccupiedDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitTest(t, filepath.Dir(remote), "clone", "--bare", fixture.remote, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(filepath.Dir(fixture.projectsRoot), "acme", "app.git"))
 	if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
 		t.Fatal(err)

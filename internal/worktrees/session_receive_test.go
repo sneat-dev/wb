@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -645,6 +646,7 @@ func newSessionReceiveFixture(t *testing.T) *sessionReceiveFixture {
 		t.Fatal(err)
 	}
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // cloneOfEmptyRemote reproduces the shape that made sync red on every run: a
@@ -14,6 +15,7 @@ func cloneOfEmptyRemote(t *testing.T) discover.Repo {
 	t.Helper()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	local := t.TempDir()
 	git(t, local, "init", "-q", "-b", "main")
@@ -59,6 +61,7 @@ func TestSyncPullsOnceRemoteHasBranches(t *testing.T) {
 func TestSyncStillFailsWhenTrackedBranchIsMissing(t *testing.T) {
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")

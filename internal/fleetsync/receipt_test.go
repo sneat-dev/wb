@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func receiptHome(t *testing.T) string {
@@ -108,6 +109,7 @@ func TestSyncPruneWritesAReceiptBeforeRemoving(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 	head, err := gitops.HeadSHA(dir)
@@ -165,6 +167,7 @@ func TestSyncPruneRefusesToRemoveWhenTheReceiptCannotBeWritten(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 

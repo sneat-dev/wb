@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestRPCovSyncArchivedRemovalFailureLeavesAFailedReceipt exercises the one
@@ -27,6 +28,7 @@ func TestRPCovSyncArchivedRemovalFailureLeavesAFailedReceipt(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 
