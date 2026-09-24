@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // targetFixture builds a real Git repository with a main branch carrying one
@@ -32,6 +34,7 @@ jobs:
 	// the fixture needs a real remote to fetch from.
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	targetGit(t, root, "init", "-q", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	targetGit(t, root, "remote", "add", "origin", remote)
 	targetGit(t, root, "push", "-q", "origin", "main")
 
@@ -41,7 +44,7 @@ jobs:
 func targetGit(t *testing.T, dir string, arguments ...string) {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, arguments...)...)
-	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"))
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s in %s: %v\n%s", arguments, dir, err, output)
 	}

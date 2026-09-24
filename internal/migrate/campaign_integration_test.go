@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -555,6 +556,7 @@ func commitCampaignRepository(t *testing.T, source, remote string) {
 		t.Fatal(err)
 	}
 	runCampaignGit(t, filepath.Dir(source), "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runCampaignGit(t, source, "init", "--initial-branch=main")
 	runCampaignGit(t, source, "add", ".")
 	runCampaignGit(t, source, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "initial")
