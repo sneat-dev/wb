@@ -838,6 +838,136 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 	}
 }
 
+// TestTruncateCommandDetailToKeepsMiddleFailAndPanicBlocksAHeadTailBoundWouldDrop
+// pins sneat-dev/wb#582: `go test` output is sorted by package, and the
+// overwhelming majority pass, so the failing package's own "--- FAIL"
+// block, and any "panic:" and its stack, sit wherever the alphabet puts
+// them — almost never at either end. A head+tail-only bound (the
+// behaviour before this fix) reliably kept only passing "ok" lines here;
+// this test builds exactly that shape and shows the evidence survives.
+func TestTruncateCommandDetailToKeepsMiddleFailAndPanicBlocksAHeadTailBoundWouldDrop(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	failBlock := "--- FAIL: TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation (1.81s)\n" +
+		"    daemon_file_bridge_test.go:149: old daemon operation count = 0, <nil>\n"
+	panicBlock := "panic: runtime error: index out of range [3] with length 3\n" +
+		"\tgoroutine 7 [running]:\n" +
+		"\tgithub.com/acme/pkg.doWork(...)\n" +
+		"\t\t/src/pkg/work.go:42\n"
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 200)
+	// A bare "FAIL" line — the whole-command summary a shard emits without
+	// its own "--- FAIL" block, e.g. a compile failure — must survive on
+	// its own too, not only as part of a "--- FAIL" block or a panic's
+	// stack.
+	bareFail := "FAIL\tgithub.com/acme/broken\t[build failed]\n"
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 20) + "FAIL\nexit status 1"
+
+	detail := head + failBlock + middle + panicBlock + middle + bareFail + middle + tail
+
+	// A degenerate head+tail bound over this shape would keep only the
+	// leading and trailing "ok" lines and the terminal bare "FAIL" — the
+	// exact defect #582 reported. Confirm the geometry actually exercises
+	// that: both blocks sit well inside the region a 1000-byte bound
+	// drops.
+	const max = 1000
+	headBytes := max / 4
+	if headBytes > 250 {
+		headBytes = 250
+	}
+	if strings.Index(detail, failBlock) < headBytes {
+		t.Fatalf("test fixture invalid: failBlock is not past the head window")
+	}
+	if strings.Index(detail, panicBlock)+len(panicBlock) > len(detail)-200 {
+		t.Fatalf("test fixture invalid: panicBlock is not clear of the tail window")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+
+	if !strings.Contains(got, "--- FAIL: TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation") {
+		t.Fatalf("truncated detail dropped the middle FAIL block: %q", got)
+	}
+	if !strings.Contains(got, "daemon_file_bridge_test.go:149: old daemon operation count = 0, <nil>") {
+		t.Fatalf("truncated detail dropped the FAIL block's assertion message: %q", got)
+	}
+	if !strings.Contains(got, "panic: runtime error: index out of range [3] with length 3") {
+		t.Fatalf("truncated detail dropped the middle panic line: %q", got)
+	}
+	if !strings.Contains(got, "/src/pkg/work.go:42") {
+		t.Fatalf("truncated detail dropped the panic's stack: %q", got)
+	}
+	if !strings.Contains(got, bareFail) {
+		t.Fatalf("truncated detail dropped the standalone middle FAIL line: %q", got)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("truncated detail does not disclose truncation: %q", got)
+	}
+	if len(got) >= len(detail) {
+		t.Fatalf("truncated detail (%d bytes) is not smaller than the input (%d bytes)", len(got), len(detail))
+	}
+}
+
+// TestTruncateCommandDetailToUnchangedWhenNothingWorthKeepingIsDropped pins
+// the historical head+tail-only shape for the common case this fix must
+// not disturb: when the region a head+tail bound drops holds no FAIL or
+// panic evidence, truncateCommandDetailTo behaves exactly as it did before
+// #582's fix.
+func TestTruncateCommandDetailToUnchangedWhenNothingWorthKeepingIsDropped(t *testing.T) {
+	t.Parallel()
+	detail := strings.Repeat("head", 1000) + "TAIL"
+	got := truncateCommandDetailTo(detail, 2000)
+	if !strings.HasPrefix(got, detail[:250]) {
+		t.Fatalf("large max did not cap the retained head: %q", got[:60])
+	}
+	if !strings.Contains(got, "TAIL") || !strings.Contains(got, "truncated") {
+		t.Fatalf("large max lost the tail or the notice: %q", got)
+	}
+	if strings.Contains(got, "kept failure evidence") {
+		t.Fatalf("truncated detail claims to keep evidence that was never present: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToCapsEvidenceWhenItWouldOverflowTheBudget pins
+// the defensive cap on kept evidence: a pathological run with dozens of
+// "--- FAIL" blocks in its dropped middle must not make the returned
+// string grow without bound — the evidence itself is capped to what
+// remains after the head, and the tail correctly collapses to nothing
+// once the evidence alone exceeds that remainder.
+func TestTruncateCommandDetailToCapsEvidenceWhenItWouldOverflowTheBudget(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	var blocks strings.Builder
+	for i := 0; i < 60; i++ {
+		blocks.WriteString("--- FAIL: TestRepeatedFailure (0.01s)\n    fixture_test.go:1: repeated failure body\n")
+	}
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 20)
+	detail := head + blocks.String() + tail
+
+	const max = 1000
+	got := truncateCommandDetailTo(detail, max)
+
+	if !strings.Contains(got, "--- FAIL: TestRepeatedFailure") {
+		t.Fatalf("truncated detail dropped all evidence: %q", got)
+	}
+	if len(got) > max+300 {
+		t.Fatalf("truncated detail (%d bytes) grew unbounded despite the evidence cap", len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("truncated detail does not disclose truncation: %q", got)
+	}
+}
+
+// TestFailureEvidenceInReturnsEmptyForAnEmptyRegion pins failureEvidenceIn's
+// own guard against the degenerate empty-region input directly, since a
+// dropped-middle region this small never reaches it through
+// truncateCommandDetailTo (the head+tail arithmetic guarantees any region
+// long enough to call it is non-empty).
+func TestFailureEvidenceInReturnsEmptyForAnEmptyRegion(t *testing.T) {
+	t.Parallel()
+	if got := failureEvidenceIn(""); got != "" {
+		t.Fatalf("failureEvidenceIn(\"\") = %q, want empty", got)
+	}
+}
+
 func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *testing.T) {
 	t.Parallel()
 	jobs := []goCoverageJob{

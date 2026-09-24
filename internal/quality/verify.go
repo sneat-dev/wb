@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -795,26 +796,128 @@ func truncateCommandDetailTo(detail string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	if len(detail) > max {
-		headBytes := max / 4
-		if headBytes > 250 {
-			headBytes = 250
-		}
-		// Reserve enough space for the truncation notice itself. Its exact
-		// length depends only on the rendered tail count.
-		tailBytes := max - headBytes - 64
-		if tailBytes < 0 {
-			tailBytes = 0
-		}
-		marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
-		tailBytes = max - headBytes - len(marker)
-		if tailBytes < 0 {
-			tailBytes = 0
-		}
-		marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
-		detail = detail[:headBytes] + marker + detail[len(detail)-tailBytes:]
+	if len(detail) <= max {
+		return detail
 	}
-	return detail
+	headBytes := max / 4
+	if headBytes > 250 {
+		headBytes = 250
+	}
+	// Reserve enough space for the truncation notice itself. Its exact
+	// length depends only on the rendered tail count.
+	tailBytes := max - headBytes - 64
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+	tailBytes = max - headBytes - len(marker)
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+
+	tailStart := len(detail) - tailBytes
+	// sneat-dev/wb#582: `go test` output is sorted by package, and the
+	// overwhelming majority pass, so the failing package (and the
+	// assertion that names the real cause) almost never sits in the head
+	// or tail a bare head+tail bound keeps — it sits in the middle, which
+	// is exactly what got dropped. Recover any FAIL/panic evidence that
+	// region held before falling back to the historical head+tail-only
+	// shape, so a run with nothing worth keeping in the middle is
+	// truncated exactly as before this fix.
+	evidence := failureEvidenceIn(detail[headBytes:tailStart])
+	if evidence == "" {
+		return detail[:headBytes] + marker + detail[tailStart:]
+	}
+
+	evidenceBlock := "\n… output truncated; kept failure evidence from the dropped middle:\n" + evidence + "\n"
+	// The evidence itself is never trimmed once found — it is the reason
+	// this function exists — but it is capped to what remains after the
+	// head, so a pathological run with unbounded FAIL/panic output cannot
+	// make the returned string grow without bound.
+	if evidenceCap := max - headBytes; evidenceCap >= 0 && len(evidenceBlock) > evidenceCap {
+		evidenceBlock = evidenceBlock[:evidenceCap]
+	}
+	tailBytes = max - headBytes - len(evidenceBlock) - 64
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	tailMarker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+	tailBytes = max - headBytes - len(evidenceBlock) - len(tailMarker)
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	return detail[:headBytes] + evidenceBlock + tailMarker + detail[len(detail)-tailBytes:]
+}
+
+var (
+	failBlockLinePattern = regexp.MustCompile(`^--- FAIL\b`)
+	bareFailLinePattern  = regexp.MustCompile(`^FAIL\b`)
+	panicLinePattern     = regexp.MustCompile(`^panic:`)
+	// packageSummaryLinePattern matches the per-package result lines
+	// go test's own output is otherwise made of ("ok  \t<pkg>\t...",
+	// "--- PASS: ...", "=== RUN  ..."). A panic's stack trace never looks
+	// like one of these, so seeing one again ends the stack even though
+	// none of its lines are blank or indented (sneat-dev/wb#582's own
+	// example interleaves plain, unindented stack frames with file:line
+	// frames that are themselves unindented too).
+	packageSummaryLinePattern = regexp.MustCompile(`^(ok\s|--- PASS\b|=== RUN\b|=== PAUSE\b|=== CONT\b)`)
+)
+
+// failureEvidenceIn returns every "^--- FAIL" block (its own line plus any
+// indented continuation lines, e.g. a sub-test line and its assertion
+// message), every bare "^FAIL" line, and every "^panic:" line together
+// with its stack trace, found in region. It is used only on the slice of a
+// command's output a head+tail bound would otherwise discard whole
+// (sneat-dev/wb#582).
+func failureEvidenceIn(region string) string {
+	if region == "" {
+		return ""
+	}
+	lines := strings.Split(region, "\n")
+	var kept []string
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
+		switch {
+		case failBlockLinePattern.MatchString(line):
+			kept = append(kept, line)
+			index++
+			for index < len(lines) && isIndentedContinuationLine(lines[index]) {
+				kept = append(kept, lines[index])
+				index++
+			}
+			index--
+		case panicLinePattern.MatchString(line):
+			kept = append(kept, line)
+			index++
+			for index < len(lines) && !isEndOfPanicStack(lines[index]) {
+				kept = append(kept, lines[index])
+				index++
+			}
+			index--
+		case bareFailLinePattern.MatchString(line):
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// isEndOfPanicStack reports whether line ends a panic's stack trace: a
+// blank line (the usual end, immediately before "exit status N"), or any
+// go test result line that means normal package output has resumed.
+func isEndOfPanicStack(line string) bool {
+	return strings.TrimSpace(line) == "" ||
+		failBlockLinePattern.MatchString(line) ||
+		bareFailLinePattern.MatchString(line) ||
+		packageSummaryLinePattern.MatchString(line)
+}
+
+// isIndentedContinuationLine reports whether line is part of the indented
+// block a "--- FAIL" line introduces (a sub-test's own "--- FAIL" line, or
+// the assertion message under it), rather than the next unrelated line of
+// `go test` output.
+func isIndentedContinuationLine(line string) bool {
+	return line != "" && (line[0] == ' ' || line[0] == '\t')
 }
 
 // ParseChecks validates the explicit --checks list. A missing list defaults to
