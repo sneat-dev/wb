@@ -1,6 +1,7 @@
 package quality
 
 import (
+	"go/ast"
 	"os"
 	"path/filepath"
 	"testing"
@@ -746,6 +747,79 @@ func (DiscardEvents) Append(name, temporary string) error {
 	}
 	if len(violations) != 1 || violations[0].Func != "FileEventLog.Append" {
 		t.Fatalf("violations = %v, want exactly one for FileEventLog.Append (receiver-qualified, so it never collides with DiscardEvents.Append, which is a no-op and not flagged)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesQualifiesAGenericSingleTypeParamReceiverMethod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/generic_box.go", `package pkg
+
+import "os"
+
+type Box[T any] struct{}
+
+func (b *Box[T]) Publish(temporary, name string) error {
+	return os.Rename(temporary, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "Box.Publish" {
+		t.Fatalf("violations = %v, want exactly one for Box.Publish (a pointer receiver to a single-type-param generic type still qualifies by its base identifier)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesQualifiesAGenericMultiTypeParamReceiverMethod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/generic_pair.go", `package pkg
+
+import "os"
+
+type Pair[K, V any] struct{}
+
+func (p *Pair[K, V]) Publish(temporary, name string) error {
+	return os.Rename(temporary, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "Pair.Publish" {
+		t.Fatalf("violations = %v, want exactly one for Pair.Publish (a pointer receiver to a multi-type-param generic type still qualifies by its base identifier)", violations)
+	}
+}
+
+func TestReceiverTypeNameReturnsEmptyForAnUnrecognisedExpressionShape(t *testing.T) {
+	t.Parallel()
+	// No legal Go method receiver actually parses to this shape (go/parser
+	// only ever produces *ast.Ident, *ast.StarExpr, *ast.IndexExpr, or
+	// *ast.IndexListExpr for a receiver type), so this exercises
+	// receiverTypeName's defensive default case directly rather than
+	// through a fixture file, which could never reach it.
+	got := receiverTypeName(&ast.BadExpr{})
+	if got != "" {
+		t.Fatalf("receiverTypeName(*ast.BadExpr) = %q, want \"\"", got)
+	}
+}
+
+func TestFindFunctionsThatCreateAndWriteContentReportsAWalkFailure(t *testing.T) {
+	t.Parallel()
+	if _, err := findFunctionsThatCreateAndWriteContent(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("findFunctionsThatCreateAndWriteContent accepted a root directory that does not exist")
+	}
+}
+
+func TestFindFunctionsThatCreateAndWriteContentReportsAParseFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/broken.go", "package pkg\n\nfunc Broken( {\n")
+	if _, err := findFunctionsThatCreateAndWriteContent(root); err == nil {
+		t.Fatal("findFunctionsThatCreateAndWriteContent accepted a file with a syntax error")
 	}
 }
 
