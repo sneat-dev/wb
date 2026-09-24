@@ -361,6 +361,40 @@ func TestEvaluateRatchetWarnsInsteadOfFailingWhenAnUnchangedPackagesCountRises(t
 	}
 }
 
+// TestEvaluateRatchetFailsWhenOnlyANonGoFixtureChangedInAPackageThatRose is
+// review finding B1: a package counts as "changed" for the ratchet when the
+// PR touches ANY file in it, not only *.go files. A table-test fixture that
+// sits next to the code and that tests read (for example
+// os.ReadFile("cases.json")) can change a package's coverage without any
+// *.go file appearing in the diff at all — a package.json/go.mod/go.sum
+// change, or a .s/.c/.syso asm/cgo file, is the same case. Narrowing
+// package ownership to *.go files here (as `wb run --changed` correctly
+// does for its own, different purpose of picking `go test`/`go vet`
+// arguments) would let a rise like this one only warn instead of fail.
+func TestEvaluateRatchetFailsWhenOnlyANonGoFixtureChangedInAPackageThatRose(t *testing.T) {
+	t.Parallel()
+	blocks := []CoverageBlock{
+		{File: "fixture.test/app/app.go", StartLine: 10, StartCol: 1, EndLine: 12, EndCol: 2, Statements: 2, Count: 0},
+	}
+	changed := ChangedLines{} // the diff touched no .go line at all
+	touched := map[string]bool{"cases.json": true}
+	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one package", results)
+	}
+	got := results[0]
+	if !got.Changed {
+		t.Fatal("Changed = false, want true: the PR touched cases.json in this package")
+	}
+	if got.Pass {
+		t.Fatal("Pass = true, want false: a changed package's uncovered count rose (1 -> 2)")
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none: this is a failure, not a warning", warnings)
+	}
+}
+
 func TestEvaluateRatchetPassesForNewPackageWithNoBaseline(t *testing.T) {
 	t.Parallel()
 	blocks := []CoverageBlock{

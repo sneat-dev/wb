@@ -334,23 +334,23 @@ func TestHkCovDetectDefaultBranchLocalState(t *testing.T) {
 	repo := initRepo(t)
 	t.Setenv(DefaultBranchEnv, "")
 
-	if got := detectDefaultBranch(repo); got != "" {
-		t.Fatalf("detectDefaultBranch(no remote refs) = %q, want empty", got)
+	if got := DetectDefaultBranch(repo); got != "" {
+		t.Fatalf("DetectDefaultBranch(no remote refs) = %q, want empty", got)
 	}
 
 	// The recorded origin/HEAD symref wins.
 	git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
 	git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-	if got := detectDefaultBranch(repo); got != "main" {
-		t.Fatalf("detectDefaultBranch(origin/HEAD) = %q, want main", got)
+	if got := DetectDefaultBranch(repo); got != "main" {
+		t.Fatalf("DetectDefaultBranch(origin/HEAD) = %q, want main", got)
 	}
 
 	// Without origin/HEAD the conventional remote-tracking ref is used.
 	git(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
 	git(t, repo, "update-ref", "-d", "refs/remotes/origin/main")
 	git(t, repo, "update-ref", "refs/remotes/origin/master", "HEAD")
-	if got := detectDefaultBranch(repo); got != "master" {
-		t.Fatalf("detectDefaultBranch(fallback) = %q, want master", got)
+	if got := DetectDefaultBranch(repo); got != "master" {
+		t.Fatalf("DetectDefaultBranch(fallback) = %q, want master", got)
 	}
 }
 
