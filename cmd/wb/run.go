@@ -43,6 +43,8 @@ func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Comma
 		allowSaturatedHost bool
 		quiet              bool
 		queueFlag          bool
+		changed            bool
+		changedTarget      string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [recipe] | run -- <command> [args...]",
@@ -85,7 +87,17 @@ budget on stderr: a queued line naming its position and what it is waiting
 on, a heartbeat at most every 10s while it keeps waiting, and admitted/done
 receipt lines — even without a terminal, so a redirected log still shows
 progress instead of going silent for minutes. --quiet silences these lines;
---queue lists who currently holds or is waiting for CPU capacity.`,
+--queue lists who currently holds or is waiting for CPU capacity.
+
+--changed scopes command mode to the Go packages a local diff touches
+against --target (default: the repository's detected default branch,
+issue #570 / spec/plans/coverage-to-100/README.md task-19): staged,
+unstaged, and already-committed changes since the merge base, combined.
+The command runs once with those package patterns appended (for example
+"go test ./internal/foo ./cmd/wb"); when nothing changed, WB prints that
+and exits 0 without running the command at all. This is a smoke check
+scoped to what changed, never a prediction of a full/merged coverage or
+vet run.`,
 		Example: `# Discover configured recipes
 wb run --list
 
@@ -109,7 +121,13 @@ wb run --history --days 7
 wb run --queue
 
 # Silence the queued/admitted/done receipt lines
-wb run --quiet -- go test ./internal/worktrees -run TestCreate`,
+wb run --quiet -- go test ./internal/worktrees -run TestCreate
+
+# Run only the packages the local diff touched against the default branch
+wb run --changed -- go test
+
+# ...against an explicit target instead of the detected default branch
+wb run --changed --target origin/main -- go vet`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if history || queueFlag {
 				return cobra.NoArgs(cmd, args)
@@ -124,20 +142,35 @@ wb run --quiet -- go test ./internal/worktrees -run TestCreate`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if queueFlag {
-				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet {
-					return usageError("--apply, --async, --config, --history, --idempotency-key, --list, and --quiet cannot be used with --queue")
+				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet || changed || changedTarget != "" {
+					return usageError("--apply, --async, --changed, --config, --history, --idempotency-key, --list, --quiet, and --target cannot be used with --queue")
 				}
 				return printRunQueue(cmd, jsonOut)
 			}
 			if history {
-				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet {
-					return usageError("--apply, --async, --config, --idempotency-key, --list, and --quiet cannot be used with --history")
+				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet || changed || changedTarget != "" {
+					return usageError("--apply, --async, --changed, --config, --idempotency-key, --list, --quiet, and --target cannot be used with --history")
 				}
 				return printRunHistory(cmd, days, jsonOut)
 			}
 			if cmd.ArgsLenAtDash() == 0 {
 				if apply || configPath != "" || list || days != 14 || outputFormatChanged(cmd) {
 					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
+				}
+				if changed {
+					if async {
+						return usageError("--changed cannot be combined with --async")
+					}
+					expanded, err := expandChangedRunArgs(cmd, args, changedTarget)
+					if err != nil {
+						return err
+					}
+					if expanded == nil {
+						return nil
+					}
+					args = expanded
+				} else if changedTarget != "" {
+					return usageError("--target requires --changed")
 				}
 				if async {
 					if strings.TrimSpace(workerID) == "" {
@@ -168,6 +201,9 @@ wb run --quiet -- go test ./internal/worktrees -run TestCreate`,
 			if quiet {
 				return usageError("--quiet requires command mode with run --")
 			}
+			if changed || changedTarget != "" {
+				return usageError("--changed and --target require command mode with run --")
+			}
 			if days != 14 || outputFormatChanged(cmd) {
 				return usageError("--days, --format=json, and --json require --history")
 			}
@@ -197,6 +233,8 @@ wb run --quiet -- go test ./internal/worktrees -run TestCreate`,
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "command mode: silence the queued/admitted/done receipt lines on stderr")
 	cmd.Flags().BoolVar(&queueFlag, "queue", false, "list this machine's CPU lease queue (running and waiting governed commands) and exit")
+	cmd.Flags().BoolVar(&changed, "changed", false, "command mode: append the Go packages a local diff touches (against --target) to the command instead of running it as given; exits 0 without running when nothing changed")
+	cmd.Flags().StringVar(&changedTarget, "target", "", "merge-base branch or ref for --changed (default: the repository's detected default branch)")
 	return cmd
 }
 

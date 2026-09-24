@@ -303,7 +303,7 @@ func annotatePushEvent(event *Event, options RunOptions, policy Policy, pushedRe
 	// The ref recorded is the one that decided the tier: the highest-tier
 	// update in this push, so a mixed push is attributed to the ref that made
 	// it a publication push rather than to whichever came first.
-	classification := ClassifyPushTier(updates, detectDefaultBranch(policy.RepoRoot), NewCachedGHPRLookup(policy.RepoRoot))
+	classification := ClassifyPushTier(updates, DetectDefaultBranch(policy.RepoRoot), NewCachedGHPRLookup(policy.RepoRoot))
 	tier := int(classification.Tier)
 	event.Tier = &tier
 	event.Ref = decidingRef(updates, classification, policy.RepoRoot)
@@ -311,7 +311,7 @@ func annotatePushEvent(event *Event, options RunOptions, policy Policy, pushedRe
 
 // decidingRef names the pushed ref the classification came from.
 func decidingRef(updates []RefUpdate, classification Classification, repoRoot string) string {
-	defaultBranch := detectDefaultBranch(repoRoot)
+	defaultBranch := DetectDefaultBranch(repoRoot)
 	lookup := NewCachedGHPRLookup(repoRoot)
 	for _, update := range updates {
 		if tier, _ := classifyOneRef(update, defaultBranch, lookup); tier == classification.Tier {

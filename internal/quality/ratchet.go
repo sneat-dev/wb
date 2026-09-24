@@ -634,10 +634,17 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 		findingsByPackage[pkg] = append(findingsByPackage[pkg], RatchetFinding{File: file, Line: line, Reason: reason})
 	}
 
-	changedPackages := make(map[string]bool, len(touchedFiles))
-	for file := range touchedFiles {
-		changedPackages[PackageOf(modulePath+"/"+file, modulePath)] = true
-	}
+	// changedPackages reuses the same file->package-directory mapping
+	// ChangedPackages (changed_packages.go) uses to build `wb run
+	// --changed`'s package list (task-19 cutover: one computation, not two).
+	// It is narrower than the naive "every touched file's directory" used
+	// before it: only *.go files decide package ownership here, matching
+	// the pre-commit hook's own scope. Dropping a non-Go touched file never
+	// changes this ratchet's outcome either way — no CoverageBlock is ever
+	// produced for a file that is not Go source, so a directory whose only
+	// touched files are non-Go never has anything to report or warn about
+	// regardless of whether it counts as "changed".
+	changedPackages := goPackageDirsFromFiles(touchedFiles)
 
 	blocksByPackage := make(map[string][]CoverageBlock)
 	for _, block := range blocks {

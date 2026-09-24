@@ -274,15 +274,15 @@ func TestCachedGHPRLookupNeverCachesAFailureOrTimeout(t *testing.T) {
 
 func TestDetectDefaultBranchHonoursExplicitOverride(t *testing.T) {
 	t.Setenv(DefaultBranchEnv, "trunk")
-	if got := detectDefaultBranch(t.TempDir()); got != "trunk" {
-		t.Fatalf("detectDefaultBranch = %q, want %q", got, "trunk")
+	if got := DetectDefaultBranch(t.TempDir()); got != "trunk" {
+		t.Fatalf("DetectDefaultBranch = %q, want %q", got, "trunk")
 	}
 }
 
 func TestDetectDefaultBranchReturnsEmptyWhenUnresolvable(t *testing.T) {
 	repo := initRepo(t)
-	if got := detectDefaultBranch(repo); got != "" {
-		t.Fatalf("detectDefaultBranch = %q, want empty (no origin configured)", got)
+	if got := DetectDefaultBranch(repo); got != "" {
+		t.Fatalf("DetectDefaultBranch = %q, want empty (no origin configured)", got)
 	}
 }
 

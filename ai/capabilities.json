@@ -8666,6 +8666,7 @@
                 "--allow-saturated-host",
                 "--apply",
                 "--async",
+                "--changed",
                 "--config",
                 "--days",
                 "--history",
@@ -8675,10 +8676,12 @@
                 "--list",
                 "--queue",
                 "--quiet",
+                "--target",
                 "--worker"
               ],
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
+                "--changed appends the Go packages a local diff touches (staged, unstaged, and already-committed changes since the merge base with --target, default: the repository's detected default branch) to the command instead of running it as given; when nothing changed it prints that and exits 0 without running the command (issue #570, spec/plans/coverage-to-100/README.md task-19).",
                 "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
                 "An exact retry after a lost file-bridge response reattaches to the unresolved envelope-bound idempotency key; --idempotency-key distinguishes intentional identical submissions.",
                 "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
@@ -8700,12 +8703,14 @@
               "contains": [
                 "--apply",
                 "--async",
+                "--changed",
                 "--config",
                 "--history",
                 "--idempotency-key",
                 "--list",
                 "--queue",
                 "--quiet",
+                "--target",
                 "--worker",
                 "run -- <command>"
               ]
@@ -8724,7 +8729,9 @@
                 "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
                 "wb run -- go test ./internal/worktrees -run TestCreate",
                 "wb run --history --days 7",
-                "wb run --queue"
+                "wb run --queue",
+                "wb run --changed -- go test",
+                "wb run --changed --target origin/main -- go vet"
               ]
             }
           ],
@@ -8807,6 +8814,21 @@
               "path": "internal/orchestrate/engine_integration_test.go",
               "name": "TestRunDryRunCreatesNoOperationState",
               "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_changed_test.go",
+              "name": "TestRunChangedAppendsOnlyTouchedPackagesToCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_changed_test.go",
+              "name": "TestRunChangedExitsZeroWithoutRunningWhenNothingChanged",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/quality/changed_packages_test.go",
+              "name": "TestChangedPackagesIncludesCommittedStagedAndUnstagedChangesTogether",
+              "kind": "unit"
             }
           ],
           "limitation": null
