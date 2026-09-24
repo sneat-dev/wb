@@ -130,7 +130,7 @@ func TestAdmitHeavyReturnsImmediatelyWhenContextIsAlreadyDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 	if _, _, _, err := admitHeavy(ctx, root, Participant{PID: 1}, ticket); err == nil {
 		t.Fatal("admitHeavy with an already-cancelled context succeeded, want its Err()")
 	}
@@ -148,12 +148,12 @@ func TestAdmitHeavyWaitsBehindAnEarlierWaiterThenReportsCancellation(t *testing.
 	t.Parallel()
 	root := t.TempDir()
 	head := RegisterHeavy(root, Participant{PID: 1})
-	defer head.Forget()
+	t.Cleanup(func() { head.Forget() })
 	behind := RegisterHeavy(root, Participant{PID: 2})
-	defer behind.Forget()
+	t.Cleanup(func() { behind.Forget() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), retryInterval/4)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	if _, _, _, err := admitHeavy(ctx, root, Participant{PID: 2}, behind); err == nil {
 		t.Fatal("admitHeavy behind an earlier waiter, with a context that expires mid-wait, succeeded, want its Err()")
 	}
@@ -169,7 +169,7 @@ func TestAdmitHeavyWaitsWhenAdmissionLockIsHeldElsewhereThenReportsCancellation(
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 
 	lockPath := heavyLockPath(root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
@@ -179,13 +179,13 @@ func TestAdmitHeavyWaitsWhenAdmissionLockIsHeldElsewhereThenReportsCancellation(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = holderFile.Close() }()
+	t.Cleanup(func() { _ = holderFile.Close() })
 	if err := unix.Flock(int(holderFile.Fd()), unix.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), retryInterval/4)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	if _, _, _, err := admitHeavy(ctx, root, Participant{PID: 1}, ticket); err == nil {
 		t.Fatal("admitHeavy against an already-held admission lock, with a context that expires mid-wait, succeeded, want its Err()")
 	}
@@ -202,7 +202,7 @@ func TestAdmitHeavyWaitsWhenDefensiveMaxIsAlreadyReachedThenReportsCancellation(
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 
 	dir := heavyRunningDir(root)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -226,7 +226,7 @@ func TestAdmitHeavyWaitsWhenDefensiveMaxIsAlreadyReachedThenReportsCancellation(
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), retryInterval*3+retryInterval/4)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	if _, _, _, err := admitHeavy(ctx, root, Participant{PID: 1}, ticket); err == nil {
 		t.Fatal("admitHeavy with heavyDefensiveMax holders already running, with a context that expires mid-wait, succeeded, want its Err()")
 	}

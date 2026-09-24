@@ -171,7 +171,7 @@ func TestSnapshotOnTheHeavyNamespaceReadsTheHeavyDirectories(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 	state := ticket.Snapshot(8)
 	if state.Total != 1 || state.Position != 1 {
 		t.Fatalf("Snapshot(heavy namespace) = %#v, want Total=1 Position=1 for its own sole waiter", state)
@@ -184,7 +184,7 @@ func TestListQueueReportsAHeavyWaiter(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1, Summary: "go test ./..."})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 	listing := ListQueue(root, 8)
 	if len(listing.Waiting) != 1 || listing.Waiting[0].Summary != "go test ./..." {
 		t.Fatalf("ListQueue with one heavy waiter = %#v, want it reported", listing.Waiting)

@@ -79,7 +79,7 @@ func TestAdmitHeavyReportsAdmissionLockDirectoryCreationFailure(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 
 	heavyDir := heavyRoot(root)
 	if err := os.MkdirAll(heavyDir, 0o700); err != nil {
@@ -110,7 +110,7 @@ func TestAdmitHeavyRetriesWhenAnnounceFailsThenReportsCancellation(t *testing.T)
 	t.Parallel()
 	root := t.TempDir()
 	ticket := RegisterHeavy(root, Participant{PID: 1})
-	defer ticket.Forget()
+	t.Cleanup(func() { ticket.Forget() })
 
 	dir := heavyRunningDir(root)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -122,7 +122,7 @@ func TestAdmitHeavyRetriesWhenAnnounceFailsThenReportsCancellation(t *testing.T)
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), retryInterval*3+retryInterval/4)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	if _, _, _, err := admitHeavy(ctx, root, Participant{PID: 1}, ticket); err == nil {
 		t.Fatal("admitHeavy that can never announce its holder record succeeded, want its Err() once the context expires")
 	}
