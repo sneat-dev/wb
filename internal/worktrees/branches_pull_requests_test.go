@@ -111,6 +111,52 @@ func TestExactBranchPullRequestsRejectsUnverifiableRepositoryIdentity(t *testing
 	}
 }
 
+func TestExactBranchPullRequestsRejectsUnverifiableBaseIdentity(t *testing.T) {
+	installBranchPullRequestFixture(t, `[]`,
+		`[{"number":13,"state":"open","head":{"ref":"child"},"base":{"ref":"feature/ambiguous"}}]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/ambiguous")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "base pull request #13") {
+		t.Fatalf("missing base repository identity did not fail closed: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsInvalidIdentityAndBaseQueryFailure(t *testing.T) {
+	if evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme", "feature/x"); evidence.err == nil {
+		t.Fatal("invalid repository was accepted")
+	}
+	installBranchPullRequestFixture(t, `[]`, `not-json`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "query base pull requests") {
+		t.Fatalf("base query failure was hidden: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsIgnoresUnknownState(t *testing.T) {
+	installBranchPullRequestFixture(t,
+		`[{"number":14,"state":"drafting","head":{"ref":"feature/x","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`,
+		`[]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+	if evidence.err != nil || len(evidence.requests) != 0 {
+		t.Fatalf("unknown PR state was reported as actionable: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsMalformedOrEmptyPages(t *testing.T) {
+	for _, test := range []struct{ name, body, want string }{
+		{"malformed", `[{`, "decode"},
+		{"null", `null`, "got null"},
+		{"empty", ``, "empty response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installBranchPullRequestFixture(t, test.body, `[]`)
+			evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+			if evidence.err == nil || !strings.Contains(evidence.err.Error(), test.want) {
+				t.Fatalf("invalid GitHub payload %q was accepted: %#v", test.body, evidence)
+			}
+		})
+	}
+}
+
 func TestBranchListReportsPullRequestQueryFailureOnRemoteRow(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "feature/unavailable")
@@ -166,5 +212,61 @@ func TestBranchListWithPRsIncludesInUseRemoteBranch(t *testing.T) {
 	entry := outcome.Entries[0]
 	if entry.Disposition != BranchInUse || !entry.PullRequestQueried || entry.OpenPullRequest == nil || entry.OpenPullRequest.Number != 12 {
 		t.Fatalf("in-use remote row lacks open PR evidence: %#v", entry)
+	}
+}
+
+func TestBranchCleanupRechecksOpenPullRequestsBeforeRemoteDeletion(t *testing.T) {
+	for _, test := range []struct{ name, mode, want string }{
+		{"query failure", "fail", "recheck pull-request evidence"},
+		{"new head PR", "head", "became the head of open pull request"},
+		{"new base PR", "base", "became the base of open pull request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			gitTest(t, fixture.canonical, "checkout", "-b", "feature/race")
+			writeAndCommit(t, fixture.canonical, "race.txt", "v1\n", "race work")
+			gitTest(t, fixture.canonical, "checkout", "main")
+			gitTest(t, fixture.canonical, "merge", "--no-ff", "-m", "merge race work", "feature/race")
+			gitTest(t, fixture.canonical, "push", "origin", "main", "feature/race")
+
+			binDir := t.TempDir()
+			script := filepath.Join(binDir, "gh")
+			calls := filepath.Join(t.TempDir(), "calls")
+			if err := os.WriteFile(calls, []byte("0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			content := "#!/bin/sh\nset -eu\n" +
+				"count=$(cat \"$WB_TEST_GH_CALLS\")\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > \"$WB_TEST_GH_CALLS\"\n" +
+				"if [ \"$count\" -le 2 ]; then printf '[]\\n'; exit 0; fi\n" +
+				"case \"$WB_TEST_RACE_MODE\" in\n" +
+				"fail) echo 'GitHub unavailable' >&2; exit 7;;\n" +
+				"head) if [ \"$count\" -eq 3 ]; then printf '%s\\n' \"$WB_TEST_RACE_HEAD\"; else printf '[]\\n'; fi;;\n" +
+				"base) if [ \"$count\" -eq 4 ]; then printf '%s\\n' \"$WB_TEST_RACE_BASE\"; else printf '[]\\n'; fi;;\n" +
+				"esac\n"
+			if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("WB_TEST_GH_CALLS", calls)
+			t.Setenv("WB_TEST_RACE_MODE", test.mode)
+			t.Setenv("WB_TEST_RACE_HEAD", `[{"number":21,"html_url":"https://example.test/21","state":"open","head":{"ref":"feature/race","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`)
+			t.Setenv("WB_TEST_RACE_BASE", `[{"number":22,"html_url":"https://example.test/22","state":"open","head":{"ref":"child"},"base":{"ref":"feature/race","repo":{"full_name":"acme/app"}}}]`)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			outcome, err := BranchCleanup(context.Background(), BranchCleanupOptions{
+				ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Base: "main",
+				Repository: "acme/app", Branch: "feature/race", Apply: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := resultFor(t, outcome, "feature/race")
+			if result.Applied || result.Outcome != "failed" || !strings.Contains(result.Error, test.want) {
+				t.Fatalf("new PR evidence did not refuse deletion: %#v", result)
+			}
+			if remoteBranchForTest(t, fixture.canonical, "feature/race") == "" {
+				t.Fatal("remote branch was deleted after PR state changed")
+			}
+		})
 	}
 }
