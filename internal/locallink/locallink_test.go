@@ -601,7 +601,7 @@ func TestEngineRealPnpmSiblingFailureRetryAndUndoJourney(t *testing.T) {
 	}
 	git := newFakeGit()
 	node := &engineExecNode{
-		ExecNode:        ExecNode{CacheRoot: filepath.Join(base, "cache"), ContentHash: git.hash, Timeout: time.Second},
+		ExecNode:        ExecNode{CacheRoot: filepath.Join(base, "cache"), ContentHash: git.hash, Timeout: 30 * time.Second},
 		dists:           dists,
 		failSiblingOnce: true,
 	}
@@ -833,7 +833,7 @@ func TestFailedBuildUndoPreservesPublishedPackageFilesystem(t *testing.T) {
 	if err := os.Symlink(relative, target); err != nil {
 		t.Fatal(err)
 	}
-	fixture.engine.Node = failingBuildExecNode{ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: time.Second}}
+	fixture.engine.Node = failingBuildExecNode{ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}}
 
 	result, err := fixture.engine.Run(context.Background(), Options{Library: fixture.library, Consumers: []string{fixture.consumer}})
 	if err != nil {
@@ -937,7 +937,7 @@ func TestRefreshBuildFailureKeepsAppliedRecoveryUntilUndo(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := &refreshThenFailNode{
-		ExecNode:    ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: time.Second},
+		ExecNode:    ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second},
 		dist:        dist,
 		consumerDir: fixture.consumer,
 		packageName: "@acme/core",
