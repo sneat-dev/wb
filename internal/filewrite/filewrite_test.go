@@ -236,10 +236,30 @@ func TestOpenReadOnlyReportsENOENTOnAMissingName(t *testing.T) {
 func TestOpenReadOnlyHonoursAnInjectedFailure(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
-	inj := &Injector{Step: StepOpenOrCreate, Name: "f", Err: errBoom}
+	inj := &Injector{Step: StepOpen, Name: "f", Err: errBoom}
 	if _, err := OpenReadOnly(int(dir.Fd()), "f", inj); !errors.Is(err, errBoom) {
 		t.Fatalf("OpenReadOnly with injected failure = %v, want errBoom", err)
 	}
+}
+
+// TestOpenReadOnlyIgnoresAStepOpenOrCreateInjector proves StepOpen and
+// StepOpenOrCreate are genuinely distinct steps (N2 from the task-9 PR-1
+// review): an Injector armed for "the create" must never fire on "the
+// reopen", even when both calls share a Name.
+func TestOpenReadOnlyIgnoresAStepOpenOrCreateInjector(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unix.Close(fd)
+	inj := &Injector{Step: StepOpenOrCreate, Name: "f", Err: errBoom}
+	fd, err = OpenReadOnly(int(dir.Fd()), "f", inj)
+	if err != nil {
+		t.Fatalf("OpenReadOnly with a StepOpenOrCreate injector = %v, want nil (StepOpen and StepOpenOrCreate are distinct)", err)
+	}
+	_ = unix.Close(fd)
 }
 
 // --- Chmod ---
@@ -399,7 +419,14 @@ func TestSyncHonoursAnInjectedFailure(t *testing.T) {
 	}
 }
 
-func TestCloseClosesTheFile(t *testing.T) {
+// closeFile is unexported (see filewrite.go's doc comment: no production
+// caller reaches a "close" step outside CreateExclusiveWriteSync), so it
+// is exercised directly here rather than through an exported wrapper --
+// TestCreateExclusiveWriteSyncReportsCreatedTrueEvenWhenCloseFails below
+// covers the same StepClose branch through the one production path that
+// uses it, and these three tests cover closeFile's own real-failure and
+// leak-prevention behaviour precisely.
+func TestCloseFileClosesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
@@ -407,31 +434,31 @@ func TestCloseClosesTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := os.NewFile(uintptr(fd), "f")
-	if err := Close(file, "f", nil); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := closeFile(file, "f", nil); err != nil {
+		t.Fatalf("closeFile: %v", err)
 	}
 	if err := file.Close(); err == nil {
 		t.Fatal("file was not actually closed")
 	}
 }
 
-func TestCloseReportsARealFailureOnADoubleClose(t *testing.T) {
+func TestCloseFileReportsARealFailureOnADoubleClose(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	file := openWritableFile(t, dir, "f")
 	_ = file.Close()
-	if err := Close(file, "f", nil); err == nil {
-		t.Fatal("Close on an already-closed file = nil, want an error")
+	if err := closeFile(file, "f", nil); err == nil {
+		t.Fatal("closeFile on an already-closed file = nil, want an error")
 	}
 }
 
-func TestCloseHonoursAnInjectedFailureAndStillClosesTheDescriptor(t *testing.T) {
+func TestCloseFileHonoursAnInjectedFailureAndStillClosesTheDescriptor(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	file := openWritableFile(t, dir, "f")
 	inj := &Injector{Step: StepClose, Name: "f", Err: errBoom}
-	if err := Close(file, "f", inj); !errors.Is(err, errBoom) {
-		t.Fatalf("Close with injected failure = %v, want errBoom", err)
+	if err := closeFile(file, "f", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("closeFile with injected failure = %v, want errBoom", err)
 	}
 	if err := file.Close(); err == nil {
 		t.Fatal("descriptor was leaked: a second Close still succeeded")
@@ -464,126 +491,7 @@ func TestSyncDirReportsARealFailureOnAClosedDirectory(t *testing.T) {
 	}
 }
 
-// --- Mkdirat ---
-
-func TestMkdiratCreatesADirectory(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	if err := Mkdirat(int(dir.Fd()), "d", 0o700, nil); err != nil {
-		t.Fatalf("Mkdirat: %v", err)
-	}
-	info, err := os.Stat(filepath.Join(dir.Name(), "d"))
-	if err != nil || !info.IsDir() {
-		t.Fatalf("Mkdirat did not create a directory: %v", err)
-	}
-}
-
-func TestMkdiratReportsEEXISTOnAnExistingName(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	if err := Mkdirat(int(dir.Fd()), "d", 0o700, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := Mkdirat(int(dir.Fd()), "d", 0o700, nil); !errors.Is(err, unix.EEXIST) {
-		t.Fatalf("second Mkdirat = %v, want EEXIST (callers decide tolerance, not this package)", err)
-	}
-}
-
-func TestMkdiratHonoursAnInjectedFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	inj := &Injector{Step: StepMkdirat, Name: "d", Err: errBoom}
-	if err := Mkdirat(int(dir.Fd()), "d", 0o700, inj); !errors.Is(err, errBoom) {
-		t.Fatalf("Mkdirat with injected failure = %v, want errBoom", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir.Name(), "d")); err == nil {
-		t.Fatal("injected failure still created the directory")
-	}
-}
-
-// --- Rename / RenameNoReplace / LinkNoReplace ---
-
-func TestRenameReplacesAnExistingDestination(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	for _, name := range []string{"from", "to"} {
-		fd, err := CreateExclusive(int(dir.Fd()), name, 0o600, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = unix.Close(fd)
-	}
-	if err := Rename(int(dir.Fd()), "from", int(dir.Fd()), "to", nil); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir.Name(), "from")); err == nil {
-		t.Fatal("source still exists after rename")
-	}
-	if _, err := os.Stat(filepath.Join(dir.Name(), "to")); err != nil {
-		t.Fatalf("destination missing after rename: %v", err)
-	}
-}
-
-func TestRenameReportsARealFailureOnAMissingSource(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	if err := Rename(int(dir.Fd()), "missing", int(dir.Fd()), "to", nil); err == nil {
-		t.Fatal("Rename(missing source) = nil, want an error")
-	}
-}
-
-func TestRenameHonoursAnInjectedFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	fd, err := CreateExclusive(int(dir.Fd()), "from", 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = unix.Close(fd)
-	inj := &Injector{Step: StepRename, Name: "to", Err: errBoom}
-	if err := Rename(int(dir.Fd()), "from", int(dir.Fd()), "to", inj); !errors.Is(err, errBoom) {
-		t.Fatalf("Rename with injected failure = %v, want errBoom", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir.Name(), "from")); err != nil {
-		t.Fatal("injected failure still consumed the source")
-	}
-}
-
-func TestRenameNoReplaceInvokesTheSuppliedRenameFunction(t *testing.T) {
-	t.Parallel()
-	var gotFrom, gotTo string
-	renameFn := func(fromFD int, from string, toFD int, to string) error {
-		gotFrom, gotTo = from, to
-		return nil
-	}
-	if err := RenameNoReplace(1, "from", 2, "to", renameFn, nil); err != nil {
-		t.Fatalf("RenameNoReplace: %v", err)
-	}
-	if gotFrom != "from" || gotTo != "to" {
-		t.Fatalf("renameFn saw (%q, %q), want (from, to)", gotFrom, gotTo)
-	}
-}
-
-func TestRenameNoReplacePropagatesTheRenameFunctionsError(t *testing.T) {
-	t.Parallel()
-	renameFn := func(int, string, int, string) error { return errBoom }
-	if err := RenameNoReplace(1, "from", 2, "to", renameFn, nil); !errors.Is(err, errBoom) {
-		t.Fatalf("RenameNoReplace = %v, want errBoom", err)
-	}
-}
-
-func TestRenameNoReplaceHonoursAnInjectedFailureWithoutCallingRenameFn(t *testing.T) {
-	t.Parallel()
-	called := false
-	renameFn := func(int, string, int, string) error { called = true; return nil }
-	inj := &Injector{Step: StepRename, Name: "to", Err: errBoom}
-	if err := RenameNoReplace(1, "from", 2, "to", renameFn, inj); !errors.Is(err, errBoom) {
-		t.Fatalf("RenameNoReplace with injected failure = %v, want errBoom", err)
-	}
-	if called {
-		t.Fatal("renameFn was called despite the injected failure")
-	}
-}
+// --- LinkNoReplace ---
 
 func TestLinkNoReplaceCreatesASecondNameForTheSameContent(t *testing.T) {
 	t.Parallel()
@@ -719,70 +627,6 @@ func TestCreateExclusiveWriteSyncReportsCreatedTrueEvenWhenCloseFails(t *testing
 	if !created || !errors.Is(err, errBoom) {
 		t.Fatalf("CreateExclusiveWriteSync with injected close failure = (%v, %v), want (true, errBoom)", created, err)
 	}
-}
-
-// --- CreateExclusiveChmodWriteSync ---
-
-func TestCreateExclusiveChmodWriteSyncCreatesChmodsWritesAndSyncsWithoutClosing(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	file, err := CreateExclusiveChmodWriteSync(dir, "f", []byte("payload"), 0o600, nil)
-	if err != nil {
-		t.Fatalf("CreateExclusiveChmodWriteSync: %v", err)
-	}
-	t.Cleanup(func() { _ = file.Close() })
-	got, err := os.ReadFile(filepath.Join(dir.Name(), "f"))
-	if err != nil || string(got) != "payload" {
-		t.Fatalf("content = %q, %v, want %q, nil", got, err, "payload")
-	}
-	// Still open: a second exclusive create of the same name must fail
-	// with EEXIST, and Close must succeed exactly once more.
-	if err := file.Close(); err != nil {
-		t.Fatalf("file was not left open: %v", err)
-	}
-}
-
-func TestCreateExclusiveChmodWriteSyncFailsOnAnInjectedOpenFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	inj := &Injector{Step: StepOpenOrCreate, Name: "f", Err: errBoom}
-	file, err := CreateExclusiveChmodWriteSync(dir, "f", []byte("x"), 0o600, inj)
-	if file != nil || !errors.Is(err, errBoom) {
-		t.Fatalf("CreateExclusiveChmodWriteSync with injected open failure = (%v, %v), want (nil, errBoom)", file, err)
-	}
-}
-
-func TestCreateExclusiveChmodWriteSyncReturnsTheOpenFileOnAnInjectedChmodFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	inj := &Injector{Step: StepChmod, Name: "f", Err: errBoom}
-	file, err := CreateExclusiveChmodWriteSync(dir, "f", []byte("x"), 0o600, inj)
-	if file == nil || !errors.Is(err, errBoom) {
-		t.Fatalf("CreateExclusiveChmodWriteSync with injected chmod failure = (%v, %v), want (non-nil, errBoom)", file, err)
-	}
-	_ = file.Close()
-}
-
-func TestCreateExclusiveChmodWriteSyncReturnsTheOpenFileOnAnInjectedWriteFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	inj := &Injector{Step: StepWrite, Name: "f", Err: errBoom}
-	file, err := CreateExclusiveChmodWriteSync(dir, "f", []byte("x"), 0o600, inj)
-	if file == nil || !errors.Is(err, errBoom) {
-		t.Fatalf("CreateExclusiveChmodWriteSync with injected write failure = (%v, %v), want (non-nil, errBoom)", file, err)
-	}
-	_ = file.Close()
-}
-
-func TestCreateExclusiveChmodWriteSyncReturnsTheOpenFileOnAnInjectedSyncFailure(t *testing.T) {
-	t.Parallel()
-	dir := openTestDir(t)
-	inj := &Injector{Step: StepSync, Name: "f", Err: errBoom}
-	file, err := CreateExclusiveChmodWriteSync(dir, "f", []byte("x"), 0o600, inj)
-	if file == nil || !errors.Is(err, errBoom) {
-		t.Fatalf("CreateExclusiveChmodWriteSync with injected sync failure = (%v, %v), want (non-nil, errBoom)", file, err)
-	}
-	_ = file.Close()
 }
 
 // --- OpenOrCreateRegular ---

@@ -57,7 +57,21 @@ type TargetLock struct {
 
 func NewTargetStore(root string) TargetStore { return TargetStore{Root: root} }
 
+// Admit is the public entry point; production always takes the nil
+// *filewrite.Injector path through admit, which is where the real work
+// (and the one fd-relative create/write/publish sequence this task-9
+// series has migrated so far) lives.
 func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
+	return store.admit(raw, nil)
+}
+
+// admit is Admit's real implementation, taking an explicit
+// *filewrite.Injector so a test can deterministically drive the
+// admit-lock create-vs-EEXIST race end to end through this package's own
+// code (not just inside internal/filewrite's own unit tests) without
+// depending on goroutine scheduling -- see
+// TestAdmitFallsBackToOpeningTheAdmitLockAfterACompetingCreate.
+func (store TargetStore) admit(raw []byte, inj *filewrite.Injector) (TargetAdmission, error) {
 	envelope, err := DecodeEnvelope(raw)
 	if err != nil {
 		return TargetAdmission{}, err
@@ -87,7 +101,7 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 		return TargetAdmission{}, err
 	}
 	admitName := ".admit-" + envelope.Request.ResumeID + ".lock"
-	admitFD, err := filewrite.OpenOrCreateRegular(rootFD, admitName, 0o600, nil)
+	admitFD, err := filewrite.OpenOrCreateRegular(rootFD, admitName, 0o600, inj)
 	if err != nil {
 		return TargetAdmission{}, err
 	}

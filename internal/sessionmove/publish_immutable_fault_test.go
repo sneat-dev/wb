@@ -74,7 +74,7 @@ func TestPublishImmutableAtWrapsAnInjectedLinkFailureThatIsNotEEXIST(t *testing.
 func TestPublishImmutableAtWrapsAnInjectedOpenPublishedFailure(t *testing.T) {
 	t.Parallel()
 	authority := smCovOpenDirectory(t, t.TempDir())
-	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Name: "artifact", Err: errPublishFault}
+	inj := &filewrite.Injector{Step: filewrite.StepOpen, Name: "artifact", Err: errPublishFault}
 	if _, err := publishImmutableAt(authority, "artifact", []byte("payload"), 0o600, inj); err == nil ||
 		!strings.Contains(err.Error(), "open published immutable file") {
 		t.Fatalf("publishImmutableAt with injected reopen failure = %v, want a %q error", err, "open published immutable file")
@@ -105,7 +105,7 @@ func TestPublishImmutableAtRejectsAPublishedFileThatDoesNotShareTheTemporarysIno
 	dir := t.TempDir()
 	authority := smCovOpenDirectory(t, dir)
 	inj := &filewrite.Injector{
-		Step: filewrite.StepOpenOrCreate,
+		Step: filewrite.StepOpen,
 		Name: "artifact",
 		Hook: func() {
 			if err := unix.Unlinkat(int(authority.Fd()), "artifact", 0); err != nil {

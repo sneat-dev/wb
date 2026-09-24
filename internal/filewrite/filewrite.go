@@ -11,7 +11,17 @@
 // Fault injection is never a package-level variable. Each function takes
 // an explicit *Injector argument; a test builds its own Injector and
 // passes it directly to the call under test, so tests using different
-// Injectors race nothing and stay safe under t.Parallel().
+// Injectors race nothing and stay safe under t.Parallel(). An *Injector
+// itself is not goroutine-safe (Skip and hookDone mutate in place): one
+// Injector belongs to one call chain in one goroutine, never shared
+// across concurrently running calls.
+//
+// This package's exported surface only includes primitives spec/plans/
+// coverage-to-100 task-9's PR series has an actual production caller for
+// as of the PR that adds them; a primitive with no caller yet (a plain
+// Rename, a RenameNoReplace, Mkdirat, or a "create, chmod, write, sync,
+// but do not close" composite) is added in the PR that first needs it,
+// not spuriously ahead of time.
 package filewrite
 
 import (
@@ -26,9 +36,18 @@ import (
 type Step string
 
 const (
-	// StepOpenOrCreate covers every Openat call this package makes,
-	// whether it creates (O_CREAT) or merely opens an existing name.
+	// StepOpenOrCreate covers CreateExclusive's create-or-fail Openat call
+	// and OpenOrCreateRegular's own create-or-fall-back Openat calls --
+	// every occurrence where this package's job is to produce a file
+	// descriptor for a name that may not exist yet.
 	StepOpenOrCreate Step = "open_or_create"
+	// StepOpen covers OpenReadOnly's Openat call: reopening a name this
+	// package (or its caller) already knows exists, to read it back. It is
+	// a separate Step from StepOpenOrCreate -- rather than the two sharing
+	// one name and being distinguished only by the Name field -- so a test
+	// can target "the create" or "the reopen" of the same sequence without
+	// needing to know each call's exact Name.
+	StepOpen Step = "open"
 	// StepWrite covers the write itself, before the real syscall runs.
 	StepWrite Step = "write"
 	// StepShortWrite forces Write's underlying syscall to report fewer
@@ -41,16 +60,12 @@ const (
 	StepChmod Step = "chmod"
 	// StepClose covers a regular file's Close.
 	StepClose Step = "close"
-	// StepRename covers Renameat (replace or no-replace).
-	StepRename Step = "rename"
 	// StepLink covers Linkat.
 	StepLink Step = "link"
 	// StepDirSync covers a directory file descriptor's Sync (fsync),
 	// separate from StepSync so a test can fail the directory fsync
 	// without also failing the regular file's own fsync.
 	StepDirSync Step = "dir_sync"
-	// StepMkdirat covers Mkdirat.
-	StepMkdirat Step = "mkdirat"
 )
 
 // Injector lets a test force one named step to fail, or run a hook
@@ -174,7 +189,7 @@ func CreateExclusive(directoryFD int, name string, mode uint32, inj *Injector) (
 // O_RDONLY|O_NOFOLLOW|O_CLOEXEC, the flag set every read-back-to-verify
 // call site in this repository used.
 func OpenReadOnly(directoryFD int, name string, inj *Injector) (int, error) {
-	if err := inj.run(StepOpenOrCreate, name); err != nil {
+	if err := inj.run(StepOpen, name); err != nil {
 		return -1, err
 	}
 	return unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -226,10 +241,14 @@ func Sync(file *os.File, name string, inj *Injector) error {
 	return file.Sync()
 }
 
-// Close closes a regular file. On an injected or real failure the
+// closeFile closes a regular file. On an injected or real failure the
 // descriptor is still closed for real first, so injecting a close
-// failure in a test never leaks the fd.
-func Close(file *os.File, name string, inj *Injector) error {
+// failure in a test never leaks the fd. It is unexported: every current
+// production sequence that needs an injectable close reaches it through
+// CreateExclusiveWriteSync; a caller that needs to inject a close failure
+// on a sequence of its own is the PR that re-exports it (see this
+// package's doc comment).
+func closeFile(file *os.File, name string, inj *Injector) error {
 	if err := inj.run(StepClose, name); err != nil {
 		_ = file.Close()
 		return err
@@ -246,41 +265,6 @@ func SyncDir(directory *os.File, inj *Injector) error {
 		return err
 	}
 	return directory.Sync()
-}
-
-// Mkdirat creates name as a directory under directoryFD with mode. It
-// does not tolerate EEXIST itself -- callers that treat a pre-existing
-// directory as success (most do) check errors.Is(err, unix.EEXIST)
-// exactly as they did before this package existed.
-func Mkdirat(directoryFD int, name string, mode uint32, inj *Injector) error {
-	if err := inj.run(StepMkdirat, name); err != nil {
-		return err
-	}
-	return unix.Mkdirat(directoryFD, name, mode)
-}
-
-// Rename renames fromName to toName, both fd-relative, replacing any
-// existing toName -- plain Renameat, the semantics callers that do not
-// need atomic-no-replace publication use.
-func Rename(fromFD int, fromName string, toFD int, toName string, inj *Injector) error {
-	if err := inj.run(StepRename, toName); err != nil {
-		return err
-	}
-	return unix.Renameat(fromFD, fromName, toFD, toName)
-}
-
-// RenameNoReplace renames fromName to toName, both fd-relative, failing
-// instead of replacing an existing toName. The real, OS-specific
-// no-replace rename (Renameat2 on Linux, RenameatxNp on Darwin) is not
-// this package's concern -- each caller already has its own build-tag
-// split pair implementing one, unchanged by this task -- so it is passed
-// in as renameFn, and this function's only job is the one thing every
-// caller shares: the injectable seam around it.
-func RenameNoReplace(fromFD int, fromName string, toFD int, toName string, renameFn func(fromFD int, fromName string, toFD int, toName string) error, inj *Injector) error {
-	if err := inj.run(StepRename, toName); err != nil {
-		return err
-	}
-	return renameFn(fromFD, fromName, toFD, toName)
 }
 
 // LinkNoReplace hard-links oldName to newName, both fd-relative, failing
@@ -320,34 +304,7 @@ func CreateExclusiveWriteSync(directory *os.File, name string, raw []byte, mode 
 		_ = file.Close()
 		return false, err
 	}
-	return true, Close(file, name, inj)
-}
-
-// CreateExclusiveChmodWriteSync creates name under directory (O_WRONLY|
-// O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, mode), immediately re-asserts mode
-// with Fchmod (belt-and-braces against umask), writes raw and fsyncs --
-// but does not close: the caller keeps the returned file open for
-// further identity checks (for example, comparing it against a
-// concurrently published file by device/inode) before deciding whether
-// to publish or discard it. The file is returned even when an error
-// occurs after it was opened, so the caller's own cleanup (close, then
-// unlink the temporary name) still has a valid descriptor to close.
-func CreateExclusiveChmodWriteSync(directory *os.File, name string, raw []byte, mode os.FileMode, inj *Injector) (*os.File, error) {
-	fd, err := CreateExclusive(int(directory.Fd()), name, uint32(mode.Perm()), inj)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), name)
-	if err := Chmod(fd, uint32(mode.Perm()), name, inj); err != nil {
-		return file, err
-	}
-	if err := Write(file, raw, name, inj); err != nil {
-		return file, err
-	}
-	if err := Sync(file, name, inj); err != nil {
-		return file, err
-	}
-	return file, nil
+	return true, closeFile(file, name, inj)
 }
 
 // OpenOrCreateRegular opens name under directoryFD for read-write,
