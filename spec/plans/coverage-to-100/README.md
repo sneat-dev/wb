@@ -49,11 +49,19 @@ Asked one at a time, each as a multiple-choice question after the plan landed. T
 9. **Backstop (was Open Question 4, task-3d).** "Keep 87, raise-only (Recommended)": `--minimum=87` stays in both `go-ci.yml` and `nightly-coverage.yml`, raised only by a normal reviewed PR, never lowered, both files moving together; task-20 replaces it with 100.
 10. **Long functions (was Open Question 5, task-12).** "Only when a wave needs it (Recommended)": task-12 splits the 6 named functions; the other 50 are split only when a wave needs it to reach 100%, each in its own reviewed refactor PR.
 
+## Founder decisions (2026-09-23/24, during task-3)
+
+Decisions 11 and 12 were asked one at a time while #696 was in review, and the chosen option label is quoted verbatim. Decision 13 was a free-text instruction from the founder, quoted verbatim.
+
+11. **Count rule scope.** Coverage turned out to vary run to run in some packages (e.g. `internal/sessionpark/target_store.go:558` covered in 6 of 8 identical CI runs, `_research/flaky-coverage-2026-09-24.txt`), so a docs-only PR could fail. "Only packages the PR changes (Recommended)": the per-package "uncovered count must not rise" rule applies only to packages the PR changes (editing or deleting a `_test.go` counts); a rise in any other package is a warning with its file:line, never a failure. The nightly backstop still measures every package.
+12. **Flaky lines in a changed package.** `cmd/wb/daemon.go:2554` (a four-goroutine shutdown race) failed #696, which changes `cmd/wb`. The founder first chose "Both", then corrected it within minutes: "Keep rule, fix race". The per-package rule stays (no per-file scoping); the race is fixed at source in its own refactor PR (#699).
+13. **Flaky tests.** Free-text instruction: "Fix all flaky tests". *The plan's reading (not a founder quote):* every statement whose coverage varies between identical runs, and every open flaky-test issue (#504, #505, #539), is fixed at source rather than exempted. See task-21.
+
 ## Journey
 
 **Actors:** the PR author, CI, the nightly job, the reviewer, and the supervisor re-measuring coverage.
 
-**Confirmed by the founder 2026-09-23 (decisions 6–9):** steps 1–5 below describe task-3's ratchet design (moved-code rule, baseline, #646/#629, backstop). None of it is built yet.
+**Confirmed by the founder 2026-09-23 (decisions 6–9):** steps 1–5 below describe task-3's ratchet design (moved-code rule, baseline, #646/#629, backstop). Built in task-3 (#696, 654b8bf), with the count rule scoped to changed packages per decision 11.
 
 1. The PR author changes a package and opens a PR. CI's coverage job checks out full history (`fetch-depth: 0`), computes the merge base against the target branch, and runs `wb coverage --changed` against that base.
 2. `wb coverage` reports, per package, the uncovered-statement count against the merge-base baseline (the counts go-ci's coverage job published for that exact SHA when it was itself pushed to main — see step 5) and against any line the diff adds or changes that is not a moved, unmodified line. The author sees pass/fail per package plus, on failure, the exact file:line of every newly uncovered statement.
@@ -124,11 +132,13 @@ As measured 2026-09-23, `wb ci audit --target main --strict` fails with 34 findi
 
 **Id:** task-3
 **Depends-On:** task-2
-**Status:** in_progress
-**Note:** Sonnet lane cov-task3-ratchet started 2026-09-23 after founder decisions 6-9.
+**Status:** complete
+**Implemented-by:** 654b8bf310f06586c94a1ef6b99f58393f58e194
+**Note:** Per-change ratchet landed (#696): wb coverage --changed; per-package count rule on changed packages (decision 11); CI artifact baseline on every push to main; --minimum=87 backstop unchanged; wb ci audit --strict wired. Follow-ups: #708.
+**Evidence:** https://github.com/sneat-dev/wb/pull/696
 **Verifies:** a fixture PR that moves an uncovered function unchanged passes; a fixture PR that adds one uncovered statement fails and names its file:line; `wb coverage` reports counts, not rounded percentages.
 
-`wb coverage` fails when any package's uncovered count rises against its baseline (below), or when a statement added or changed against the merge base is uncovered and is not a moved, unmodified line (moved-code rule, below). It reports counts rather than rounded percentages. Wire it into `.github/workflows/go-ci.yml` with `--minimum=87` kept as a backstop and `wb ci audit --target <base> --strict` enabled (task-2 lands first so this starts clean; `<base>` is the PR's target branch, not the literal word "main"). Add `fetch-depth: 0` to the coverage job's checkout step (`.github/workflows/go-ci.yml:280`, today a shallow clone with no `fetch-depth`, unlike the eligibility job at `:176`), so the merge base is resolvable.
+`wb coverage` fails when the uncovered count of any package the PR changes rises against its baseline (below; decision 11 — a rise in an unchanged package is a warning; a changed package with no baseline entry counts from 0; renames count both paths as changed), or when a statement added or changed against the merge base is uncovered and is not a moved, unmodified line (moved-code rule, below). It reports counts rather than rounded percentages. Wire it into `.github/workflows/go-ci.yml` with `--minimum=87` kept as a backstop and `wb ci audit --target <base> --strict` enabled (task-2 lands first so this starts clean; `<base>` is the PR's target branch, not the literal word "main"). Add `fetch-depth: 0` to the coverage job's checkout step (`.github/workflows/go-ci.yml:280`, today a shallow clone with no `fetch-depth`, unlike the eligibility job at `:176`), so the merge base is resolvable.
 
 **Confirmed by the founder 2026-09-23 (decisions 6–9 above):**
 
@@ -147,7 +157,8 @@ Docs this task must also update, because tests enforce them: `AGENTS.md:84` (the
 
 **Id:** task-4
 **Depends-On:** task-3
-**Status:** planning
+**Status:** in_progress
+**Note:** Sonnet lane rebasing #646 onto main after task-3 (decision 8).
 **Verifies:** PR #646 is merged; `wb ci audit --target main --strict` still exits 0 after the merge; the coverage-shard jobs it touches complete within their `timeout-minutes` budget.
 
 An agent lane (decision 8) rebases sneat-dev/wb#646 onto main (post task-3), fixes its `internal/worktrees` coverage-shard timeouts, makes it pass the ratchet, and lands it after an adversarial review. #629 is rebased the same way, as a separate lane when the cap allows; it does not block task-5 or task-6.
@@ -177,11 +188,11 @@ This is production code, not test-only, so it is its own refactor task per found
 **Id:** task-7
 **Depends-On:** task-5, task-6
 **Status:** planning
-**Verifies:** `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each run in at most 3 minutes on the VM; the CI coverage job runs in at most 6 minutes; issues #587, #620 and #504 are each closed with a linked fix commit; a regression test proves `wb run --` no longer deadlocks its own tests (consuming task-6's run-queue seam).
+**Verifies:** `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each run in at most 3 minutes on the VM; the CI coverage job runs in at most 6 minutes; issues #587 and #620 are each closed with a linked fix commit (#504 and #539 moved to task-21, decision 13); a regression test proves `wb run --` no longer deadlocks its own tests (consuming task-6's run-queue seam).
 
-In shared test setup, set umask 022 and a private HOME and WB_HOME. Fix #587, #620 and #504. This task consumes task-5's per-invocation context to make `cmd/wb` tests run in parallel, and task-6's run-queue seam to stop the `wb run` deadlock; it makes no production-code changes of its own — per founder decision 3, test lanes change production code only through already-landed seams. This is #623 step 4 (measure a per-package wall-time table before and after, recorded in the PR).
+In shared test setup, set umask 022 and a private HOME and WB_HOME. Fix #587 and #620 (#504 and #539 moved to task-21 under founder decision 13; #504 closed by #703). This task consumes task-5's per-invocation context to make `cmd/wb` tests run in parallel, and task-6's run-queue seam to stop the `wb run` deadlock; it makes no production-code changes of its own — per founder decision 3, test lanes change production code only through already-landed seams. This is #623 step 4 (measure a per-package wall-time table before and after, recorded in the PR).
 
-#504 (`TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation`) and #539 (`TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository`) were checked (`gh issue view`, 2026-09-23) for a hidden production dependency the way #505 has one: neither `cmd/wb/daemon_file_bridge.go` nor the daemon package has a production `time.Sleep`/`time.After`, and `internal/repositoryevents`'s queue already exposes an injectable `queue.now` plus channel-based synchronization — both fixes are test-only (tighten the deadline-polling helpers in `cmd/wb/daemon_file_bridge_test.go`, and replace `time.After` timeouts with explicit barriers in `internal/repositoryevents/receiver_test.go`), so both stay here. #505 does not: see task-10.
+*Moved to task-21 (decision 13); kept for the analysis.* #504 (`TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation`) and #539 (`TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository`) were checked (`gh issue view`, 2026-09-23) for a hidden production dependency the way #505 has one: neither `cmd/wb/daemon_file_bridge.go` nor the daemon package has a production `time.Sleep`/`time.After`, and `internal/repositoryevents`'s queue already exposes an injectable `queue.now` plus channel-based synchronization — both fixes are test-only (tighten the deadline-polling helpers in `cmd/wb/daemon_file_bridge_test.go`, and replace `time.After` timeouts with explicit barriers in `internal/repositoryevents/receiver_test.go`), so both stay here. #505 does not: see task-10.
 
 ### Task 8: Git/exec runner seam
 
@@ -218,9 +229,9 @@ Consolidate the temp-file write, sync, chmod, close and rename sequences into on
 **Id:** task-10
 **Depends-On:** task-7
 **Status:** planning
-**Verifies:** a mechanical check finds zero direct `time.Sleep`/`time.Now` calls in retry, timeout or backoff code paths outside the seam; #505 is closed with a linked fix commit.
+**Verifies:** a mechanical check finds zero direct `time.Sleep`/`time.Now` calls in retry, timeout or backoff code paths outside the seam. (#505 moved to task-21 under decision 13.)
 
-Inject time and sleep wherever retries, timeouts or backoff exist. Estimated at about 180 statements. The sleep/retry sites to inject, as measured 2026-09-23 (excluding tests): `internal/remotestate/gitrepo/clonelock.go:71`, `internal/gitops/gitops.go:240`, `internal/remotestate/gitrepo/provider.go:211`, `internal/agents/owner.go:325`, `internal/orchestrate/pr_create.go:591`, `internal/orchestrate/worktree_merge_ack.go:891`, `internal/worktrees/repository_registration_lock.go:65`, `internal/worktrees/repository_registration_lock.go:81`, `cmd/wb/daemon_process_darwin.go:140`, `cmd/wb/daemon.go:997`. This task also fixes #505 (flaky `internal/runqueue` heartbeat and `cmd/wb` queue-wait grace tests) — moved here from task-7 because its own text recommends "inject a clock," a production change task-7 (test-only per founder decision 3) cannot make; task-7 is test-only, so #505 waits for this seam. Per founder decision 1, this refactor PR must carry tests for 100% of every statement it adds or modifies.
+Inject time and sleep wherever retries, timeouts or backoff exist. Estimated at about 180 statements. The sleep/retry sites to inject, as measured 2026-09-23 (excluding tests): `internal/remotestate/gitrepo/clonelock.go:71`, `internal/gitops/gitops.go:240`, `internal/remotestate/gitrepo/provider.go:211`, `internal/agents/owner.go:325`, `internal/orchestrate/pr_create.go:591`, `internal/orchestrate/worktree_merge_ack.go:891`, `internal/worktrees/repository_registration_lock.go:65`, `internal/worktrees/repository_registration_lock.go:81`, `cmd/wb/daemon_process_darwin.go:140`, `cmd/wb/daemon.go:997`. #505 (flaky `internal/runqueue` heartbeat and `cmd/wb` queue-wait grace tests) was originally assigned here; under founder decision 13 it moved to task-21, which fixes it at source, with its own refactor PR if a seam is needed. Per founder decision 1, this refactor PR must carry tests for 100% of every statement it adds or modifies.
 
 ### Task 11: Secure helpers as a thin shim plus a testable core
 
@@ -313,6 +324,15 @@ Promote the changed-package computation that today lives embedded as shell insid
 **Verifies:** `wb coverage --minimum=100` is the only coverage gate invoked by both `.github/workflows/go-ci.yml` and the pre-push hook, with no exclusions; both `go-ci.yml` and `nightly-coverage.yml` show `--minimum=100`, not `--minimum=87`.
 
 Once every package is at 100%, replace the per-change ratchet and its 87 backstop with specscore-cli's gate: 100% or fail, with no exclusions. Per Task 3's decision, both the ratchet and this hard gate live in `wb coverage` — this task does not introduce a separate `scripts/coverage-gate.sh`; CI and the pre-push hook call `wb coverage --minimum=100`, with the pre-push invocation scoped to changed packages via task-19's `wb run --changed -- go test` / `wb coverage --changed`, because the full suite is too slow for a pre-push hook (`.wb/templates/go-sharded-pre-push.sh` has no coverage step today, and the full local suite takes about 27 minutes). `--minimum=87` is removed from both files, replaced by `--minimum=100` — not just lowered or left as dead configuration; this is a cutover per `rule:cutover-verbs-mean-full-cutover`, so this task also lists every workflow reference to the old `--minimum=87` invocation and updates each one. The nightly job keeps running unchanged in shape (same cron schedule, same full-merged-suite run) — only its threshold moves to 100, since it stays the independent backstop that catches a regression within 24 hours even though the PR-path gate is now scoped to changed packages. The per-package ratchet and its baseline-publishing machinery (task-3, including the push-event validation-reuse exemption) are retired once this gate lands — a single repo-wide 100% requirement makes a per-package baseline redundant. The hook comment must not suggest `--no-verify`, per `rule:hooks-are-never-bypassed`.
+
+### Task 21: Deterministic coverage — fix all flaky tests
+
+**Id:** task-21
+**Depends-On:** task-1
+**Status:** in_progress
+**Verifies:** eight identical full-suite coverage runs on one main commit show 0 statements whose coverage differs between runs (`_research/flaky_analyze.py`), and issues #504, #505 and #539 are closed with linked fix commits.
+
+Founder decision 13. The ratchet (task-3) turns coverage that varies between identical runs into random PR failures, so every such statement is made deterministic at source, never exempted. Inventory ([`_research/flaky-coverage-2026-09-24.txt`](_research/flaky-coverage-2026-09-24.txt)): eight parallel `nightly-coverage.yml` runs dispatched on main 825693b (one throwaway branch per run, since the workflow's concurrency group is per ref; the branches are deleted afterwards), with each run's `profile.cov` compared by `_research/flaky_analyze.py`, found 21 blocks / 22 statements in 7 packages, and no failing tests: `internal/orchestrate/ciwait.go` (9), `internal/runqueue/heavy.go` (4), `cmd/wb/daemon.go` (3), `internal/worktrees/worklog.go` (3), `hub/peer_admin.go:173`, `internal/sessionmove/store.go:829`, `internal/sessionpark/target_store.go:558`. Landed so far: #699 (`serveDashboard` shutdown race, 6fd993d), #700 (state-lock clock seam, a538dd1), #703 (#504, 4d43c4b). In review: #702 (`ciwait.go`), #705 (`runqueue/heavy.go`, #505). Queued: the `*At` file helpers, `hub`, and #539. Production changes go through their own behaviour-preserving refactor PRs first (decision 3); a fix that makes coverage depend on a sleep instead of a barrier does not count. This pulls #504/#539 forward from task-7 and #505 forward from task-10.
 
 ## Estimates
 
