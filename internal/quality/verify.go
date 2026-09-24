@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sneat-dev/wb/internal/envguard"
 	"github.com/sneat-dev/wb/internal/process"
@@ -792,6 +793,21 @@ func commandError(command, output string, err error) string {
 	return truncateCommandDetailTo(detail, 1000)
 }
 
+// truncationMarkerFormat renders the "final N bytes" notice truncated
+// output carries. It must always be rendered from the FINAL tail size —
+// never a provisional one — so the count it states matches what actually
+// follows it.
+const truncationMarkerFormat = "\n… output truncated; final %d bytes:\n"
+
+// evidenceHeader introduces the failure evidence truncateCommandDetailTo
+// recovers from a truncated command's dropped middle (sneat-dev/wb#582).
+// evidenceTruncatedNotice replaces it when even the evidence itself had to
+// be cut to fit the budget.
+const (
+	evidenceHeader          = "\n… output truncated; kept failure evidence from the dropped middle:\n"
+	evidenceTruncatedNotice = "\n… (further failure evidence omitted)\n"
+)
+
 func truncateCommandDetailTo(detail string, max int) string {
 	if max <= 0 {
 		return ""
@@ -803,77 +819,153 @@ func truncateCommandDetailTo(detail string, max int) string {
 	if headBytes > 250 {
 		headBytes = 250
 	}
-	// Reserve enough space for the truncation notice itself. Its exact
-	// length depends only on the rendered tail count.
-	tailBytes := max - headBytes - 64
-	if tailBytes < 0 {
-		tailBytes = 0
-	}
-	marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
-	tailBytes = max - headBytes - len(marker)
-	if tailBytes < 0 {
-		tailBytes = 0
-	}
-	marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
 
-	tailStart := len(detail) - tailBytes
 	// sneat-dev/wb#582: `go test` output is sorted by package, and the
 	// overwhelming majority pass, so the failing package (and the
 	// assertion that names the real cause) almost never sits in the head
 	// or tail a bare head+tail bound keeps — it sits in the middle, which
-	// is exactly what got dropped. Recover any FAIL/panic evidence that
-	// region held before falling back to the historical head+tail-only
-	// shape, so a run with nothing worth keeping in the middle is
-	// truncated exactly as before this fix.
-	evidence := failureEvidenceIn(detail[headBytes:tailStart])
-	if evidence == "" {
-		return detail[:headBytes] + marker + detail[tailStart:]
+	// is exactly what got dropped, and a FAIL block can also sit inside
+	// what the old bound would have kept as tail, only to be squeezed out
+	// once evidence elsewhere shrinks that tail. Scan everything from the
+	// start of the line headBytes falls in (so a "--- FAIL" line
+	// straddling the head boundary is still seen whole, keeping its
+	// indented continuation even when the parent line is itself in the
+	// head) all the way to the true end of detail — never only up to some
+	// provisional tail boundary — so nothing between the head and the end
+	// is ever missed regardless of how much the tail must shrink.
+	scanStart := 0
+	if idx := strings.LastIndexByte(detail[:headBytes], '\n'); idx >= 0 {
+		scanStart = idx + 1
+	}
+	evidenceLines := failureEvidenceIn(detail[scanStart:])
+
+	// legacyTailBytes and legacyMarker are the historical head+tail-only
+	// shape (unchanged formula). When nothing worth keeping was found,
+	// this is returned byte-for-byte as before this fix.
+	legacyTailBytes, legacyMarker := sizeTailAndMarker(max - headBytes)
+	if len(evidenceLines) == 0 {
+		return detail[:headBytes] + legacyMarker + detail[len(detail)-legacyTailBytes:]
 	}
 
-	evidenceBlock := "\n… output truncated; kept failure evidence from the dropped middle:\n" + evidence + "\n"
-	// The evidence itself is never trimmed once found — it is the reason
-	// this function exists — but it is capped to what remains after the
-	// head, so a pathological run with unbounded FAIL/panic output cannot
-	// make the returned string grow without bound.
-	if evidenceCap := max - headBytes; evidenceCap >= 0 && len(evidenceBlock) > evidenceCap {
-		evidenceBlock = evidenceBlock[:evidenceCap]
+	available := max - headBytes
+	evidenceBlock := fitEvidenceBlock(evidenceLines, available)
+	remaining := available - len(evidenceBlock)
+	tailBytes, marker := sizeTailAndMarker(remaining)
+	// Unlike the legacy fallback above (which reproduces the historical
+	// formula byte-for-byte, including its own long-standing imprecision
+	// at a budget too small to fit even a zero-byte marker), the evidence
+	// path must never exceed max (review finding B1): evidenceBlock has
+	// already consumed part of the head's own remaining room, so the same
+	// imprecision here would push the total over budget. Drop the tail
+	// and its marker entirely rather than exceed it.
+	if len(marker)+tailBytes > remaining {
+		marker, tailBytes = "", 0
 	}
-	tailBytes = max - headBytes - len(evidenceBlock) - 64
+	var tail string
+	if tailBytes > 0 {
+		tail = detail[len(detail)-tailBytes:]
+	}
+	return detail[:headBytes] + evidenceBlock + marker + tail
+}
+
+// sizeTailAndMarker renders the truncation marker from the tail size it
+// actually leaves room for — recomputing once the marker's own rendered
+// length is known, exactly as the historical algorithm did. It is a
+// byte-for-byte reproduction of that historical formula, including its
+// own long-standing imprecision when budget is too small to fit even a
+// zero-byte marker (the legacy fallback above relies on this exact
+// parity); a caller that must not exceed budget corrects for that itself.
+func sizeTailAndMarker(budget int) (tailBytes int, marker string) {
+	if budget <= 0 {
+		return 0, ""
+	}
+	tailBytes = budget - 64
 	if tailBytes < 0 {
 		tailBytes = 0
 	}
-	tailMarker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
-	tailBytes = max - headBytes - len(evidenceBlock) - len(tailMarker)
+	marker = fmt.Sprintf(truncationMarkerFormat, tailBytes)
+	tailBytes = budget - len(marker)
 	if tailBytes < 0 {
 		tailBytes = 0
 	}
-	return detail[:headBytes] + evidenceBlock + tailMarker + detail[len(detail)-tailBytes:]
+	marker = fmt.Sprintf(truncationMarkerFormat, tailBytes)
+	return tailBytes, marker
+}
+
+// fitEvidenceBlock renders every kept evidence line under evidenceHeader,
+// never returning more than available bytes. When the full block does not
+// fit, it keeps as many whole lines (in the order found) as fit alongside
+// evidenceTruncatedNotice, so a cut always lands on a line boundary and
+// discloses that it happened; it never splits a line, and never splits a
+// multibyte rune even in the degenerate case where available is too small
+// to hold the header itself.
+func fitEvidenceBlock(lines []string, available int) string {
+	full := evidenceHeader + strings.Join(lines, "\n") + "\n"
+	if len(full) <= available {
+		return full
+	}
+	budget := available - len(evidenceHeader) - len(evidenceTruncatedNotice)
+	if budget < 0 {
+		return truncateRuneSafe(evidenceHeader, available)
+	}
+	var kept []string
+	used := 0
+	for _, line := range lines {
+		add := len(line)
+		if len(kept) > 0 {
+			add++ // the "\n" strings.Join would place before it
+		}
+		if used+add > budget {
+			break
+		}
+		kept = append(kept, line)
+		used += add
+	}
+	return evidenceHeader + strings.Join(kept, "\n") + evidenceTruncatedNotice
+}
+
+// truncateRuneSafe returns the longest prefix of s that is at most max
+// bytes and never splits a multibyte UTF-8 rune.
+func truncateRuneSafe(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 var (
 	failBlockLinePattern = regexp.MustCompile(`^--- FAIL\b`)
 	bareFailLinePattern  = regexp.MustCompile(`^FAIL\b`)
 	panicLinePattern     = regexp.MustCompile(`^panic:`)
-	// packageSummaryLinePattern matches the per-package result lines
-	// go test's own output is otherwise made of ("ok  \t<pkg>\t...",
-	// "--- PASS: ...", "=== RUN  ..."). A panic's stack trace never looks
-	// like one of these, so seeing one again ends the stack even though
-	// none of its lines are blank or indented (sneat-dev/wb#582's own
-	// example interleaves plain, unindented stack frames with file:line
-	// frames that are themselves unindented too).
-	packageSummaryLinePattern = regexp.MustCompile(`^(ok\s|--- PASS\b|=== RUN\b|=== PAUSE\b|=== CONT\b)`)
+	// packageSummaryLinePattern matches the per-package result and status
+	// lines `go test` output is otherwise made of — "ok  \t<pkg>\t...",
+	// "--- PASS: ...", "=== RUN  ...", "PASS", "?   \t<pkg>\t[no test
+	// files]", "coverage: ...", and a shard-index label such as
+	// "[unsharded packages]" (internal/quality's own coverage-diagnostics
+	// output). A panic's stack trace never looks like one of these, so
+	// seeing one again ends the stack even when none of its lines are
+	// blank or indented (sneat-dev/wb#582's own example interleaves
+	// plain, unindented stack frames with file:line frames that are
+	// themselves unindented too).
+	packageSummaryLinePattern = regexp.MustCompile(`^(ok\s|--- PASS\b|=== |PASS$|\?\s|coverage:|\[.*\])`)
 )
 
 // failureEvidenceIn returns every "^--- FAIL" block (its own line plus any
 // indented continuation lines, e.g. a sub-test line and its assertion
 // message), every bare "^FAIL" line, and every "^panic:" line together
-// with its stack trace, found in region. It is used only on the slice of a
-// command's output a head+tail bound would otherwise discard whole
-// (sneat-dev/wb#582).
-func failureEvidenceIn(region string) string {
-	if region == "" {
-		return ""
-	}
+// with its stack trace, found in region, as the whole lines they were
+// found in — never a partial line — so a caller can join, cap, or inspect
+// them without ever risking a partial-line false match. It is used only on
+// the slice of a command's output a head+tail bound would otherwise
+// discard whole (sneat-dev/wb#582).
+func failureEvidenceIn(region string) []string {
 	lines := strings.Split(region, "\n")
 	var kept []string
 	for index := 0; index < len(lines); index++ {
@@ -899,7 +991,7 @@ func failureEvidenceIn(region string) string {
 			kept = append(kept, line)
 		}
 	}
-	return strings.Join(kept, "\n")
+	return kept
 }
 
 // isEndOfPanicStack reports whether line ends a panic's stack trace: a
