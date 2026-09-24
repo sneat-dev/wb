@@ -45,12 +45,29 @@ func remoteGit(t *testing.T, dir string, args ...string) string {
 // setGitIdentity gives Publish's commits (made through the process env, not
 // remoteGit's explicit env) a valid author/committer so tests work under a
 // HOME with no git config.
+//
+// It also disables git's opportunistic "gc --auto": a push or commit that
+// crosses git's loose-object threshold forks a detached background
+// `git gc --auto` that keeps writing into the repository's .git/objects
+// after the git command that spawned it returns and after the test that
+// owns the TempDir has finished — t.TempDir()'s cleanup RemoveAll then
+// races that still-running gc and fails with "unlinkat ...: directory not
+// empty" (seen on TestRemoteClaimForceOnUnreadableFile against
+// origin.git/objects). GIT_CONFIG_COUNT/KEY_N/VALUE_N apply to every git
+// subprocess this test (and any child it forks, such as `receive-pack` for
+// a same-host push) inherits this env from — both the explicit-env
+// `remoteGit` helper below and the production `gitops` package, which
+// builds its command env from `console.Env()` (os.Environ()) and so also
+// observes it.
 func setGitIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "gc.auto")
+	t.Setenv("GIT_CONFIG_VALUE_0", "0")
 }
 
 // remoteFixture builds a projects root holding one dirty fleet repo, a bare
