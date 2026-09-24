@@ -380,19 +380,22 @@ func TestSmCovLockRetainHandoffForStoreRequiresExactBinding(t *testing.T) {
 		{name: "changed request", root: fixture.root, request: changed, digest: fixture.digest},
 		{name: "wrong digest", root: fixture.root, request: fixture.request, digest: otherDigest},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			retained, err := lock.RetainHandoffForStore(test.root, test.request, test.digest)
-			if err == nil {
-				_ = retained.Close()
-				t.Fatalf("RetainHandoffForStore(%s) succeeded, want missing authority", test.root)
-			}
-			if !strings.Contains(err.Error(), "does not retain the exact admitted handoff directory") {
-				t.Fatalf("RetainHandoffForStore error = %v, want missing authority", err)
-			}
-		})
-	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what keeps the lock open (not yet Close()d below) while these subtests exercise binding mismatches, rather than all vacuously observing a closed lock (sneat-dev/wb#646 B2 fix)
+	t.Run("mismatches", func(t *testing.T) {
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+				retained, err := lock.RetainHandoffForStore(test.root, test.request, test.digest)
+				if err == nil {
+					_ = retained.Close()
+					t.Fatalf("RetainHandoffForStore(%s) succeeded, want missing authority", test.root)
+				}
+				if !strings.Contains(err.Error(), "does not retain the exact admitted handoff directory") {
+					t.Fatalf("RetainHandoffForStore error = %v, want missing authority", err)
+				}
+			})
+		}
+	})
 
 	retained, err := lock.RetainHandoffForStore(fixture.root, fixture.request, fixture.digest)
 	if err != nil {
@@ -449,19 +452,22 @@ func TestSmCovLockRetainStoreRootForStoreRequiresExactBinding(t *testing.T) {
 		{name: "changed request", root: fixture.root, request: changed, digest: fixture.digest},
 		{name: "wrong digest", root: fixture.root, request: fixture.request, digest: otherDigest},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			retained, err := lock.RetainStoreRootForStore(test.root, test.request, test.digest)
-			if err == nil {
-				_ = retained.Close()
-				t.Fatalf("RetainStoreRootForStore(%s) succeeded, want missing authority", test.root)
-			}
-			if !strings.Contains(err.Error(), "does not retain the exact admitted handoff store root") {
-				t.Fatalf("RetainStoreRootForStore error = %v, want missing authority", err)
-			}
-		})
-	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what keeps the lock open (not yet Close()d below) while these subtests exercise binding mismatches, rather than all vacuously observing a closed lock (sneat-dev/wb#646 B2 fix)
+	t.Run("mismatches", func(t *testing.T) {
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+				retained, err := lock.RetainStoreRootForStore(test.root, test.request, test.digest)
+				if err == nil {
+					_ = retained.Close()
+					t.Fatalf("RetainStoreRootForStore(%s) succeeded, want missing authority", test.root)
+				}
+				if !strings.Contains(err.Error(), "does not retain the exact admitted handoff store root") {
+					t.Fatalf("RetainStoreRootForStore error = %v, want missing authority", err)
+				}
+			})
+		}
+	})
 
 	retained, err := lock.RetainStoreRootForStore(fixture.root, fixture.request, fixture.digest)
 	if err != nil {

@@ -39,7 +39,7 @@ func TestSdCovAcknowledgeRejectsNilContextWithoutDurableState(t *testing.T) {
 func TestSdCovAcknowledgeValidateOptionsRejections(t *testing.T) {
 	t.Parallel()
 	fixture := newCustodyFixture(t)
-	for _, tc := range []struct {
+	cases := []struct {
 		name    string
 		mutate  func(*Options)
 		wantErr string
@@ -86,21 +86,25 @@ func TestSdCovAcknowledgeValidateOptionsRejections(t *testing.T) {
 			mutate:  func(o *Options) { o.Receipt.TmuxName = "wb-session-somebody-else" },
 			wantErr: sessionmove.ErrHandoffConflict.Error(),
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			options := fixture.options
-			tc.mutate(&options)
-			options.EnsureSourceOffer = func(worktrees.ExternalSourceOfferOptions) (worktrees.ExternalSourceOfferResult, error) {
-				t.Fatal("source offer ensured before options were validated")
-				return worktrees.ExternalSourceOfferResult{}, nil
-			}
-			_, err := Acknowledge(context.Background(), options)
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Acknowledge error = %v, want it to contain %q", err, tc.wantErr)
-			}
-		})
 	}
+	//nolint:paralleltest // synchronous grouping wrapper, not a test in its own right: it must not itself be parallel, because t.Run blocking for its parallel children to finish is exactly what makes the durable-evidence check below run after every rejection has actually been attempted (sneat-dev/wb#646 B2 fix)
+	t.Run("rejections", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				options := fixture.options
+				tc.mutate(&options)
+				options.EnsureSourceOffer = func(worktrees.ExternalSourceOfferOptions) (worktrees.ExternalSourceOfferResult, error) {
+					t.Fatal("source offer ensured before options were validated")
+					return worktrees.ExternalSourceOfferResult{}, nil
+				}
+				_, err := Acknowledge(context.Background(), options)
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Acknowledge error = %v, want it to contain %q", err, tc.wantErr)
+				}
+			})
+		}
+	})
 	// No rejection above may leave evidence behind.
 	state, err := fixture.store.Load(fixture.request.HandoffID)
 	if err != nil {

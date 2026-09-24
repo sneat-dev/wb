@@ -552,7 +552,7 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		}, wantErr: "does not match pinned repair and self-supersession target evidence"},
 		{name: "source", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSourceSHAs[1] = strings.Repeat("0", 40)
-		}, wantErr: "repair source"},
+		}, wantErr: "does not match expected"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Not t.Parallel(): every subtest calls
