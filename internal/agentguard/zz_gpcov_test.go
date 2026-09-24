@@ -684,8 +684,9 @@ func TestGpCovManagedWorktreeWalks(t *testing.T) {
 }
 
 // TestGpCovGovernedValidationDecisions pins the validation classifier's
-// edge shapes, including an npx with no nested command and a package manager
-// command that names no script.
+// edge shapes, including an npx with no nested command, a package manager
+// command that names no script, and a package manager command that names an
+// ordinary (non-validation) subcommand such as "install".
 func TestGpCovGovernedValidationDecisions(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -698,6 +699,7 @@ func TestGpCovGovernedValidationDecisions(t *testing.T) {
 		{"cargo clippy", []string{"cargo", "clippy"}, true},
 		{"pnpm exec running a governed tool", []string{"pnpm", "exec", "go", "test"}, true},
 		{"pnpm with no script", []string{"pnpm", "-y"}, false},
+		{"npm running an unrecognized, non-validation subcommand", []string{"npm", "install"}, false},
 		{"an ordinary program", []string{"echo", "hi"}, false},
 	}
 	for _, testCase := range cases {

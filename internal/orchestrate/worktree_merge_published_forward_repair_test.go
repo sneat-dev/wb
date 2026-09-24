@@ -554,7 +554,19 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
+			// Not t.Parallel(): every subtest calls
+			// PreparePublishedValidationFailureForwardRepair against the
+			// same fixture.githubDir/receipt.Lane, which AcquireOperationLock
+			// (called at the top of that function) treats as one exclusive
+			// lane. Running these in parallel let siblings race for that
+			// lock; the loser failed with "operation ... is already active"
+			// before ever reaching the claim/supersession mismatch branch
+			// this subtest exists to exercise, and the assertion below
+			// (err == nil || ...) is loose enough to still pass -- so the
+			// test kept passing while silently, nondeterministically
+			// starving internal/orchestrate/worktree_merge_published_forward_repair.go:113-169
+			// of coverage depending on scheduling (sneat-dev/wb#646 task-4
+			// resume, CI run 35996224158's coverage ratchet).
 			refusal := options
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)
