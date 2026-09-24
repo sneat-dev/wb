@@ -342,7 +342,7 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 			} else {
 				retiredRefs[BranchScopeLocal] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeLocal)
 			}
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, false)
+			tags, diagnostic := listRetiredTags(ctx, repository.Path, false, true)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired local tags: %s", repository.Slug(), diagnostic))
 			} else {
@@ -357,7 +357,7 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 			} else {
 				retiredRefs[BranchScopeRemote] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeRemote)
 			}
-			tags, tagDiagnostic := listRetiredTags(ctx, repository.Path, true)
+			tags, tagDiagnostic := listRetiredTags(ctx, repository.Path, true, true)
 			if tagDiagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired remote tags: %s", repository.Slug(), tagDiagnostic))
 				retiredRemoteUnavailable = true
@@ -573,7 +573,7 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 					names[repository.Slug()+"|"+ref.Name] = true
 				}
 			}
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, false)
+			tags, diagnostic := listRetiredTags(ctx, repository.Path, false, true)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired local tags: %s", repository.Slug(), diagnostic))
 			}
@@ -591,6 +591,7 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 			refs, diagnostic := listRefs(ctx, repository.Path, "refs/remotes/origin/", "origin/")
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote refs: %s", repository.Slug(), diagnostic))
+				retiredRemoteUnavailable = true
 			}
 			for _, ref := range refs {
 				if !retiredRefSelected(sweep, ref) {
@@ -601,7 +602,7 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 					names[repository.Slug()+"|"+ref.Name] = true
 				}
 			}
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, true)
+			tags, diagnostic := listRetiredTags(ctx, repository.Path, true, sweep.OlderThan > 0)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote tags: %s", repository.Slug(), diagnostic))
 				retiredRemoteUnavailable = true
@@ -624,7 +625,10 @@ func retiredRefSelected(sweep branchSweepOptions, ref branchRef) bool {
 	if !branchNameSelected(sweep, ref.Name) {
 		return false
 	}
-	return sweep.OlderThan == 0 || ref.CommitterDate.IsZero() || sweep.Now.Sub(ref.CommitterDate) >= sweep.OlderThan
+	if sweep.OlderThan == 0 {
+		return true
+	}
+	return !ref.UnknownDate && !ref.CommitterDate.IsZero() && sweep.Now.Sub(ref.CommitterDate) >= sweep.OlderThan
 }
 
 func branchNameSelected(sweep branchSweepOptions, name string) bool {
@@ -852,6 +856,7 @@ type branchRef struct {
 	Name          string
 	SHA           string
 	CommitterDate time.Time
+	UnknownDate   bool
 }
 
 func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
@@ -875,7 +880,7 @@ func listRetiredRemoteRefs(ctx context.Context, repositoryPath string) ([]branch
 // listRetiredTags keeps remote tag inspection separate from local tags. It
 // uses ls-remote for remote scope so branch inventory never writes fetched
 // tags into the caller's local tag namespace.
-func listRetiredTags(ctx context.Context, repositoryPath string, remote bool) ([]branchRef, string) {
+func listRetiredTags(ctx context.Context, repositoryPath string, remote, metadata bool) ([]branchRef, string) {
 	if !remote {
 		return listRefs(ctx, repositoryPath, "refs/tags/retired/", "")
 	}
@@ -889,7 +894,31 @@ func listRetiredTags(ctx context.Context, repositoryPath string, remote bool) ([
 		if len(fields) != 2 || strings.HasSuffix(fields[1], "^{}") || !strings.HasPrefix(fields[1], "refs/tags/retired/") || !isGitObjectID(fields[0]) {
 			continue
 		}
-		refs = append(refs, branchRef{Name: strings.TrimPrefix(fields[1], "refs/tags/"), SHA: fields[0]})
+		refs = append(refs, branchRef{Name: strings.TrimPrefix(fields[1], "refs/tags/"), SHA: fields[0], UnknownDate: true})
+	}
+	if !metadata || len(refs) == 0 {
+		return refs, ""
+	}
+	// Fetch objects into FETCH_HEAD without writing local tag refs. Remote tag
+	// metadata must not rely on a source branch still existing locally.
+	for _, ref := range refs {
+		// An exact source ref is required here: Git rejects wildcard fetches
+		// without a destination. This updates FETCH_HEAD and the object store,
+		// never the local tag namespace.
+		if _, err := git(ctx, repositoryPath, "fetch", "--no-tags", "origin", "refs/tags/"+ref.Name); err != nil {
+			return nil, fmt.Sprintf("fetch retired tag object %s: %v", ref.Name, err)
+		}
+	}
+	for i := range refs {
+		date, err := git(ctx, repositoryPath, "show", "-s", "--format=%cI", refs[i].SHA+"^{commit}")
+		if err != nil {
+			return nil, fmt.Sprintf("read retired tag commit metadata: %v", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(date))
+		if err != nil {
+			return nil, fmt.Sprintf("parse retired tag commit date: %v", err)
+		}
+		refs[i].CommitterDate, refs[i].UnknownDate = parsed, false
 	}
 	return refs, ""
 }

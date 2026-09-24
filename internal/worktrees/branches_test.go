@@ -559,6 +559,33 @@ func TestRetiredNamespaceListsAndCountsTagsSeparately(t *testing.T) {
 	}
 }
 
+func TestRemoteRetiredTagFetchesMetadataAndHonoursAge(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "tag-source")
+	sha := writeAndCommit(t, fixture.canonical, "remote-tag.txt", "remote only\n", "remote retired tag source")
+	gitTest(t, fixture.canonical, "tag", "retired/remote-metadata", sha)
+	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/remote-metadata")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "branch", "-D", "tag-source")
+	gitTest(t, fixture.canonical, "tag", "-d", "retired/remote-metadata")
+	gitTest(t, fixture.canonical, "gc", "--prune=now")
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].CommitterDate.IsZero() || outcome.Entries[0].Title != "remote retired tag source" {
+		t.Fatalf("remote tag metadata = %#v", outcome)
+	}
+	aged, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*", OlderThan: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aged.Entries) != 0 || aged.RetiredTagNames != 0 {
+		t.Fatalf("young remote tag bypassed age filter: %#v", aged)
+	}
+}
+
 func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
