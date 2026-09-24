@@ -57,6 +57,13 @@ func TestMain(m *testing.M) {
 	// WB_AGENT_* exports would otherwise leak into every worktree/session
 	// assertion below. See internal/testenv and internal/envguard.
 	testenv.IsolateProcess()
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including remote_test.go's own fixture clones/pushes and any
+	// production git call under test, so no background writer can race
+	// t.TempDir() cleanup (task-21). A bare remote pushed to over a local
+	// transport still needs its own testenv.ConfigureGitAutoMaintenanceOff
+	// call (see remote_test.go's setGitIdentity).
+	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
 }
 
