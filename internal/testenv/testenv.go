@@ -122,7 +122,7 @@ var gitAutoMaintenanceValues = [3]string{"0", "false", "false"}
 // `git push` spawns as its own child process: git strips every
 // GIT_CONFIG_* variable from the environment it hands to that child (#711's
 // review traced this directly). A bare remote a test pushes to must also be
-// configured with SetGitAutoMaintenanceOff on the repository itself.
+// configured with ConfigureGitAutoMaintenanceOff on the repository itself.
 func GitAutoMaintenanceOffEnv(base []string) []string {
 	count := 0
 	for _, entry := range base {
@@ -161,8 +161,8 @@ func GitAutoMaintenanceOffEnv(base []string) []string {
 //
 // Like GitAutoMaintenanceOffEnv, this does not reach a server-side
 // `receive-pack` a same-host `git push` spawns for a bare remote (see its
-// doc comment); call SetGitAutoMaintenanceOff on that repository directly
-// as well.
+// doc comment); call ConfigureGitAutoMaintenanceOff on that repository
+// directly as well.
 func SetGitAutoMaintenanceOff(t testing.TB) {
 	t.Helper()
 	count := 0

@@ -112,6 +112,7 @@ func TestIsolateProcessResolvesSymlinkedTemporaryRoot(t *testing.T) {
 }
 
 func TestGitAutoMaintenanceOffEnvAppendsToAnExistingSequence(t *testing.T) {
+	t.Parallel()
 	base := []string{
 		"UNRELATED=kept",
 		"GIT_CONFIG_COUNT=1",
@@ -154,6 +155,7 @@ func TestGitAutoMaintenanceOffEnvAppendsToAnExistingSequence(t *testing.T) {
 }
 
 func TestGitAutoMaintenanceOffEnvStartsFreshWithNoExistingSequence(t *testing.T) {
+	t.Parallel()
 	env := GitAutoMaintenanceOffEnv([]string{"UNRELATED=kept"})
 	want := map[string]string{
 		"UNRELATED":          "kept",
@@ -180,17 +182,16 @@ func TestGitAutoMaintenanceOffEnvStartsFreshWithNoExistingSequence(t *testing.T)
 	}
 }
 
-// TestSetGitAutoMaintenanceOffStopsRealGitFromDispatchingAutoWork proves the
-// env this sets actually reaches a real git subprocess and takes effect,
-// not merely that the right variable names are present: a `git commit`
-// with gc.auto forced to trigger by a tiny --gc-log-expire-style threshold
-// would normally spawn a background gc; with the process env this function
-// sets, `git -c gc.auto=1 count-objects` style probes are unnecessary --
-// instead this asserts `git config --get` resolves each key from the
-// process environment override to the exact disabled value, which is the
-// documented mechanism GIT_CONFIG_COUNT/KEY_N/VALUE_N uses to make git
-// behave as if the repository's own config held these entries.
-func TestSetGitAutoMaintenanceOffStopsRealGitFromDispatchingAutoWork(t *testing.T) {
+// TestSetGitAutoMaintenanceOffExposesDisabledSettingsToGitConfig proves the
+// env this sets actually reaches a real git subprocess: it asserts
+// `git config --get` resolves each key from the process environment
+// override to the exact disabled value, which is the documented mechanism
+// GIT_CONFIG_COUNT/KEY_N/VALUE_N uses to make git behave as if the
+// repository's own config held these entries. It does not itself observe a
+// real gc/maintenance dispatch being skipped -- that is exercised in the
+// packages this helper is used to fix, via GIT_TRACE2_EVENT child-start
+// counts.
+func TestSetGitAutoMaintenanceOffExposesDisabledSettingsToGitConfig(t *testing.T) {
 	repo := t.TempDir()
 	cmd := exec.Command("git", "init", "-q", "-b", "main")
 	cmd.Dir = repo
@@ -280,6 +281,7 @@ func TestGitAutoMaintenanceOffProcessExtendsTheProcessSequence(t *testing.T) {
 }
 
 func TestConfigureGitAutoMaintenanceOffWritesIntoTheReposOwnConfig(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	cmd := exec.Command("git", "init", "-q", "--bare", "-b", "main")
 	cmd.Dir = repo
@@ -340,6 +342,7 @@ func (r *recordingTB) Fatalf(format string, args ...any) {
 // inside it fails, and ConfigureGitAutoMaintenanceOff must report that
 // failure through t.Fatalf rather than silently continuing.
 func TestConfigureGitAutoMaintenanceOffFailsLoudlyWhenGitConfigFails(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	recorder := &recordingTB{}
 

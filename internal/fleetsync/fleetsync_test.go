@@ -9,15 +9,16 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
@@ -57,6 +58,7 @@ func newRemote(t *testing.T) string {
 
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, seed, "remote", "add", "origin", remote)
 	git(t, seed, "push", "-q", "origin", "main")
 	return remote
@@ -96,7 +98,9 @@ func TestSyncCloneMissingDryRun(t *testing.T) {
 func TestSyncPullClean(t *testing.T) {
 	remote := newRemote(t)
 	cloneDir := filepath.Join(t.TempDir(), "widgets")
-	if out, err := exec.Command("git", "clone", "-q", remote, cloneDir).CombinedOutput(); err != nil {
+	cmd := exec.Command("git", "clone", "-q", remote, cloneDir)
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 	before, err := gitops.HeadSHA(cloneDir)
@@ -105,7 +109,9 @@ func TestSyncPullClean(t *testing.T) {
 	}
 
 	seed := t.TempDir()
-	if out, err := exec.Command("git", "clone", "-q", remote, seed).CombinedOutput(); err != nil {
+	cmd = exec.Command("git", "clone", "-q", remote, seed)
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("seed clone: %v: %s", err, out)
 	}
 	write(t, seed, "f.txt", "v2\n")
@@ -136,7 +142,9 @@ func TestSyncPullClean(t *testing.T) {
 func TestSyncSkipDirty(t *testing.T) {
 	remote := newRemote(t)
 	cloneDir := t.TempDir()
-	if out, err := exec.Command("git", "clone", "-q", remote, cloneDir).CombinedOutput(); err != nil {
+	cmd := exec.Command("git", "clone", "-q", remote, cloneDir)
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 	write(t, cloneDir, "f.txt", "dirty\n")
@@ -165,6 +173,7 @@ func TestSyncArchivedDefaultDoesNotPrune(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	// -u: the off-path now routes an archived clone through the ordinary
 	// pull logic, which needs upstream tracking configured exactly like a
@@ -202,6 +211,7 @@ func TestSyncArchivedWithFlagRemovesQualifying(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 
@@ -228,6 +238,7 @@ func TestSyncArchivedWithFlagRemovesQualifyingDryRun(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 
@@ -256,6 +267,7 @@ func TestSyncArchivedWithFlagRefusesUnsafe(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 	write(t, dir, "uncommitted.txt", "oops\n")
@@ -291,6 +303,7 @@ func TestSyncArchivedWithFlagRefusesLinkedWorktree(t *testing.T) {
 	git(t, dir, "commit", "-qm", "v1")
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "push", "-q", "origin", "main")
 

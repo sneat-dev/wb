@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // seedGraphRepository creates a remote plus a canonical clone containing files,
@@ -26,6 +28,7 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, fixture, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +197,7 @@ func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testi
 	// the failure must stay loud rather than being excused as irrelevant.
 	remote := filepath.Join(fixture, "remote-broken.git")
 	runTestGit(t, fixture, "init", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	broken := filepath.Join(fixture, "projects", "acme", "broken")
 	if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
 		t.Fatal(err)

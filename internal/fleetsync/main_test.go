@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestMain pins WB_PROJECTS_ROOT for the whole package.
@@ -24,6 +26,10 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("WB_PROJECTS_ROOT", root); err != nil {
 		panic(err)
 	}
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including Sync's own pulls and clones against t.TempDir()
+	// fixtures, so no background writer can race TempDir cleanup (task-21).
+	testenv.GitAutoMaintenanceOffProcess()
 	code := m.Run()
 	_ = os.RemoveAll(root)
 	os.Exit(code)

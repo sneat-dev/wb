@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
@@ -30,6 +32,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	gitTest(t, worktree, "push", "-u", "origin", "retire-demo")
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-demo", ArchiveRemote: archive,
 		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -100,6 +103,7 @@ func TestRetireBareRemotePreservesSourceTagAndDeletesOriginalBranch(t *testing.T
 	gitTest(t, worktree, "push", "-u", "origin", "retire-tag")
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-tag", Preserve: "tag", ArchiveRemote: archive, Apply: true,
 		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -134,6 +138,7 @@ func TestRetireTagModeRejectsResumeAsBranch(t *testing.T) {
 	gitTest(t, worktree, "push", "-u", "origin", "retire-mode")
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-mode", Preserve: "tag", ArchiveRemote: archive, Apply: true, RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
@@ -170,6 +175,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 			gitTest(t, worktree, "push", "-u", "origin", "retire-resume")
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 			options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-resume", ArchiveRemote: archive, Apply: true,
 				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -242,6 +248,7 @@ func TestRetirePreservesUnpushedCommits(t *testing.T) {
 	want := gitTestOutput(t, worktree, "rev-parse", "HEAD")
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-ahead", ArchiveRemote: archive, Apply: true,
 		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -272,6 +279,7 @@ func TestRetireRefusesExternallyDeletedOriginalWithoutAtomicProof(t *testing.T) 
 			gitTest(t, worktree, "push", "-u", "origin", "retire-external")
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 			options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-external", ArchiveRemote: archive, Apply: true,
 				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -317,6 +325,7 @@ func TestRetireRefusesRemoteWithoutAtomicPush(t *testing.T) {
 	gitTest(t, fixture.remote, "config", "receive.advertiseAtomic", "false")
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	partial, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-atomic", ArchiveRemote: archive, Apply: true,
 		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -363,6 +372,7 @@ func TestRetireRefusesIgnoredFilesAndUntrackedSymlinksBeforeStaging(t *testing.T
 			}
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 			_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-extra", ArchiveRemote: archive, Apply: true,
 				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -428,6 +438,7 @@ func TestRetireRefusesOpenPRSecretPathAndHookFailure(t *testing.T) {
 			}
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 			_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-refusal", ArchiveRemote: archive, Apply: true,
 				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -472,6 +483,7 @@ func TestRetireCommitsDeletionOnlySourceChange(t *testing.T) {
 	}
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-deletion", ArchiveRemote: archive, Apply: true,
 		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
@@ -534,6 +546,7 @@ func TestRetireRechecksRemoteOwnerBeforeSourceMutation(t *testing.T) {
 	}
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	testenv.ConfigureGitAutoMaintenanceOff(t, archive)
 	checks := 0
 	_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-owner", ArchiveRemote: archive, Apply: true,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
