@@ -143,7 +143,7 @@ canonical clones and never queries every repository on GitHub.
 --with-prs enriches selected remote branch rows with exact same-repository
 head PR history (open, merged, closed) and open PRs using the branch as base.
 It reads GitHub's paginated PR API and may take longer on a large inventory.
-Protected base branches and unreadable rows are excluded from PR enrichment;
+Protected, unreadable, and retired rows are excluded from PR enrichment;
 in-use branches are included so their open PRs remain visible.
 Without it, list makes no PR API calls. Cleanup independently checks open PRs
 for each remote deletion candidate and again before applying deletion.
