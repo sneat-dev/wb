@@ -1,6 +1,7 @@
 package runqueue
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +40,49 @@ func TestReadTicketsInReapsAnAgedTempFile(t *testing.T) {
 
 	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
 		t.Fatalf("readTicketsIn did not reap an aged .tmp- file, stat err = %v", err)
+	}
+}
+
+// infoFailingDirEntry is an os.DirEntry whose Info() always fails, so tests
+// can drive reapStaleTempFile's defensive "entry.Info() errored" branch
+// (visibility.go) deterministically, without racing a real concurrent
+// deleter for the narrow window between os.ReadDir and entry.Info() that
+// production code relies on (TestConcurrentReadersDoNotErrorWhileStaleEntriesAreReaped
+// exercises that race, but it is inherently timing-dependent and does not
+// reliably hit this branch — sneat-dev/wb#646 coverage flake).
+type infoFailingDirEntry struct {
+	name string
+}
+
+func (e infoFailingDirEntry) Name() string               { return e.name }
+func (e infoFailingDirEntry) IsDir() bool                { return false }
+func (e infoFailingDirEntry) Type() fs.FileMode          { return 0 }
+func (e infoFailingDirEntry) Info() (fs.FileInfo, error) { return nil, fs.ErrNotExist }
+
+// TestReapStaleTempFileLeavesEntryAloneWhenItsInfoCannotBeRead drives
+// reapStaleTempFile's own "entry.Info() errored" early return
+// (visibility.go): when the caller-supplied os.DirEntry cannot report its
+// info, reapStaleTempFile must return without touching the file, rather
+// than assuming it is safe to age-check and remove.
+func TestReapStaleTempFileLeavesEntryAloneWhenItsInfoCannotBeRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	name := ".tmp-unreadable-info"
+	tempPath := filepath.Join(dir, name)
+	if err := os.WriteFile(tempPath, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Old enough that, without the Info()-error guard, the age check below it
+	// would reap the file.
+	old := time.Now().Add(-2 * staleAfter)
+	if err := os.Chtimes(tempPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	reapStaleTempFile(dir, infoFailingDirEntry{name: name})
+
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Fatalf("reapStaleTempFile removed a file whose entry.Info() failed: %v", err)
 	}
 }
 
