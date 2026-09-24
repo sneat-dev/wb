@@ -43,32 +43,21 @@ var (
 // raced there, but many cmd/wb tests call run()/runWithStdin() directly with
 // t.Parallel(), and every such call shared the same package-level storage —
 // a genuine data race the race detector catches (issue #733). Building one
-// *invocation per call and threading it through cobra's context, rather than
-// through a package-level var, removes the shared mutable state without
-// changing newRootCmd's signature or any of its ~50 test call sites.
+// *invocation per call and closing over it while constructing the command
+// tree (newRootCmdFor below) removes the shared mutable state.
 //
 // commandStarted is the first (and, for this PR, only) field moved out of
 // the package-level block above; projectsRoot, filterFlag, extraOrgs and
 // nonInteractive follow in later PRs in this same sequence (task-5,
-// spec/plans/coverage-to-100).
+// spec/plans/coverage-to-100) — each will bind its persistent flag directly
+// to a field on *invocation instead of to the package-level var, which is why
+// this seam builds the invocation before the command tree rather than after:
+// a flag's bound target has to exist when PersistentFlags().XxxVar(&target,
+// ...) runs, during tree construction, not later when the tree executes.
 type invocation struct {
 	// commandStarted records that cobra accepted the invocation and began
-	// running a command. See the PersistentPreRunE in newRootCmd.
+	// running a command. See the PersistentPreRunE in newRootCmdFor.
 	commandStarted bool
-}
-
-// invocationContextKey is the unexported type context.WithValue uses to
-// store *invocation, so no other package can collide with or read the key.
-type invocationContextKey struct{}
-
-// invocationFromContext returns the *invocation stored on ctx by
-// runWithStdin, or nil when none was stored — which happens in every test
-// that builds a command tree with newRootCmd() to inspect it (help text,
-// subcommand paths) without executing it through runWithStdin. Callers must
-// handle a nil result; PersistentPreRunE below does.
-func invocationFromContext(ctx context.Context) *invocation {
-	inv, _ := ctx.Value(invocationContextKey{}).(*invocation)
-	return inv
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -120,7 +109,22 @@ activates only when its output stream is a terminal. Pass --non-interactive, or
 set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
 
+// newRootCmd builds the command tree for callers that only inspect it (help
+// text, subcommand paths, flag matrices) rather than execute it through
+// runWithStdin. It is the ~50 existing test call sites' entry point, and
+// stays a zero-argument constructor so none of them need to change as more
+// package-level globals move onto *invocation in later PRs: it hands
+// newRootCmdFor a throwaway invocation that is never read back.
 func newRootCmd() *cobra.Command {
+	return newRootCmdFor(&invocation{})
+}
+
+// newRootCmdFor builds the command tree for one invocation, closing over inv
+// so PersistentPreRunE and (in later PRs) flag bindings write into it
+// directly instead of into a package-level var or a value fished back out of
+// cobra's context. runWithStdin is the only caller that keeps inv afterwards
+// to read commandStarted.
+func newRootCmdFor(inv *invocation) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wb",
 		Short:         "Workbench CLI — fleet-wide operations across your GitHub repositories",
@@ -147,9 +151,7 @@ func newRootCmd() *cobra.Command {
 			// before any work starts, on stderr, without touching the exit
 			// code — a retired variable must not become a rejected command.
 			warnIgnoredWBHome(cmd)
-			if inv := invocationFromContext(cmd.Context()); inv != nil {
-				inv.commandStarted = true
-			}
+			inv.commandStarted = true
 			id := persistentCommandID(cmd)
 			// `wb version` (including --json) MUST stay side-effect-free
 			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
@@ -526,7 +528,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	// attribution path as the production main entrypoint. The resolver is
 	// read-only until a command explicitly mutates state.
 	installSessionResolver()
-	root := newRootCmd()
+	root := newRootCmdFor(inv)
 	root.SetArgs(args)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
@@ -536,8 +538,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 
 	prepareHelpPresentation(root, args)
-	ctx := context.WithValue(context.Background(), invocationContextKey{}, inv)
-	err := executeWithFang(ctx, root)
+	err := executeWithFang(root)
 	// Always on stderr, and always after the command's own output, so a
 	// --format json or yaml document on stdout stays machine-parseable.
 	reportUndeclaredOwners(stderr)
@@ -575,9 +576,9 @@ func terminalPresentationDisabled(args []string) bool {
 	return false
 }
 
-func executeWithFang(ctx context.Context, root *cobra.Command) error {
+func executeWithFang(root *cobra.Command) error {
 	return fang.Execute(
-		ctx,
+		context.Background(),
 		root,
 		fang.WithoutVersion(),
 		fang.WithoutManpage(),
