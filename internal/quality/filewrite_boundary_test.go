@@ -74,6 +74,32 @@ func TestEveryFilewriteBoundaryExemptionMatchesALiveViolation(t *testing.T) {
 	}
 }
 
+// TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent asserts
+// no NotAFileWritePublishExemptions entry -- exempted for a rename/move/
+// append reason -- also independently creates a file via a gated
+// OpenFile/Openat-with-create-flag call and writes content to it in the
+// same function. A round-2 review of task-9 PR-1 found
+// internal/locallink/execports.go's Link function exempted this way while
+// also doing two real O_CREATE|O_EXCL content writes of its own ahead of
+// its rename; this test catches that shape going forward so a stale or
+// mis-scoped "not a write" reason can never hide a real pending migration.
+func TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent(t *testing.T) {
+	t.Parallel()
+	root, err := ParallelGuardModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	creators, err := findFunctionsThatCreateAndWriteContent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, reason := range NotAFileWritePublishExemptions {
+		if creators[key] {
+			t.Errorf("NotAFileWritePublishExemptions[%q] = %q, but this function also creates a file and writes content to it directly -- it belongs in PendingMigrationExemptions, not the permanent list", key, reason)
+		}
+	}
+}
+
 func writeBoundaryFixture(t *testing.T, dir, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, name)
@@ -142,6 +168,86 @@ func publishBySyscallRename(temporary, name string) error {
 	}
 	if len(violations) != 1 || violations[0].Func != "publishBySyscallRename" {
 		t.Fatalf("violations = %v, want exactly one for publishBySyscallRename", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsASyscallRenameatCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/syscall_renameat.go", `package pkg
+
+import "syscall"
+
+func publishBySyscallRenameat(dirFD int, name string) error {
+	return syscall.Renameat(dirFD, ".tmp", dirFD, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "publishBySyscallRenameat" {
+		t.Fatalf("violations = %v, want exactly one for publishBySyscallRenameat", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsASyscallLinkCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/syscall_link.go", `package pkg
+
+import "syscall"
+
+func publishBySyscallLink(temporary, name string) error {
+	return syscall.Link(temporary, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "publishBySyscallLink" {
+		t.Fatalf("violations = %v, want exactly one for publishBySyscallLink", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsAUnixRenameCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/unix_rename.go", `package pkg
+
+import "github.com/sneat-dev/wb/internal/unixcompat"
+
+func publishByUnixRename(temporary, name string) error {
+	return unix.Rename(temporary, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "publishByUnixRename" {
+		t.Fatalf("violations = %v, want exactly one for publishByUnixRename", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsAUnixLinkCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/unix_link.go", `package pkg
+
+import "github.com/sneat-dev/wb/internal/unixcompat"
+
+func publishByUnixLink(temporary, name string) error {
+	return unix.Link(temporary, name)
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "publishByUnixLink" {
+		t.Fatalf("violations = %v, want exactly one for publishByUnixLink", violations)
 	}
 }
 
@@ -282,15 +388,65 @@ func writeOnce(dir string, content []byte) error {
 	}
 }
 
-func TestFindInlineWriteSequencesIgnoresAnOSCreateTempCallThatNeverWritesContent(t *testing.T) {
+func TestFindInlineWriteSequencesFlagsAnOSCreateTempCallEvenWithNoContentWrite(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeBoundaryFixture(t, root, "pkg/createtemp_lock.go", `package pkg
+	writeBoundaryFixture(t, root, "pkg/createtemp_scratch.go", `package pkg
 
 import "os"
 
-func createOnly(dir string) error {
+func reserveNameOnly(dir string) (string, error) {
 	f, err := os.CreateTemp(dir, "tmp-*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	return name, f.Close()
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "reserveNameOnly" {
+		t.Fatalf("violations = %v, want exactly one for reserveNameOnly (os.CreateTemp is banned unconditionally, unlike os.OpenFile/unix.Openat, since it can never be used for a lock-only open)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsAnIOUtilTempFileCallEvenWithNoContentWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/tempfile_scratch.go", `package pkg
+
+import "io/ioutil"
+
+func reserveNameOnly(dir string) (string, error) {
+	f, err := ioutil.TempFile(dir, "tmp-*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	return name, f.Close()
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "reserveNameOnly" {
+		t.Fatalf("violations = %v, want exactly one for reserveNameOnly (ioutil.TempFile is banned unconditionally)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsAnOSCreateCallEvenWithNoContentWrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/create_only.go", `package pkg
+
+import "os"
+
+func createOnly(name string) error {
+	f, err := os.Create(name)
 	if err != nil {
 		return err
 	}
@@ -301,8 +457,35 @@ func createOnly(dir string) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(violations) != 0 {
-		t.Fatalf("violations = %v, want none (a create with no content write is a lock-style open, not a write sequence)", violations)
+	if len(violations) != 1 || violations[0].Func != "createOnly" {
+		t.Fatalf("violations = %v, want exactly one for createOnly (os.Create is banned unconditionally, per B2 of the task-9 round-2 review)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesFlagsAnOSCreateCallThatWritesContent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/create_write.go", `package pkg
+
+import "os"
+
+func writeOnce(name string, content []byte) error {
+	f, err := os.Create(name)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		return err
+	}
+	return f.Close()
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "writeOnce" {
+		t.Fatalf("violations = %v, want exactly one for writeOnce", violations)
 	}
 }
 
@@ -535,6 +718,34 @@ func overwrite(name string, content []byte) error {
 	}
 	if len(violations) != 0 {
 		t.Fatalf("violations = %v, want none (a bare os.WriteFile with no publish call is an ordinary overwrite)", violations)
+	}
+}
+
+func TestFindInlineWriteSequencesQualifiesAMethodKeyWithItsReceiverType(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/methods.go", `package pkg
+
+import "os"
+
+type FileEventLog struct{}
+
+func (log *FileEventLog) Append(name, temporary string) error {
+	return os.Rename(temporary, name)
+}
+
+type DiscardEvents struct{}
+
+func (DiscardEvents) Append(name, temporary string) error {
+	return nil
+}
+`)
+	violations, err := FindInlineWriteSequences(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0].Func != "FileEventLog.Append" {
+		t.Fatalf("violations = %v, want exactly one for FileEventLog.Append (receiver-qualified, so it never collides with DiscardEvents.Append, which is a no-op and not flagged)", violations)
 	}
 }
 

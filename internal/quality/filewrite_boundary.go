@@ -5,38 +5,80 @@
 //
 // The check is call-based, not a co-occurrence heuristic: a function is a
 // violation if its body directly calls one of a fixed set of publish or
-// create primitives (os.Rename, os.Link, syscall.Rename, the fd-relative
-// unix.Renameat/Renameat2/RenameatxNp/Linkat family, the repo-local
-// renameNoReplace helper or a package-level alias of os.Link/os.Rename,
-// os.CreateTemp, ioutil.TempFile, or os.OpenFile/unix.Openat carrying an
-// O_CREAT-family flag) -- with one narrower exception: a bare os.WriteFile
-// call is only a violation when the same function also calls one of the
-// publish primitives above, since os.WriteFile alone is an ordinary
-// overwrite, not a temp-file publish. This replaces an earlier
-// create-and-rename-pair heuristic that missed every os.*-based site (the
-// dominant shape in this repository), every renameNoReplace call and every
-// package-level rename/link alias, and that could never match os.OpenFile
-// at all because it looked for the identifier O_CREAT while the os package
-// spells its flag O_CREATE.
+// create primitives:
+//
+//   - publish, always banned: os.Rename, os.Link, syscall.Rename,
+//     syscall.Renameat, syscall.Link, the fd-relative unix.Rename/
+//     Renameat/Renameat2/RenameatxNp/Link/Linkat family, the repo-local
+//     renameNoReplace helper, or a package-level alias of os.Link/os.Rename.
+//   - create, always banned regardless of whether the same function goes
+//     on to write content: os.CreateTemp, ioutil.TempFile, os.Create. A
+//     round-2 review of task-9 PR-1 found these three reserve or open a
+//     file unconditionally -- unlike os.OpenFile/unix.Openat, they cannot
+//     be used for a lock-only open, so gating them behind a content-write
+//     check let a real write escape through a package-level seam function
+//     (internal/nodeidentity/nodeidentity.go:writeNodeIDTempFile).
+//   - create, banned only when the same function also writes content:
+//     os.OpenFile or unix.Openat carrying an O_CREAT-family flag. This
+//     gate stays narrow because both are legitimately used for a
+//     lock-file open (O_CREAT|O_EXCL followed only by Fchmod/Flock, never
+//     a content write) that internal/filewrite has nothing to replace.
+//   - os.WriteFile alone is not banned; it is only a violation together
+//     with one of the publish primitives above in the same function,
+//     since a bare os.WriteFile is an ordinary overwrite, not a temp-file
+//     publish.
+//
+// This replaced an earlier create-and-rename-pair heuristic that missed
+// every os.*-based site (the dominant shape in this repository), every
+// renameNoReplace call and every package-level rename/link alias, and
+// that could never match os.OpenFile at all because it looked for the
+// identifier O_CREAT while the os package spells its flag O_CREATE.
+//
+// A violation's key is "relative/path.go:FuncName", or
+// "relative/path.go:ReceiverType.FuncName" for a method -- the receiver
+// type disambiguates two methods that share a name on different receivers
+// in the same file (internal/streams/events.go has both
+// (*FileEventLog).Append, a real O_APPEND write, and (DiscardEvents).Append,
+// a no-op stub that is never flagged).
 //
 // Two named allow-lists carry the sites this detector finds but task-9's PR
 // series has not folded into internal/filewrite yet:
 //
-//   - PendingMigrationExemptions: real write-then-publish (or write-once)
-//     sequences still implemented inline, each naming the PR that will
-//     migrate it. The last PR in the series empties this map, turning the
-//     guard below into a zero-exception gate.
+//   - PendingMigrationExemptions: real write-then-publish (or write-once,
+//     or create-only-scratch) sequences still implemented inline, each
+//     naming the PR that will migrate it. The last PR in the series empties
+//     this map, turning the guard below into a zero-exception gate. Per a
+//     round-2 review decision, this includes every ephemeral/scratch
+//     CreateTemp site (a name reserved and freed, or a file written and
+//     used once by a single subprocess, never durably read back): the plan
+//     the file's own package doc for internal/filewrite states the
+//     Verifies goal as "zero direct temp-file write/sync/chmod/close/
+//     rename sequences outside the new package", with no carve-out for
+//     scratch files, so these are pending a future filewrite.CreateScratch
+//     helper rather than permanently exempt.
 //   - NotAFileWritePublishExemptions: sites this detector's necessarily
 //     conservative rules flag, but that are not a temp-file write-and-
 //     publish sequence at all -- a queue-state move, an archive/quarantine
-//     move, a directory move, or the renameNoReplace primitive's own OS-
-//     specific implementation. These never migrate to internal/filewrite,
-//     because there is nothing here for it to replace.
+//     move, a directory move, an append-only log write, or the
+//     renameNoReplace primitive's own OS-specific implementation. These
+//     never migrate to internal/filewrite, because there is nothing here
+//     for it to replace. This list holds only move-only renames,
+//     append-only log writes, and the renameNoReplace OS wrappers -- never
+//     a create-temp-file site, since every one of those is either a real
+//     write (pending migration) or a scratch file (also pending, per the
+//     policy above).
 //
 // TestEveryFilewriteBoundaryExemptionMatchesALiveViolation asserts every
 // entry in both maps still names a real, currently-detected site, so a
 // stale or padded entry is caught immediately and the allow-lists can only
 // shrink as sites genuinely migrate.
+// TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent asserts
+// no NotAFileWritePublishExemptions entry -- exempted for a rename/move/
+// append reason -- also independently creates a file via a gated
+// OpenFile/Openat-with-create-flag call and writes content to it; a
+// round-2 review found internal/locallink/execports.go's Link function
+// misclassified this way (exempted as "renames ... into place", when it
+// also does two real O_CREATE|O_EXCL content writes before that rename).
 package quality
 
 import (
@@ -50,113 +92,157 @@ import (
 	"strings"
 )
 
-// PendingMigrationExemptions lists "relative/path.go:FuncName" sites that
-// implement a real temp-file write-then-publish (or write-once) sequence
-// inline, not yet routed through internal/filewrite. Every entry names the
-// task-9 PR that will migrate it; that PR removes the entry in the same
-// commit it lands.
+// PendingMigrationExemptions lists "relative/path.go:FuncName" (or
+// "relative/path.go:ReceiverType.FuncName" for a method) sites that
+// implement a real temp-file write-then-publish sequence, write-once
+// sequence, or scratch/name-reservation create inline, not yet routed
+// through internal/filewrite. Every entry names the task-9 PR that will
+// migrate it; that PR removes the entry in the same commit it lands.
 var PendingMigrationExemptions = map[string]string{
-	"internal/worktrees/worklog.go:writeBytesImmutableAt":   "cov-t9-cutover: rename-based immutable publish (via renameNoReplace), not yet migrated to internal/filewrite",
-	"internal/worktrees/worklog.go:writeBytesAtomicAt":      "cov-t9-cutover: fd-relative rename-based atomic write, not yet migrated to internal/filewrite",
-	"internal/worktrees/worklog.go:writeBytesAtomic":        "cov-t9-cutover: path-based twin of writeBytesAtomicAt, not yet migrated to internal/filewrite",
-	"internal/sessionlaunch/state.go:publishLaunchArtifact": "cov-t9-cutover: link-based immutable publish, not yet migrated to internal/filewrite",
-	"internal/hooks/manager.go:writeExecutableAt":           "cov-t9-cutover: fd-relative create+chmod+write+renameNoReplace publish, not yet migrated to internal/filewrite",
+	"internal/worktrees/worklog.go:writeBytesImmutableAt":   "PR-3: worktrees -- rename-based immutable publish (via renameNoReplace)",
+	"internal/worktrees/worklog.go:writeBytesAtomicAt":      "PR-3: worktrees -- fd-relative rename-based atomic write",
+	"internal/worktrees/worklog.go:writeBytesAtomic":        "PR-3: worktrees -- path-based twin of writeBytesAtomicAt",
+	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
+	"internal/hooks/manager.go:writeExecutableAt":           "PR-5: hooks -- fd-relative create+chmod+write+renameNoReplace publish",
 
 	// Category A: os.CreateTemp/os.OpenFile/os.WriteFile + os.Rename, all
 	// in the same function (spec/plans/coverage-to-100 task-9 PR-1 review,
 	// B1 inventory items 1-47).
-	"cmd/wb/daemon.go:writeLifecycleOwnerPID":                                                                                  "cov-t9-cutover: path-based CreateTemp+chmod+sync+Rename, not yet migrated",
-	"cmd/wb/daemon_file_bridge.go:writeDaemonFileEnvelope":                                                                     "cov-t9-cutover: OpenFile+write+sync+Rename, not yet migrated",
-	"cmd/wb/daemon_process_darwin.go:startDaemonProcess":                                                                       "cov-t9-cutover: CreateTemp plist+chmod+Rename, not yet migrated",
-	"cmd/wb/fleet_default_branch.go:persistDefaultBranchReport":                                                                "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"cmd/wb/hooks_agent.go:writeSettingsAtomically":                                                                            "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"cmd/wb/peers.go:savePeerUpstreamState":                                                                                    "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"cmd/wb/sync_report.go:writeSyncIssuesFile":                                                                                "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/agents/run.go:Save":                                                                                              "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/archiveprune/untracked.go:overwriteArchiveCleanReceipt":                                                          "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/checkoutmarker/checkoutmarker.go:writeFileAtomically":                                                            "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/daemon/lifecycle.go:Save":                                                                                        "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/daemon/service.go:persistRecord":                                                                                 "cov-t9-cutover: OpenFile+sync+Rename, not yet migrated",
-	"internal/deps/github_actions.go:writeAtomic":                                                                              "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/discover/local_index.go:writeLocalIndex":                                                                         "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/fleetsync/receipt.go:overwriteRemovalReceipt":                                                                    "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/githubobserver/observer.go:writeCacheEntry":                                                                      "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/hooks/pushtier_prlookup.go:savePRStatusCache":                                                                    "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/landinglane/landinglane.go:writeRecord":                                                                          "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/layout/migrate.go:writeManifest":                                                                                 "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/lifecyclehooks/gc.go:rewriteReceiptRecords":                                                                      "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/lifecyclehooks/queue.go:writeJSONAtomic":                                                                         "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/mergeack/mergeack.go:Persist":                                                                                    "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/migrate/engine.go:Apply":                                                                                         "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/npmrelease/release.go:writeAtomic":                                                                               "cov-t9-cutover: CreateTemp+chmod+Rename, not yet migrated",
-	"internal/orchestrate/worktree_merge.go:persistWorktreeMergeReceipt":                                                       "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistPreparedWorktreeMergeRebatch":                                           "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistLandedFailureAcknowledgement":                                           "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistValidationFailureSupersession":                                          "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/orchestrate/worktree_merge_retired_publication.go:persistRetiredPublicationAcknowledgement":                      "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/orchestrate/worktree_merge_stranded.go:persistStrandedLandingAcknowledgement":                                    "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/orchestrate/worktree_merge_unpublished_validation_failure.go:persistUnpublishedValidationFailureAcknowledgement": "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/quality/go_test_shards.go:writeCoverageProfileAtomically":                                                        "cov-t9-cutover: CreateTemp+chmod+sync+Rename, not yet migrated",
-	"internal/quality/validation_cache.go:SaveValidationCache":                                                                 "cov-t9-cutover: CreateTemp+sync+Rename, not yet migrated",
-	"internal/repositoryevents/queue.go:persist":                                                                               "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/repositoryevents/receiver.go:saveState":                                                                          "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/runqueue/visibility.go:atomicWriteFile":                                                                          "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/streams/store.go:writeAtomically":                                                                                "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/waitregistry/registry.go:Register":                                                                               "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/wbconfig/peers.go:SetPeersUpstream":                                                                              "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/wbconfig/remote.go:SetRemoteHub":                                                                                 "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/worktrees/branches_quarantine.go:writeQuarantineReport":                                                          "cov-t9-cutover: OpenFile+sync+Rename, not yet migrated",
-	"internal/worktrees/lifecycle.go:writeCleanupReport":                                                                       "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/worktrees/rename.go:writeRenameReport":                                                                           "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
-	"internal/worktrees/retire.go:writeRetireReport":                                                                           "cov-t9-cutover: CreateTemp-based publish, not yet migrated",
-	"internal/worktrees/stage_recovery.go:writeRetiredStageReceipt":                                                            "cov-t9-cutover: WriteFile-to-temp+Rename, not yet migrated",
+	"cmd/wb/daemon.go:daemonController.writeLifecycleOwnerPID":                                                                 "PR-2: cmd/wb -- path-based CreateTemp+chmod+sync+Rename",
+	"cmd/wb/daemon_file_bridge.go:writeDaemonFileEnvelope":                                                                     "PR-2: cmd/wb -- OpenFile+write+sync+Rename",
+	"cmd/wb/daemon_process_darwin.go:startDaemonProcess":                                                                       "PR-2: cmd/wb -- CreateTemp plist+chmod+Rename",
+	"cmd/wb/fleet_default_branch.go:persistDefaultBranchReport":                                                                "PR-2: cmd/wb -- CreateTemp+chmod+sync+Rename",
+	"cmd/wb/hooks_agent.go:writeSettingsAtomically":                                                                            "PR-2: cmd/wb -- CreateTemp+chmod+Rename",
+	"cmd/wb/peers.go:savePeerUpstreamState":                                                                                    "PR-2: cmd/wb -- CreateTemp+chmod+sync+Rename",
+	"cmd/wb/sync_report.go:writeSyncIssuesFile":                                                                                "PR-2: cmd/wb -- CreateTemp+chmod+Rename",
+	"internal/agents/run.go:Store.Save":                                                                                        "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
+	"internal/archiveprune/untracked.go:overwriteArchiveCleanReceipt":                                                          "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
+	"internal/checkoutmarker/checkoutmarker.go:writeFileAtomically":                                                            "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/daemon/lifecycle.go:Store.Save":                                                                                  "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
+	"internal/daemon/service.go:Service.persistRecord":                                                                         "PR-7: session-and-lifecycle -- OpenFile+sync+Rename",
+	"internal/deps/github_actions.go:writeAtomic":                                                                              "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/discover/local_index.go:writeLocalIndex":                                                                         "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/fleetsync/receipt.go:overwriteRemovalReceipt":                                                                    "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/githubobserver/observer.go:writeCacheEntry":                                                                      "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/hooks/pushtier_prlookup.go:savePRStatusCache":                                                                    "PR-5: hooks -- WriteFile-to-temp+Rename",
+	"internal/landinglane/landinglane.go:writeRecord":                                                                          "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
+	"internal/layout/migrate.go:writeManifest":                                                                                 "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
+	"internal/lifecyclehooks/gc.go:rewriteReceiptRecords":                                                                      "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
+	"internal/lifecyclehooks/queue.go:writeJSONAtomic":                                                                         "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
+	"internal/mergeack/mergeack.go:Persist":                                                                                    "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
+	"internal/migrate/engine.go:Apply":                                                                                         "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/npmrelease/release.go:writeAtomic":                                                                               "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
+	"internal/orchestrate/worktree_merge.go:persistWorktreeMergeReceipt":                                                       "PR-4: orchestrate -- CreateTemp+chmod+sync+Rename",
+	"internal/orchestrate/worktree_merge_ack.go:persistPreparedWorktreeMergeRebatch":                                           "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/orchestrate/worktree_merge_ack.go:persistLandedFailureAcknowledgement":                                           "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/orchestrate/worktree_merge_ack.go:persistValidationFailureSupersession":                                          "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/orchestrate/worktree_merge_retired_publication.go:persistRetiredPublicationAcknowledgement":                      "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/orchestrate/worktree_merge_stranded.go:persistStrandedLandingAcknowledgement":                                    "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/orchestrate/worktree_merge_unpublished_validation_failure.go:persistUnpublishedValidationFailureAcknowledgement": "PR-4: orchestrate -- CreateTemp-based publish",
+	"internal/quality/go_test_shards.go:writeCoverageProfileAtomically":                                                        "PR-6: quality -- CreateTemp+chmod+sync+Rename",
+	"internal/quality/validation_cache.go:SaveValidationCache":                                                                 "PR-6: quality -- CreateTemp+sync+Rename",
+	"internal/repositoryevents/queue.go:Queue.persist":                                                                         "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/repositoryevents/receiver.go:CursorStore.saveState":                                                              "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/runqueue/visibility.go:atomicWriteFile":                                                                          "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/streams/store.go:Store.writeAtomically":                                                                          "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/waitregistry/registry.go:Register":                                                                               "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
+	"internal/wbconfig/peers.go:SetPeersUpstream":                                                                              "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/wbconfig/remote.go:SetRemoteHub":                                                                                 "PR-8: misc-atomic-writers -- CreateTemp-based publish",
+	"internal/worktrees/branches_quarantine.go:writeQuarantineReport":                                                          "PR-3: worktrees -- OpenFile+sync+Rename",
+	"internal/worktrees/lifecycle.go:writeCleanupReport":                                                                       "PR-3: worktrees -- WriteFile-to-temp+Rename",
+	"internal/worktrees/rename.go:writeRenameReport":                                                                           "PR-3: worktrees -- WriteFile-to-temp+Rename",
+	"internal/worktrees/retire.go:writeRetireReport":                                                                           "PR-3: worktrees -- CreateTemp-based publish",
+	"internal/worktrees/stage_recovery.go:writeRetiredStageReceipt":                                                            "PR-3: worktrees -- WriteFile-to-temp+Rename",
 
 	// Category B: publish through a package-level os.Link alias, or the
 	// write and the publish split across functions (review items 48-56).
-	"internal/orchestrate/worktree_merge_ack.go:persistReceiptCollisionAcknowledgement":        "cov-t9-cutover: publishes via package-var alias linkReceiptCollisionAcknowledgement = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistConflictCandidateAdvance":               "cov-t9-cutover: publishes via package-var alias linkConflictCandidateAdvance = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistLegacyValidationFailureIdentity":        "cov-t9-cutover: publishes via package-var alias linkLegacyValidationFailureIdentity = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistLegacyConflictIdentity":                 "cov-t9-cutover: publishes via package-var alias linkLegacyConflictIdentity = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistMissingCleanupAcknowledgement":          "cov-t9-cutover: publishes via package-var alias linkMissingCleanupAcknowledgement = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_ack.go:persistSelfSupersessionCorrection":             "cov-t9-cutover: publishes via package-var alias linkSelfSupersessionCorrection = os.Link, not yet migrated",
-	"internal/orchestrate/worktree_merge_adopt_published.go:persistPublishedCandidateAdoption": "cov-t9-cutover: publishes via package-var alias linkPublishedCandidateAdoption = os.Link, not yet migrated",
-	"internal/worktrees/branches_cleanup.go:writeBranchCleanupReport":                          "cov-t9-cutover: writeDurableFile(temporary) then os.Rename, not yet migrated",
-	"internal/nodeidentity/nodeidentity.go:publishNodeID":                                      "cov-t9-cutover: publishes via os.Link; its temp-file half writeNodeIDTempFile uses package-var seams fileChmod/fileWriteString/fileSync/fileClose (not independently detected, migrates in the same PR), not yet migrated",
+	"internal/orchestrate/worktree_merge_ack.go:persistReceiptCollisionAcknowledgement":        "PR-4: orchestrate -- publishes via package-var alias linkReceiptCollisionAcknowledgement = os.Link",
+	"internal/orchestrate/worktree_merge_ack.go:persistConflictCandidateAdvance":               "PR-4: orchestrate -- publishes via package-var alias linkConflictCandidateAdvance = os.Link",
+	"internal/orchestrate/worktree_merge_ack.go:persistLegacyValidationFailureIdentity":        "PR-4: orchestrate -- publishes via package-var alias linkLegacyValidationFailureIdentity = os.Link",
+	"internal/orchestrate/worktree_merge_ack.go:persistLegacyConflictIdentity":                 "PR-4: orchestrate -- publishes via package-var alias linkLegacyConflictIdentity = os.Link",
+	"internal/orchestrate/worktree_merge_ack.go:persistMissingCleanupAcknowledgement":          "PR-4: orchestrate -- publishes via package-var alias linkMissingCleanupAcknowledgement = os.Link",
+	"internal/orchestrate/worktree_merge_ack.go:persistSelfSupersessionCorrection":             "PR-4: orchestrate -- publishes via package-var alias linkSelfSupersessionCorrection = os.Link",
+	"internal/orchestrate/worktree_merge_adopt_published.go:persistPublishedCandidateAdoption": "PR-4: orchestrate -- publishes via package-var alias linkPublishedCandidateAdoption = os.Link",
+	"internal/worktrees/branches_cleanup.go:writeBranchCleanupReport":                          "PR-3: worktrees -- writeDurableFile(temporary) then os.Rename",
+	"internal/nodeidentity/nodeidentity.go:publishNodeID":                                      "PR-7: session-and-lifecycle -- publishes via os.Link; its temp-file half writeNodeIDTempFile migrates in the same PR",
+	"internal/nodeidentity/nodeidentity.go:writeNodeIDTempFile":                                "PR-7: session-and-lifecycle -- CreateTemp+chmod+write+sync via package-var seams fileChmod/fileWriteString/fileSync/fileClose, escapes the OpenFile content-write gate; migrates with publishNodeID",
 
 	// Category C: create-exclusive, write, sync, no publish -- the
 	// write-once-immutable shape (review items 57-63, plus writeOneTimeToken
 	// and MarkParked found while regenerating this inventory against the
 	// call-based detector). PR-1 migrated this shape for sessionpark only.
-	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeKey":                   "cov-t9-cutover: OpenFile O_CREATE|O_EXCL write-once, not yet migrated",
-	"cmd/wb/peers.go:writeOneTimeToken":                                  "cov-t9-cutover: OpenFile O_EXCL write-once (one-time token), not yet migrated",
-	"cmd/wb/remote_enroll.go:writePrivateCredential":                     "cov-t9-cutover: chmod+OpenFile O_EXCL write-once, not yet migrated",
-	"cmd/wb/verify_receipt.go:writeGraduationReceipt":                    "cov-t9-cutover: OpenFile O_EXCL write-once, not yet migrated",
-	"internal/retiredcandidateack/ack.go:Persist":                        "cov-t9-cutover: OpenFile O_EXCL write-once, not yet migrated",
-	"internal/session/session.go:MarkParked":                             "cov-t9-cutover: OpenFile O_EXCL write-once (parked lifecycle marker), not yet migrated",
-	"internal/session/session.go:MarkResumed":                            "cov-t9-cutover: OpenFile O_EXCL write-once, not yet migrated",
-	"internal/worktrees/branches_cleanup.go:writeDurableFile":            "cov-t9-cutover: OpenFile O_EXCL write-once (also used non-temp), not yet migrated",
-	"internal/worktrees/branches_cleanup.go:copyFileSHA256":              "cov-t9-cutover: OpenFile O_EXCL write-once (copy via io.Copy), not yet migrated",
-	"internal/locallink/execports.go:copyBuiltPackageContents":           "cov-t9-cutover: OpenFile O_EXCL write-once (copy via io.Copy), not yet migrated",
-	"internal/worktrees/retire.go:retireCaptureFile":                     "cov-t9-cutover: OpenFile O_EXCL write-once (copy via io.Copy), not yet migrated",
-	"internal/orchestrate/worktree_merge.go:extractWorktreeMergeArchive": "cov-t9-cutover: OpenFile O_CREATE|O_TRUNC write via io.Copy for each archive entry, not yet migrated",
+	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeKey":                   "PR-2: cmd/wb -- OpenFile O_CREATE|O_EXCL write-once",
+	"cmd/wb/peers.go:writeOneTimeToken":                                  "PR-2: cmd/wb -- OpenFile O_EXCL write-once (one-time token)",
+	"cmd/wb/remote_enroll.go:writePrivateCredential":                     "PR-2: cmd/wb -- chmod+OpenFile O_EXCL write-once",
+	"cmd/wb/verify_receipt.go:writeGraduationReceipt":                    "PR-2: cmd/wb -- OpenFile O_EXCL write-once",
+	"internal/retiredcandidateack/ack.go:Persist":                        "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
+	"internal/session/session.go:MarkParked":                             "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once (parked lifecycle marker)",
+	"internal/session/session.go:MarkResumed":                            "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
+	"internal/worktrees/branches_cleanup.go:writeDurableFile":            "PR-3: worktrees -- OpenFile O_EXCL write-once (also used non-temp)",
+	"internal/worktrees/branches_cleanup.go:copyFileSHA256":              "PR-3: worktrees -- OpenFile O_EXCL write-once (copy via io.Copy)",
+	"internal/locallink/execports.go:ExecNode.Link":                      "PR-8: misc-atomic-writers -- two OpenFile O_CREATE|O_EXCL write-once marker/backup writes ahead of a rename; not rename-only, unlike ExecNode.Unlink",
+	"internal/locallink/execports.go:copyBuiltPackageContents":           "PR-8: misc-atomic-writers -- OpenFile O_EXCL write-once (copy via io.Copy)",
+	"internal/worktrees/retire.go:retireCaptureFile":                     "PR-3: worktrees -- OpenFile O_EXCL write-once (copy via io.Copy)",
+	"internal/orchestrate/worktree_merge.go:extractWorktreeMergeArchive": "PR-4: orchestrate -- OpenFile O_CREATE|O_TRUNC write via io.Copy for each archive entry",
+
+	// Category D (round 2): create-only scratch/name-reservation temp
+	// files -- created, immediately closed (some also removed) and never
+	// written to. Not detected before this round, since os.CreateTemp was
+	// previously gated by the same content-write check os.OpenFile/
+	// unix.Openat still use; the round-2 review made os.CreateTemp
+	// unconditional, which now catches these. Per the coordinator's
+	// scratch-file policy (spec/plans/coverage-to-100 task-9 round-2
+	// review), these are pending migration to a new filewrite.CreateScratch
+	// helper, not permanently exempt as a non-write-publish site.
+	"cmd/wb/coverage_ratchet.go:runChangedCoverage":          "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes and reuses it, never writes",
+	"cmd/wb/fleet_default_branch.go:defaultBranchReportPath": "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique report path then frees it via os.Remove, never writes",
+	"internal/locallink/execports.go:ExecGit.ContentHash":    "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a name for git plumbing output, closes and removes it, never writes",
+	"internal/pathguard/pathguard.go:OSProbe":                "PR-9: scratch-helper (filewrite.CreateScratch) -- writability probe: create, close, remove, never writes",
+	"internal/quality/coverage.go:coverageProfilePath":       "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes it, never writes",
+	"internal/quality/verify.go:runShardedVerification":      "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique verify-coverage-profile path, closes it, never writes",
+
+	// Category E (round 2): ephemeral scratch temp files moved here from
+	// NotAFileWritePublishExemptions per the coordinator's round-2 policy
+	// override -- created, written, used as one subprocess's input (gh api,
+	// git diff/push, a hook template, an HTTP download), and removed in the
+	// same function or its immediate caller, never durably read back. The
+	// task-9 plan's Verifies goal is "zero direct temp-file write/sync/
+	// chmod/close/rename sequences outside the new package" with no
+	// carve-out for scratch files, so these are pending a
+	// filewrite.CreateScratch helper rather than permanently exempt.
+	"cmd/wb/fleet_merge_policy.go:applyClassicProtectionWithoutLinearHistory":                           "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp file passed as gh api --input, removed by defer",
+	"cmd/wb/fleet_merge_policy.go:applySharedRuleset":                                                   "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp file passed as gh api --input, removed by defer",
+	"internal/hooks/run.go:runTemplate":                                                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp script for one subprocess execution, removed by defer",
+	"internal/orchestrate/worktree_merge.go:PrepareWorktreeMergeRevert":                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral git-diff patch temp file, removed by defer",
+	"internal/orchestrate/worktree_merge.go:runWorktreeMergePrePushGate":                                "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral pre-push gate input temp file, removed by defer",
+	"internal/orchestrate/worktree_merge.go:writeWorktreeMergePrompt":                                   "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
+	"internal/orchestrate/worktree_merge_conflict_replacement.go:writeConflictCandidateRefreshPrompt":   "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
+	"internal/orchestrate/worktree_merge_published_forward_repair.go:writePublishedForwardRepairPrompt": "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
+	"internal/orchestrate/worktree_merge_seal.go:writeValidationFailureSealPrompt":                      "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
+	"cmd/wb/deps_policy.go:fetchPolicy":                                                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- writes one HTTP download to a temp file returned to the caller for one-shot use",
 }
 
-// NotAFileWritePublishExemptions lists "relative/path.go:FuncName" sites
-// this detector's conservative call-based rules flag, but that are not a
+// NotAFileWritePublishExemptions lists "relative/path.go:FuncName" (or
+// "relative/path.go:ReceiverType.FuncName" for a method) sites this
+// detector's conservative call-based rules flag, but that are not a
 // temp-file write-and-publish sequence: a queue-state move, an archive or
-// quarantine move, a directory or lock move, or the renameNoReplace
-// primitive's own OS-specific implementation (which internal/filewrite
-// does not yet own -- see LinkNoReplace's doc comment). None of these
-// migrates to internal/filewrite, because there is no write sequence here
-// for it to replace.
+// quarantine move, a directory or lock move, an append-only log write, or
+// the renameNoReplace primitive's own OS-specific implementation (which
+// internal/filewrite does not yet own -- see LinkNoReplace's doc comment).
+// None of these migrates to internal/filewrite, because there is no write
+// sequence here for it to replace. Per a round-2 review decision, this list
+// holds only move-only renames, append-only logs, and the renameNoReplace
+// OS wrappers -- a create-temp-file site never belongs here, even a
+// scratch one; see PendingMigrationExemptions' Category D/E.
+// TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent enforces
+// that no entry below also independently creates and writes a file.
 var NotAFileWritePublishExemptions = map[string]string{
-	"internal/lifecyclehooks/queue.go:recoverRunning":                          "renames a queue job's state directory back to pending on recovery; not a file write",
-	"internal/lifecyclehooks/queue.go:claimBatch":                              "renames a queue job's state directory to claim it; not a file write",
-	"internal/lifecyclehooks/queue.go:quarantineFile":                          "renames (moves) a file into a quarantine directory; not a write publish",
-	"internal/streams/store.go:archiveLocked":                                  "renames a stream's directory into an archive location; not a file write",
-	"internal/locallink/execports.go:Link":                                     "renames an existing package directory into place as part of a link/backup dance; not a temp-file write",
-	"internal/locallink/execports.go:Unlink":                                   "renames an existing backup directory back into place; not a temp-file write",
-	"cmd/wb/daemon_file_bridge.go:quarantine":                                  "renames a request file into a quarantine directory; not a write publish",
+	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":               "renames a queue job's state directory back to pending on recovery; not a file write",
+	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatch":                   "renames a queue job's state directory to claim it; not a file write",
+	"internal/lifecyclehooks/queue.go:Dispatcher.quarantineFile":               "renames (moves) a file into a quarantine directory; not a write publish",
+	"internal/streams/store.go:Store.archiveLocked":                            "renames a stream's directory into an archive location; not a file write",
+	"internal/locallink/execports.go:ExecNode.Unlink":                          "renames an existing backup directory back into place; not a temp-file write",
+	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":           "renames a request file into a quarantine directory; not a write publish",
 	"internal/worktrees/worktrees.go:moveExpectedDirectoryNoReplaceAuthorized": "moves a worktree directory after an identity check; not a file write",
 	"internal/worktrees/worktrees.go:moveExpectedLockNoReplace":                "moves a lock file after an identity check, without writing new content; not a file write",
 	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":               "moves a managed hook after an identity check, without writing new content; not a file write",
@@ -175,29 +261,12 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// Append-only log writes: an O_APPEND descriptor with a flock (or a
 	// bare append), never a temp name, never a rename or link. There is no
 	// create/write/publish sequence here for internal/filewrite to replace.
-	"internal/agentguard/gh.go:recordGhPrMergeOverride": "O_APPEND log write, not a create/publish sequence",
-	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
-	"internal/runlog/runlog.go:Append":                  "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/streams/events.go:Append":                 "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/lifecyclehooks/queue.go:appendReceipt":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/locallink/execports.go:ExcludePath":       "O_APPEND write to a git exclude file, not a create/publish sequence",
-
-	// Ephemeral scratch temp files: created, written, used as one
-	// subprocess's input (gh api, git diff/push, a hook template), and
-	// removed in the same function or its immediate caller, never
-	// durably read back. There is no publish and nothing for
-	// internal/filewrite's write-once or write-then-publish primitives to
-	// replace.
-	"cmd/wb/fleet_merge_policy.go:applyClassicProtectionWithoutLinearHistory":                           "ephemeral temp file passed as gh api --input, removed by defer; no publish",
-	"cmd/wb/fleet_merge_policy.go:applySharedRuleset":                                                   "ephemeral temp file passed as gh api --input, removed by defer; no publish",
-	"internal/hooks/run.go:runTemplate":                                                                 "ephemeral temp script for one subprocess execution, removed by defer; no publish",
-	"internal/orchestrate/worktree_merge.go:PrepareWorktreeMergeRevert":                                 "writes an ephemeral git-diff patch temp file, removed by defer; no publish",
-	"internal/orchestrate/worktree_merge.go:runWorktreeMergePrePushGate":                                "writes an ephemeral pre-push gate input temp file, removed by defer; no publish",
-	"internal/orchestrate/worktree_merge.go:writeWorktreeMergePrompt":                                   "writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer, no publish",
-	"internal/orchestrate/worktree_merge_conflict_replacement.go:writeConflictCandidateRefreshPrompt":   "writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer, no publish",
-	"internal/orchestrate/worktree_merge_published_forward_repair.go:writePublishedForwardRepairPrompt": "writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer, no publish",
-	"internal/orchestrate/worktree_merge_seal.go:writeValidationFailureSealPrompt":                      "writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer, no publish",
-	"cmd/wb/deps_policy.go:fetchPolicy":                                                                 "writes one HTTP download to a temp file returned to the caller for one-shot use; no publish",
+	"internal/agentguard/gh.go:recordGhPrMergeOverride":   "O_APPEND log write, not a create/publish sequence",
+	"internal/hooks/metrics.go:AppendEvents":              "O_APPEND log write, not a create/publish sequence",
+	"internal/runlog/runlog.go:Append":                    "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/streams/events.go:FileEventLog.Append":      "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/lifecyclehooks/queue.go:appendReceipt":      "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/locallink/execports.go:ExecGit.ExcludePath": "O_APPEND write to a git exclude file, not a create/publish sequence",
 }
 
 // InlineWriteSequenceViolation names one function outside
@@ -208,7 +277,8 @@ var NotAFileWritePublishExemptions = map[string]string{
 type InlineWriteSequenceViolation struct {
 	// File is the path relative to root, slash-separated.
 	File string
-	// Func is the offending top-level function's name.
+	// Func is the offending function's name, or "ReceiverType.Name" for a
+	// method.
 	Func string
 	// Line is the function declaration's line number, for a human
 	// reading the failure to jump straight to it.
@@ -233,17 +303,19 @@ var filewriteBoundaryExcludedDirs = []string{
 // FindInlineWriteSequences walks root (a module root, typically
 // ParallelGuardModuleRoot's result) and reports every non-test Go function
 // outside internal/filewrite and internal/unixcompat whose body directly
-// calls a publish primitive (os.Rename, os.Link, syscall.Rename, the
-// fd-relative unix.Renameat/Renameat2/RenameatxNp/Linkat family, the
-// repo-local renameNoReplace helper, or a package-level alias of
-// os.Link/os.Rename), a create primitive (os.CreateTemp, ioutil.TempFile,
-// or os.OpenFile/unix.Openat with an O_CREAT-family flag), or os.WriteFile
-// together with one of the publish primitives above in the same function --
-// skipping any file:func listed in pendingMigration or notAFileWritePublish.
-// Callers pass PendingMigrationExemptions and NotAFileWritePublishExemptions
-// for the real guard; a test may pass its own maps (or nil) to exercise the
-// detector without touching package state, which keeps every test in this
-// file parallel-safe.
+// calls a publish primitive (os.Rename, os.Link, syscall.Rename,
+// syscall.Renameat, syscall.Link, the fd-relative unix.Rename/Renameat/
+// Renameat2/RenameatxNp/Link/Linkat family, the repo-local renameNoReplace
+// helper, or a package-level alias of os.Link/os.Rename), a create
+// primitive banned unconditionally (os.CreateTemp, ioutil.TempFile,
+// os.Create), a create primitive banned only alongside a content write
+// (os.OpenFile or unix.Openat carrying an O_CREAT-family flag), or
+// os.WriteFile together with one of the publish primitives above in the
+// same function -- skipping any file:func listed in pendingMigration or
+// notAFileWritePublish. Callers pass PendingMigrationExemptions and
+// NotAFileWritePublishExemptions for the real guard; a test may pass its
+// own maps (or nil) to exercise the detector without touching package
+// state, which keeps every test in this file parallel-safe.
 func FindInlineWriteSequences(root string, pendingMigration, notAFileWritePublish map[string]string) ([]InlineWriteSequenceViolation, error) {
 	fset := token.NewFileSet()
 	var violations []InlineWriteSequenceViolation
@@ -280,7 +352,8 @@ func FindInlineWriteSequences(root string, pendingMigration, notAFileWritePublis
 			if !functionHasInlineWriteSequence(fn.Body, aliases) {
 				continue
 			}
-			key := rel + ":" + fn.Name.Name
+			funcName := qualifiedFuncName(fn)
+			key := rel + ":" + funcName
 			if _, exempt := pendingMigration[key]; exempt {
 				continue
 			}
@@ -289,7 +362,7 @@ func FindInlineWriteSequences(root string, pendingMigration, notAFileWritePublis
 			}
 			violations = append(violations, InlineWriteSequenceViolation{
 				File: rel,
-				Func: fn.Name.Name,
+				Func: funcName,
 				Line: fset.Position(fn.Pos()).Line,
 			})
 		}
@@ -305,6 +378,39 @@ func FindInlineWriteSequences(root string, pendingMigration, notAFileWritePublis
 		return violations[i].Func < violations[j].Func
 	})
 	return violations, nil
+}
+
+// qualifiedFuncName returns fn's name, prefixed with its receiver's type
+// name and a "." when fn is a method -- e.g. "FileEventLog.Append" -- so
+// two methods with the same name on different receivers in the same file
+// never collide under a single "file:func" exemption key.
+func qualifiedFuncName(fn *ast.FuncDecl) string {
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		if t := receiverTypeName(fn.Recv.List[0].Type); t != "" {
+			return t + "." + fn.Name.Name
+		}
+	}
+	return fn.Name.Name
+}
+
+// receiverTypeName extracts the bare type name from a method receiver's
+// type expression, unwrapping a pointer receiver (*T) and a generic
+// receiver's instantiation (T[P]) to their base identifier. It returns ""
+// for a shape it does not recognise, in which case qualifiedFuncName falls
+// back to the bare function name.
+func receiverTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return receiverTypeName(t.X)
+	case *ast.IndexExpr:
+		return receiverTypeName(t.X)
+	case *ast.IndexListExpr:
+		return receiverTypeName(t.X)
+	default:
+		return ""
+	}
 }
 
 // relSlashFor renders path as a slash-separated path relative to root,
@@ -356,22 +462,39 @@ func fileRenameLinkAliases(file *ast.File) map[string]bool {
 	return aliases
 }
 
-// functionHasInlineWriteSequence reports whether body directly calls a
-// publish primitive this package always bans (os.Rename, os.Link,
-// syscall.Rename, the unix.Renameat/Renameat2/RenameatxNp/Linkat family,
-// renameNoReplace, or a package-level alias of os.Link/os.Rename), or
-// creates a file with an O_CREAT-family flag (os.CreateTemp,
-// ioutil.TempFile, or os.OpenFile/unix.Openat carrying the flag) AND also
-// writes content to it in the same function -- the second half of that
-// condition is what tells a genuine write-then-publish or write-once
-// sequence apart from a plain lock-file open (O_CREAT|O_EXCL followed only
-// by Fchmod/Flock, with no content ever written), which is not a case this
-// package's write primitives have anything to offer. aliases is the file's
-// package-level os.Link/os.Rename alias set, from fileRenameLinkAliases.
-func functionHasInlineWriteSequence(body *ast.BlockStmt, aliases map[string]bool) bool {
-	publishBanned := false
-	createBanned := false
-	hasContentWrite := false
+// inlineWriteSequenceClassification is the shared result of scanning one
+// function body for the primitives this file bans, split into the two
+// independent signals FindInlineWriteSequences and
+// functionCreatesAndWritesContentIgnoringPublish each need: whether the
+// body calls a publish primitive (always a violation on its own), and
+// whether it independently creates a file via a gated create primitive
+// and writes content to it (a violation only via this second signal, and
+// the signal TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent
+// checks in isolation from any publish call in the same function).
+type inlineWriteSequenceClassification struct {
+	publishBanned bool
+	alwaysBanned  bool
+	createBanned  bool
+	// createExclOrTruncBanned is like createBanned, but excludes an
+	// os.OpenFile/unix.Openat call whose flags also mention O_APPEND (an
+	// ever-growing append log, never a temp-file publish target) and is
+	// also set whenever alwaysBanned is (os.CreateTemp/ioutil.TempFile/
+	// os.Create can never append). Only
+	// functionCreatesAndWritesContentIgnoringPublish uses this: it must
+	// not mistake a legitimate O_APPEND log write (which also happens to
+	// create the file on first use) for the write-once/write-then-publish
+	// shape the round-2 review's B1 finding was about.
+	createExclOrTruncBanned bool
+	hasContentWrite         bool
+}
+
+// classifyInlineWriteSequence walks body once and reports every signal
+// functionHasInlineWriteSequence and functionCreatesAndWritesContentIgnoringPublish
+// need. aliases is the file's package-level os.Link/os.Rename alias set,
+// from fileRenameLinkAliases (pass nil when publish-alias detection is not
+// needed, e.g. from a caller that only wants the create-and-write signal).
+func classifyInlineWriteSequence(body *ast.BlockStmt, aliases map[string]bool) inlineWriteSequenceClassification {
+	var c inlineWriteSequenceClassification
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -386,43 +509,141 @@ func functionHasInlineWriteSequence(body *ast.BlockStmt, aliases map[string]bool
 			}
 			switch {
 			case pkgName == "os" && (fn.Sel.Name == "Rename" || fn.Sel.Name == "Link"):
-				publishBanned = true
-			case pkgName == "syscall" && fn.Sel.Name == "Rename":
-				publishBanned = true
+				c.publishBanned = true
+			case pkgName == "syscall" && (fn.Sel.Name == "Rename" || fn.Sel.Name == "Renameat" || fn.Sel.Name == "Link"):
+				c.publishBanned = true
 			case pkgName == "unix" && inlineWriteSequencePublishNames[fn.Sel.Name]:
-				publishBanned = true
+				c.publishBanned = true
 			case pkgName == "os" && fn.Sel.Name == "CreateTemp":
-				createBanned = true
+				c.alwaysBanned = true
+				c.createExclOrTruncBanned = true
 			case pkgName == "ioutil" && fn.Sel.Name == "TempFile":
-				createBanned = true
+				c.alwaysBanned = true
+				c.createExclOrTruncBanned = true
+			case pkgName == "os" && fn.Sel.Name == "Create":
+				c.alwaysBanned = true
+				c.createExclOrTruncBanned = true
 			case pkgName == "os" && fn.Sel.Name == "WriteFile":
-				hasContentWrite = true
+				c.hasContentWrite = true
 			case (pkgName == "os" && fn.Sel.Name == "OpenFile") || (pkgName == "unix" && fn.Sel.Name == "Openat"):
 				if callArgsMentionCreateFlag(call.Args) {
-					createBanned = true
+					c.createBanned = true
+					if !callArgsMentionAppendFlag(call.Args) {
+						c.createExclOrTruncBanned = true
+					}
 				}
 			case inlineWriteSequenceContentWriteNames[fn.Sel.Name]:
-				hasContentWrite = true
+				c.hasContentWrite = true
 			}
 		case *ast.Ident:
 			if fn.Name == "renameNoReplace" || aliases[fn.Name] {
-				publishBanned = true
+				c.publishBanned = true
 			}
 		}
 		return true
 	})
-	if publishBanned {
+	return c
+}
+
+// functionHasInlineWriteSequence reports whether body directly calls a
+// publish primitive this package always bans (os.Rename, os.Link,
+// syscall.Rename/Renameat/Link, the unix.Rename/Renameat/Renameat2/
+// RenameatxNp/Link/Linkat family, renameNoReplace, or a package-level
+// alias of os.Link/os.Rename), a create primitive this package always
+// bans regardless of a content write (os.CreateTemp, ioutil.TempFile,
+// os.Create), or creates a file with an O_CREAT-family flag via
+// os.OpenFile/unix.Openat AND also writes content to it in the same
+// function -- the second half of that last condition is what tells a
+// genuine write-then-publish or write-once sequence apart from a plain
+// lock-file open (O_CREAT|O_EXCL followed only by Fchmod/Flock, with no
+// content ever written), which is not a case this package's write
+// primitives have anything to offer. aliases is the file's package-level
+// os.Link/os.Rename alias set, from fileRenameLinkAliases.
+func functionHasInlineWriteSequence(body *ast.BlockStmt, aliases map[string]bool) bool {
+	c := classifyInlineWriteSequence(body, aliases)
+	if c.publishBanned || c.alwaysBanned {
 		return true
 	}
-	return createBanned && hasContentWrite
+	return c.createBanned && c.hasContentWrite
+}
+
+// functionCreatesAndWritesContentIgnoringPublish reports whether body
+// creates a file via a gated create primitive (os.OpenFile or
+// unix.Openat carrying an O_CREAT-family flag) AND writes content to it,
+// regardless of whether the same function also calls a publish primitive.
+// This is deliberately narrower than functionHasInlineWriteSequence: it
+// exists only so TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent
+// can catch a function exempted in NotAFileWritePublishExemptions for a
+// rename/move/append reason that also independently does a real
+// create-and-write, which functionHasInlineWriteSequence alone would mask
+// behind the publish call (a round-2 review finding:
+// internal/locallink/execports.go's Link function was exempted as
+// "renames ... into place", but does two O_CREATE|O_EXCL content writes
+// of its own before that rename).
+func functionCreatesAndWritesContentIgnoringPublish(body *ast.BlockStmt) bool {
+	c := classifyInlineWriteSequence(body, nil)
+	return c.createExclOrTruncBanned && c.hasContentWrite
+}
+
+// findFunctionsThatCreateAndWriteContent walks root the same way
+// FindInlineWriteSequences does (same file/dir skip rules, same excluded
+// directories) and returns the set of "file:func" (or
+// "file:ReceiverType.func") keys for which
+// functionCreatesAndWritesContentIgnoringPublish is true. It is used only
+// by TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent.
+func findFunctionsThatCreateAndWriteContent(root string) (map[string]bool, error) {
+	fset := token.NewFileSet()
+	keys := map[string]bool{}
+	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == ".git" || base == "node_modules" || base == "vendor" || (strings.HasPrefix(base, ".") && base != ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel := relSlashFor(root, path)
+		for _, excluded := range filewriteBoundaryExcludedDirs {
+			if rel == excluded || strings.HasPrefix(rel, excluded+"/") {
+				return nil
+			}
+		}
+		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return fmt.Errorf("parse %s: %w", path, parseErr)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if !functionCreatesAndWritesContentIgnoringPublish(fn.Body) {
+				continue
+			}
+			keys[rel+":"+qualifiedFuncName(fn)] = true
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("walk %s: %w", root, walkErr)
+	}
+	return keys, nil
 }
 
 // inlineWriteSequencePublishNames are the unix-package (internal/
 // unixcompat) selector names that publish a file by rename or hard link.
 var inlineWriteSequencePublishNames = map[string]bool{
+	"Rename":      true,
 	"Renameat":    true,
 	"Renameat2":   true,
 	"RenameatxNp": true,
+	"Link":        true,
 	"Linkat":      true,
 }
 
@@ -450,16 +671,33 @@ var inlineWriteSequenceContentWriteNames = map[string]bool{
 // exact equality with "O_CREAT" and so could never match os.OpenFile's own
 // flag spelling.
 func callArgsMentionCreateFlag(args []ast.Expr) bool {
+	return callArgsMentionFlagSubstring(args, "O_CREAT")
+}
+
+// callArgsMentionAppendFlag reports whether any argument expression
+// mentions an identifier or selector whose name contains "O_APPEND" --
+// covering both unix.O_APPEND and os.O_APPEND. It distinguishes an
+// ever-growing append log (O_APPEND, never a temp-file publish target,
+// still legitimately exempt in NotAFileWritePublishExemptions) from a
+// genuine write-once-then-optionally-publish open (O_EXCL or O_TRUNC),
+// for functionCreatesAndWritesContentIgnoringPublish only.
+func callArgsMentionAppendFlag(args []ast.Expr) bool {
+	return callArgsMentionFlagSubstring(args, "O_APPEND")
+}
+
+// callArgsMentionFlagSubstring reports whether any argument expression
+// mentions an identifier or selector whose name contains substr.
+func callArgsMentionFlagSubstring(args []ast.Expr, substr string) bool {
 	found := false
 	for _, arg := range args {
 		ast.Inspect(arg, func(n ast.Node) bool {
 			switch e := n.(type) {
 			case *ast.Ident:
-				if strings.Contains(e.Name, "O_CREAT") {
+				if strings.Contains(e.Name, substr) {
 					found = true
 				}
 			case *ast.SelectorExpr:
-				if strings.Contains(e.Sel.Name, "O_CREAT") {
+				if strings.Contains(e.Sel.Name, substr) {
 					found = true
 				}
 			}
