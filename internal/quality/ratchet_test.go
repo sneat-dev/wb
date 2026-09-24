@@ -685,6 +685,139 @@ func TestGitTouchedFilesIncludesAPureDeletion(t *testing.T) {
 	}
 }
 
+// TestFileLineOffsetsMapCoversEveryBranch exercises Map directly against a
+// hand-built two-hunk FileLineOffsets, covering: a line before every hunk
+// (unshifted), a line inside a hunk's old range (unmappable), a line
+// between hunks (shifted by the first hunk's net delta only), and a line
+// after both hunks (shifted by both hunks' net deltas together).
+func TestFileLineOffsetsMapCoversEveryBranch(t *testing.T) {
+	t.Parallel()
+	offsets := FileLineOffsets{hunks: []lineOffsetHunk{
+		{oldStart: 10, oldCount: 2, newStart: 10, newCount: 5}, // net +3
+		{oldStart: 20, oldCount: 3, newStart: 23, newCount: 0}, // net -3
+	}}
+	if newLine, ok := offsets.Map(5); !ok || newLine != 5 {
+		t.Fatalf("Map(5) = (%d, %v), want (5, true): a line before every hunk is unshifted", newLine, ok)
+	}
+	if _, ok := offsets.Map(10); ok {
+		t.Fatal("Map(10) ok = true, want false: line 10 falls inside the first hunk's old range")
+	}
+	if _, ok := offsets.Map(11); ok {
+		t.Fatal("Map(11) ok = true, want false: line 11 falls inside the first hunk's old range")
+	}
+	if newLine, ok := offsets.Map(15); !ok || newLine != 18 {
+		t.Fatalf("Map(15) = (%d, %v), want (18, true): shifted by the first hunk's net +3", newLine, ok)
+	}
+	if _, ok := offsets.Map(21); ok {
+		t.Fatal("Map(21) ok = true, want false: line 21 falls inside the second hunk's old range")
+	}
+	if newLine, ok := offsets.Map(30); !ok || newLine != 30 {
+		t.Fatalf("Map(30) = (%d, %v), want (30, true): shifted by both hunks' net deltas (+3 - 3 = 0)", newLine, ok)
+	}
+}
+
+// TestAtoiOrDefaultParsesOrFallsBack covers all three of atoiOrDefault's
+// outcomes: an empty string (the unified-diff header omitted the count,
+// meaning 1), a valid number, and a malformed one.
+func TestAtoiOrDefaultParsesOrFallsBack(t *testing.T) {
+	t.Parallel()
+	if got := atoiOrDefault("", 1); got != 1 {
+		t.Fatalf("atoiOrDefault(\"\", 1) = %d, want 1", got)
+	}
+	if got := atoiOrDefault("7", 1); got != 7 {
+		t.Fatalf("atoiOrDefault(\"7\", 1) = %d, want 7", got)
+	}
+	if got := atoiOrDefault("not-a-number", 1); got != 1 {
+		t.Fatalf("atoiOrDefault(\"not-a-number\", 1) = %d, want the default 1", got)
+	}
+}
+
+// TestGitLineOffsetsFixtureMapsAcrossAnInsertionAndADeletion is the
+// review-696 non-blocking #3 mechanism end to end: a real PR that inserts a
+// single line (a hunk header with an omitted old count, exercising
+// atoiOrDefault's "empty means 1" branch) and deletes a whole block (a hunk
+// with explicit counts on both sides) produces offsets whose Map correctly
+// places a line before, between and after both hunks.
+func TestGitLineOffsetsFixtureMapsAcrossAnInsertionAndADeletion(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.writeFile("app_test.go", fixtureTestSource)
+	baseSHA := repo.commitAll("base")
+
+	repo.runGit("checkout", "-b", "feature")
+	// Insert one comment line before Add (line 2 -> +1 line), then delete
+	// the blank line and Uncovered entirely (lines 6-11, wholly removed).
+	edited := "package app\n\n// Add adds two numbers.\nfunc Add(a, b int) int {\n\treturn a + b\n}\n"
+	repo.writeFile("app.go", edited)
+	repo.commitAll("insert a comment, delete Uncovered")
+
+	offsets, err := GitLineOffsets(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileOffsets, ok := offsets["app.go"]
+	if !ok {
+		t.Fatalf("offsets = %#v, want an entry for app.go", offsets)
+	}
+	// Line 1 (the package clause) sits before the insertion hunk: unshifted.
+	if newLine, ok := fileOffsets.Map(1); !ok || newLine != 1 {
+		t.Fatalf("Map(1) = (%d, %v), want (1, true)", newLine, ok)
+	}
+	// Line 6 (the blank line right before Uncovered) falls inside the
+	// deletion hunk's old range: unmappable.
+	if _, ok := fileOffsets.Map(6); ok {
+		t.Fatal("Map(6) ok = true, want false: line 6 was deleted by the second hunk")
+	}
+}
+
+// TestGitLineOffsetsFixtureIgnoresDevNullAndOrphanHunks exercises
+// parseLineOffsets' two defensive branches with a real deletion diff: the
+// "+++ /dev/null" file-deleted case clears currentFile, and every hunk that
+// follows a cleared (or not-yet-seen) file header is skipped rather than
+// attributed to the wrong file.
+func TestGitLineOffsetsFixtureIgnoresDevNullAndOrphanHunks(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	baseSHA := repo.commitAll("base")
+
+	repo.runGit("checkout", "-b", "feature")
+	if err := os.Remove(filepath.Join(repo.dir, "app.go")); err != nil {
+		t.Fatal(err)
+	}
+	repo.commitAll("delete app.go")
+
+	offsets, err := GitLineOffsets(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := offsets["app.go"]; ok {
+		t.Fatalf("offsets = %#v, want no entry for a wholly deleted file", offsets)
+	}
+}
+
+func TestGitLineOffsetsRejectsUnknownMergeBase(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	repo.commitAll("base")
+	if _, err := GitLineOffsets(context.Background(), repo.dir, "does-not-exist"); err == nil {
+		t.Fatal("want error for an unresolvable merge base")
+	}
+}
+
+// TestGitLineOffsetsFailsWithoutExitErrorWhenGitCannotEvenStart exercises
+// the non-*exec.ExitError branch, mirroring
+// TestGitChangedLinesFailsWithoutExitErrorWhenGitCannotEvenStart.
+func TestGitLineOffsetsFailsWithoutExitErrorWhenGitCannotEvenStart(t *testing.T) {
+	t.Parallel()
+	_, err := GitLineOffsets(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), "main")
+	if err == nil {
+		t.Fatal("want error when repoRoot does not exist")
+	}
+}
+
 // TestGitChangedLinesExcludesDeletedFile exercises the "+++ /dev/null"
 // (file-deleted) branch of the diff parser using a real deletion.
 func TestGitChangedLinesExcludesDeletedFile(t *testing.T) {

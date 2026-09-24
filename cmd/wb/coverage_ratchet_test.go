@@ -652,6 +652,51 @@ func TestCoverageChangedFailsClosedWhenGitTouchedFilesCannotRun(t *testing.T) {
 	}
 }
 
+// TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun exercises
+// runChangedCoverage's quality.GitLineOffsets error branch specifically: a
+// `git` shim that only fails the invocation carrying --src-prefix=a/, which
+// only GitLineOffsets passes (GitChangedLines also passes -U0, but with
+// --color-moved=plain instead, and GitTouchedFiles passes neither), so
+// GitChangedLines and GitTouchedFiles (which must succeed first) still run
+// against the real binary. Not parallel-safe (t.Setenv mutates the
+// process-wide PATH).
+func TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun(t *testing.T) {
+	repo := newRatchetFixtureRepo(t)
+	repo.writeFile("app.go", ratchetFixtureBaseSource)
+	repo.writeFile("app_test.go", ratchetFixtureTestSource)
+	baseSHA := repo.commitAll("base")
+	runCommand(t, repo.dir, "git", "checkout", "-q", "-b", "feature")
+	repo.writeFile("README.md", "x\n")
+	repo.commitAll("doc change")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = --src-prefix=a/ ]; then\n" +
+		"    echo 'fake git diff --src-prefix failure' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + realGit + " \"$@\"\n"
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"coverage", repo.dir, "--changed", "--target", baseSHA, "--non-interactive"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero when git diff --src-prefix cannot run")
+	}
+	if !strings.Contains(stderr.String(), "fake git diff --src-prefix failure") {
+		t.Fatalf("stderr = %q, want it to surface the git diff --src-prefix failure", stderr.String())
+	}
+}
+
 // TestCoverageChangedFailsClosedOnMalformedRepositoryQualityPolicy exercises
 // runChangedCoverage's quality.RepositoryRunOptions error branch: --changed
 // now reuses the same .wb/quality.yaml-aware sharded runner the plain
