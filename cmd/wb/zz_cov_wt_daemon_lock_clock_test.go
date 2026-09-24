@@ -63,11 +63,26 @@ func TestCwWtDaemonStateLockContendedUntilDeadline(t *testing.T) {
 	start := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	current := start
 	waiterDeps := daemonTestDependencies(t, root)
-	waiterDeps.now = func() time.Time { return current }
+	waiterDeps.lockNow = func() time.Time { return current }
 	waiterDeps.sleep = func(time.Duration) { current = current.Add(2 * daemonReadyTimeout) }
 	waiter := newDaemonController(waiterDeps, root)
 
 	if _, err := waiter.stateLock(); err == nil || !strings.Contains(err.Error(), "another process held the daemon state lock for") {
 		t.Fatalf("stateLock past the deadline = %v", err)
+	}
+}
+
+// TestCwWtDaemonStateLockDefaultClockIsMonotonic proves that the production
+// default of deps.lockNow, unlike deps.now, keeps Go's monotonic clock
+// reading. deps.now defaults to time.Now().UTC(), and UTC() strips the
+// monotonic reading (see time.Time.UTC and time.Time.stripMono in GOROOT's
+// time package): a stateLock deadline measured on that wall clock would move
+// under an NTP step or a VM resume. deps.lockNow must default to plain
+// time.Now so the 5s deadline is immune to wall-clock adjustments. A
+// monotonic time.Time's String() includes an "m=" component; UTC() drops it.
+func TestCwWtDaemonStateLockDefaultClockIsMonotonic(t *testing.T) {
+	now := defaultDaemonDependencies().lockNow()
+	if !strings.Contains(now.String(), "m=") {
+		t.Fatalf("default lockNow() = %s, want a monotonic reading (\"m=...\")", now)
 	}
 }
