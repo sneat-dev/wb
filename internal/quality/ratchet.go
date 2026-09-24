@@ -635,16 +635,19 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 	}
 
 	// changedPackages reuses the same file->package-directory mapping
-	// ChangedPackages (changed_packages.go) uses to build `wb run
-	// --changed`'s package list (task-19 cutover: one computation, not two).
-	// It is narrower than the naive "every touched file's directory" used
-	// before it: only *.go files decide package ownership here, matching
-	// the pre-commit hook's own scope. Dropping a non-Go touched file never
-	// changes this ratchet's outcome either way — no CoverageBlock is ever
-	// produced for a file that is not Go source, so a directory whose only
-	// touched files are non-Go never has anything to report or warn about
-	// regardless of whether it counts as "changed".
-	changedPackages := goPackageDirsFromFiles(touchedFiles)
+	// ChangedPackages (changed_packages.go) uses for `wb run --changed`'s
+	// package list (task-19 cutover: one function computes package
+	// ownership from a touched-file set everywhere, not two that can
+	// drift), but with goOnly=false: per founder decision 11
+	// (spec/plans/coverage-to-100/README.md task-3) and this function's own
+	// contract above, ANY touched file makes the PR own that package for
+	// the ratchet — a table-test fixture, a go:embed asset, a .s/.c/.syso
+	// file, or go.mod/go.sum itself can change a package's coverage
+	// without any *.go file in the diff. `wb run --changed` narrows this
+	// to *.go files (goOnly=true) because only Go source decides what
+	// `go test`/`go vet` should run over; the ratchet's ownership question
+	// is different and stays as wide as it was before task-19.
+	changedPackages := packageDirsFromFiles(touchedFiles, false)
 
 	blocksByPackage := make(map[string][]CoverageBlock)
 	for _, block := range blocks {

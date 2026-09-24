@@ -18,7 +18,17 @@ import (
 // return means nothing changed — the caller must print nothing further and
 // exit 0 without running the command; expandChangedRunArgsResult itself
 // already printed the explanatory line.
+//
+// Only tracked changes are ever considered: `git diff` never reports
+// untracked files, staged, unstaged, or committed, so a brand-new untracked
+// package, or a new untracked file in an otherwise unchanged package, is
+// never part of what "changed" here.
 func expandChangedRunArgs(cmd *cobra.Command, args []string, target string) ([]string, error) {
+	for _, argument := range args {
+		if argument == "-args" || argument == "--" {
+			return nil, usageError("--changed cannot be combined with -args or a nested -- in the command: WB appends the changed package patterns immediately after the given command and its own flags, and a -args/-- boundary would instead send them to the test binary or beyond")
+		}
+	}
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return nil, err

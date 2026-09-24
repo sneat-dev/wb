@@ -3,8 +3,10 @@ package quality
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -110,14 +112,14 @@ func TestChangedPackagesMapsModuleRootFilesToDot(t *testing.T) {
 // TestChangedPackagesCountsBothRenamePaths proves a rename reports both its
 // old package and its new one, mirroring GitTouchedFiles' own --no-renames
 // rationale (rename detection would otherwise print only the destination
-// path). `git mv` leaves the old directory behind on disk, empty but still
-// present, exactly like the pre-commit hook's own `[ -d "$package" ]` shell
-// check would see it — this is not the "fully deleted" case (below), which
-// needs the directory itself removed, not merely emptied.
+// path). "from" keeps a second, untouched .go file so it stays a buildable
+// package after the move — the "git mv leaves nothing buildable behind"
+// case is its own test below (M1).
 func TestChangedPackagesCountsBothRenamePaths(t *testing.T) {
 	t.Parallel()
 	repo := newFixtureRepo(t)
 	repo.writeFile("from/thing.go", "package from\n")
+	repo.writeFile("from/other.go", "package from\n")
 	baseSHA := repo.commitAll("base")
 
 	if err := os.MkdirAll(filepath.Join(repo.dir, "to"), 0o755); err != nil {
@@ -133,6 +135,56 @@ func TestChangedPackagesCountsBothRenamePaths(t *testing.T) {
 	want := []string{"./from", "./to"}
 	if !reflect.DeepEqual(result.Packages, want) {
 		t.Fatalf("Packages = %#v, want %#v", result.Packages, want)
+	}
+}
+
+// TestChangedPackagesExcludesDirectoryWithNoBuildableGoFileLeft proves a
+// `git mv` that empties a directory of every *.go file (leaving only a
+// non-Go file such as a README behind, so the directory itself still
+// exists) is excluded — `go test`/`go vet` fail outright ("no Go files")
+// against a directory like that (review finding M1).
+func TestChangedPackagesExcludesDirectoryWithNoBuildableGoFileLeft(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("from/thing.go", "package from\n")
+	repo.writeFile("from/README.md", "hello\n")
+	baseSHA := repo.commitAll("base")
+
+	if err := os.MkdirAll(filepath.Join(repo.dir, "to"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.runGit("mv", "from/thing.go", "to/thing.go")
+	repo.commitAll("rename package, leave a README behind")
+
+	result, err := ChangedPackages(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"./to"}
+	if !reflect.DeepEqual(result.Packages, want) {
+		t.Fatalf("Packages = %#v, want %#v (./from has no buildable .go file left)", result.Packages, want)
+	}
+}
+
+// TestChangedPackagesExcludesTestdataDirectory proves a change confined to
+// a "testdata" directory is excluded — the go tool itself always ignores
+// such directories, so `go vet`/`go test` would either skip or mis-handle
+// it (review finding M1).
+func TestChangedPackagesExcludesTestdataDirectory(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	repo.writeFile("pkg/pkg.go", "package pkg\n")
+	repo.writeFile("pkg/testdata/fixture.go", "package ignored\n")
+	baseSHA := repo.commitAll("base")
+
+	repo.writeFile("pkg/testdata/fixture.go", "package ignored\n\n// touched\n")
+
+	result, err := ChangedPackages(context.Background(), repo.dir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Packages) != 0 {
+		t.Fatalf("Packages = %#v, want none for a testdata-only change", result.Packages)
 	}
 }
 
@@ -179,13 +231,12 @@ func TestChangedPackagesPropagatesGitMergeBaseError(t *testing.T) {
 	}
 }
 
-// TestChangedPackagesPropagatesGitTouchedFilesError proves an error from the
-// second git call (GitTouchedFiles), after GitMergeBase already resolved
-// successfully, surfaces as an error rather than an empty result. A bare
-// repository resolves `git merge-base` fine (it needs no worktree) but
-// `git diff` fails outright (it does), isolating this branch from
-// GitMergeBase's own error path.
-func TestChangedPackagesPropagatesGitTouchedFilesError(t *testing.T) {
+// TestChangedPackagesPropagatesGitTopLevelError proves a directory outside
+// any Git work tree at all (a bare repository is one; `git rev-parse
+// --show-toplevel` fails there exactly like `git diff` does, since neither
+// operation has a work tree to run against) surfaces as an error, not an
+// empty result.
+func TestChangedPackagesPropagatesGitTopLevelError(t *testing.T) {
 	t.Parallel()
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", fixtureBaseSource)
@@ -195,7 +246,139 @@ func TestChangedPackagesPropagatesGitTouchedFilesError(t *testing.T) {
 	repo.runGit("clone", "-q", "--bare", repo.dir, bareDir)
 
 	if _, err := ChangedPackages(context.Background(), bareDir, baseSHA); err == nil {
-		t.Fatal("want error when GitTouchedFiles cannot run (bare repository has no work tree)")
+		t.Fatal("want error when the working directory has no Git work tree at all")
+	}
+}
+
+// TestChangedPackagesPropagatesFindModuleRootError proves a Git repository
+// with no go.mod anywhere in it fails closed with an error rather than
+// silently reporting no changes.
+func TestChangedPackagesPropagatesFindModuleRootError(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	// newFixtureRepo already wrote go.mod; remove it so no module exists.
+	if err := os.Remove(filepath.Join(repo.dir, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	repo.writeFile("README.md", "hello\n")
+	baseSHA := repo.commitAll("base")
+
+	if _, err := ChangedPackages(context.Background(), repo.dir, baseSHA); err == nil {
+		t.Fatal("want error when no go.mod exists anywhere in the repository")
+	}
+}
+
+// TestChangedPackagesPropagatesGitTouchedFilesError proves an error from
+// the last git call (GitTouchedFiles), after GitTopLevel, findModuleRoot,
+// and GitMergeBase all already resolved successfully, surfaces as an error
+// rather than an empty result. A fake `git` in front of PATH delegates
+// every subcommand except "diff" to the real binary, isolating this one
+// branch deterministically (no reliance on timing).
+func TestChangedPackagesPropagatesGitTouchedFilesError(t *testing.T) {
+	repo := newFixtureRepo(t)
+	repo.writeFile("app.go", fixtureBaseSource)
+	baseSHA := repo.commitAll("base")
+
+	installFakeGitFailingDiff(t)
+
+	if _, err := ChangedPackages(context.Background(), repo.dir, baseSHA); err == nil {
+		t.Fatal("want error when GitTouchedFiles' own git diff call fails")
+	}
+}
+
+// installFakeGitFailingDiff puts a fake `git` at the front of PATH that
+// delegates every subcommand to the real git binary except "diff", which it
+// fails outright. Not parallel-safe (t.Setenv mutates process-wide PATH).
+func installFakeGitFailingDiff(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git shim requires a POSIX shell")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$arg\" = \"diff\" ]; then\n" +
+		"    echo 'fake git: diff refused' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + realGit + " \"$@\"\n"
+	path := filepath.Join(dir, "git")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if resolved, err := exec.LookPath("git"); err != nil || resolved != path {
+		t.Fatalf("PATH override did not take effect: resolved=%q err=%v", resolved, err)
+	}
+}
+
+// TestChangedPackagesFromNestedModuleRoot proves a repository whose Go
+// module lives in a subdirectory (the fleet's common
+// "<product>/backend/go.mod" layout) resolves correctly when invoked from
+// that module's own root: patterns stay relative to it, and a change in a
+// second, sibling Go module elsewhere in the same repository (its own
+// go.mod, so it is a module boundary, not merely a non-Go directory) is
+// excluded, per review finding B2 ("exclude packages outside that
+// module").
+func TestChangedPackagesFromNestedModuleRoot(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	// newFixtureRepo already wrote a go.mod at repo.dir; this test wants the
+	// module nested under "backend" instead, so replace it.
+	if err := os.Remove(filepath.Join(repo.dir, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	repo.writeFile("backend/go.mod", "module fixture.test/backend\n\ngo 1.27\n")
+	repo.writeFile("backend/internal/a/a.go", "package a\n")
+	repo.writeFile("other/go.mod", "module fixture.test/other\n\ngo 1.27\n")
+	repo.writeFile("other/x.go", "package other\n")
+	baseSHA := repo.commitAll("base")
+
+	repo.writeFile("backend/internal/a/a.go", "package a\n\nfunc Changed() {}\n")
+	repo.writeFile("other/x.go", "package other\n\nfunc Changed() {}\n")
+
+	moduleRoot := filepath.Join(repo.dir, "backend")
+	result, err := ChangedPackages(context.Background(), moduleRoot, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"./internal/a"}
+	if !reflect.DeepEqual(result.Packages, want) {
+		t.Fatalf("Packages = %#v, want %#v (other/ is a sibling module and must be excluded)", result.Packages, want)
+	}
+}
+
+// TestChangedPackagesFromSubdirectoryOfNestedModule proves invocation from
+// a subdirectory further inside that same nested module still resolves the
+// correct module root and rebases patterns onto the invocation directory
+// itself, per review finding B2's exact probe.
+func TestChangedPackagesFromSubdirectoryOfNestedModule(t *testing.T) {
+	t.Parallel()
+	repo := newFixtureRepo(t)
+	if err := os.Remove(filepath.Join(repo.dir, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	repo.writeFile("backend/go.mod", "module fixture.test/backend\n\ngo 1.27\n")
+	repo.writeFile("backend/internal/a/a.go", "package a\n")
+	repo.writeFile("backend/b.go", "package backend\n")
+	baseSHA := repo.commitAll("base")
+
+	repo.writeFile("backend/internal/a/a.go", "package a\n\nfunc Changed() {}\n")
+	repo.writeFile("backend/b.go", "package backend\n\nfunc Changed() {}\n")
+
+	workingDir := filepath.Join(repo.dir, "backend", "internal", "a")
+	result, err := ChangedPackages(context.Background(), workingDir, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".", "../.."}
+	if !reflect.DeepEqual(result.Packages, want) {
+		t.Fatalf("Packages = %#v, want %#v (own package \".\", module root \"../..\", both relative to cwd)", result.Packages, want)
 	}
 }
 
@@ -216,5 +399,75 @@ func TestChangedPackagesCountsTestFileChanges(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.Packages, []string{"."}) {
 		t.Fatalf("Packages = %#v, want [\".\"] for a _test.go-only change at the module root", result.Packages)
+	}
+}
+
+// TestChangedPackagesFailsClosedWhenWorkingDirCannotBeResolved proves a
+// relative workingDir that can't be made absolute (the current directory no
+// longer exists) surfaces as an error instead of resolving against some
+// other, unrelated directory.
+func TestChangedPackagesFailsClosedWhenWorkingDirCannotBeResolved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory-removal-under-cwd probe requires POSIX semantics")
+	}
+	gone := t.TempDir()
+	t.Chdir(gone)
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ChangedPackages(context.Background(), ".", "main"); err == nil {
+		t.Fatal("want error when the current directory no longer exists")
+	}
+}
+
+// TestGitTopLevelFailsWithoutExitErrorWhenGitCannotEvenStart exercises the
+// non-*exec.ExitError branch, mirroring
+// TestGitMergeBaseFailsWithoutExitErrorWhenGitCannotEvenStart.
+func TestGitTopLevelFailsWithoutExitErrorWhenGitCannotEvenStart(t *testing.T) {
+	t.Parallel()
+	_, err := GitTopLevel(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatal("want error when dir does not exist")
+	}
+}
+
+// TestFindModuleRootStopsAtTheFilesystemRootWhenCeilingIsNotAnAncestor
+// proves the upward search terminates even when ceilingDir is never
+// encountered (an unrelated path), rather than looping or panicking.
+func TestFindModuleRootStopsAtTheFilesystemRootWhenCeilingIsNotAnAncestor(t *testing.T) {
+	t.Parallel()
+	startDir := t.TempDir()
+	if _, err := findModuleRoot(startDir, string(filepath.Separator)+"unrelated-ceiling-path"); err == nil {
+		t.Fatal("want error when no go.mod exists anywhere up to the filesystem root")
+	}
+}
+
+// TestModuleRelativePathReportsNotOKWhenPathsAreNotComparable exercises
+// moduleRelativePath's own defensive branch directly: filepath.Rel fails
+// only between paths of different absoluteness, which ChangedPackages'
+// real call site never produces (both are always absolute there).
+func TestModuleRelativePathReportsNotOKWhenPathsAreNotComparable(t *testing.T) {
+	t.Parallel()
+	if _, ok := moduleRelativePath("relative/base", "/absolute/target"); ok {
+		t.Fatal("want ok=false when the two paths cannot be related")
+	}
+}
+
+// TestHasBuildableGoFileReportsFalseWhenDirectoryCannotBeRead exercises
+// hasBuildableGoFile's own os.ReadDir error branch directly.
+func TestHasBuildableGoFileReportsFalseWhenDirectoryCannotBeRead(t *testing.T) {
+	t.Parallel()
+	if hasBuildableGoFile(filepath.Join(t.TempDir(), "does-not-exist")) {
+		t.Fatal("want false when the directory cannot be read")
+	}
+}
+
+// TestRelativePatternPropagatesRelErrorForNonComparablePaths exercises
+// relativePattern's own defensive branch directly, for the same reason as
+// TestModuleRelativePathReportsNotOKWhenPathsAreNotComparable above.
+func TestRelativePatternPropagatesRelErrorForNonComparablePaths(t *testing.T) {
+	t.Parallel()
+	if _, err := relativePattern("relative/working-dir", "/absolute/target"); err == nil {
+		t.Fatal("want error when the two paths cannot be related")
 	}
 }

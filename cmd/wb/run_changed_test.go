@@ -196,6 +196,36 @@ func TestExpandChangedRunArgsPropagatesPrintErrorWhenNothingChanged(t *testing.T
 	}
 }
 
+// TestRunChangedRejectsArgsFlagInCommand proves --changed refuses a command
+// containing a literal -args token with a usage error, rather than silently
+// appending the changed package patterns after it (where go test would hand
+// them to the test binary instead of using them to select packages).
+func TestRunChangedRejectsArgsFlagInCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--changed", "--target", "main", "--", "go", "test", "-args", "-v"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cannot be combined with -args or a nested -- in the command") {
+		t.Errorf("stderr = %q, want an explanation naming -args and --", stderr.String())
+	}
+}
+
+// TestRunChangedRejectsNestedDashDashInCommand proves --changed refuses a
+// command containing a second, nested -- the same way it refuses -args: both
+// would otherwise receive the appended package patterns as if they were
+// arguments meant for something past the command itself.
+func TestRunChangedRejectsNestedDashDashInCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--changed", "--target", "main", "--", "go", "test", "--", "-v"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cannot be combined with -args or a nested -- in the command") {
+		t.Errorf("stderr = %q, want an explanation naming -args and --", stderr.String())
+	}
+}
+
 // TestRunChangedAppendsAtModuleRoot proves a module-root-only change
 // appends "." rather than an empty or malformed pattern.
 func TestRunChangedAppendsAtModuleRoot(t *testing.T) {
