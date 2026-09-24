@@ -227,7 +227,9 @@ func TestDepsCovAdaptersGoInspectPlansAndSortsModules(t *testing.T) {
 }
 
 func TestDepsCovAdaptersGoInspectPropagatesFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("ls-tree fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"go.mod": "module example.com/app\n\ngo 1.24\n"})
 		decisions, err := (goAdapter{}).inspect(context.Background(), dir, "no-such-base", depsCovGoTarget("v0.2.0"), Options{Timeout: time.Minute})
 		if err == nil {
@@ -239,6 +241,7 @@ func TestDepsCovAdaptersGoInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("git show fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"seed.txt": "seed\n"})
 		commit := depsCovPhantomCommit(t, dir, "go.mod")
 		decisions, err := (goAdapter{}).inspect(context.Background(), dir, commit, depsCovGoTarget("v0.2.0"), Options{Timeout: time.Minute})
@@ -251,6 +254,7 @@ func TestDepsCovAdaptersGoInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("unparsable manifest fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"go.mod": "this is not a module file\n"})
 		_, err := (goAdapter{}).inspect(context.Background(), dir, "HEAD", depsCovGoTarget("v0.2.0"), Options{Timeout: time.Minute})
 		if err == nil || !strings.Contains(err.Error(), "parse go.mod") {
@@ -259,6 +263,7 @@ func TestDepsCovAdaptersGoInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("downgrade is blocked", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"go.mod": "module example.com/app\n\ngo 1.24\n\nrequire example.com/model v1.9.0\n"})
 		decisions, err := (goAdapter{}).inspect(context.Background(), dir, "HEAD", depsCovGoTarget("v1.0.0"), Options{Timeout: time.Minute})
 		if err == nil || !strings.Contains(err.Error(), "lower than observed version") || !strings.Contains(err.Error(), "--allow-downgrade") {
@@ -542,6 +547,7 @@ func TestDepsCovAdaptersGoManifestsScansARootNamedVendor(t *testing.T) {
 func TestDepsCovAdaptersGoManifestsReportsWalkAndManifestErrors(t *testing.T) {
 	t.Parallel()
 	t.Run("missing root", func(t *testing.T) {
+		t.Parallel()
 		manifests, err := goManifests(filepath.Join(t.TempDir(), "absent"), "example.com/model")
 		if err == nil {
 			t.Fatal("goManifests succeeded against a nonexistent root")
@@ -552,6 +558,7 @@ func TestDepsCovAdaptersGoManifestsReportsWalkAndManifestErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable go.mod", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(root, "go.mod")); err != nil {
 			t.Fatal(err)
@@ -562,6 +569,7 @@ func TestDepsCovAdaptersGoManifestsReportsWalkAndManifestErrors(t *testing.T) {
 	})
 
 	t.Run("unparsable go.mod", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "go.mod"), "this is not a module file\n")
 		_, err := goManifests(root, "example.com/model")
@@ -590,6 +598,7 @@ func TestDepsCovAdaptersRequiredGoVersionParsesRequirements(t *testing.T) {
 func TestDepsCovAdaptersValidatePublishableGoManifests(t *testing.T) {
 	t.Parallel()
 	t.Run("sorted local replacements", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.24\n\nreplace example.com/b => ../b\n")
 		writeTestFile(t, filepath.Join(root, "nested", "go.mod"), "module example.com/nested\n\ngo 1.24\n\nreplace example.com/a => ../a\n")
@@ -606,6 +615,7 @@ func TestDepsCovAdaptersValidatePublishableGoManifests(t *testing.T) {
 	})
 
 	t.Run("versioned replacements are publishable", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.24\n\nreplace example.com/model => example.com/fork v0.2.1\n")
 		if err := validatePublishableGoManifests(root); err != nil {
@@ -614,12 +624,14 @@ func TestDepsCovAdaptersValidatePublishableGoManifests(t *testing.T) {
 	})
 
 	t.Run("missing root", func(t *testing.T) {
+		t.Parallel()
 		if err := validatePublishableGoManifests(filepath.Join(t.TempDir(), "absent")); err == nil {
 			t.Fatal("validatePublishableGoManifests succeeded against a nonexistent root")
 		}
 	})
 
 	t.Run("unreadable go.mod", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(root, "go.mod")); err != nil {
 			t.Fatal(err)
@@ -630,6 +642,7 @@ func TestDepsCovAdaptersValidatePublishableGoManifests(t *testing.T) {
 	})
 
 	t.Run("unparsable go.mod", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "go.mod"), "this is not a module file\n")
 		err := validatePublishableGoManifests(root)
@@ -639,6 +652,7 @@ func TestDepsCovAdaptersValidatePublishableGoManifests(t *testing.T) {
 	})
 
 	t.Run("root named vendor is still scanned", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(t.TempDir(), "vendor")
 		writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.24\n\nreplace example.com/model => ../model\n")
 		err := validatePublishableGoManifests(root)
@@ -801,6 +815,7 @@ func TestDepsCovAdaptersGitHubActionsInspectCollectsWorkflowDecisions(t *testing
 func TestDepsCovAdaptersGitHubActionsInspectPropagatesFailures(t *testing.T) {
 	t.Parallel()
 	t.Run("ls-tree fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{".github/workflows/ci.yml": "jobs:\n"})
 		if _, err := (githubActionsAdapter{}).inspect(context.Background(), dir, "no-such-base", Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}, Options{Timeout: time.Minute}); err == nil {
 			t.Fatal("inspect succeeded against a nonexistent base ref")
@@ -808,6 +823,7 @@ func TestDepsCovAdaptersGitHubActionsInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("git show fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"seed.txt": "seed\n"})
 		commit := depsCovPhantomCommit(t, dir, ".github/workflows/ci.yml")
 		if _, err := (githubActionsAdapter{}).inspect(context.Background(), dir, commit, Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}, Options{Timeout: time.Minute}); err == nil {
@@ -816,6 +832,7 @@ func TestDepsCovAdaptersGitHubActionsInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("downgrade is blocked", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{
 			".github/workflows/ci.yml": "jobs:\n  ci:\n    uses: acme/cicd@" + strings.Repeat("3", 40) + " # v2.0.0\n",
 		})
@@ -889,6 +906,7 @@ func TestDepsCovAdaptersGitHubActionsApplyWritesOnlyChangedWorkflows(t *testing.
 func TestDepsCovAdaptersGitHubActionsApplyReportsFailures(t *testing.T) {
 	t.Parallel()
 	t.Run("no workflows directory", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "README.md"), "no workflows here\n")
 		decisions, err := (githubActionsAdapter{}).apply(context.Background(), worktree, Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}, Options{Timeout: time.Minute})
@@ -901,6 +919,7 @@ func TestDepsCovAdaptersGitHubActionsApplyReportsFailures(t *testing.T) {
 	})
 
 	t.Run("github path is not a directory", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, ".github"), "a regular file, not a directory\n")
 		_, err := (githubActionsAdapter{}).apply(context.Background(), worktree, Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}, Options{Timeout: time.Minute})
@@ -910,6 +929,7 @@ func TestDepsCovAdaptersGitHubActionsApplyReportsFailures(t *testing.T) {
 	})
 
 	t.Run("unreadable workflow", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		workflows := filepath.Join(worktree, ".github", "workflows")
 		if err := os.MkdirAll(workflows, 0o755); err != nil {
@@ -925,6 +945,7 @@ func TestDepsCovAdaptersGitHubActionsApplyReportsFailures(t *testing.T) {
 	})
 
 	t.Run("downgrade is blocked before writing", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		ciPath := filepath.Join(worktree, ".github", "workflows", "ci.yml")
 		body := "jobs:\n  ci:\n    uses: acme/cicd@" + strings.Repeat("3", 40) + " # v2.0.0\n"
@@ -966,6 +987,7 @@ func TestDepsCovAdaptersRewriteGitHubActionsAllowsExplicitDowngrade(t *testing.T
 func TestDepsCovAdaptersWriteAtomicWritesAndCleansUp(t *testing.T) {
 	t.Parallel()
 	t.Run("writes contents and mode", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "workflow.yml")
 		if err := writeAtomic(path, []byte("jobs:\n"), 0o600); err != nil {
@@ -991,6 +1013,7 @@ func TestDepsCovAdaptersWriteAtomicWritesAndCleansUp(t *testing.T) {
 	})
 
 	t.Run("missing directory is reported", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "absent", "workflow.yml")
 		if err := writeAtomic(path, []byte("jobs:\n"), 0o644); err == nil {
@@ -1002,6 +1025,7 @@ func TestDepsCovAdaptersWriteAtomicWritesAndCleansUp(t *testing.T) {
 	})
 
 	t.Run("failed rename removes the temporary file", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		target := filepath.Join(dir, "target")
 		writeTestFile(t, filepath.Join(target, "keep.txt"), "keep\n")
@@ -1064,6 +1088,7 @@ catalogs:
 func TestDepsCovAdaptersNpmInspectPropagatesFailures(t *testing.T) {
 	t.Parallel()
 	t.Run("ls-tree fails", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"package.json": npmPackageJSONWithDependency("@sneat/app", "@sneat/core", "1.2.3")})
 		if _, err := (npmAdapter{}).inspect(context.Background(), dir, "no-such-base", depsCovNpmTarget("@sneat/core", "1.3.0"), Options{Timeout: time.Minute}); err == nil {
 			t.Fatal("inspect succeeded against a nonexistent base ref")
@@ -1071,6 +1096,7 @@ func TestDepsCovAdaptersNpmInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("package.json cannot be read from the base", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"seed.txt": "seed\n"})
 		commit := depsCovPhantomCommit(t, dir, "package.json")
 		if _, err := (npmAdapter{}).inspect(context.Background(), dir, commit, depsCovNpmTarget("@sneat/core", "1.3.0"), Options{Timeout: time.Minute}); err == nil {
@@ -1079,6 +1105,7 @@ func TestDepsCovAdaptersNpmInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("pnpm-workspace.yaml cannot be read from the base", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{"seed.txt": "seed\n"})
 		commit := depsCovPhantomCommit(t, dir, "pnpm-workspace.yaml")
 		if _, err := (npmAdapter{}).inspect(context.Background(), dir, commit, depsCovNpmTarget("@sneat/core", "1.3.0"), Options{Timeout: time.Minute}); err == nil {
@@ -1087,6 +1114,7 @@ func TestDepsCovAdaptersNpmInspectPropagatesFailures(t *testing.T) {
 	})
 
 	t.Run("workspace downgrade is blocked", func(t *testing.T) {
+		t.Parallel()
 		dir := seedNpmInspectRepository(t, map[string]string{
 			"package.json": npmPackageJSONWithDependency("@sneat/app", "lodash", "^4.17.21"),
 			"pnpm-workspace.yaml": `overrides:
@@ -1118,6 +1146,7 @@ func TestDepsCovAdaptersNpmApplyReportsMissingTree(t *testing.T) {
 func TestDepsCovAdaptersNpmApplyReportsUnreadableManifests(t *testing.T) {
 	t.Parallel()
 	t.Run("package.json", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		if err := os.Symlink(filepath.Join(worktree, "missing-target"), filepath.Join(worktree, "package.json")); err != nil {
 			t.Fatal(err)
@@ -1128,6 +1157,7 @@ func TestDepsCovAdaptersNpmApplyReportsUnreadableManifests(t *testing.T) {
 	})
 
 	t.Run("pnpm-workspace.yaml", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "lodash", "^4.17.21"))
 		if err := os.Symlink(filepath.Join(worktree, "missing-target"), filepath.Join(worktree, "pnpm-workspace.yaml")); err != nil {
@@ -1250,6 +1280,7 @@ func TestDepsCovAdaptersRegenerateAffectedLockfilesHandlesEachKind(t *testing.T)
 	target := depsCovNpmTarget("@sneat/core", "1.3.0")
 
 	t.Run("no changed files", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 		decisions, err := regenerateAffectedLockfiles(context.Background(), worktree, map[string]bool{}, target, Options{Timeout: time.Minute})
@@ -1259,6 +1290,7 @@ func TestDepsCovAdaptersRegenerateAffectedLockfilesHandlesEachKind(t *testing.T)
 	})
 
 	t.Run("missing worktree", func(t *testing.T) {
+		t.Parallel()
 		_, err := regenerateAffectedLockfiles(context.Background(), filepath.Join(t.TempDir(), "absent"), map[string]bool{"package.json": true}, target, Options{Timeout: time.Minute})
 		if err == nil {
 			t.Fatal("regenerateAffectedLockfiles succeeded against a nonexistent worktree")
@@ -1266,6 +1298,7 @@ func TestDepsCovAdaptersRegenerateAffectedLockfilesHandlesEachKind(t *testing.T)
 	})
 
 	t.Run("yarn lockfile is skipped with instructions", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "yarn.lock"), "# yarn lockfile v1\n")
 		decisions, err := regenerateAffectedLockfiles(context.Background(), worktree, map[string]bool{"package.json": true}, target, Options{Timeout: time.Minute})
@@ -1313,6 +1346,7 @@ func TestDepsCovAdaptersRegenerateAffectedLockfilesHandlesEachKind(t *testing.T)
 	})
 
 	t.Run("changed file outside every lockfile scope", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "sub", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 		decisions, err := regenerateAffectedLockfiles(context.Background(), worktree, map[string]bool{"other/package.json": true}, target, Options{Timeout: time.Minute})

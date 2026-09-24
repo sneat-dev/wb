@@ -68,6 +68,7 @@ func TestTailCovUserRulesPathReportsUndeterminableConfigDir(t *testing.T) {
 // TestTailCovUserRulesPathUnderExplicitConfigDir pins the exact user-level
 // location: <config dir>/wb/secretscan/rules.toml.
 func TestTailCovUserRulesPathUnderExplicitConfigDir(t *testing.T) {
+	t.Parallel()
 	configDir := t.TempDir()
 
 	path, found := UserRulesPath(configDir)
@@ -132,6 +133,7 @@ func TestTailCovLoadDefaultIgnoresUserLevelPathWhenNoRulesFileExists(t *testing.
 // silent fall back to the baseline (an operator who believes their rule is
 // armed must not be wrong about it).
 func TestTailCovLoadDefaultReportsUnloadableExtraRules(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent-rules.toml")
 
 	scanner, skipped, err := LoadDefault(LoadOptions{EnvExtraRulesPath: &missing})
@@ -149,6 +151,7 @@ func TestTailCovLoadDefaultReportsUnloadableExtraRules(t *testing.T) {
 // TestTailCovLoadRulesFileReportsUnreadableFile covers the single-file
 // loader's own read failure.
 func TestTailCovLoadRulesFileReportsUnreadableFile(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "never-written.toml")
 
 	rules, skipped, err := LoadRulesFile(missing)
@@ -195,6 +198,7 @@ func TestTailCovLoadDefaultReportsUnparseableEmbeddedRuleset(t *testing.T) {
 // extra rules file is an error attributed to the file it came from, rather
 // than an empty ruleset.
 func TestTailCovParseTOMLRulesetReportsUnparseableDocument(t *testing.T) {
+	t.Parallel()
 	rules, skipped, err := parseTOMLRuleset([]byte("[[rules]\nid = \"x\"\n"), "tailcov-broken.toml", classifyExtraRule)
 	if err == nil {
 		t.Fatal("parseTOMLRuleset accepted a malformed TOML document")
@@ -212,6 +216,7 @@ func TestTailCovParseTOMLRulesetReportsUnparseableDocument(t *testing.T) {
 // repeats an id would shadow the first. Both are skipped with a reason, and
 // the surrounding rules still load.
 func TestTailCovParseTOMLRulesetSkipsEmptyAndDuplicateIDs(t *testing.T) {
+	t.Parallel()
 	document := `
 [[rules]]
 description = "no id at all"
@@ -258,6 +263,7 @@ regex = '''second-[a-z]+'''
 // a no-op rather than a malformed override: repeatable flags commonly leave
 // empty entries behind, and only a non-empty value must be well-formed.
 func TestTailCovParseOverridesIgnoresBlankValues(t *testing.T) {
+	t.Parallel()
 	overrides, err := ParseOverrides([]string{"", "   ", "aws-access-token:sha256:4f9c2a1b"})
 	if err != nil {
 		t.Fatalf("ParseOverrides: %v", err)
@@ -272,6 +278,7 @@ func TestTailCovParseOverridesIgnoresBlankValues(t *testing.T) {
 // The rule-id tie-break matters because two rules can match the same bytes at
 // the same position, and the refusal output must not depend on load order.
 func TestTailCovScanOrdersFindingsBySegmentLineAndRule(t *testing.T) {
+	t.Parallel()
 	scanner := NewScanner([]Rule{
 		{ID: "b-rule", Description: "b", Regex: regexp.MustCompile("TOK"), Keywords: []string{"tok"}, Severity: SeverityBlock, Source: "tailcov"},
 		{ID: "a-rule", Description: "a", Regex: regexp.MustCompile("TOK"), Keywords: []string{"tok"}, Severity: SeverityBlock, Source: "tailcov"},

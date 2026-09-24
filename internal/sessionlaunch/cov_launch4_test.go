@@ -15,7 +15,9 @@ import (
 )
 
 func TestSlCovTmuxFailureNoServerAndMultiPane(t *testing.T) {
+	t.Parallel()
 	t.Run("no server", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `printf 'no server running on /private/tmp/tmux-501/default\n'; exit 1`)
 		failure, found, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
 		if err != nil || found || failure != (tmuxFailure{}) {
@@ -23,6 +25,7 @@ func TestSlCovTmuxFailureNoServerAndMultiPane(t *testing.T) {
 		}
 	})
 	t.Run("multiple panes", func(t *testing.T) {
+		t.Parallel()
 		if _, _, err := parseTmuxPaneFailureOutput([]byte("0\t\n0\t\n")); err == nil || !strings.Contains(err.Error(), "want one pane") {
 			t.Fatalf("multi-pane output = %v", err)
 		}
@@ -30,6 +33,7 @@ func TestSlCovTmuxFailureNoServerAndMultiPane(t *testing.T) {
 }
 
 func TestSlCovDecodeLaunchJSONSurfacesTrailingGarbage(t *testing.T) {
+	t.Parallel()
 	var plan launchPlan
 	if err := decodeLaunchJSON([]byte("{\"schema_version\":1}\nnot-json"), &plan); err == nil {
 		t.Fatal("decodeLaunchJSON accepted trailing garbage")
@@ -37,6 +41,7 @@ func TestSlCovDecodeLaunchJSONSurfacesTrailingGarbage(t *testing.T) {
 }
 
 func TestSlCovOpenLaunchStateFromHandoffRejectsNonDirectoryAttempts(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), sessionmove.DirName)
 	handoff := filepath.Join(root, "handoff-broken")
 	if err := os.MkdirAll(filepath.Join(handoff, launchDirectoryName), 0o700); err != nil {
@@ -49,6 +54,7 @@ func TestSlCovOpenLaunchStateFromHandoffRejectsNonDirectoryAttempts(t *testing.T
 }
 
 func TestSlCovOpenOrRecoverClaimedAttemptSurfacesCreationFailure(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	const claimedID = "000001-00000000000000000000000000000001"
 	attemptDir := slCovAttemptDir(root, claimedID)
@@ -65,7 +71,9 @@ func TestSlCovOpenOrRecoverClaimedAttemptSurfacesCreationFailure(t *testing.T) {
 }
 
 func TestSlCovPreReleaseProcessEvidenceSurfacesClosedDescriptors(t *testing.T) {
+	t.Parallel()
 	t.Run("closed ready", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, _, _ := slCovAttempt(t)
 		if err := attempt.ready.Close(); err != nil {
 			t.Fatal(err)
@@ -75,6 +83,7 @@ func TestSlCovPreReleaseProcessEvidenceSurfacesClosedDescriptors(t *testing.T) {
 		}
 	})
 	t.Run("closed exec", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, _, _ := slCovAttempt(t)
 		if err := attempt.exec.Close(); err != nil {
 			t.Fatal(err)
@@ -86,12 +95,13 @@ func TestSlCovPreReleaseProcessEvidenceSurfacesClosedDescriptors(t *testing.T) {
 }
 
 func TestSlCovOpenPrivateDirectoryAtSurfacesCreationFailure(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	parentFile, err := os.Open(parent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parentFile.Close() }()
+	t.Cleanup(func() { _ = parentFile.Close() })
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +142,7 @@ func TestSlCovStartAndInspectSurfaceMissingTmux(t *testing.T) {
 }
 
 func TestSlCovInspectPreparedRejectsCorruptPlan(t *testing.T) {
+	t.Parallel()
 	fixture := slCovNewAuthorityFixture(t)
 	slCovWrite(t, filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json"), 0o600, "{}\n")
 	if _, err := InspectPrepared(context.Background(), fixture.options()); err == nil {
@@ -140,8 +151,10 @@ func TestSlCovInspectPreparedRejectsCorruptPlan(t *testing.T) {
 }
 
 func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("unbound abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6302)
 		attempt, err := latestAttempt(fixture.state)
@@ -164,6 +177,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 		}
 	})
 	t.Run("unreadable exec fence on pre-release attempt", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		if _, err := attempt.saveReady(fixture.plan, fixture.planDigest(t), slCovReadyRecord(fixture.plan, 6304, fixture.deps.now())); err != nil {
@@ -175,6 +189,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 		}
 	})
 	t.Run("sealed abandonment verify pinned failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(6305)
@@ -190,6 +205,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 		}
 	})
 	t.Run("sealed abandonment publication failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(6306)
@@ -207,6 +223,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 }
 
 func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	type handles struct{ fence *os.File }
 	setup := func(t *testing.T) (*launcherRetryFixture, *handles) {
@@ -246,6 +263,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 		return fx, state
 	}
 	t.Run("before release failure", func(t *testing.T) {
+		t.Parallel()
 		fx, _ := setup(t)
 		before := func(context.Context, Prepared) (string, error) { return "", errors.New("custody refused") }
 		if _, err := startWithDependencies(ctx, fx.options(before), fx.deps); err == nil || !strings.Contains(err.Error(), "custody refused") {
@@ -253,6 +271,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("release publication without fence", func(t *testing.T) {
+		t.Parallel()
 		fx, handles := setup(t)
 		before := func(context.Context, Prepared) (string, error) {
 			return "worklog", handles.fence.Close()
@@ -262,6 +281,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("exec never observed", func(t *testing.T) {
+		t.Parallel()
 		fx, _ := setup(t)
 		fx.deps.startTimeout = 20 * time.Millisecond
 		before := func(context.Context, Prepared) (string, error) { return "worklog", nil }
@@ -270,6 +290,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("finalize started failure", func(t *testing.T) {
+		t.Parallel()
 		fx, handles := setup(t)
 		before := func(context.Context, Prepared) (string, error) {
 			state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
@@ -303,6 +324,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 }
 
 func TestSlCovSelectAttemptForStartVerifyPinnedRetryFailure(t *testing.T) {
+	t.Parallel()
 	fx := newLauncherRetryFixture(t)
 	attempt, release, releaseDigest, _ := slCovReleasedAttempt(t, fx, 919191)
 	if err := attempt.saveExecFailure(fx.plan, fx.planDigest, release.ReadyDigest, releaseDigest, 919191, errors.New("boom"), fx.deps.now()); err != nil {
@@ -314,13 +336,14 @@ func TestSlCovSelectAttemptForStartVerifyPinnedRetryFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	if _, _, _, _, err := selectAttemptForStart(context.Background(), fx.options(nil), fx.deps, state, fx.plan, fx.planDigest); err == nil || !strings.Contains(err.Error(), "verify corrected pinned worktree") {
 		t.Fatalf("verify pinned retry failure = %v", err)
 	}
 }
 
 func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
+	t.Parallel()
 	const pid = 919191
 	base := func(t *testing.T) (*launcherRetryFixture, *launchAttempt, launcherRelease, sessionmove.Digest) {
 		t.Helper()
@@ -341,6 +364,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 		return failedAttemptRetryable(context.Background(), fx.options(nil), fx.deps, state, attempt, fx.plan, fx.planDigest, release, releaseDigest)
 	}
 	t.Run("valid started marker", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
 		started := launcherStarted{SchemaVersion: launchSchemaVersion, HandoffID: fx.request.HandoffID,
 			AttemptID: attempt.id, AttemptIndex: attempt.index, RequestDigest: fx.plan.RequestDigest,
@@ -357,6 +381,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("missing fence file", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
 		if err := os.Remove(filepath.Join(slCovAttemptDir(fx.store.Root, attempt.id), execDirectoryName, "919191.lock")); err != nil {
 			t.Fatal(err)
@@ -366,6 +391,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("corrupt failure evidence", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(fx.store.Root, attempt.id), execDirectoryName, "919191.failure.json"), 0o600, "{}")
 		if err := call(t, fx, attempt, release, releaseDigest); err == nil {
@@ -373,6 +399,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("tmux probe error", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
 		fx.deps.tmux = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
 		if err := call(t, fx, attempt, release, releaseDigest); err == nil {
@@ -380,6 +407,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("ambiguous pid probe", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
 		fx.deps.processStatus = func(int) error { return syscall.EPERM }
 		if err := call(t, fx, attempt, release, releaseDigest); err == nil {
@@ -400,6 +428,7 @@ func (fixture *launcherRetryFixture) planStore(t *testing.T) *launchState {
 }
 
 func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
+	t.Parallel()
 	const pid = 5650
 	base := func(t *testing.T) (*launcherRetryFixture, *launchAttempt, launcherAbandonment) {
 		t.Helper()
@@ -430,6 +459,7 @@ func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
 		return validateAbandonment(context.Background(), fx.deps, state, attempt, fx.plan, fx.planDigest, abandonment)
 	}
 	t.Run("valid release conflicts", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		state := attempt.state
 		record := slCovReadyRecord(fx.plan, pid, fx.deps.now())
@@ -449,6 +479,7 @@ func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("valid started conflicts", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		state := attempt.state
 		started := launcherStarted{SchemaVersion: launchSchemaVersion, HandoffID: fx.request.HandoffID,
@@ -466,6 +497,7 @@ func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("ready digest mismatch refused", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		state := attempt.state
 		if _, err := attempt.saveReady(fx.plan, fx.planDigest, slCovReadyRecord(fx.plan, pid, fx.deps.now())); err != nil {
@@ -477,6 +509,7 @@ func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("corrupt ready artifact", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		state := attempt.state
 		abandonment.ReadyDigest = slCovDigest("expected")
@@ -486,6 +519,7 @@ func TestSlCovValidateAbandonmentRemainingGates(t *testing.T) {
 		}
 	})
 	t.Run("held fence refused", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		state := attempt.state
 		fence, err := attempt.acquireExecFence(pid)

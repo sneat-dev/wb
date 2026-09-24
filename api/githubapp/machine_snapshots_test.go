@@ -59,6 +59,7 @@ func (fn publisherResolverFunc) Publisher(request *http.Request) (MachinePublish
 }
 
 func TestMachineSnapshotHTTPBindsIdentityAndStoresIdempotently(t *testing.T) {
+	t.Parallel()
 	receivedAt := time.Date(2026, 9, 6, 14, 0, 1, 0, time.UTC)
 	store := &memoryMachineSnapshotStore{}
 	service := &MachineSnapshotService{Store: store, Now: func() time.Time { return receivedAt }}
@@ -96,6 +97,7 @@ func TestMachineSnapshotHTTPBindsIdentityAndStoresIdempotently(t *testing.T) {
 }
 
 func TestMachineSnapshotHTTPRejectsIdentityMismatchAndUnknownLocalFields(t *testing.T) {
+	t.Parallel()
 	store := &memoryMachineSnapshotStore{}
 	handler := NewHandler(HandlerOptions{
 		MachineSnapshots: &MachineSnapshotService{Store: store},
@@ -121,6 +123,7 @@ func TestMachineSnapshotHTTPRejectsIdentityMismatchAndUnknownLocalFields(t *test
 }
 
 func TestMachineSnapshotHTTPFailsClosedAndBoundsPayload(t *testing.T) {
+	t.Parallel()
 	service := &MachineSnapshotService{Store: &memoryMachineSnapshotStore{}}
 	withoutAuth := NewHandler(HandlerOptions{MachineSnapshots: service})
 	response := httptest.NewRecorder()
@@ -145,6 +148,7 @@ func TestMachineSnapshotHTTPFailsClosedAndBoundsPayload(t *testing.T) {
 }
 
 func TestMachineSnapshotListIsLoginScoped(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	store := &memoryMachineSnapshotStore{records: map[string]machinesnapshot.StoredSnapshot{}}
 	alice := validHostedSnapshot()

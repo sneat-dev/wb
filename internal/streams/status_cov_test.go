@@ -36,6 +36,7 @@ func (hub stCovHubBranchErr) PullRequestForBranch(context.Context, string, strin
 }
 
 func TestStatusReportsAMissingStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Status(context.Background(), "absent"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Status of a missing stream = %v, want ErrNotFound", err)
@@ -43,6 +44,7 @@ func TestStatusReportsAMissingStream(t *testing.T) {
 }
 
 func TestStatusReportsAnUnreadableEventLog(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{Name: "logs", Phase: PhaseOpen}); err != nil {
 		t.Fatal(err)
@@ -60,6 +62,7 @@ func TestStatusReportsAnUnreadableEventLog(t *testing.T) {
 }
 
 func TestStatusReportsAStaleCloneAndReadFailures(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	const repository = "acme/app"
@@ -89,6 +92,7 @@ func TestStatusReportsAStaleCloneAndReadFailures(t *testing.T) {
 }
 
 func TestStatusReportsAMemberPullRequestReadFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	engine.GitHub = stCovHubBranchErr{fakeHub: hub, err: errors.New("gh view failed")}
@@ -111,6 +115,7 @@ func TestStatusReportsAMemberPullRequestReadFailure(t *testing.T) {
 }
 
 func TestStatusReportsALinkedConsumerGap(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{
 		Name: "alternate", Phase: PhaseOpen,
@@ -138,6 +143,7 @@ func TestStatusReportsALinkedConsumerGap(t *testing.T) {
 }
 
 func TestStatusReportsUnreadableUnabsorbedCommits(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	if _, err := engine.Store.Create(Stream{
@@ -161,6 +167,7 @@ func TestStatusReportsUnreadableUnabsorbedCommits(t *testing.T) {
 }
 
 func TestCollapsePatchIdenticalFallsBackToTheSHA(t *testing.T) {
+	t.Parallel()
 	collapsed := collapsePatchIdentical([]Commit{
 		{SHA: "1111111111111111111111111111111111111111"},
 		{SHA: "2222222222222222222222222222222222222222", Subject: "a subject"},
@@ -187,9 +194,11 @@ func stCovIdentityLibrary(t *testing.T) (root string) {
 }
 
 func TestLibraryGapsReportsEveryUnknown(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("no library member", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		status := Status{}
 		engine.libraryGaps(ctx, Stream{}, &status)
@@ -199,6 +208,7 @@ func TestLibraryGapsReportsEveryUnknown(t *testing.T) {
 	})
 
 	t.Run("unreadable tags", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _ := newTestEngine(t)
 		library := stCovIdentityLibrary(t)
 		engine.Git = stCovGitTagsErr{fakeGit: git, err: errors.New("tags unreadable")}
@@ -212,6 +222,7 @@ func TestLibraryGapsReportsEveryUnknown(t *testing.T) {
 	})
 
 	t.Run("unreadable merged-untagged log", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _ := newTestEngine(t)
 		library := stCovIdentityLibrary(t)
 		git.tags[library] = []string{"backend/v0.5.0"}
@@ -226,6 +237,7 @@ func TestLibraryGapsReportsEveryUnknown(t *testing.T) {
 	})
 
 	t.Run("no version tag", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _ := newTestEngine(t)
 		library := stCovIdentityLibrary(t)
 		git.tags[library] = []string{"not-a-version"}
@@ -243,6 +255,7 @@ func TestLibraryGapsReportsEveryUnknown(t *testing.T) {
 // repository and per identity, with the declarations WB could not read
 // surfaced rather than silently omitted.
 func TestLibraryGapsReportsEveryConsumerBehind(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	library := stCovIdentityLibrary(t)
 	behind := t.TempDir()
@@ -299,6 +312,7 @@ func TestLibraryGapsReportsEveryConsumerBehind(t *testing.T) {
 }
 
 func TestLibraryGapsReportsAMergedUntaggedCommit(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	library := stCovIdentityLibrary(t)
 	git.tags[library] = []string{"backend/v0.5.0"}
@@ -316,6 +330,7 @@ func TestLibraryGapsReportsAMergedUntaggedCommit(t *testing.T) {
 }
 
 func TestLibraryTagPatternAndTagVersionEdgeCases(t *testing.T) {
+	t.Parallel()
 	if got := libraryTagPattern([]Identity{{Ecosystem: EcosystemNpm, Name: "@acme/core"}}); got != "v*" {
 		t.Fatalf("pattern for an npm-only library = %q, want v*", got)
 	}
@@ -340,6 +355,7 @@ func TestLibraryTagPatternAndTagVersionEdgeCases(t *testing.T) {
 }
 
 func TestVersionComparisonTreatsAnUnreadablePublishedVersionAsCurrent(t *testing.T) {
+	t.Parallel()
 	if !versionAtLeast("1.2.3", "not-a-version") {
 		t.Fatal("an unreadable published version was reported as behind")
 	}

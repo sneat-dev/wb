@@ -1,0 +1,57 @@
+version: "2"
+
+# paralleltest checks for consistent, correct use of t.Parallel(). It runs
+# with ignore-missing so it does not force every one of the thousands of
+# already-intentionally-serial tests in this repository (env/cwd mutation,
+# package-seam reassignment, real subprocess fixtures) to carry an individual
+# nolint annotation -- that would be a diff explosion unrelated to catching
+# real mistakes. The actual regression guard for "new tests default to
+# parallel" is internal/quality's TestParallelBaselineDoesNotRegress, which
+# keys its baseline on package + test name + subtest path (not file:line) and
+# requires a reason for every serial entry (see
+# internal/quality/testdata/paralleltest_baseline.txt and
+# internal/quality/cmd/parallelbaseline).
+#
+# ignore-missing (kunwardeep/paralleltest v1.0.15) suppresses every
+# missing-t.Parallel() report, including "a subtest added to an
+# already-parallel table test that forgets its own t.Parallel()" --
+# analysis.go gates that diagnostic (and the top-level and range-statement
+# variants) behind `!ignoreMissing`. With ignore-missing: true the only
+# paralleltest diagnostics that still fire are the loop-variable-shadowing
+# check (gated by ignore-loop-var, left false) and, with check-cleanup below,
+# the defer-vs-t.Cleanup check. The baseline guard above is what actually
+# enforces "new tests default to parallel"; paralleltest here only catches
+# the two narrower mistakes just named.
+#
+# check-cleanup: true additionally reports a defer alongside t.Parallel() in
+# the same function, which should be t.Cleanup instead -- t.Cleanup runs
+# after the function's own parallel subtests finish; a bare defer runs as
+# soon as the function's non-parallel body returns, before those subtests'
+# bodies have executed at all (sneat-dev/wb#623's review found nine such
+# sites shipped this way).
+#
+# tparallel (moricho/tparallel) is a separate, complementary linter: it
+# flags a top-level test and its subtests calling t.Parallel()
+# inconsistently (one but not the other) and, like check-cleanup, a subtest
+# using defer instead of t.Cleanup after calling t.Parallel(). It has no
+# ignore-missing equivalent, needing no settings of its own, and it is real
+# signal, not noise: unlike paralleltest under ignore-missing, it would have
+# caught the shape of at least one bug this task found by hand (a test whose
+# subtests were parallel while the parent used their post-loop state as if
+# they weren't). Evaluated for sneat-dev/wb#623 but deliberately left
+# disabled here rather than enabled: with --max-issues-per-linter=0 it reports
+# 74 pre-existing sites across 19 packages, two of them in cmd/wb (out of this
+# task's scope entirely) and several in generated code under internal/gen.
+# Each remaining site needs the same case-by-case parallel-safety judgment
+# this whole task applied to the packages it actually touched -- not a
+# mechanical fix -- so enabling it belongs to a follow-up scoped to that
+# review, not folded into this PR.
+linters:
+  default: standard
+  enable:
+    - paralleltest
+  settings:
+    paralleltest:
+      ignore-missing: true
+      ignore-missing-subtests: false
+      check-cleanup: true

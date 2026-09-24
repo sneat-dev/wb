@@ -136,6 +136,7 @@ func suffixesReachableFrom(decls packageDecls, start string) map[string]bool {
 // gap that let four suffixes drift out of sync between the two functions
 // after the single-suffix fix on 2026-09-02 added no guarding test.
 func TestWorktreeMergeReportSidecarSuffixParity(t *testing.T) {
+	t.Parallel()
 	decls := loadPackageDecls(t)
 
 	var universe []string
@@ -164,6 +165,7 @@ func TestWorktreeMergeReportSidecarSuffixParity(t *testing.T) {
 	for _, name := range universe {
 		name := name
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			inResolve := resolveSet[name]
 			inActive := activeSet[name]
 			if !inResolve || !inActive {

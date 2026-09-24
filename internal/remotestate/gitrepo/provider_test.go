@@ -531,6 +531,7 @@ func TestStatusRefreshesOnceForMachinesAndClaims(t *testing.T) {
 // the configured remote.repo happens to use another), while still telling
 // genuinely different remotes apart.
 func TestSameRemoteEquivalence(t *testing.T) {
+	t.Parallel()
 	equal := [][2]string{
 		{"https://github.com/o/r", "git@github.com:o/r.git"},
 		{"ssh://git@github.com/o/r", "git@github.com:o/r"},
@@ -667,6 +668,7 @@ func TestEnsureCloneAcceptsInsteadOfRewrite(t *testing.T) {
 }
 
 func TestSameRemoteLocalPathsStayCaseSensitive(t *testing.T) {
+	t.Parallel()
 	if sameRemote("/tmp/Store", "/tmp/store") {
 		t.Fatal("local paths differing only in case must not compare equal on a case-sensitive filesystem")
 	}

@@ -274,6 +274,8 @@ func TestChangedPackagesPropagatesFindModuleRootError(t *testing.T) {
 // rather than an empty result. A fake `git` in front of PATH delegates
 // every subcommand except "diff" to the real binary, isolating this one
 // branch deterministically (no reliance on timing).
+//
+//nolint:paralleltest // installFakeGitFailingDiff calls t.Setenv on the shared process PATH (sneat-dev/wb#646 baseline fix)
 func TestChangedPackagesPropagatesGitTouchedFilesError(t *testing.T) {
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", fixtureBaseSource)
@@ -406,6 +408,8 @@ func TestChangedPackagesCountsTestFileChanges(t *testing.T) {
 // relative workingDir that can't be made absolute (the current directory no
 // longer exists) surfaces as an error instead of resolving against some
 // other, unrelated directory.
+//
+//nolint:paralleltest // calls t.Chdir on the shared process working directory (sneat-dev/wb#646 baseline fix)
 func TestChangedPackagesFailsClosedWhenWorkingDirCannotBeResolved(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory-removal-under-cwd probe requires POSIX semantics")
@@ -685,6 +689,8 @@ func installFakeGitReportingMissingTopLevel(t *testing.T) string {
 // directly: `git rev-parse --show-toplevel` always names a real, existing
 // directory in practice, so this is otherwise unreachable through a real
 // git binary.
+//
+//nolint:paralleltest // installFakeGitReportingMissingTopLevel calls t.Setenv on the shared process PATH (sneat-dev/wb#646 baseline fix)
 func TestChangedPackagesFailsClosedWhenGitTopLevelCannotBeSymlinkResolved(t *testing.T) {
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", fixtureBaseSource)

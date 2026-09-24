@@ -321,6 +321,7 @@ func TestRetiredPublicationAcknowledgementTamperingKeepsLaneBlocked(t *testing.T
 }
 
 func TestValidateRetiredPublicationReceiptRefusesWrongShape(t *testing.T) {
+	t.Parallel()
 	base := func() WorktreeMergeReceipt {
 		return WorktreeMergeReceipt{
 			ID: "receipt-id", ReceiptPath: "/receipts/lane.json", Lane: worktreeMergeLaneID("acme/app", "main"),
@@ -349,6 +350,7 @@ func TestValidateRetiredPublicationReceiptRefusesWrongShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := base()
 			tt.mutate(&receipt)
 			err := validateRetiredPublicationReceipt(receipt, receipt.ReceiptPath)

@@ -68,6 +68,7 @@ func (capture *tailCovCapture) Preserve(_ context.Context, _, message string) (s
 // result is a failure: an invocation-level error, a member that failed, and
 // -- just as important -- that a clean run is not one.
 func TestTailCovFailedReportsErrorsAndFailedMembers(t *testing.T) {
+	t.Parallel()
 	if !(Result{Errors: []string{"inventory unavailable"}}).Failed() {
 		t.Error("Failed() = false with an invocation error")
 	}
@@ -91,6 +92,7 @@ func TestTailCovFailedReportsErrorsAndFailedMembers(t *testing.T) {
 // with and without a remediation command: a refusal that names no command
 // must not render a dangling "; run:" clause.
 func TestTailCovRefusalErrorOmitsEmptySanctionList(t *testing.T) {
+	t.Parallel()
 	plain := &Refusal{Code: RefusalLiveLink, Message: "task still holds a live local link"}
 	if got := plain.Error(); got != plain.Message {
 		t.Fatalf("Error() = %q, want %q", got, plain.Message)
@@ -112,6 +114,7 @@ func TestTailCovRefusalErrorOmitsEmptySanctionList(t *testing.T) {
 // must name the task and a UTC timestamp even when the clock reports another
 // zone.
 func TestTailCovCaptureMessageIdentifiesTaskInUTC(t *testing.T) {
+	t.Parallel()
 	order := &[]string{}
 	capture := &tailCovCapture{
 		dirty: map[string][]string{"/wt/app": {"main.go"}},
@@ -144,6 +147,7 @@ func TestTailCovCaptureMessageIdentifiesTaskInUTC(t *testing.T) {
 // TestTailCovEndRequiresTaskName pins that a blank task is refused before the
 // inventory is even consulted: there is no "the current task" to end.
 func TestTailCovEndRequiresTaskName(t *testing.T) {
+	t.Parallel()
 	inventory := &tailCovInventory{worktrees: []Worktree{{Repository: "acme/app", Path: "/wt/app"}}}
 	engine := &Engine{ProjectsRoot: "/projects", Inventory: inventory}
 
@@ -166,6 +170,7 @@ func TestTailCovEndRequiresTaskName(t *testing.T) {
 // aborts the whole invocation with that error and no partial result to act
 // on.
 func TestTailCovEndReportsInventoryFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("inventory unavailable")
 	capture := &tailCovCapture{}
 	engine := &Engine{
@@ -190,6 +195,7 @@ func TestTailCovEndReportsInventoryFailure(t *testing.T) {
 // wired" path: the live-link check is skipped entirely, so a task whose
 // worktrees are all clean ends with the claim released.
 func TestTailCovEndWithoutLinkGuardRetiresEveryWorktree(t *testing.T) {
+	t.Parallel()
 	retirer := &fakeRetirer{err: map[string]error{}, order: &[]string{}}
 	claims := &fakeClaims{}
 	engine := &Engine{
@@ -220,6 +226,7 @@ func TestTailCovEndWithoutLinkGuardRetiresEveryWorktree(t *testing.T) {
 // an error, not an assumed "no links": nothing is captured or removed, and
 // the partial result names the task it was working on.
 func TestTailCovEndReportsLinkGuardFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("link state unreadable")
 	capture := &tailCovCapture{dirty: map[string][]string{"/wt/app": {"main.go"}}}
 	retirer := &fakeRetirer{err: map[string]error{}, order: &[]string{}}
@@ -248,6 +255,7 @@ func TestTailCovEndReportsLinkGuardFailure(t *testing.T) {
 // uncommitted state cannot even be listed is marked failed -- never
 // "clean" -- and is not removed, so the claim is kept.
 func TestTailCovEndReportsDirtyPathFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("git status failed")
 	capture := &tailCovCapture{dirtyErr: boom}
 	retirer := &fakeRetirer{err: map[string]error{}, order: &[]string{}}
@@ -284,6 +292,7 @@ func TestTailCovEndReportsDirtyPathFailure(t *testing.T) {
 // operator must be shown each distinct clearing command once, in a stable
 // order.
 func TestTailCovRefusalDeduplicatesAndSortsSanctionedCommands(t *testing.T) {
+	t.Parallel()
 	engine := &Engine{
 		ProjectsRoot: "/projects",
 		Inventory: &tailCovInventory{worktrees: []Worktree{

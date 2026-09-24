@@ -448,6 +448,7 @@ func landOptions(fixture *landFixture) PullRequestLandOptions {
 }
 
 func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
+	t.Parallel()
 	var got []time.Duration
 	for remaining := 20 * time.Minute; remaining > 0; {
 		slice, err := pullRequestLandWaitSlice(remaining)
@@ -469,6 +470,7 @@ func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
 }
 
 func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testing.T) {
+	t.Parallel()
 	options := PullRequestWaitOptions{
 		Repository: "acme/app", PullRequest: "7", Target: "main", Head: strings.Repeat("a", 40),
 		Slice: 20 * time.Minute, CheckPollInterval: time.Minute,
@@ -495,6 +497,7 @@ func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testin
 }
 
 func TestPullRequestLandRejectsNonPositiveTimeout(t *testing.T) {
+	t.Parallel()
 	for _, timeout := range []time.Duration{0, -time.Second} {
 		if _, err := pullRequestLandWaitSlice(timeout); err == nil {
 			t.Fatalf("timeout %s was accepted", timeout)
@@ -797,6 +800,7 @@ func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
 }
 
 func TestPlanKeptCommitsPreservesOrderAroundOneAggregate(t *testing.T) {
+	t.Parallel()
 	commits := []SourceCommit{
 		{SHA: "1111111111111111111111111111111111111111", Subject: "one"},
 		{SHA: "2222222222222222222222222222222222222222", Subject: "two"},
@@ -835,6 +839,7 @@ func TestPlanKeptCommitsPreservesOrderAroundOneAggregate(t *testing.T) {
 // When every unkept commit precedes the kept ones, the aggregate lands first —
 // which is the same rule, not a special case.
 func TestPlanKeptCommitsPutsTheAggregateFirstWhenItsMembersComeFirst(t *testing.T) {
+	t.Parallel()
 	commits := []SourceCommit{
 		{SHA: "1111111111111111111111111111111111111111", Subject: "one"},
 		{SHA: "2222222222222222222222222222222222222222", Subject: "two"},
@@ -850,6 +855,7 @@ func TestPlanKeptCommitsPutsTheAggregateFirstWhenItsMembersComeFirst(t *testing.
 }
 
 func TestSavingsCountEveryAbsorbedCallAndLabelTheEstimate(t *testing.T) {
+	t.Parallel()
 	result := PullRequestLandResult{
 		ManualEquivalent: []string{"a", "b", "c", "d", "e", "f", "g", "h"},
 		AbsorbedPolls:    3,
@@ -870,6 +876,7 @@ func TestSavingsCountEveryAbsorbedCallAndLabelTheEstimate(t *testing.T) {
 // M1: the aggregate has to name the pull request, so a reader of `git log` can
 // find it. It used to interpolate the base branch, which named nothing.
 func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
+	t.Parallel()
 	view := PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
 	view.Base.Ref = "main"
 	view.Base.Repo = &struct {
@@ -887,6 +894,7 @@ func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
 // M2: the classification reads the diff, not the filename. A `package.json`
 // holds the scripts CI runs and the overrides that rewrite the whole graph.
 func TestMechanicalIsDecidedFromContent(t *testing.T) {
+	t.Parallel()
 	versionOnly := `@@ -5,7 +5,7 @@
    "dependencies": {
 -    "lodash": "^4.17.20"

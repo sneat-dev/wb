@@ -27,6 +27,7 @@ func cloneOfEmptyRemote(t *testing.T) discover.Repo {
 }
 
 func TestSyncReportsEmptyRemoteRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	repo := cloneOfEmptyRemote(t)
 
 	res := Sync(context.Background(), repo, "", false, false)
@@ -43,6 +44,7 @@ func TestSyncReportsEmptyRemoteRatherThanFailing(t *testing.T) {
 // with no marker to clear and no human step. This is the self-healing
 // property that makes the detection preferable to a manual skip marker.
 func TestSyncPullsOnceRemoteHasBranches(t *testing.T) {
+	t.Parallel()
 	repo := cloneOfEmptyRemote(t)
 
 	// Someone pushes the first commit.
@@ -59,6 +61,7 @@ func TestSyncPullsOnceRemoteHasBranches(t *testing.T) {
 // A remote that publishes branches, just not the tracked one, is a renamed or
 // deleted branch. That needs a human and must not be absorbed as benign.
 func TestSyncStillFailsWhenTrackedBranchIsMissing(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -88,6 +91,7 @@ func TestSyncStillFailsWhenTrackedBranchIsMissing(t *testing.T) {
 }
 
 func TestEmptyRemoteStatusString(t *testing.T) {
+	t.Parallel()
 	if got := EmptyRemote.String(); got != "empty remote" {
 		t.Fatalf("EmptyRemote.String() = %q, want %q", got, "empty remote")
 	}

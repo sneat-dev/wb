@@ -76,6 +76,7 @@ func tailCovFleet(t *testing.T, projectsRoot string) string {
 }
 
 func TestTailCovHealthReportsHubStateAndOmitsZeroIdentity(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(Options{
 		ProjectsRoot: t.TempDir(),
 		Version:      "test",
@@ -108,6 +109,7 @@ func TestTailCovHealthReportsHubStateAndOmitsZeroIdentity(t *testing.T) {
 }
 
 func TestTailCovOverviewDescribesEveryWorktreeAndRunEvent(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	repository := tailCovFleet(t, projectsRoot)
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -188,6 +190,7 @@ func TestTailCovOverviewDescribesEveryWorktreeAndRunEvent(t *testing.T) {
 }
 
 func TestTailCovOverviewReportsUnreadableWorktreesDirectory(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: directory permission bits do not deny reads")
 	}
@@ -207,6 +210,7 @@ func TestTailCovOverviewReportsUnreadableWorktreesDirectory(t *testing.T) {
 }
 
 func TestTailCovOverviewFailsOnCorruptRunTelemetry(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	repository := tailCovFleet(t, projectsRoot)
 	worktree := filepath.Join(repository, ".worktrees", "task-a")
@@ -235,6 +239,7 @@ func TestTailCovOverviewFailsOnCorruptRunTelemetry(t *testing.T) {
 }
 
 func TestTailCovOverviewUsesHomeCacheWhenNoIndexPathIsConfigured(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	repository := tailCovFleet(t, projectsRoot)
 	worktree := filepath.Join(repository, ".worktrees", "task-a")
@@ -255,6 +260,7 @@ func TestTailCovOverviewUsesHomeCacheWhenNoIndexPathIsConfigured(t *testing.T) {
 }
 
 func TestTailCovOverviewCountsUnavailableStateHomeAsADiagnostic(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	tailCovFleet(t, projectsRoot)
 
@@ -273,6 +279,7 @@ func TestTailCovOverviewCountsUnavailableStateHomeAsADiagnostic(t *testing.T) {
 }
 
 func TestTailCovBuildOverviewRejectsUnreadableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	if _, err := BuildOverview(context.Background(), filepath.Join(t.TempDir(), "absent"), "test", now); err == nil {
 		t.Fatal("BuildOverview must fail for a missing projects root")

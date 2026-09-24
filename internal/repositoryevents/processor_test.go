@@ -30,6 +30,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, "", "init", "--bare", remote)
@@ -79,6 +80,7 @@ func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) 
 }
 
 func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, "", "init", "--bare", remote)
@@ -116,7 +118,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 	queue.workers = 1
 	queue.acquire = func(context.Context) (func(), error) { return func() {}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	go queue.Run(ctx, localSyncProcessor(projects), nil)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -138,6 +140,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 }
 
 func TestSyncProcessorLeavesUnsafeRenameQueuedFromSharedGuard(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	if err := os.MkdirAll(oldPath, 0o755); err != nil {
@@ -163,6 +166,7 @@ func TestSyncProcessorLeavesUnsafeRenameQueuedFromSharedGuard(t *testing.T) {
 }
 
 func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	newPath := filepath.Join(projects, "acme", "new-app")
@@ -202,6 +206,7 @@ func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
 }
 
 func TestSyncProcessorPersistsAndRecoversExactPendingTransferCleanup(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	newPath := filepath.Join(projects, "acme", "new-app")
@@ -245,6 +250,7 @@ func TestSyncProcessorPersistsAndRecoversExactPendingTransferCleanup(t *testing.
 }
 
 func TestSyncProcessorDoesNotAcknowledgeFailedWorkLogFinalization(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	newPath := filepath.Join(projects, "acme", "new-app")
 	if err := os.MkdirAll(newPath, 0o755); err != nil {
@@ -354,6 +360,7 @@ func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
 }
 
 func TestSyncProcessorRejectsMismatchedCanonicalOrigin(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	path := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -371,6 +378,7 @@ func TestSyncProcessorRejectsMismatchedCanonicalOrigin(t *testing.T) {
 }
 
 func TestSyncLifecycleEventOnlyDescribesChangedCheckout(t *testing.T) {
+	t.Parallel()
 	repository := "github.com/acme/app"
 	path := "/projects/acme/app"
 	tests := []struct {
@@ -388,6 +396,7 @@ func TestSyncLifecycleEventOnlyDescribesChangedCheckout(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			event, ok := syncLifecycleEvent(repository, test.result)
 			if ok != test.want {
 				t.Fatalf("event=%+v ok=%t, want ok=%t", event, ok, test.want)

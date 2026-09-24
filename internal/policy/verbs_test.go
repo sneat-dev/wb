@@ -6,6 +6,7 @@ import (
 )
 
 func TestExplainShowsWinningPatternAndPerScopeVerdict(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	explanation, err := Explain(loaded, "github.com/acme/cal/backend", "", "github.com/dal-go/dalgo2firestore")
 	if err != nil {
@@ -33,6 +34,7 @@ func TestExplainShowsWinningPatternAndPerScopeVerdict(t *testing.T) {
 }
 
 func TestExplainRejectsUnknownType(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	if _, err := Explain(loaded, "github.com/acme/cal/backend", "ghost", "fmt"); err == nil {
 		t.Fatal("expected an error for an undeclared type")
@@ -40,6 +42,7 @@ func TestExplainRejectsUnknownType(t *testing.T) {
 }
 
 func TestRunExpectations(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	results := RunExpectations(loaded)
 	if len(results) != 2 {
@@ -53,6 +56,7 @@ func TestRunExpectations(t *testing.T) {
 }
 
 func TestRunExpectationsReportsAMismatch(t *testing.T) {
+	t.Parallel()
 	body := strings.Replace(samplePolicy,
 		`  - {import: "github.com/acme/ext-cal/backend/facade", group: extension-contract}`,
 		`  - {import: "github.com/acme/ext-cal/backend/facade", group: extension-implementation}`, 1)
@@ -70,6 +74,7 @@ func TestRunExpectationsReportsAMismatch(t *testing.T) {
 }
 
 func TestDescribeResolvesEffectiveRules(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	effective, err := Describe(loaded, "github.com/acme/cal/backend", "", "/repo/.wb-deps-policy.yaml", false)
 	if err != nil {
@@ -96,6 +101,7 @@ func TestDescribeResolvesEffectiveRules(t *testing.T) {
 }
 
 func TestDescribeStrictPromotesLayerMode(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	effective, err := Describe(loaded, "github.com/acme/cal/backend", "", "", true)
 	if err != nil {

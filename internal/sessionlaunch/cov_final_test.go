@@ -16,6 +16,7 @@ import (
 )
 
 func TestSlCovResolveAuthorityRejectsRequestThatFailsAuthorityValidation(t *testing.T) {
+	t.Parallel()
 	request := completeLaunchTestRequest(t)
 	request.HandoverPath = "."
 	raw, err := sessionmove.EncodeRequest(request)
@@ -43,8 +44,10 @@ func TestSlCovDefaultDependenciesSessionDirFailure(t *testing.T) {
 }
 
 func TestSlCovStartCannotClaimNewAttempt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("after sealed abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 7301)
 		slCovReadOnly(t, filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, attemptsDirectoryName))
@@ -53,6 +56,7 @@ func TestSlCovStartCannotClaimNewAttempt(t *testing.T) {
 		}
 	})
 	t.Run("after dead pre-release wrapper", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(7302)
@@ -70,8 +74,10 @@ func TestSlCovStartCannotClaimNewAttempt(t *testing.T) {
 }
 
 func TestSlCovStartPlanPublicationAndAdoptionFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("start failure with ambiguous probe", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.tmux.startErr = errors.New("duplicate session")
 		calls := 0
@@ -87,6 +93,7 @@ func TestSlCovStartPlanPublicationAndAdoptionFailures(t *testing.T) {
 		}
 	})
 	t.Run("tmux pid changed while authorizing", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		pid := os.Getpid()
 		attempt := fixture.claimed(t)
@@ -118,6 +125,7 @@ func TestSlCovStartPlanPublicationAndAdoptionFailures(t *testing.T) {
 }
 
 func TestSlCovInspectStartedRejectsMismatchedReleasedAttempt(t *testing.T) {
+	t.Parallel()
 	fixture := slCovNewAuthorityFixture(t)
 	attempt, _ := fixture.released(t, 7401)
 	started := launcherStarted{SchemaVersion: launchSchemaVersion, HandoffID: fixture.handoffID,
@@ -137,6 +145,7 @@ func TestSlCovVerifyPinnedWorktreeWithoutGit(t *testing.T) {
 }
 
 func TestSlCovInspectReleasedProbeFailureAfterExec(t *testing.T) {
+	t.Parallel()
 	fixture := slCovNewAuthorityFixture(t)
 	pid := os.Getpid()
 	attempt, release := fixture.liveReleased(t, pid)
@@ -155,6 +164,7 @@ func TestSlCovInspectReleasedProbeFailureAfterExec(t *testing.T) {
 }
 
 func TestSlCovValidatePlanForOptionsSurfacesHarnessSpecFailure(t *testing.T) {
+	t.Parallel()
 	_, plan, resolved, options, worktree := slCovAuthorityPlan(t)
 	resolved.launch.RequestedHarness = "bogus"
 	if err := validatePlanForOptions(plan, options, resolved, worktree); err == nil {
@@ -286,7 +296,9 @@ func TestSlCovRunPrivateLauncherCustodyConflicts(t *testing.T) {
 }
 
 func TestSlCovValidatePrivatePlanHarnessFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("unsupported requested harness", func(t *testing.T) {
+		t.Parallel()
 		request := completeLaunchTestRequest(t)
 		request.RequestedHarness = "bogus"
 		store := sessionmove.NewStore(filepath.Join(t.TempDir(), sessionmove.DirName))
@@ -309,6 +321,7 @@ func TestSlCovValidatePrivatePlanHarnessFailures(t *testing.T) {
 		}
 	})
 	t.Run("invalid absolute harness executable", func(t *testing.T) {
+		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		state, err := fx.store.Load(fx.request.HandoffID)
 		if err != nil {
@@ -333,6 +346,7 @@ func TestSlCovValidatePrivateParkPlanHarnessExecutable(t *testing.T) {
 func TestSlCovVerifyPrivateLocalRootDirectFailures(t *testing.T) {
 	state, plan, bundle, _ := slCovParkFixture(t)
 	t.Run("mode mismatch", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.RootMode = string(sessionauthority.LaunchRootParkedLocal)
 		if err := verifyPrivateLocalRoot(state, bundle, broken); err == nil {

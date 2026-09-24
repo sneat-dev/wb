@@ -11,6 +11,7 @@ import (
 )
 
 func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	snapshot := FromRemoteSnapshot(remotestate.Snapshot{
 		Login: "alice", Machine: "laptop", PublishedAt: at, RemoteStore: "git:team/wb-state",

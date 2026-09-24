@@ -354,7 +354,7 @@ func TestConfigureGitAutoMaintenanceOffFailsLoudlyWhenGitConfigFails(t *testing.
 	<-done
 
 	recorder.mu.Lock()
-	defer recorder.mu.Unlock()
+	t.Cleanup(func() { recorder.mu.Unlock() })
 	if !recorder.fataled {
 		t.Fatal("ConfigureGitAutoMaintenanceOff against a missing directory did not fail")
 	}

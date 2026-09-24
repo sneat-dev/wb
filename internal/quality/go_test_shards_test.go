@@ -58,12 +58,14 @@ func record(t *testing.T, name string) { t.Helper(); f, err := os.OpenFile(os.Ge
 }
 
 func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
+	t.Parallel()
 	profile := filepath.Join("tmp", "coverage.out")
 	for name, arguments := range map[string][]string{
 		"unsharded": goCoverageArguments(profile),
 		"shard":     goCoverageArguments(profile, "./internal/worktrees", "-run", "^(TestOne|TestTwo)$"),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			joined := strings.Join(arguments, " ")
 			if strings.Contains(joined, "-count=1") {
 				t.Fatalf("default coverage disables Go test-result caching: %s", joined)
@@ -76,12 +78,14 @@ func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
 }
 
 func TestShardedGoCoverageArgumentsPropagateAttemptTimeout(t *testing.T) {
+	t.Parallel()
 	profile := filepath.Join("tmp", "coverage.out")
 	for name, arguments := range map[string][]string{
 		"unsharded": goCoverageArgumentsWithTimeout(profile, 17*time.Minute),
 		"shard":     goCoverageArgumentsWithTimeout(profile, 17*time.Minute, "./internal/worktrees", "-run", "^(TestOne|TestTwo)$"),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if joined := strings.Join(arguments, " "); !strings.Contains(joined, "-timeout 17m0s") {
 				t.Fatalf("coverage command omitted caller timeout: %s", joined)
 			}
@@ -90,6 +94,7 @@ func TestShardedGoCoverageArgumentsPropagateAttemptTimeout(t *testing.T) {
 }
 
 func TestVerifyWithRepositoryPolicyUsesShardedGoTest(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/verify-shards\n\ngo 1.24\n")
 	writeGoShardFixturePackage(t, module, "serial", `package serial
@@ -144,6 +149,7 @@ func TestBeta(t *testing.T) { if Value() != 1 { t.Fatal("value") } }
 }
 
 func TestRunShardedCoverageRetainsOnlyFailedShardDiagnostic(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/failure\n\ngo 1.24\n")
 	writeGoShardFixturePackage(t, module, "serial", `package serial
@@ -246,6 +252,7 @@ func TestStuck(t *testing.T) { time.Sleep(120 * time.Second) }
 const shardDeadlineElapsedBound = 60 * time.Second
 
 func TestRunShardedCoverageStopsAStuckShardAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/shard-timeout\n\ngo 1.24\n")
 	writeGoShardFixturePackage(t, module, "serial", "package serial\n", shardDeadlineStuckFixture)
@@ -260,6 +267,7 @@ func TestRunShardedCoverageStopsAStuckShardAtItsDeadline(t *testing.T) {
 }
 
 func TestRunCoverageWithOptionsUsesExplicitShardAttemptDeadline(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/explicit-shard-timeout\n\ngo 1.24\n")
 	writeGoShardFixturePackage(t, module, "serial", "package serial\n", shardDeadlineStuckFixture)
@@ -280,6 +288,7 @@ func TestRunCoverageWithOptionsUsesExplicitShardAttemptDeadline(t *testing.T) {
 }
 
 func TestPlanGoTestShardsIsDeterministicCompleteAndUnique(t *testing.T) {
+	t.Parallel()
 	tests := []string{"TestZulu", "TestAlpha", "ExampleUsage", "FuzzDecode", "TestMiddle"}
 	want := [][]string{
 		{"ExampleUsage", "TestMiddle"},
@@ -316,6 +325,7 @@ func TestPlanGoTestShardsIsDeterministicCompleteAndUnique(t *testing.T) {
 }
 
 func TestPlanGoTestShardsRejectsUnsafeInputs(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		tests  []string
@@ -328,6 +338,7 @@ func TestPlanGoTestShardsRejectsUnsafeInputs(t *testing.T) {
 		{name: "invalid name", tests: []string{"TestOne", "not-a-test"}, shards: 2, want: "unsupported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := planGoTestShards(test.tests, test.shards)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)
@@ -337,6 +348,7 @@ func TestPlanGoTestShardsRejectsUnsafeInputs(t *testing.T) {
 }
 
 func TestMergeCoverageProfilesPreservesUnionAndStatementIdentity(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	first := filepath.Join(directory, "first.cov")
 	second := filepath.Join(directory, "second.cov")
@@ -374,6 +386,7 @@ example/a.go:4.1,5.2 3 1
 }
 
 func TestMergeCoverageProfilesSumsCountMode(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	first := filepath.Join(directory, "first.cov")
 	second := filepath.Join(directory, "second.cov")
@@ -395,6 +408,7 @@ func TestMergeCoverageProfilesSumsCountMode(t *testing.T) {
 }
 
 func TestMergeCoverageProfilesRejectsModeOrBlockMismatch(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	setProfile := filepath.Join(directory, "set.cov")
 	countProfile := filepath.Join(directory, "count.cov")
@@ -412,6 +426,7 @@ func TestMergeCoverageProfilesRejectsModeOrBlockMismatch(t *testing.T) {
 		{name: "block", profiles: []string{setProfile, mismatchedBlock}, want: "block"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := mergeCoverageProfiles(test.profiles, filepath.Join(directory, test.name+".cov"))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)

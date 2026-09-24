@@ -16,6 +16,7 @@ import (
 // names a forge itself, and it must be the same fallback EnsureCanonical clones
 // from — otherwise the predicted and the created path could disagree.
 func TestCanonicalClonePathFollowsTheCloneURL(t *testing.T) {
+	t.Parallel()
 	root := "/projects"
 	for _, test := range []struct {
 		slug     string

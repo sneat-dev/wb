@@ -25,6 +25,7 @@ func writeTree(t *testing.T, files map[string]string) string {
 // comes from backend/go.mod when the repository has one, and npm package
 // names from libs/**/package.json.
 func TestDiscoverPublishedPrefersBackendGoModAndReadsLibsPackages(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{
 		"go.mod":                     "module github.com/acme/library/tools\n",
 		"backend/go.mod":             "module github.com/acme/library/backend\n",
@@ -53,6 +54,7 @@ func TestDiscoverPublishedPrefersBackendGoModAndReadsLibsPackages(t *testing.T) 
 }
 
 func TestDiscoverNpmPackagesAndDeclarationsAcrossNestedWorkspaces(t *testing.T) {
+	t.Parallel()
 	library := writeTree(t, map[string]string{
 		"frontend/package.json":           `{"name":"frontend-root","private":true}`,
 		"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
@@ -84,6 +86,7 @@ func TestDiscoverNpmPackagesAndDeclarationsAcrossNestedWorkspaces(t *testing.T) 
 }
 
 func TestNpmDiscoveryDoesNotFollowWorkspaceSymlinks(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{"package.json": `{"private":true}`})
 	outside := writeTree(t, map[string]string{
 		"pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
@@ -102,6 +105,7 @@ func TestNpmDiscoveryDoesNotFollowWorkspaceSymlinks(t *testing.T) {
 }
 
 func TestNpmDiscoveryIgnoresManagedCheckoutsAndFrontendCaches(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{
 		"package.json":                         `{"private":true}`,
 		".worktrees/stale/libs/a/package.json": `{"name":"@acme/stale"}`,
@@ -120,6 +124,7 @@ func TestNpmDiscoveryIgnoresManagedCheckoutsAndFrontendCaches(t *testing.T) {
 }
 
 func TestPreflightKeepsPublicRepositoryRootProviderIdentity(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{"package.json": `{"name":"@acme/root-package"}`})
 	names, finding := collectNpmPackageNames(PreflightInput{Repository: "acme/root", Path: root})
 	if finding.Status != PreflightPass || len(names) != 1 || names[0] != "@acme/root-package" {
@@ -128,6 +133,7 @@ func TestPreflightKeepsPublicRepositoryRootProviderIdentity(t *testing.T) {
 }
 
 func TestDiscoverPublishedFallsBackToTheModuleRoot(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{"go.mod": "module github.com/acme/library\n"})
 	identities, err := DiscoverPublished(root)
 	if err != nil {
@@ -142,6 +148,7 @@ func TestDiscoverPublishedFallsBackToTheModuleRoot(t *testing.T) {
 // consumer worktree is enumerated, including nested tooling modules, because
 // a workspace holding only the library leaves the consumer's own module out.
 func TestGoModulesEnumeratesEveryModuleInTheWorktree(t *testing.T) {
+	t.Parallel()
 	root := writeTree(t, map[string]string{
 		"backend/go.mod":            "module github.com/acme/app/backend\n",
 		"tools/lint/go.mod":         "module github.com/acme/app/tools/lint\n",
@@ -164,6 +171,7 @@ func TestGoModulesEnumeratesEveryModuleInTheWorktree(t *testing.T) {
 // REQ: link-discovery-uses-the-canonical-dependency-sections — a declaration
 // is found in every canonical section, not only `dependencies`.
 func TestDiscoverDeclarationsReadsTheCanonicalSections(t *testing.T) {
+	t.Parallel()
 	library := writeTree(t, map[string]string{
 		"backend/go.mod":         "module github.com/acme/library/backend\n",
 		"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`,
@@ -196,6 +204,7 @@ func TestDiscoverDeclarationsReadsTheCanonicalSections(t *testing.T) {
 }
 
 func TestDiscoverDeclarationsReportsNothingForAnUnrelatedConsumer(t *testing.T) {
+	t.Parallel()
 	library := writeTree(t, map[string]string{"backend/go.mod": "module github.com/acme/library/backend\n"})
 	identities, err := DiscoverPublished(library)
 	if err != nil {
@@ -214,6 +223,7 @@ func TestDiscoverDeclarationsReportsNothingForAnUnrelatedConsumer(t *testing.T) 
 }
 
 func TestGoRequirementsReadsBothSpellings(t *testing.T) {
+	t.Parallel()
 	requirements := goRequirements([]byte(
 		"module m\n\ngo 1.27\n\nrequire github.com/one/single v1.0.0\n\nrequire (\n\tgithub.com/two/block v2.1.0\n\tgithub.com/three/block v3.0.0 // indirect\n)\n",
 	))

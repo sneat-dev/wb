@@ -10,6 +10,7 @@ import (
 )
 
 func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -30,7 +31,7 @@ func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	if !lock.HeldForStore(root, request, digest) {
 		t.Fatal("exact admitted store authority was not recognized")
 	}
@@ -74,6 +75,7 @@ func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
 }
 
 func TestAcquireExecutionLockAllowsConcurrentFirstCreation(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {

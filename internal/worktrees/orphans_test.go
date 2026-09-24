@@ -285,6 +285,7 @@ func mustGitOutput(t *testing.T, dir string, args ...string) string {
 // cannot delete their working trees; that only pays off if cleanup also
 // declines the parent while they are live.
 func TestCleanupRefusesAParentWithLiveSubEfforts(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	worktreesRoot := filepath.Join(root, "worktrees")
 	for _, effort := range []string{"feature", "feature.task-one", "unrelated"} {
@@ -315,6 +316,7 @@ func TestCleanupRefusesAParentWithLiveSubEfforts(t *testing.T) {
 
 // A sibling that merely shares a prefix is not a child.
 func TestCleanupPrefixIsNotParentage(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	worktreesRoot := filepath.Join(root, "worktrees")
 	for _, effort := range []string{"feature", "feature-extended"} {

@@ -10,6 +10,7 @@ import (
 )
 
 func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "remote", "add", "origin", "git@github.com:acme/app.git")
 	if got := originSlug(repo); got != "acme/app" {
@@ -18,6 +19,7 @@ func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
 }
 
 func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -136,6 +138,7 @@ func TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity(t *testin
 }
 
 func TestFileURLRemoteIsNotAHostedSlug(t *testing.T) {
+	t.Parallel()
 	if hostedRemote("file:///tmp/hr2/origin.git") {
 		t.Fatal("file:// is a local path remote, not a hosted owner/repository")
 	}

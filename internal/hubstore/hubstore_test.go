@@ -35,16 +35,17 @@ func testSnapshot(machineID string) hub.StoredMachineSnapshot {
 // test and every throwaway run use, so it has to do real work rather than
 // merely open.
 func TestMemoryEngineRunsAWholeStoreJourney(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineMemory})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := closer.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	}()
+	})
 	_, _, snapshots := hub.NewMachineStores(store)
 	record := testSnapshot("machine-1")
 	if result, err := snapshots.StoreLatest(ctx, record); err != nil || !result.Updated {
@@ -60,6 +61,7 @@ func TestMemoryEngineRunsAWholeStoreJourney(t *testing.T) {
 // the engine in, but a caller that builds a Store by hand must not get a
 // silent nil database.
 func TestAnEmptyEngineIsTheMemoryEngine(t *testing.T) {
+	t.Parallel()
 	store, closer, err := Open(context.Background(), hubconfig.Store{})
 	if err != nil || store == nil {
 		t.Fatalf("Open = %v, %v", store, err)
@@ -70,6 +72,7 @@ func TestAnEmptyEngineIsTheMemoryEngine(t *testing.T) {
 }
 
 func TestUnknownEngineIsRefused(t *testing.T) {
+	t.Parallel()
 	_, closer, err := Open(context.Background(), hubconfig.Store{Engine: "postgres"})
 	if err == nil || !strings.Contains(err.Error(), "postgres") {
 		t.Fatalf("Open = %v", err)
@@ -84,13 +87,14 @@ func TestUnknownEngineIsRefused(t *testing.T) {
 // use against an unreachable URL fails at the call rather than at Open, so a
 // daemon whose OpenVaultDB is down still starts and reports the error.
 func TestOpenVaultDBEngineIsConstructedWithoutReachingTheServer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// 127.0.0.1:1 has nothing listening and needs no network to refuse.
 	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineOpenVaultDB, URL: "http://127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	_, _, snapshots := hub.NewMachineStores(store)
 	if _, err := snapshots.ListLatest(ctx); err == nil {
 		t.Fatal("a query against an unreachable OpenVaultDB succeeded")
@@ -98,6 +102,7 @@ func TestOpenVaultDBEngineIsConstructedWithoutReachingTheServer(t *testing.T) {
 }
 
 func TestOpenVaultDBEngineRefusesAnEmptyURL(t *testing.T) {
+	t.Parallel()
 	if _, _, err := Open(context.Background(), hubconfig.Store{Engine: hubconfig.EngineOpenVaultDB}); err == nil {
 		t.Fatal("openvaultdb without a URL was accepted")
 	}
@@ -109,13 +114,14 @@ func TestOpenVaultDBEngineRefusesAnEmptyURL(t *testing.T) {
 // and a second Open over the same directory is a no-op rather than an
 // "already exists" failure.
 func TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hub")
 	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		t.Fatalf("store directory = %v, %v", info, err)
 	}
@@ -157,13 +163,14 @@ func TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection(t *testing.T) 
 // upstream honours the factory. When it does, this test fails and the
 // limitation in hub/README.md comes out.
 func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hub")
 	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	_, _, snapshots := hub.NewMachineStores(store)
 	if _, err := snapshots.StoreLatest(ctx, testSnapshot("machine-1")); err != nil {
 		t.Fatalf("StoreLatest: %v", err)
@@ -201,6 +208,7 @@ func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
 }
 
 func TestInGitDBEngineRefusesAnEmptyPathAndAnUnusableDirectory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if _, _, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB}); err == nil {
 		t.Fatal("ingitdb without a path was accepted")
@@ -221,6 +229,7 @@ func TestInGitDBEngineRefusesAnEmptyPathAndAnUnusableDirectory(t *testing.T) {
 // directory name stops CreateCollection, and Open must name the collection
 // rather than hand back a store that fails on first write.
 func TestInGitDBEngineSurfacesADeclarationFailure(t *testing.T) {
+	t.Parallel()
 	path := t.TempDir()
 	blocked, _, _ := strings.Cut(hub.Collections()[0], "/")
 	if err := os.WriteFile(filepath.Join(path, blocked), []byte("x"), 0o600); err != nil {

@@ -65,6 +65,7 @@ func dqCovZeroFileSizeLimit(t *testing.T) {
 // TestDqCovStoreSaveReportsUnwritableTemporaryFile proves a state file that
 // cannot be written is reported and never published over an existing record.
 func TestDqCovStoreSaveReportsUnwritableTemporaryFile(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
@@ -92,6 +93,7 @@ func TestDqCovStoreSaveReportsUnwritableTemporaryFile(t *testing.T) {
 // TestDqCovPersistRecordReportsUnwritableOperationFile proves a durable
 // transition that cannot be written is reported instead of being published.
 func TestDqCovPersistRecordReportsUnwritableOperationFile(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

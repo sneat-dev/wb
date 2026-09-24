@@ -7,6 +7,7 @@ import (
 )
 
 func TestAppliesToAlways(t *testing.T) {
+	t.Parallel()
 	r := Recipe{AppliesIf: "always"}
 	ok, err := r.AppliesTo(t.TempDir())
 	if err != nil || !ok {
@@ -15,6 +16,7 @@ func TestAppliesToAlways(t *testing.T) {
 }
 
 func TestAppliesToHasFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "specscore.yaml"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
@@ -33,6 +35,7 @@ func TestAppliesToHasFile(t *testing.T) {
 }
 
 func TestAppliesToHasSourceSingle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -51,6 +54,7 @@ func TestAppliesToHasSourceSingle(t *testing.T) {
 }
 
 func TestAppliesToHasSourceCommaListIsOr(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "app.ts"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
@@ -63,6 +67,7 @@ func TestAppliesToHasSourceCommaListIsOr(t *testing.T) {
 }
 
 func TestAppliesToUnknownVocabulary(t *testing.T) {
+	t.Parallel()
 	r := Recipe{AppliesIf: "something_else"}
 	if _, err := r.AppliesTo(t.TempDir()); err == nil {
 		t.Error("expected error for unknown applies_if vocabulary, got nil")
@@ -70,6 +75,7 @@ func TestAppliesToUnknownVocabulary(t *testing.T) {
 }
 
 func TestAppliesToUnknownLanguage(t *testing.T) {
+	t.Parallel()
 	r := Recipe{AppliesIf: "has_source:rust"}
 	if _, err := r.AppliesTo(t.TempDir()); err == nil {
 		t.Error("expected error for unknown has_source language, got nil")

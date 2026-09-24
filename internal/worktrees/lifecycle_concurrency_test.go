@@ -91,6 +91,7 @@ func TestListSurvivesATaskWhoseLockCannotBeInspected(t *testing.T) {
 // A task that is simply gone is the state cleanup converges on, so it is
 // success rather than a diagnostic and must stay silent.
 func TestVanishedDuringWalkRecognisesOnlyAMissingPath(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "never-created")
 	if _, err := os.ReadDir(missing); !vanishedDuringWalk(err) {
 		t.Fatalf("a removed task directory must read as vanished, got %v", err)

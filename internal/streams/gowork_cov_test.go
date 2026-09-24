@@ -8,6 +8,7 @@ import (
 )
 
 func TestGoWorkUseEntriesReadsTheFileAndReportsAnUnreadableOne(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if entries, err := GoWorkUseEntries(worktree); err != nil || len(entries) != 0 {
 		t.Fatalf("GoWorkUseEntries without a go.work = %v, %v; want none", entries, err)
@@ -35,6 +36,7 @@ func TestGoWorkUseEntriesReadsTheFileAndReportsAnUnreadableOne(t *testing.T) {
 }
 
 func TestParseGoWorkUseEntriesReadsBothSpellingsAndSkipsComments(t *testing.T) {
+	t.Parallel()
 	contents := `go 1.22
 
 use ./libs/alpha
@@ -63,6 +65,7 @@ use ./libs/delta
 }
 
 func TestParseGoWorkUseEntriesIgnoresACommentedBlock(t *testing.T) {
+	t.Parallel()
 	contents := "// use (\n//\t./libs/not-linked\n// )\n"
 	if entries := ParseGoWorkUseEntries(contents); len(entries) != 0 {
 		t.Fatalf("entries = %v, want a commented block to contribute nothing", entries)

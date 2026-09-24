@@ -178,6 +178,7 @@ func TestResolveCanonicalRepositoryReportsGitHubFailures(t *testing.T) {
 }
 
 func TestReconcileTransfersKeepsUnresolvableAndUnmovedLocalRepos(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{
 			{Org: "acme", Name: "broken", Path: "/p/acme/broken"},
@@ -209,6 +210,7 @@ func TestReconcileTransfersKeepsUnresolvableAndUnmovedLocalRepos(t *testing.T) {
 }
 
 func TestReconcileTransfersFlagsAmbiguousTransfers(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{
 			{Org: "oldco", Name: "app", Path: "/p/oldco/app"},
@@ -380,6 +382,7 @@ func TestMemberOrgsReportsFailures(t *testing.T) {
 }
 
 func TestScanLocalReportsUnreadableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	repositories, err := ScanLocal(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatal("ScanLocal() on a missing projects root returned no error")
@@ -390,6 +393,7 @@ func TestScanLocalReportsUnreadableProjectsRoot(t *testing.T) {
 }
 
 func TestScanLocalSkipsNonRepositoryEntries(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectsRoot, ".hidden", "nested"), 0o755); err != nil {
 		t.Fatal(err)
@@ -422,6 +426,7 @@ func TestScanLocalSkipsNonRepositoryEntries(t *testing.T) {
 }
 
 func TestScanLocalSkipsAnUnreadableOrganizationDirectory(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX directory permissions are unavailable")
 	}

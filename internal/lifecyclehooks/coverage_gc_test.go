@@ -20,6 +20,7 @@ func hkCovWriteReceiptStream(t *testing.T, path string, receipts ...Receipt) {
 }
 
 func TestHkCovGCRejectsInvalidOptionsAndPaths(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if _, err := dispatcher.GC(GCOptions{Keep: -1}); err == nil || !strings.Contains(err.Error(), "must not be negative") {
 		t.Fatalf("negative keep error=%v", err)
@@ -43,6 +44,7 @@ func TestHkCovGCRejectsInvalidOptionsAndPaths(t *testing.T) {
 }
 
 func TestHkCovGCLockAndStreamTrustFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -66,6 +68,7 @@ func TestHkCovGCLockAndStreamTrustFailures(t *testing.T) {
 }
 
 func TestHkCovGCProtectsKeptReceiptsAndUsesStartedAt(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -90,6 +93,7 @@ func TestHkCovGCProtectsKeptReceiptsAndUsesStartedAt(t *testing.T) {
 }
 
 func TestHkCovGCReportsLongReceiptIDStatFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -102,6 +106,7 @@ func TestHkCovGCReportsLongReceiptIDStatFailure(t *testing.T) {
 }
 
 func TestHkCovGCApplySurfacesIndexRemovalFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -120,6 +125,7 @@ func TestHkCovGCApplySurfacesIndexRemovalFailure(t *testing.T) {
 }
 
 func TestHkCovGCApplyRejectsDiagnosticsOutsideReceiptDirectory(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -135,6 +141,7 @@ func TestHkCovGCApplyRejectsDiagnosticsOutsideReceiptDirectory(t *testing.T) {
 }
 
 func TestHkCovGCApplyRemovesIndexAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -166,6 +173,7 @@ func TestHkCovGCApplyRemovesIndexAndDiagnostics(t *testing.T) {
 }
 
 func TestHkCovRemoveReceiptDiagnosticsReportsMissingDirectory(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -179,6 +187,7 @@ func TestHkCovRemoveReceiptDiagnosticsReportsMissingDirectory(t *testing.T) {
 }
 
 func TestHkCovRemoveReceiptDiagnosticsReportsStatFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -190,6 +199,7 @@ func TestHkCovRemoveReceiptDiagnosticsReportsStatFailure(t *testing.T) {
 }
 
 func TestHkCovReadReceiptRecordsMissingFile(t *testing.T) {
+	t.Parallel()
 	records, findings, err := readReceiptRecords(filepath.Join(t.TempDir(), "absent.jsonl"))
 	if err != nil || records != nil || findings != nil {
 		t.Fatalf("records=%v findings=%v err=%v", records, findings, err)
@@ -197,6 +207,7 @@ func TestHkCovReadReceiptRecordsMissingFile(t *testing.T) {
 }
 
 func TestHkCovReadReceiptRecordsKeepsInvalidLines(t *testing.T) {
+	t.Parallel()
 	path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "receipts.jsonl"), hkCovMustJSON(t, hkCovReceipt("good"))+"\nnot-json\n", 0o600)
 	records, findings, err := readReceiptRecords(path)
 	if err != nil || len(records) != 2 || len(findings) != 1 || !strings.Contains(findings[0], "preserved invalid lifecycle hook receipt line 2") {
@@ -208,6 +219,7 @@ func TestHkCovReadReceiptRecordsKeepsInvalidLines(t *testing.T) {
 }
 
 func TestHkCovRewriteReceiptRecordsFailures(t *testing.T) {
+	t.Parallel()
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	if err := rewriteReceiptRecords(filepath.Join(blocker, "receipts.jsonl"), nil); err == nil {
 		t.Fatal("expected MkdirAll failure")
@@ -223,6 +235,7 @@ func TestHkCovRewriteReceiptRecordsFailures(t *testing.T) {
 }
 
 func TestHkCovRewriteReceiptRecordsDropsRemovedLines(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipts.jsonl")
 	records := []receiptRecord{
 		{raw: []byte(`{"id":"keep"}`), valid: true},
@@ -246,6 +259,7 @@ func TestHkCovRewriteReceiptRecordsDropsRemovedLines(t *testing.T) {
 }
 
 func TestHkCovGCWithoutReceiptStreamIsNoOp(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	report, err := dispatcher.GC(GCOptions{})
 	if err != nil || report.Receipts != 0 || len(report.Candidates) != 0 {

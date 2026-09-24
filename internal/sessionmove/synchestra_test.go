@@ -10,6 +10,7 @@ import (
 )
 
 func TestSynchestraRouteAndDispatchIdentityAreImmutableAndReplayable(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	route := Route{
 		HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -45,6 +46,7 @@ func TestSynchestraRouteAndDispatchIdentityAreImmutableAndReplayable(t *testing.
 }
 
 func TestSynchestraDispatchIdentityRefusesRouteOrReplayDrift(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	if _, _, err := store.SaveRoute(Route{
 		HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -70,6 +72,7 @@ func TestSynchestraDispatchIdentityRefusesRouteOrReplayDrift(t *testing.T) {
 }
 
 func TestSynchestraDispatchIdentityReadsAreDescriptorSafeAndStrict(t *testing.T) {
+	t.Parallel()
 	fixture := func(t *testing.T) (Store, Request, SynchestraDispatch, []byte, string) {
 		t.Helper()
 		store, request, digest, _ := admittedRouteRequest(t, false)
@@ -95,6 +98,7 @@ func TestSynchestraDispatchIdentityReadsAreDescriptorSafeAndStrict(t *testing.T)
 	}
 
 	t.Run("symlink", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, raw, path := fixture(t)
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
@@ -112,6 +116,7 @@ func TestSynchestraDispatchIdentityReadsAreDescriptorSafeAndStrict(t *testing.T)
 	})
 
 	t.Run("hardlink", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _, path := fixture(t)
 		if err := os.Link(path, filepath.Join(t.TempDir(), "dispatch-alias.json")); err != nil {
 			t.Fatal(err)
@@ -122,6 +127,7 @@ func TestSynchestraDispatchIdentityReadsAreDescriptorSafeAndStrict(t *testing.T)
 	})
 
 	t.Run("unknown field", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, raw, path := fixture(t)
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)

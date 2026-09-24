@@ -25,6 +25,7 @@ func tailCovSizedModel(t *testing.T, results []fleetsync.Result, width, height i
 // command of its own (the sync drives every message) and passes a message it
 // does not own through without mutating state.
 func TestTailCovProgressModelInitAndUnhandledMessage(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(map[string]int{"acme": 1}, 1)
 	if cmd := m.Init(); cmd != nil {
 		t.Fatalf("Init() = %v, want nil while the sync drives its own messages", cmd)
@@ -43,6 +44,7 @@ func TestTailCovProgressModelInitAndUnhandledMessage(t *testing.T) {
 // TestTailCovProgressModelQuittingRendersEmptyView asserts a quit renders
 // nothing at all, so the alternate-screen restore is not fighting stale rows.
 func TestTailCovProgressModelQuittingRendersEmptyView(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(map[string]int{"acme": 2}, 2)
 	if m.View().Content == "" {
 		t.Fatal("running progress view is empty, so the quit assertion proves nothing")
@@ -60,6 +62,7 @@ func TestTailCovProgressModelQuittingRendersEmptyView(t *testing.T) {
 // TestTailCovSummaryItemAccessors pins the row text the summary list renders
 // and the filter text the fuzzy matcher searches.
 func TestTailCovSummaryItemAccessors(t *testing.T) {
+	t.Parallel()
 	sections := map[fleetsync.SummarySection]string{
 		fleetsync.SummaryFinalOutcomes:       "Outcome",
 		fleetsync.SummaryPullActions:         "Pull",
@@ -93,6 +96,7 @@ func TestTailCovSummaryItemAccessors(t *testing.T) {
 // action, and the filter value carries every searchable field including the
 // error text.
 func TestTailCovRepositoryItemAccessors(t *testing.T) {
+	t.Parallel()
 	item := repositoryItem{fleetsync.Result{
 		Repo:        discover.Repo{Org: "acme", Name: "widgets"},
 		Status:      fleetsync.Pulled,
@@ -126,6 +130,7 @@ func TestTailCovRepositoryItemAccessors(t *testing.T) {
 // TestTailCovResultsModelInitAndQuitKeys drives the two unconditional quit
 // paths directly.
 func TestTailCovResultsModelInitAndQuitKeys(t *testing.T) {
+	t.Parallel()
 	base := tailCovSizedModel(t, []fleetsync.Result{{Repo: discover.Repo{Org: "a", Name: "one"}, Status: fleetsync.Failed}}, 100, 24)
 	if cmd := base.Init(); cmd != nil {
 		t.Fatalf("Init() = %v, want nil", cmd)
@@ -157,6 +162,7 @@ func TestTailCovResultsModelInitAndQuitKeys(t *testing.T) {
 // TestTailCovResultsModelFocusKeys pins enter/right to entering the repository
 // pane and esc/left to leaving it.
 func TestTailCovResultsModelFocusKeys(t *testing.T) {
+	t.Parallel()
 	results := []fleetsync.Result{{Repo: discover.Repo{Org: "a", Name: "broken"}, Status: fleetsync.Failed}}
 	m := tailCovSizedModel(t, results, 100, 24)
 	selectResultGroup(t, &m, "Errors")
@@ -194,6 +200,7 @@ func TestTailCovResultsModelFocusKeys(t *testing.T) {
 // TestTailCovResultsModelHalfPageKeysScrollDetails proves both spellings of
 // half-page-up move the detail viewport back toward the top.
 func TestTailCovResultsModelHalfPageKeysScrollDetails(t *testing.T) {
+	t.Parallel()
 	commits := make([]string, 60)
 	for i := range commits {
 		commits[i] = fmt.Sprintf("%07x commit %d with a subject long enough to wrap", i, i)
@@ -229,6 +236,7 @@ func TestTailCovResultsModelHalfPageKeysScrollDetails(t *testing.T) {
 // pre-size guard: with no terminal geometry the model renders the summary list
 // alone rather than dividing by a zero-size layout.
 func TestTailCovResultsModelRendersSummaryBeforeFirstWindowSize(t *testing.T) {
+	t.Parallel()
 	m := NewResultsModel([]fleetsync.Result{{Repo: discover.Repo{Org: "a", Name: "one"}, Status: fleetsync.Failed}})
 	unsized := m.summary.View()
 	if unsized == "" {
@@ -247,6 +255,7 @@ func TestTailCovResultsModelRendersSummaryBeforeFirstWindowSize(t *testing.T) {
 // TestTailCovResultsRightHeightsDegeneratePanes pins the arithmetic that keeps
 // the repository pane and detail pane non-negative on tiny terminals.
 func TestTailCovResultsRightHeightsDegeneratePanes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		height, repositories, detail int
 	}{
@@ -265,6 +274,7 @@ func TestTailCovResultsRightHeightsDegeneratePanes(t *testing.T) {
 // TestTailCovResultsModelToggleFocusLeavesEmptyRepositoryPane pins both
 // branches of focus toggling, including a focused-but-empty repository pane.
 func TestTailCovResultsModelToggleFocusLeavesEmptyRepositoryPane(t *testing.T) {
+	t.Parallel()
 	m := NewResultsModel([]fleetsync.Result{{Repo: discover.Repo{Org: "a", Name: "broken"}, Status: fleetsync.Failed}})
 	if len(m.repositories.Items()) != 0 {
 		t.Fatalf("default category should be empty, got %d repositories", len(m.repositories.Items()))
@@ -289,6 +299,7 @@ func TestTailCovResultsModelToggleFocusLeavesEmptyRepositoryPane(t *testing.T) {
 // exposes the pull action and, for diverged repositories, the tracking line
 // that makes the report actionable.
 func TestTailCovResultsModelRendersPullAndTrackingDetail(t *testing.T) {
+	t.Parallel()
 	results := []fleetsync.Result{
 		{Repo: discover.Repo{Org: "a", Name: "current"}, Status: fleetsync.Pulled, PullSucceeded: true},
 		{
@@ -313,6 +324,7 @@ func TestTailCovResultsModelRendersPullAndTrackingDetail(t *testing.T) {
 // renders a placeholder instead of an empty " — " heading when the summary
 // counts a result whose repository was never resolved.
 func TestTailCovResultsModelDetailForRepositoryWithNoIdentity(t *testing.T) {
+	t.Parallel()
 	m := tailCovSizedModel(t, []fleetsync.Result{{Status: fleetsync.Failed}}, 120, 30)
 	selectResultGroup(t, &m, "Errors")
 	if view := m.View().Content; !strings.Contains(view, "No repositories need review.") {
@@ -324,6 +336,7 @@ func TestTailCovResultsModelDetailForRepositoryWithNoIdentity(t *testing.T) {
 // when the summary offers no selectable category: the detail pane must say so
 // rather than keep showing the previously selected repository.
 func TestTailCovResultsModelDetailWhenSummaryHasNoCategory(t *testing.T) {
+	t.Parallel()
 	m := tailCovSizedModel(t, []fleetsync.Result{{Repo: discover.Repo{Org: "a", Name: "one"}, Status: fleetsync.Pulled}}, 120, 30)
 	selectResultGroup(t, &m, "Pulled")
 	if got := m.selectedSummaryGroup().Label; got != "Pulled" {

@@ -161,6 +161,7 @@ func writeAbsorbedConflictAck(t *testing.T, fixture absorbedConflictReceiptFixtu
 }
 
 func TestFindAbsorbedConflictCleanupProofAcceptsValidAcknowledgement(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-e69e39368098"
@@ -189,6 +190,7 @@ func TestFindAbsorbedConflictCleanupProofAcceptsValidAcknowledgement(t *testing.
 }
 
 func TestFindAbsorbedConflictCleanupProofRejectsTamperedReceipt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-tampered"
@@ -215,6 +217,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsTamperedReceipt(t *testing.T) {
 }
 
 func TestFindAbsorbedConflictCleanupProofRejectsMissingAcknowledgement(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-noack"
@@ -236,6 +239,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsMissingAcknowledgement(t *testin
 }
 
 func TestFindAbsorbedConflictCleanupProofRejectsStaleAcknowledgedTarget(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-stale"
@@ -258,6 +262,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsStaleAcknowledgedTarget(t *testi
 }
 
 func TestFindAbsorbedConflictCleanupProofIgnoresAnUnrelatedCandidate(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	writeAbsorbedConflictReceipt(t, home, "other-task", filepath.Join(home, "worktrees", "other-task"), "other-branch", strings.Repeat("d", 40), []string{first}, "")
@@ -285,6 +290,7 @@ func TestFindAbsorbedConflictCleanupProofIgnoresAnUnrelatedCandidate(t *testing.
 // would accept this as landing proof and let cleanup delete new work that
 // was never acknowledged, let alone landed.
 func TestFindAbsorbedConflictCleanupProofRejectsRecycledBranch(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-recycled-branch"
@@ -311,6 +317,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsRecycledBranch(t *testing.T) {
 // acknowledgement proved -- new commits landed in the recycled slot after
 // the acknowledgement was recorded.
 func TestFindAbsorbedConflictCleanupProofRejectsRecycledHeadSHA(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-recycled-sha"
@@ -334,6 +341,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsRecycledHeadSHA(t *testing.T) {
 // receipted, acknowledged candidate, but the live worktree is now doing
 // entirely unrelated new work (different branch AND different head SHA).
 func TestFindAbsorbedConflictCleanupProofRejectsUnrelatedRecycledWork(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-recycled-slot"
@@ -361,6 +369,7 @@ func TestFindAbsorbedConflictCleanupProofRejectsUnrelatedRecycledWork(t *testing
 // branch-identity check this test exercises is what makes a detached
 // candidate categorically unmatchable by this proof.
 func TestCleanupSafetyEligibilityRefusesDetachedHeadDespiteMatchingReceipt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-detached"
@@ -388,6 +397,7 @@ func TestCleanupSafetyEligibilityRefusesDetachedHeadDespiteMatchingReceipt(t *te
 }
 
 func TestCleanupSafetyEligibilityAcceptsAbsorbedConflictAcknowledgementForNeverPushedHead(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-e2e"
@@ -421,6 +431,7 @@ func TestCleanupSafetyEligibilityAcceptsAbsorbedConflictAcknowledgementForNeverP
 }
 
 func TestCleanupSafetyEligibilityRefusesDirtyWorktreeDespiteAbsorbedConflictAcknowledgement(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-dirty"
@@ -451,6 +462,7 @@ func TestCleanupSafetyEligibilityRefusesDirtyWorktreeDespiteAbsorbedConflictAckn
 }
 
 func TestCleanupSafetyEligibilityRefusalNamesReceiptWhenAcknowledgementDoesNotValidate(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, _ := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-hint"
@@ -484,6 +496,7 @@ func TestCleanupSafetyEligibilityRefusalNamesReceiptWhenAcknowledgementDoesNotVa
 }
 
 func TestCleanupSafetyEligibilityRefusalNamesGenericHintWithoutAMatchingReceipt(t *testing.T) {
+	t.Parallel()
 	entry := ListResult{HeadSHA: strings.Repeat("f", 40), HeadUnknownToRemote: true, Clean: true}
 	eligible, reason := cleanupSafetyEligibility(entry, 0, time.Now(), false)
 	if eligible {
@@ -506,6 +519,7 @@ func TestCleanupSafetyEligibilityRefusalNamesGenericHintWithoutAMatchingReceipt(
 // it turns "someone quietly reintroduced a duplicate literal" into a build
 // or test failure instead of a silent validation gap.
 func TestAbsorbedConflictAckSchemaConstantsMatchMergeack(t *testing.T) {
+	t.Parallel()
 	if absorbedConflictAckSchemaVersion != mergeack.SchemaVersion {
 		t.Fatalf("absorbedConflictAckSchemaVersion = %d, want mergeack.SchemaVersion = %d", absorbedConflictAckSchemaVersion, mergeack.SchemaVersion)
 	}
@@ -525,6 +539,7 @@ func TestAbsorbedConflictAckSchemaConstantsMatchMergeack(t *testing.T) {
 // internal/orchestrate has always written -- not just the shape this test
 // file's own fixture helpers happen to construct.
 func TestFindAbsorbedConflictCleanupProofValidatesARealSidecarFixture(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	repoDir, first, second := newAbsorbedConflictProofRepo(t)
 	task := "merge-acme-app-main-real-shape"

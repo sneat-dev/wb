@@ -8,6 +8,7 @@ import (
 )
 
 func TestResolveLatestIsIdempotentAndMonotonic(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	first := StoredSnapshot{Snapshot: validSnapshot(at), ReceivedAt: at.Add(time.Second), Digest: "first"}
 	created, err := ResolveLatest(nil, first)
@@ -41,6 +42,7 @@ func TestResolveLatestIsIdempotentAndMonotonic(t *testing.T) {
 }
 
 func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
+	t.Parallel()
 	snapshot := validSnapshot(time.Now().UTC())
 	if err := snapshot.Validate(); err != nil {
 		t.Fatal(err)
@@ -105,6 +107,7 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 }
 
 func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {
+	t.Parallel()
 	first, err := SnapshotKey("alice", "laptop")
 	if err != nil {
 		t.Fatal(err)

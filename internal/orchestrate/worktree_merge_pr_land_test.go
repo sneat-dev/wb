@@ -8,6 +8,7 @@ import (
 )
 
 func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		parents []string
@@ -20,6 +21,7 @@ func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
 		{name: "neither parent is the previous head", parents: []string{"ccc", "ddd"}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := updateBranchMergeTargetParent(test.parents, "aaa")
 			if test.wantErr {
 				if err == nil {
@@ -47,6 +49,7 @@ func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
 // adoptWorktreeMergeUpdateBranchAdvance does (via updateBranchMergeTargetParent)
 // closes the range and excludes it.
 func TestAbsorbedSourceHeadsExcludesAnUnrelatedPullRequestOnceTargetSHAAdvances(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	runEngineGit(t, dir, "config", "user.name", "WB Test")

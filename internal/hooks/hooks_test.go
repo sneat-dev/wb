@@ -367,6 +367,7 @@ func TestWorktreeAdmissionWarnsAfterCheckoutAndBlocksCommitOrPush(t *testing.T) 
 
 	for _, hook := range []string{"pre-commit", "pre-push"} {
 		t.Run(hook, func(t *testing.T) {
+			t.Parallel()
 			result, runErr := Run(RunOptions{
 				RepoPath: repo, Hook: hook, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
 				WBExecutable: fakeWB, ProjectsRoot: projects,
@@ -458,6 +459,7 @@ func TestApplyRejectsTransientGoRunExecutable(t *testing.T) {
 }
 
 func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	nonExecutable := filepath.Join(root, "not-executable")
 	mustWrite(t, nonExecutable, "#!/bin/sh\nexit 0\n")
@@ -488,6 +490,7 @@ func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
 		{name: "symlink to transient path", executable: transientLink, want: "transient go run executable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := durableWBExecutable(test.executable); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("durableWBExecutable(%q) error = %v, want %q", test.executable, err, test.want)
 			}
@@ -631,6 +634,7 @@ func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
 		{name: "non executable", executable: nonExecutable, want: "not executable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			command := exec.Command(preCommit)
 			command.Dir = repo
 			command.Env = hookEnvironment(map[string]string{
@@ -645,6 +649,7 @@ func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
 	}
 
 	t.Run("missing from PATH", func(t *testing.T) {
+		t.Parallel()
 		gitExecutable, lookErr := exec.LookPath("git")
 		if lookErr != nil {
 			t.Fatal(lookErr)
@@ -2047,6 +2052,7 @@ func TestRunFailurePreservesExitCodeAndRecordsFailure(t *testing.T) {
 }
 
 func TestAppendReadAndSummarizeMetrics(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "events.jsonl")
 	zone := time.FixedZone("test", 2*60*60)
 	now := time.Date(2026, 7, 20, 18, 0, 0, 0, zone)
@@ -2091,7 +2097,7 @@ func TestAppendReadAndSummarizeMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	decoder := json.NewDecoder(file)
 	var first Event
 	if err := decoder.Decode(&first); err != nil || first.SchemaVersion != EventSchemaVersion {
@@ -2100,6 +2106,7 @@ func TestAppendReadAndSummarizeMetrics(t *testing.T) {
 }
 
 func TestReadEventsRejectsUnsupportedSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	mustWrite(t, path, `{"schema_version":99,"timestamp":"2026-07-20T00:00:00Z"}`+"\n")
 	if _, err := ReadEvents(path); err == nil || !strings.Contains(err.Error(), "schema version 99") {

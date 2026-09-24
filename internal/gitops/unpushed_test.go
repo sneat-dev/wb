@@ -54,6 +54,7 @@ func BenchmarkUnpushedWorkManyBranches(b *testing.B) {
 // The case that made every completed pull request look like work at risk: a
 // branch that was pushed, merged, and had its remote deleted.
 func TestUnpushedCommitsIgnoresABranchWhoseUpstreamIsGone(t *testing.T) {
+	t.Parallel()
 	clone, origin := pushedClone(t)
 
 	git(t, clone, "checkout", "-q", "-b", "feature")
@@ -76,6 +77,7 @@ func TestUnpushedCommitsIgnoresABranchWhoseUpstreamIsGone(t *testing.T) {
 // A branch that was never pushed holds work that really does exist nowhere
 // else, and must still be reported.
 func TestUnpushedCommitsReportsABranchThatWasNeverPushed(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 
 	git(t, clone, "checkout", "-q", "-b", "local-only")
@@ -93,6 +95,7 @@ func TestUnpushedCommitsReportsABranchThatWasNeverPushed(t *testing.T) {
 // A branch whose upstream still exists and is behind holds genuinely unpushed
 // work — the remindius case, which the fix must not silence.
 func TestUnpushedCommitsReportsCommitsAheadOfALiveUpstream(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 
 	git(t, clone, "checkout", "-q", "-b", "feature")
@@ -111,6 +114,7 @@ func TestUnpushedCommitsReportsCommitsAheadOfALiveUpstream(t *testing.T) {
 
 // A gone upstream must not hide unpushed work on other branches.
 func TestUnpushedCommitsStillSeesOtherBranchesBesideAGoneOne(t *testing.T) {
+	t.Parallel()
 	clone, origin := pushedClone(t)
 
 	git(t, clone, "checkout", "-q", "-b", "merged")
@@ -136,6 +140,7 @@ func TestUnpushedCommitsStillSeesOtherBranchesBesideAGoneOne(t *testing.T) {
 }
 
 func TestUnpushedWorkAttributesCommitToLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 	linked := filepath.Join(t.TempDir(), "linked")
 	git(t, clone, "worktree", "add", "-q", "-b", "linked-work", linked, "main")
@@ -161,6 +166,7 @@ func TestUnpushedWorkAttributesCommitToLinkedWorktree(t *testing.T) {
 }
 
 func TestUnpushedWorkAttributesSharedHistoryToEveryBranch(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 	git(t, clone, "checkout", "-q", "-b", "alpha", "main")
 	git(t, clone, "commit", "-q", "--allow-empty", "-m", "shared work")
@@ -187,6 +193,7 @@ func TestUnpushedWorkAttributesSharedHistoryToEveryBranch(t *testing.T) {
 }
 
 func TestParseUnpushedCommitPreservesTabsInSubject(t *testing.T) {
+	t.Parallel()
 	commit, err := parseUnpushedCommit("abcdef\t1234567 subject\twith tab\tparent1 parent2")
 	if err != nil {
 		t.Fatal(err)

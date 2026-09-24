@@ -269,6 +269,7 @@ func TestPersistPublishedCandidateAdoptionFailsClosedOnExclusivePublish(t *testi
 }
 
 func TestPublishedCandidateAdoptionRejectsMalformedSidecar(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "ack.json")
 	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
 		t.Fatal(err)
@@ -279,6 +280,7 @@ func TestPublishedCandidateAdoptionRejectsMalformedSidecar(t *testing.T) {
 }
 
 func TestAdoptPublishedCandidateApplyRequiresActorAndReason(t *testing.T) {
+	t.Parallel()
 	_, err := AdoptPublishedWorktreeMergeCandidate(context.Background(), WorktreeMergePublishedCandidateAdoptionOptions{ProjectsRoot: t.TempDir(), Receipt: "missing.json", PullRequest: "7", Apply: true})
 	if err == nil || !strings.Contains(err.Error(), "--actor and --reason") {
 		t.Fatalf("missing audit admission error = %v", err)

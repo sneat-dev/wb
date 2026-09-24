@@ -184,6 +184,7 @@ func TestOriginAddressReportsTheLiteralHostAndSlug(t *testing.T) {
 		{name: "explicit port", url: "https://github.com:8443/team/app.git", host: "github.com:8443", slug: "team/app"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-"))
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)

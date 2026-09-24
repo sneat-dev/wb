@@ -18,6 +18,7 @@ import (
 )
 
 func TestSdCovProcessorRejectsInvalidEventAndIncompleteCleanupState(t *testing.T) {
+	t.Parallel()
 	processor := SyncProcessor{ProjectsRoot: t.TempDir()}
 	if _, err := processor.Process(context.Background(), repositoryevent.Event{}, ProcessState{}); err == nil {
 		t.Fatal("Process accepted an invalid event")
@@ -28,7 +29,9 @@ func TestSdCovProcessorRejectsInvalidEventAndIncompleteCleanupState(t *testing.T
 }
 
 func TestSdCovProcessorRecoversPendingCleanupBeforeSyncing(t *testing.T) {
+	t.Parallel()
 	t.Run("default recovery seam rejects a foreign receipt", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		receipt := filepath.Join(t.TempDir(), "pending-cleanup.json")
 		command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
@@ -43,6 +46,7 @@ func TestSdCovProcessorRecoversPendingCleanupBeforeSyncing(t *testing.T) {
 	})
 
 	t.Run("recovery failure is surfaced", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		receipt := filepath.Join(projects, ".wb", "reports", "repository-transfers", "pending-cleanup.json")
 		command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
@@ -66,6 +70,7 @@ func TestSdCovProcessorRecoversPendingCleanupBeforeSyncing(t *testing.T) {
 	})
 
 	t.Run("an unapplied recovery is surfaced", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		receipt := filepath.Join(projects, ".wb", "reports", "repository-transfers", "pending-cleanup.json")
 		command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
@@ -86,6 +91,7 @@ func TestSdCovProcessorRecoversPendingCleanupBeforeSyncing(t *testing.T) {
 }
 
 func TestSdCovProcessorUsesDefaultRelocationSeamForExistingRename(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	if err := os.MkdirAll(oldPath, 0o755); err != nil {
@@ -106,6 +112,7 @@ func TestSdCovProcessorUsesDefaultRelocationSeamForExistingRename(t *testing.T) 
 }
 
 func TestSdCovProcessorRejectsIncompleteRelocationCleanupRecovery(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	if err := os.MkdirAll(oldPath, 0o755); err != nil {
@@ -128,7 +135,9 @@ func TestSdCovProcessorRejectsIncompleteRelocationCleanupRecovery(t *testing.T) 
 }
 
 func TestSdCovProcessorRenameStatFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("source stat failure", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		if err := os.WriteFile(filepath.Join(projects, "acme"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -155,6 +164,7 @@ func TestSdCovProcessorRenameStatFailures(t *testing.T) {
 	})
 
 	t.Run("destination stat failure", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		if err := os.WriteFile(filepath.Join(projects, "newco"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -172,7 +182,9 @@ func TestSdCovProcessorRenameStatFailures(t *testing.T) {
 }
 
 func TestSdCovProcessorRejectsNonCanonicalCheckouts(t *testing.T) {
+	t.Parallel()
 	t.Run("path is not a directory", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(projects, "acme"), 0o755); err != nil {
 			t.Fatal(err)
@@ -187,6 +199,7 @@ func TestSdCovProcessorRejectsNonCanonicalCheckouts(t *testing.T) {
 	})
 
 	t.Run("missing git directory", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(projects, "acme", "app"), 0o755); err != nil {
 			t.Fatal(err)
@@ -199,6 +212,7 @@ func TestSdCovProcessorRejectsNonCanonicalCheckouts(t *testing.T) {
 }
 
 func TestSdCovProcessorSkipsCheckoutOnADifferentBranch(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	path := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -223,7 +237,9 @@ func TestSdCovProcessorSkipsCheckoutOnADifferentBranch(t *testing.T) {
 }
 
 func TestSdCovProcessorSyncsAbsentCheckoutAndPropagatesFailure(t *testing.T) {
+	t.Parallel()
 	t.Run("absent checkout syncs with an empty path", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		var synced discover.Repo
 		var root string
@@ -245,6 +261,7 @@ func TestSdCovProcessorSyncsAbsentCheckoutAndPropagatesFailure(t *testing.T) {
 	})
 
 	t.Run("failed sync is propagated", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		forced := errors.New("sync exploded")
 		processor := SyncProcessor{
@@ -279,6 +296,7 @@ func TestSdCovProcessorDispatchesLifecycleEventsThroughBothSeams(t *testing.T) {
 	})
 
 	t.Run("dispatch failure becomes a hook warning", func(t *testing.T) {
+		t.Parallel()
 		processor := SyncProcessor{
 			ProjectsRoot: t.TempDir(),
 			sync:         cloned,
@@ -296,6 +314,7 @@ func TestSdCovProcessorDispatchesLifecycleEventsThroughBothSeams(t *testing.T) {
 	})
 
 	t.Run("reported warnings become a hook warning", func(t *testing.T) {
+		t.Parallel()
 		processor := SyncProcessor{
 			ProjectsRoot: t.TempDir(),
 			sync:         cloned,
@@ -314,6 +333,7 @@ func TestSdCovProcessorDispatchesLifecycleEventsThroughBothSeams(t *testing.T) {
 }
 
 func TestSdCovVerifyGitHubOrigin(t *testing.T) {
+	t.Parallel()
 	if err := verifyGitHubOrigin(t.TempDir(), "github.com/acme/app"); err == nil {
 		t.Fatal("verifyGitHubOrigin accepted a non-repository path")
 	}
@@ -330,6 +350,7 @@ func TestSdCovVerifyGitHubOrigin(t *testing.T) {
 }
 
 func TestSdCovProcessorReportsCanonicalPathInspectionFailure(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projects, "acme"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)

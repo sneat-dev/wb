@@ -40,6 +40,7 @@ func (runner *courierRunner) Run(_ context.Context, executable string, args []st
 }
 
 func TestSSHDelivererUsesFixedWBArgvAndCanonicalPrivateStdin(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	runner := &courierRunner{stdout: courierResultJSON(t, request, raw)}
 	deliverer := testSSHDeliverer(t, sessionmove.SSHConfig{Host: "target-vm", User: "ai"}, runner)
@@ -65,6 +66,7 @@ func TestSSHDelivererUsesFixedWBArgvAndCanonicalPrivateStdin(t *testing.T) {
 // it for session move -- but ignoring it silently would let the key read as
 // configured while behaving as not, so the operator is warned.
 func TestSSHDelivererIgnoresConfiguredRemoteWBPathWithWarning(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	warn := new(bytes.Buffer)
 	runner := &courierRunner{stdout: courierResultJSON(t, request, raw)}
@@ -93,6 +95,7 @@ func TestSSHDelivererIgnoresConfiguredRemoteWBPathWithWarning(t *testing.T) {
 // sanitizing control characters makes text safe to print, not safe to
 // disclose. It goes to the private local journal and only the path is shown.
 func TestSSHDelivererWritesRemoteStderrToPrivateJournalWithoutDisclosing(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	secret := request.Continuation
 	diagnostic := "remote failure leaked " + secret
@@ -129,6 +132,7 @@ func TestSSHDelivererWritesRemoteStderrToPrivateJournalWithoutDisclosing(t *test
 
 // When the journal cannot be written the diagnostic is dropped, never dumped.
 func TestSSHDelivererDegradesToSuppressedWhenJournalUnavailable(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	secret := request.Continuation
 	blocked := filepath.Join(t.TempDir(), "not-a-dir")
@@ -137,6 +141,7 @@ func TestSSHDelivererDegradesToSuppressedWhenJournalUnavailable(t *testing.T) {
 	}
 	for name, dir := range map[string]string{"unset": "", "unwritable": filepath.Join(blocked, "park-1")} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &courierRunner{stderr: []byte("remote failure leaked " + secret), err: errors.New("exit status 1")}
 			deliverer, err := newSSHDeliverer(sessionmove.SSHConfig{Host: "target"}, executableLookup(t), runner, Options{DiagnosticDir: dir})
 			if err != nil {
@@ -154,6 +159,7 @@ func TestSSHDelivererDegradesToSuppressedWhenJournalUnavailable(t *testing.T) {
 }
 
 func TestSSHDelivererStrictlyBoundsAndValidatesReceiverResult(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	valid := courierResultJSON(t, request, raw)
 	for name, response := range map[string][]byte{
@@ -161,6 +167,7 @@ func TestSSHDelivererStrictlyBoundsAndValidatesReceiverResult(t *testing.T) {
 		"oversized":     bytes.Repeat([]byte("x"), maxSSHStdoutBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &courierRunner{stdout: response}
 			deliverer := testSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 			if _, err := deliverer.Deliver(context.Background(), raw); err == nil {

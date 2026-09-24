@@ -7,6 +7,7 @@ import (
 )
 
 func TestRemoteHasBranches(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -37,6 +38,7 @@ func TestRemoteHasBranches(t *testing.T) {
 }
 
 func TestRemoteHasBranchesErrorsWithoutOrigin(t *testing.T) {
+	t.Parallel()
 	local := t.TempDir()
 	git(t, local, "init", "-q", "-b", "main")
 

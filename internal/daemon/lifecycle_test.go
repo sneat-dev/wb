@@ -8,6 +8,7 @@ import (
 )
 
 func TestQueueOwnershipSurvivesVersionHandoff(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 5, 6, 0, 0, 0, time.UTC)
 	old := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb-old", SHA256: "old", Version: "0.96.6"}, "old-owner", now)
 	old.MarkReady(101, now)
@@ -24,6 +25,7 @@ func TestQueueOwnershipSurvivesVersionHandoff(t *testing.T) {
 }
 
 func TestStoreRoundTripIsPrivateAndAtomic(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "runtime", "daemon-state.json")
 	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb", SHA256: "digest", Version: "0.96.6"}, "owner", time.Now())
 	store := Store{Path: path}

@@ -5,11 +5,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// stubPullSleep replaces the retry-backoff seam with a no-op for the
+// duration of the test, so retry-exhaustion paths run at full speed while
+// still exercising every attempt Pull would otherwise wait between.
+func stubPullSleep(t *testing.T) {
+	t.Helper()
+	original := pullSleep
+	pullSleep = func(time.Duration) {}
+	t.Cleanup(func() { pullSleep = original })
+}
 
 // Pull retries a transport failure and returns success once a later attempt
 // gets through, so one dropped SSH handshake does not fail a whole sync.
 func TestLgCovPullRetriesTransientFailureThenSucceeds(t *testing.T) {
+	stubPullSleep(t)
 	state := filepath.Join(t.TempDir(), "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
@@ -45,6 +57,7 @@ exit 1
 // Once the five attempts are exhausted the last transport error is returned, so
 // the caller can report the real failure instead of a silent success.
 func TestLgCovPullReturnsLastErrorAfterExhaustingRetries(t *testing.T) {
+	stubPullSleep(t)
 	state := filepath.Join(t.TempDir(), "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
@@ -184,6 +197,7 @@ exit 0
 }
 
 func TestLgCovUnpushableBranchesErrorsOutsideRepository(t *testing.T) {
+	t.Parallel()
 	if _, err := unpushableBranches(t.TempDir()); err == nil {
 		t.Fatal("unpushableBranches outside a git repository should error")
 	}
@@ -337,6 +351,7 @@ exit 0
 }
 
 func TestLgCovLocalStateErrorsOutsideRepository(t *testing.T) {
+	t.Parallel()
 	if _, _, err := LocalState(t.TempDir()); err == nil {
 		t.Fatal("LocalState outside a git repository should error")
 	}

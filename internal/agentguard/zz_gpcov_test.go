@@ -51,6 +51,7 @@ func gpCovEqualStrings(got, want []string) bool {
 // quoting, redirection targets and here-strings, because every recogniser
 // above it sees the command only through these words.
 func TestGpCovShellReaderQuotingAndEscapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		command     string
@@ -71,6 +72,7 @@ func TestGpCovShellReaderQuotingAndEscapes(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := gpCovWords(t, testCase.command); !gpCovEqualStrings(got, testCase.wantWords) {
 				t.Fatalf("splitSegments(%q) words = %q, want %q", testCase.command, got, testCase.wantWords)
 			}
@@ -86,6 +88,7 @@ func TestGpCovShellReaderQuotingAndEscapes(t *testing.T) {
 // `<<-` dash form — is skipped whole, so text inside it is never read as a
 // command.
 func TestGpCovShellReaderHeredocBodies(t *testing.T) {
+	t.Parallel()
 	command := "cat <<-EOF\nrm -rf everything\nEOF\necho done\n"
 	segments := splitSegments(command)
 	if len(segments) != 2 {
@@ -102,6 +105,7 @@ func TestGpCovShellReaderHeredocBodies(t *testing.T) {
 // TestGpCovIsAllDigitsRejectsNonDigits pins the file-descriptor test the
 // redirect reader uses to drop a `2>` descriptor without treating `2a>` as one.
 func TestGpCovIsAllDigitsRejectsNonDigits(t *testing.T) {
+	t.Parallel()
 	for input, want := range map[string]bool{"": false, "2": true, "2a": false, "12": true} {
 		if got := isAllDigits(input); got != want {
 			t.Fatalf("isAllDigits(%q) = %v, want %v", input, got, want)
@@ -113,6 +117,7 @@ func TestGpCovIsAllDigitsRejectsNonDigits(t *testing.T) {
 // inputs Classify has to answer without guessing: a Location that names no
 // repository, and a projects root it cannot compare against a checkout root.
 func TestGpCovLocationSlugAndUnresolvableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	if got := (Location{}).Slug(); got != "" {
 		t.Fatalf("Location{}.Slug() = %q, want empty", got)
 	}
@@ -232,6 +237,7 @@ func TestGpCovLiveClaimBaselineAndFalsePositives(t *testing.T) {
 	})
 
 	t.Run("an empty projects root refuses nothing", func(t *testing.T) {
+		t.Parallel()
 		if finding := inspectDispatchIntoLiveClaim(toolInput{Prompt: gpCovClaimPrompt()}, t.TempDir(), ""); finding != nil {
 			t.Fatalf("refused with no projects root:\n%s", finding.Message)
 		}
@@ -298,6 +304,7 @@ func TestGpCovLiveClaimMalformedWorktreeEntries(t *testing.T) {
 // TestGpCovCandidateRepositories pins both prompt shapes the policy reads,
 // including the duplicate and `wb/...` tokens that must not become candidates.
 func TestGpCovCandidateRepositories(t *testing.T) {
+	t.Parallel()
 	// The same repository named twice must not produce two candidates.
 	repeated := "Touch /srv/projects/acme/widget and again /srv/projects/acme/widget here"
 	if got := candidateRepositories(repeated); len(got) != 1 || got[0] != [2]string{"acme", "widget"} {
@@ -318,6 +325,7 @@ func TestGpCovCandidateRepositories(t *testing.T) {
 // TestGpCovWithinDirectory pins the containment test, including the two paths
 // that cannot be compared at all.
 func TestGpCovWithinDirectory(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		candidate string
 		directory string
@@ -463,16 +471,13 @@ func TestGpCovUnresolvableHomePaths(t *testing.T) {
 // distinguish-between "absent", "false" and "true" answers that decide whether
 // the guard refuses a hand tag.
 func TestGpCovReadAutoTagsFlags(t *testing.T) {
+	t.Parallel()
 	if value, ok := readAutoTagsFlag(""); ok || value {
 		t.Fatal("readAutoTagsFlag(\"\") reported a value")
 	}
 	if value, ok := readGlobalAutoTagsFlag(""); ok || value {
 		t.Fatal("readGlobalAutoTagsFlag(\"\") reported a value")
 	}
-
-	directory := t.TempDir()
-	repoConfig := filepath.Join(directory, "hooks.yaml")
-	globalConfig := filepath.Join(directory, "wb.yaml")
 
 	cases := []struct {
 		name    string
@@ -487,9 +492,13 @@ func TestGpCovReadAutoTagsFlags(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run("repository config: "+testCase.name, func(t *testing.T) {
-			if testCase.content == "" {
-				_ = os.Remove(repoConfig)
-			} else {
+			t.Parallel()
+			// Each subtest gets its own directory and config path: all five
+			// run in parallel with each other, and a shared path written and
+			// removed from concurrently is a logic race -race cannot see
+			// (it is file I/O, not a memory access).
+			repoConfig := filepath.Join(t.TempDir(), "hooks.yaml")
+			if testCase.content != "" {
 				writeFile(t, repoConfig, testCase.content)
 			}
 			value, ok := readAutoTagsFlag(repoConfig)
@@ -509,6 +518,10 @@ func TestGpCovReadAutoTagsFlags(t *testing.T) {
 	}
 	for _, testCase := range globalCases {
 		t.Run("global policy: "+testCase.name, func(t *testing.T) {
+			t.Parallel()
+			// Each subtest gets its own directory and config path for the
+			// same reason as the repository-config cases above.
+			globalConfig := filepath.Join(t.TempDir(), "wb.yaml")
 			writeFile(t, globalConfig, testCase.content)
 			value, ok := readGlobalAutoTagsFlag(globalConfig)
 			gpCovAssertOptionalBool(t, "readGlobalAutoTagsFlag", value, ok, testCase.want)
@@ -586,6 +599,7 @@ func TestGpCovAutoTaggingSignals(t *testing.T) {
 // past directories, non-workflow files, and files it cannot read instead of
 // stopping at the first one.
 func TestGpCovWorkflowHeuristicSkipsUnreadableEntries(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	workflows := filepath.Join(repo, ".github", "workflows")
 	if err := os.MkdirAll(filepath.Join(workflows, "nested"), 0o755); err != nil {
@@ -606,6 +620,7 @@ func TestGpCovWorkflowHeuristicSkipsUnreadableEntries(t *testing.T) {
 // TestGpCovInspectGitTaggingFailsOpenOutsideManagedCheckouts pins the two
 // locations the tagging policy declines to judge.
 func TestGpCovInspectGitTaggingFailsOpenOutsideManagedCheckouts(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	if finding := inspectGitTagging("tag", []string{"v1.2.3"}, repositories.Foreign, repositories.ProjectsRoot); finding != nil {
 		t.Fatalf("tag policy judged a foreign checkout:\n%s", finding.Message)
@@ -619,6 +634,7 @@ func TestGpCovInspectGitTaggingFailsOpenOutsideManagedCheckouts(t *testing.T) {
 
 // TestGpCovLooksLikeTagCreation pins which invocations create or move a tag.
 func TestGpCovLooksLikeTagCreation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		subcommand string
 		arguments  []string
@@ -644,6 +660,7 @@ func TestGpCovLooksLikeTagCreation(t *testing.T) {
 // unresolvable directory, a directory deep enough to exhaust the bounded walk,
 // and a real manifest.
 func TestGpCovManagedWorktreeWalks(t *testing.T) {
+	t.Parallel()
 	if managedWorktree("relative/path") {
 		t.Fatal("managedWorktree resolved a relative directory")
 	}
@@ -667,9 +684,11 @@ func TestGpCovManagedWorktreeWalks(t *testing.T) {
 }
 
 // TestGpCovGovernedValidationDecisions pins the validation classifier's
-// edge shapes, including an npx with no nested command and a package manager
-// command that names no script.
+// edge shapes, including an npx with no nested command, a package manager
+// command that names no script, and a package manager command that names an
+// ordinary (non-validation) subcommand such as "install".
 func TestGpCovGovernedValidationDecisions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		words []string
@@ -680,10 +699,12 @@ func TestGpCovGovernedValidationDecisions(t *testing.T) {
 		{"cargo clippy", []string{"cargo", "clippy"}, true},
 		{"pnpm exec running a governed tool", []string{"pnpm", "exec", "go", "test"}, true},
 		{"pnpm with no script", []string{"pnpm", "-y"}, false},
+		{"npm running an unrecognized, non-validation subcommand", []string{"npm", "install"}, false},
 		{"an ordinary program", []string{"echo", "hi"}, false},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := isGovernedValidation(testCase.words[0], testCase.words); got != testCase.want {
 				t.Fatalf("isGovernedValidation(%q) = %v, want %v", testCase.words, got, testCase.want)
 			}
@@ -694,6 +715,7 @@ func TestGpCovGovernedValidationDecisions(t *testing.T) {
 // TestGpCovHelpAndFlagHelpers pins the small flag classifiers the help-bypass
 // logic is built from.
 func TestGpCovHelpAndFlagHelpers(t *testing.T) {
+	t.Parallel()
 	if cobraStyleHelp(nil) {
 		t.Fatal("cobraStyleHelp accepted an empty invocation")
 	}
@@ -717,6 +739,7 @@ func TestGpCovHelpAndFlagHelpers(t *testing.T) {
 // TestGpCovBashPathResolutionHelpers pins the path helpers that decide whether
 // a redirect or formatter target lands in a canonical clone.
 func TestGpCovBashPathResolutionHelpers(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 
 	if got := applyChangeDirectory("/base", []string{"-P", repositories.Canonical}); got != repositories.Canonical {
@@ -737,6 +760,7 @@ func TestGpCovBashPathResolutionHelpers(t *testing.T) {
 // shapes: an in-place editor with no canonical target and a formatter with no
 // rewrite flag must both be allowed.
 func TestGpCovInPlaceEditorAndFormatterDecisions(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	foreign := repositories.Foreign
 
@@ -766,6 +790,7 @@ func TestGpCovInPlaceEditorAndFormatterDecisions(t *testing.T) {
 // inspectGenerator accepts: when a tool has no verb in the named set, the
 // callback names the verb the refusal reports.
 func TestGpCovGeneratorExtraVerbCallback(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	alwaysWrite := func([]string) bool { return true }
 	finding := inspectGenerator("sometool", []string{"sometool", "publish"}, repositories.Canonical, repositories.ProjectsRoot, map[string]bool{}, alwaysWrite)
@@ -780,6 +805,7 @@ func TestGpCovGeneratorExtraVerbCallback(t *testing.T) {
 // TestGpCovGitGlobalsParsing pins how Git's own global options are consumed
 // before a subcommand is read.
 func TestGpCovGitGlobalsParsing(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name              string
 		arguments         []string
@@ -801,6 +827,7 @@ func TestGpCovGitGlobalsParsing(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			invocation := parseGitGlobals(testCase.arguments, testCase.workingDirectory)
 			if invocation.Subcommand != testCase.wantSubcommand {
 				t.Fatalf("Subcommand = %q, want %q", invocation.Subcommand, testCase.wantSubcommand)
@@ -817,6 +844,7 @@ func TestGpCovGitGlobalsParsing(t *testing.T) {
 
 // TestGpCovGitDecisionHelpers pins the small decisions inspectGit makes.
 func TestGpCovGitDecisionHelpers(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 
 	if finding := inspectGit([]string{"-C"}, repositories.Canonical, repositories.ProjectsRoot); finding != nil {
@@ -858,6 +886,7 @@ func TestGpCovGitDecisionHelpers(t *testing.T) {
 // TestGpCovGhApiMergeParsing pins how `gh api` merge calls are recognised
 // without a network call.
 func TestGpCovGhApiMergeParsing(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		words []string
@@ -872,6 +901,7 @@ func TestGpCovGhApiMergeParsing(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := isGhAPIMerge(testCase.words); got != testCase.want {
 				t.Fatalf("isGhAPIMerge(%q) = %v, want %v", testCase.words, got, testCase.want)
 			}
@@ -882,6 +912,7 @@ func TestGpCovGhApiMergeParsing(t *testing.T) {
 // TestGpCovGhFlagClusters pins the short-flag cluster reader, including the
 // unknown-letter case pflag rejects outright.
 func TestGpCovGhFlagClusters(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		letters      string
 		wantHelp     bool
@@ -911,6 +942,7 @@ func TestGpCovGhFlagClusters(t *testing.T) {
 // TestGpCovBraceExpansionLimit pins the bound that keeps a pathological brace
 // list from expanding without end.
 func TestGpCovBraceExpansionLimit(t *testing.T) {
+	t.Parallel()
 	got := braceExpansions("{a,b,c,d}", 1)
 	if len(got) != 1 || got[0] != "a" {
 		t.Fatalf("braceExpansions with limit 1 = %q, want [a]", got)
@@ -931,6 +963,7 @@ func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 	merge := []string{"gh", "pr", "merge", "1"}
 
 	t.Run("a record is written when the state home is writable", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if finding := inspectGh(merge, root, "operator asked"); finding != nil {
 			t.Fatalf("override did not allow the call:\n%s", finding.Message)
@@ -957,6 +990,7 @@ func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 	})
 
 	t.Run("a projects root that is a file still allows the call", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "blocker")
 		writeFile(t, blocker, "not a directory\n")
 		if finding := inspectGh(merge, blocker, "operator asked"); finding != nil {
@@ -965,6 +999,7 @@ func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 	})
 
 	t.Run("an unwritable audit file still allows the call", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(root, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl"), 0o755); err != nil {
 			t.Fatal(err)
@@ -979,6 +1014,7 @@ func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 // an option terminator before -c, or nothing after it, means there is no
 // payload to recurse into.
 func TestGpCovShellDashCPayloadBoundaries(t *testing.T) {
+	t.Parallel()
 	readings := []shellOptionReading{bashOptionReading}
 	cases := []struct {
 		name  string
@@ -993,6 +1029,7 @@ func TestGpCovShellDashCPayloadBoundaries(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			got := shellDashCPayloads(testCase.words, readings)
 			if !gpCovEqualStrings(got, testCase.want) {
 				t.Fatalf("shellDashCPayloads(%q) = %q, want %q", testCase.words, got, testCase.want)
@@ -1005,6 +1042,7 @@ func TestGpCovShellDashCPayloadBoundaries(t *testing.T) {
 // a file deeper than the walk limit with no checkout anywhere above it must
 // answer "unknown" rather than keep walking.
 func TestGpCovEnclosingCheckoutWalkIsBounded(t *testing.T) {
+	t.Parallel()
 	deep := t.TempDir()
 	for depth := 0; depth < maxAncestorWalk+6; depth++ {
 		deep = filepath.Join(deep, "level")
@@ -1021,6 +1059,7 @@ func TestGpCovEnclosingCheckoutWalkIsBounded(t *testing.T) {
 // TestGpCovRefusalWordingFallbacks pins the two fallbacks in the canonical
 // refusal wording: a missing slug and a missing root.
 func TestGpCovRefusalWordingFallbacks(t *testing.T) {
+	t.Parallel()
 	message := refusal(finding{Location: Location{Root: "/projects/acme/widget"}, Detail: "writing a file"})
 	for _, expected := range []string{"<owner/repository>", "wb worktree create <task>", "/projects/acme/widget"} {
 		if !strings.Contains(message, expected) {
@@ -1045,6 +1084,7 @@ func TestGpCovRefusalWordingFallbacks(t *testing.T) {
 // TestGpCovFileToolIgnoresUnresolvablePaths pins that a Write naming a path
 // the guard cannot make absolute is allowed rather than guessed at.
 func TestGpCovFileToolIgnoresUnresolvablePaths(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	call := ToolCall{
 		HookEventName: "PreToolUse",
@@ -1066,6 +1106,7 @@ func (gpCovFailingWriter) Write([]byte) (int, error) {
 // TestGpCovWriteDecisionReportsWriterFailure pins that a deny whose JSON
 // cannot be delivered is reported as an error rather than silently lost.
 func TestGpCovWriteDecisionReportsWriterFailure(t *testing.T) {
+	t.Parallel()
 	written, err := WriteDecision(gpCovFailingWriter{}, Decision{Deny: true, Reason: "refused"}, nil)
 	if err == nil {
 		t.Fatal("WriteDecision hid a writer failure")

@@ -168,6 +168,7 @@ func TestCleanupLeavesTaskNamespaceHoldingAnythingAtAll(t *testing.T) {
 // its lock; if the namespace is retired in that gap, the operation must refuse
 // rather than build a task hierarchy under a pathname nothing can reach.
 func TestOperationLockRefusesRetiredDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "task")
 	if err := os.Mkdir(path, 0o755); err != nil {
@@ -177,7 +178,7 @@ func TestOperationLockRefusesRetiredDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}

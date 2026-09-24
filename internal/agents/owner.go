@@ -27,8 +27,14 @@ const OwnerArgument = "--wb-internal-agent-run"
 const maxLogBytes = 128 << 20
 
 // stopGrace is how long a stopped worker has to honour a graceful signal before
-// the stop escalates to a kill.
-const stopGrace = 3 * time.Second
+// the stop escalates to a kill. It is a var, not a const, so a test exercising
+// the escalation path can shrink it instead of waiting out the real grace
+// period.
+var stopGrace = 3 * time.Second
+
+// stopPollInterval is how often StopRun re-checks whether the worker has
+// exited during the grace period.
+var stopPollInterval = 50 * time.Millisecond
 
 // OwnerDeps are the seams the run owner needs. They are injected so the whole
 // owner can be exercised deterministically against a fake harness.
@@ -322,7 +328,7 @@ func StopRun(store Store, agentID string) (Record, error) {
 	}
 	deadline := time.Now().Add(stopGrace)
 	for processAlive(record.WorkerPID) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(stopPollInterval)
 	}
 	if processAlive(record.WorkerPID) {
 		return record, terminateOwner(record.WorkerPID, killSignal())

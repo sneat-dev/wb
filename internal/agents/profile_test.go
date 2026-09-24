@@ -17,6 +17,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestLoadConfigFileShipsBuiltinsAndAppliesUserOverrides(t *testing.T) {
+	t.Parallel()
 	config, err := LoadConfigFile(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err != nil {
 		t.Fatalf("a missing configuration file must not be an error: %v", err)
@@ -75,6 +76,7 @@ agents:
 }
 
 func TestLoadConfigFileRejectsUnusableProvidersAndYAML(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"provider name is not one safe segment":  "agents:\n  providers:\n    \"bad name\":\n      base_url: https://x.example\n      credential_env: K\n      wire_api: responses\n",
 		"provider name with a dot nests the key": "agents:\n  providers:\n    \"bad.name\":\n      base_url: https://x.example\n      credential_env: K\n      wire_api: responses\n",
@@ -86,6 +88,7 @@ func TestLoadConfigFileRejectsUnusableProvidersAndYAML(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := LoadConfigFile(writeConfig(t, body)); err == nil {
 				t.Fatalf("LoadConfigFile accepted %s", name)
 			}
@@ -94,6 +97,7 @@ func TestLoadConfigFileRejectsUnusableProvidersAndYAML(t *testing.T) {
 }
 
 func TestLoadConfigFileReportsUnreadablePath(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	if _, err := LoadConfigFile(directory); err == nil {
 		t.Fatal("a directory is not a readable configuration file")
@@ -101,6 +105,7 @@ func TestLoadConfigFileReportsUnreadablePath(t *testing.T) {
 }
 
 func TestResolveFailsClosedAndIsARequestError(t *testing.T) {
+	t.Parallel()
 	config, err := LoadConfigFile(writeConfig(t, `
 agents:
   profiles:
@@ -121,6 +126,7 @@ agents:
 	}
 	for requested, fragment := range cases {
 		t.Run("requested="+requested, func(t *testing.T) {
+			t.Parallel()
 			_, err := config.Resolve(requested)
 			if err == nil {
 				t.Fatalf("Resolve(%q) succeeded", requested)
@@ -150,6 +156,7 @@ agents:
 }
 
 func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		body   string
 		expect string
@@ -185,6 +192,7 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			config, err := LoadConfigFile(writeConfig(t, testCase.body))
 			if err != nil {
 				t.Fatal(err)
@@ -204,6 +212,7 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 }
 
 func TestResolveNamesConfiguredProfilesAndProviders(t *testing.T) {
+	t.Parallel()
 	config, err := LoadConfigFile(writeConfig(t, `
 agents:
   profiles:
@@ -239,6 +248,7 @@ agents:
 }
 
 func TestValidateExecutionValueAcceptsRealModelIdentifiers(t *testing.T) {
+	t.Parallel()
 	// The identifiers each provider actually publishes must survive validation
 	// unchanged: WB passes the model through verbatim.
 	for _, value := range []string{

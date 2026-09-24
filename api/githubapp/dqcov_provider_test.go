@@ -7,6 +7,7 @@ import (
 )
 
 func TestDQCovValidateProjectionDocumentRejectsInvalidEligibilityEvidence(t *testing.T) {
+	t.Parallel()
 	document := ProjectionDocument{
 		Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets",
 		UpdatedAt: time.Unix(1, 0), PublicOptIn: true,

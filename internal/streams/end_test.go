@@ -27,6 +27,7 @@ func startedStream(t *testing.T, name string, repositories ...string) (*Engine, 
 // REQ: stream-end-restores-published-state — end refuses while any link is
 // live, and the refusal names the exact undo command per link.
 func TestEndRefusesWhileALinkIsLive(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees, stream := startedStream(t, "linked", "acme/library", "acme/app")
 	library, _ := stream.Member("acme/library")
 	if _, err := engine.Store.Update("linked", func(current *Stream) error {
@@ -64,6 +65,7 @@ func TestEndRefusesWhileALinkIsLive(t *testing.T) {
 // whose branch carries work the base has not absorbed refuses, named at the
 // content level rather than by listing paths.
 func TestEndRefusesUnabsorbedWork(t *testing.T) {
+	t.Parallel()
 	engine, git, _, worktrees, stream := startedStream(t, "unabsorbed", "acme/library")
 	member := stream.Members[0]
 	git.notIn[member.Worktree+" stream/unabsorbed origin/main"] = []Commit{
@@ -86,6 +88,7 @@ func TestEndRefusesUnabsorbedWork(t *testing.T) {
 // still-open pull request targeting the stream branch is closed before the
 // branch could be deleted, so GitHub never silently retargets one at main.
 func TestEndClosesStillOpenAgentPullRequestsBeforeRemovingTheBranch(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees, stream := startedStream(t, "agents", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" stream/agents"] = []PullRequest{
@@ -130,6 +133,7 @@ func TestEndClosesStillOpenAgentPullRequestsBeforeRemovingTheBranch(t *testing.T
 }
 
 func TestEndCanRetargetAgentPullRequestsInstead(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "retarget", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" stream/retarget"] = []PullRequest{
@@ -151,6 +155,7 @@ func TestEndCanRetargetAgentPullRequestsInstead(t *testing.T) {
 // ended. The missing checkout is recoverable only from that member's exact
 // merged PR receipt, never from absence alone.
 func TestEndRetiresMemberAlreadyRemovedByMergedStreamPullRequest(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "already-landed", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -178,6 +183,7 @@ func TestEndRetiresMemberAlreadyRemovedByMergedStreamPullRequest(t *testing.T) {
 }
 
 func TestEndRefusesRemovedMemberWithoutExactMergedStreamPullRequest(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees, stream := startedStream(t, "missing-without-receipt", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -195,6 +201,7 @@ func TestEndRefusesRemovedMemberWithoutExactMergedStreamPullRequest(t *testing.T
 }
 
 func TestEndRefusesRemovedMemberWhoseRemoteBranchAdvancedAfterMerge(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "missing-advanced", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -214,6 +221,7 @@ func TestEndRefusesRemovedMemberWhoseRemoteBranchAdvancedAfterMerge(t *testing.T
 }
 
 func TestEndRefusesRemovedMemberWhoseLocalStreamBranchAdvancedAfterMerge(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "missing-local-advanced", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -237,6 +245,7 @@ func TestEndRefusesRemovedMemberWhoseLocalStreamBranchAdvancedAfterMerge(t *test
 // dirty or untracked work. The recovery receipt is valid only after pr land
 // has removed the local stream branch entirely.
 func TestEndRefusesRemovedMemberWhoseLocalStreamBranchStillExistsAtMergedHead(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "missing-local-present", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -259,6 +268,7 @@ func TestEndRefusesRemovedMemberWhoseLocalStreamBranchStillExistsAtMergedHead(t 
 }
 
 func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "squash-merged", "acme/library")
 	member := stream.Members[0]
 	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
@@ -292,6 +302,7 @@ func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testi
 }
 
 func TestEndLeavesSquashMemberWhenRemoteAdvancesAfterProof(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, worktrees, stream := startedStream(t, "squash-race", "acme/library")
 	member := stream.Members[0]
 	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
@@ -327,6 +338,7 @@ func TestEndLeavesSquashMemberWhenRemoteAdvancesAfterProof(t *testing.T) {
 }
 
 func TestEndRefusesOrdinaryMemberWhoseRemoteStreamBranchAlreadyAdvanced(t *testing.T) {
+	t.Parallel()
 	engine, git, _, worktrees, stream := startedStream(t, "ordinary-remote-advanced", "acme/library")
 	member := stream.Members[0]
 	local := "1111111111111111111111111111111111111111"
@@ -351,6 +363,7 @@ func TestEndRefusesOrdinaryMemberWhoseRemoteStreamBranchAlreadyAdvanced(t *testi
 }
 
 func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		configure func(member Member, git *fakeGit, hub *fakeHub, localHead, mergedPRHead string)
@@ -402,6 +415,7 @@ func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			engine, git, hub, worktrees, stream := startedStream(t, "unsafe-squash-"+strings.ReplaceAll(test.name, " ", "-"), "acme/library")
 			member := stream.Members[0]
 			localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
@@ -437,6 +451,7 @@ func exactSquashReceipt(member Member, head string) PullRequest {
 }
 
 func TestEndUsesCanonicalCheckoutForAlreadyRemovedMemberGitHubCalls(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "missing-canonical-cwd", "acme/library")
 	member := stream.Members[0]
 	if err := os.RemoveAll(member.Worktree); err != nil {
@@ -457,6 +472,7 @@ func TestEndUsesCanonicalCheckoutForAlreadyRemovedMemberGitHubCalls(t *testing.T
 // Without --apply the verb reports exactly what it would do and changes
 // nothing, so an operator sees which pull requests would be closed first.
 func TestEndWithoutApplyChangesNothing(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees, stream := startedStream(t, "dry", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" stream/dry"] = []PullRequest{
@@ -487,6 +503,7 @@ func TestEndWithoutApplyChangesNothing(t *testing.T) {
 // REQ: stream-end-restores-published-state — ending publishes, bumps and
 // merges nothing: the member's own draft pull request is closed, never merged.
 func TestEndClosesTheDraftPullRequestAndMergesNothing(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "no-merge", "acme/library")
 	member := stream.Members[0]
 	result, err := engine.End(context.Background(), EndOptions{Name: "no-merge", Apply: true})

@@ -7,6 +7,7 @@ import (
 )
 
 func TestClaimEncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
 	claim := Claim{SchemaVersion: ClaimSchemaVersion, Task: "task-7", Login: "alice", Machine: "laptop",
 		ClaimedAt: time.Date(2026, 8, 24, 9, 15, 0, 0, time.UTC), Note: "rehearsal"}
 	data, err := EncodeClaim(claim)
@@ -30,18 +31,21 @@ func TestClaimEncodeDecodeRoundTrip(t *testing.T) {
 }
 
 func TestDecodeClaimRejectsNewerSchema(t *testing.T) {
+	t.Parallel()
 	if _, err := DecodeClaim([]byte("schema_version: 99\ntask: t\n")); err == nil || !strings.Contains(err.Error(), "schema_version 99") {
 		t.Fatalf("err = %v, want newer-schema error", err)
 	}
 }
 
 func TestDecodeClaimRejectsGarbage(t *testing.T) {
+	t.Parallel()
 	if _, err := DecodeClaim([]byte("{nope")); err == nil {
 		t.Fatal("expected YAML error")
 	}
 }
 
 func TestValidTaskName(t *testing.T) {
+	t.Parallel()
 	for _, ok := range []string{"task-7", "T1", "a.b_c-d"} {
 		if err := ValidTaskName(ok); err != nil {
 			t.Errorf("%q: unexpected error %v", ok, err)

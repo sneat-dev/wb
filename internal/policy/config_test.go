@@ -17,6 +17,7 @@ func writeRepoConfig(t *testing.T, body string) string {
 }
 
 func TestLoadRepoConfig(t *testing.T) {
+	t.Parallel()
 	root := writeRepoConfig(t, "policy: acme/cicd//policy/backend.yaml\ntype: extension-implementation\nstrict: true\n")
 	config, err := LoadRepoConfig(root)
 	if err != nil {
@@ -37,6 +38,7 @@ func TestLoadRepoConfig(t *testing.T) {
 }
 
 func TestLoadRepoConfigAbsentIsNotAnError(t *testing.T) {
+	t.Parallel()
 	config, err := LoadRepoConfig(t.TempDir())
 	if err != nil {
 		t.Fatalf("a missing config file is not an error: %v", err)
@@ -50,6 +52,7 @@ func TestLoadRepoConfigAbsentIsNotAnError(t *testing.T) {
 // the shapes someone reaches for when they want an exception, and each has to
 // fail loudly rather than quietly take effect.
 func TestRepoConfigRefusesToLoosen(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"declaring groups": "policy: p.yaml\ngroups:\n  - {name: mine, match: [\"...\"]}\n",
 		"declaring types":  "policy: p.yaml\ntypes:\n  - name: t\n    detect: [\"x\"]\n",
@@ -61,6 +64,7 @@ func TestRepoConfigRefusesToLoosen(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := LoadRepoConfig(writeRepoConfig(t, body))
 			if err == nil {
 				t.Fatal("expected an error")
@@ -73,6 +77,7 @@ func TestRepoConfigRefusesToLoosen(t *testing.T) {
 }
 
 func TestRepoConfigRefusesAPinnedPolicyVersion(t *testing.T) {
+	t.Parallel()
 	_, err := LoadRepoConfig(writeRepoConfig(t, "policy: acme/cicd//policy/backend.yaml@v1.2.0\n"))
 	if err == nil {
 		t.Fatal("pinning a policy release is an exception with extra steps and must be refused")
@@ -83,6 +88,7 @@ func TestRepoConfigRefusesAPinnedPolicyVersion(t *testing.T) {
 }
 
 func TestParseSource(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		raw  string
 		kind SourceKind
@@ -95,6 +101,7 @@ func TestParseSource(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.raw, func(t *testing.T) {
+			t.Parallel()
 			source, err := ParseSource(tc.raw)
 			if err != nil {
 				t.Fatal(err)
@@ -112,6 +119,7 @@ func TestParseSource(t *testing.T) {
 }
 
 func TestSourceLocateFindsPolicyInAFleetCheckout(t *testing.T) {
+	t.Parallel()
 	fleetRoot := t.TempDir()
 	target := filepath.Join(fleetRoot, "acme", "cicd", "policy", "backend.yaml")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -134,6 +142,7 @@ func TestSourceLocateFindsPolicyInAFleetCheckout(t *testing.T) {
 }
 
 func TestSourceLocateExplainsAMissingFleetCheckout(t *testing.T) {
+	t.Parallel()
 	source, err := ParseSource("acme/cicd//policy/backend.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +157,7 @@ func TestSourceLocateExplainsAMissingFleetCheckout(t *testing.T) {
 }
 
 func TestSourceLocateResolvesRelativePathAgainstRepoRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, "policy.yaml")
 	if err := os.WriteFile(target, []byte(samplePolicy), 0o600); err != nil {

@@ -141,6 +141,7 @@ func TestCreateUsesConfiguredSharedWorktreesRoot(t *testing.T) {
 }
 
 func TestSharedWorktreeRootRejectsRelativePath(t *testing.T) {
+	t.Parallel()
 	if _, err := resolveSharedWorktreesRoot("relative/worktrees"); err == nil {
 		t.Fatal("relative shared root was accepted")
 	}

@@ -39,6 +39,7 @@ func tailCovPersistAck(t *testing.T, receiptPath string, mutate func(*Acknowledg
 }
 
 func TestTailCovComputeIDHashesPathProofsAndExcusedPaths(t *testing.T) {
+	t.Parallel()
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
 	base := newTestAcknowledgement(receiptPath)
 	base.SourceProofs = []SourceProof{tailCovPathProofSourceProof("lines_absorbed", 2, 2)}
@@ -70,6 +71,7 @@ func TestTailCovComputeIDHashesPathProofsAndExcusedPaths(t *testing.T) {
 }
 
 func TestTailCovSameSourcesComparesLengthAndContent(t *testing.T) {
+	t.Parallel()
 	source := Source{Task: "one", Worktree: "/worktrees/one", Branch: "one", SHA: "sha-one"}
 	drifted := Source{Task: "two", Worktree: "/worktrees/one", Branch: "one", SHA: "sha-one"}
 
@@ -88,6 +90,7 @@ func TestTailCovSameSourcesComparesLengthAndContent(t *testing.T) {
 }
 
 func TestTailCovSameRejectsDivergentSourceProofEvidence(t *testing.T) {
+	t.Parallel()
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
 	left := newTestAcknowledgement(receiptPath)
 	left.SourceProofs = []SourceProof{tailCovPathProofSourceProof("lines_absorbed", 4, 4)}
@@ -115,6 +118,7 @@ func TestTailCovSameRejectsDivergentSourceProofEvidence(t *testing.T) {
 }
 
 func TestTailCovFileSHA256ReportsMissingFile(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent.json")
 	if _, err := FileSHA256(missing); err == nil {
 		t.Fatal("FileSHA256 succeeded for a missing file")
@@ -124,6 +128,7 @@ func TestTailCovFileSHA256ReportsMissingFile(t *testing.T) {
 }
 
 func TestTailCovPersistRejectsUnencodableTimestamp(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ackPath := filepath.Join(dir, "ack.json")
 	ack := newTestAcknowledgement(filepath.Join(dir, "receipt.json"))
@@ -140,6 +145,7 @@ func TestTailCovPersistRejectsUnencodableTimestamp(t *testing.T) {
 }
 
 func TestTailCovPersistRejectsUncreatableDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
@@ -153,6 +159,7 @@ func TestTailCovPersistRejectsUncreatableDirectory(t *testing.T) {
 }
 
 func TestTailCovPersistReportsUnwritableDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ackPath := filepath.Join(dir, "ack.json")
 	ack := newTestAcknowledgement(filepath.Join(dir, "receipt.json"))
@@ -170,6 +177,7 @@ func TestTailCovPersistReportsUnwritableDirectory(t *testing.T) {
 }
 
 func TestTailCovLoadRejectsUndecodableSidecar(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -185,6 +193,7 @@ func TestTailCovLoadRejectsUndecodableSidecar(t *testing.T) {
 }
 
 func TestTailCovLoadRejectsReceiptThatCannotBeHashed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	ackPath := Path(receiptPath)
@@ -201,6 +210,7 @@ func TestTailCovLoadRejectsReceiptThatCannotBeHashed(t *testing.T) {
 }
 
 func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
+	t.Parallel()
 	newReceipt := func(t *testing.T) string {
 		t.Helper()
 		receiptPath := filepath.Join(t.TempDir(), "receipt.json")
@@ -209,6 +219,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	}
 
 	t.Run("records each allowed excused derived path", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		loaded, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.ExcusedDerivedPaths = []string{"spec/README.md", "spec/features/thing/README.md"}
@@ -222,6 +233,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects a proof whose identity drifted from its source", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs[0].Task = "someone-else"
@@ -232,6 +244,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects an unknown source proof method", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs[0].Method = "teleported"
@@ -242,6 +255,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects a content absorbed proof without evidence", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs[0].Method = "content_absorbed"
@@ -254,6 +268,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("accepts a blob absorbed path proof", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		loaded, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs = []SourceProof{tailCovPathProofSourceProof("blob_absorbed", 0, 0)}
@@ -292,6 +307,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects a lines absorbed proof with unmatched counts", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs = []SourceProof{tailCovPathProofSourceProof("lines_absorbed", 3, 2)}
@@ -302,6 +318,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("accepts a lines absorbed proof with matched counts", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		loaded, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs = []SourceProof{tailCovPathProofSourceProof("lines_absorbed", 5, 5)}
@@ -315,6 +332,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects an excused path proof that was never recorded", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs = []SourceProof{tailCovPathProofSourceProof("derived_excused", 0, 0)}
@@ -326,6 +344,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("accepts a recorded excused derived path proof", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		loaded, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.ExcusedDerivedPaths = []string{"spec/README.md"}
@@ -341,6 +360,7 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 	})
 
 	t.Run("rejects an unknown path proof method", func(t *testing.T) {
+		t.Parallel()
 		receiptPath := newReceipt(t)
 		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
 			ack.SourceProofs = []SourceProof{tailCovPathProofSourceProof("abducted", 0, 0)}

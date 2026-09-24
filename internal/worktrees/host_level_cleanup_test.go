@@ -250,6 +250,7 @@ func TestOpenCleanupWorktreeRefusesSymlinkAtHostOwnerOrRepositorySegment(t *test
 // the 2-segment case already used. All three refuse "..", empty, and any
 // segment carrying a path separator.
 func TestHostLevelSegmentValidatorsRefuseTraversalEmptyAndSeparatorSegments(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"..", "", "a/b", "a" + string(filepath.Separator) + "b"} {
 		if validSafeSegment(value) {
 			t.Errorf("validSafeSegment(%q) = true, want false", value)

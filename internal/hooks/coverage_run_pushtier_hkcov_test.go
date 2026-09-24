@@ -293,6 +293,7 @@ func TestHkCovRunVerifiesARealCanonicalRescueAttestation(t *testing.T) {
 }
 
 func TestHkCovParseRefUpdatesScannerError(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("ref stream failed")
 	if _, err := ParseRefUpdates(iotest.ErrReader(failure)); err == nil || !strings.Contains(err.Error(), "read pushed-ref list") {
 		t.Fatalf("ParseRefUpdates(erroring reader) error = %v", err)
@@ -300,6 +301,7 @@ func TestHkCovParseRefUpdatesScannerError(t *testing.T) {
 }
 
 func TestHkCovClassifyPushTierUnrecognizedNamespace(t *testing.T) {
+	t.Parallel()
 	updates := []RefUpdate{{
 		LocalRef: "refs/notes/commits", LocalSHA: strings.Repeat("a", 40),
 		RemoteRef: "refs/notes/commits", RemoteSHA: zeroOID40,
@@ -314,6 +316,7 @@ func TestHkCovClassifyPushTierUnrecognizedNamespace(t *testing.T) {
 }
 
 func TestHkCovClassifyPendingPushRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	if _, err := ClassifyPendingPush(strings.NewReader("only two fields\n"), repo); err == nil || !strings.Contains(err.Error(), "malformed pushed-ref line") {
 		t.Fatalf("ClassifyPendingPush(malformed) error = %v", err)
@@ -373,6 +376,7 @@ func TestHkCovDefaultPRStatusCachePath(t *testing.T) {
 }
 
 func TestHkCovCachedGHPRLookupDefaultsAndBlankInputs(t *testing.T) {
+	t.Parallel()
 	lookup := &CachedGHPRLookup{}
 	if lookup.ttl() != defaultPRStatusCacheTTL {
 		t.Fatalf("ttl() = %v, want %v", lookup.ttl(), defaultPRStatusCacheTTL)
@@ -415,6 +419,7 @@ func TestHkCovCachedGHPRLookupUsesTheDefaultRunner(t *testing.T) {
 }
 
 func TestHkCovCachedGHPRLookupRejectsBadJSON(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	lookup := &CachedGHPRLookup{
 		RepoRoot: repo, RepoSlug: "acme/widget",
@@ -442,6 +447,7 @@ func TestHkCovRunGHExecutesTheFakeBinary(t *testing.T) {
 }
 
 func TestHkCovPRStatusCacheLoadAndSave(t *testing.T) {
+	t.Parallel()
 	if cache := loadPRStatusCache("   "); len(cache) != 0 {
 		t.Fatalf("loadPRStatusCache(blank) = %#v, want empty", cache)
 	}
@@ -490,6 +496,7 @@ func TestHkCovPRStatusCacheLoadAndSave(t *testing.T) {
 }
 
 func TestHkCovPRHeadQualifier(t *testing.T) {
+	t.Parallel()
 	if got := prHeadQualifier("acme/widget", "feature"); got != "acme:feature" {
 		t.Fatalf("prHeadQualifier = %q, want acme:feature", got)
 	}

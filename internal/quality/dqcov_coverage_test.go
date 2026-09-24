@@ -13,6 +13,7 @@ import (
 // with no Go module is reported skipped rather than failed, and the caller's
 // repository and path survive into the report.
 func TestDqCovCoverDelegatesToDefaultOptions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	report := Cover(context.Background(), "example/delegated", root)
 	if report.Status != StatusSkipped || report.Repository != "example/delegated" || report.Path != root {
@@ -27,7 +28,9 @@ func TestDqCovCoverDelegatesToDefaultOptions(t *testing.T) {
 // discovery-time rejections: an unparsable go.work, a tree with no module, and
 // a retained profile requested for more than one module.
 func TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands(t *testing.T) {
+	t.Parallel()
 	t.Run("unparsable go.work", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "go.work"), "this is not a go.work file\n")
 		report := CoverWithOptions(context.Background(), "example/broken", root, RunOptions{})
@@ -37,6 +40,7 @@ func TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands(t *testing.T) {
 	})
 
 	t.Run("no go module", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		report := CoverWithOptions(context.Background(), "example/empty", root, RunOptions{CoverageDiagnosticsRepository: "example/empty"})
 		if report.Status != StatusSkipped || len(report.Modules) != 0 {
@@ -45,6 +49,7 @@ func TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands(t *testing.T) {
 	})
 
 	t.Run("retained profile with two modules", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "one", "go.mod"), "module example.test/one\n\ngo 1.24\n")
 		writeQualityFile(t, filepath.Join(root, "two", "go.mod"), "module example.test/two\n\ngo 1.24\n")
@@ -60,12 +65,19 @@ func TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands(t *testing.T) {
 // cheaply: a retained profile is reused in place, and a profile the shim did not
 // rewrite is rejected as unparsable.
 func TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile(t *testing.T) {
-	root := t.TempDir()
-	writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/retained\n\ngo 1.24\n")
-	dqCovFakeGo(t, root)
-	retained := filepath.Join(root, "retained.out")
+	newModuleRoot := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/retained\n\ngo 1.24\n")
+		dqCovFakeGo(t, root)
+		return root
+	}
 
+	// Left serial: newModuleRoot's fake go shim calls t.Setenv("PATH", ...),
+	// which Go's testing package forbids combining with t.Parallel.
 	t.Run("valid profile retained in place", func(t *testing.T) {
+		root := newModuleRoot(t)
+		retained := filepath.Join(root, "retained.out")
 		writeQualityFile(t, retained, "mode: set\nexample/a.go:1.1,2.2 4 3\nexample/b.go:1.1,2.2 1 0\n")
 		report := CoverWithOptions(context.Background(), "example/retained", root, RunOptions{CoverageProfile: retained})
 		if report.Status != StatusPassed || report.Statements != 5 || report.Covered != 4 {
@@ -77,6 +89,8 @@ func TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile(t *testing.
 	})
 
 	t.Run("unparsable profile fails", func(t *testing.T) {
+		root := newModuleRoot(t)
+		retained := filepath.Join(root, "retained.out")
 		writeQualityFile(t, retained, "mode: set\nthis line has too many fields here\n")
 		report := CoverWithOptions(context.Background(), "example/retained", root, RunOptions{CoverageProfile: retained})
 		if report.Status != StatusFailed || !strings.Contains(report.Error, "invalid coverage profile") {
@@ -125,6 +139,7 @@ func TestDqCovCoverageProfilePathRetainsOrCreatesTemp(t *testing.T) {
 // TestDqCovNewCoverageReportSortsAndAggregates pins deterministic ordering and
 // percentage aggregation across repositories supplied in arbitrary order.
 func TestDqCovNewCoverageReportSortsAndAggregates(t *testing.T) {
+	t.Parallel()
 	report := NewCoverageReport([]RepositoryCoverage{
 		{Repository: "zulu/repo", Statements: 10, Covered: 5},
 		{Repository: "alpha/repo", Statements: 30, Covered: 30},
@@ -144,7 +159,9 @@ func TestDqCovNewCoverageReportSortsAndAggregates(t *testing.T) {
 // mode and the directory pruning that keeps generated trees out of module
 // discovery.
 func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
+	t.Parallel()
 	t.Run("unparsable go.work", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "go.work"), "not a workspace file\n")
 		if _, err := goModules(root); err == nil || !strings.Contains(err.Error(), "parse go.work") {
@@ -153,6 +170,7 @@ func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
 	})
 
 	t.Run("go.work use without go.mod", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "go.work"), "go 1.24\n\nuse ./missing\n")
 		if _, err := goModules(root); err == nil || !strings.Contains(err.Error(), "has no readable go.mod") {
@@ -161,6 +179,7 @@ func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
 	})
 
 	t.Run("unreadable go.work", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Mkdir(filepath.Join(root, "go.work"), 0o755); err != nil {
 			t.Fatal(err)
@@ -171,6 +190,7 @@ func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
 	})
 
 	t.Run("walk prunes generated trees", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, ".git", "go.mod"), "module example.test/git\n")
 		writeQualityFile(t, filepath.Join(root, "vendor", "go.mod"), "module example.test/vendor\n")
@@ -186,6 +206,7 @@ func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
 	})
 
 	t.Run("walk failure surfaces", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "service", "go.mod"), "module example.test/service\n")
 		denied := filepath.Join(root, "denied")
@@ -203,6 +224,7 @@ func TestDqCovGoModulesDiscoversWorkAndWalkTrees(t *testing.T) {
 // shape fails with a diagnostic naming the file, rather than reporting a
 // misleading total.
 func TestDqCovProfileTotalsRejectsInvalidProfiles(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	for _, tc := range []struct {
 		name     string
@@ -213,6 +235,7 @@ func TestDqCovProfileTotalsRejectsInvalidProfiles(t *testing.T) {
 		{name: "non-numeric fields", contents: "mode: set\nexample.go:1.1,1.2 three one\n", want: "invalid coverage profile"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(directory, strings.ReplaceAll(tc.name, " ", "-")+".out")
 			writeQualityFile(t, path, tc.contents)
 			if _, _, err := profileTotals(path); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -227,6 +250,7 @@ func TestDqCovProfileTotalsRejectsInvalidProfiles(t *testing.T) {
 }
 
 func TestDqCovPercentHandlesZeroAndPartialStatements(t *testing.T) {
+	t.Parallel()
 	if got := percent(0, 0); got != 0 {
 		t.Fatalf("percent(0, 0) = %v, want 0", got)
 	}

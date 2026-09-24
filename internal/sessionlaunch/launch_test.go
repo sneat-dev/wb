@@ -52,6 +52,7 @@ func (f *fakeTmux) PanePID(context.Context, string) (int, bool, error) {
 }
 
 func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := sessionmove.NewStore(filepath.Join(root, "handoffs"))
 	request := completeLaunchTestRequest(t)
@@ -67,7 +68,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	worktree := filepath.Join(root, "worktree")
 	if err := os.MkdirAll(filepath.Join(worktree, ".wb", "handoffs"), 0o755); err != nil {
@@ -193,6 +194,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 }
 
 func TestStartRetainsImmediateHarnessExitStatusAndDiagnostic(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	fence, _ := fixture.createReleasedAttempt(t, false, true)
 	fixture.tmux.pid = 919191
@@ -576,6 +578,7 @@ func TestRunPrivateLauncherRecordsExecFailureBeforeReleasingFence(t *testing.T) 
 }
 
 func TestLaunchArtifactsRejectTrailingJSONAndSymlinks(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	handoff := filepath.Join(root, "handoff-123")
 	if err := os.MkdirAll(filepath.Join(handoff, "launch"), 0o700); err != nil {

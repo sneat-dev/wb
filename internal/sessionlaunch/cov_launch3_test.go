@@ -64,13 +64,16 @@ func (fixture *slCovAuthorityFixture) liveReleased(t *testing.T, pid int) (*laun
 }
 
 func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("resolve authority error", func(t *testing.T) {
+		t.Parallel()
 		if _, err := InspectPrepared(ctx, Options{}); err == nil {
 			t.Fatal("InspectPrepared accepted an empty request")
 		}
 	})
 	t.Run("unheld fence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.held = false
 		if _, err := InspectPrepared(ctx, fixture.options()); err == nil {
@@ -78,6 +81,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("retain error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.retainErr = errors.New("retain failed")
 		if _, err := InspectPrepared(ctx, fixture.options()); err == nil {
@@ -85,6 +89,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("missing aggregate", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		empty, err := os.Open(t.TempDir())
 		if err != nil {
@@ -97,6 +102,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("unopenable aggregate", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		dir := filepath.Join(t.TempDir(), "handoff-123")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -114,6 +120,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("missing plan", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -123,6 +130,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("relative worktree", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.WorktreeDir = "relative"
@@ -131,6 +139,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("plan conflict", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.WorktreeDir = t.TempDir()
@@ -139,6 +148,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("started marker exists", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		started := launcherStarted{SchemaVersion: launchSchemaVersion, HandoffID: fixture.handoffID,
 			AttemptID: "000001-00000000000000000000000000000001", AttemptIndex: 1,
@@ -156,6 +166,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("corrupt started marker", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if created, err := fixture.state.publish("", "started.json", []byte("{}")); err != nil || !created {
 			t.Fatalf("inject started = %t %v", created, err)
@@ -165,6 +176,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("malformed history", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Mkdir(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, attemptsDirectoryName, "garbage"), 0o700); err != nil {
 			t.Fatal(err)
@@ -174,6 +186,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("unopenable attempt", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovWrite(t, filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, attemptsDirectoryName,
 			"000001-00000000000000000000000000000001"), 0o600, "not a directory")
@@ -182,6 +195,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("latest already released", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.released(t, 62)
 		if _, err := InspectPrepared(ctx, fixture.options()); err == nil || !strings.Contains(err.Error(), "already released latest attempt") {
@@ -189,6 +203,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("prior released without ready", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt, _ := fixture.released(t, 63)
 		fixture.claimed(t)
@@ -200,6 +215,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("prior released with corrupt failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt, _ := fixture.released(t, 64)
 		fixture.claimed(t)
@@ -209,6 +225,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("prior released lacks terminal evidence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.released(t, 65)
 		fixture.claimed(t)
@@ -217,6 +234,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("corrupt latest release", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(fixture.root, attempt.id), "release.json"), 0o600, "{}")
@@ -225,6 +243,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("ambiguous ready evidence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		for _, name := range []string{"66.json", "67.json"} {
@@ -237,6 +256,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("no evidence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.claimed(t)
 		if _, err := InspectPrepared(ctx, fixture.options()); !errors.Is(err, ErrNotReleased) {
@@ -244,6 +264,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("lock without ready", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(68)
@@ -258,6 +279,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("corrupt ready", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(69)
@@ -275,6 +297,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 		}
 	})
 	t.Run("ready conflicts with plan", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(70)
@@ -300,6 +323,7 @@ func TestSlCovInspectPreparedRejectsAmbiguousCustody(t *testing.T) {
 }
 
 func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inspect := func(t *testing.T, fixture *slCovAuthorityFixture) error {
 		t.Helper()
@@ -307,11 +331,13 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		return err
 	}
 	t.Run("resolve authority error", func(t *testing.T) {
+		t.Parallel()
 		if _, err := inspectWithDependencies(ctx, Options{}, slCovFakeDeps(t, &fakeTmux{}), true); err == nil {
 			t.Fatal("accepted an empty request")
 		}
 	})
 	t.Run("unheld fence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.held = false
 		if err := inspect(t, fixture); err == nil {
@@ -319,6 +345,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("retain error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.retainErr = errors.New("retain failed")
 		if err := inspect(t, fixture); err == nil {
@@ -326,6 +353,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("missing aggregate", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		empty, err := os.Open(t.TempDir())
 		if err != nil {
@@ -338,6 +366,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("missing plan", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -347,6 +376,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("corrupt plan", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovWrite(t, filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json"), 0o600, "{}\n")
 		if err := inspect(t, fixture); err == nil {
@@ -354,6 +384,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("relative worktree", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.WorktreeDir = "relative"
@@ -362,6 +393,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("corrupt started marker", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if created, err := fixture.state.publish("", "started.json", []byte("{}")); err != nil || !created {
 			t.Fatalf("inject started = %t %v", created, err)
@@ -371,12 +403,14 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("missing history", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := inspect(t, fixture); !errors.Is(err, ErrNotReleased) {
 			t.Fatalf("missing history = %v", err)
 		}
 	})
 	t.Run("malformed history", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Mkdir(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, attemptsDirectoryName, "garbage"), 0o700); err != nil {
 			t.Fatal(err)
@@ -386,6 +420,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("corrupt release", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(fixture.root, attempt.id), "release.json"), 0o600, "{}")
@@ -394,6 +429,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("released live successor", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		pid := os.Getpid()
 		fixture.liveReleased(t, pid)
@@ -403,6 +439,7 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 		}
 	})
 	t.Run("finalize started failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		pid := os.Getpid()
 		fixture.liveReleased(t, pid)
@@ -414,8 +451,10 @@ func TestSlCovInspectWithDependenciesRejectsAmbiguousState(t *testing.T) {
 }
 
 func TestSlCovStartWithDependenciesSurfacesLiveStateConflicts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("finalize started failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		pid := os.Getpid()
 		fixture.liveReleased(t, pid)
@@ -425,6 +464,7 @@ func TestSlCovStartWithDependenciesSurfacesLiveStateConflicts(t *testing.T) {
 		}
 	})
 	t.Run("verify pinned failure after readiness", func(t *testing.T) {
+		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		pid := os.Getpid()
 		var fence *os.File
@@ -463,6 +503,7 @@ func TestSlCovStartWithDependenciesSurfacesLiveStateConflicts(t *testing.T) {
 		}
 	})
 	t.Run("released successor cannot be retried without terminal evidence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.released(t, 71)
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil {

@@ -125,6 +125,7 @@ func rpCovHTTPBody(body string) string {
 }
 
 func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testing.T) {
+	t.Parallel()
 	if result := (OSCommandRunner{}).Run(context.Background(), ""); result.Code != 2 || result.Err == nil {
 		t.Fatalf("empty command result = %+v, want the usage refusal", result)
 	}
@@ -191,6 +192,7 @@ func TestRPCovResolveHeadThroughTheSharedObserver(t *testing.T) {
 }
 
 func TestRPCovResolveHeadRejectsAnInvalidExternalSHAResponse(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovCommandRunner{steps: []CommandResult{{Output: "not-a-sha\n"}}}
 	if _, err := resolveHead(context.Background(), Receipt{Release: testRelease()}, Options{Runner: runner}); err == nil ||
 		!strings.Contains(err.Error(), "invalid head SHA") {
@@ -251,6 +253,7 @@ func TestRPCovWaitRunThroughTheSharedObserver(t *testing.T) {
 }
 
 func TestRPCovWaitRunReportsTimeoutPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovCommandRunner{steps: []CommandResult{
 		{Output: workflowRunFixture("123", "in_progress", "", time.Now().UTC())},
 	}}
@@ -263,6 +266,7 @@ func TestRPCovWaitRunReportsTimeoutPersistenceFailure(t *testing.T) {
 }
 
 func TestRPCovVerifyRegistryRequiresTheExactPublishedVersion(t *testing.T) {
+	t.Parallel()
 	checkedAt := time.Date(2026, 7, 8, 9, 10, 11, 0, time.UTC)
 	options := Options{
 		Registry: "https://registry.example",
@@ -285,6 +289,7 @@ func TestRPCovVerifyRegistryRequiresTheExactPublishedVersion(t *testing.T) {
 }
 
 func TestRPCovNormalizeRequiresATupleAndDefaultsTheRef(t *testing.T) {
+	t.Parallel()
 	if _, err := Normalize(nil, "main"); err == nil || !strings.Contains(err.Error(), "at least one npm release tuple") {
 		t.Fatalf("empty-tuple error = %v", err)
 	}
@@ -300,6 +305,7 @@ func TestRPCovNormalizeRequiresATupleAndDefaultsTheRef(t *testing.T) {
 }
 
 func TestRPCovValidateReleaseRejectsAnUnparseableTargetVersion(t *testing.T) {
+	t.Parallel()
 	release := testRelease()
 	release.Version = ""
 	if err := ValidateRelease(release); err == nil || !strings.Contains(err.Error(), "fully-qualified-dependency@version") {

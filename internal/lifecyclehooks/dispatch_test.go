@@ -14,6 +14,7 @@ import (
 )
 
 func TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	run := false
 	dispatcher.Run = func(context.Context, Invocation) error { run = true; return nil }
@@ -39,6 +40,7 @@ func TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline
 }
 
 func TestDispatchCoalescesAcrossCallsAndKeepsLatestSHA(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	first := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{first}); err != nil {
@@ -65,6 +67,7 @@ func TestDispatchCoalescesAcrossCallsAndKeepsLatestSHA(t *testing.T) {
 }
 
 func TestWorkerDrainsNewerEventQueuedWhilePriorRevisionRuns(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -101,13 +104,14 @@ func TestWorkerDrainsNewerEventQueuedWhilePriorRevisionRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutex.Lock()
-	defer mutex.Unlock()
+	t.Cleanup(func() { mutex.Unlock() })
 	if strings.Join(newSHAs, ",") != "b,c" {
 		t.Fatalf("executed SHAs=%v, want [b c]", newSHAs)
 	}
 }
 
 func TestWorkerRecoversInterruptedClaim(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{event}); err != nil {
@@ -132,6 +136,7 @@ func TestWorkerRecoversInterruptedClaim(t *testing.T) {
 }
 
 func TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	var active atomic.Int32
 	var maximum atomic.Int32
@@ -204,6 +209,7 @@ func TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics(t *testing.T) {
 }
 
 func TestFailedReceiptCanBeRetriedAfterRepair(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	dispatcher.Run = func(context.Context, Invocation) error { return errors.New("broken index") }
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
@@ -231,6 +237,7 @@ func TestFailedReceiptCanBeRetriedAfterRepair(t *testing.T) {
 }
 
 func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "checkout")
 	insideExecutable := filepath.Join(repository, "tools", "indexer")
@@ -258,6 +265,7 @@ func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
 }
 
 func TestCheckRejectsGroupWritableExecutable(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	cfg, _, err := Load(dispatcher.ConfigPath)
 	if err != nil {
@@ -274,6 +282,7 @@ func TestCheckRejectsGroupWritableExecutable(t *testing.T) {
 }
 
 func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	cfg, _, err := Load(dispatcher.ConfigPath)
 	if err != nil {
@@ -297,6 +306,7 @@ func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
 }
 
 func TestAppendReceiptKeepsConcurrentRecordsAsCompleteJSONLines(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipts.jsonl")
 	const writers = 32
 	var wait sync.WaitGroup

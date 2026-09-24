@@ -47,8 +47,10 @@ func tailCovCorruptTargetEvents(t *testing.T, store sessionpark.TargetStore, res
 }
 
 func TestTailCovReceiveRejectsMalformedEnvelopeAndMissingMachine(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	t.Run("malformed envelope", func(t *testing.T) {
+		t.Parallel()
 		options := fixture.options()
 		options.RawEnvelope = []byte("{not-an-envelope")
 		if _, err := Receive(context.Background(), options); err == nil || !strings.Contains(err.Error(), "parse park resume envelope") {
@@ -56,6 +58,7 @@ func TestTailCovReceiveRejectsMalformedEnvelopeAndMissingMachine(t *testing.T) {
 		}
 	})
 	t.Run("missing local machine", func(t *testing.T) {
+		t.Parallel()
 		options := fixture.options()
 		options.LocalMachine = ""
 		if _, err := Receive(context.Background(), options); err == nil || !strings.Contains(err.Error(), "remote.machine identity is required") {
@@ -65,6 +68,7 @@ func TestTailCovReceiveRejectsMalformedEnvelopeAndMissingMachine(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsStoreRootThatCannotBeAdmitted(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.Store = sessionpark.NewTargetStore("relative-" + filepath.Base(fixture.t.TempDir()))
@@ -74,6 +78,7 @@ func TestTailCovReceiveRejectsStoreRootThatCannotBeAdmitted(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsAggregateIdentityTheStoreCannotLock(t *testing.T) {
+	t.Parallel()
 	fixture := tailCovResumeIDFixture(t, "unprefixed-aggregate", 1)
 	options := fixture.options()
 	if _, err := Receive(context.Background(), options); err == nil || !strings.Contains(err.Error(), "target authority identity is invalid") {
@@ -88,6 +93,7 @@ func TestTailCovReceiveRejectsAggregateIdentityTheStoreCannotLock(t *testing.T) 
 }
 
 func TestTailCovReceiveRecordsEventTimesFromInjectedClock(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	fixed := time.Date(2027, time.March, 4, 5, 6, 7, 0, time.UTC)
@@ -123,6 +129,7 @@ func TestTailCovReceiveRecordsEventTimesFromInjectedClock(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsTamperedTargetEventHistory(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	if _, err := Receive(context.Background(), options); err != nil {
@@ -136,6 +143,7 @@ func TestTailCovReceiveRejectsTamperedTargetEventHistory(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsMemberResultIdentityDrift(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.ReceiveMember = func(context.Context, worktrees.SessionMemberReceiveOptions) (worktrees.SessionReceiveResult, error) {
@@ -149,6 +157,7 @@ func TestTailCovReceiveRejectsMemberResultIdentityDrift(t *testing.T) {
 }
 
 func TestTailCovReceiveRequiresAbsoluteMemberTargetPath(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.ReceiveMember = func(context.Context, worktrees.SessionMemberReceiveOptions) (worktrees.SessionReceiveResult, error) {
@@ -163,6 +172,7 @@ func TestTailCovReceiveRequiresAbsoluteMemberTargetPath(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenReceivedEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	fixed := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
@@ -186,6 +196,7 @@ func TestTailCovReceiveFailsWhenReceivedEventCannotBeRecorded(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenReplayCompletionEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	interrupted := false
@@ -214,6 +225,7 @@ func TestTailCovReceiveFailsWhenReplayCompletionEventCannotBeRecorded(t *testing
 }
 
 func TestTailCovReceiveFailsWhenMembersReadyEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	baseReceive := options.ReceiveMember
@@ -231,6 +243,7 @@ func TestTailCovReceiveFailsWhenMembersReadyEventCannotBeRecorded(t *testing.T) 
 }
 
 func TestTailCovReceiveFailsWhenClaimsReadyEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	basePrepare := options.PrepareMember
@@ -248,6 +261,7 @@ func TestTailCovReceiveFailsWhenClaimsReadyEventCannotBeRecorded(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsPreparedMemberReferenceConflict(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.PrepareMember = func(context.Context, worktrees.ParkedSessionWorkLogPrepareOptions) (worktrees.ParkedSessionWorkLogPrepareResult, error) {
@@ -259,6 +273,7 @@ func TestTailCovReceiveRejectsPreparedMemberReferenceConflict(t *testing.T) {
 }
 
 func TestTailCovReceiveSurfacesAfterClaimsReadyFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	injected := errors.New("injected after-claims failure")
@@ -269,6 +284,7 @@ func TestTailCovReceiveSurfacesAfterClaimsReadyFailure(t *testing.T) {
 }
 
 func TestTailCovReceiveSurfacesUnexpectedInspectFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	injected := errors.New("injected inspect failure")
@@ -306,6 +322,7 @@ func TestTailCovReceiveFallsBackToRealSuccessorLaunchers(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsConflictingSuccessorIdentity(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	baseStart := options.StartSuccessor
@@ -323,6 +340,7 @@ func TestTailCovReceiveRejectsConflictingSuccessorIdentity(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsSuccessorReceiptThatFailsValidation(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	baseStart := options.StartSuccessor
@@ -340,6 +358,7 @@ func TestTailCovReceiveRejectsSuccessorReceiptThatFailsValidation(t *testing.T) 
 }
 
 func TestTailCovReceiveSurfacesAfterSuccessorStartedFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	injected := errors.New("injected after-successor failure")
@@ -350,6 +369,7 @@ func TestTailCovReceiveSurfacesAfterSuccessorStartedFailure(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenDurableReceiptCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	baseComplete := options.CompleteMember
@@ -367,6 +387,7 @@ func TestTailCovReceiveFailsWhenDurableReceiptCannotBeWritten(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenCompletionEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.AfterReceipt = func() error {
@@ -379,6 +400,7 @@ func TestTailCovReceiveFailsWhenCompletionEventCannotBeRecorded(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenSuccessorStartedEventCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	baseStart := options.StartSuccessor
@@ -398,6 +420,7 @@ func TestTailCovReceiveFailsWhenSuccessorStartedEventCannotBeRecorded(t *testing
 }
 
 func TestTailCovReceiveMembersReadyReplayDefaultsToRealVerifier(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	interrupted := false
@@ -429,6 +452,7 @@ func TestTailCovReceiveMembersReadyReplayDefaultsToRealVerifier(t *testing.T) {
 }
 
 func TestTailCovTargetStoreRootJoinsParkDirectory(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if got, want := TargetStoreRoot(home), filepath.Join(home, sessionpark.TargetDirName); got != want {
 		t.Fatalf("TargetStoreRoot(%q) = %q, want %q", home, got, want)

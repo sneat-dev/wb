@@ -407,6 +407,7 @@ func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *tes
 // pins the floor: a repository whose origin has no resolvable ref at all
 // must still fail loudly rather than silently resolving to nothing.
 func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runEngineGit(t, root, "init", "--bare", remote)

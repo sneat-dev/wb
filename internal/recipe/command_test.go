@@ -24,6 +24,7 @@ func git(t *testing.T, dir string, args ...string) {
 }
 
 func TestPreviewCommandNoDryRunCommand(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Command: "true"}
 	p, err := previewCommand(r, t.TempDir())
 	if err != nil {
@@ -35,6 +36,7 @@ func TestPreviewCommandNoDryRunCommand(t *testing.T) {
 }
 
 func TestPreviewCommandCleanExit(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Command: "true", DryRunCommand: "exit 0"}
 	p, err := previewCommand(r, t.TempDir())
 	if err != nil {
@@ -46,6 +48,7 @@ func TestPreviewCommandCleanExit(t *testing.T) {
 }
 
 func TestPreviewCommandNonZeroExit(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Command: "fix-it", DryRunCommand: "exit 1"}
 	p, err := previewCommand(r, t.TempDir())
 	if err != nil {
@@ -57,6 +60,7 @@ func TestPreviewCommandNonZeroExit(t *testing.T) {
 }
 
 func TestPreviewCommandCountRegex(t *testing.T) {
+	t.Parallel()
 	r := Recipe{
 		Command:       "fix-it",
 		DryRunCommand: `echo "3 violation(s) found"; exit 1`,
@@ -72,6 +76,7 @@ func TestPreviewCommandCountRegex(t *testing.T) {
 }
 
 func TestPreviewCommandLaunchFailure(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Command: "x", DryRunCommand: "this-command-does-not-exist-xyz"}
 	if _, err := previewCommand(r, t.TempDir()); err == nil {
 		t.Error("expected an error when the dry_run_command can't be found, got nil")
@@ -79,6 +84,7 @@ func TestPreviewCommandLaunchFailure(t *testing.T) {
 }
 
 func TestCommandMutatorChanges(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("v1\n"), 0o644); err != nil {
@@ -98,6 +104,7 @@ func TestCommandMutatorChanges(t *testing.T) {
 }
 
 func TestCommandMutatorNoChange(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 

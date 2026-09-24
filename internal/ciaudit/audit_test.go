@@ -7,6 +7,7 @@ import (
 )
 
 func TestAuditAcceptsCoverageAndVerifiedArtifactPromotion(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write(t, root, "backend/main.go", "package main\nfunc main() {}\n")
 	write(t, root, "frontend/package.json", `{"devDependencies":{"vitest":"1"}}`)
@@ -47,6 +48,7 @@ jobs:
 }
 
 func TestAuditReportsMissingThresholdsAndDeployRebuild(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write(t, root, "main.go", "package main\n")
 	write(t, root, "package.json", `{"devDependencies":{"vitest":"1"}}`)
@@ -82,6 +84,7 @@ jobs:
 }
 
 func TestAuditReportsDuplicateE2ESetup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write(t, root, "package.json", `{"devDependencies":{"vitest":"1"}}`)
 	write(t, root, ".github/workflows/ci.yml", `
@@ -108,7 +111,9 @@ jobs:
 }
 
 func TestAuditRecognizesAstroRuntimeCoverageWithoutClassifyingManifestOnlyDocsAsFrontend(t *testing.T) {
+	t.Parallel()
 	t.Run("Astro source with CI-invoked c8 coverage", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", `{
   "scripts": {
@@ -134,6 +139,7 @@ jobs:
 	})
 
 	t.Run("manifest-only documentation", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", `{
   "scripts": {
@@ -160,6 +166,7 @@ jobs:
 }
 
 func TestAuditRecognizesOnlyEnforcedPlaywrightV8Coverage(t *testing.T) {
+	t.Parallel()
 	const manifest = `{
   "scripts": {
     "test:coverage": "pnpm run build && playwright test"
@@ -185,6 +192,7 @@ test("built landing runtime", async ({ page }) => {
 `
 
 	t.Run("invoked coverage script with positive executable-line gate", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
@@ -201,6 +209,7 @@ test("built landing runtime", async ({ page }) => {
 	})
 
 	t.Run("coverage package script is not invoked", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
@@ -222,6 +231,7 @@ jobs:
 	})
 
 	t.Run("ordinary Playwright test", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
@@ -244,6 +254,7 @@ test("landing", async ({ page }) => {
 	})
 
 	t.Run("zero threshold and diagnostic percentage", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
@@ -270,6 +281,7 @@ test("coverage diagnostic", async ({ page }) => {
 	})
 
 	t.Run("documentation example", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "README.md", positiveGate)
@@ -286,7 +298,9 @@ test("coverage diagnostic", async ({ page }) => {
 }
 
 func TestAuditRequiresPositiveConfiguredGoCoverageThreshold(t *testing.T) {
+	t.Parallel()
 	t.Run("wb sharded coverage gate", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -311,6 +325,7 @@ jobs:
 	})
 
 	t.Run("zero wb sharded coverage gate", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -330,6 +345,7 @@ jobs:
 	})
 
 	t.Run("zero diagnostic", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -353,6 +369,7 @@ jobs:
 	})
 
 	t.Run("positive configuration", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -375,7 +392,9 @@ jobs:
 }
 
 func TestAuditDoesNotClassifyWranglerDryRunAsDeployment(t *testing.T) {
+	t.Parallel()
 	t.Run("dry run", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/deploy.yml", `
 jobs:
@@ -394,6 +413,7 @@ jobs:
 	})
 
 	t.Run("real deploy", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/ci.yml", `
 jobs:

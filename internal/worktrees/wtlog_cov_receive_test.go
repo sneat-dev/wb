@@ -160,6 +160,7 @@ func TestWtLogCovReceivedSessionWorktreePath(t *testing.T) {
 }
 
 func TestWtLogCovExactInterruptedSessionStage(t *testing.T) {
+	t.Parallel()
 	operationRoot := t.TempDir()
 	stage := ".wb-stage-" + strings.Repeat("a", 32)
 	if err := os.MkdirAll(filepath.Join(operationRoot, stage, "checkout"), 0o700); err != nil {
@@ -182,6 +183,7 @@ func TestWtLogCovExactInterruptedSessionStage(t *testing.T) {
 }
 
 func TestWtLogCovInterruptedSessionStageNames(t *testing.T) {
+	t.Parallel()
 	operationRoot := t.TempDir()
 	stage := ".wb-stage-" + strings.Repeat("b", 32)
 	if err := os.MkdirAll(filepath.Join(operationRoot, stage), 0o700); err != nil {
@@ -194,7 +196,7 @@ func TestWtLogCovInterruptedSessionStageNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	names, err := interruptedSessionStageNames(directory)
 	if err != nil {
 		t.Fatal(err)

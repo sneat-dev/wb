@@ -46,6 +46,7 @@ func initRepository(t *testing.T) string {
 // working tree including modified and untracked files, so an uncommitted
 // library still has an identity; ignored build output does not change it.
 func TestContentHashCoversModifiedAndUntrackedFilesButNotIgnoredOnes(t *testing.T) {
+	t.Parallel()
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -99,6 +100,7 @@ func TestContentHashCoversModifiedAndUntrackedFilesButNotIgnoredOnes(t *testing.
 }
 
 func TestTrackedChangesIgnoresUntrackedArtefacts(t *testing.T) {
+	t.Parallel()
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -129,6 +131,7 @@ func TestTrackedChangesIgnoresUntrackedArtefacts(t *testing.T) {
 // untracked, which is the only thing that proves the exclude landed where Git
 // reads it.
 func TestExcludePathUsesTheWorktreeExcludeFileAndNotTheTrackedGitignore(t *testing.T) {
+	t.Parallel()
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -193,6 +196,7 @@ func gitStatus(t *testing.T, root string) string {
 // Link replaces a real installed package with a symlink and keeps the original
 // aside, so Unlink restores exactly what was there rather than reinstalling.
 func TestExecNodeLinkAndUnlinkRestoreTheInstalledPackage(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	installed := filepath.Join(consumer, "node_modules", "@acme", "core")
 	if err := os.MkdirAll(installed, 0o755); err != nil {
@@ -240,6 +244,7 @@ func TestExecNodeLinkAndUnlinkRestoreTheInstalledPackage(t *testing.T) {
 }
 
 func TestExecNodeBuildRefusesWithoutAContentHash(t *testing.T) {
+	t.Parallel()
 	node := ExecNode{CacheRoot: t.TempDir()}
 	if _, err := node.Build(context.Background(), t.TempDir(), t.TempDir()); err == nil {
 		t.Fatal("a build with no content hash to key its cache reported success")
@@ -247,6 +252,7 @@ func TestExecNodeBuildRefusesWithoutAContentHash(t *testing.T) {
 }
 
 func TestNodeBuildCommandSelectsThePackageNxTarget(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	packageDir := filepath.Join(workspace, "libs", "extensions", "contactus", "runtime")
 	if err := os.MkdirAll(packageDir, 0o755); err != nil {
@@ -271,6 +277,7 @@ func TestNodeBuildCommandSelectsThePackageNxTarget(t *testing.T) {
 }
 
 func TestNodeBuildCommandFallsBackToWorkspaceBuildScript(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	packageDir := filepath.Join(workspace, "libs", "core")
 	if err := os.MkdirAll(packageDir, 0o755); err != nil {
@@ -291,6 +298,7 @@ func TestNodeBuildCommandFallsBackToWorkspaceBuildScript(t *testing.T) {
 // The build cache is keyed by content hash: the same hash reuses the build,
 // and a moved hash rebuilds.
 func TestExecNodeBuildCacheIsKeyedByContentHash(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
 	library := t.TempDir()
 	packageDir := filepath.Join(library, "libs", "core")
@@ -332,6 +340,7 @@ func TestExecNodeBuildCacheIsKeyedByContentHash(t *testing.T) {
 // left the consumer with no package at all. Its target is now recorded and
 // re-created.
 func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
 	if err := os.MkdirAll(store, 0o755); err != nil {
@@ -429,6 +438,7 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 }
 
 func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	packages := []struct {
 		name         string
@@ -571,6 +581,7 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 // published singleton after the root has been linked to an unpublished build.
 // The local-link operation must detect that split before reporting success.
 func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	if err := os.WriteFile(filepath.Join(consumer, "package.json"), []byte(`{
 		"name":"consumer",
@@ -621,11 +632,11 @@ func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testin
 	if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if _, err := node.Unlink(context.Background(), consumer, "@acme/core"); err != nil {
 			t.Errorf("undo linked core: %v", err)
 		}
-	}()
+	})
 
 	err := node.LinkSiblings(context.Background(), consumer, []string{"@acme/core"})
 	if err == nil ||
@@ -671,6 +682,7 @@ func resolvePath(t *testing.T, path string) string {
 }
 
 func TestExecNodeLinkRejectsInstalledPackageSymlinkOutsideConsumer(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	outside := t.TempDir()
 	target := filepath.Join(consumer, "node_modules", "@acme", "core")
@@ -694,6 +706,7 @@ func TestExecNodeLinkRejectsInstalledPackageSymlinkOutsideConsumer(t *testing.T)
 }
 
 func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) {
+	t.Parallel()
 	newConsumer := func(t *testing.T) (consumer, target, stage string) {
 		t.Helper()
 		consumer = t.TempDir()
@@ -725,6 +738,7 @@ func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) 
 	node := ExecNode{}
 
 	t.Run("stage", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, stage := newConsumer(t)
 		if err := os.MkdirAll(stage, 0o755); err != nil {
 			t.Fatal(err)
@@ -745,6 +759,7 @@ func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) 
 	})
 
 	t.Run("recovery artifact", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, stage := newConsumer(t)
 		backup := target + linkSymlinkBackupSuffix
 		if err := os.WriteFile(backup, []byte("do-not-replace\n"), 0o644); err != nil {
@@ -766,6 +781,7 @@ func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) 
 }
 
 func TestCopyBuiltPackageRejectsSymlinks(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
@@ -791,6 +807,7 @@ func TestCopyBuiltPackageRejectsSymlinks(t *testing.T) {
 }
 
 func TestUnlinkRejectsMarkerForAnotherStagedPath(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	marker := linkAppliedMarkerPath(consumer, "@acme/core")
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
@@ -818,6 +835,7 @@ func TestUnlinkRejectsMarkerForAnotherStagedPath(t *testing.T) {
 // SHOULD-FIX (b). A consumer with no lockfile has no frozen baseline to prove,
 // so the check reports that it could not run rather than passing silently.
 func TestFrozenInstallWithNoLockfileIsReportedAsSkippedNotPassed(t *testing.T) {
+	t.Parallel()
 	node := ExecNode{Timeout: 30 * time.Second}
 	err := node.FrozenInstall(context.Background(), t.TempDir())
 	skipped, wasSkipped := Skipped(err)
@@ -833,6 +851,7 @@ func TestFrozenInstallWithNoLockfileIsReportedAsSkippedNotPassed(t *testing.T) {
 // was live must be flagged: reporting success would say the published package
 // is back when it is not.
 func TestUnlinkFlagsARestoredSymlinkThatDangles(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
 	if err := os.MkdirAll(store, 0o755); err != nil {
@@ -875,6 +894,7 @@ func TestUnlinkFlagsARestoredSymlinkThatDangles(t *testing.T) {
 // package is already installed, so undo clears the stale record and leaves
 // the filesystem exactly as the package manager left it.
 func TestExecNodeUnlinkClearsRecordWhenLinkAlreadySupersededByPublishedPackage(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	originalStore := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
 	if err := os.MkdirAll(originalStore, 0o755); err != nil {
@@ -956,6 +976,7 @@ func TestExecNodeUnlinkClearsRecordWhenLinkAlreadySupersededByPublishedPackage(t
 // mistaken for a superseded one: it restores the previously-installed
 // package as always and reports no note.
 func TestExecNodeUnlinkStillStagedRestoresNormally(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	installed := filepath.Join(consumer, "node_modules", "@acme", "core")
 	if err := os.MkdirAll(installed, 0o755); err != nil {
@@ -994,6 +1015,7 @@ func TestExecNodeUnlinkStillStagedRestoresNormally(t *testing.T) {
 // rather than a package manager's own resolution — must keep refusing so a
 // real problem is never silently discarded.
 func TestExecNodeUnlinkRefusesWhenTargetIsUnknown(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
 	if err := os.MkdirAll(store, 0o755); err != nil {

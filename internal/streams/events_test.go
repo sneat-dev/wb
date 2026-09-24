@@ -12,6 +12,7 @@ import (
 // REQ: every-verb-appends-a-structured-event — every append is versioned and
 // concurrent appenders interleave records rather than corrupt one.
 func TestEventLogAppendsConcurrentlyWithoutLosingRecords(t *testing.T) {
+	t.Parallel()
 	log := &FileEventLog{Path: filepath.Join(t.TempDir(), "events.jsonl")}
 	var group sync.WaitGroup
 	const appenders = 16
@@ -71,6 +72,7 @@ func TestEventLogStampsProvenanceFromEnv(t *testing.T) {
 // REQ: redaction-runs-before-any-bytes-leave-the-process — a credential never
 // reaches the log file, not merely never reaches an export.
 func TestEventLogRedactsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	log := &FileEventLog{Path: path, Now: func() time.Time { return time.Unix(0, 0).UTC() }}
 	secret := "ghp_0123456789abcdefghijklmnopqrstuvwx"
@@ -94,6 +96,7 @@ func TestEventLogRedactsBeforeWriting(t *testing.T) {
 }
 
 func TestReadEventsRefusesANewerSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	if err := os.WriteFile(path, []byte(`{"schema_version":99,"verb":"x"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -104,6 +107,7 @@ func TestReadEventsRefusesANewerSchema(t *testing.T) {
 }
 
 func TestReadEventsOnAMissingLogIsEmptyNotAnError(t *testing.T) {
+	t.Parallel()
 	events, err := ReadEvents(filepath.Join(t.TempDir(), "absent.jsonl"))
 	if err != nil || len(events) != 0 {
 		t.Fatalf("events = %v, err = %v; want an empty log", events, err)
@@ -111,6 +115,7 @@ func TestReadEventsOnAMissingLogIsEmptyNotAnError(t *testing.T) {
 }
 
 func TestRedactStringCoversTheDocumentedCredentialShapes(t *testing.T) {
+	t.Parallel()
 	for _, secret := range []string{
 		"ghp_0123456789abcdefghijklmnopqrstuvwx",
 		"github_pat_11ABCDEFG0abcdefghijkl_0123456789",
@@ -127,6 +132,7 @@ func TestRedactStringCoversTheDocumentedCredentialShapes(t *testing.T) {
 }
 
 func TestDiscardEventsAcceptsEverything(t *testing.T) {
+	t.Parallel()
 	if err := (DiscardEvents{}).Append(Event{}); err != nil {
 		t.Fatal(err)
 	}

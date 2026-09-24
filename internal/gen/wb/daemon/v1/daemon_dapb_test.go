@@ -182,6 +182,7 @@ func TestDapbMessageDescriptorAndProtoReflect(t *testing.T) {
 func TestDapbGettersReturnFieldValues(t *testing.T) {
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			m := tc.fresh()
 			dapbSetAllFields(t, m)
 			rv := reflect.ValueOf(m).Elem()
@@ -239,6 +240,7 @@ func TestDapbGettersReturnFieldValues(t *testing.T) {
 func TestDapbGettersAreNilSafe(t *testing.T) {
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ptrType := reflect.TypeOf(tc.fresh())
 			rv := reflect.Zero(ptrType)
 			if !rv.IsNil() {
@@ -298,6 +300,7 @@ func TestDapbResetClearsFields(t *testing.T) {
 func TestDapbMarshalUnmarshalRoundTrip(t *testing.T) {
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			src := tc.fresh()
 			dapbSetAllFields(t, src)
 			blob, err := proto.Marshal(src)
@@ -399,6 +402,7 @@ func TestDapbEnumAccessors(t *testing.T) {
 // TestDapbFileDescriptor asserts the file descriptor carries the two enums and
 // the single service declared in daemon.proto.
 func TestDapbFileDescriptor(t *testing.T) {
+	t.Parallel()
 	fd := File_wb_daemon_v1_daemon_proto
 	if fd == nil {
 		t.Fatal("File_wb_daemon_v1_daemon_proto is nil")

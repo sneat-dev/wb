@@ -38,6 +38,7 @@ func cloneInto(t *testing.T, origin, dest string) {
 }
 
 func TestSyncReportsAheadOnlyCloneAsUnpushed(t *testing.T) {
+	t.Parallel()
 	repo := aheadOnlyClone(t)
 
 	res := Sync(context.Background(), repo, "", false, false)
@@ -56,6 +57,7 @@ func TestSyncReportsAheadOnlyCloneAsUnpushed(t *testing.T) {
 
 // Work abandoned on a side branch is still work that exists nowhere else.
 func TestSyncReportsUnpushedOnANonCheckedOutBranch(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -80,6 +82,7 @@ func TestSyncReportsUnpushedOnANonCheckedOutBranch(t *testing.T) {
 // The ordinary case must stay ordinary: a clone with nothing of its own is
 // still just Pulled.
 func TestSyncStillReportsPulledWhenNothingIsOwed(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -95,6 +98,7 @@ func TestSyncStillReportsPulledWhenNothingIsOwed(t *testing.T) {
 }
 
 func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
@@ -108,6 +112,7 @@ func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
 }
 
 func TestSyncDryRunMatchesApplyForDetachedClone(t *testing.T) {
+	t.Parallel()
 	origin := newRemote(t)
 	local := t.TempDir()
 	cloneInto(t, origin, local)
@@ -175,6 +180,7 @@ func TestSyncStillKeepsArchivedCloneDirtyForOtherReasons(t *testing.T) {
 }
 
 func TestUnpushedAndArchivedUnlandableStatusStrings(t *testing.T) {
+	t.Parallel()
 	if got := Unpushed.String(); got != "unpushed commits" {
 		t.Fatalf("Unpushed.String() = %q", got)
 	}

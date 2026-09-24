@@ -575,6 +575,11 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	return result, nil
 }
 
+// pinPullRequestViewPollDelay is a var, not a const, so a test exercising
+// more than one poll iteration can shrink it instead of waiting out the
+// real interval.
+var pinPullRequestViewPollDelay = 200 * time.Millisecond
+
 // pinPullRequestViewToHead re-reads a pull request until its own reported
 // head SHA matches pushedHead, bounded rather than immediate: GitHub's own
 // read-after-write for a pull request this call just adopted or created can
@@ -586,9 +591,8 @@ func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHea
 		return view, nil
 	}
 	const attempts = 5
-	const delay = 200 * time.Millisecond
 	for attempt := 1; attempt < attempts; attempt++ {
-		time.Sleep(delay)
+		time.Sleep(pinPullRequestViewPollDelay)
 		refreshed, err := ReadPullRequest(ctx, repository, number)
 		if err != nil {
 			return view, fmt.Errorf("re-read pull request %s#%s to confirm its pushed head: %w", repository, number, err)

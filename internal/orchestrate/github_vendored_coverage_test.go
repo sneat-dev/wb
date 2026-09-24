@@ -161,6 +161,7 @@ func TestOrchCovReadPullRequestRefusesIdentityItCannotProve(t *testing.T) {
 }
 
 func TestOrchCovReadPullRequestRefusesAnUnaddressableRequest(t *testing.T) {
+	t.Parallel()
 	if _, err := ReadPullRequest(context.Background(), "acme/app", "not-a-number"); err == nil {
 		t.Fatal("unaddressable selector was accepted")
 	}
@@ -444,6 +445,7 @@ func TestOrchCovObservedSatisfiesMatchesNameProducerAndBucket(t *testing.T) {
 		{name: "unknown name", expectation: RequiredRemoteCheck{Name: "Deploy"}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := observedSatisfies(observed, test.expectation); got != test.want {
 				t.Fatalf("observedSatisfies(%+v) = %t, want %t", test.expectation, got, test.want)
 			}
