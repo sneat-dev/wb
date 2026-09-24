@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
@@ -259,6 +260,12 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 		{"unknown subcommand flag is a usage error", []string{"status", "--no-such-flag"}, exitUsage},
 		{"too many arguments is a usage error", []string{"version", "unexpected"}, exitUsage},
 		{"a rejected flag value is a usage error", []string{"coverage", "--parallel", "not-a-number"}, exitUsage},
+		// A command that starts (PersistentPreRunE runs, so commandStarted
+		// becomes true) and then fails is a finding, not a usage error — this
+		// is the exit-1 row TestConcurrentInvocationsReportOwnExitCode's
+		// discriminating goroutine below relies on, and the plain
+		// commandStarted propagation this table did not otherwise exercise.
+		{"a started command that fails is a finding", []string{"deps", "graph", "--ecosystem", "bogus", "--non-interactive"}, exitFindings},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -267,6 +274,80 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 				t.Errorf("run(%q) = %d, want %d; stderr: %s", test.args, got, test.want, stderr.String())
 			}
 		})
+	}
+}
+
+// TestConcurrentInvocationsReportOwnExitCode is the regression test for #733:
+// runWithStdin used to record whether a command started in a package-level
+// `commandStarted` variable, shared by every concurrent call in this test
+// binary. A real `wb` process only ever calls run() once, so that never
+// raced in production, but many cmd/wb tests call run()/runWithStdin()
+// directly with t.Parallel(), racing the shared variable from multiple
+// goroutines in one process (race.yml run 36051478734, 24 DATA RACE blocks
+// against the whole package-level `var` block in main.go). Building one
+// *invocation per call and closing over it while constructing the command
+// tree, instead of writing a package-level var, means two concurrent
+// invocations now write to two different structs and so cannot
+// cross-contaminate each other's exit code — the outcome this test pins,
+// without needing -race (unavailable locally; go-ci's race job does not
+// cover cmd/wb, and race.yml's cmd/wb run stays red on the other four
+// package-level globals until the last PR in this sequence, so it would add
+// no separate signal here) to see it hold.
+//
+// The two invocations must be chosen so a cross-contaminated commandStarted
+// actually flips an exit code:
+//   - "--no-such-flag" fails flag parsing before PersistentPreRunE ever runs,
+//     so it reads commandStarted without either goroutine having a chance to
+//     race a write into it — pairing it with "--help" (also pre-PreRunE, and
+//     exitOK returns before commandStarted is read at all) cannot fail even
+//     with the shared package-level var restored, because neither goroutine
+//     ever sets "started" to observe. This was PR #737's mistake.
+//   - The fix pairs the usage-error invocation with one that starts and then
+//     fails with a plain (uncoded) error: "deps graph --ecosystem bogus
+//     --non-interactive". Its ecosystem check runs inside RunE, after
+//     PersistentPreRunE has set commandStarted = true, and returns a plain
+//     fmt.Errorf before touching the network or the filesystem — pure,
+//     fast, and safe under t.Parallel(). exitCodeFor(err, started) needs
+//     started == true to report exitFindings (1) instead of exitUsage (2).
+//     With the package-level var restored, a write from one goroutine
+//     (start writing true, or the other resetting it to false at the top of
+//     the next runWithStdin call) is visible to the other's read, flipping
+//     either result: 5–13 of 200 usage runs and 5–11 of 200 findings runs
+//     get the wrong code in local reproduction (no -race needed).
+func TestConcurrentInvocationsReportOwnExitCode(t *testing.T) {
+	t.Parallel()
+	const iterations = 200
+
+	usageResults := make([]int, iterations)
+	findingsResults := make([]int, iterations)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			usageResults[i] = run([]string{"--no-such-flag"}, &stdout, &stderr)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			findingsResults[i] = run([]string{"deps", "graph", "--ecosystem", "bogus", "--non-interactive"}, &stdout, &stderr)
+		}
+	}()
+	wg.Wait()
+
+	for i, got := range usageResults {
+		if got != exitUsage {
+			t.Errorf("usage invocation #%d = %d, want %d (cross-contaminated by the concurrent started-and-failed invocation)", i, got, exitUsage)
+		}
+	}
+	for i, got := range findingsResults {
+		if got != exitFindings {
+			t.Errorf("started-and-failed invocation #%d = %d, want %d (cross-contaminated by the concurrent usage-error invocation)", i, got, exitFindings)
+		}
 	}
 }
 

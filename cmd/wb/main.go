@@ -35,11 +35,30 @@ var (
 	filterFlag     string
 	extraOrgs      []string
 	nonInteractive bool
-
-	// commandStarted records that cobra accepted the invocation and began
-	// running a command. See the PersistentPreRunE in newRootCmd.
-	commandStarted bool
 )
+
+// invocation carries the mutable state one run()/runWithStdin() call reads
+// and writes, as opposed to the package-level `var` block above (#733): a
+// real CLI process calls run() exactly once, so package-level globals never
+// raced there, but many cmd/wb tests call run()/runWithStdin() directly with
+// t.Parallel(), and every such call shared the same package-level storage —
+// a genuine data race the race detector catches (issue #733). Building one
+// *invocation per call and closing over it while constructing the command
+// tree (newRootCmdFor below) removes the shared mutable state.
+//
+// commandStarted is the first (and, for this PR, only) field moved out of
+// the package-level block above; projectsRoot, filterFlag, extraOrgs and
+// nonInteractive follow in later PRs in this same sequence (task-5,
+// spec/plans/coverage-to-100) — each will bind its persistent flag directly
+// to a field on *invocation instead of to the package-level var, which is why
+// this seam builds the invocation before the command tree rather than after:
+// a flag's bound target has to exist when PersistentFlags().XxxVar(&target,
+// ...) runs, during tree construction, not later when the tree executes.
+type invocation struct {
+	// commandStarted records that cobra accepted the invocation and began
+	// running a command. See the PersistentPreRunE in newRootCmdFor.
+	commandStarted bool
+}
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
 // given: WB_PROJECTS_ROOT when set, else ~/projects. It is the only place the
@@ -90,7 +109,22 @@ activates only when its output stream is a terminal. Pass --non-interactive, or
 set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
 
+// newRootCmd builds the command tree for callers that only inspect it (help
+// text, subcommand paths, flag matrices) rather than execute it through
+// runWithStdin. It is the ~50 existing test call sites' entry point, and
+// stays a zero-argument constructor so none of them need to change as more
+// package-level globals move onto *invocation in later PRs: it hands
+// newRootCmdFor a throwaway invocation that is never read back.
 func newRootCmd() *cobra.Command {
+	return newRootCmdFor(&invocation{})
+}
+
+// newRootCmdFor builds the command tree for one invocation, closing over inv
+// so PersistentPreRunE and (in later PRs) flag bindings write into it
+// directly instead of into a package-level var or a value fished back out of
+// cobra's context. runWithStdin is the only caller that keeps inv afterwards
+// to read commandStarted.
+func newRootCmdFor(inv *invocation) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wb",
 		Short:         "Workbench CLI — fleet-wide operations across your GitHub repositories",
@@ -117,7 +151,7 @@ func newRootCmd() *cobra.Command {
 			// before any work starts, on stderr, without touching the exit
 			// code — a retired variable must not become a rejected command.
 			warnIgnoredWBHome(cmd)
-			commandStarted = true
+			inv.commandStarted = true
 			id := persistentCommandID(cmd)
 			// `wb version` (including --json) MUST stay side-effect-free
 			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
@@ -489,12 +523,12 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return printBareVersion(stdout)
 	}
 
-	commandStarted = false
+	inv := &invocation{}
 	// Keep the in-process test/embedding runner on the same admission and
 	// attribution path as the production main entrypoint. The resolver is
 	// read-only until a command explicitly mutates state.
 	installSessionResolver()
-	root := newRootCmd()
+	root := newRootCmdFor(inv)
 	root.SetArgs(args)
 	root.SetIn(stdin)
 	root.SetOut(stdout)
@@ -512,7 +546,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return exitOK
 	}
 	_, _ = fmt.Fprintln(stderr, "error:", err)
-	code := exitCodeFor(err, commandStarted)
+	code := exitCodeFor(err, inv.commandStarted)
 	if code == exitUsage {
 		_, _ = fmt.Fprintln(stderr, usageRecoveryHint(root, args))
 	}
