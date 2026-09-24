@@ -402,7 +402,37 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		}
 	}
 	t.Run("trusted validation reuse", func(t *testing.T) {
+		// A trusted receipt is only ever selected for a push to main
+		// (.github/scripts/ci-reuse-select.sh requires GITHUB_EVENT_NAME ==
+		// push), so this scenario always carries EVENT_NAME=push. The
+		// coverage job stays exempt from the reuse skip on push (it is the
+		// per-change ratchet's baseline producer), so it still concludes
+		// "success" while every other reused check is "skipped".
 		values := map[string]string{
+			"EVENT_NAME":         "push",
+			"ELIGIBILITY_RESULT": "success",
+			"REUSE_RESULT":       "true",
+			"REUSE_JOB_RESULT":   "success",
+			"SOURCE_RESULT":      "skipped",
+			"STATIC_RESULT":      "skipped",
+			"LINT_RESULT":        "skipped",
+			"COVERAGE_RESULT":    "success",
+			"RACE_RESULT":        "skipped",
+			"WINDOWS_RESULT":     "skipped",
+		}
+		if err := runValues(values); err != nil {
+			t.Fatalf("trusted reuse was rejected: %v", err)
+		}
+	})
+	t.Run("push reusing validation still requires the coverage baseline job to run", func(t *testing.T) {
+		// Regression for the "Tests and coverage" concluded success; expected
+		// skipped failure on every push to main after task-3 (#696,
+		// 654b8bf): the coverage job runs unconditionally on push (it is the
+		// ratchet's baseline producer) even when REUSE_RESULT=true, so a
+		// "skipped" conclusion for it must now be rejected instead of
+		// silently accepted like every other reused check.
+		values := map[string]string{
+			"EVENT_NAME":         "push",
 			"ELIGIBILITY_RESULT": "success",
 			"REUSE_RESULT":       "true",
 			"REUSE_JOB_RESULT":   "success",
@@ -413,8 +443,8 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"RACE_RESULT":        "skipped",
 			"WINDOWS_RESULT":     "skipped",
 		}
-		if err := runValues(values); err != nil {
-			t.Fatalf("trusted reuse was rejected: %v", err)
+		if err := runValues(values); err == nil {
+			t.Fatal("summary accepted a skipped coverage job on a push that reused validation")
 		}
 	})
 	allSkipped := func(event, goRequired string) map[string]string {
