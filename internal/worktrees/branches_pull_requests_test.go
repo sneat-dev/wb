@@ -143,3 +143,28 @@ func TestBranchListReportsPullRequestQueryFailureOnRemoteRow(t *testing.T) {
 		t.Fatalf("remote row hid query failure: %#v", entry)
 	}
 }
+
+func TestBranchListWithPRsIncludesInUseRemoteBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	worktreeDir := filepath.Join(t.TempDir(), "in-use")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/in-use-pr", worktreeDir, "main")
+	writeAndCommit(t, worktreeDir, "in-use.txt", "v1\n", "in-use PR work")
+	gitTest(t, fixture.canonical, "push", "origin", "feature/in-use-pr")
+	installBranchPullRequestFixture(t,
+		`[{"number":12,"html_url":"https://example.test/12","state":"open","head":{"ref":"feature/in-use-pr","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`,
+		`[]`)
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
+		Repository: "acme/app", Branch: "feature/in-use-pr", WithPRs: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 {
+		t.Fatalf("entries = %#v, want one remote row", outcome.Entries)
+	}
+	entry := outcome.Entries[0]
+	if entry.Disposition != BranchInUse || !entry.PullRequestQueried || entry.OpenPullRequest == nil || entry.OpenPullRequest.Number != 12 {
+		t.Fatalf("in-use remote row lacks open PR evidence: %#v", entry)
+	}
+}

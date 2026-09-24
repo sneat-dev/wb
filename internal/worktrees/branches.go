@@ -811,8 +811,8 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 			} else {
 				entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
 				entry := &entries[len(entries)-1]
-				if entry.Disposition != BranchProtected && entry.Disposition != BranchInUse && entry.Disposition != BranchUnreadable &&
-					(sweep.WithPRs || (sweep.Cleanup && eligibleBranchCleanupDisposition(*entry))) {
+				if (sweep.WithPRs && entry.Disposition != BranchProtected && entry.Disposition != BranchUnreadable) ||
+					(sweep.Cleanup && eligibleBranchCleanupDisposition(*entry)) {
 					decorateRemoteBranchPullRequests(ctx, repository, ref, entry, branchPullRequestCache, sweep.WithPRs)
 				}
 			}
