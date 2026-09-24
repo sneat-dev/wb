@@ -20,8 +20,8 @@ import (
 // It deliberately shares primitives with Worktree Lifecycle — the same
 // fresh-fetch exact target resolution (fetchRemoteTargetHead), the same
 // ancestor/tree/patch-id evidence gathering (isAncestor, commitTree, git
-// cherry), the same GitHub pull-request evidence (githubPullRequests,
-// matchingPullRequests), and the same compare-and-delete/force-with-lease ref
+// cherry), the same GitHub merged-receipt proof, and the same
+// compare-and-delete/force-with-lease ref
 // retirement (gitCanonical, runSecureCleanupGitHelper) — while remaining a
 // sibling command family with its own evidence taxonomy and its own top-level
 // `wb branch` surface. See spec/features/branch-hygiene/README.md.
@@ -79,31 +79,35 @@ type BranchListOptions struct {
 
 // BranchEntry is one branch and the evidence behind its disposition.
 type BranchEntry struct {
-	Repository      string       `json:"repository"`
-	Branch          string       `json:"branch"`
-	RefKind         string       `json:"ref_kind,omitempty"` // branch or tag
-	Scope           string       `json:"scope"`              // local or remote
-	SHA             string       `json:"sha"`
-	ShortSHA        string       `json:"short_sha"`
-	CommitterDate   time.Time    `json:"committer_date,omitempty"`
-	Author          string       `json:"author,omitempty"`
-	Title           string       `json:"title,omitempty"`
-	Base            string       `json:"base"`
-	TargetSHA       string       `json:"target_sha,omitempty"`
-	Disposition     string       `json:"disposition"`
-	Evidence        string       `json:"evidence"`
-	Reason          string       `json:"reason,omitempty"`
-	Task            string       `json:"task,omitempty"`
-	OpenPullRequest *PullRequest `json:"open_pull_request,omitempty"`
+	Repository            string              `json:"repository"`
+	Branch                string              `json:"branch"`
+	RefKind               string              `json:"ref_kind,omitempty"` // branch or tag
+	Scope                 string              `json:"scope"`              // local or remote
+	SHA                   string              `json:"sha"`
+	ShortSHA              string              `json:"short_sha"`
+	CommitterDate         time.Time           `json:"committer_date,omitempty"`
+	Author                string              `json:"author,omitempty"`
+	Title                 string              `json:"title,omitempty"`
+	Base                  string              `json:"base"`
+	TargetSHA             string              `json:"target_sha,omitempty"`
+	Disposition           string              `json:"disposition"`
+	Evidence              string              `json:"evidence"`
+	Reason                string              `json:"reason,omitempty"`
+	Task                  string              `json:"task,omitempty"`
+	OpenPullRequest       *PullRequest        `json:"open_pull_request,omitempty"`
+	OpenBasePullRequest   *PullRequest        `json:"open_base_pull_request,omitempty"`
+	PullRequests          []BranchPullRequest `json:"pull_requests,omitempty"`
+	PullRequestQueried    bool                `json:"pull_request_queried,omitempty"`
+	PullRequestQueryError string              `json:"pull_request_query_error,omitempty"`
 	// LandingSHA and ReceiptPullRequest carry a receipted branch's proved
 	// landing so apply can re-verify the receipt — not ancestry, which a
 	// receipted branch fails by construction — against the freshly fetched
 	// target. See #req:receipted-requires-a-proved-landing.
 	LandingSHA         string       `json:"landing_sha,omitempty"`
 	ReceiptPullRequest *PullRequest `json:"receipt_pull_request,omitempty"`
-	// PullRequestQueryFailed distinguishes "no open pull request" from "WB
-	// could not ask GitHub." Cleanup's remote apply fails the whole scope
-	// closed on the latter; list surfaces it but never refuses on it.
+	// PullRequestQueryFailed distinguishes "no matching pull request" from
+	// "WB could not ask GitHub." Cleanup's remote apply fails the whole scope
+	// closed on the latter; list surfaces the specific error.
 	PullRequestQueryFailed bool `json:"pull_request_query_failed,omitempty"`
 	// AbsorbedByRejection explains why an operator-supplied --absorbed-by
 	// pointer did not verify for this branch. It is set only when
@@ -789,6 +793,7 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, checkedOutDiagnostic))
 		}
 		pullRequestCache := map[string][]githubPullRequest{}
+		branchPullRequestCache := map[string]branchPullRequestEvidence{}
 		for _, ref := range remote {
 			if !branchNameSelected(sweep, ref.Name) {
 				continue
@@ -800,6 +805,7 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 				entries = append(entries, retiredBranchEntry(repository, sweep, ref, BranchScopeRemote, targetSHA))
 			} else {
 				entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
+				decorateRemoteBranchPullRequests(ctx, repository, ref, &entries[len(entries)-1], branchPullRequestCache)
 			}
 			decorateBranchCommit(ctx, repository.Path, &entries[len(entries)-1])
 		}
@@ -1030,9 +1036,6 @@ func classifyBranch(
 			}
 			entry.SupersessionSHA256 = digest
 			entry.Evidence = "trusted reviewer receipt binds the exact source, target, replacements, and complete residual inventory"
-			if scope == BranchScopeRemote {
-				classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
-			}
 			return entry
 		}
 		entry.SupersessionRejection = rejection
@@ -1047,9 +1050,6 @@ func classifyBranch(
 	if contained {
 		entry.Disposition = BranchContained
 		entry.Evidence = fmt.Sprintf("merge-base --is-ancestor %s %s", entry.ShortSHA, shortSHA(targetSHA))
-		if scope == BranchScopeRemote {
-			classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
-		}
 		return entry
 	}
 
@@ -1090,9 +1090,6 @@ func classifyBranch(
 				sweep.AbsorbedBy, shortSHA(receipt.LandingSHA), shortSHA(receipt.LandingSHA))
 			entry.Reason = fmt.Sprintf(
 				"content-proven absorbed via --absorbed-by %s; eligible for deletion", sweep.AbsorbedBy)
-			if scope == BranchScopeRemote {
-				classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
-			}
 			return entry
 		}
 		entry.AbsorbedByRejection = rejection
@@ -1117,9 +1114,6 @@ func classifyBranch(
 				receipt.Number, sweep.Base, shortSHA(receipt.MergeSHA))
 			entry.Reason = fmt.Sprintf(
 				"landed via merged pull request #%d; eligible for deletion under --receipts", receipt.Number)
-			if scope == BranchScopeRemote {
-				classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
-			}
 			return entry
 		}
 		receiptNote = "; receipt: " + note
@@ -1138,9 +1132,6 @@ func classifyBranch(
 	}
 	entry.Disposition = BranchUnique
 	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote + absorbedByNote
-	if scope == BranchScopeRemote {
-		classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
-	}
 	return entry
 }
 
@@ -1288,25 +1279,4 @@ func classifyAbsorbedOrUnique(ctx context.Context, repositoryPath, targetSHA, br
 		return true, fmt.Sprintf("tree %s identical to target tree %s", shortSHA(branchTree), shortSHA(targetTree)), 0, nil
 	}
 	return false, "", uniqueCount, nil
-}
-
-// classifyRemotePullRequestGate attaches open pull-request evidence to a
-// remote branch entry when one exists. Listing never refuses on missing PR
-// evidence — that fail-closed rule belongs to cleanup's apply path — but the
-// evidence is surfaced here so a dry run already shows what would block it.
-func classifyRemotePullRequestGate(ctx context.Context, repository discover.Repo, ref branchRef, targetSHA string, entry *BranchEntry, cache map[string][]githubPullRequest) {
-	pullRequests, ok := cache[ref.SHA]
-	if !ok {
-		fetched, err := githubPullRequests(ctx, repository.Path, repository.Slug(), ref.SHA)
-		if err != nil {
-			entry.PullRequestQueryFailed = true
-			return // list reports the missing evidence; apply's remote gate refuses on it
-		}
-		pullRequests = fetched
-		if cache != nil {
-			cache[ref.SHA] = pullRequests
-		}
-	}
-	open, _ := matchingPullRequests(pullRequests, repository.Slug(), entry.Base, ref.Name, ref.SHA)
-	entry.OpenPullRequest = open
 }

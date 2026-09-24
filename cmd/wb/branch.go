@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -364,8 +365,12 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 		if kind == "" {
 			kind = "branch"
 		}
+		evidence := entry.Evidence
+		if entry.Scope == worktrees.BranchScopeRemote && kind == "branch" && entry.Branch != "" && entry.Disposition != worktrees.BranchRetired {
+			evidence += branchPullRequestSummary(entry)
+		}
 		if _, err := fmt.Fprintf(out, "  %-18s %-32s %-8s %-12s %-11s %-21s %-16s %-24s %-8s %s\n",
-			entry.Repository, entry.Branch, kind, entry.ShortSHA, entry.Disposition, date, entry.Author, entry.Title, entry.Scope, entry.Evidence); err != nil {
+			entry.Repository, entry.Branch, kind, entry.ShortSHA, entry.Disposition, date, entry.Author, entry.Title, entry.Scope, evidence); err != nil {
 			return err
 		}
 	}
@@ -376,6 +381,20 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 		return err
 	}
 	return printRetiredBranchSummary(out, outcome)
+}
+
+func branchPullRequestSummary(entry worktrees.BranchEntry) string {
+	if entry.PullRequestQueryFailed {
+		return "; PR query failed: " + entry.PullRequestQueryError
+	}
+	if len(entry.PullRequests) == 0 {
+		return "; PRs: none"
+	}
+	var parts []string
+	for _, request := range entry.PullRequests {
+		parts = append(parts, fmt.Sprintf("%s #%d %s %s", request.Role, request.Number, request.State, request.URL))
+	}
+	return "; PRs: " + strings.Join(parts, ", ")
 }
 
 func printRetiredBranchSummary(out io.Writer, outcome worktrees.BranchListOutcome) error {
