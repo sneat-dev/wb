@@ -774,6 +774,67 @@ func TestAcknowledgeRetiresDeliveredEventsFromTheMachineQueue(t *testing.T) {
 	}
 }
 
+// TestAcknowledgePreservesQueuedWorkField is round 3's finding 1 fix: the
+// queue-state document Acknowledge reads and unconditionally writes back
+// whole must declare every field a later writer (Tasks 3 and 4's coalescing
+// enqueue and reset transactions) could have set, or acknowledging anything
+// silently erases it. QueuedWork is seeded directly (as that later writer
+// would have set it, since nothing in this task increments it) and must
+// survive an acknowledgement untouched.
+func TestAcknowledgePreservesQueuedWorkField(t *testing.T) {
+	backend := newFirestoreMemoryBackend()
+	store := repositoryEventStore{backend: backend, now: fixedNow(t)}
+	machine := testMachine("m1")
+	event := testRepositoryEvent("evt-1")
+	if _, err := store.EnqueueForMachines(context.Background(), event, []Machine{machine}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := store.Poll(context.Background(), machine, "", 10)
+	if err != nil || len(response.Events) != 1 {
+		t.Fatalf("poll = %+v, %v", response, err)
+	}
+	backend.putDocument(repositoryEventQueueCollection, machine.ID, repositoryEventQueueState{QueuedWork: 7})
+
+	ackRequest := repositoryevent.AckRequest{Version: repositoryevent.ContractVersion, Cursor: response.NextCursor, EventIDs: []string{event.ID}}
+	if _, err := store.Acknowledge(context.Background(), machine, ackRequest); err != nil {
+		t.Fatal(err)
+	}
+	var state repositoryEventQueueState
+	found, err := backend.Get(context.Background(), repositoryEventQueueCollection, machine.ID, &state)
+	if err != nil || !found {
+		t.Fatalf("queue state after acknowledge = found=%t, %v", found, err)
+	}
+	if state.QueuedWork != 7 {
+		t.Fatalf("QueuedWork = %d after acknowledge, want 7 (preserved, not silently erased)", state.QueuedWork)
+	}
+	if state.AcknowledgedSequence != 1 {
+		t.Fatalf("AcknowledgedSequence = %d, want 1", state.AcknowledgedSequence)
+	}
+}
+
+// TestQueuedWorkStoreReadsTheSameDocumentAcknowledgeWrites covers
+// QueuedWorkStore's found/absent/backend-failure branches directly, against
+// the exact document Acknowledge above reads and writes.
+func TestQueuedWorkStoreReadsTheSameDocumentAcknowledgeWrites(t *testing.T) {
+	backend := newFirestoreMemoryBackend()
+	store := NewQueuedWorkStore(backend)
+	if _, found, err := store.QueuedWork(context.Background(), "machine_1"); err != nil || found {
+		t.Fatalf("QueuedWork(absent) = found=%t, %v, want false, nil", found, err)
+	}
+	backend.putDocument(repositoryEventQueueCollection, "machine_1", repositoryEventQueueState{QueuedWork: 3})
+	if count, found, err := store.QueuedWork(context.Background(), "machine_1"); err != nil || !found || count != 3 {
+		t.Fatalf("QueuedWork(present) = %d, %t, %v, want 3, true, nil", count, found, err)
+	}
+	backend.failGet = failOnCollection(repositoryEventQueueCollection)
+	if _, _, err := store.QueuedWork(context.Background(), "machine_1"); err == nil {
+		t.Fatal("QueuedWork must surface a backend Get failure")
+	}
+	var unavailable QueuedWorkStore = queuedWorkStore{}
+	if _, _, err := unavailable.QueuedWork(context.Background(), "machine_1"); !errors.Is(err, errRepositoryEventStoreUnavailable) {
+		t.Fatalf("QueuedWork with no backend = %v, want errRepositoryEventStoreUnavailable", err)
+	}
+}
+
 // TestEnqueueForMachinesReadsEachIdentityReceiptOnce covers the transaction
 // ordering rule: every per-identity status document is read before the first
 // write (Firestore rejects reads after writes), and two machines under one

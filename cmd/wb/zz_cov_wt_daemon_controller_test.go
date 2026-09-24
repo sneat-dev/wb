@@ -105,7 +105,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	// A process that refuses to drain is reported.
 	refuseDeps := deps
 	refuseDeps.alive = func(pid int) bool { return pid == 4242 }
-	refuseDeps.stop = func(int) error { return errors.New("cwTt: cannot signal") }
+	refuseDeps.stop = func(int, daemon.Supervisor, string) error { return errors.New("cwTt: cannot signal") }
 	refused := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{}, "t", deps.now())
 	refused.MarkReady(4242, deps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(refused); err != nil {
@@ -135,7 +135,10 @@ func TestCwWtDaemonControllerStartHandsOffDifferentBinary(t *testing.T) {
 		}
 		return originalAlive(pid)
 	}
-	live.stop = func(pid int) error { overridden[pid] = false; return originalStop(pid) }
+	live.stop = func(pid int, supervisor daemon.Supervisor, label string) error {
+		overridden[pid] = false
+		return originalStop(pid, supervisor, label)
+	}
 
 	result, err := newDaemonController(live, root).Start(context.Background(), daemonDefaultListen)
 	if err != nil {
@@ -172,18 +175,18 @@ func TestCwWtDaemonControllerLaunchAndRestartErrors(t *testing.T) {
 	}
 
 	// Restart with no managed daemon and --if-running succeeds without starting.
-	if result, err := newDaemonController(deps, root).RestartWithProgress(ctx, true, nil); err != nil || result.Action != "restart" {
+	if result, err := newDaemonController(deps, root).RestartWithProgress(ctx, true, nil, false); err != nil || result.Action != "restart" {
 		t.Fatalf("Restart --if-running with no daemon = (%+v, %v)", result, err)
 	}
 
 	// Restart without --if-running starts a replacement.
-	if _, err := newDaemonController(deps, root).RestartWithProgress(ctx, false, nil); err != nil {
+	if _, err := newDaemonController(deps, root).RestartWithProgress(ctx, false, nil, false); err != nil {
 		t.Fatalf("Restart with no daemon: %v", err)
 	}
 
 	// The phase callback is exercised when a replacement is started.
 	phases := []string{}
-	if _, err := newDaemonController(deps, root).RestartWithProgress(ctx, false, func(phase string) { phases = append(phases, phase) }); err != nil {
+	if _, err := newDaemonController(deps, root).RestartWithProgress(ctx, false, func(phase string) { phases = append(phases, phase) }, false); err != nil {
 		t.Fatalf("Restart with progress: %v", err)
 	}
 	if len(phases) == 0 {
@@ -194,7 +197,7 @@ func TestCwWtDaemonControllerLaunchAndRestartErrors(t *testing.T) {
 	noExec := deps
 	noExec.alive = func(int) bool { return false }
 	noExec.executable = func() (string, error) { return "", errors.New("cwWt: no executable") }
-	if _, err := newDaemonController(noExec, root).RestartWithProgress(ctx, false, nil); err == nil {
+	if _, err := newDaemonController(noExec, root).RestartWithProgress(ctx, false, nil, false); err == nil {
 		t.Fatal("Restart without an executable must fail")
 	}
 }

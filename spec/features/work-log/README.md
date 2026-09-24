@@ -136,9 +136,9 @@ instruction bytes.
 Prompt bodies are private local data. They MUST NOT be printed in normal output,
 entered into public projections, reports, hook metrics, source Git, or a
 Synchestra envelope; only the digest and ordinal may enter public state. A
-configured archive MAY accept them only as an explicitly authorized encrypted
-sealed payload with declared retention. Local exact retention remains mandatory
-whether or not export is configured.
+configured private per-organization retirement repository MAY accept the plain
+actual Work Log files when `wb worktree retire --apply` is explicitly invoked.
+Local exact retention remains mandatory whether or not retirement is configured.
 
 #### REQ: sealed-archive-outlives-worktree
 
@@ -369,9 +369,9 @@ model transcript, command output, provider secrets, and absolute local-home
 paths. Handoff summaries and progress messages are user-authored public fields
 and MUST be validated against size limits; callers that need sensitive context
 use the private local journal or an authorized Synchestra message/artifact
-contract. An authorized encrypted private prompt archive is a separate sealed
-payload, never a field added to the generic operational envelope or Git mirror;
-only its digest and receipt may enter public state.
+contract. Authorized retirement stores the actual private prompt and Work Log
+files as plain files only in the configured private retirement repository;
+they never enter a public operational envelope or the source repository.
 
 ## Dependencies
 

@@ -105,6 +105,48 @@ type State struct {
 	// restarts the daemon, and without this the reason would exist only in a
 	// log the same removal may have unlinked.
 	StoppedReason string `json:"stopped_reason,omitempty"`
+
+	// Supervisor and SupervisorExecPID are what the process itself observed
+	// about its own start, through DetectSupervisor. They are empty in records
+	// written before this field existed and in a record whose process was
+	// never observed to start under a supervisor at all — both read as
+	// SupervisorNone by a reporter, since neither can name an owner to hand a
+	// restart to (sneat-dev/wb#617, sneat-dev/wb#546).
+	Supervisor        Supervisor `json:"supervisor,omitempty"`
+	SupervisorExecPID string     `json:"supervisor_exec_pid,omitempty"`
+
+	// SupervisorLabel is the supervisor's own identity for the job it started,
+	// when DetectSupervisor could read one — currently only launchd's job
+	// label (from XPC_SERVICE_NAME). It is what lets a reader tell wb's own
+	// self-managed launchd job (cmd/wb's daemonLaunchdLabel, which wb already
+	// knows how to re-bootstrap with a new binary) from a foreign one wb must
+	// hand off to instead of touching directly (sneat-dev/wb#622 review item 1).
+	SupervisorLabel string `json:"supervisor_label,omitempty"`
+
+	// SystemdUnit is the systemd unit name this process observed ITSELF
+	// running inside, from its own /proc/self/cgroup, at `daemon serve`
+	// startup -- independent of any config a LATER, separate `wb daemon
+	// status` invocation's own environment happens to carry. A later reader
+	// checking this daemon's unit health MUST prefer this field over its own
+	// configured/default unit name: unit identity read from the status
+	// invoker's own environment gives a false negative for a daemon
+	// correctly supervised under a unit name the status invocation was never
+	// told about (sneat-dev/wb#622 review round 3, item M3). Empty when this
+	// process is not in a systemd service unit's own cgroup at all.
+	SystemdUnit string `json:"systemd_unit,omitempty"`
+}
+
+// ReportedSupervisor is Supervisor normalized for a reader: an empty or
+// otherwise unrecognized recorded value — a record written before this field
+// existed, most notably — is reported as SupervisorNone rather than as
+// whatever raw string happens to be on disk, because "no supervisor known" is
+// exactly the state that must never launch a detached replacement believing
+// something else owns the process.
+func (s State) ReportedSupervisor() Supervisor {
+	if s.Supervisor.Valid() {
+		return s.Supervisor
+	}
+	return SupervisorNone
 }
 
 func (s State) Valid() error {

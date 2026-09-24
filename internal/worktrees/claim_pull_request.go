@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,4 +61,85 @@ func RecordClaimPullRequestBinding(projectsRoot, worktree string, binding ClaimP
 		return "", "", fmt.Errorf("record task-to-pull-request binding: %w", err)
 	}
 	return claim.Task, claim.ClaimID, nil
+}
+
+// RegisteredPullRequestBinding pairs one durably recorded task-to-pull-request
+// binding with the claim identity it was recorded against. It is what
+// ListRegisteredPullRequestBindings returns: the exact, and only, set of pull
+// requests the daemon's watcher (herdr-session-transport, Plan Task 6) may
+// evaluate.
+type RegisteredPullRequestBinding struct {
+	Task        string
+	ClaimID     string
+	Repository  string
+	PullRequest int
+	URL         string
+	RecordedAt  time.Time
+}
+
+// ListRegisteredPullRequestBindings is the first reader of the binding
+// RecordClaimPullRequestBinding writes (sneat-dev/wb#601 recorded it with no
+// reader before herdr-session-transport). It returns exactly the pull
+// requests with a durably recorded binding beside a still-active Work Log
+// claim, across every home wbhome.Resolve reports for projectsRoot. It reads
+// only local disk state RecordClaimPullRequestBinding already wrote: no
+// GitHub call and no fleet-wide pull-request scan happens here.
+//
+// A claim that has since reached a terminal state is skipped: nothing should
+// watch on behalf of a claim whose Work Log life is already over, matching
+// ListActiveClaimSummaries' own terminal-skip rule.
+func ListRegisteredPullRequestBindings(projectsRoot string) ([]RegisteredPullRequestBinding, error) {
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(resolution.Read))
+	result := make([]RegisteredPullRequestBinding, 0)
+	for _, layout := range resolution.Read {
+		home := filepath.Clean(layout.Home)
+		if home == "" || seen[home] {
+			continue
+		}
+		seen[home] = true
+		bindings, err := listRegisteredPullRequestBindingsInHome(home)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, bindings...)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Repository != result[j].Repository {
+			return result[i].Repository < result[j].Repository
+		}
+		if result[i].Task != result[j].Task {
+			return result[i].Task < result[j].Task
+		}
+		return result[i].ClaimID < result[j].ClaimID
+	})
+	return result, nil
+}
+
+// listRegisteredPullRequestBindingsInHome is
+// ListRegisteredPullRequestBindings for exactly one resolved home. It shares
+// walkActiveWorkLogClaims (internal/worktrees/active_claims.go) with
+// ListActiveClaimSummaries — the same enumeration, symlink rejection, and
+// terminal-skip rule — and reads each active claim's ".pull_request.json"
+// sidecar instead of the claim itself, reporting nothing for a claim that has
+// no such sidecar.
+func listRegisteredPullRequestBindingsInHome(home string) ([]RegisteredPullRequestBinding, error) {
+	result := make([]RegisteredPullRequestBinding, 0)
+	err := walkActiveWorkLogClaims(home, func(claims *os.File, claimID string, claim workLogClaim) {
+		var binding ClaimPullRequestBinding
+		if readJSONAt(claims, claimID+pullRequestBindingSuffix, &binding) != nil {
+			return
+		}
+		result = append(result, RegisteredPullRequestBinding{
+			Task: claim.Task, ClaimID: claimID, Repository: binding.Repository,
+			PullRequest: binding.PullRequest, URL: binding.URL, RecordedAt: binding.RecordedAt,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

@@ -98,7 +98,18 @@ func (controller daemonController) assessIdentity(state daemon.State, found bool
 	if !processAlive {
 		return identityStopped, "the recorded process is not running", false
 	}
-	observed, observedKnown := daemon.ProcessStartTime(state.PID)
+	// Routed through the injectable seam, not called directly: a hard-coded
+	// test PID (like the 900-series fixtures used throughout this package's
+	// tests) must never be checked against whatever real process happens to
+	// hold that number on the machine running the suite
+	// (sneat-dev/wb#622 review item 8 — this call site was the one place
+	// that still read the real process table directly after the seam was
+	// introduced for stop() and waitForSupervisorReplacement()).
+	processStartTime := controller.deps.processStartTime
+	if processStartTime == nil {
+		processStartTime = daemon.ProcessStartTime
+	}
+	observed, observedKnown := processStartTime(state.PID)
 	match, generationKnown := state.ProcessGenerationMatches(observed, observedKnown)
 	switch {
 	case generationKnown && !match:

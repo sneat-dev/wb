@@ -2932,11 +2932,15 @@ func remoteBranchForTest(t *testing.T, repository, branch string) string {
 // target by construction, and the landed commit carries more than that
 // candidate's tree, so the exact-tree rebase receipt cannot describe it.
 func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateResult, string, string, time.Time) {
+	return prepareAbsorbedCandidateWithWorkLog(t, task, WorkLogOptions{Model: "unknown"})
+}
+
+func prepareAbsorbedCandidateWithWorkLog(t *testing.T, task string, workLog WorkLogOptions) (*gitFixture, CreateResult, string, string, time.Time) {
 	t.Helper()
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+		Operation:    task, WorkLog: workLog,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3065,13 +3069,12 @@ func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing
 	}
 }
 
-// TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts
-// models a merger that incorporated a source then amended the same file before
-// squashing the integration PR. The exact source is in the PR head and the PR
-// head equals the landing tree, but replaying the source onto the squash
-// landing conflicts. That legacy patch-containment question must not override
-// the stronger numbered-PR proof.
-func TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts(t *testing.T) {
+// TestCleanupRefusesAttestedSquashPullRequestWhenContentProofConflicts models
+// a merger that incorporated a source then amended the same file before
+// squashing the integration PR. PR topology still proves the source reached
+// the landing, but the content proof is the shared plan/apply guard and must
+// reject this receipt before cleanup can become eligible.
+func TestCleanupRefusesAttestedSquashPullRequestWhenContentProofConflicts(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "cleanup-attested-pr-amendment", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -3122,9 +3125,11 @@ func TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Results) != 1 || !planned.Results[0].Eligible || !planned.Results[0].AbsorbedAtOrigin ||
-		planned.Results[0].AbsorbedBySHA != squashSHA || planned.Results[0].MergedPullRequest == nil {
-		t.Fatalf("attested amended squash cleanup = %#v", planned)
+	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].AbsorbedAtOrigin {
+		t.Fatalf("conflicted attested squash cleanup became eligible: %#v", planned)
+	}
+	if !strings.Contains(planned.Results[0].AbsorbedByRejection, "no longer survives in the exact fetched origin/main target") {
+		t.Fatalf("cleanup rejection does not name content proof refusal: %#v", planned.Results[0])
 	}
 }
 

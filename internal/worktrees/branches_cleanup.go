@@ -2,7 +2,9 @@ package worktrees
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +26,8 @@ type BranchCleanupOptions struct {
 	OlderThan    time.Duration
 	ReportDir    string
 	Filter       string
+	Repository   string
+	Branch       string
 	Progress     io.Writer
 	// Receipts enables landing-receipt classification, making receipted
 	// branches eligible alongside contained ones. Off by default because it
@@ -41,6 +45,11 @@ type BranchCleanupOptions struct {
 	// it never runs unless explicitly passed, and a pointer that fails to
 	// verify for a given candidate refuses only that candidate.
 	AbsorbedBy string
+	// SupersededBy is a trusted-reviewer receipt for a deliberately split
+	// branch. It requires one exact repository/ref selector.
+	SupersededBy string
+	PeerEvidence []string
+	RequireHosts []string
 	// Now is injectable so age eligibility is deterministic under test.
 	Now func() time.Time
 }
@@ -51,11 +60,12 @@ type BranchCleanupOptions struct {
 // #req:absorbed-is-report-only and #req:receipted-requires-a-proved-landing.
 type BranchCleanupResult struct {
 	BranchEntry
-	Eligible   bool   `json:"eligible"`
-	SkipReason string `json:"skip_reason,omitempty"`
-	Applied    bool   `json:"applied"`
-	Outcome    string `json:"outcome"` // planned, deleted, skipped, or failed
-	Error      string `json:"error,omitempty"`
+	Eligible       bool   `json:"eligible"`
+	SkipReason     string `json:"skip_reason,omitempty"`
+	Applied        bool   `json:"applied"`
+	Outcome        string `json:"outcome"` // planned, deleted, skipped, or failed
+	Error          string `json:"error,omitempty"`
+	RecoveryBundle string `json:"recovery_bundle,omitempty"`
 }
 
 // BranchCleanupOutcome is the full result of one plan or apply run.
@@ -73,14 +83,32 @@ type BranchCleanupOutcome struct {
 func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupOptions, error) {
 	base, err := normalizeBranchListOptions(BranchListOptions{
 		ProjectsRoot: options.ProjectsRoot, Base: options.Base, Scope: options.Scope,
-		OlderThan: options.OlderThan, Filter: options.Filter,
+		OlderThan: options.OlderThan, Filter: options.Filter, Repository: options.Repository, Branch: options.Branch,
 	})
 	if err != nil {
 		return BranchCleanupOptions{}, err
 	}
 	options.ProjectsRoot, options.Base, options.Scope = base.ProjectsRoot, base.Base, base.Scope
 	options.OlderThan, options.Filter = base.OlderThan, base.Filter
+	options.Repository, options.Branch = base.Repository, base.Branch
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
+	options.SupersededBy = strings.TrimSpace(options.SupersededBy)
+	options.PeerEvidence = compactStrings(options.PeerEvidence)
+	options.RequireHosts = compactStrings(options.RequireHosts)
+	if options.SupersededBy != "" && (options.Repository == "" || options.Branch == "") {
+		return BranchCleanupOptions{}, errors.New("--superseded-by requires exact --repo owner/name and --branch ref selectors")
+	}
+	if options.SupersededBy != "" && scopeIncludesRemote(options.Scope) && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
+		return BranchCleanupOptions{}, errors.New("reviewed remote retirement requires --peer-evidence and --require-host")
+	}
+	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
+		if !scopeIncludesRemote(options.Scope) || options.Repository == "" || options.Branch == "" {
+			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host require exact remote scope, --repo owner/name, and --branch ref")
+		}
+		if len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0 {
+			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host must be supplied together")
+		}
+	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -92,6 +120,10 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 		options.ReportDir = filepath.Clean(absolute)
 	}
 	return options, nil
+}
+
+func scopeIncludesRemote(scope string) bool {
+	return scope == BranchScopeRemote || scope == BranchScopeAll
 }
 
 // DefaultBranchCleanupReportDir mirrors DefaultCleanupReportDir's naming
@@ -116,6 +148,8 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		ProjectsRoot: normalized.ProjectsRoot, Base: normalized.Base, Scope: normalized.Scope,
 		OlderThan: normalized.OlderThan, Filter: normalized.Filter, Progress: normalized.Progress, Now: now,
 		Receipts: normalized.Receipts, AbsorbedBy: normalized.AbsorbedBy,
+		Repository: normalized.Repository, Branch: normalized.Branch,
+		SupersededBy: normalized.SupersededBy,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
@@ -141,6 +175,9 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		}
 		reportDir = DefaultBranchCleanupReportDir(resolution.Write.Home, now)
 	}
+	if err := validateBranchCleanupReportDir(ctx, reportDir, paths); err != nil {
+		return BranchCleanupOutcome{}, err
+	}
 	// durable-audit: the plan is written before the first destructive Git
 	// operation, then rewritten as each candidate's outcome is known.
 	reportPath, err := writeBranchCleanupReport(reportDir, normalized, now, results)
@@ -148,6 +185,20 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		return BranchCleanupOutcome{}, err
 	}
 
+	if err := validatePeerEvidence(normalized, results, now); err != nil {
+		for index := range results {
+			if results[index].Eligible && results[index].Scope == BranchScopeRemote {
+				results[index].Eligible = false
+				results[index].Outcome = "failed"
+				results[index].Error = err.Error()
+			}
+		}
+		if _, writeErr := writeBranchCleanupReport(reportDir, normalized, now, results); writeErr != nil {
+			return BranchCleanupOutcome{}, writeErr
+		}
+		return BranchCleanupOutcome{Base: normalized.Base, Scope: normalized.Scope, Apply: true, Results: results, Diagnostics: diagnostics, Totals: tallyCleanupOutcomes(results), ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds()}, nil
+	}
+	normalized.ReportDir = reportDir
 	applyBranchCleanup(ctx, results, paths, normalized, now)
 
 	if _, err := writeBranchCleanupReport(reportDir, normalized, now, results); err != nil {
@@ -175,7 +226,7 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 	for _, entry := range entries {
 		result := BranchCleanupResult{BranchEntry: entry, Outcome: "skipped"}
 		switch {
-		case entry.Disposition != BranchContained && entry.Disposition != BranchReceipted:
+		case !eligibleBranchCleanupDisposition(entry):
 			result.SkipReason = skipReasonForDisposition(entry)
 		case sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan:
 			result.SkipReason = fmt.Sprintf("branch is younger than --older-than %s", sweep.OlderThan)
@@ -190,6 +241,17 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 		results = append(results, result)
 	}
 	return results
+}
+
+func eligibleBranchCleanupDisposition(entry BranchEntry) bool {
+	switch entry.Disposition {
+	case BranchContained, BranchReceipted:
+		return true
+	case BranchSuperseded:
+		return entry.SupersededAtOrigin
+	default:
+		return false
+	}
 }
 
 // skipReasonForDisposition prefers the entry's own tailored Reason, then its
@@ -221,7 +283,7 @@ func remotePullRequestEvidenceUnavailable(entries []BranchEntry, sweep branchSwe
 	}
 	for _, entry := range entries {
 		if entry.Scope == BranchScopeRemote &&
-			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted) &&
+			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted || entry.Disposition == BranchSuperseded) &&
 			entry.PullRequestQueryFailed {
 			return true
 		}
@@ -252,20 +314,128 @@ func applyBranchCleanup(ctx context.Context, results []BranchCleanupResult, path
 			result.Outcome, result.Error = "failed", "repository path was not retained from the plan"
 			continue
 		}
+		if result.SupersededAtOrigin {
+			bundle, err := archiveReviewedBranch(ctx, options.ReportDir, path, *result)
+			if err != nil {
+				result.Outcome, result.Error = "failed", fmt.Sprintf("create verified recovery bundle: %v", err)
+				continue
+			}
+			result.RecoveryBundle = bundle
+		}
 		if result.Scope == BranchScopeLocal {
-			applyLocalBranchDeletion(ctx, path, result)
+			applyLocalBranchDeletion(ctx, path, result, options)
 			continue
 		}
-		applyRemoteBranchDeletion(ctx, path, result)
+		applyRemoteBranchDeletion(ctx, path, result, options)
 	}
 }
 
-func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult) {
+type reviewedBranchRecoveryManifest struct {
+	Repository    string    `json:"repository"`
+	Branch        string    `json:"branch"`
+	Head          string    `json:"head"`
+	Target        string    `json:"target"`
+	Receipt       string    `json:"receipt"`
+	ReceiptSHA256 string    `json:"receipt_sha256"`
+	Bundle        string    `json:"bundle"`
+	BundleSHA256  string    `json:"bundle_sha256"`
+	RestoredHead  string    `json:"restored_head"`
+	VerifiedAt    time.Time `json:"verified_at"`
+}
+
+// archiveReviewedBranch preserves the exact source independently of the
+// source clone, then proves the bundle restores that exact head into a new
+// empty repository before deletion is permitted.
+func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string, result BranchCleanupResult) (string, error) {
+	if err := validateBranchCleanupReportDir(ctx, reportDir, map[string]string{result.Repository: repositoryPath}); err != nil {
+		return "", err
+	}
+	key := strings.NewReplacer("/", "_", "\\", "_").Replace(result.Repository + "--" + result.Branch + "-")
+	recoveryRoot := filepath.Join(reportDir, "recovery")
+	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
+		return "", err
+	}
+	if err := syncDirectoryAndAncestors(recoveryRoot); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(recoveryRoot, key)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(recoveryRoot); err != nil {
+		return "", err
+	}
+	bundle := filepath.Join(dir, "source.bundle")
+	sourceRef := "refs/heads/" + result.Branch
+	if result.Scope == BranchScopeRemote {
+		sourceRef = "refs/remotes/origin/" + result.Branch
+	}
+	if _, err := git(ctx, repositoryPath, "bundle", "create", bundle, sourceRef); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(bundle, 0o600); err != nil {
+		return "", err
+	}
+	if err := syncFile(bundle); err != nil {
+		return "", err
+	}
+	bundleDigest, err := fileSHA256(bundle)
+	if err != nil {
+		return "", err
+	}
+	copyPath := filepath.Join(dir, "supersession.json")
+	receiptDigest, err := copyFileSHA256(result.SupersessionReceipt, copyPath)
+	if err != nil {
+		return "", err
+	}
+	if result.SupersessionSHA256 == "" || receiptDigest != result.SupersessionSHA256 {
+		return "", errors.New("supersession receipt bytes changed after planning")
+	}
+	verify, err := os.MkdirTemp("", "wb-reviewed-branch-verify-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(verify) }()
+	if _, err := git(ctx, verify, "init", "--bare"); err != nil {
+		return "", err
+	}
+	if _, err := git(ctx, verify, "fetch", bundle, sourceRef+":refs/heads/recovery"); err != nil {
+		return "", err
+	}
+	restored, err := git(ctx, verify, "rev-parse", "refs/heads/recovery")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(restored) != result.SHA {
+		return "", fmt.Errorf("restored head %s does not match %s", strings.TrimSpace(restored), result.SHA)
+	}
+	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: receiptDigest, Bundle: "source.bundle", BundleSHA256: bundleDigest, RestoredHead: strings.TrimSpace(restored), VerifiedAt: time.Now().UTC()}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := writeDurableFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(dir); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(recoveryRoot); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult, options BranchCleanupOptions) {
 	freshTarget, err := fetchRemoteTargetHead(ctx, repositoryPath, result.Base)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch exact origin/%s target: %v", result.Base, err)
 		return
 	}
+	result.TargetSHA = freshTarget
 	currentSHA, err := git(ctx, repositoryPath, "rev-parse", "--verify", "refs/heads/"+result.Branch)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch no longer exists: %v", err)
@@ -274,6 +444,9 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 	currentSHA = strings.TrimSpace(currentSHA)
 	if currentSHA != result.SHA {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(currentSHA))
+		return
+	}
+	if !recheckBranchRetirementGuards(ctx, options.ProjectsRoot, repositoryPath, result) {
 		return
 	}
 	if !recheckDeletionEvidence(ctx, repositoryPath, currentSHA, freshTarget, result) {
@@ -301,6 +474,28 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 // is marked and false is returned. See
 // #req:receipted-requires-a-proved-landing.
 func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, freshTarget string, result *BranchCleanupResult) bool {
+	if result.SupersededAtOrigin {
+		digest, digestErr := supersessionFileSHA256(result.SupersessionReceipt)
+		if digestErr != nil || digest != result.SupersessionSHA256 {
+			result.Outcome = "failed"
+			result.Error = "supersession receipt bytes changed after planning; refusing"
+			return false
+		}
+		_, rejection, err := branchSupersessionReceipt(ctx, result.SupersessionReceipt, ListResult{
+			Repository: result.Repository, Branch: result.Branch, HeadSHA: currentSHA,
+			Base: result.Base, RemoteTargetSHA: freshTarget, CanonicalDir: repositoryPath,
+		})
+		if err != nil || rejection != "" {
+			result.Outcome = "failed"
+			if err != nil {
+				result.Error = fmt.Sprintf("recheck supersession receipt: %v", err)
+			} else {
+				result.Error = rejection
+			}
+			return false
+		}
+		return true
+	}
 	if result.Disposition == BranchReceipted {
 		if !isGitObjectID(result.LandingSHA) {
 			result.Outcome, result.Error = "failed", "receipted plan carries no landing commit; refusing"
@@ -341,7 +536,7 @@ func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, fr
 	return true
 }
 
-func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult) {
+func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult, options BranchCleanupOptions) {
 	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch --prune origin: %v", err)
 		return
@@ -351,6 +546,7 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch exact origin/%s target: %v", result.Base, err)
 		return
 	}
+	result.TargetSHA = freshTarget
 	observedSHA, err := remoteBranchHead(ctx, repositoryPath, result.Branch)
 	if err != nil || observedSHA == "" {
 		result.Outcome = "failed"
@@ -365,6 +561,9 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("remote branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(observedSHA))
 		return
 	}
+	if !recheckBranchRetirementGuards(ctx, options.ProjectsRoot, repositoryPath, result) {
+		return
+	}
 	if !recheckDeletionEvidence(ctx, repositoryPath, observedSHA, freshTarget, result) {
 		return
 	}
@@ -377,18 +576,66 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the head of open pull request %s", open.URL)
 		return
 	}
+	if result.SupersededAtOrigin {
+		if err := reviewedRemoteForkGuard(ctx, repositoryPath, result.Repository); err != nil {
+			result.Outcome, result.Error = "failed", err.Error()
+			return
+		}
+	}
 	canonical, err := openCanonicalRepository(repositoryPath)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("open canonical repository: %v", err)
 		return
 	}
 	defer canonical.close()
+	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
+		if err := validatePeerEvidence(options, []BranchCleanupResult{*result}, options.Now()); err != nil {
+			result.Outcome, result.Error = "failed", fmt.Sprintf("recheck peer evidence immediately before remote deletion: %v", err)
+			return
+		}
+	}
 	pushSpec := "--force-with-lease=refs/heads/" + result.Branch + ":" + observedSHA
 	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", pushSpec, "origin", ":refs/heads/"+result.Branch); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("force-with-lease delete refs/heads/%s: %v", result.Branch, err)
 		return
 	}
 	result.Applied, result.Outcome = true, "deleted"
+}
+
+// recheckBranchRetirementGuards repeats the non-content guards after the
+// durable plan/archive work. A branch can become checked out or claimed while
+// the receipt is being archived, so plan-time classification is insufficient.
+func recheckBranchRetirementGuards(ctx context.Context, projectsRoot, repositoryPath string, result *BranchCleanupResult) bool {
+	head, err := git(ctx, repositoryPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck canonical HEAD: %v", err)
+		return false
+	}
+	if isProtectedBranch(result.Branch, result.Base, strings.TrimSpace(head)) {
+		result.Outcome, result.Error = "failed", "branch is now protected; refusing deletion"
+		return false
+	}
+	checkedOut, diagnostic := checkedOutLocalBranches(ctx, repositoryPath)
+	if diagnostic != "" {
+		result.Outcome, result.Error = "failed", diagnostic
+		return false
+	}
+	if projectsRoot != "" {
+		claims, diagnostic := branchInUseIndex(ctx, projectsRoot, "")
+		if diagnostic != "" {
+			result.Outcome, result.Error = "failed", diagnostic
+			return false
+		}
+		if _, claimed := claims[branchInUseKey(result.Repository, result.Branch)]; claimed {
+			result.Outcome, result.Error = "failed", "branch became claimed by a live WB work log"
+			return false
+		}
+	}
+	if checkedOut[result.Branch] {
+		result.Outcome, result.Error = "failed", "branch became checked out in a linked worktree"
+		return false
+	}
+	return true
 }
 
 type branchCleanupReport struct {
@@ -401,8 +648,14 @@ type branchCleanupReport struct {
 }
 
 func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult) (string, error) {
+	if err := rejectSymlinkAncestors(reportDir); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create branch cleanup report directory: %w", err)
+	}
+	if err := syncDirectoryAndAncestors(reportDir); err != nil {
+		return "", err
 	}
 	report := branchCleanupReport{
 		GeneratedAt: now, Base: options.Base, Scope: options.Scope, Apply: options.Apply,
@@ -415,11 +668,163 @@ func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, no
 	content = append(content, '\n')
 	path := filepath.Join(reportDir, "cleanup.json")
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o644); err != nil {
+	if err := writeDurableFile(temporary, content, 0o644); err != nil {
 		return "", fmt.Errorf("write branch cleanup report: %w", err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		return "", fmt.Errorf("activate branch cleanup report: %w", err)
 	}
+	if err := syncDirectory(reportDir); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+func validateBranchCleanupReportDir(ctx context.Context, reportDir string, repositoryPaths map[string]string) error {
+	if err := rejectSymlinkAncestors(reportDir); err != nil {
+		return fmt.Errorf("unsafe branch cleanup report directory: %w", err)
+	}
+	for repository, sourcePath := range repositoryPaths {
+		if sourcePath == "" {
+			continue
+		}
+		sourceRoots, err := sourceRepositoryRoots(ctx, sourcePath)
+		if err != nil {
+			return fmt.Errorf("resolve source repository %s: %w", repository, err)
+		}
+		for _, sourceRoot := range sourceRoots {
+			if pathIsWithin(reportDir, sourceRoot) {
+				return fmt.Errorf("branch cleanup report directory %s is inside source repository %s; choose a location outside the clone or worktree", reportDir, repository)
+			}
+		}
+	}
+	return nil
+}
+
+func sourceRepositoryRoots(ctx context.Context, sourcePath string) ([]string, error) {
+	output, err := git(ctx, sourcePath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var roots []string
+	for _, line := range strings.Split(output, "\n") {
+		root, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		absoluteRoot, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, absoluteRoot)
+		if physicalRoot, err := filepath.EvalSymlinks(absoluteRoot); err == nil {
+			roots = append(roots, physicalRoot)
+		}
+	}
+	if len(roots) == 0 {
+		return nil, errors.New("source repository has no registered worktree roots")
+	}
+	return compactStrings(roots), nil
+}
+
+func pathIsWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func rejectSymlinkAncestors(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink", current)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+	}
+}
+
+func copyFileSHA256(source, destination string) (digest string, resultErr error) {
+	input, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	defer func() { resultErr = errors.Join(resultErr, input.Close()) }()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
+	syncErr := output.Sync()
+	closeErr := output.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if syncErr != nil {
+		return "", syncErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func writeDurableFile(path string, content []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(content)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncDirectoryAndAncestors(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		if err := syncDirectory(current); err != nil {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+	}
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }

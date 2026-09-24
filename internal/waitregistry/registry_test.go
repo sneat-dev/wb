@@ -41,6 +41,37 @@ func TestRegisterMakesTheWaitVisibleAndReleaseRemovesIt(t *testing.T) {
 	}
 }
 
+// TestRegisterStampsProvenanceFromEnv is wb#631's wait-record half of the
+// acceptance test: a registered wait carries every declared provenance
+// field plus wb_version.
+func TestRegisterStampsProvenanceFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-wait-1")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "high")
+	t.Setenv("WB_SUBAGENT_ID", "agent-3")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_4")
+
+	home := t.TempDir()
+	fixedAlive(t, true)
+	release, err := Register(home, Record{ID: "b", PID: 42, Kind: "pr", Targets: []string{"acme/app#2"}, Until: "checks-settled", StartedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	records, err := List(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if record.HarnessSessionID != "sess-wait-1" || record.Harness != "claude-code" || record.EffortLevel != "high" ||
+		record.AgentID != "agent-3" || record.ToolUseID != "toolu_4" || record.WBVersion == "" {
+		t.Fatalf("record did not carry every provenance field: %+v", record)
+	}
+}
+
 func TestListReportsADeadWaiterRatherThanHidingIt(t *testing.T) {
 	home := t.TempDir()
 	fixedAlive(t, true)

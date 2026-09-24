@@ -137,6 +137,24 @@ func wbAfterUpdate(cmd **cobra.Command) selfupdate.AfterUpdateFunc {
 	}
 }
 
+// selfUpdateDaemonHandoffMargin is headroom added on top of the daemon's own
+// worst-case drain-then-supervised-wait bound, so the child's context outlives
+// the handoff it is waiting on rather than killing it partway through.
+const selfUpdateDaemonHandoffMargin = 5 * time.Second
+
+// selfUpdateDaemonHandoffTimeout is the child `wb daemon restart --if-running`
+// process's own bound. It must be at least daemonStopTimeout (draining the
+// old process) plus daemonSupervisorRestartTimeout (waiting for a supervisor
+// to bring the replacement back) — the previous fixed 15s cut a supervised
+// wait off partway through, killing the child before it could ever report a
+// real timeout of its own and leaving a misleading "could not run" warning
+// (sneat-dev/wb#622 review item 5). It is a function, not a package-level
+// constant, so it always reflects the daemon package's current bounds even if
+// a future change adjusts either one.
+func selfUpdateDaemonHandoffTimeout() time.Duration {
+	return daemonStopTimeout + daemonSupervisorRestartTimeout + selfUpdateDaemonHandoffMargin
+}
+
 func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) {
 	if update.Outcome.Action == selfupdate.ActionAlreadyCurrent || update.Outcome.PostSwapWarning != nil {
 		return
@@ -144,13 +162,18 @@ func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, up
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	ctx, cancel := context.WithTimeout(parent, selfUpdateDaemonHandoffTimeout())
 	defer cancel()
 	child := exec.CommandContext(ctx, update.Executable.Path, "daemon", "restart", "--if-running", "--format", "json") //nolint:gosec // verified post-swap executable.
 	var output bytes.Buffer
 	child.Stdout, child.Stderr = &output, &output
 	if err := child.Run(); err != nil {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but daemon handoff could not run; use `wb daemon restart --if-running`: %v\n", err)
+		if ctx.Err() != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but the daemon handoff did not finish within %s: %v; check `wb daemon status` and run `wb daemon restart --if-running` if it is not back\n", selfUpdateDaemonHandoffTimeout(), err)
+		} else {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but the daemon handoff reported a failure; check `wb daemon status` and run `wb daemon restart --if-running` if needed: %v\n", err)
+		}
+		_, _ = cmd.ErrOrStderr().Write(output.Bytes())
 		return
 	}
 	// The self-update command owns stdout (especially in JSON mode), so the

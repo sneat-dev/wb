@@ -1353,6 +1353,10 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		// whose crash window this closes.
 		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, &receipt)
 		if adoptErr != nil {
+			if IsTransientGitHubFailure(adoptErr) {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
+					fmt.Errorf("%w; resume with wb worktree merge resume %s", adoptErr, receipt.ReceiptPath))
+			}
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, adoptErr)
 		}
 		if adopted {
@@ -1366,6 +1370,10 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, &receipt)
 		if advanceErr != nil {
+			if IsTransientGitHubFailure(advanceErr) {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
+					fmt.Errorf("%w; resume with wb worktree merge resume %s", advanceErr, receipt.ReceiptPath))
+			}
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
 		}
 		if advanced {
@@ -1379,6 +1387,10 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
+			if IsTransientGitHubFailure(observeErr) {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
+					fmt.Errorf("%w; resume with wb worktree merge resume %s", observeErr, receipt.ReceiptPath))
+			}
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, observeErr)
 		}
 		if merged {

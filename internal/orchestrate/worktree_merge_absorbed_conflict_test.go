@@ -115,6 +115,59 @@ func TestAcknowledgeAbsorbedConflictProvesAncestorAndContentAbsorbedSourcesAndFr
 	}
 }
 
+func TestAcknowledgeAbsorbedConflictMissingEmptyCandidateUsesCanonicalClone(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSourceOnBase(t, fixture, "task-missing-candidate", "feature/missing-candidate", "main", "absorbed.txt", "absorbed\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateSHA := receipt.Candidate.SHA
+	receipt.Candidate.SHA = "" // A conflict before the candidate commit was recorded.
+	receipt.Status = WorktreeMergeConflict
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, fixture.canonical+"/absorbed.txt", "absorbed\n")
+	runEngineGit(t, fixture.canonical, "add", "absorbed.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "chore: independently absorb source content")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	for _, path := range []string{source.WorktreeDir, receipt.Candidate.Worktree} {
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runEngineGit(t, fixture.canonical, "worktree", "prune")
+
+	options := WorktreeMergeAbsorbedConflictAcknowledgementOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}
+	if _, err := AcknowledgeAbsorbedConflict(context.Background(), options); err == nil || !strings.Contains(err.Error(), "local branch") {
+		t.Fatalf("surviving local branch was not refused: %v", err)
+	}
+	runEngineGit(t, fixture.canonical, "branch", "-D", source.Branch)
+	runEngineGit(t, fixture.canonical, "branch", "-D", receipt.Candidate.Branch)
+	runEngineGit(t, fixture.canonical, "push", "origin", candidateSHA+":refs/heads/"+receipt.Candidate.Branch)
+	if _, err := AcknowledgeAbsorbedConflict(context.Background(), options); err == nil || !strings.Contains(err.Error(), "published") {
+		t.Fatalf("published empty-SHA candidate was not refused: %v", err)
+	}
+	runEngineGit(t, fixture.canonical, "push", "origin", ":refs/heads/"+receipt.Candidate.Branch)
+	ack, err := AcknowledgeAbsorbedConflict(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ack.SourceProofs) != 1 || ack.SourceProofs[0].Method != "content_absorbed" {
+		t.Fatalf("missing-candidate proof = %+v", ack.SourceProofs)
+	}
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited missing empty candidate"
+	if _, err := AcknowledgeAbsorbedConflict(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged, err := hasAbsorbedConflictAcknowledgement(receipt); err != nil || !acknowledged {
+		t.Fatalf("acknowledgement did not free lane: acknowledged=%v err=%v", acknowledged, err)
+	}
+}
+
 func TestAcknowledgeAbsorbedConflictRefusals(t *testing.T) {
 	t.Run("source worktree still exists", func(t *testing.T) {
 		fixture := newEngineFixture(t)

@@ -37,6 +37,317 @@ func TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest(t *testing.T) {
 	}
 }
 
+// TestAbortDiscardedRecoversLegacyMissingPrivateClaim is the regression for
+// wb#659. Older worktrees can retain the immutable local manifest/projection
+// and the claimed outbox event while the private claim file itself is absent.
+// A proved absorbed landing must plan and apply the same audited recovery,
+// rather than promising "would seal" and failing only after --apply.
+func TestAbortDiscardedRecoversLegacyMissingPrivateClaim(t *testing.T) {
+	fixture, created, _, _, _ := prepareAbsorbedCandidate(t, "abort-legacy-missing-claim")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-legacy-missing-claim")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "claims", projection.ClaimID+".json")
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-legacy-missing-claim",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("dry run refused recoverable legacy claim: %v", err)
+	}
+	if len(plan) != 1 || !plan[0].Eligible {
+		t.Fatalf("dry run refused legacy claim recovery: %#v", plan)
+	}
+	if !plan[0].WorkLogRecoveryPlanned || plan[0].WorkLogRecovered {
+		t.Fatalf("dry run did not disclose recovery without claiming it was applied: %#v", plan[0])
+	}
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-legacy-missing-claim",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatalf("apply disagreed with dry run: %v", err)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone || !results[0].BranchDeleted {
+		t.Fatalf("legacy recovered abort = %#v", results)
+	}
+	if !results[0].WorkLogRecoveryPlanned || !results[0].WorkLogRecovered {
+		t.Fatalf("apply did not disclose completed recovery: %#v", results[0])
+	}
+	if _, err := os.Stat(claimPath); err != nil {
+		t.Fatalf("recovered immutable claim is absent: %v", err)
+	}
+	recoveryPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "recoveries", projection.ClaimID+"-missing-claim.json")
+	if _, err := os.Stat(recoveryPath); err != nil {
+		t.Fatalf("legacy claim recovery receipt is absent: %v", err)
+	}
+	terminalPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "terminals", projection.ClaimID+".json")
+	if _, err := os.Stat(terminalPath); err != nil {
+		t.Fatalf("recovered claim was not terminalized: %v", err)
+	}
+}
+
+func TestAbortDiscardedLegacyMissingClaimFailsClosedWithoutCorroboratingOutbox(t *testing.T) {
+	fixture, created, _, _, _ := prepareAbsorbedCandidate(t, "abort-legacy-claim-bad-outbox")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-legacy-claim-bad-outbox")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "claims", projection.ClaimID+".json")
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+	outboxPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "outbox", projection.RunID+"-"+projection.ClaimID+"-claimed.json")
+	tampered := []byte("{\"version\":1}\n")
+	if err := os.WriteFile(outboxPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(outboxPath); err != nil || !bytes.Equal(got, tampered) {
+		t.Fatalf("failed to establish tampered outbox fixture: got %q, err=%v", got, err)
+	}
+
+	plan, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-legacy-claim-bad-outbox",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("dry run should report per-repository refusal: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Eligible || plan[0].WorkLogRecoveryPlanned ||
+		!strings.Contains(plan[0].Reason, "immutable claimed outbox event does not corroborate") {
+		t.Fatalf("tampered recovery evidence was not refused: %#v", plan)
+	}
+}
+
+func TestAbortDryRunDoesNotMigrateLegacyWorkLogProjection(t *testing.T) {
+	fixture, created, _, _, _ := prepareAbsorbedCandidate(t, "abort-read-only-legacy-projection")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-read-only-legacy-projection")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeWorkLogProjection(created.WorktreeDir); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(created.WorktreeDir, legacyWorkLogProjectionName)
+	if err := writeJSONAtomic(legacyPath, projection, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyBefore, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyInfoBefore, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-read-only-legacy-projection",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+	})
+	if err != nil || len(plan) != 1 || !plan[0].Eligible {
+		t.Fatalf("legacy projection dry run = %#v, err=%v", plan, err)
+	}
+	legacyAfter, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("dry run removed the legacy projection: %v", err)
+	}
+	legacyInfoAfter, err := os.Stat(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(legacyBefore, legacyAfter) || legacyInfoBefore.Mode() != legacyInfoAfter.Mode() ||
+		!legacyInfoBefore.ModTime().Equal(legacyInfoAfter.ModTime()) {
+		t.Fatal("dry run changed legacy projection bytes or metadata")
+	}
+	currentPath := filepath.Join(created.WorktreeDir, workLogProjectionDirectory, workLogProjectionName)
+	if _, err := os.Stat(currentPath); !os.IsNotExist(err) {
+		t.Fatalf("dry run created the current projection: %v", err)
+	}
+}
+
+func TestRecoverLegacyMissingClaimRequiresRecoveryReceiptWhenClaimAppears(t *testing.T) {
+	fixture, created, _, _, _ := prepareAbsorbedCandidate(t, "abort-raced-legacy-claim")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-raced-legacy-claim")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "claims", projection.ClaimID+".json")
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+	options := AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-raced-legacy-claim",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+	}
+	results, err := Abort(context.Background(), options)
+	if err != nil || len(results) != 1 || !results[0].WorkLogRecoveryPlanned {
+		t.Fatalf("recovery plan = %#v, err=%v", results, err)
+	}
+	recoveryPlan, err := planLegacyMissingClaimRecovery(fixture.home, options, results[0].ListResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir, _, err := openWorkLogRun(fixture.home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := openPrivateChild(runDir, "claims", true)
+	if err != nil {
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	if err := writeJSONImmutableAt(claims, projection.ClaimID+".json", recoveryPlan.claim, false); err != nil {
+		_ = claims.Close()
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	_ = claims.Close()
+	_ = runDir.Close()
+
+	err = recoverLegacyMissingClaimForAbort(fixture.home, options, results[0].ListResult)
+	if err == nil || !strings.Contains(err.Error(), "recovery receipt") {
+		t.Fatalf("claim without its mandatory recovery receipt was accepted: %v", err)
+	}
+
+	badEntry := results[0].ListResult
+	badEntry.HeadSHA = strings.Repeat("f", 40)
+	badPlan, err := planLegacyMissingClaimRecovery(fixture.home, options, badEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badPlan.recovery.RecoveredAt = time.Date(2026, time.July, 1, 13, 0, 0, 0, time.UTC)
+	runDir, _, err = openWorkLogRun(fixture.home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveries, err := openPrivateChild(runDir, "recoveries", true)
+	if err != nil {
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	if err := writeJSONImmutableAt(recoveries, projection.ClaimID+"-missing-claim.json", badPlan.recovery, false); err != nil {
+		_ = recoveries.Close()
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	_ = recoveries.Close()
+	_ = runDir.Close()
+	err = recoverLegacyMissingClaimForAbort(fixture.home, options, badEntry)
+	if err == nil || !strings.Contains(err.Error(), "live HEAD") {
+		t.Fatalf("existing recovered claim and receipt skipped normal seal preflight: %v", err)
+	}
+}
+
+func TestAbortDiscardedLegacyMissingClaimPreservesOriginalPromptLinkage(t *testing.T) {
+	const promptBody = "Fix the absorbed legacy worktree without losing its audit trail.\n"
+	promptPath := writeWorkLogPromptFile(t, promptBody)
+	workLog := WorkLogOptions{Model: "unknown", OriginalPrompt: promptPath, RequireOriginalPrompt: true}
+	fixture, created, _, _, _ := prepareAbsorbedCandidateWithWorkLog(t, "abort-legacy-claim-prompt", workLog)
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-legacy-claim-prompt")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "claims", projection.ClaimID+".json")
+	claimBytes, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original workLogClaim
+	if err := json.Unmarshal(claimBytes, &original); err != nil {
+		t.Fatal(err)
+	}
+	if original.PromptArchive == "" || original.PromptDigest == "" {
+		t.Fatalf("production-shaped fixture lacks prompt linkage: %#v", original)
+	}
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-legacy-claim-prompt",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true, Apply: true,
+	})
+	if err != nil || len(results) != 1 || !results[0].WorkLogRecovered {
+		t.Fatalf("prompt-linked recovery = %#v, err=%v", results, err)
+	}
+	recoveredBytes, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered workLogClaim
+	if err := json.Unmarshal(recoveredBytes, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.PromptArchive != original.PromptArchive || recovered.PromptDigest != original.PromptDigest {
+		t.Fatalf("recovered prompt linkage = (%q, %q), want (%q, %q)", recovered.PromptArchive, recovered.PromptDigest, original.PromptArchive, original.PromptDigest)
+	}
+	archived, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(claimPath)), recovered.PromptArchive))
+	if err != nil || string(archived) != promptBody {
+		t.Fatalf("recovered claim prompt archive = %q, err=%v", archived, err)
+	}
+}
+
+func TestAbortDiscardedLegacyMissingClaimRejectsTamperedOriginalPrompt(t *testing.T) {
+	promptPath := writeWorkLogPromptFile(t, "original audited request\n")
+	workLog := WorkLogOptions{Model: "unknown", OriginalPrompt: promptPath, RequireOriginalPrompt: true}
+	fixture, created, _, _, _ := prepareAbsorbedCandidateWithWorkLog(t, "abort-legacy-claim-tampered-prompt", workLog)
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-legacy-claim-tampered-prompt")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+
+	projection, err := readWorkLogProjection(created.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID)
+	claimPath := filepath.Join(runPath, "claims", projection.ClaimID+".json")
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runPath, "original-prompt.txt"), []byte("tampered request\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-legacy-claim-tampered-prompt",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("dry run should report per-repository refusal: %v", err)
+	}
+	if len(plan) != 1 || plan[0].Eligible || plan[0].WorkLogRecoveryPlanned ||
+		!strings.Contains(plan[0].Reason, "original prompt metadata does not corroborate") {
+		t.Fatalf("tampered prompt evidence was not refused: %#v", plan)
+	}
+}
+
 // TestAbortDiscardedAcceptsAttestedMergeCommitLanding is the S41 regression
 // for abort's --absorbed-by proof: a genuine "Create a merge commit" landing
 // whose target advanced past the branch's last sync before the merge (the

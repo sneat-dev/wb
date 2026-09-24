@@ -1,0 +1,102 @@
+// Repo-wide function-length scan using go/ast (not brace counting).
+// Walks every non-test, non-generated .go file under the given root and
+// reports every func/method declaration whose body spans more than 150
+// lines (end line - start line of the enclosing braces).
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+type longFunc struct {
+	name  string
+	file  string
+	line  int
+	lines int
+}
+
+func main() {
+	root := "."
+	if len(os.Args) > 1 {
+		root = os.Args[1]
+	}
+	var out []longFunc
+	fset := token.NewFileSet()
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			base := filepath.Base(path)
+			if path != "." && (base == "vendor" || base == "node_modules" || strings.HasPrefix(base, ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if strings.Contains(path, "/internal/gen/") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		file, perr := parser.ParseFile(fset, path, src, 0)
+		if perr != nil {
+			// Skip files that fail to parse (should not happen for a clean tree).
+			fmt.Fprintf(os.Stderr, "parse error %s: %v\n", path, perr)
+			return nil
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			startPos := fset.Position(fn.Body.Lbrace)
+			endPos := fset.Position(fn.Body.Rbrace)
+			lines := endPos.Line - startPos.Line + 1
+			if lines > 150 {
+				name := fn.Name.Name
+				if fn.Recv != nil && len(fn.Recv.List) > 0 {
+					name = recvTypeName(fn.Recv.List[0].Type) + "." + name
+				}
+				out = append(out, longFunc{
+					name:  name,
+					file:  strings.TrimPrefix(path, "./"),
+					line:  fset.Position(fn.Pos()).Line,
+					lines: lines,
+				})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].lines > out[j].lines })
+	fmt.Printf("functions over 150 lines (go/ast body-brace span): %d\n", len(out))
+	for _, f := range out {
+		fmt.Printf("%5d  %s:%d  %s\n", f.lines, f.file, f.line, f.name)
+	}
+}
+
+func recvTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return recvTypeName(t.X)
+	case *ast.Ident:
+		return t.Name
+	default:
+		return "?"
+	}
+}

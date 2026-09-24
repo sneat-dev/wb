@@ -181,6 +181,62 @@ func TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog(t *testing.T) {
 	}
 }
 
+// GC must expose the same Work Log refusal as Cleanup before an operator asks
+// it to apply. Historically this candidate was planned eligible from its Git
+// evidence, then apply delegated to Cleanup which refused the missing claim.
+func TestGCRefusesMissingWorkLogClaimBeforeApply(t *testing.T) {
+	fixture, result, _, mergedAt := prepareMergedTask(t, "gc-missing-worklog-claim")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+	projection, err := readWorkLogProjection(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "claims", projection.ClaimID+".json")
+	if err := os.Remove(claimPath); err != nil {
+		t.Fatal(err)
+	}
+	remoteHead := gitTestOutput(t, fixture.remote, "rev-parse", "refs/heads/"+result.Branch)
+	opts := GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot,
+		Tasks:            []string{"gc-missing-worklog-claim"},
+		SkipSizes:        true,
+		Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+	}
+
+	dryRun, err := GC(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dryEntry := entryFor(t, dryRun, "gc-missing-worklog-claim")
+	if dryEntry.Class != GCClassContained || dryEntry.Eligible {
+		t.Fatalf("dry entry = %#v, want contained but ineligible", dryEntry)
+	}
+	if !strings.Contains(dryEntry.Reason, "preflight Work Log for acme/app") ||
+		!strings.Contains(dryEntry.Reason, "file does not exist") {
+		t.Fatalf("dry reason = %q, want exact Work Log preflight blocker", dryEntry.Reason)
+	}
+
+	opts.Apply = true
+	applied, err := GC(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyEntry := entryFor(t, applied, "gc-missing-worklog-claim")
+	if applyEntry.Eligible || applyEntry.Applied || applyEntry.Reason != dryEntry.Reason {
+		t.Fatalf("apply entry = %#v, want unchanged dry-run refusal %#v", applyEntry, dryEntry)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("apply removed the refused worktree: %v", statErr)
+	}
+	if got := gitTestOutput(t, fixture.remote, "rev-parse", "refs/heads/"+result.Branch); got != remoteHead {
+		t.Fatalf("apply changed refused remote branch from %s to %s", remoteHead, got)
+	}
+	if _, statErr := os.Stat(claimPath); !os.IsNotExist(statErr) {
+		t.Fatalf("apply recreated or changed the missing claim: %v", statErr)
+	}
+}
+
 func TestGCDeletesProvedOlderRemoteRefForLandedLocalHead(t *testing.T) {
 	fixture, result, _, mergedAt := prepareMergedTask(t, "gc-older-remote")
 	installMergedPullRequestFixtures(t, nil, time.Time{})

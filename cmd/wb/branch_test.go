@@ -2,9 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"gopkg.in/yaml.v3"
 )
 
 func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
@@ -52,11 +58,197 @@ func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
 	}
 }
 
+func TestBranchListSupportsRetiredAndOrganizationSelectors(t *testing.T) {
+	command := newBranchListCmd()
+	if command.Flags().Lookup("org") == nil || command.Flags().Lookup("include-retired") == nil {
+		t.Fatal("branch list is missing organization or retired selector")
+	}
+	if command.Flags().Lookup("format").DefValue != "text" {
+		t.Fatal("branch list no longer defaults to table text")
+	}
+	if err := requireOutputFormat("yaml", "text", "json", "yaml"); err != nil {
+		t.Fatalf("yaml format rejected: %v", err)
+	}
+}
+
+func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
+	command := newBranchQuarantineCmd()
+	if flag := command.Flags().Lookup("apply"); flag == nil || flag.DefValue != "false" {
+		t.Fatal("quarantine must default to dry-run")
+	}
+	for _, name := range []string{"repo", "branch", "sha", "reason", "manifest", "report-dir"} {
+		if command.Flags().Lookup(name) == nil {
+			t.Fatalf("missing --%s", name)
+		}
+	}
+}
+
+func TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight(t *testing.T) {
+	original := branchArchiveTargetPreflight
+	t.Cleanup(func() { branchArchiveTargetPreflight = original })
+	branchArchiveTargetPreflight = func(_ context.Context, repository string) (worktrees.RetiredArchivePlan, error) {
+		return worktrees.RetiredArchivePlan{SourceRepository: repository, ArchiveRepository: "sneat-co/backstage-retired", Outcome: "refused", Refusal: "archive repository is public"}, nil
+	}
+	command := newBranchArchiveTargetCmd()
+	if command.Flags().Lookup("apply") != nil || command.Flags().Lookup("repo") == nil || command.Flags().Lookup("format") == nil {
+		t.Fatal("archive-target must expose only repo and format, with no apply path")
+	}
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetArgs([]string{"--repo", "sneat-co/app"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "archive-target: sneat-co/backstage-retired") || !strings.Contains(got, "refusal: archive repository is public") {
+		t.Fatalf("text output = %q", got)
+	}
+	var help bytes.Buffer
+	command = newBranchArchiveTargetCmd()
+	command.SetOut(&help)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil || !strings.Contains(help.String(), "read-only") || !strings.Contains(help.String(), "--repo") {
+		t.Fatalf("help = %q, err=%v", help.String(), err)
+	}
+}
+
+func TestBranchArchiveTargetYAMLSemanticallyMatchesJSON(t *testing.T) {
+	original := branchArchiveTargetPreflight
+	t.Cleanup(func() { branchArchiveTargetPreflight = original })
+	branchArchiveTargetPreflight = func(_ context.Context, repository string) (worktrees.RetiredArchivePlan, error) {
+		return worktrees.RetiredArchivePlan{SourceRepository: repository, ArchiveRepository: "sneat-co/backstage-retired", Outcome: "refused", Refusal: "archive repository is unavailable", LocalQuarantine: "preserved", WorkLogExport: "not_started"}, nil
+	}
+	execute := func(format string) []byte {
+		t.Helper()
+		command := newBranchArchiveTargetCmd()
+		var out bytes.Buffer
+		command.SetOut(&out)
+		command.SetArgs([]string{"--repo", "sneat-co/app", "--format", format})
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	jsonRaw := execute("json")
+	yamlRaw := execute("yaml")
+	var want, got any
+	if err := json.Unmarshal(jsonRaw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(yamlRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("archive-target YAML differs from JSON\nwant=%#v\ngot=%#v", want, got)
+	}
+}
+
+func TestBranchCountUsesTheSharedInventorySelectors(t *testing.T) {
+	command := newBranchCountCmd()
+	for _, name := range []string{"org", "repo", "scope", "only", "name", "older-than", "format"} {
+		if command.Flags().Lookup(name) == nil {
+			t.Fatalf("count missing --%s", name)
+		}
+	}
+	if command.Flags().Lookup("include-retired") != nil {
+		t.Fatal("count must share list's one-pass inventory rather than request a second presentation mode")
+	}
+}
+
+func TestBranchCountRetiredTextFormatKeepsScopedRefTotals(t *testing.T) {
+	var out bytes.Buffer
+	if err := printBranchCount(&out, worktrees.BranchListOutcome{
+		Totals:          map[string]int{worktrees.BranchRetired: 2},
+		RetiredBranches: 1,
+		RetiredRefs:     map[string]int{worktrees.BranchScopeLocal: 1, worktrees.BranchScopeRemote: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "STATUS       REFS\nretired     2\nretired branches 1 names (1 local refs, 1 remote refs)\nretired tags     0 names (0 local refs, 0 remote refs)\n"; got != want {
+		t.Fatalf("retired count text = %q, want %q", got, want)
+	}
+}
+
+func TestBranchCountDoesNotRenderAnUnavailableRemoteRetiredInventoryAsZero(t *testing.T) {
+	var out bytes.Buffer
+	if err := printBranchCount(&out, worktrees.BranchListOutcome{
+		Scope:                    worktrees.BranchScopeRemote,
+		RetiredRefs:              map[string]int{},
+		RetiredRemoteUnavailable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "unavailable remote refs") {
+		t.Fatalf("remote retired failure rendered as a count: %q", out.String())
+	}
+}
+
+func TestPrintBranchDiagnosticsUsesSeparateStream(t *testing.T) {
+	var diagnostics bytes.Buffer
+	if err := printBranchDiagnostics(&diagnostics, []string{"retired namespace inventory skipped fetch of origin/main", "acme/app: retired remote refs: unavailable"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "diagnostic: retired namespace inventory skipped fetch of origin/main\ndiagnostic: acme/app: retired remote refs: unavailable\n"
+	if diagnostics.String() != want {
+		t.Fatalf("diagnostics = %q, want %q", diagnostics.String(), want)
+	}
+}
+
+func TestYAMLBranchListSemanticallyMatchesJSON(t *testing.T) {
+	outcome := worktrees.BranchListOutcome{Org: "acme", RetiredBranches: 1, RetiredRefs: map[string]int{"local": 1}, Entries: []worktrees.BranchEntry{{Repository: "acme/app", Branch: "retired/example", Author: "Alex", Title: "old work"}}}
+	raw, err := yamlCompatibleBranchList(outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonRaw, err := json.Marshal(outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got any
+	if err := json.Unmarshal(jsonRaw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("yaml differs from JSON\nwant=%#v\ngot=%#v", want, got)
+	}
+}
+
+func TestBranchOutcomeAlwaysSerializesZeroRetiredBranchNames(t *testing.T) {
+	raw, err := json.Marshal(worktrees.BranchListOutcome{RetiredRefs: map[string]int{worktrees.BranchScopeLocal: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome map[string]any
+	if err := json.Unmarshal(raw, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := outcome["retired_branches"]; !ok || got != float64(0) {
+		t.Fatalf("retired_branches = %#v (present=%t), want explicit zero", got, ok)
+	}
+}
+
 func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 	list := newBranchListCmd()
 	for _, wanted := range []string{
 		"contained", "absorbed", "unique", "protected", "in-use", "unreadable",
 		"never eligible for --apply", "read-only in every configuration", "[n/N] repository",
+		"bounded quarantine inventory", "does not fetch origin/<base>",
 	} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("branch list help does not mention %q", wanted)
@@ -103,7 +295,7 @@ func TestBranchListRejectsUnsupportedScopeAndOnlyAsUsageErrors(t *testing.T) {
 	}{
 		{"bad scope", []string{"branch", "list", "--scope", "bogus", "--projects-root", t.TempDir()}, "unsupported --scope"},
 		{"bad only", []string{"branch", "list", "--only", "bogus", "--projects-root", t.TempDir()}, "unsupported --only"},
-		{"bad format", []string{"branch", "list", "--format", "yaml", "--projects-root", t.TempDir()}, "unsupported format"},
+		{"bad format", []string{"branch", "list", "--format", "toml", "--projects-root", t.TempDir()}, "unsupported format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

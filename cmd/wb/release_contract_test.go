@@ -181,7 +181,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	assert("required check name", aggregate["name"], "Required checks passed")
 	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
-	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
+	for _, name := range []string{"source", "static", "lint", "race"} {
 		job, ok := jobs[name].(map[string]any)
 		if !ok {
 			t.Fatalf("validation job %s missing", name)
@@ -190,6 +190,18 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		assert(name+" scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
 			"(github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	}
+	// coverage is the per-change coverage ratchet's one and only baseline
+	// producer (spec/plans/coverage-to-100/README.md task-3(b)): it is
+	// deliberately exempt from the validation-reuse push-event skip the other
+	// validation jobs apply, so a baseline artifact is always published on
+	// every push to main.
+	coverageJob, ok := jobs["coverage"].(map[string]any)
+	if !ok {
+		t.Fatal("validation job coverage missing")
+	}
+	assert("coverage starts after eligibility, reuse and Go scope", coverageJob["needs"], []any{"release-eligibility", "validation-reuse", "go-scope"})
+	assert("coverage scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(coverageJob["if"])), " "),
+		"(github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true')")
 	goScope, ok := jobs["go-scope"].(map[string]any)
 	if !ok {
 		t.Fatal("Go validation scope job missing")
@@ -199,7 +211,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("Go validation scope steps=%v", goScope["steps"])
 	}
 	goScopeFilter, _ := goScopeSteps[0].(map[string]any)
-	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@v4")
+	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d")
 	// Push, tag and manual runs always validate, so they must not depend on a
 	// git-history diff that can fail after a force-push.
 	assert("Go scope filter only on pull requests", goScopeFilter["if"], "github.event_name == 'pull_request'")
@@ -237,7 +249,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("native Windows scope steps=%v", windowsScope["steps"])
 	}
 	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
-	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@v6")
+	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
@@ -264,7 +276,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if _, conditional := checkout["if"]; conditional {
 		t.Fatalf("eligibility checkout=%v", checkout)
 	}
-	assert("eligibility checkout action", checkout["uses"], "actions/checkout@v6")
+	assert("eligibility checkout action", checkout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	assert("eligibility history", checkout["with"], map[string]any{"fetch-depth": 0})
 	assert("eligibility output", eligibility["outputs"], map[string]any{"eligible": "${{ steps.eligibility.outputs.eligible }}"})
 	if _, err := os.Stat(filepath.Join(repoRoot, ".github", "workflows", "release.yml")); !os.IsNotExist(err) {

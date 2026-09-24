@@ -556,6 +556,18 @@
       "notes": "Deliberately not a mode of wb sync: sync mutates by default and its own archived-clone pruning uses a looser check with no linked-worktree, local-only-branch, unpushed-tag, or WB Work Log awareness."
     },
     {
+      "id": "wb.branch.archive-target",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb branch archive-target", "flags": ["--format", "--repo"], "modes": ["Resolves user-only per-organization archive configuration and live private-target status", "Read-only: no remote ref rename, worktree deletion, Work Log export, report creation, or apply mode"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb branch archive-target --help", "contains": ["read-only", "--repo"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch archive-target --repo sneat-co/app --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The command is an archive-target visibility preflight only. It does not make a remote retirement eligible or perform one."
+    },
+    {
       "id": "wb.branch.cleanup",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -571,11 +583,16 @@
                 "--absorbed-by",
                 "--apply",
                 "--base",
+                "--branch",
                 "--format",
                 "--older-than",
+                "--peer-evidence",
+                "--repo",
                 "--receipts",
                 "--report-dir",
-                "--scope"
+                "--require-host",
+                "--scope",
+                "--superseded-by"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required for every deletion in every scope",
@@ -585,7 +602,10 @@
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
                 "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
-                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome"
+                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome",
+                "--superseded-by requires exact --repo and --branch, validates a trusted reviewer receipt, archives and restores the exact source head before deletion, and rechecks receipt bytes and all guards",
+                "Reviewed retirement in remote or all scope requires fresh machine-generated --peer-evidence for every explicit --require-host; missing, stale, mismatched, or unsafe evidence refuses deletion immediately before the leased push",
+                "Recovery reports are rejected inside the source clone or any linked worktree and through symlink ancestors; the manifest records fsynced SHA-bound bundle and receipt digests plus an independent restore verification"
               ]
             }
           ],
@@ -604,7 +624,10 @@
                 "pull-request evidence",
                 "never removes, moves, or modifies any working tree",
                 "--receipts",
-                "--absorbed-by"
+                "--absorbed-by",
+                "--superseded-by",
+                "--peer-evidence",
+                "--require-host"
               ]
             }
           ],
@@ -670,6 +693,18 @@
       "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
     },
     {
+      "id": "wb.branch.count",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb branch count", "flags": ["--base", "--format", "--name", "--older-than", "--only", "--org", "--repo", "--scope"], "modes": ["Shares one locally discovered branch inventory with list", "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory", "Retired-only selectors read local retired refs without fetching origin/main; remote scope refreshes only origin retired refs and reports failures through diagnostics and retired_remote_unavailable"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb branch count --help", "contains": ["retired", "local, remote, or all"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch count --org sneat-co --only retired --format yaml"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchCountUsesTheSharedInventorySelectors", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Count is a presentation over one branch inventory, not a separate fleet scan."
+    },
+    {
       "id": "wb.branch.list",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -683,16 +718,23 @@
               "path": "wb branch list",
               "flags": [
                 "--base",
+                "--branch",
                 "--format",
+				"--include-retired",
+				"--name",
                 "--older-than",
                 "--only",
+				"--org",
+                "--repo",
                 "--scope"
               ],
               "modes": [
                 "Read-only in every configuration; the only permitted remote interaction is fetching",
                 "Every disposition is computed against the exact commit SHA fetched from origin/<base> during the run",
                 "A repository whose target cannot be fetched yields unreadable for its branches without blocking the rest of the sweep",
-                "Closed evidence taxonomy: contained, absorbed, unique, protected, in-use, unreadable"
+				"Retired branches are excluded from the active backlog by default but counted separately; --only retired and --include-retired expose them",
+                "Closed evidence taxonomy: contained, absorbed, retired, unique, protected, in-use, unreadable",
+                "--org selects locally discovered canonical clones only; it is not a GitHub-wide organization query"
               ]
             }
           ],
@@ -709,6 +751,7 @@
                 "unique",
                 "protected",
                 "in-use",
+				"retired",
                 "unreadable",
                 "never eligible for --apply"
               ]
@@ -743,6 +786,31 @@
         }
       },
       "notes": "Progress streams to stderr as '[n/N] repository' plus a closing per-disposition summary; stdout stays reserved for the report so --format json stays machine-parseable."
+    },
+    {
+      "id": "wb.branch.quarantine",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb branch quarantine",
+            "flags": ["--apply", "--branch", "--manifest", "--reason", "--repo", "--report-dir", "--sha"],
+            "modes": [
+              "Dry-run plan is the default; --apply uses one local compare-and-swap update-ref transaction",
+              "Every manifest row binds exact repository, source ref, SHA, and reason; per-row outcomes are durably reported before and after mutation",
+              "Open pull requests using the source as either head or base, protected/current refs, checked-out refs, live claims, moved sources, and destination collisions are refused",
+              "Remote quarantine is unavailable by design until independent peer evidence and leased remote mutation are implemented"
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {"status": "Full", "anchors": [{"command": "wb branch quarantine --help", "contains": ["dry-run", "Remote quarantine"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch quarantine --repo owner/repository --branch old/topic --reason superseded-work"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/branches_test.go", "name": "TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Retired refs are explicit operator quarantine and are never automatic cleanup candidates. Remote archive preflight exists only as an internal future-retirement planner; this public command neither resolves archive configuration nor performs remote/worktree retirement."
     },
     {
       "id": "wb.check",
@@ -1644,6 +1712,9 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--baseline-file",
+                "--baseline-timeout",
+                "--changed",
                 "--coverage-profile",
                 "--fleet",
                 "--format",
@@ -1655,6 +1726,7 @@
                 "--resume",
                 "--retry",
                 "--shard-package",
+                "--target",
                 "--test-shards",
                 "--timeout"
               ],
@@ -1662,7 +1734,8 @@
                 "Measures statement-weighted Go coverage for one repository or a selected local fleet.",
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
-                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications."
+                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
+                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
               ]
             }
           ],
@@ -1734,12 +1807,96 @@
               "path": "internal/orchestrate/worktree_merge_test.go",
               "name": "TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation",
               "kind": "integration"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
+      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume. --changed applies the per-change coverage ratchet (spec/plans/coverage-to-100/README.md task-3): a package fails when its uncovered-statement count rises against its baseline, or when a statement a diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
+    },
+    {
+      "id": "wb.coverage.baseline",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage baseline",
+              "flags": [
+                "--module",
+                "--out",
+                "--sha"
+              ],
+              "modes": [
+                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON go-ci's coverage job publishes as a build artifact on every push to main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage baseline --help",
+              "contains": [
+                "--module",
+                "--out"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Consumed by go-ci.yml directly; no standalone operator runbook is published yet."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineWritesPerPackageUncoveredCounts",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineRejectsMissingProfile",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageBaselineRejectsMissingGoMod",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "go-ci.yml's coverage job runs this on every push to main and uploads its output as the wb-coverage-baseline artifact; wb coverage --changed --baseline-file reads it back for pull requests."
     },
     {
       "id": "wb.create",
@@ -2182,13 +2339,16 @@
             {
               "path": "wb daemon restart",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--if-running",
                 "--json"
               ],
               "modes": [
                 "Restarts with a durable queue ownership handoff",
-                "--if-running is safe after verified self-update"
+                "--if-running is safe after verified self-update",
+                "Hands a supervised (systemd/launchd) daemon back to its supervisor instead of launching a detached replacement",
+                "--force-detached overrides a refusal to start a detached daemon under a recorded supervisor"
               ]
             }
           ],
@@ -2200,6 +2360,7 @@
             {
               "command": "wb daemon restart --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--if-running",
                 "--json"
@@ -2356,12 +2517,15 @@
             {
               "path": "wb daemon start",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--json",
                 "--listen"
               ],
               "modes": [
-                "Idempotently starts the loopback daemon and hands off an older installed executable"
+                "Idempotently starts the loopback daemon and hands off an older installed executable",
+                "Refuses a detached start when the runtime's recorded owner is a systemd or launchd supervisor still confirmed present",
+                "--force-detached overrides that refusal"
               ]
             }
           ],
@@ -2373,6 +2537,7 @@
             {
               "command": "wb daemon start --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--json",
                 "--listen"
@@ -2431,7 +2596,9 @@
                 "Reports a daemon still serving the pre-resolver runtime directory, and why a start was refused while one is live",
                 "Reports whether the bench hub is mounted, with its store engine, store location, and listen address",
                 "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged",
-                "Reports whether webhook mode is on and the public URL GitHub delivers to"
+                "Reports whether webhook mode is on and the public URL GitHub delivers to",
+                "Reports supervisor=systemd|launchd|none, what the daemon recorded about its own start",
+                "Flags a supervisor_mismatch when the recorded supervisor disagrees with what this build can independently observe (Linux cgroup membership)"
               ]
             }
           ],
@@ -3013,7 +3180,7 @@
                 "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
                 "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
                 "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted.",
-                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling \u2014 the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
+                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling — the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
               ]
             }
           ],
@@ -3080,7 +3247,7 @@
           "limitation": null
         }
       },
-      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run \u2014 the concrete failure mode motivating the policy, not a cosmetic preference."
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run — the concrete failure mode motivating the policy, not a cosmetic preference."
     },
     {
       "id": "wb.deps.go-directive.report",
@@ -3104,10 +3271,10 @@
                 "--toolchain"
               ],
               "modes": [
-                "Walks every discovered repository and every Go module inside it \u2014 one row per module, not per repository \u2014 and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
+                "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
                 "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
                 "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first.",
-                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius \u2014 the number of repositories the policy actually protects \u2014 is a single number in the report."
+                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius — the number of repositories the policy actually protects — is a single number in the report."
               ]
             }
           ],
@@ -3962,7 +4129,7 @@
                 "Records every link in stream state BEFORE the filesystem is touched and again with the exact artefacts afterwards, so a crash mid-apply leaves a record --undo can act on",
                 "Refuses (exit 2, link-not-recordable) a consumer no open stream holds, before anything is written: an unrecorded link cannot be undone and is invisible to the merge guard",
                 "Proves the frozen install once per consumer before any linking, never once per package",
-                "Preserves whatever node_modules/<pkg> was \u2014 a pnpm symlink's target is recorded and re-created, an npm directory is moved aside \u2014 so --undo restores the published package either way",
+                "Preserves whatever node_modules/<pkg> was — a pnpm symlink's target is recorded and re-created, an npm directory is moved aside — so --undo restores the published package either way",
                 "--undo clears an unrecorded go.work too, so the command the merge guard names can satisfy the guard; a removal that fails keeps its record so the guard stays closed",
                 "go mod tidy and go get run with GOWORK=off, set by the verb, so a module-graph mutation can never resolve against an unpublished library tree"
               ]
@@ -4345,9 +4512,9 @@
                 "--skip-sizes"
               ],
               "modes": [
-                "Reports WB-attributable bytes per category \u2014 worktrees, Go build and module caches, the node package store, WB state, and per-task scratch \u2014 against the headroom remaining on the volume holding the projects root.",
+                "Reports WB-attributable bytes per category — worktrees, Go build and module caches, the node package store, WB state, and per-task scratch — against the headroom remaining on the volume holding the projects root.",
                 "Separates what removing a category would actually reclaim from what its trees appear to hold. Git worktrees share objects with their canonical clone and pnpm hard-links store entries into every consumer, so apparent size overstates a reclaim; every category is measured in one accounting walk so content linked into two is counted once.",
-                "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured \u2014 so a partial measurement is never mistaken for a tidy machine.",
+                "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured — so a partial measurement is never mistaken for a tidy machine.",
                 "--skip-sizes reports roots and filesystem headroom without walking trees, because measuring a multi-gigabyte cache costs minutes of IO and the free-space figure is often the whole answer.",
                 "Reports only. Retiring a worktree remains wb worktree gc, which knows what holds unlanded work."
               ]
@@ -4404,7 +4571,7 @@
           "limitation": null
         }
       },
-      "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total \u2014 worktrees held 340 MB fleet-wide while per-task scratch held 46 GB \u2014 so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
+      "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total — worktrees held 340 MB fleet-wide while per-task scratch held 46 GB — so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
     },
     {
       "id": "wb.fleet",
@@ -4476,6 +4643,32 @@
         }
       },
       "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
+    },
+    {
+      "id": "wb.fleet.default-branch",
+      "feature_refs": [
+        "spec/features/default-branch-migration/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb fleet default-branch",
+            "flags": ["--all-orgs", "--apply", "--branch", "--format", "--json", "--migrate-pages-source", "--org", "--parallel", "--reconcile-from", "--reconcile-sha256", "--repo", "--report-dir", "--restore-archive-from", "--restore-archive-sha256", "--rewrite-workflow-triggers", "--temporarily-unarchive", "--user"],
+            "modes": [
+              "Audit is read-only. Desired policy uses --branch, then fleet.organizations.<owner>.default_branch, then fleet.default_branch.",
+              "Apply needs explicit --all-orgs, --org, --repo, or --user scope and writes a durable report before mutation. GitHub rename visibility may lag: WB records an accepted response, performs bounded read-only checks, and does not retry. --reconcile-from needs its exact-byte --reconcile-sha256 and fresh proof, is remote read-only, and blocks any refreshed repository that is not compliant.",
+              "Differing target SHA, source-head pull requests, protection/rules impacts, and unsupported workflow references are refusals. --migrate-pages-source permits legacy source with / or /docs. --rewrite-workflow-triggers permits only plain top-level push/pull_request branch-list scalars, commits replacements with expectedHeadOid, then verifies bytes and commit parent before rename. Other Pages and workflow shapes remain refused. Archived repositories require --temporarily-unarchive."
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {"status":"Full","anchors":[{"command":"wb fleet default-branch --help","contains":["read-only","--all-orgs","--apply","never rewrites"]}],"limitation":null},
+        "ai_skill": {"status":"Full","skills":[{"path":"ai/skills/wb-fleet/references/default-branch.md","marker":"# Audit and safely migrate GitHub default branches","examples":["wb fleet default-branch --all-orgs --format json"]}],"limitation":null},
+        "tests": {"status":"Full","references":[{"path":"cmd/wb/fleet_default_branch_test.go","name":"TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof","kind":"integration"}],"limitation":null}
+      },
+      "notes": "Default branch changes are report-first, source/head-bound, and fail closed for unsafe migration effects. Workflow content is never rewritten; canonical clone reconciliation records dirty, unpublished, diverged, destination-conflicting, or linked-worktree state as a blocker."
     },
     {
       "id": "wb.fleet.merge-policy",
@@ -4966,7 +5159,12 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
-                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Rewrites CPU-heavy validation run directly in a WB-managed worktree into wb run -- ... instead of refusing it (wb#637), but only for the narrow \"simple command\" shape wb#645's review restricted this to: a single governed command, optionally prefixed by VAR=value assignments and/or a leading cd <dir> &&. The env assignments move in front of wb run so they still apply; a leading cd stays outside wb run -- so it still changes the shell's directory.",
+                "Any wider compound command (a second &&, ;, a pipeline, ||, a subshell, a heredoc, or a wrapper like nice/timeout/time first) is never rewritten and falls back to the pre-PR refusal — there is no sh -c wrapping anywhere. Outside a managed worktree, and for a call already under wb run --, nothing changes. Every deny policy is evaluated across the whole line, ignoring any governed match, before a rewrite is considered, so a real deny anywhere always wins over a rewrite (deny wins).",
+                "When the payload carries agent_id (sent only from a subagent) and the Bash command is, entirely on its own, a simple invocation of wb (no other command chained onto the line), prefixes export WB_SUBAGENT_ID=<agent_id> WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>; onto it, feeding the provenance fields wb#631 stamps onto claims, fleet events, wb run events, and wait records.",
+                "These names are deliberately outside the WB_AGENT_* family WB's own owner-identity variables use, so a subagent stamp is never mistaken for a declared owner identity. Both IDs are validated against a safe charset before interpolation; an unsafe or absent agent_id drops the whole prefix.",
+                "A rewrite is written as updatedInput.command with no permissionDecision at all, the guard's one exception to writing only a deny; every other tool_input field the call sent is carried through unchanged.",
+                "Claude Code v2.1.276 applies a response carrying updatedInput with no permissionDecision as the new input and then runs its normal permission flow on it, so the user's own prompts and allow/deny/ask rules still apply to the rewritten command — an explicit allow here was found to suppress that prompt entirely, which is not this guard's call to make. This relies on Claude Code >= 2.1.276's undocumented behaviour.",
                 "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
                 "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
                 "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth); through the shell's brace expansion of any word (gh pr {merge,} 1); and whatever the letter case of the program name (Gh pr merge 1 runs gh on macOS).",
@@ -4975,8 +5173,8 @@
                 "The escape hatch is WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" on that exact call, where the shell really exports it to gh: at the start of the call, or right after env, sudo, time or a shell keyword. It lets that one call through, and the guard records the reason when it allows the call. The record proves only that the guard allowed the call, not that the call ran, and the hook process's own ambient environment is never read.",
                 "A specscore/go/npm/pnpm/yarn/bun invocation bypasses its write-verb check only for a genuine help request (wb#493); which shape counts depends on the tool, because --help/-h behaves differently once a subcommand precedes it.",
                 "cobra-based specscore accepts a subcommand chain trailing in exactly one --help/-h with nothing after, or the word help first with no flag anywhere else.",
-                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser \u2014 confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
-                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead \u2014 for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
+                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser — confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
+                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead — for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
                 "gh pr merge's own --help/-h recognition is separate and reads the flags the way gh does. A --help consumed by a value-taking flag (gh pr merge 123 --subject --help, gh pr merge 123 -st --help) is a real merge, not a help request, and so is a --help placed after -- (gh pr merge -- --help).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
@@ -5030,7 +5228,57 @@
             },
             {
               "path": "internal/agentguard/agentguard_test.go",
-              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "name": "TestManagedWorktreeRewritesGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestNonSimpleGovernedCommandsAreRefusedNotRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestDenyWinsOverAGovernedRewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestCompoundWBInvocationIsNeverStamped",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewrittenSimpleCommandsRunCorrectlyInARealShell",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestWbRunCommandIsNeverRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestSubagentWBCallGetsTheIDPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestMainThreadWBCallGetsNoPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestOtherToolInputFieldsArePreservedAcrossARewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewriteAndStampNeverSetPermissionDecision",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/worklog_test.go",
+              "name": "TestSubagentStampEnvVarsDoNotDeclareAnIdentity",
               "kind": "unit"
             },
             {
@@ -5132,7 +5380,7 @@
           "limitation": null
         }
       },
-      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands \u2014 while every unmodelled construct is allowed rather than guessed at."
+      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial — recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands — while every unmodelled construct is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -5928,7 +6176,7 @@
               ],
               "modes": [
                 "Prices three profiles from the recorded hook events: the commit profile, a push to a stream/<name> branch, and every other push",
-                "Each profile carries its measured budget \u2014 the slowest run actually observed, never an estimate",
+                "Each profile carries its measured budget — the slowest run actually observed, never an estimate",
                 "The stream saving is the number of stream-branch pushes priced at the measured average of a non-stream push, with the basis printed beside it",
                 "Anything the window could not price is listed under 'not measured', so a zero saving is never readable as the stream profile saving nothing",
                 "Per-block cost is reported so a slow profile can be named rather than guessed at",
@@ -6620,6 +6868,447 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.peers.block",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers block",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Refuses a peer's sessions and HTTP calls over the daemon's owner-token RPC, keeping its record, cursor and lifetime counters."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers block --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers block laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "block, unblock and disconnect resolve <peer> by name or ID; on a laptop they act on the configured upstream locally instead of the (nonexistent) owner RPC."
+    },
+    {
+      "id": "wb.peers.disconnect",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers disconnect",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Closes a peer's live session only; the peer stays trusted and reconnects by itself. Reports \"no live session\" until Task 2 adds sessions."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers disconnect --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers disconnect laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Answers a clear \"no live session\" result for any known peer until Task 2's session registry lands."
+    },
+    {
+      "id": "wb.peers.get",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers get",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Shows one peer's full record, read through the local daemon's /api/v1/peers API. The reserved name \"upstream\" shows this machine's configured hub instead."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers get --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers get laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersGetRendersAPeerDetailOrTheUpstream",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Session, counters and admin_available are empty/false until Tasks 2, 6 and 7 fill them in."
+    },
+    {
+      "id": "wb.peers.invite",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers invite",
+              "flags": [
+                "--format",
+                "--json",
+                "--rotate",
+                "--token-file"
+              ],
+              "modes": [
+                "Mints a one-time peer credential on this hub over the owner-token RPC and prints the token once, or writes it privately to --token-file."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers invite --help",
+              "contains": [
+                "--rotate",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers invite laptop --token-file ~/.wb/credentials/laptop.token"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersInvitePrintsTokenOnceOrWritesTokenFile",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses an existing peer name without --rotate, the hub's own machine name, a name held by a non-peer credential, and the memory store engine."
+    },
+    {
+      "id": "wb.peers.join",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers join",
+              "flags": [
+                "--format",
+                "--json",
+                "--restart-daemon",
+                "--token-file",
+                "--token-stdin"
+              ],
+              "modes": [
+                "Verifies a one-time peer token against the hub's connect route, writes peers.upstream in wb.yaml without touching remote:, and restarts a running daemon."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers join --help",
+              "contains": [
+                "--token-stdin",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers join https://vm1.sneat.dev --token-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_join_test.go",
+              "name": "TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses a same-origin remote.provider: hub, since two receivers cannot consume one queue."
+    },
+    {
+      "id": "wb.peers.list",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers list",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Lists every downstream peer this hub knows, plus the upstream hub row when peers.upstream is configured."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers list --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersListRendersDownstreamAndUpstreamRows",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Reads through the local daemon's /api/v1/peers API; a daemon that is not reachable yields an empty downstream list rather than failing the command."
+    },
+    {
+      "id": "wb.peers.unblock",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers unblock",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Allows a blocked peer's sessions again over the owner-token RPC and sets reset_pending, so its next redial reconciles from the hub's heads."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers unblock --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers unblock laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "See wb.peers.block for the shared name/ID resolution and the laptop-local upstream path."
+    },
+    {
       "id": "wb.pr.create",
       "feature_refs": [
         "spec/features/dependency-streams/README.md"
@@ -6795,10 +7484,10 @@
                 "--keep-commits requires explicit --merge-method squash and a mandatory --reason; it rebuilds the branch so the named commits land as their own, in order, with the rest aggregated, while merge/rebase combinations are refused",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
                 "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
-                "The live-link refusal runs whatever --keep says \u2014 --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed \u2014 and a stream WB cannot read stops the landing rather than being reported as no link",
+                "The live-link refusal runs whatever --keep says — --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed — and a stream WB cannot read stops the landing rather than being reported as no link",
                 "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
-                "Every invocation writes exactly one stream event \u2014 success, findings or refusal, and including --keep \u2014 carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
+                "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
                 "Source commits are paired with the commits that landed them by git patch-id --stable over the base's new commits, never by the scratch worktree's SHAs, which exist nowhere after a rebase merge",
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
@@ -9860,7 +10549,7 @@
                 "Refuses (exit 2) on stream-exists, repository-in-stream naming wb stream join, and preflight-failed naming wb hooks repair",
                 "Reports (exit 1) a red base, a missing CI concurrency group, a check it could not establish, and any transitive consumer left out of the stream",
                 "Stream membership is recorded in WB-owned state outside every repository, so git status in each member stays clean",
-                "Writes the stream record \u2014 with every member's intended worktree, branch and base \u2014 BEFORE the first side effect, so an interrupted start leaves a `creating` stream wb stream end can retire",
+                "Writes the stream record — with every member's intended worktree, branch and base — BEFORE the first side effect, so an interrupted start leaves a `creating` stream wb stream end can retire",
                 "Reserves the name under the store-wide lock that also decides the one-open-stream question, so two concurrent starts arbitrate before either pushes anything",
                 "Starting on the name of an ENDED stream archives the old record as <name>.ended-<timestamp> and proceeds, so a name is never burned by its first use",
                 "An unreadable stream record elsewhere in the store is reported, never allowed to refuse an unrelated start"
@@ -9975,7 +10664,7 @@
               ],
               "modes": [
                 "Reports the three gaps separately and per repository: consumers holding a live local link, library changes merged but untagged, and consumers behind the newest published version",
-                "Lists every open pull request targeting a stream branch \u2014 the ones GitHub would silently retarget at the base if the branch were deleted",
+                "Lists every open pull request targeting a stream branch — the ones GitHub would silently retarget at the base if the branch were deleted",
                 "Collapses patch-identical unabsorbed commits so N branches carrying one body of work read as one cluster",
                 "Reconstructs everything from WB-owned stream state, so it answers after an interrupted session",
                 "Anything it could not establish is reported under 'could not establish'; an empty gap list is never readable as nothing is wrong",
@@ -10079,7 +10768,7 @@
                 "Reports conflicts per agent branch with the branch, its claiming agent and the conflicting paths; a conflict in one never aborts the others",
                 "Refuses by default while a branch is under review, because rebasing it invalidates the review that pinned its patch set",
                 "--verify applies the whole batch and runs the suite once, then finds the culprit by cumulative prefix re-apply on a local scratch branch that is never pushed",
-                "Costs one run when the batch passes and 1+k when the culprit is element k \u2014 a linear prefix scan, not a bisection",
+                "Costs one run when the batch passes and 1+k when the culprit is element k — a linear prefix scan, not a bisection",
                 "A lockstep family is one element and is never split during prefix re-apply",
                 "Reports an interaction failure, blaming no element, when every prefix passes",
                 "Names a skipped CI mechanism only after reading the member's stream-PR workflows and proving CI runs it; anything neither side carries is reported as unguarded",
@@ -11366,7 +12055,7 @@
               ]
             }
           ],
-          "limitation": "Reports only; it never merges, and it is not merge evidence. Conditions beyond checks, state and head movement \u2014 a review submitted, changes requested, or a new comment \u2014 are not observed."
+          "limitation": "Reports only; it never merges, and it is not merge evidence. Conditions beyond checks, state and head movement — a review submitted, changes requested, or a new comment — are not observed."
         },
         "help": {
           "status": "Full",
@@ -12529,7 +13218,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/SKILL.md",
-              "marker": "## Ending a task \u2014 `wb worktree end`",
+              "marker": "## Ending a task — `wb worktree end`",
               "examples": [
                 "wb worktree end improve-login",
                 "wb worktree end improve-login --apply"
@@ -12602,18 +13291,18 @@
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required to retire anything",
-                "Merged-ness is decided by commit identity \u2014 GitHub's commit-to-pull-request index for the head, then for its ancestors \u2014 never by branch-name ancestry, because a squash merge leaves none",
+                "Merged-ness is decided by commit identity — GitHub's commit-to-pull-request index for the head, then for its ancestors — never by branch-name ancestry, because a squash merge leaves none",
                 "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
                 "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
                 "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
                 "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
-                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past \u2014 the residual commits, or the receipt and the reviewer after every bound head is re-verified",
+                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past — the residual commits, or the receipt and the reviewer after every bound head is re-verified",
                 "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
-                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
+                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes — no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
                 "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
-                "The in-use guard applies to every checkout, including one with no owner registration at all \u2014 a review checkout, a git worktree add checkout, or one whose registering process exited \u2014 because those are exactly the checkouts a sweep removed while they were in use",
-                "In use is decided from four activity signals \u2014 a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit \u2014 and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
+                "The in-use guard applies to every checkout, including one with no owner registration at all — a review checkout, a git worktree add checkout, or one whose registering process exited — because those are exactly the checkouts a sweep removed while they were in use",
+                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
@@ -12792,7 +13481,7 @@
           "limitation": null
         }
       },
-      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup \u2014 cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
+      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup — cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
     },
     {
       "id": "wb.worktree.guard",
@@ -14622,6 +15311,96 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-retired-prepare-candidate",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-prepare-candidate",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves one clean unpublished legacy empty-candidate prepare/conflict checkout remains exactly at the receipt target SHA after the recorded target ref was deleted",
+                "Requires the exact unchanged receipt bytes, complete source identity distinct from the candidate, a freshly resolved default branch, and fresh candidate/default acknowledgement ancestry into its fetched target without asserting source absorption",
+                "Writes an append-only candidate-only acknowledgement; adoption and ordinary cleanup revalidate it without rewriting the receipt or freeing the historical merge lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-prepare-candidate --help",
+              "contains": [
+                "unpublished legacy prepare/conflict candidate",
+                "default target",
+                "never asserts",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_prepare_candidate_test.go",
+              "name": "TestValidateRetiredPrepareCandidateReceiptRejectsCandidateOrSourceConfusion",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestAdoptCurrentLayoutOnlyWithRetiredPrepareCandidateAcknowledgement",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestCleanupRecoversRetiredPrepareCandidateAfterRecordedTargetDeleted",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestRetiredPrepareCandidateAcknowledgementRejectsChangedDefaultTarget",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Candidate-only recovery for a historical failed prepare receipt whose recorded target branch disappeared after its exact candidate commit reached the remote default branch. The acknowledgement says nothing about source absorption, and cleanup uses the ordinary descriptor-safe transaction only after rechecking the fresh default target and candidate publication state."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-retired-publication",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
@@ -15481,7 +16260,7 @@
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated \u2014 nothing left to re-validate locally.",
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally.",
                 "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
                 "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed",
                 "When the target has advanced past a published candidate's recorded target SHA, WB refreshes it instead of refusing: merges the freshly fetched target (and any already-advanced candidate descendant) into the published head, records a target_refreshes entry, re-validates the exact resulting candidate, and fast-forward pushes the same PR branch; a merge conflict reports the conflicting paths and leaves the receipt prepare/conflict without pushing, and no target advance is a no-op"
@@ -16315,6 +17094,43 @@
         }
       },
       "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
+    },
+    {
+      "id": "wb.worktree.retire",
+      "feature_refs": ["spec/features/branch-hygiene/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb worktree retire",
+            "flags": ["--apply", "--format", "--json", "--message", "--preserve", "--mode", "--initiator"],
+            "modes": [
+              "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
+              "Preserves the exact source commit at retired/* as a branch by default, or as refs/tags/retired/* with --preserve=tag, then archives actual plain Work Log files and worktree metadata in the configured private organization retirement repository",
+              "Verifies both remote receipts before deleting the original remote ref with an exact lease and removing the local worktree and branch",
+              "Refuses open pull requests, competing ownership, changed refs, and unavailable or public retirement repositories; interrupted applies resume from durable intent"
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb worktree retire --help", "contains": ["dry run", "private", "--apply", "--preserve", "--mode", "--initiator"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "wb worktree retire", "examples": ["wb worktree retire <task> --apply"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [{"path": "internal/worktrees/retire_test.go", "name": "TestRetireBareRemotePreservesSourceAndPlainWorkLog", "kind": "integration"}],
+          "limitation": null
+        }
+      },
+      "notes": "Retirement preserves the source commit in the original repository and records actual plain Work Log files and worktree metadata in a separate private organization repository."
     },
     {
       "id": "wb.worktree.set",

@@ -1,0 +1,70 @@
+package sessiontransport
+
+import (
+	"context"
+	"time"
+)
+
+// NoneTransport is the first-class no-op transport
+// REQ:none-transport-is-first-class requires: every method returns a plain,
+// honest, non-error outcome, because there never was anywhere live to
+// deliver to. It is the transport a session resolves to when neither herdr
+// nor tmux identity is observable (REQ:identity-capture-outside-herdr,
+// Task 5's to wire onto this type). The zero value is ready to use.
+type NoneTransport struct{}
+
+// Kind implements [Transport], returning [KindNone].
+func (NoneTransport) Kind() Kind { return KindNone }
+
+// Capabilities implements [Transport], returning [NoneCapabilities].
+func (NoneTransport) Capabilities() Capabilities { return NoneCapabilities() }
+
+// ResolvePane implements [Transport]. none never has a live pane, so it
+// reports [ErrNoUniqueTarget] rather than fabricating one; every caller
+// already treats that as record-only (REQ:no-live-owner-is-record-only).
+func (NoneTransport) ResolvePane(context.Context, Identity) (Target, error) {
+	return Target{}, ErrNoUniqueTarget
+}
+
+// Launch implements [Transport]. none has no terminal to start, so it
+// returns a zero [Target] with no error: launching a successor onto none is
+// a supported, expected outcome, not a failure.
+func (NoneTransport) Launch(context.Context, LaunchRequest) (Target, error) {
+	return Target{}, nil
+}
+
+// Inspect implements [Transport]. none never started anything, so nothing
+// is ever live and nothing ever left terminal evidence behind either.
+func (NoneTransport) Inspect(context.Context, Target) (Inspection, error) {
+	return Inspection{}, nil
+}
+
+// AddressFor implements [Transport]. none has no address derivable purely
+// from a WB session ID — there is no live pane to name at all — so it
+// returns "".
+func (NoneTransport) AddressFor(string) string {
+	return ""
+}
+
+// Deliver implements [Transport]. [NoneCapabilities] declares every
+// capability false, so [ResolveDeliveryMode] always resolves
+// [ModeRecordOnly] for it regardless of delivery.Operation and
+// delivery.Class — every requested delivery, including a caller mistake
+// that assumes a submit or advisory path exists, resolves to a recorded
+// outcome and no error (REQ:none-transport-is-first-class,
+// AC:none-transport-records-only). The explicit zero-Target check below is
+// redundant for none specifically (its Outcome is always ModeRecordOnly
+// regardless), but is written the way every [Transport] implementation
+// must, as the reference example.
+func (NoneTransport) Deliver(_ context.Context, target Target, delivery Delivery) (Receipt, error) {
+	mode := ResolveDeliveryMode(NoneCapabilities(), delivery.Operation, delivery.Class)
+	if target.IsZero() {
+		mode = ModeRecordOnly
+	}
+	return Receipt{
+		Operation: delivery.Operation,
+		Outcome:   mode,
+		Target:    target,
+		At:        time.Now().UTC(),
+	}, nil
+}

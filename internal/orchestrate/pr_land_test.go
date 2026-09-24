@@ -154,10 +154,22 @@ func (fixture *landFixture) installGH(t *testing.T, branch string, files []strin
 printf '%s\n' "$*" >>"$WB_LAND_LOG"
 S="$WB_LAND_STATE"
 head=$(cat "$S/head")
+if [ -f "$S/head-from-remote" ] && git --git-dir="$WB_LAND_REMOTE" show-ref --verify --quiet "refs/heads/$WB_LAND_BRANCH"; then
+  head=$(git --git-dir="$WB_LAND_REMOTE" rev-parse "refs/heads/$WB_LAND_BRANCH")
+  printf '%s' "$head" >"$S/head"
+fi
 state=$(cat "$S/pr-state")
 merged=$(cat "$S/merged")
 case "$*" in
   'api repos/acme/app/pulls/7 --include'|'api repos/acme/app/pulls/7')
+	if [ -f "$S/pr-view-fail-count" ]; then
+	  failures=$(cat "$S/pr-view-fail-count")
+	  if [ "$failures" -gt 0 ]; then
+	    printf '%s' "$((failures - 1))" >"$S/pr-view-fail-count"
+	    echo 'gh: Bad Gateway (HTTP 502)' >&2
+	    exit 1
+	  fi
+	fi
     if [ -f "$S/fail-pr-view-once" ]; then
       rm -f "$S/fail-pr-view-once"
       # Self-kill with SIGKILL so Go's exec layer reports the exact
@@ -318,6 +330,11 @@ case "$*" in
     git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$requested"
     printf 'true' >"$S/merged"
     printf 'closed' >"$S/pr-state"
+	if [ -f "$S/merge-transient-after-success" ]; then
+	  printf '20' >"$S/pr-view-fail-count"
+	  echo 'gh: Bad Gateway (HTTP 502)' >&2
+	  exit 1
+	fi
     printf '{"sha":"%s","merged":true,"message":"Pull Request successfully merged"}\n' "$requested" ;;
   'api --method POST repos/acme/app/issues/7/comments'*)
     printf '%s\n' "$*" >>"$S/posted-comments"
@@ -521,6 +538,30 @@ func TestLandMechanicalBumpNeedsNoApproval(t *testing.T) {
 	}
 }
 
+func TestLandPullRequestResumeReconcilesMergeAfterTransientWriteAndRead(t *testing.T) {
+	fixture := newLandFixture(t, "bump/transient-recovery", "go.mod", "go.sum")
+	fixture.writeState(t, "merge-transient-after-success", "1")
+	options := landOptions(fixture)
+	options.Keep = false
+
+	first, err := LandPullRequest(context.Background(), options)
+	if err == nil || !IsTransientGitHubFailure(err) || !strings.Contains(err.Error(), "resumable: wb pr land acme/app#7") {
+		t.Fatalf("first landing = %+v err=%v, want resumable transient failure", first, err)
+	}
+	if fixture.readState(t, "merged") != "true" {
+		t.Fatal("fixture did not merge before losing the response")
+	}
+	fixture.writeState(t, "pr-view-fail-count", "0")
+
+	resumed, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("resume already-merged pull request: result=%+v err=%v", resumed, err)
+	}
+	if resumed.Outcome != LandSuccess || !resumed.LandingOnBase || resumed.CanonicalSync == "" || !resumed.BranchDeleted {
+		t.Fatalf("resume did not finish remote verification, canonical sync, and branch cleanup: %+v", resumed)
+	}
+}
+
 // The same pull request, titled as a bump, whose diff also edits a source file:
 // classified from the diff, and refused without a recorded approval.
 func TestLandRefusesABumpWhoseDiffTouchesCode(t *testing.T) {
@@ -716,6 +757,43 @@ func TestLandRefusesAKeptCommitThatIsNotOnTheBranch(t *testing.T) {
 	}
 	if result.Outcome != LandRefused || result.RefusalCode != LandRefusalKeepUnknownCommit {
 		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+}
+
+func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
+	fixture := newLandFixture(t, "feature/keep-success", "go.mod", "go.sum")
+	if _, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "keep-success",
+		Branch: "feature/keep-success", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "test-model"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.writeState(t, "head-from-remote", "true")
+	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	options.MergeMethodExplicit = true
+	options.KeepCommits = []string{fixture.commitSHAs[0]}
+	options.Reason = "the first commit must remain independently bisectable"
+	options.BuildCommand = []string{"sh", "-c", "exit 0"}
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.HeadSHA == fixture.headSHA {
+		t.Fatalf("head was not rewritten: %s", result.HeadSHA)
+	}
+	if !result.BranchDeleted {
+		t.Fatal("rewritten pull request branch was not retired")
+	}
+	if output, err := runGitAllowFail(fixture.canonical, "ls-remote", "origin", "refs/heads/feature/keep-success"); err != nil {
+		t.Fatal(err)
+	} else if strings.TrimSpace(output) != "" {
+		t.Fatalf("rewritten remote branch still exists: %s", output)
 	}
 }
 

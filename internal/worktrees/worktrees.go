@@ -995,17 +995,17 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		return GuardResult{}, err
 	}
 	base := strings.TrimSpace(options.Base)
-	if base == "" {
-		base = "main"
-	}
-	if err := branchValidationError(ctx, "base branch", base); err != nil {
-		return GuardResult{}, err
-	}
 	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return GuardResult{}, err
 	}
 	root = filepath.Clean(root)
+	if base == "" {
+		base = guardDefaultBase(ctx, root)
+	}
+	if err := branchValidationError(ctx, "base branch", base); err != nil {
+		return GuardResult{}, err
+	}
 	gitDir, commonDir, err := gitDirectories(ctx, root)
 	if err != nil {
 		return GuardResult{}, err
@@ -1124,6 +1124,21 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		result.Publication = inspectPublication(ctx, root, branch)
 	}
 	return result, nil
+}
+
+// guardDefaultBase follows origin's advertised default when it is available.
+// Hooks call Guard without a user supplied base, so assuming main would reject
+// an otherwise clean canonical clone whose authoritative default is master.
+func guardDefaultBase(ctx context.Context, root string) string {
+	value, err := git(ctx, root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return "main"
+	}
+	branch := strings.TrimPrefix(strings.TrimSpace(value), "origin/")
+	if branch == "" {
+		return "main"
+	}
+	return branch
 }
 
 // locateResumableWorktree reads the canonical Git registration rather than

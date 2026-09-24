@@ -17,22 +17,74 @@ do not yet know whether it does.
 wb branch list
 wb branch list --scope remote
 wb branch list --scope all --only unique
+wb branch list --org sneat-co --name 'retired/*'
+wb branch count --org sneat-co --only retired --format yaml
 wb branch cleanup
 wb branch cleanup --scope remote --apply
 wb branch cleanup --scope all --apply --older-than 0
 wb branch cleanup --scope remote --absorbed-by 123
+wb branch quarantine --repo owner/repository --branch old/topic --reason superseded-work
 ```
 
 `wb branch list` is read-only in every configuration; its only remote
 interaction is fetching. `wb branch cleanup` plans by default — `--apply` is
 required for every deletion, in every scope.
 
-Flags on both: `--base` (default `main`), `--scope` (`local`, `remote`, or
-`all`; default `local`), `--format` (`text` or `json`), plus root `--filter`
-and `--projects-root`. `wb branch list` adds `--only <disposition>` and
-`--older-than` (default `0`, shows every age). `wb branch cleanup` adds
+`wb branch list` and `wb branch count` default to local refs from locally
+discovered canonical clones. `--org` selects an exact owner within that local
+inventory; it does not discover every GitHub repository in an organization.
+Use `--scope remote` or `--scope all` to include known remote refs. Retired
+refs are excluded from active totals, reported separately, and can be selected
+with `--only retired` or `--name 'retired/*'`.
+
+A retired-only selector takes a bounded namespace inventory. With `--scope
+local`, it reads only local `refs/heads/retired/*` and works offline; it does
+not fetch `origin/main`. With `--scope remote` or `all`, WB refreshes only
+`origin`'s `retired/*` namespace before reading its tracking refs, so the
+remote number is current without a full branch or base-target fetch. The
+report records that the base fetch was skipped; if the scoped remote refresh
+fails, diagnostics and `retired_remote_unavailable` make the remote count
+explicitly unknown rather than a cached zero.
+
+## Local quarantine
+
+`wb branch quarantine` is a deliberate local-only rename into `retired/*`.
+It plans by default. Supply one exact repository, source ref, and durable
+reason; `--apply` creates the retired ref at the observed SHA and deletes the
+source in one local compare-and-swap transaction. A JSON `--manifest` can
+contain multiple exact `repository`, `ref`, `sha`, and `reason` rows.
+
+Remote retirement is explicitly unavailable in this command. The future flow
+will resolve an archive target from user-only
+`~/.config/wb/worktrees.yaml`: `retirement.archive_repository` defaults to
+`backstage-retired`, with `retirement.organizations.<owner>.archive_repository`
+for per-organization overrides. It must prove peer and pull-request state, use
+a leased remote mutation, and archive worktree metadata and log pointers in the
+configured private per-org retirement repository before cleanup. The preflight
+refuses public, missing, mismatched, and unavailable targets. The current local
+command does not use this preflight and does not retire remote refs, worktrees,
+or logs.
+
+Use `wb branch archive-target --repo owner/repository` to inspect the selected
+target and its current private/public/missing/unavailable status. For machine
+output, run `wb branch archive-target --repo sneat-co/app --format json`. It is
+read-only and accepts `--format text|json|yaml`.
+
+`wb branch list` and `wb branch count` accept `--base` (default `main`),
+`--scope` (`local`, `remote`, or `all`; default `local`), `--format`
+(`text`, `json`, or `yaml`), root `--filter` and `--projects-root`, plus exact
+`--repo`, exact-owner `--org`, `--name` glob, `--only <disposition>`, and
+`--older-than` (default `0`, shows every age). List also accepts exact
+`--branch` and `--include-retired`; count reports retired refs separately.
+`wb branch cleanup` accepts its established `text` or `json` format and adds
 `--apply`, `--older-than` (default `24h`, `0` disables the grace window),
-`--report-dir`, `--receipts`, and `--absorbed-by <pr-or-commit>`. Scope is
+`--report-dir`, `--receipts`, `--absorbed-by <pr-or-commit>`, and the reviewed
+retirement inputs `--superseded-by <receipt.json>`, exact `--repo` and
+`--branch`, `--peer-evidence`, and `--require-host`. Reviewed retirement in
+any scope that includes remote deletion requires peer evidence from every
+named host, rechecks it immediately before the leased push, refuses fork
+origins, and stores a SHA-bound restored recovery bundle outside every source
+clone and linked worktree. Scope is
 selected only by `--scope` — there is no `--remote` boolean here, unlike
 `wb worktree cleanup --remote`.
 

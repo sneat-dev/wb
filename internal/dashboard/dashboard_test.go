@@ -41,6 +41,63 @@ func TestDashboardServesUIAndHealth(t *testing.T) {
 	}
 }
 
+// TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex is a regression
+// test for a real startup panic this task introduced and fixed: NewHandler
+// once registered Peers at the unqualified pattern "/api/v1/peers", which
+// conflicts with the "GET /" catch-all index route registered just above it
+// ("matches more methods... but has a more specific path") — Go 1.22's
+// ServeMux panics on that ambiguity at registration time, which means every
+// `wb daemon serve` would have panicked on startup, hub or no hub, since
+// serveDashboard always sets Peers. The route must be GET-qualified, must
+// answer for both the list path and a nested detail path, and must leave
+// every other route (the index, health) unaffected.
+func TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex(t *testing.T) {
+	var peersCalls []string
+	peers := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peersCalls = append(peersCalls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"schema_version":1,"peers":[]}`))
+	})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", Peers: peers})
+
+	for _, path := range []string{"/api/v1/peers", "/api/v1/peers/machine_1"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, response.Code)
+		}
+	}
+	if len(peersCalls) != 2 {
+		t.Fatalf("peers handler calls = %v, want both paths reached", peersCalls)
+	}
+
+	// The index and health routes must still answer as before.
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
+	if index.Code != http.StatusOK {
+		t.Fatalf("index status = %d, want 200", index.Code)
+	}
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", health.Code)
+	}
+}
+
+// TestPeersOptionOmittedLeavesTheRouteUnmounted proves the nil default (a
+// caller that has not set Peers, matching every caller before this task)
+// keeps its previous behaviour: no /api/v1/peers route exists, so it falls
+// through to the catch-all index like any other unknown path.
+func TestPeersOptionOmittedLeavesTheRouteUnmounted(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/peers", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "WB operations") {
+		t.Fatalf("status = %d, body = %q, want the catch-all index", response.Code, response.Body.String())
+	}
+}
+
 func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
 	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})

@@ -298,6 +298,10 @@ type ListResult struct {
 	// acknowledgement's recorded target all validate. See
 	// applyAbsorbedConflictAcknowledgementCleanupProof.
 	AbsorbedConflictAcknowledgementPath string `json:"absorbed_conflict_acknowledgement_path,omitempty"`
+	// RetiredPrepareCandidateAcknowledgementPath records the candidate-only
+	// acknowledgement that allowed cleanup after the recorded integration
+	// target was deleted. It is not source-absorption evidence.
+	RetiredPrepareCandidateAcknowledgementPath string `json:"retired_prepare_candidate_acknowledgement_path,omitempty"`
 	// AbsorbedConflictProvenSourceSHAs are the receipted source commits the
 	// acknowledgement proved already reachable from the target, carried here
 	// so a cleanup report and terminal Work Log both show exactly what
@@ -619,6 +623,9 @@ type CleanupResult struct {
 // cleanupResultProof names the landing-proof mechanism a CleanupResult should
 // report, derived from the ListResult evidence applyAbsorbedConflictAcknowledgementCleanupProof recorded.
 func cleanupResultProof(entry ListResult) string {
+	if entry.RetiredPrepareCandidateAcknowledgementPath != "" {
+		return "retired_prepare_candidate_acknowledgement"
+	}
 	if entry.AbsorbedConflictAcknowledgementPath != "" {
 		return "absorbed_conflict_acknowledgement"
 	}
@@ -3493,7 +3500,7 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 	// compatibility branch is intentionally limited to the parked-session claim
 	// and does not override ordinary manifests or an explicit --base choice.
 	if manifestBase != "" && strings.TrimSpace(home) != "" {
-		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil && claim.AcquiredVia == "parked_session_resume" {
+		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree); claimErr == nil && claim.AcquiredVia == "parked_session_resume" {
 			return fallback, nil
 		}
 	}
@@ -3506,7 +3513,7 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 	// full corroboration before any destructive operation. Claims are consulted
 	// here only when a legacy checkout has no manifest.
 	if manifestBase == "" && strings.TrimSpace(home) != "" {
-		claim, _, _, claimErr := activeWorkLogClaim(home, worktree)
+		claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree)
 		switch {
 		case claimErr == nil:
 			claimBase = strings.TrimSpace(claim.Base)
@@ -3720,10 +3727,10 @@ func inspectLifecycleWorktree(
 	// exists so park can identify the intended member before attempting custody
 	// capture; legacy claims simply leave this field empty.
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
-		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
+		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
 			result.TaskSummary = claim.TaskSummary
-		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
+		} else if terminal, terminalErr := readWorkLogTerminalRecordReadOnly(home, worktree); terminalErr == nil && terminal != nil {
 			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
 			result.TaskSummary = terminal.TaskSummary
 			if terminal.FinalizeReport != nil {
@@ -3739,6 +3746,7 @@ func inspectLifecycleWorktree(
 		var known bool
 		integrationBase := base
 		recoveredByDefaultReceipt := false
+		recoveredByRetiredPrepareCandidate := false
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
 		if err != nil {
 			// A timeout or other transport failure is not evidence that the
@@ -3752,39 +3760,53 @@ func inspectLifecycleWorktree(
 			if defaultErr != nil {
 				return ListResult{}, defaultErr
 			}
-			// A deleted recorded target is recoverable only through a GitHub
-			// receipt for that target branch itself. The commit-to-PR index is
-			// intentionally insufficient here: after a squash merge it associates
-			// the source head with its PR into the deleted stream, not with the
-			// stream PR that landed it on the repository default branch.
-			receipt, receiptErr := exactDeletedTargetDefaultBranchReceipt(ctx, worktree, slug, base, defaultBase, head)
-			if receiptErr != nil {
-				return ListResult{}, receiptErr
-			}
-			if receipt == nil {
-				return ListResult{}, fmt.Errorf("recorded target origin/%s is absent and GitHub has no exact merged receipt into default branch %s for head %s", base, defaultBase, head)
-			}
 			integrationBase = defaultBase
 			result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
 			if err != nil {
 				return ListResult{}, err
 			}
-			mergeInTarget, mergeErr := isAncestor(ctx, canonical, receipt.MergeSHA, result.RemoteTargetSHA)
-			if mergeErr != nil {
-				return ListResult{}, fmt.Errorf("verify merged receipt #%d against fetched origin/%s: %w", receipt.Number, integrationBase, mergeErr)
+			candidateProof, proofErr := findRetiredPrepareCandidateAcknowledgement(ctx, home, canonical, result.Task, worktree, branch, head, defaultBase, result.RemoteTargetSHA)
+			if proofErr != nil {
+				return ListResult{}, proofErr
 			}
-			if !mergeInTarget {
-				return ListResult{}, fmt.Errorf("merged receipt #%d commit %s is not contained in freshly fetched origin/%s", receipt.Number, receipt.MergeSHA, integrationBase)
+			if candidateProof != nil {
+				if result.RecordedBase == "" {
+					result.RecordedBase = base
+				}
+				result.Base = integrationBase
+				result.HeadUnknownToRemote = false
+				result.RetiredPrepareCandidateAcknowledgementPath = candidateProof.AcknowledgementPath
+				recoveredByRetiredPrepareCandidate = true
+			} else {
+				// A deleted recorded target is otherwise recoverable only through a
+				// GitHub receipt for that target branch itself. The commit-to-PR
+				// index is intentionally insufficient here: after a squash merge it
+				// associates the source head with its PR into the deleted stream,
+				// not with the stream PR that landed it on the default branch.
+				receipt, receiptErr := exactDeletedTargetDefaultBranchReceipt(ctx, worktree, slug, base, defaultBase, head)
+				if receiptErr != nil {
+					return ListResult{}, receiptErr
+				}
+				if receipt == nil {
+					return ListResult{}, fmt.Errorf("recorded target origin/%s is absent and GitHub has no exact merged receipt into default branch %s for head %s", base, defaultBase, head)
+				}
+				mergeInTarget, mergeErr := isAncestor(ctx, canonical, receipt.MergeSHA, result.RemoteTargetSHA)
+				if mergeErr != nil {
+					return ListResult{}, fmt.Errorf("verify merged receipt #%d against fetched origin/%s: %w", receipt.Number, integrationBase, mergeErr)
+				}
+				if !mergeInTarget {
+					return ListResult{}, fmt.Errorf("merged receipt #%d commit %s is not contained in freshly fetched origin/%s", receipt.Number, receipt.MergeSHA, integrationBase)
+				}
+				if result.RecordedBase == "" {
+					result.RecordedBase = base
+				}
+				result.Base = integrationBase
+				result.HeadUnknownToRemote = false
+				result.MergedPullRequest = receipt
+				result.AbsorbedAtOrigin = true
+				result.AbsorbedBySHA = receipt.MergeSHA
+				recoveredByDefaultReceipt = true
 			}
-			if result.RecordedBase == "" {
-				result.RecordedBase = base
-			}
-			result.Base = integrationBase
-			result.HeadUnknownToRemote = false
-			result.MergedPullRequest = receipt
-			result.AbsorbedAtOrigin = true
-			result.AbsorbedBySHA = receipt.MergeSHA
-			recoveredByDefaultReceipt = true
 		} else {
 			var pullRequestErr error
 			pullRequests, known, pullRequestErr = githubPullRequestsForCommit(ctx, worktree, slug, head)
@@ -3822,7 +3844,7 @@ func inspectLifecycleWorktree(
 		if containedErr != nil {
 			return ListResult{}, containedErr
 		}
-		result.IntegratedAtOrigin = containedAtOrigin || recoveredByDefaultReceipt
+		result.IntegratedAtOrigin = containedAtOrigin || recoveredByDefaultReceipt || recoveredByRetiredPrepareCandidate
 		// LocallyMerged historically described the remote-tracking ref. Once an
 		// exact fetched target is available, report the stronger observation.
 		result.LocallyMerged = result.IntegratedAtOrigin
@@ -4360,6 +4382,19 @@ func attestedAbsorbedReceipt(
 		return nil, rejection, err
 	}
 	if pullRequest != nil {
+		receiptAfterContentProof := func(landing string) (*absorbedReceipt, string, error) {
+			absorbed, err := contentAbsorbed(ctx, repository, head, landing, target)
+			if err != nil {
+				return nil, "", err
+			}
+			if !absorbed {
+				return nil, fmt.Sprintf(
+					"work absorbed by %s no longer survives in the exact fetched origin/%s target %s",
+					landing, base, target,
+				), nil
+			}
+			return &absorbedReceipt{LandingSHA: landing, PullRequest: pullRequest}, "", nil
+		}
 		// A numbered PR has a stronger, topology-aware proof than generic
 		// patch containment: the exact source head is in the fetched PR
 		// head, and the reported merge is in the fresh target. Two landing
@@ -4378,14 +4413,14 @@ func attestedAbsorbedReceipt(
 			return nil, "", err
 		}
 		if squashRejection == "" {
-			return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+			return receiptAfterContentProof(landingSHA)
 		}
 		mergeCommitRejection, err := verifyAttestedMergeCommitPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
 		if err != nil {
 			return nil, "", err
 		}
 		if mergeCommitRejection == "" {
-			return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+			return receiptAfterContentProof(pullRequest.MergeSHA)
 		}
 		return nil, squashRejection + "; " + mergeCommitRejection, nil
 	}

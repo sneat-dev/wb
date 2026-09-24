@@ -1,16 +1,22 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Approved
 ---
 
 # Idea: Quality diff and thresholds
 
-**Status:** Draft
+**Status:** Approved
 **Date:** 2026-07-21
 **Owner:** alex
 **Promotes To:** —
 **Supersedes:** —
 **Related Ideas:** —
+
+**Approved 2026-09-23** on the founder's decision 1 in
+[`spec/plans/coverage-to-100/README.md`](../plans/coverage-to-100/README.md#founder-decisions-2026-09-23),
+quoted verbatim: 1. **Per-change ratchet.** "Yes, per-change ratchet": every
+PR must cover 100% of the statements it adds or changes, and no package's
+uncovered count may go up. `--minimum` stays only as a backstop.
 
 ## Problem Statement
 

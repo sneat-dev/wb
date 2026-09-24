@@ -41,6 +41,34 @@ func TestEventLogAppendsConcurrentlyWithoutLosingRecords(t *testing.T) {
 	}
 }
 
+// TestEventLogStampsProvenanceFromEnv is wb#631's fleet-event half of the
+// acceptance test: every appended event carries the declared harness
+// identity plus wb_version.
+func TestEventLogStampsProvenanceFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-stream-1")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "medium")
+	t.Setenv("WB_SUBAGENT_ID", "agent-7")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_9")
+
+	log := &FileEventLog{Path: filepath.Join(t.TempDir(), "events.jsonl")}
+	if err := log.Append(Event{Stream: "s", Verb: "stream start", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadEvents(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.HarnessSessionID != "sess-stream-1" || event.Harness != "claude-code" || event.EffortLevel != "medium" ||
+		event.AgentID != "agent-7" || event.ToolUseID != "toolu_9" || event.WBVersion == "" {
+		t.Fatalf("event did not carry every provenance field: %+v", event)
+	}
+}
+
 // REQ: redaction-runs-before-any-bytes-leave-the-process — a credential never
 // reaches the log file, not merely never reaches an export.
 func TestEventLogRedactsBeforeWriting(t *testing.T) {

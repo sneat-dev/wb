@@ -102,22 +102,127 @@ retirement, and the same durable audit-report discipline.
 
 #### REQ: top-level-branch-family
 
-WB MUST expose a top-level `wb branch` command family with exactly two public
-leaves in this feature: `wb branch list` and `wb branch cleanup`. The family
+WB MUST expose a top-level `wb branch` command family with `wb branch list`,
+`wb branch count`, `wb branch cleanup`, `wb branch quarantine`, and the
+read-only `wb branch archive-target`. The family
 MUST NOT be nested under `wb worktree`, and `wb worktree cleanup` MUST NOT gain
 a branch-scope or remote-only flag.
 
 `wb branch list` flags: `--base` (string, default `main`), `--scope` (string,
 one of `local`, `remote`, `all`; default `local`), `--only` (string, one
 disposition name), `--older-than` (duration, default `0`), `--format` (string,
-`text` or `json`; default `text`). It MUST accept the root `--filter` and
+`text`, `json`, or `yaml`; default `text`), exact `--repo`, exact `--org`, and
+`--include-retired`, and `--name` branch-name glob (for example
+`'retired/*'`). It MUST accept the root `--filter` and
 `--projects-root` flags.
+
+`wb branch list` inventories locally discovered canonical clones only (and
+their known remote refs); `--org` is an exact owner selector over that local
+inventory, never a GitHub-wide organization query. Retired refs are excluded
+from the active backlog by default, but their local/remote ref counts and
+distinct branch-name count remain visible; `--only retired` lists them.
+
+`wb branch count` shares the exact one-pass `wb branch list` inventory and
+selectors (`--org`, `--repo`, `--scope`, `--only`, `--name`, and `--older-than`) but
+renders concise active-disposition and retired-ref counts. It must not launch a
+second fleet sweep. JSON and YAML preserve the same machine-readable outcome.
+
+#### REQ: retired-namespace-inventory
+
+`--only retired`, an exact `--branch retired/...`, or a `--name` glob rooted
+at `retired/` MUST inventory the retired namespace without fetching
+`origin/<base>`. A local-scope inventory reads only `refs/heads/retired/*` and
+is offline. Remote scope refreshes and prunes only
+`refs/heads/retired/*` into `refs/remotes/origin/retired/*` before reporting
+remote refs, so it never presents a stale tracking ref as current remote
+truth. A failed scoped remote refresh MUST leave the remote count unknown,
+record the diagnostic, and set `retired_remote_unavailable`; text output MUST
+say unavailable rather than zero.
+
+Retired refs have the fixed `retired` disposition. When a retired exact/glob
+selector is combined with any other `--only` disposition, the intersection is
+empty and MUST return no rows or counts without a base or remote fetch. The
+inventory still reports per-repository progress to stderr and emits diagnostics
+to stderr in text mode; JSON and YAML retain diagnostics in the outcome.
+
+`wb branch quarantine` accepts one exact local `--repo`, `--branch`, optional
+`--sha`, and required `--reason`, or a JSON `--manifest` whose every row names
+exact repository, ref, SHA, and reason. It plans by default. Under `--apply`
+it atomically moves each proven-safe local source to
+`retired/<UTC-date>-<flat-source>-<short-SHA>` and writes a durable per-row
+receipt. Remote quarantine is refused until equivalent remote peer proof and
+leased mutation exist.
+
+This local-only command does not retire worktrees, Work Logs, or remote refs.
+`wb worktree retire <task> --apply` persists original path/ref/SHA and WB
+receipts in a recovery manifest. Its archive target is a user-only WB
+configuration in `~/.config/wb/worktrees.yaml` (or
+`$XDG_CONFIG_HOME/wb/worktrees.yaml`): `retirement.archive_repository` selects
+the per-organization basename, defaulting to `backstage-retired`, and
+`retirement.organizations.<owner>.archive_repository` overrides it for one
+owner. Thus `sneat-co` resolves to `sneat-co/backstage-retired` by default.
+Repository-tracked `.wb/worktrees.yaml` MUST NOT select this target. Retirement
+commits tracked and nonignored untracked source changes on the original branch
+with hooks, publishes that exact commit at a deterministic `retired/*` source
+branch by default or `refs/tags/retired/*` when `--preserve=tag` is explicit,
+and pushes the plain actual Work Log files and checkout metadata into the
+configured private retirement repository. It verifies both remote refs before
+deleting the original branch with an exact SHA lease and removing the local
+checkout and branch. Local exact Work Log retention remains mandatory.
+Backstage carries only a summary and index, never raw logs. A preflight must
+confirm that the exact configured target exists and is private. A public,
+missing, mismatched, or unavailable target fails closed; there is no
+public-target override.
+
+`wb branch archive-target --repo owner/repository` resolves the configured
+target and performs the private-target preflight in text, JSON, or YAML. It
+has no apply flag and performs no branch, worktree, or Work Log mutation.
+
+#### REQ: retired-archive-preflight
+
+WB MUST expose an internal read-only retirement preflight that resolves the
+user-only target and inspects its exact remote repository visibility before any
+remote ref creation, Work Log export, or worktree deletion. Its result
+MUST preserve local quarantine and report those operations as unperformed. It
+MUST refuse a public, missing, mismatched, or unavailable target without
+including remote transport errors or credentials in output. `wb branch
+archive-target` exposes this preflight; `wb branch quarantine` remains
+local-only.
+
+#### REQ: guarded-worktree-retirement
+
+`wb worktree retire <task>` MUST plan without mutation by default. Apply MUST
+hold the task lock and refuse a competing live claim, an open pull request,
+a changed source or remote ref, a secret-looking source commit path, or a
+missing, public, mismatched, or unavailable private archive target. It MUST
+read the configured remote task claims and machine snapshots before planning,
+recheck them under the task lock and before original-ref deletion, and refuse
+when another machine holds the task or the remote state cannot be read. It MUST
+commit tracked and nonignored untracked source changes on the original branch
+with hooks enabled, create the deterministic retired source branch or explicit
+`refs/tags/retired/*` tag, and commit
+actual plain Work Log and checkout metadata files to the configured private
+retirement repository. The archive MUST exclude source checkout code files.
+WB MUST verify both remote refs and the archive file digests before deleting
+the original remote ref with an exact SHA lease. The deletion and creation of
+`refs/tags/wb-retirement-deleted/<retired-ref-stem>` at the exact source commit
+MUST be one atomic push. On retry, an absent original ref is accepted only
+with the exact proof tag and a durable local deletion intent; an absent tag or
+an unsupported atomic push fails closed. It MUST then remove the local
+worktree and branch while retaining the retired source ref. An interrupted
+apply MUST resume from its durable receipt and recheck remote identities.
+After the last repository is removed, WB MUST release its remote task claim;
+a failed release MUST be reported as a partial completion.
 
 `wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,
 default false), `--older-than` (duration, default `24h`; `0` disables),
 `--report-dir` (string, default `<wb-home>/reports/branch-cleanup/<timestamp>`),
-`--format` (string, `text` or `json`; default `text`). It MUST accept the root
+`--format` (string, `text` or `json`; default `text`), `--superseded-by`
+(trusted-reviewer receipt), exact `--repo` and `--branch` selectors, and
+repeatable `--peer-evidence` and `--require-host`. A reviewed retirement whose
+scope includes remote deletion MUST provide evidence from every required host;
+`--scope all` does not bypass this requirement. It MUST accept the root
 `--filter` and `--projects-root` flags.
 
 `wb branch cleanup` MUST NOT define a `--remote` boolean. Remote action is
@@ -355,6 +460,20 @@ with applied or failed state. Each entry MUST retain repository, branch, branch
 SHA, target branch, fetched target SHA, evidence class, evidence string,
 decision, and outcome. The report MUST remain readable after the branches it
 describes are gone.
+
+#### REQ: reviewed-branch-retirement
+
+`--superseded-by` MUST create a distinct `superseded` disposition only after a
+trusted reviewer receipt binds the exact source and target identities. Empty,
+unknown, absorbed, protected, in-use, and unreadable dispositions MUST remain
+ineligible. Before remote deletion WB MUST recheck ownership, protection,
+source and target SHA, and open pull-request state. It MUST re-read fresh peer
+inventories immediately before its leased push, refuse a fork origin when it
+cannot prove upstream pull-request ownership, and reject a report or recovery
+path inside the source clone or any linked worktree, including symlinked paths.
+The source bundle and copied receipt MUST be SHA-bound, fsynced, independently
+restored into a new repository, and recorded with that restore verification in
+the durable manifest before either local or remote deletion.
 
 ### Remote-branches-only mode
 

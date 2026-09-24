@@ -7,9 +7,23 @@ Leaf help hides inherited selectors that the selected command would reject.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
+`coverage --changed` (the per-change coverage ratchet,
+spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
+`--target <branch-or-ref>` (required with `--changed`), `--baseline-file`, and
+`--baseline-timeout` all apply only to `coverage`, are rejected without
+`--changed`, and are incompatible with `--fleet`, `--resume`, and
+`--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
+`json`.
+
+`coverage baseline <coverage-profile>` (the per-change coverage ratchet's
+baseline publisher) is also command-specific: `--module` (the Go module
+root, default `.`), `--sha` (the commit the profile was measured at, for
+traceability), and `--out` (the output baseline JSON path, default
+`coverage-baseline.json`).
+
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
+acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -60,9 +74,11 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
+| `fleet default-branch` | yes | yes | yes | yes |
 | `fleet prs` | rejected | rejected | yes | yes |
 | `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
+| `peers invite`, `join`, `list`, `get`, `block`, `unblock`, `disconnect` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` (`pickup` alias), `recall` (`request-handoff` alias), `send`, `receive-message` | yes | rejected | rejected | yes |
 | `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
 | `agent dispatch`, `status`, `await`, `list`, `logs`, `stop` | yes | rejected | rejected | yes |
@@ -79,12 +95,14 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `create` (root alias), `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree end` | yes | rejected | rejected | yes |
 | `land` (root alias), `worktree land` | yes | rejected | rejected | yes |
-| `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
+| `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
-| `branch list`, `cleanup` | yes | yes | rejected | yes |
+| `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |
+| `branch cleanup`, `quarantine` | yes | yes | rejected | yes |
+| `branch archive-target` | rejected | rejected | rejected | yes |
 | `version`, `self-update`, `install`, `upgrade` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |

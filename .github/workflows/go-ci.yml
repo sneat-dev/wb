@@ -34,7 +34,7 @@ jobs:
       # enters the Go module archive. Only pull requests are scoped, and a
       # scoped run publishes no validation receipt, so the merge to main always
       # validates in full.
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: changes
         if: github.event_name == 'pull_request'
         with:
@@ -92,9 +92,9 @@ jobs:
     timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -111,8 +111,8 @@ jobs:
       required: ${{ steps.changes.outputs.required }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: changes
         with:
           filters: |
@@ -134,7 +134,7 @@ jobs:
       reason: ${{ steps.verify.outputs.reason }}
     steps:
       - name: Checkout landed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Select an exact trusted pull-request receipt
         id: select
         env:
@@ -145,7 +145,7 @@ jobs:
         # An expired or transiently unavailable artifact must take the ordinary
         # full-validation path; it is not an authorization failure.
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: wb-ci-validation-receipt
           run-id: ${{ steps.select.outputs.run_id }}
@@ -171,7 +171,7 @@ jobs:
       # Resolve publication policy first. An ineligible PR still runs all
       # validation jobs; only publication depends on the eligible output.
       - name: Checkout eligibility source and history
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
       - name: Determine eligible publication ref
@@ -195,9 +195,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -223,9 +223,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -244,14 +244,14 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # v2.12.2's analysis dependencies panic on Go 1.27's
           # embedded-selector literals. Pin upstream source with the fixes
@@ -262,9 +262,15 @@ jobs:
   coverage:
     name: Tests and coverage (8 shards)
     needs: [release-eligibility, validation-reuse, go-scope]
+    # This job is the per-change coverage ratchet's one and only baseline
+    # producer (spec/plans/coverage-to-100/README.md task-3(b)): it is
+    # deliberately exempt from the validation-reuse push-event skip other
+    # jobs apply, so a baseline artifact is always published on every push to
+    # main. That is a CI-cost choice, not a free correction — a full 8-shard
+    # run now executes on every push, including ones validation-reuse would
+    # otherwise have let reuse an existing result.
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
-      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -276,38 +282,108 @@ jobs:
     # failure diagnostic upload remain outside the inner budget and a timeout
     # still leaves evidence.
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # The merge-base ratchet needs full history to resolve the base
+          # commit and diff against it; the eligibility job at :176 already
+          # does this for the same reason.
+          fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
+      - name: wb ci audit --strict against the PR base branch
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: go run ./cmd/wb ci audit . --target "$BASE_REF" --strict --non-interactive
+      - name: Fetch coverage baseline for the merge base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # --commit filters server-side by exact commit, so an old merge
+          # base is still found precisely instead of falling out of a
+          # branch listing's default recency window; --status success is
+          # deliberately not required, since a baseline can exist even when
+          # some unrelated job on that run later failed.
+          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow go-ci.yml \
+            --commit "$BASE_SHA" --json databaseId --jq '.[0].databaseId' || true)
+          if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+            gh run download "$RUN_ID" --repo "${{ github.repository }}" --name wb-coverage-baseline --dir . || true
+          fi
+          if [ ! -f coverage-baseline.json ]; then
+            echo "no published baseline artifact for merge base $BASE_SHA; wb coverage --changed will measure it directly, bounded by --baseline-timeout"
+          fi
       - name: Test with merged coverage threshold
+        if: ${{ github.event_name != 'pull_request' }}
         run: >-
           go run ./cmd/wb coverage .
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=88
+          --minimum=87
           --format json
           --non-interactive
           --timeout 35m
+      - name: Test with the per-change coverage ratchet
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # --baseline-timeout and --timeout bound two runs that can both
+        # execute in the worst case (no published baseline artifact, so the
+        # fallback measures the merge base, then the PR head is measured):
+        # 15m + 20m = 35m, leaving 10m of this job's 45-minute
+        # timeout-minutes for checkout, setup-go, the audit step above and
+        # the diagnostics upload below (review-696 also-fix #3: 20m + 20m
+        # left only 5m of headroom, so a slow shard could have the job
+        # killed by GitHub instead of the ratchet failing loudly).
+        run: >-
+          go run ./cmd/wb coverage .
+          --changed
+          --target "$BASE_SHA"
+          --baseline-file coverage-baseline.json
+          --baseline-timeout 15m
+          --timeout 20m
+          --coverage-profile profile.cov
+          --report-dir coverage-diagnostics
+          --minimum=87
+          --format json
+          --non-interactive
       - name: Upload coverage diagnostics on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-coverage-diagnostics
           path: coverage-diagnostics
           if-no-files-found: warn
           retention-days: 14
       - name: Upload coverage profile
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-go-coverage
           path: profile.cov
           if-no-files-found: error
           retention-days: 14
+      - name: Publish per-package coverage baseline
+        if: ${{ github.event_name == 'push' }}
+        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ github.sha }}" --out coverage-baseline.json
+      - name: Upload coverage baseline artifact
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wb-coverage-baseline
+          path: coverage-baseline.json
+          if-no-files-found: error
+          retention-days: 90
 
   race:
     name: Race tests
@@ -319,9 +395,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -353,9 +429,9 @@ jobs:
     timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -469,7 +545,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout tested source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Write exact validation receipt
         env:
           PULL_NUMBER: ${{ github.event.pull_request.number }}
@@ -478,7 +554,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: .github/scripts/ci-reuse-receipt.sh ci-validation-receipt.json
       - name: Upload validation receipt
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-ci-validation-receipt
           path: ci-validation-receipt.json

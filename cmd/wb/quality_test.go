@@ -55,6 +55,12 @@ func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
 		{name: "fleet package", options: qualityOptions{testShards: 2, shardPackages: []string{"./internal/worktrees"}, fleet: true}, want: "repository-specific"},
 		{name: "fleet profile", options: qualityOptions{testShards: 1, fleet: true, coverageProfile: "profile.cov"}, want: "one fresh repository"},
 		{name: "invalid minimum", options: qualityOptions{testShards: 1, minimumCoverage: 101}, want: "between 0 and 100"},
+		{name: "changed without target", options: qualityOptions{testShards: 1, changed: true}, want: "requires --target"},
+		{name: "changed with fleet", options: qualityOptions{testShards: 1, changed: true, target: "main", fleet: true}, want: "repository-specific"},
+		{name: "changed with resume", options: qualityOptions{testShards: 1, changed: true, target: "main", resume: true}, want: "cannot be combined with --resume"},
+		{name: "changed with test-shards", options: qualityOptions{testShards: 2, changed: true, target: "main", shardPackages: []string{"./internal/worktrees"}}, want: "cannot be combined with --test-shards"},
+		{name: "target without changed", options: qualityOptions{testShards: 1, target: "main"}, want: "--target requires --changed"},
+		{name: "baseline-file without changed", options: qualityOptions{testShards: 1, baselineFile: "baseline.json"}, want: "--baseline-file requires --changed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateCoverageExecutionOptions(test.options)

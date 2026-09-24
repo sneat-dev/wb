@@ -281,6 +281,31 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts paired root Go dependency upgrade proofs", func(t *testing.T) {
+		receiptPath := newReceipt(t)
+		loaded, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
+			proof := tailCovPathProofSourceProof("go_dependency_upgrade", 0, 0)
+			proof.PathCount = 2
+			proof.PathProofs = []PathProof{{Path: "go.mod", Method: "go_dependency_upgrade"}, {Path: "go.sum", Method: "go_dependency_upgrade"}}
+			ack.SourceProofs = []SourceProof{proof}
+		})
+		if err != nil || len(loaded.SourceProofs[0].PathProofs) != 2 {
+			t.Fatalf("Load paired Go upgrade: %+v, %v", loaded, err)
+		}
+	})
+
+	t.Run("rejects an unpaired Go dependency upgrade proof", func(t *testing.T) {
+		receiptPath := newReceipt(t)
+		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
+			proof := tailCovPathProofSourceProof("go_dependency_upgrade", 0, 0)
+			proof.PathProofs[0].Path = "go.mod"
+			ack.SourceProofs = []SourceProof{proof}
+		})
+		if err == nil || !strings.Contains(err.Error(), "must prove go.mod and go.sum upgrades together") {
+			t.Fatalf("Load error = %v, want unpaired upgrade refusal", err)
+		}
+	})
+
 	t.Run("rejects a lines absorbed proof with unmatched counts", func(t *testing.T) {
 		t.Parallel()
 		receiptPath := newReceipt(t)

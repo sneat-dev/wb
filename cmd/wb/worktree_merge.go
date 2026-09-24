@@ -108,6 +108,12 @@ Use acknowledge-absorbed-conflict only for an unpublished prepare conflict
 whose every receipted source worktree is already gone and whose exact content
 is proved, source by source, already reachable from the current remote
 target by graph ancestry or by identical-blob content absorption. Use
+acknowledge-retired-prepare-candidate only for a legacy prepare/conflict
+receipt with an empty candidate SHA whose clean unpublished candidate remains
+exactly at the deleted recorded target's SHA and is now contained in the
+freshly fetched default target. It writes only a candidate-specific
+acknowledgement and never asserts source absorption or frees the historical
+lane. Use
 acknowledge-retired-publication only for a conflict/validation_failed/
 checks_failed receipt whose exact published pull request was closed without
 ever merging and whose remote candidate branch is gone, proved fresh from
@@ -139,6 +145,9 @@ wb worktree merge acknowledge-stranded-landing /path/to/merge-receipt --apply --
 # Free a stale lane after proving every gone source's content already reached the target
 wb worktree merge acknowledge-absorbed-conflict /path/to/merge-receipt --apply --actor operator --reason "audited absorbed conflict"
 
+# Restore only one historical prepare candidate to ordinary WB lifecycle after its recorded target was deleted
+wb worktree merge acknowledge-retired-prepare-candidate /path/to/merge-receipt --apply --actor operator --reason "audited retired prepare candidate"
+
 # Free a stale lane after proving a stale published pull request was closed unmerged and its branch is gone
 wb worktree merge acknowledge-retired-publication /path/to/merge-receipt --apply --actor operator --reason "audited retired publication"
 
@@ -159,7 +168,48 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeRetiredPublicationCmd(), newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeRetiredPrepareCandidateCmd(), newWorktreeMergeAcknowledgeRetiredPublicationCmd(), newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	return command
+}
+
+func newWorktreeMergeAcknowledgeRetiredPrepareCandidateCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-retired-prepare-candidate <merge-receipt>",
+		Short: "Acknowledge one unpublished failed prepare candidate absorbed by the default target",
+		Long:  `Prove only that one clean unpublished legacy prepare/conflict candidate is still exactly at its immutable receipt target SHA, its recorded target branch is gone, and that exact candidate SHA is contained in a freshly fetched current repository default target. This never asserts that any receipted source landed or frees the historical lane. It writes an append-only acknowledgement bound to the unchanged receipt; after applying it, adopt the candidate and run ordinary WB cleanup.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, release, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer release()
+			ack, err := orchestrate.AcknowledgeRetiredPrepareCandidate(command.Context(), orchestrate.WorktreeMergeRetiredPrepareCandidateAcknowledgementOptions{ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				return json.NewEncoder(command.OutOrStdout()).Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate-worktree: %s\ndefault-target: %s@%s\nacknowledgement: %s\n", ack.Status, ack.ReceiptPath, ack.Candidate.Worktree, ack.DefaultBranch, ack.DefaultSHA, ack.ReceiptPath+".retired-prepare-candidate.ack.json")
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			} else {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree adopt %s --apply --mode manual --initiator %s\n", ack.Candidate.Worktree, actor)
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited candidate-only acknowledgement")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
@@ -683,7 +733,8 @@ every receipted source is already reachable from the freshly fetched current
 remote target -- either because the receipted source SHA is a graph ancestor
 of that target, or path by path relative to its merge-base with the target:
 an identical blob on the target (an unrelated later commit landed the same
-content), or, automatically for a "*.jsonl" append-only ledger path, every
+content), a strictly monotonic paired root go.mod/go.sum dependency upgrade,
+or, automatically for a "*.jsonl" append-only ledger path, every
 line the source added relative to the merge-base present verbatim as a line
 in the target's copy ("lines_absorbed") -- then record a separate audited
 acknowledgement so a fresh candidate can own the lane. Repeatable --derived-path audits an
@@ -697,8 +748,10 @@ already gone from disk, which is exactly the case neither resume nor
 prepare-conflict-replacement or supersede-validation-failed can recover:
 those all require an exact clean receipted source worktree to still exist.
 It never reads or requires a receipted source worktree, never rewrites the
-historical receipt or any Work Log, and never deletes the preserved,
-unpublished candidate worktree. This is a dry-run by default; --apply
+historical receipt or any Work Log, and never deletes a preserved,
+unpublished candidate worktree. A missing candidate worktree is accepted
+only for an empty candidate SHA and absent local source/candidate branches;
+the candidate branch must also remain unpublished. This is a dry-run by default; --apply
 requires --actor and --reason and writes only the new acknowledgement
 artifact. A source worktree that still exists, a published or landed
 receipt, an invalid or absent --derived-path, or any path whose content
