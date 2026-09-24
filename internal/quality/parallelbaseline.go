@@ -35,10 +35,17 @@ type ParallelBaselineEntry struct {
 	Reason string
 }
 
+// callerLookup abstracts runtime.Caller so ParallelGuardModuleRoot's
+// defensive "the runtime could not resolve the caller" branch -- which
+// cannot actually happen from a fixed skip=1 call in ordinary Go code -- is
+// exercisable by a test, the same seam convention this repository already
+// uses for Now func() time.Time.
+var callerLookup = runtime.Caller
+
 // ParallelGuardModuleRoot walks up from the calling file to the nearest
 // go.mod.
 func ParallelGuardModuleRoot() (string, error) {
-	_, thisFile, _, ok := runtime.Caller(1)
+	_, thisFile, _, ok := callerLookup(1)
 	if !ok {
 		return "", fmt.Errorf("resolve caller's own path")
 	}
@@ -148,11 +155,7 @@ func ScanSerialTests(root string) (serial []ParallelBaselineEntry, bareNolint []
 		if !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = path
-		}
-		pkgDir := filepath.ToSlash(filepath.Dir(rel))
+		pkgDir := packageDirFor(root, path)
 		file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if parseErr != nil {
 			return fmt.Errorf("parse %s: %w", path, parseErr)
@@ -166,6 +169,18 @@ func ScanSerialTests(root string) (serial []ParallelBaselineEntry, bareNolint []
 		return nil, nil, fmt.Errorf("walk %s: %w", root, walkErr)
 	}
 	return serial, bareNolint, nil
+}
+
+// packageDirFor renders path as a slash-separated directory relative to
+// root, falling back to path itself when it cannot be made relative (mixed
+// absolute/relative inputs, which never occurs through ScanSerialTests's own
+// filepath.Walk but is exercised directly by a unit test).
+func packageDirFor(root, path string) string {
+	rel, relErr := filepath.Rel(root, path)
+	if relErr != nil {
+		rel = path
+	}
+	return filepath.ToSlash(filepath.Dir(rel))
 }
 
 func scanFile(fset *token.FileSet, file *ast.File, pkgDir string) ([]ParallelBaselineEntry, []string) {
