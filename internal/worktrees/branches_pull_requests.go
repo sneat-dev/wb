@@ -1,9 +1,12 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -34,10 +37,14 @@ type branchPullRequestEvidence struct {
 	err      error
 }
 
-func decorateRemoteBranchPullRequests(ctx context.Context, repository discover.Repo, ref branchRef, entry *BranchEntry, cache map[string]branchPullRequestEvidence) {
+func decorateRemoteBranchPullRequests(ctx context.Context, repository discover.Repo, ref branchRef, entry *BranchEntry, cache map[string]branchPullRequestEvidence, withHistory bool) {
 	evidence, ok := cache[ref.Name]
 	if !ok {
-		evidence = exactBranchPullRequests(ctx, repository.Path, repository.Slug(), ref.Name)
+		if withHistory {
+			evidence = exactBranchPullRequests(ctx, repository.Path, repository.Slug(), ref.Name)
+		} else {
+			evidence = openBranchPullRequests(ctx, repository.Path, repository.Slug(), ref.Name)
+		}
 		cache[ref.Name] = evidence
 	}
 	entry.PullRequests = evidence.requests
@@ -55,15 +62,23 @@ func decorateRemoteBranchPullRequests(ctx context.Context, repository discover.R
 // the returned identities matters: a commit can be shared by several branches,
 // and GitHub's head selector alone does not prove same-repository ownership.
 func exactBranchPullRequests(ctx context.Context, worktree, repository, branch string) branchPullRequestEvidence {
+	return branchPullRequestsForHeadState(ctx, worktree, repository, branch, "all")
+}
+
+func openBranchPullRequests(ctx context.Context, worktree, repository, branch string) branchPullRequestEvidence {
+	return branchPullRequestsForHeadState(ctx, worktree, repository, branch, "open")
+}
+
+func branchPullRequestsForHeadState(ctx context.Context, worktree, repository, branch, headState string) branchPullRequestEvidence {
 	owner, _, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || branch == "" {
 		return branchPullRequestEvidence{err: fmt.Errorf("invalid repository or branch for pull-request query")}
 	}
-	head, err := queryBranchPullRequests(ctx, worktree, repository, url.Values{"head": {owner + ":" + branch}, "state": {"all"}})
+	head, err := queryBranchPullRequests(ctx, worktree, repository, url.Values{"head": {owner + ":" + branch}, "state": {headState}, "per_page": {"100"}})
 	if err != nil {
 		return branchPullRequestEvidence{err: fmt.Errorf("query head pull requests for %s:%s: %w", repository, branch, err)}
 	}
-	base, err := queryBranchPullRequests(ctx, worktree, repository, url.Values{"base": {branch}, "state": {"all"}})
+	base, err := queryBranchPullRequests(ctx, worktree, repository, url.Values{"base": {branch}, "state": {"open"}, "per_page": {"100"}})
 	if err != nil {
 		return branchPullRequestEvidence{err: fmt.Errorf("query base pull requests for %s:%s: %w", repository, branch, err)}
 	}
@@ -128,12 +143,24 @@ func queryBranchPullRequests(ctx context.Context, worktree, repository string, q
 	if response.Err != nil {
 		return nil, fmt.Errorf("%w: %s", response.Err, strings.TrimSpace(string(response.Stderr)+string(response.Stdout)))
 	}
-	if strings.TrimSpace(string(response.Stdout)) == "null" {
-		return nil, fmt.Errorf("decode %s: expected a pull-request array, got null", endpoint)
-	}
 	var requests []githubPullRequest
-	if err := json.Unmarshal(response.Stdout, &requests); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", endpoint, err)
+	decoder := json.NewDecoder(bytes.NewReader(response.Stdout))
+	pageCount := 0
+	for {
+		var page []githubPullRequest
+		if err := decoder.Decode(&page); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode %s: %w", endpoint, err)
+		}
+		if page == nil {
+			return nil, fmt.Errorf("decode %s: expected a pull-request array, got null", endpoint)
+		}
+		pageCount++
+		requests = append(requests, page...)
+	}
+	if pageCount == 0 {
+		return nil, fmt.Errorf("decode %s: expected a pull-request array, got empty response", endpoint)
 	}
 	return requests, nil
 }

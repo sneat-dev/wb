@@ -150,6 +150,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		Receipts: normalized.Receipts, AbsorbedBy: normalized.AbsorbedBy,
 		Repository: normalized.Repository, Branch: normalized.Branch,
 		SupersededBy: normalized.SupersededBy,
+		Cleanup:      true,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
@@ -569,7 +570,7 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 	if !recheckDeletionEvidence(ctx, repositoryPath, observedSHA, freshTarget, result) {
 		return
 	}
-	prEvidence := exactBranchPullRequests(ctx, repositoryPath, result.Repository, result.Branch)
+	prEvidence := openBranchPullRequests(ctx, repositoryPath, result.Repository, result.Branch)
 	if prEvidence.err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck pull-request evidence: %v", prEvidence.err)
 		return

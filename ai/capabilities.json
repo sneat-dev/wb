@@ -726,10 +726,11 @@
                 "--only",
 				"--org",
                 "--repo",
-                "--scope"
+                "--scope",
+                "--with-prs"
               ],
               "modes": [
-                "Read-only in every configuration; the only permitted remote interaction is fetching",
+                "Read-only in every configuration; --with-prs reads paginated GitHub PR metadata for selected remote branches",
                 "Every disposition is computed against the exact commit SHA fetched from origin/<base> during the run",
                 "A repository whose target cannot be fetched yields unreadable for its branches without blocking the rest of the sweep",
 				"Retired branches are excluded from the active backlog by default but counted separately; --only retired and --include-retired expose them",

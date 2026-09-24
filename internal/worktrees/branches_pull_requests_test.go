@@ -14,8 +14,8 @@ func installBranchPullRequestFixture(t *testing.T, head, base string) {
 	script := filepath.Join(binDir, "gh")
 	content := "#!/bin/sh\nset -eu\n" +
 		"case \"$3\" in\n" +
-		"*head=*) printf '%s\\n' \"$WB_TEST_HEAD_PRS\";;\n" +
-		"*base=*) printf '%s\\n' \"$WB_TEST_BASE_PRS\";;\n" +
+		"*head=*state=all*|*head=*state=open*) printf '%s\\n' \"$WB_TEST_HEAD_PRS\";;\n" +
+		"*base=*state=open*) printf '%s\\n' \"$WB_TEST_BASE_PRS\";;\n" +
 		"*) echo \"unexpected gh endpoint: $3\" >&2; exit 2;;\n" +
 		"esac\n"
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
@@ -33,15 +33,14 @@ func TestExactBranchPullRequestsSeparatesRolesStatesAndRepository(t *testing.T) 
 		`{"number":6,"html_url":"https://example.test/6","state":"closed","head":{"ref":"feature/shared","sha":"oldest","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}},` +
 		`{"number":7,"html_url":"https://example.test/7","state":"open","head":{"ref":"feature/shared","sha":"fork","repo":{"full_name":"elsewhere/fork"}},"base":{"ref":"main"}}]`
 	base := `[{"number":8,"html_url":"https://example.test/8","state":"open","head":{"ref":"child"},"base":{"ref":"feature/shared","repo":{"full_name":"acme/app"}}},` +
-		`{"number":9,"html_url":"https://example.test/9","state":"closed","head":{"ref":"old-child"},"base":{"ref":"feature/shared","repo":{"full_name":"acme/app"}}},` +
 		`{"number":10,"html_url":"https://example.test/10","state":"open","head":{"ref":"fork-child"},"base":{"ref":"feature/shared","repo":{"full_name":"elsewhere/fork"}}}]`
 	installBranchPullRequestFixture(t, head, base)
 	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/shared")
 	if evidence.err != nil {
 		t.Fatal(evidence.err)
 	}
-	if len(evidence.requests) != 5 {
-		t.Fatalf("requests = %#v, want three head and two base", evidence.requests)
+	if len(evidence.requests) != 4 {
+		t.Fatalf("requests = %#v, want three head and one open base row", evidence.requests)
 	}
 	if evidence.openHead == nil || evidence.openHead.Number != 4 || evidence.openBase == nil || evidence.openBase.Number != 8 {
 		t.Fatalf("open roles = head %#v, base %#v", evidence.openHead, evidence.openBase)
@@ -50,10 +49,24 @@ func TestExactBranchPullRequestsSeparatesRolesStatesAndRepository(t *testing.T) 
 	for _, request := range evidence.requests {
 		states[request.Number] = request.Role + ":" + request.State
 	}
-	for number, want := range map[int]string{4: "head:open", 5: "head:merged", 6: "head:closed", 8: "base:open", 9: "base:closed"} {
+	for number, want := range map[int]string{4: "head:open", 5: "head:merged", 6: "head:closed", 8: "base:open"} {
 		if states[number] != want {
 			t.Errorf("PR #%d = %q, want %q", number, states[number], want)
 		}
+	}
+}
+
+func TestExactBranchPullRequestsReadsEveryPaginatedArray(t *testing.T) {
+	head := `[{"number":1,"html_url":"https://example.test/1","state":"closed","merged_at":"2026-09-01T00:00:00Z","head":{"ref":"feature/paged","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]` + "\n" +
+		`[{"number":2,"html_url":"https://example.test/2","state":"open","head":{"ref":"feature/paged","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`
+	installBranchPullRequestFixture(t, head, `[]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/paged")
+	if evidence.err != nil {
+		t.Fatal(evidence.err)
+	}
+	if len(evidence.requests) != 2 || evidence.requests[0].Number != 1 || evidence.requests[1].Number != 2 ||
+		evidence.openHead == nil || evidence.openHead.Number != 2 {
+		t.Fatalf("second page was not included: %#v", evidence)
 	}
 }
 
@@ -105,9 +118,19 @@ func TestBranchListReportsPullRequestQueryFailureOnRemoteRow(t *testing.T) {
 	gitTest(t, fixture.canonical, "checkout", "main")
 	gitTest(t, fixture.canonical, "push", "origin", "feature/unavailable")
 	installPoisonedGitHubFixture(t)
-	outcome, err := BranchList(context.Background(), BranchListOptions{
+	defaultOutcome, err := BranchList(context.Background(), BranchListOptions{
 		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
 		Repository: "acme/app", Branch: "feature/unavailable",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultOutcome.Entries) != 1 || defaultOutcome.Entries[0].PullRequestQueried || defaultOutcome.Entries[0].PullRequestQueryFailed {
+		t.Fatalf("default remote list unexpectedly queried GitHub: %#v", defaultOutcome.Entries)
+	}
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
+		Repository: "acme/app", Branch: "feature/unavailable", WithPRs: true,
 	})
 	if err != nil {
 		t.Fatal(err)

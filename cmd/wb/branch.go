@@ -116,7 +116,7 @@ func newBranchQuarantineCmd() *cobra.Command {
 
 func newBranchListCmd() *cobra.Command {
 	var base, scope, only, format, repository, branch, org, name string
-	var includeRetired bool
+	var includeRetired, withPRs bool
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "list",
@@ -140,6 +140,12 @@ The default --scope local inventories local refs. Use --scope remote or --scope
 all to include known origin refs; --org narrows only locally discovered
 canonical clones and never queries every repository on GitHub.
 
+--with-prs enriches selected remote branch rows with exact same-repository
+head PR history (open, merged, closed) and open PRs using the branch as base.
+It reads GitHub's paginated PR API and may take longer on a large inventory.
+Without it, list makes no PR API calls. Cleanup independently checks open PRs
+for each remote deletion candidate and again before applying deletion.
+
 Disposition is one of a closed set:
   contained   ancestor of the fetched exact target; the only one eligible for deletion
   absorbed    patch-id or tree equal to the target, but not an ancestor — report-only, forever
@@ -159,8 +165,8 @@ with no worktree left, or an explicit human decision otherwise.
 A branch owned by a WB task is always in-use, never a candidate here — see
 'wb worktree cleanup <task>' or 'wb worktree abort <task>'.
 
-This command is read-only in every configuration: its only permitted remote
-interaction is fetching. Progress streams to stderr as '[n/N] repository',
+This command is read-only in every configuration: it fetches Git refs and,
+with --with-prs, reads GitHub PR metadata. Progress streams to stderr as '[n/N] repository',
 flushed per event, so a long fleet sweep never looks hung; stdout stays
 reserved for the report.`,
 		Args: cobra.NoArgs,
@@ -173,7 +179,7 @@ reserved for the report.`,
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, Org: org,
 				OlderThan: olderThan, Filter: filterFlag, Progress: progress,
 				Repository: repository, Branch: branch, Name: name,
-				IncludeRetired: includeRetired,
+				IncludeRetired: includeRetired, WithPRs: withPRs,
 			})
 			if err != nil {
 				return err
@@ -210,6 +216,7 @@ reserved for the report.`,
 	command.Flags().StringVar(&branch, "branch", "", "exact branch ref selector")
 	command.Flags().StringVar(&name, "name", "", "branch-name glob, for example 'retired/*'")
 	command.Flags().BoolVar(&includeRetired, "include-retired", false, "include retired/* quarantine branches (excluded by default)")
+	command.Flags().BoolVar(&withPRs, "with-prs", false, "read GitHub PR history for selected remote branches (head all states; base open only)")
 	return command
 }
 
@@ -366,7 +373,7 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 			kind = "branch"
 		}
 		evidence := entry.Evidence
-		if entry.Scope == worktrees.BranchScopeRemote && kind == "branch" && entry.Branch != "" && entry.Disposition != worktrees.BranchRetired {
+		if entry.Scope == worktrees.BranchScopeRemote && kind == "branch" && entry.Branch != "" && entry.Disposition != worktrees.BranchRetired && (entry.PullRequestQueried || entry.PullRequestQueryFailed) {
 			evidence += branchPullRequestSummary(entry)
 		}
 		if _, err := fmt.Fprintf(out, "  %-18s %-32s %-8s %-12s %-11s %-21s %-16s %-24s %-8s %s\n",

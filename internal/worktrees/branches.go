@@ -54,7 +54,7 @@ var protectedBranchNames = map[string]bool{
 }
 
 // BranchListOptions selects the inventory. It is read-only in every
-// configuration: its only permitted remote interaction is fetching.
+// configuration: it fetches Git refs and optionally reads GitHub PR metadata.
 type BranchListOptions struct {
 	ProjectsRoot string
 	Base         string
@@ -72,6 +72,8 @@ type BranchListOptions struct {
 	// of the normal backlog inventory because they require an explicit operator
 	// decision, never automatic cleanup.
 	IncludeRetired bool
+	// WithPRs enriches selected remote rows with hosted pull-request history.
+	WithPRs bool
 	// Progress receives incremental "[n/N] repository" lines as the sweep
 	// works, plus a closing summary. Nil disables progress reporting.
 	Progress io.Writer
@@ -242,6 +244,8 @@ type branchSweepOptions struct {
 	// query per non-contained candidate. See
 	// #req:receipted-is-opt-in-and-fails-closed.
 	Receipts bool
+	WithPRs  bool
+	Cleanup  bool
 	// AbsorbedBy is the optional operator-supplied landing pointer (a merged
 	// pull request number or an exact landing commit) that Branch Hygiene
 	// verifies with the same attested-absorption proof `wb worktree cleanup
@@ -272,6 +276,7 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 		Progress: options.Progress, Now: started,
 		Repository: options.Repository, Org: options.Org, Branch: options.Branch, Name: options.Name,
 		IncludeRetired: options.IncludeRetired,
+		WithPRs:        options.WithPRs,
 	}
 	if retiredNamespaceSelected(sweep) {
 		return inventoryRetiredNamespace(ctx, sweep, started)
@@ -805,7 +810,11 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 				entries = append(entries, retiredBranchEntry(repository, sweep, ref, BranchScopeRemote, targetSHA))
 			} else {
 				entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
-				decorateRemoteBranchPullRequests(ctx, repository, ref, &entries[len(entries)-1], branchPullRequestCache)
+				entry := &entries[len(entries)-1]
+				if entry.Disposition != BranchProtected && entry.Disposition != BranchInUse && entry.Disposition != BranchUnreadable &&
+					(sweep.WithPRs || (sweep.Cleanup && eligibleBranchCleanupDisposition(*entry))) {
+					decorateRemoteBranchPullRequests(ctx, repository, ref, entry, branchPullRequestCache, sweep.WithPRs)
+				}
 			}
 			decorateBranchCommit(ctx, repository.Path, &entries[len(entries)-1])
 		}
