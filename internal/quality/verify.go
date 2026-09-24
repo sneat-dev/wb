@@ -863,75 +863,122 @@ func truncateCommandDetailTo(detail string, max int) string {
 		}
 		scanStart = prevNewline + 1
 	}
-	evidenceLines := failureEvidenceIn(detail[scanStart:])
-	// Review finding N3 (continued): the walk-back above can pull a
-	// trigger line, or other lines, that are already fully reproduced
-	// verbatim in the head into the evidence scan. Drop any evidence line
-	// that is a complete, exact duplicate of a head line — a straddling
-	// line is a partial match here, never an exact one, so it is left
-	// alone — rather than showing it twice.
-	evidenceLines = excludeLinesPresentIn(evidenceLines, detail[:headBytes])
-
 	// legacyTailBytes and legacyMarker are the historical head+tail-only
 	// shape (unchanged formula). When nothing worth keeping was found,
 	// this is returned byte-for-byte as before this fix.
 	legacyTailBytes, legacyMarker := sizeTailAndMarker(max - headBytes)
+	legacy := detail[:headBytes] + legacyMarker + detail[len(detail)-legacyTailBytes:]
+
+	evidenceLines := failureEvidenceIn(detail, scanStart)
+	// Review finding N3 (continued): the walk-back above can pull a
+	// trigger line, or other lines, that are already fully reproduced
+	// verbatim in the head into the evidence scan. Drop any evidence line
+	// whose own source bytes lie entirely inside the head window — a
+	// straddling line's own bytes only partially overlap that window, so
+	// it is left alone — rather than showing it twice.
+	evidenceLines = excludeLinesInWindow(evidenceLines, 0, headBytes)
 	if len(evidenceLines) == 0 {
-		return detail[:headBytes] + legacyMarker + detail[len(detail)-legacyTailBytes:]
+		return legacy
 	}
 
 	available := max - headBytes
 	evidenceBlock := fitEvidenceBlock(evidenceLines, available)
-	remaining := available - len(evidenceBlock)
-	tailBytes, marker := sizeTailAndMarker(remaining)
-	// Unlike the legacy fallback above (which reproduces the historical
-	// formula byte-for-byte, including its own long-standing imprecision
-	// at a budget too small to fit even a zero-byte marker), the evidence
-	// path must never exceed max (review finding B1): evidenceBlock has
-	// already consumed part of the head's own remaining room, so the same
-	// imprecision here would push the total over budget. Drop the tail
-	// and its marker entirely rather than exceed it.
-	if len(marker)+tailBytes > remaining {
-		marker, tailBytes = "", 0
-	}
-	var tail string
-	if tailBytes > 0 {
-		tail = detail[len(detail)-tailBytes:]
+
+	// evidenceCollapsedFallback is used once evidence was actually found but
+	// ends up empty anyway — either every candidate line sat inside the
+	// tail window, or fitEvidenceBlock itself kept nothing (review finding
+	// N3: an over-long trigger line whose only possible fragment fell below
+	// the minimum meaningful length). Unlike legacy above, this must never
+	// exceed max (review finding B1: the evidence path's own contract), so
+	// it applies the same overflow clamp the surviving-evidence branch does
+	// — it does not reuse legacy's byte-for-byte historical formula, which
+	// is allowed to overflow at a tiny budget only when no evidence was
+	// ever found at all.
+	evidenceCollapsedFallback := func() string {
+		tailBytes, marker := sizeTailAndMarker(available)
+		if len(marker)+tailBytes > available {
+			marker, tailBytes = "", 0
+		}
+		var tail string
+		if tailBytes > 0 {
+			tail = detail[len(detail)-tailBytes:]
+		}
+		return detail[:headBytes] + marker + tail
 	}
 
-	// Review finding N2: an evidence line that also appears, complete and
-	// unchanged, in the kept tail was never actually dropped — showing it
-	// again under the "dropped middle" header both misstates what
-	// happened and wastes bytes on a duplicate. Filter those out and
-	// rebuild the block; the result can only be the same size or smaller,
-	// so the tail computed above still fits.
-	if tail != "" {
-		filtered := excludeLinesPresentIn(evidenceLines, tail)
-		if len(filtered) != len(evidenceLines) {
-			evidenceLines = filtered
-			if len(evidenceLines) == 0 {
-				return detail[:headBytes] + marker + tail
-			}
-			evidenceBlock = fitEvidenceBlock(evidenceLines, available)
+	// Review finding N2: an evidence line whose own source bytes lie
+	// entirely inside the kept tail was never actually dropped — showing
+	// it again under the "dropped middle" header both misstates what
+	// happened and wastes bytes on a duplicate. Filtering those out
+	// shrinks evidenceBlock, which frees budget the tail can grow into;
+	// growing the tail can in turn newly swallow an evidence line that
+	// survived the smaller tail, but never the reverse (the tail only
+	// ever extends further back from the end). Every non-stable pass
+	// below either returns directly (once excludeLinesInWindow empties
+	// evidenceLines) or strictly shrinks evidenceLines by at least one
+	// line before looping again, so a stable pass — which always returns
+	// too — is reached in at most the starting len(evidenceLines) passes:
+	// this loop always returns from inside its own body and never falls
+	// out the bottom.
+	for {
+		remaining := available - len(evidenceBlock)
+		tailBytes, marker := sizeTailAndMarker(remaining)
+		// Unlike the legacy fallback above (which reproduces the
+		// historical formula byte-for-byte, including its own
+		// long-standing imprecision at a budget too small to fit even a
+		// zero-byte marker), the evidence path must never exceed max
+		// (review finding B1): evidenceBlock has already consumed part
+		// of the head's own remaining room, so the same imprecision here
+		// would push the total over budget. Drop the tail and its marker
+		// entirely rather than exceed it.
+		if len(marker)+tailBytes > remaining {
+			marker, tailBytes = "", 0
 		}
+		var tail string
+		if tailBytes > 0 {
+			tail = detail[len(detail)-tailBytes:]
+		}
+		filtered := excludeLinesInWindow(evidenceLines, len(detail)-tailBytes, len(detail))
+		if len(filtered) == len(evidenceLines) {
+			// Stable: this tail's size swallowed nothing new. Review
+			// finding N3 (continued): fitEvidenceBlock can itself decide
+			// nothing survives (e.g. the one over-long trigger line
+			// could not meet the minimum meaningful fragment length) —
+			// that is exactly the "nothing worth keeping" case the
+			// legacy shape covers, so fall back to it rather than leave
+			// output shorter than the budget for no benefit.
+			if evidenceBlock == "" {
+				return evidenceCollapsedFallback()
+			}
+			return detail[:headBytes] + evidenceBlock + marker + tail
+		}
+		evidenceLines = filtered
+		if len(evidenceLines) == 0 {
+			return evidenceCollapsedFallback()
+		}
+		evidenceBlock = fitEvidenceBlock(evidenceLines, available)
 	}
-	return detail[:headBytes] + evidenceBlock + marker + tail
 }
 
-// excludeLinesPresentIn drops every line from lines that appears, complete
-// and byte-identical, as one of verbatim's own lines — never a partial
-// match — leaving every other line (including empty ones, which are never
-// meaningful evidence on their own) in its original order.
-func excludeLinesPresentIn(lines []string, verbatim string) []string {
-	present := make(map[string]bool, strings.Count(verbatim, "\n")+1)
-	for _, line := range strings.Split(verbatim, "\n") {
-		if line != "" {
-			present[line] = true
-		}
+// excludeLinesInWindow drops every evidence line whose own source bytes lie
+// entirely within [start, end) — the actually emitted head or tail window —
+// leaving every other line (including one that only partially overlaps the
+// window, e.g. a "--- FAIL" line straddling the head boundary) untouched, in
+// its original order. Filtering by an evidence line's own recorded position,
+// rather than by matching its text against what the window contains, is
+// what review finding B (round 4 of #582) requires: two different failing
+// tests can legitimately share identical assertion text (a shared helper, a
+// table-driven case, "context deadline exceeded"), and a text-based filter
+// silently discarded whichever occurrence sat in the middle even though its
+// own bytes were never actually shown anywhere in the output.
+func excludeLinesInWindow(lines []evidenceLine, start, end int) []evidenceLine {
+	if start >= end {
+		return lines
 	}
-	kept := make([]string, 0, len(lines))
+	kept := make([]evidenceLine, 0, len(lines))
 	for _, line := range lines {
-		if line != "" && present[line] {
+		lineEnd := line.offset + len(line.text)
+		if line.offset >= start && lineEnd <= end {
 			continue
 		}
 		kept = append(kept, line)
@@ -963,18 +1010,29 @@ func sizeTailAndMarker(budget int) (tailBytes int, marker string) {
 	return tailBytes, marker
 }
 
+// minPartialEvidenceLineBytes is the shortest rune-safe prefix of an
+// over-long evidence line worth keeping on its own (review finding N3,
+// round 4 of #582): a fragment shorter than this — a handful of bytes of a
+// test name with no assertion text — conveys nothing a reader could act on.
+// Below this length, fitEvidenceBlock omits the line entirely rather than
+// keeping a fragment that would misstate what evidence exists.
+const minPartialEvidenceLineBytes = 40
+
 // fitEvidenceBlock renders every kept evidence line under evidenceHeader,
 // never returning more than available bytes. When the full block does not
 // fit, it keeps as many whole lines (in the order found) as fit alongside
 // evidenceTruncatedNotice, so a cut always lands on a line boundary and
 // discloses that it happened. A single line too long to fit whole still
-// contributes its own rune-safe prefix rather than being dropped entirely
-// (review finding N5). When available is too small to fit even the header
-// and the omission notice together, fitEvidenceBlock emits nothing at all
-// (review finding N4): a truncated fragment of either would misstate what
-// happened, which is worse than showing no evidence at that budget.
-func fitEvidenceBlock(lines []string, available int) string {
-	full := evidenceHeader + strings.Join(lines, "\n") + "\n"
+// contributes its own rune-safe prefix rather than being dropped entirely,
+// but only when that prefix is at least minPartialEvidenceLineBytes long
+// (review finding N5, tightened by finding N3 in round 4) — a shorter
+// fragment is omitted instead. When nothing at all fits — including when
+// available is too small to fit even the header and the omission notice
+// together (review finding N4), or when the only candidate line's prefix
+// falls below the minimum — fitEvidenceBlock returns "" rather than a
+// header promising evidence that never follows it.
+func fitEvidenceBlock(lines []evidenceLine, available int) string {
+	full := evidenceHeader + joinEvidenceLines(lines) + "\n"
 	if len(full) <= available {
 		return full
 	}
@@ -985,6 +1043,7 @@ func fitEvidenceBlock(lines []string, available int) string {
 	var kept []string
 	used := 0
 	for _, line := range lines {
+		text := line.text
 		separator := 0
 		if len(kept) > 0 {
 			separator = 1 // the "\n" strings.Join would place before it
@@ -993,17 +1052,32 @@ func fitEvidenceBlock(lines []string, available int) string {
 		if room <= 0 {
 			break
 		}
-		if len(line) <= room {
-			kept = append(kept, line)
-			used += separator + len(line)
+		if len(text) <= room {
+			kept = append(kept, text)
+			used += separator + len(text)
 			continue
 		}
-		if partial := truncateRuneSafe(line, room); partial != "" {
-			kept = append(kept, partial)
+		if room >= minPartialEvidenceLineBytes {
+			if partial := truncateRuneSafe(text, room); partial != "" {
+				kept = append(kept, partial)
+			}
 		}
 		break
 	}
+	if len(kept) == 0 {
+		return ""
+	}
 	return evidenceHeader + strings.Join(kept, "\n") + evidenceTruncatedNotice
+}
+
+// joinEvidenceLines renders lines' own text, one per line, exactly as
+// strings.Join(lines, "\n") would for a []string.
+func joinEvidenceLines(lines []evidenceLine) string {
+	texts := make([]string, len(lines))
+	for i, line := range lines {
+		texts[i] = line.text
+	}
+	return strings.Join(texts, "\n")
 }
 
 // truncateRuneSafe returns the longest prefix of s that is at most max
@@ -1046,42 +1120,67 @@ var (
 	packageSummaryLinePattern = regexp.MustCompile(`^(ok\s|--- PASS\b|=== |PASS$|\?\s|coverage:|\[.*\])`)
 )
 
+// evidenceLine is one line failureEvidenceIn kept, together with offset —
+// its own absolute byte position within the full command detail
+// truncateCommandDetailTo was called with (never a position relative to
+// region alone). Carrying offset is what lets truncateCommandDetailTo tell
+// two occurrences of identical text apart (review finding B, round 4 of
+// #582): de-duplication against the head or tail window must drop a line
+// only when its own source bytes sit inside that window, never merely
+// because its text happens to match something found there.
+type evidenceLine struct {
+	text   string
+	offset int
+}
+
 // failureEvidenceIn returns every "^--- FAIL" block (its own line plus any
 // indented continuation lines, e.g. a sub-test line and its assertion
 // message), every bare "^FAIL" line, and every "^panic:" line together
-// with its stack trace, found in region, as the whole lines they were
-// found in — never a partial line — so a caller can join, cap, or inspect
-// them without ever risking a partial-line false match. It is used only on
-// the slice of a command's output a head+tail bound would otherwise
-// discard whole (sneat-dev/wb#582).
-func failureEvidenceIn(region string) []string {
+// with its stack trace, found in detail[scanStart:], as the whole lines
+// they were found in — never a partial line — so a caller can join, cap, or
+// inspect them without ever risking a partial-line false match, and each
+// tagged with its own absolute offset in detail. It is used only on the
+// slice of a command's output a head+tail bound would otherwise discard
+// whole (sneat-dev/wb#582).
+func failureEvidenceIn(detail string, scanStart int) []evidenceLine {
+	region := detail[scanStart:]
 	lines := strings.Split(region, "\n")
-	var kept []string
+	offsets := make([]int, len(lines))
+	pos := scanStart
+	for i, line := range lines {
+		offsets[i] = pos
+		pos += len(line) + 1 // +1 for the '\n' strings.Split consumed
+	}
+	var kept []evidenceLine
 	for index := 0; index < len(lines); index++ {
 		line := lines[index]
 		switch {
 		case failBlockLinePattern.MatchString(line):
-			kept = append(kept, line)
+			kept = append(kept, evidenceLine{line, offsets[index]})
 			index++
 			for index < len(lines) && isIndentedContinuationLine(lines[index]) {
-				kept = append(kept, lines[index])
+				kept = append(kept, evidenceLine{lines[index], offsets[index]})
 				index++
 			}
 			index--
 		case panicLinePattern.MatchString(line):
-			kept = append(kept, line)
+			kept = append(kept, evidenceLine{line, offsets[index]})
 			index++
-			sawGoroutineHeader := false
-			for index < len(lines) && !isEndOfPanicStack(lines[index], sawGoroutineHeader) {
-				if goroutineHeaderPattern.MatchString(lines[index]) {
-					sawGoroutineHeader = true
+			for index < len(lines) {
+				var next string
+				hasNext := index+1 < len(lines)
+				if hasNext {
+					next = lines[index+1]
 				}
-				kept = append(kept, lines[index])
+				if isEndOfPanicStack(lines[index], next, hasNext) {
+					break
+				}
+				kept = append(kept, evidenceLine{lines[index], offsets[index]})
 				index++
 			}
 			index--
 		case bareFailLinePattern.MatchString(line):
-			kept = append(kept, line)
+			kept = append(kept, evidenceLine{line, offsets[index]})
 		}
 	}
 	return kept
@@ -1089,16 +1188,19 @@ func failureEvidenceIn(region string) []string {
 
 // isEndOfPanicStack reports whether line ends a panic's stack trace: any go
 // test result line that means normal package output has resumed, or a
-// blank line — but only once sawGoroutineHeader is true. The Go runtime
-// always prints exactly one blank line right after "panic: ..." and before
-// "goroutine N [running]:" (review finding B, round 2 of #582); treating
-// that first blank line as the end of the stack drops the goroutine header
-// and every frame under it, even though nothing was actually done yet.
-// Once the header has been seen, a further blank line (the usual end,
-// immediately before "exit status N") does end the stack as before.
-func isEndOfPanicStack(line string, sawGoroutineHeader bool) bool {
+// blank line that is not immediately followed by another goroutine header.
+// The Go runtime always prints exactly one blank line right after "panic:
+// ..." and before "goroutine N [running]:" (review finding B, round 2 of
+// #582), and again between each goroutine's own frames in a multi-goroutine
+// dump such as a test-timeout panic (review finding N5, round 4) — treating
+// either of those blank lines as the end of the stack drops a goroutine
+// header, and every frame under it, that the budget had room to keep. A
+// blank line whose next line is itself a goroutine header is therefore never
+// the end; every other blank line is, including the very last line of the
+// scanned region (hasNext is false and so nothing can follow it).
+func isEndOfPanicStack(line string, nextLine string, hasNext bool) bool {
 	if strings.TrimSpace(line) == "" {
-		return sawGoroutineHeader
+		return !hasNext || !goroutineHeaderPattern.MatchString(nextLine)
 	}
 	return failBlockLinePattern.MatchString(line) ||
 		bareFailLinePattern.MatchString(line) ||
