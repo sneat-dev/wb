@@ -35,11 +35,41 @@ var (
 	filterFlag     string
 	extraOrgs      []string
 	nonInteractive bool
+)
 
+// invocation carries the mutable state one run()/runWithStdin() call reads
+// and writes, as opposed to the package-level `var` block above (#733): a
+// real CLI process calls run() exactly once, so package-level globals never
+// raced there, but many cmd/wb tests call run()/runWithStdin() directly with
+// t.Parallel(), and every such call shared the same package-level storage —
+// a genuine data race the race detector catches (issue #733). Building one
+// *invocation per call and threading it through cobra's context, rather than
+// through a package-level var, removes the shared mutable state without
+// changing newRootCmd's signature or any of its ~50 test call sites.
+//
+// commandStarted is the first (and, for this PR, only) field moved out of
+// the package-level block above; projectsRoot, filterFlag, extraOrgs and
+// nonInteractive follow in later PRs in this same sequence (task-5,
+// spec/plans/coverage-to-100).
+type invocation struct {
 	// commandStarted records that cobra accepted the invocation and began
 	// running a command. See the PersistentPreRunE in newRootCmd.
 	commandStarted bool
-)
+}
+
+// invocationContextKey is the unexported type context.WithValue uses to
+// store *invocation, so no other package can collide with or read the key.
+type invocationContextKey struct{}
+
+// invocationFromContext returns the *invocation stored on ctx by
+// runWithStdin, or nil when none was stored — which happens in every test
+// that builds a command tree with newRootCmd() to inspect it (help text,
+// subcommand paths) without executing it through runWithStdin. Callers must
+// handle a nil result; PersistentPreRunE below does.
+func invocationFromContext(ctx context.Context) *invocation {
+	inv, _ := ctx.Value(invocationContextKey{}).(*invocation)
+	return inv
+}
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
 // given: WB_PROJECTS_ROOT when set, else ~/projects. It is the only place the
@@ -117,7 +147,9 @@ func newRootCmd() *cobra.Command {
 			// before any work starts, on stderr, without touching the exit
 			// code — a retired variable must not become a rejected command.
 			warnIgnoredWBHome(cmd)
-			commandStarted = true
+			if inv := invocationFromContext(cmd.Context()); inv != nil {
+				inv.commandStarted = true
+			}
 			id := persistentCommandID(cmd)
 			// `wb version` (including --json) MUST stay side-effect-free
 			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
@@ -489,7 +521,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return printBareVersion(stdout)
 	}
 
-	commandStarted = false
+	inv := &invocation{}
 	// Keep the in-process test/embedding runner on the same admission and
 	// attribution path as the production main entrypoint. The resolver is
 	// read-only until a command explicitly mutates state.
@@ -504,7 +536,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 
 	prepareHelpPresentation(root, args)
-	err := executeWithFang(root)
+	ctx := context.WithValue(context.Background(), invocationContextKey{}, inv)
+	err := executeWithFang(ctx, root)
 	// Always on stderr, and always after the command's own output, so a
 	// --format json or yaml document on stdout stays machine-parseable.
 	reportUndeclaredOwners(stderr)
@@ -512,7 +545,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return exitOK
 	}
 	_, _ = fmt.Fprintln(stderr, "error:", err)
-	code := exitCodeFor(err, commandStarted)
+	code := exitCodeFor(err, inv.commandStarted)
 	if code == exitUsage {
 		_, _ = fmt.Fprintln(stderr, usageRecoveryHint(root, args))
 	}
@@ -542,9 +575,9 @@ func terminalPresentationDisabled(args []string) bool {
 	return false
 }
 
-func executeWithFang(root *cobra.Command) error {
+func executeWithFang(ctx context.Context, root *cobra.Command) error {
 	return fang.Execute(
-		context.Background(),
+		ctx,
 		root,
 		fang.WithoutVersion(),
 		fang.WithoutManpage(),

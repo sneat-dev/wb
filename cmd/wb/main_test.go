@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
@@ -267,6 +268,63 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 				t.Errorf("run(%q) = %d, want %d; stderr: %s", test.args, got, test.want, stderr.String())
 			}
 		})
+	}
+}
+
+// TestConcurrentInvocationsReportOwnExitCode is the regression test for #733:
+// runWithStdin used to record whether a command started in a package-level
+// `commandStarted` variable, shared by every concurrent call in this test
+// binary. A real `wb` process only ever calls run() once, so that never
+// raced in production, but many cmd/wb tests call run()/runWithStdin()
+// directly with t.Parallel(), racing the shared variable from multiple
+// goroutines in one process (race.yml run 36051478734, 24 DATA RACE blocks
+// against the whole package-level `var` block in main.go). Moving
+// commandStarted into a per-call *invocation, threaded through cobra's
+// context instead of a package-level var, means two concurrent invocations
+// now write to two different structs and so cannot cross-contaminate each
+// other's exit code — the outcome this test pins, without needing -race
+// (unavailable locally; race.yml runs it in CI) to see it hold.
+//
+// One goroutine repeatedly runs an invocation cobra rejects before any
+// command starts (exitUsage); the other repeatedly runs one a command
+// completes successfully (exitOK). Before this change, a run's write of
+// `commandStarted = true`/`= false` could be observed by the other
+// goroutine's read at the shared-var's exitCodeFor call, flipping either
+// outcome to the wrong code.
+func TestConcurrentInvocationsReportOwnExitCode(t *testing.T) {
+	t.Parallel()
+	const iterations = 200
+
+	usageResults := make([]int, iterations)
+	okResults := make([]int, iterations)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			usageResults[i] = run([]string{"--no-such-flag"}, &stdout, &stderr)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			okResults[i] = run([]string{"--help"}, &stdout, &stderr)
+		}
+	}()
+	wg.Wait()
+
+	for i, got := range usageResults {
+		if got != exitUsage {
+			t.Errorf("usage invocation #%d = %d, want %d (cross-contaminated by the concurrent success invocation)", i, got, exitUsage)
+		}
+	}
+	for i, got := range okResults {
+		if got != exitOK {
+			t.Errorf("success invocation #%d = %d, want %d (cross-contaminated by the concurrent usage-error invocation)", i, got, exitOK)
+		}
 	}
 }
 
