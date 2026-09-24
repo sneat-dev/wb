@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestCanonicalClonePathFollowsTheCloneURL pins where a canonical clone belongs:
@@ -55,6 +57,7 @@ func TestEnsureCanonicalClonesIntoTheHostLevelDerivedFromTheCloneURL(t *testing.
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)

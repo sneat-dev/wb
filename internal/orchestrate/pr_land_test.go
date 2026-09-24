@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -48,6 +49,7 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	// The fake GitHub commits in the remote itself (update-branch, another
 	// landing advancing main), so it needs an identity of its own: a CI runner
 	// has no global one to fall back on.

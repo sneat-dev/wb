@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type fixture struct {
@@ -23,6 +25,7 @@ func newFixture(t *testing.T) fixture {
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
 	run(t, root, "git", "init", "-q", "--bare", origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "sneat-co", "backstage")
@@ -47,7 +50,7 @@ func run(t *testing.T, directory, name string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command(name, arguments...)
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(arguments, " "), err, output)

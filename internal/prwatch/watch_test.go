@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -650,6 +651,7 @@ func newTwoRepoFixture(t *testing.T) string {
 	for _, repository := range []string{"acme/app", "acme/other"} {
 		remote := filepath.Join(root, strings.ReplaceAll(repository, "/", "-")+".git")
 		runFixtureGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 		canonical := filepath.Join(projectsRoot, repository)
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 			t.Fatal(err)

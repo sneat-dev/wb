@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -397,7 +398,9 @@ func TestDeleteRemoteBranchIgnoresAPreexistingLandingRemote(t *testing.T) {
 	runEngineGit(t, seed, "add", "README.md")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	runEngineGit(t, root, "clone", "--bare", seed, malicious)
+	testenv.ConfigureGitAutoMaintenanceOff(t, malicious)
 	runEngineGit(t, root, "clone", origin, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")

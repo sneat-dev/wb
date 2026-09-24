@@ -76,6 +76,7 @@ func (lgCovFailingReader) Read([]byte) (int, error) {
 func lgCovBareRepo(t *testing.T, path string) {
 	t.Helper()
 	run(t, filepath.Dir(path), "git", "init", "-q", "--bare", path)
+	testenv.ConfigureGitAutoMaintenanceOff(t, path)
 }
 
 // TestLgCovInspectSeesACleanCloneAndDerivesItsBranchName pins both halves of

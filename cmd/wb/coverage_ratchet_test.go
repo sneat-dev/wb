@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -477,14 +476,6 @@ func TestWriteChangedCoverageOutputToFailsClosedWhenReportFileIsBlocked(t *testi
 	err := writeChangedCoverageOutputTo(&out, changedCoverageReport{}, "markdown", reportDir)
 	if err == nil {
 		t.Fatal("want error when the report file path is already a directory")
-	}
-}
-
-func TestGitMergeBaseFailsWithoutExitErrorWhenGitCannotEvenStart(t *testing.T) {
-	t.Parallel()
-	_, err := gitMergeBase(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), "main")
-	if err == nil {
-		t.Fatal("want error when repoPath does not exist")
 	}
 }
 

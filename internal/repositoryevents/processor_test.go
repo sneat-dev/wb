@@ -14,14 +14,27 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+// TestMain disables git's detached gc/maintenance dispatch for every git this
+// test binary starts, including this package's own fixture clones and
+// pushes, so no background writer can race t.TempDir()'s cleanup (task-21).
+// Bare remotes pushed to over a local transport are also configured
+// directly with testenv.ConfigureGitAutoMaintenanceOff, because git strips
+// GIT_CONFIG_* before spawning the server-side receive-pack.
+func TestMain(m *testing.M) {
+	testenv.GitAutoMaintenanceOffProcess()
+	os.Exit(m.Run())
+}
 
 func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) {
 	t.Parallel()
 	projects := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, "", "init", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	seed := filepath.Join(t.TempDir(), "seed")
 	runGit(t, "", "clone", remote, seed)
 	runGit(t, seed, "config", "user.email", "test@example.com")
@@ -71,6 +84,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 	projects := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, "", "init", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	seed := filepath.Join(t.TempDir(), "seed")
 	runGit(t, "", "clone", remote, seed)
 	runGit(t, seed, "config", "user.email", "test@example.com")
@@ -272,6 +286,7 @@ func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGit(t, "", "init", "--bare", oldRemote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, oldRemote)
 	seed := filepath.Join(t.TempDir(), "seed")
 	runGit(t, "", "clone", oldRemote, seed)
 	runGit(t, seed, "config", "user.email", "test@example.com")

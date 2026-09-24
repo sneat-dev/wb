@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
@@ -21,6 +23,7 @@ func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "cloned")
@@ -71,6 +74,7 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	// A clone assembled by `git init` + `git remote add` + fetch never gets
 	// the origin/HEAD symref a `git clone` would have set, which is exactly
@@ -103,8 +107,10 @@ func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) 
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "broken")
-	runEngineGit(t, root, "init", "--bare", filepath.Join(root, "empty.git"))
-	runEngineGit(t, root, "clone", filepath.Join(root, "empty.git"), canonical)
+	emptyRemote := filepath.Join(root, "empty.git")
+	runEngineGit(t, root, "init", "--bare", emptyRemote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, emptyRemote)
+	runEngineGit(t, root, "clone", emptyRemote, canonical)
 	if _, err := EnsureCanonical(context.Background(),
 		Repository{Slug: "acme/broken", Path: canonical, CloneURL: filepath.Join(root, "empty.git")}, canonical,
 		Options{GitHubDir: projectsRoot, Ref: "main", Timeout: time.Minute}); err == nil ||
