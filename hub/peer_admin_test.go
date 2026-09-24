@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -292,6 +293,89 @@ func TestConcurrentInviteOfTheSameNameHasExactlyOneWinner(t *testing.T) {
 	}
 	if _, err := resolver.ResolveMachineCredential(ctx, digest); err != nil {
 		t.Fatalf("winner's token no longer resolves after the race: %v", err)
+	}
+}
+
+// inviteBarrierReader is service.Random for
+// TestConcurrentInviteWherePreCheckIsAlwaysStaleForALoser: every Invite call
+// reads from it exactly once, right after peerExists finds "not a peer yet"
+// and right before it mints a token and enters UpdateAtomic. Blocking every
+// caller here until all of them have arrived guarantees every attempt's
+// peerExists pre-check observes "not found" before any attempt has had a
+// chance to commit — so at least one of them is certain to still find
+// trustFound=true inside its own, later UpdateAtomic transaction (the branch
+// this test exists to force), rather than being caught earlier by the cheap
+// pre-check outside the transaction. That is what
+// TestConcurrentInviteOfTheSameNameHasExactlyOneWinner leaves to scheduler
+// luck: when every attempt happens to be serviced fast enough that its
+// pre-check runs after the winner's commit, none of the losers ever reaches
+// this transaction-time recheck at all (task-21, 7/8 nightly runs).
+type inviteBarrierReader struct {
+	mu       sync.Mutex
+	pending  int
+	released chan struct{}
+}
+
+func newInviteBarrierReader(attempts int) *inviteBarrierReader {
+	return &inviteBarrierReader{pending: attempts, released: make(chan struct{})}
+}
+
+func (barrier *inviteBarrierReader) Read(p []byte) (int, error) {
+	barrier.mu.Lock()
+	barrier.pending--
+	if barrier.pending == 0 {
+		close(barrier.released)
+	}
+	barrier.mu.Unlock()
+	<-barrier.released
+	return rand.Read(p)
+}
+
+// TestConcurrentInviteWherePreCheckIsAlwaysStaleForALoser is
+// TestConcurrentInviteOfTheSameNameHasExactlyOneWinner's deterministic
+// counterpart: it forces every attempt's peerExists pre-check to be stale by
+// the time it reaches its own UpdateAtomic transaction, so the transaction's
+// own trustFound recheck (hub/peer_admin.go's "%q is already a peer" refusal
+// inside the UpdateAtomic callback, as opposed to the identically-worded
+// refusal peerExists returns before any transaction begins) is exercised on
+// every run rather than only when the scheduler happens to interleave the
+// attempts that way.
+func TestConcurrentInviteWherePreCheckIsAlwaysStaleForALoser(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	service := newTestPeerAdminService(backend)
+
+	const attempts = 8
+	service.Random = newInviteBarrierReader(attempts)
+
+	results := make([]PeerInviteResult, attempts)
+	errs := make([]error, attempts)
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = service.Invite(ctx, "laptop", false)
+		}(i)
+	}
+	wg.Wait()
+
+	wins, losses := 0, 0
+	for i := 0; i < attempts; i++ {
+		if errs[i] == nil {
+			wins++
+			continue
+		}
+		losses++
+		if !strings.Contains(errs[i].Error(), "already a peer") {
+			t.Fatalf("attempt %d failed with an unexpected error: %v", i, errs[i])
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("winners = %d, want exactly 1 (UpdateAtomic must still serialize with a forced-stale pre-check)", wins)
+	}
+	if losses != attempts-1 {
+		t.Fatalf("losses = %d, want %d", losses, attempts-1)
 	}
 }
 
