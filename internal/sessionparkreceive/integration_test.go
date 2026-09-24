@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -35,6 +36,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
 		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
 	}
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including this package's own fixture clones and pushes, so
+	// no background writer can race t.TempDir() cleanup (task-21). Bare
+	// remotes pushed to over a local transport are also configured
+	// directly with testenv.ConfigureGitAutoMaintenanceOff.
+	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
 }
 
@@ -165,6 +172,7 @@ func createParkRemote(t *testing.T, root, repository string) (string, string) {
 		t.Fatal(err)
 	}
 	runGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	seed := filepath.Join(root, "seed-"+repository)
 	runGit(t, root, "clone", remote, seed)
 	runGit(t, seed, "config", "user.name", "WB Test")

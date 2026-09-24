@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -409,6 +410,7 @@ func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runEngineGit(t, root, "init", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(root, "projects", "acme", "broken")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
@@ -709,6 +711,7 @@ func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

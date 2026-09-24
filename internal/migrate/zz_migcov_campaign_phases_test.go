@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -33,6 +34,7 @@ func migCovClone(t *testing.T, name string, goMod string) string {
 	runCampaignGit(t, source, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "seed")
 	remote := filepath.Join(root, name+".git")
 	runCampaignGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runCampaignGit(t, source, "remote", "add", "origin", remote)
 	runCampaignGit(t, source, "push", "-u", "origin", "main")
 	worktree := filepath.Join(root, name)
