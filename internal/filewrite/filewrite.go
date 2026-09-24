@@ -234,6 +234,15 @@ func Write(file *os.File, data []byte, name string, inj *Injector) error {
 }
 
 // Sync fsyncs a regular file.
+// Sync calls file.Sync(), i.e. the fsync(2) syscall. On Linux this is
+// full durability. On Darwin, Go's file.Sync() is fsync(2), which the
+// kernel does not guarantee flushes to physical disk (F_FULLFSYNC, an
+// fcntl the standard library does not issue, is what actually forces
+// that); every inline call site this package replaces already had this
+// same Darwin behaviour before this package existed, so this is a
+// pre-existing, unchanged property being carried forward faithfully, not
+// a regression -- flagged here so a future reader does not mistake Sync
+// for stronger durability than it provides on that platform.
 func Sync(file *os.File, name string, inj *Injector) error {
 	if err := inj.run(StepSync, name); err != nil {
 		return err
