@@ -164,7 +164,8 @@ owner. Thus `sneat-co` resolves to `sneat-co/backstage-retired` by default.
 Repository-tracked `.wb/worktrees.yaml` MUST NOT select this target. Retirement
 commits tracked and nonignored untracked source changes on the original branch
 with hooks, publishes that exact commit at a deterministic `retired/*` source
-ref, and pushes the plain actual Work Log files and checkout metadata into the
+branch by default or `refs/tags/retired/*` when `--preserve=tag` is explicit,
+and pushes the plain actual Work Log files and checkout metadata into the
 configured private retirement repository. It verifies both remote refs before
 deleting the original branch with an exact SHA lease and removing the local
 checkout and branch. Local exact Work Log retention remains mandatory.
@@ -198,7 +199,8 @@ read the configured remote task claims and machine snapshots before planning,
 recheck them under the task lock and before original-ref deletion, and refuse
 when another machine holds the task or the remote state cannot be read. It MUST
 commit tracked and nonignored untracked source changes on the original branch
-with hooks enabled, create the deterministic retired source ref, and commit
+with hooks enabled, create the deterministic retired source branch or explicit
+`refs/tags/retired/*` tag, and commit
 actual plain Work Log and checkout metadata files to the configured private
 retirement repository. The archive MUST exclude source checkout code files.
 WB MUST verify both remote refs and the archive file digests before deleting

@@ -25,10 +25,13 @@ import (
 // RetireOptions selects one WB-managed checkout. Inspector and ArchiveRemote
 // are replaceable only so bare-remote integration tests never contact GitHub.
 type RetireOptions struct {
-	ProjectsRoot     string
-	Task             string
-	Repository       string
-	Message          string
+	ProjectsRoot string
+	Task         string
+	Repository   string
+	Message      string
+	// Preserve chooses the source receipt namespace. Empty retains the
+	// established branch mode for callers and v1 receipts.
+	Preserve         string
 	Apply            bool
 	Now              func() time.Time
 	Inspect          RetiredArchiveInspector
@@ -50,6 +53,7 @@ type RetireResult struct {
 	WorktreesRoot     string    `json:"worktrees_root"`
 	Local             bool      `json:"local"`
 	Branch            string    `json:"branch"`
+	Preserve          string    `json:"preserve,omitempty"`
 	OriginalRemoteSHA string    `json:"original_remote_sha,omitempty"`
 	DeleteIntentSHA   string    `json:"delete_intent_sha,omitempty"`
 	SourceSHA         string    `json:"source_sha"`
@@ -70,6 +74,12 @@ type RetireResult struct {
 func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if options.Now == nil {
 		options.Now = time.Now
+	}
+	if options.Preserve == "" {
+		options.Preserve = "branch"
+	}
+	if options.Preserve != "branch" && options.Preserve != "tag" {
+		return RetireResult{}, fmt.Errorf("unsupported --preserve %q; use branch or tag", options.Preserve)
 	}
 	if !validSafeSegment(options.Task) {
 		return RetireResult{}, fmt.Errorf("invalid retirement task %q", options.Task)
@@ -164,7 +174,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	}
 	result := RetireResult{Version: 1, Task: entry.Task, Repository: entry.Repository, ArchiveRepository: archivePlan.ArchiveRepository,
 		Worktree: entry.WorktreeDir, Canonical: entry.CanonicalDir, WorktreesRoot: lifecycleTaskLockRoot(resolution.Write.Home, wbhome.Layout{WorktreesRoot: entry.WorktreesRoot, Local: entry.Local}), Local: entry.Local,
-		Branch: entry.Branch, OriginalRemoteSHA: remoteSHA, SourceSHA: entry.HeadSHA, ClaimID: claim.ClaimID, EffortID: claim.EffortID, RunID: claim.RunID, Phase: "planned"}
+		Branch: entry.Branch, Preserve: options.Preserve, OriginalRemoteSHA: remoteSHA, SourceSHA: entry.HeadSHA, ClaimID: claim.ClaimID, EffortID: claim.EffortID, RunID: claim.RunID, Phase: "planned"}
 	result.ReportPath = retireReportPath(resolution.Write.Home, result)
 	if !options.Apply {
 		result.RetiredRef = retiredBranchDestination(options.Now(), entry.Branch, entry.HeadSHA)
@@ -228,7 +238,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		if prior.Phase == "original_deleted" {
 			remoteMatchesReceipt = remoteSHA == ""
 		}
-		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || !remoteMatchesReceipt {
+		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || retirePreserveMode(prior) != options.Preserve || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || !remoteMatchesReceipt {
 			return RetireResult{}, fmt.Errorf("retirement receipt conflicts with current checkout")
 		}
 		result = prior
@@ -769,6 +779,20 @@ func retireArchiveRef(result RetireResult) string {
 	return "retired/" + repository + "/" + strings.TrimPrefix(result.RetiredRef, "retired/")
 }
 
+func retirePreserveMode(result RetireResult) string {
+	if result.Preserve == "" {
+		return "branch"
+	}
+	return result.Preserve
+}
+
+func retireSourceRef(result RetireResult) string {
+	if retirePreserveMode(result) == "tag" {
+		return "refs/tags/" + result.RetiredRef
+	}
+	return "refs/heads/" + result.RetiredRef
+}
+
 func retireReportPath(home string, result RetireResult) string {
 	owner, repository, _ := strings.Cut(result.Repository, "/")
 	return filepath.Join(home, "reports", "worktree-retire", result.Task, owner+"-"+repository+".json")
@@ -801,7 +825,7 @@ func readRetireReport(path string) (RetireResult, error) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		return result, err
 	}
-	if result.Version != 1 || !isGitObjectID(result.SourceSHA) {
+	if result.Version != 1 || !isGitObjectID(result.SourceSHA) || (result.Preserve != "" && result.Preserve != "branch" && result.Preserve != "tag") {
 		return result, fmt.Errorf("invalid retirement receipt")
 	}
 	if result.DeleteIntentSHA != "" && (result.DeleteIntentSHA != result.OriginalRemoteSHA || !isGitObjectID(result.DeleteIntentSHA)) {
@@ -862,7 +886,7 @@ func writeRetireReport(result RetireResult) error {
 }
 
 func retirePublishSource(ctx context.Context, result *RetireResult) error {
-	ref := "refs/heads/" + result.RetiredRef
+	ref := retireSourceRef(*result)
 	current, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
 	if err != nil {
 		return err
@@ -889,7 +913,7 @@ func retirePublishSource(ctx context.Context, result *RetireResult) error {
 }
 
 func retireVerifyReceipts(ctx context.Context, canonical, archiveRemote string, result RetireResult) error {
-	retired, err := retireRemoteSHA(ctx, canonical, "origin", "refs/heads/"+result.RetiredRef)
+	retired, err := retireRemoteSHA(ctx, canonical, "origin", retireSourceRef(result))
 	if err != nil || retired != result.SourceSHA {
 		return fmt.Errorf("retired source receipt changed: %w", err)
 	}
@@ -1072,6 +1096,7 @@ type retireArchiveManifest struct {
 	Version    int               `json:"version"`
 	Repository string            `json:"repository"`
 	Branch     string            `json:"branch"`
+	Preserve   string            `json:"preserve,omitempty"`
 	SourceSHA  string            `json:"source_sha"`
 	RetiredRef string            `json:"retired_ref"`
 	ClaimID    string            `json:"claim_id"`
@@ -1170,7 +1195,7 @@ func retirePublishArchive(ctx context.Context, home, remote string, result *Reti
 	if err := retireCaptureTree(outbox, filepath.Join(working, "worklog", "outbox"), func(path string) bool { return strings.HasPrefix(path, result.RunID+"-"+result.ClaimID+"-") }, hashes, "worklog/outbox"); err != nil {
 		return fmt.Errorf("capture Work Log outbox: %w", err)
 	}
-	manifest := retireArchiveManifest{Version: 1, Repository: result.Repository, Branch: result.Branch, SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef, ClaimID: result.ClaimID, Files: hashes}
+	manifest := retireArchiveManifest{Version: 1, Repository: result.Repository, Branch: result.Branch, Preserve: retirePreserveMode(*result), SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef, ClaimID: result.ClaimID, Files: hashes}
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
@@ -1238,7 +1263,7 @@ func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA 
 	if err := json.Unmarshal(body, &actual); err != nil {
 		return err
 	}
-	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
+	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || retireArchiveManifestPreserve(actual) != retireArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
 		return fmt.Errorf("private archive manifest identity mismatch")
 	}
 	paths := make([]string, 0, len(expected.Files))
@@ -1278,6 +1303,13 @@ func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA 
 		}
 	}
 	return nil
+}
+
+func retireArchiveManifestPreserve(manifest retireArchiveManifest) string {
+	if manifest.Preserve == "" {
+		return "branch"
+	}
+	return manifest.Preserve
 }
 
 func retireGitObjectSHA(ctx context.Context, directory, object string) (string, error) {

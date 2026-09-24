@@ -13,14 +13,15 @@ import (
 
 func newWorktreeRetireCmd() *cobra.Command {
 	var apply, jsonShortcut bool
-	var format, message string
+	var format, message, preserve string
 	command := &cobra.Command{
 		Use:   "retire <task>",
 		Short: "Preserve a task in retired Git refs and a private Work Log repository",
 		Long: `Plan or apply retirement of one WB-managed worktree. The default is a dry run.
 Apply commits tracked and nonignored untracked source changes on the original
 branch with normal Git hooks, then publishes the exact commit as a retired/*
-ref in the source repository. It pushes the actual Work Log and checkout
+branch by default. Pass --preserve=tag to publish refs/tags/retired/* instead.
+It pushes the actual Work Log and checkout
 metadata as plain files to the configured private organization retirement
 repository. Only after both remote receipts verify does it atomically delete
 the old remote ref with an exact lease and create a deletion-proof tag at the
@@ -46,7 +47,7 @@ planning, again under the task lock, and before deleting the original ref.`,
 			defer release()
 			result, err := worktrees.Retire(command.Context(), worktrees.RetireOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Repository: filterFlag,
-				Message: message, Apply: apply,
+				Message: message, Preserve: preserve, Apply: apply,
 				RemoteOwnership: func(ctx context.Context, task string) error {
 					return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), projectsRoot, task)
 				},
@@ -79,6 +80,7 @@ planning, again under the task lock, and before deleting the original ref.`,
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "apply the verified retirement plan")
 	command.Flags().StringVarP(&message, "message", "m", "", "source commit message when changes remain")
+	command.Flags().StringVar(&preserve, "preserve", "branch", "source preservation ref: branch or tag")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonShortcut, "json", false, "shorthand for --format=json")
 	addMutationAdmissionFlags(command)
