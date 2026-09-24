@@ -235,6 +235,50 @@ func TestSetGitAutoMaintenanceOffExtendsAnAlreadySetSequence(t *testing.T) {
 	}
 }
 
+// TestGitAutoMaintenanceOffProcessExtendsTheProcessSequence proves the
+// TestMain variant appends the three disabled settings to whatever
+// GIT_CONFIG_COUNT sequence the process already carries, and that a real git
+// subprocess inheriting the process environment resolves them.
+func TestGitAutoMaintenanceOffProcessExtendsTheProcessSequence(t *testing.T) {
+	// Route every key this test (or the function under test) touches through
+	// t.Setenv first so it is restored -- or unset again -- afterwards.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "t")
+	for _, index := range []string{"1", "2", "3"} {
+		t.Setenv("GIT_CONFIG_KEY_"+index, "")
+		t.Setenv("GIT_CONFIG_VALUE_"+index, "")
+	}
+
+	GitAutoMaintenanceOffProcess()
+
+	want := map[string]string{
+		"GIT_CONFIG_COUNT":   "4",
+		"GIT_CONFIG_KEY_0":   "user.name",
+		"GIT_CONFIG_VALUE_0": "t",
+		"GIT_CONFIG_KEY_1":   "gc.auto",
+		"GIT_CONFIG_VALUE_1": "0",
+		"GIT_CONFIG_KEY_2":   "maintenance.auto",
+		"GIT_CONFIG_VALUE_2": "false",
+		"GIT_CONFIG_KEY_3":   "receive.autogc",
+		"GIT_CONFIG_VALUE_3": "false",
+	}
+	for name, value := range want {
+		if got := os.Getenv(name); got != value {
+			t.Fatalf("%s = %q, want %q", name, got, value)
+		}
+	}
+	cmd := exec.Command("git", "config", "--get", "maintenance.auto")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git config --get maintenance.auto: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "false" {
+		t.Fatalf("inherited maintenance.auto = %q, want %q", got, "false")
+	}
+}
+
 func TestConfigureGitAutoMaintenanceOffWritesIntoTheReposOwnConfig(t *testing.T) {
 	repo := t.TempDir()
 	cmd := exec.Command("git", "init", "-q", "--bare", "-b", "main")

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
@@ -29,6 +31,7 @@ func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
@@ -51,6 +54,7 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
@@ -97,6 +101,7 @@ func TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity(t *testin
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")

@@ -12,6 +12,12 @@ import (
 
 func TestMain(m *testing.M) {
 	testenv.IsolateProcess()
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including this package's own fixture clones and pushes, so
+	// no background writer can race t.TempDir() cleanup (task-21). Bare
+	// remotes pushed to over a local transport are also configured
+	// directly with testenv.ConfigureGitAutoMaintenanceOff.
+	testenv.GitAutoMaintenanceOffProcess()
 	// This package's migrate tests read Work Log claims across every
 	// wbhome-resolved home, including the retired legacy $HOME/.wb, and must
 	// not see this machine's real fleet state (a fixture repository name can
@@ -156,6 +162,7 @@ func initRemoteClone(t *testing.T, root, owner, name, originSlug string) string 
 		t.Fatal(err)
 	}
 	run(t, root, "git", "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(root, owner, name)
 	cloneFrom(t, remote, canonical)
 	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:"+originSlug+".git")
@@ -178,6 +185,7 @@ func seedRemoteClone(t *testing.T, root, dirName, originSlug, dest string) {
 	run(t, seed, "git", "add", ".")
 	run(t, seed, "git", "commit", "-m", "init")
 	run(t, root, "git", "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	cloneFrom(t, remote, dest)
 	run(t, dest, "git", "remote", "set-url", "origin", "git@github.com:"+originSlug+".git")
 }
