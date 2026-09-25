@@ -21,7 +21,7 @@ func pushTierTestRepo(t *testing.T) string {
 	root := t.TempDir()
 	bare := filepath.Join(root, "remote.git")
 	repo := filepath.Join(root, "work")
-	pushTierGit(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.InitBareRemoteForTest(t, bare)
 	pushTierGit(t, root, "init", "-b", "main", repo)
 	pushTierGit(t, repo, "config", "user.name", "wb-test")
 	pushTierGit(t, repo, "config", "user.email", "wb-test@example.invalid")

@@ -20,7 +20,7 @@ func initGCFixture(t *testing.T) (projectsRoot, home, worktree string) {
 	remote := filepath.Join(root, "remote.git")
 	projectsRoot = filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "app")
-	gcGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

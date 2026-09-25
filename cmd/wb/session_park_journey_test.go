@@ -263,7 +263,7 @@ func prepareJourneySourceWorktrees(t *testing.T, root, projectsRoot string) []jo
 		if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		journeyGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+		testenv.InitBareRemoteForTest(t, remote)
 		canonical := filepath.Join(projectsRoot, filepath.FromSlash(repository))
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 			t.Fatal(err)

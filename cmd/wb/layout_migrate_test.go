@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -276,7 +277,7 @@ func TestLayoutMigrateSkipsUnsafeClones(t *testing.T) {
 	// cloned from GitHub and later adopted by WB.
 	claimedPath := filepath.Join(root, "acme", "claimed")
 	claimedRemote := filepath.Join(root, "claimed-origin.git")
-	runGit(t, root, "init", "--bare", "-b", "main", claimedRemote)
+	testenv.InitBareRemoteForTest(t, claimedRemote)
 	runGit(t, root, "clone", claimedRemote, claimedPath)
 	runGit(t, claimedPath, "config", "user.email", "wb@example.test")
 	runGit(t, claimedPath, "config", "user.name", "WB Test")
@@ -460,7 +461,7 @@ func dalgoFetchableFixtureAt(t *testing.T, root, clonePath string) string {
 	t.Helper()
 	origin := filepath.Join(root, "dalgo-origin.git")
 	if _, statErr := os.Stat(origin); statErr != nil {
-		runGit(t, root, "init", "--bare", "-b", "main", origin)
+		testenv.InitBareRemoteForTest(t, origin)
 	}
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)
@@ -485,7 +486,7 @@ func dalgo2sqlFetchableFixtureAt(t *testing.T, root, clonePath string) string {
 	t.Helper()
 	origin := filepath.Join(root, "dalgo2sql-origin.git")
 	if _, statErr := os.Stat(origin); statErr != nil {
-		runGit(t, root, "init", "--bare", "-b", "main", origin)
+		testenv.InitBareRemoteForTest(t, origin)
 	}
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)

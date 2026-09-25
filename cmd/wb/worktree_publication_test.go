@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -83,7 +84,7 @@ func newPublicationWorktree(t *testing.T, task string) (string, string) {
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	remote := filepath.Join(root, "remote.git")
-	publicationGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
