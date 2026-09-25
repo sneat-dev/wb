@@ -1003,11 +1003,6 @@ internal/nodeidentity::TestPublishNodeIDReadsWinnersIDOnALostRace	serial pending
 internal/nodeidentity::TestPublishNodeIDReportsAnUnrelatedLinkFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/nodeidentity::TestReadNodeIDReportsAnEmptyFile	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/nodeidentity::TestReadNodeIDReportsInvalidHex	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/nodeidentity::TestWriteNodeIDTempFileReportsEachBackendFailure	kept serial because a nested subtest must stay serial: chmod fails
-internal/nodeidentity::TestWriteNodeIDTempFileReportsEachBackendFailure/chmod fails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/nodeidentity::TestWriteNodeIDTempFileReportsEachBackendFailure/close fails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/nodeidentity::TestWriteNodeIDTempFileReportsEachBackendFailure/sync fails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/nodeidentity::TestWriteNodeIDTempFileReportsEachBackendFailure/write fails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovListExactWorkflowRunsThroughTheSharedObserver	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovResolveHeadThroughTheSharedObserver	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovRunThroughRealCommandsPublishesAnExactVersion	serial pending case-by-case review (sneat-dev/wb#623 baseline)

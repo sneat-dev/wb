@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -107,7 +108,15 @@ func LoadFile(path string, random io.Reader) (string, error) {
 // directly and deterministically: call it with a path a winner has already
 // published to, and it takes exactly the loser's branch.
 func publishNodeID(tempPath, path, id string) (string, error) {
-	if err := os.Link(tempPath, path); err != nil {
+	return publishNodeIDInjected(tempPath, path, id, nil)
+}
+
+// publishNodeIDInjected is publishNodeID's test seam (task-9 PR-7): every
+// production call site reaches it only through publishNodeID, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged.
+// filewrite.LinkPath calls exactly the original os.Link(tempPath, path).
+func publishNodeIDInjected(tempPath, path, id string, inj *filewrite.Injector) (string, error) {
+	if err := filewrite.LinkPath(tempPath, path, inj); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return readNodeID(path)
 		}
@@ -116,47 +125,45 @@ func publishNodeID(tempPath, path, id string) (string, error) {
 	return id, nil
 }
 
-// fileChmod, fileWriteString, fileSync and fileClose are narrow test seams
-// for writeNodeIDTempFile's otherwise-unreachable defensive error branches: a
-// real filesystem never fails a chmod, write, sync or close on a temp file it
-// just created a moment earlier in the same function, so there is no
-// portable, deterministic way to force those branches through the real
-// filesystem alone. Production always leaves these at their zero value,
-// which does exactly what the direct *os.File call would.
-var (
-	fileChmod       = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
-	fileWriteString = func(file *os.File, s string) (int, error) { return io.WriteString(file, s) }
-	fileSync        = func(file *os.File) error { return file.Sync() }
-	fileClose       = func(file *os.File) error { return file.Close() }
-)
-
 // writeNodeIDTempFile writes id to a private, fsynced temporary file in dir
 // (the node-id file's own directory, so the later os.Link stays on one
 // filesystem) and returns its path. The caller publishes it with os.Link and
 // always removes the temp name afterward, whether or not the link won the
 // race.
 func writeNodeIDTempFile(dir, id string) (string, error) {
-	file, err := os.CreateTemp(dir, ".node-id-*.tmp")
+	return writeNodeIDTempFileInjected(dir, id, nil)
+}
+
+// writeNodeIDTempFileInjected is writeNodeIDTempFile's test seam (task-9
+// PR-7): every production call site reaches it only through
+// writeNodeIDTempFile, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the create/chmod/write/sync/close failure branches
+// deterministically. This replaces the former fileChmod/fileWriteString/
+// fileSync/fileClose package-var seams with the standard per-call Injector
+// convention every other migrated site in this repository uses.
+func writeNodeIDTempFileInjected(dir, id string, inj *filewrite.Injector) (string, error) {
+	file, err := filewrite.CreateTemp(dir, ".node-id-*.tmp", inj)
 	if err != nil {
 		return "", fmt.Errorf("create node identity temp file: %w", err)
 	}
 	path := file.Name()
-	if err := fileChmod(file, 0o600); err != nil {
-		_ = file.Close()
+	if err := filewrite.ChmodFile(file, 0o600, path, inj); err != nil {
+		_ = filewrite.Close(file, path, inj)
 		_ = os.Remove(path)
 		return "", fmt.Errorf("protect node identity temp file: %w", err)
 	}
-	if _, err := fileWriteString(file, id+"\n"); err != nil {
-		_ = file.Close()
+	if err := filewrite.Write(file, []byte(id+"\n"), path, inj); err != nil {
+		_ = filewrite.Close(file, path, inj)
 		_ = os.Remove(path)
 		return "", fmt.Errorf("write node identity temp file: %w", err)
 	}
-	if err := fileSync(file); err != nil {
-		_ = file.Close()
+	if err := filewrite.Sync(file, path, inj); err != nil {
+		_ = filewrite.Close(file, path, inj)
 		_ = os.Remove(path)
 		return "", fmt.Errorf("sync node identity temp file: %w", err)
 	}
-	if err := fileClose(file); err != nil {
+	if err := filewrite.Close(file, path, inj); err != nil {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("close node identity temp file: %w", err)
 	}

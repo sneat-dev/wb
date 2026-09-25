@@ -241,8 +241,12 @@ Pass --target <branch> to additionally compare every numeric
 min_test_coverage_percent against the same workflow file on the fetched
 target branch (lesson l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit):
 a threshold lower here than on the target is a coverage-floor-lowered
-finding. This is a no-op when the current branch already equals --target, and
-fetches origin/<target> (the one place this command is not read-only).`,
+finding. It also compares internal/quality/testdata/unit_tier.pending's
+grand total against the target's committed copy (spec/plans/coverage-to-100
+task-24): a rise is a unit-tier-pending-total-rose finding unless this PR
+shrinks other entries by at least as much. Both comparisons are a no-op when
+the current branch already equals --target, and fetch origin/<target> (the
+one place this command is not read-only).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
@@ -264,7 +268,7 @@ fetches origin/<target> (the one place this command is not read-only).`,
 	}
 	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
-	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors against this fetched target branch")
+	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors and the unit-tier pending total against this fetched target branch")
 	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
@@ -307,7 +311,7 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 			return 1, err
 		}
 		if target != "" {
-			targetFindings, err := ciaudit.CompareCoverageFloors(absolute, target)
+			targetFindings, err := ciaudit.CompareAgainstTarget(absolute, target)
 			if err != nil {
 				return 1, err
 			}
