@@ -11,26 +11,40 @@
 // reusing their exact committed file format and this package's own parser
 // for it (execsites.go's own comment names the same convention).
 //
-// The check flags, in every `_test.go` file anywhere in the module:
+// The check flags, in every `_test.go` file anywhere in the module, two
+// lineages of campaign token: the long-lived "cov" family several earlier
+// coverage campaigns left on main, and the rwi/pkp/pk0/cgx/pr9 family the
+// 2026-09-25 coordinator briefs used for one day before the same-day rename
+// campaign fixed every occurrence it had just added (997a4201). Both are
+// guarded, not just the one still visible on main at seed time: an
+// unguarded, already-renamed-away pattern is exactly the gap a future
+// coordinator brief could walk straight back through by reusing one of
+// these tokens tomorrow.
 //
 //   - a file name (basename, not the full path) containing "zz_", starting
-//     "cov_", or containing "_cov_", "tailcov" or "dqcov" -- the exact
-//     campaign-naming fragments AGENTS.md:108-112 names, plus the "cov_"
-//     and "_cov_" shapes those earlier coverage-campaign lanes actually
-//     used on main;
+//     "cov_", or containing "_cov_", "tailcov" or "dqcov" (the "cov"
+//     family), or containing "_rwi<digits>_", "_pkp<digits>_",
+//     "_pk0_" (no trailing digits -- "pk0" is already a complete token),
+//     "_cgx<digits>_"/"_cgxc<digits>_", or starting or containing "_pr9_"
+//     (the rwi/pkp/pk0/cgx/pr9 family) -- every fragment
+//     token-bounded by a leading/trailing "_" (or the start of the name for
+//     a leading token) so an ordinary word that merely contains the letters
+//     -- "pkg", "network", "coverage" -- can never match;
 //   - a `Test*` function name starting CwCov, TailCov, DqCov or Zz
 //     (case-sensitive, immediately after "Test", followed by an uppercase
 //     letter, a digit, or the end of the name -- so TestCoverageXxx, whose
 //     "Cov" is followed by lowercase "erage", is never mistaken for the
-//     campaign token TestCov never actually names on main).
+//     campaign token TestCov never actually names on main), or starting
+//     Rwi/RWI/Pkp/Pk0/Cgx (case variants main's own violations actually
+//     use) immediately followed by a digit -- Cgx's own campaign token is
+//     always spelled with a further lowercase "c" before the digit
+//     (Cgxc1/2/3), so that form is matched explicitly rather than by a
+//     generic uppercase-or-digit boundary the literal "c" would fail.
 //
-// Both shapes come from what main actually contains as of the 2026-09-25
-// sweep, not an exhaustive theoretical list: the rwi/pkp/cgx/pk0/pr9 tokens
-// today's coordinator briefs used are a different, one-day lineage this
-// rename campaign fixed directly rather than encoding here, and this
-// detector does not special-case them -- a future campaign that reuses one
-// of those tokens is still free-form until AGENTS.md:108-112's rule (and,
-// if it recurs, this detector) is extended to name it explicitly.
+// Both lineages come from what main and this exact rename campaign actually
+// contain, not an exhaustive theoretical list of every token a campaign
+// could invent; a genuinely new token still needs this detector extended by
+// hand, the same way AGENTS.md:108-112's rule itself would need updating.
 package quality
 
 import (
@@ -73,8 +87,8 @@ func (m CampaignTestNameMatch) String() string {
 }
 
 // campaignFuncNameToken matches a Test* function name whose name starts
-// with one of the campaign tokens AGENTS.md:108-112 and main's own
-// pre-existing violations actually use, immediately followed by another
+// with one of the "cov"-family campaign tokens AGENTS.md:108-112 and main's
+// own pre-existing violations actually use, immediately followed by another
 // capitalised word or a digit (so the token itself is a whole name segment)
 // or the end of the name. Requiring that boundary is what keeps
 // TestCoverageProfilePathInjected -- an entirely legitimate behaviour name
@@ -83,22 +97,50 @@ func (m CampaignTestNameMatch) String() string {
 // only the fuller CwCov/TailCov/DqCov tokens main's actual violations use.
 var campaignFuncNameToken = regexp.MustCompile(`^Test(CwCov|TailCov|DqCov|Zz)([A-Z0-9]|$)`)
 
+// campaignFuncNameLineageToken matches a Test* function name starting with
+// one of the rwi/pkp/pk0/cgx tokens the 2026-09-25 coordinator briefs used
+// (997a4201 renamed every one this exact batch added; this pattern guards
+// against a future brief reusing one of them). Rwi, RWI and Pkp are each
+// immediately followed by a digit -- the exact shape main's own violations
+// use (Rwi01, RWI08, Pkp00/02/03); Cgx is followed by an optional further
+// lowercase "c" then a digit (Cgxc1/2/3 -- never a generic
+// uppercase-or-digit boundary, which "Cgxc1" would fail, since the
+// character right after "Cgx" is the lowercase "c", not a digit); Pk0 is
+// already a complete three-character token (the trailing "0" is not a
+// separate digit suffix), so it uses the same
+// uppercase-letter-or-digit-or-end boundary campaignFuncNameToken's
+// Cov-family tokens use, not a required following digit.
+var campaignFuncNameLineageToken = regexp.MustCompile(`^Test(Rwi|RWI|Pkp)[0-9]|^TestPk0([A-Z0-9]|$)|^TestCgxc?[0-9]`)
+
+// campaignFileNameLineageFragment matches a _test.go basename carrying one
+// of the rwi/pkp/pk0/cgx/pr9 tokens' file-name shape, token-bounded on both
+// sides -- a leading "_" or the start of the name, a trailing "_" -- so an
+// ordinary word merely containing the letters ("pkg", "network", "cgxray")
+// can never match: "rwi<digits>_", "pkp<digits>_", "pk0_" (no trailing
+// digits -- "pk0" is already a complete token), "cgx<digits>_"/"cgxc<digits>_"
+// or "pr9_", each either at the very start of the basename or immediately
+// after an "_" elsewhere in it.
+var campaignFileNameLineageFragment = regexp.MustCompile(`(^|_)(rwi|pkp)[0-9]+_|(^|_)pk0_|(^|_)cgxc?[0-9]+_|(^|_)pr9_`)
+
 // campaignFileNameViolation reports whether basename -- a _test.go file's
 // own name, never its directory -- carries one of AGENTS.md:108-112's
-// forbidden campaign-naming fragments.
+// forbidden campaign-naming fragments, from either the "cov" lineage or the
+// rwi/pkp/pk0/cgx/pr9 lineage.
 func campaignFileNameViolation(basename string) bool {
 	return strings.Contains(basename, "zz_") ||
 		strings.HasPrefix(basename, "cov_") ||
 		strings.Contains(basename, "_cov_") ||
 		strings.Contains(basename, "tailcov") ||
-		strings.Contains(basename, "dqcov")
+		strings.Contains(basename, "dqcov") ||
+		campaignFileNameLineageFragment.MatchString(basename)
 }
 
 // campaignFuncNameViolation reports whether name -- a declared Test*
-// function's own identifier -- carries campaignFuncNameToken's forbidden
-// prefix.
+// function's own identifier -- carries campaignFuncNameToken's (the "cov"
+// lineage) or campaignFuncNameLineageToken's (the rwi/pkp/pk0/cgx lineage)
+// forbidden prefix.
 func campaignFuncNameViolation(name string) bool {
-	return campaignFuncNameToken.MatchString(name)
+	return campaignFuncNameToken.MatchString(name) || campaignFuncNameLineageToken.MatchString(name)
 }
 
 // FindCampaignTestNameMatches walks root and reports, in every `_test.go`
