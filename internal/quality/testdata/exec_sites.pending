@@ -8,18 +8,11 @@
 # entries by at least as much; the PR that creates this file is exempt.
 # Remove an entry once its count reaches 0, or once the owning task's
 # migration lands.
-cmd/wb/browser.go	1	task-16
-cmd/wb/ci.go	1	task-16
 cmd/wb/daemon.go	2	task-22
 cmd/wb/daemon_process_darwin.go	1	task-16
 cmd/wb/daemon_process_unix.go	1	task-16
 cmd/wb/daemon_process_windows.go	1	task-16
-cmd/wb/deps.go	1	task-16
 cmd/wb/fleet_default_branch.go	6	task-22
-cmd/wb/quality.go	2	task-16
-cmd/wb/remote_enroll.go	1	task-16
-cmd/wb/selfupdate.go	2	task-16
-cmd/wb/verify_receipt.go	4	task-16
 cmd/wb/worktree_end.go	4	task-16
 cmd/wb/worktree_marker.go	1	task-16
 internal/agents/changes.go	4	task-15

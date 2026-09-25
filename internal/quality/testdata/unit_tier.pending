@@ -8,7 +8,7 @@
 # its count reaches 0.
 cmd/wb/agent_remote_test.go	4	task-22
 cmd/wb/archive_test.go	9	task-22
-cmd/wb/ci_wait_test.go	26	task-22
+cmd/wb/ci_wait_test.go	27	task-22
 cmd/wb/cli_smoke_test.go	2	task-22
 cmd/wb/coverage_ratchet_test.go	31	task-22
 cmd/wb/daemon_supervisor_test.go	3	task-22
@@ -31,7 +31,7 @@ cmd/wb/layout_test.go	9	task-22
 cmd/wb/module_archive_test.go	10	task-22
 cmd/wb/pr_create_link_preflight_test.go	16	task-16
 cmd/wb/pr_test.go	1	task-22
-cmd/wb/quality_test.go	7	task-22
+cmd/wb/quality_test.go	8	task-22
 cmd/wb/release_contract_test.go	32	task-22
 cmd/wb/remote_claim_test.go	13	task-22
 cmd/wb/remote_test.go	27	task-22
@@ -41,7 +41,6 @@ cmd/wb/run_changed_test.go	8	task-22
 cmd/wb/run_command_test.go	3	task-22
 cmd/wb/run_queue_test.go	1	task-22
 cmd/wb/self_hosted_bench_e2e_test.go	22	task-23
-cmd/wb/selfupdate_test.go	1	task-22
 cmd/wb/session_park_journey_test.go	17	task-23
 cmd/wb/session_park_test.go	2	task-22
 cmd/wb/status_test.go	3	task-22
@@ -62,12 +61,12 @@ cmd/wb/zz_cov_deps_policy_fleet_test.go	4	task-22
 cmd/wb/zz_cov_deps_run_test.go	4	task-22
 cmd/wb/zz_cov_deps_set_bump_test.go	6	task-22
 cmd/wb/zz_cov_deps_sync_test.go	2	task-22
-cmd/wb/zz_cov_deps_writers_test.go	10	task-22
+cmd/wb/zz_cov_deps_writers_test.go	5	task-22
 cmd/wb/zz_cov_fleet_test.go	7	task-22
 cmd/wb/zz_cov_layout_gc_test.go	11	task-22
-cmd/wb/zz_cov_quality_test.go	4	task-22
+cmd/wb/zz_cov_quality_test.go	5	task-22
 cmd/wb/zz_cov_status_pr_branch_test.go	2	task-22
-cmd/wb/zz_cov_stream_migrate_test.go	7	task-22
+cmd/wb/zz_cov_stream_migrate_test.go	6	task-22
 cmd/wb/zz_cov_wt_end_test.go	2	task-22
 cmd/wb/zz_cov_wt_guard_test.go	3	task-22
 cmd/wb/zz_cov_wt_helpers_test.go	5	task-22
