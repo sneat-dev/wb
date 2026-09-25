@@ -334,3 +334,66 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		t.Errorf("stdout tail = %q, want the child's output", completed.Msg.StdoutTail)
 	}
 }
+
+// An operation submitted with an explicit CpuUnits (the trusted raw-execution
+// fallback) must be admitted through the explicit budget-sum pool rather than
+// argv-based reclassification (PR #628, M4).
+func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service, err := daemonTestService(t, root, "test-build", "cw-worker-explicit", func() error { return errors.New("raw disabled") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, handler := daemonv1connect.NewDaemonServiceHandler(service)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
+
+	ctx := context.Background()
+	operation, err := client.SubmitOperation(ctx, connect.NewRequest(&daemonv1.SubmitOperationRequest{
+		WorkingDirectory: work, Argv: []string{"go", "version"}, CpuUnits: 1, TargetWorkerId: "cw-worker-explicit",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := client.RegisterWorker(ctx, connect.NewRequest(&daemonv1.RegisterWorkerRequest{
+		WorkerId: "cw-worker-explicit", Build: "test-build", ProtocolVersion: daemon.ProtocolVersion,
+		Os: runtime.GOOS, Arch: runtime.GOARCH, CpuCapacity: 1, PermittedRoots: []string{root},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := registered.Msg.Registration
+	leased, err := client.LeaseOperation(ctx, connect.NewRequest(&daemonv1.LeaseOperationRequest{
+		WorkerId: registration.WorkerId, WorkerGeneration: registration.WorkerGeneration, WaitMilliseconds: 1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := leased.Msg.Assignment
+	if assignment.CpuUnits == 0 {
+		t.Fatal("assignment lost the explicit CpuUnits; test fixture no longer proves the explicit path")
+	}
+	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
+	command.SetContext(ctx)
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, assignment); err != nil {
+		t.Fatalf("executeWorkerAssignment with explicit CpuUnits: %v", err)
+	}
+	completed, err := client.GetOperation(ctx, connect.NewRequest(&daemonv1.GetOperationRequest{
+		OperationId: operation.Msg.OperationId,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Msg.State != daemonv1.OperationState_OPERATION_STATE_SUCCEEDED {
+		t.Fatalf("operation state = %v (error %q)", completed.Msg.State, completed.Msg.Error)
+	}
+}
