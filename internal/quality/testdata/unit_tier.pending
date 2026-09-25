@@ -215,7 +215,8 @@ internal/quality/changed_packages_test.go	14	task-15
 internal/quality/deadcode_test.go	2	task-15
 internal/quality/dqcov_shim_test.go	2	task-15
 internal/quality/dqcov_verify_test.go	1	task-15
-internal/quality/quality_test.go	10	task-15
+internal/quality/quality_process_cancellation_unix_test.go	1	task-15
+internal/quality/quality_test.go	9	task-15
 internal/quality/ratchet_test.go	34	task-15
 internal/recipe/command_test.go	5	task-15
 internal/recipe/land_test.go	15	task-15
