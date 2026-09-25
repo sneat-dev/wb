@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,8 +26,24 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+// realRunner returns the production [runner.Runner]. It is a function, not
+// a package-level var, so this package carries no mutable global seam.
+func realRunner() runner.Runner { return runner.New() }
+
+// resolveRunner defaults Options.Runner: nil (production's zero value)
+// resolves to the real runner; a test's injected [runnertest.Fake] passes
+// through unchanged. Mirrors internal/orchestrate's PullRequestLandOptions
+// resolve-helper pattern.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return realRunner()
+}
 
 // Options selects and drives one clean run.
 type Options struct {
@@ -48,6 +63,11 @@ type Options struct {
 	// Progress, when set, receives one "[n/N] org/repo" line per repository as
 	// it is evaluated, so a long fleet sweep is distinguishable from a hang.
 	Progress io.Writer
+
+	// Runner overrides the process runner Clean's evaluation uses to invoke
+	// git. Production leaves it nil, which resolveRunner defaults to the
+	// real runner; a test injects a runnertest.Fake.
+	Runner runner.Runner
 
 	// beforeUntrackedRevalidation is a package-private test seam. Production
 	// callers cannot set it; it lets the safety contract prove that a path
@@ -108,6 +128,7 @@ type Outcome struct {
 // deletes the ones that pass every safety check. It never removes a clone it
 // has not itself confirmed archived and clean in this exact run.
 func Clean(ctx context.Context, options Options) (Outcome, error) {
+	r := resolveRunner(options.Runner)
 	root, err := filepath.Abs(options.ProjectsRoot)
 	if err != nil {
 		return Outcome{}, err
@@ -129,7 +150,7 @@ func Clean(ctx context.Context, options Options) (Outcome, error) {
 		if options.Progress != nil {
 			_, _ = fmt.Fprintf(options.Progress, "[%d/%d] %s\n", index+1, len(filtered), repo.Slug())
 		}
-		result := Evaluate(ctx, root, repo)
+		result := evaluate(ctx, r, root, repo)
 		if options.Apply {
 			switch {
 			case result.Eligible:
@@ -150,6 +171,14 @@ func Clean(ctx context.Context, options Options) (Outcome, error) {
 // Evaluate judges a single clone against the full safety predicate. It never
 // mutates anything; Clean is the only mutator, and only under Apply.
 func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Result {
+	return evaluate(ctx, realRunner(), projectsRoot, repo)
+}
+
+// evaluate is [Evaluate]'s test seam: every production call site reaches it
+// only through Evaluate (or Clean, via resolveRunner), so production
+// behaviour is unchanged. A test passes a [runnertest.Fake] to reach every
+// git-outcome branch deterministically.
+func evaluate(ctx context.Context, r runner.Runner, projectsRoot string, repo discover.Repo) Result {
 	result := Result{Repository: repo.Slug(), Path: repo.Path}
 
 	skip, err := gitops.SkipSync(repo.Path)
@@ -196,7 +225,7 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 		blockers = append(blockers, plural(len(status.Stashed), "stash entry"))
 	}
 
-	localOnly, err := localOnlyBranches(ctx, repo.Path)
+	localOnly, err := localOnlyBranches(ctx, r, repo.Path)
 	if err != nil {
 		result.Reason = fmt.Sprintf("could not resolve remote branches: %v", err)
 		return result
@@ -205,7 +234,7 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 		blockers = append(blockers, fmt.Sprintf("local-only branch %q does not exist on origin", branch))
 	}
 
-	unpushedTags, err := unpushedTagNames(ctx, repo.Path)
+	unpushedTags, err := unpushedTagNames(ctx, r, repo.Path)
 	if err != nil {
 		result.Reason = fmt.Sprintf("could not resolve remote tags: %v", err)
 		return result
@@ -214,7 +243,7 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 		blockers = append(blockers, fmt.Sprintf("local tag %q does not exist on origin", tag))
 	}
 
-	linked, err := linkedWorktreePaths(ctx, repo.Path)
+	linked, err := linkedWorktreePaths(ctx, r, repo.Path)
 	if err != nil {
 		result.Reason = fmt.Sprintf("could not read linked worktrees: %v", err)
 		return result
@@ -281,30 +310,27 @@ func plural(n int, noun string) string {
 // runGit runs git in dir with output captured, disabling every interactive
 // prompt so a missing credential or unknown host key fails fast instead of
 // blocking on a terminal nobody is watching.
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = console.Env()
-	out, err := cmd.Output()
+func runGit(ctx context.Context, r runner.Runner, dir string, args ...string) (string, error) {
+	result, err := r.RunEnv(ctx, dir, console.Env(), "git", args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(exitErr.Stderr)))
+		if result.ExitCode != 0 {
+			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(result.Stderr))
 		}
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return string(out), nil
+	return result.Stdout, nil
 }
 
 // localOnlyBranches returns every local branch that does not exist by name on
 // origin, regardless of whether its commits are also reachable via another
 // ref: deleting the clone would otherwise silently discard a branch pointer
 // GitHub never saw.
-func localOnlyBranches(ctx context.Context, repoPath string) ([]string, error) {
-	localOut, err := runGit(ctx, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+func localOnlyBranches(ctx context.Context, r runner.Runner, repoPath string) ([]string, error) {
+	localOut, err := runGit(ctx, r, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
 	if err != nil {
 		return nil, err
 	}
-	remote, err := remoteRefNames(ctx, repoPath, "--heads", "refs/heads/")
+	remote, err := remoteRefNames(ctx, r, repoPath, "--heads", "refs/heads/")
 	if err != nil {
 		return nil, err
 	}
@@ -323,12 +349,12 @@ func localOnlyBranches(ctx context.Context, repoPath string) ([]string, error) {
 
 // unpushedTagNames returns every local tag that does not exist by name on
 // origin.
-func unpushedTagNames(ctx context.Context, repoPath string) ([]string, error) {
-	localOut, err := runGit(ctx, repoPath, "tag")
+func unpushedTagNames(ctx context.Context, r runner.Runner, repoPath string) ([]string, error) {
+	localOut, err := runGit(ctx, r, repoPath, "tag")
 	if err != nil {
 		return nil, err
 	}
-	remote, err := remoteRefNames(ctx, repoPath, "--tags", "refs/tags/")
+	remote, err := remoteRefNames(ctx, r, repoPath, "--tags", "refs/tags/")
 	if err != nil {
 		return nil, err
 	}
@@ -348,8 +374,8 @@ func unpushedTagNames(ctx context.Context, repoPath string) ([]string, error) {
 // remoteRefNames returns the short names origin publishes for the given
 // `git ls-remote` scope flag (--heads or --tags), stripping the given prefix
 // and any annotated-tag peel suffix ("^{}").
-func remoteRefNames(ctx context.Context, repoPath, scopeFlag, prefix string) (map[string]bool, error) {
-	out, err := runGit(ctx, repoPath, "ls-remote", scopeFlag, "origin")
+func remoteRefNames(ctx context.Context, r runner.Runner, repoPath, scopeFlag, prefix string) (map[string]bool, error) {
+	out, err := runGit(ctx, r, repoPath, "ls-remote", scopeFlag, "origin")
 	if err != nil {
 		return nil, err
 	}
@@ -371,8 +397,8 @@ func remoteRefNames(ctx context.Context, repoPath, scopeFlag, prefix string) (ma
 
 // linkedWorktreePaths returns every worktree `git worktree list` registers
 // against repoPath other than the canonical checkout itself.
-func linkedWorktreePaths(ctx context.Context, repoPath string) ([]string, error) {
-	out, err := runGit(ctx, repoPath, "worktree", "list", "--porcelain")
+func linkedWorktreePaths(ctx context.Context, r runner.Runner, repoPath string) ([]string, error) {
+	out, err := runGit(ctx, r, repoPath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}

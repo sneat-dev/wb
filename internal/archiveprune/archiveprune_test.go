@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -25,6 +26,12 @@ type fixture struct {
 
 func newFixture(t *testing.T, owner, name string) *fixture {
 	t.Helper()
+	// Clean/Evaluate reach real git through internal/runner.Real since
+	// task-15's exec-site migration, so task-24's runtime guard now applies.
+	// Every fixture-backed test already needs a real local repository and
+	// remote for ls-remote/push/fetch to mean anything; this is what makes
+	// that legitimate rather than a new kind of test.
+	runnertest.AllowRealProcess(t)
 	projectsRoot := t.TempDir()
 	remotesRoot := t.TempDir()
 

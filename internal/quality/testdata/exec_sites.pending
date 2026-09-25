@@ -23,7 +23,7 @@ cmd/wb/verify_receipt.go	4	task-16
 cmd/wb/worktree_end.go	4	task-16
 cmd/wb/worktree_marker.go	1	task-16
 internal/agents/changes.go	3	task-15
-internal/archiveprune/archiveprune.go	5	task-15
+internal/archiveprune/archiveprune.go	4	task-15
 internal/canonicalrescue/canonicalrescue.go	2	task-15
 internal/ciaudit/target.go	4	task-15
 internal/deps/command.go	1	task-14

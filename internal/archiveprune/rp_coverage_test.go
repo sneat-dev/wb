@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -164,52 +165,53 @@ func TestRPCovUnpushedBranchBlockersFallBackToTheGenericCommitCount(t *testing.T
 }
 
 func TestRPCovRunGitReportsExitAndLaunchFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	run(t, dir, "git", "init", "-q", "-b", "main")
-	if _, err := runGit(context.Background(), dir, "rev-parse", "--verify", "does-not-exist"); err == nil ||
+	if _, err := runGit(context.Background(), realRunner(), dir, "rev-parse", "--verify", "does-not-exist"); err == nil ||
 		!strings.Contains(err.Error(), "rev-parse") {
 		t.Fatalf("exit error = %v, want git's own refusal quoted", err)
 	}
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := runGit(cancelled, dir, "status"); err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if _, err := runGit(cancelled, realRunner(), dir, "status"); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("cancellation error = %v, want the launch failure", err)
 	}
 }
 
 func TestRPCovRefHelpersReportGitFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	notARepo := t.TempDir()
-	if _, err := localOnlyBranches(context.Background(), notARepo); err == nil {
+	if _, err := localOnlyBranches(context.Background(), realRunner(), notARepo); err == nil {
 		t.Fatal("localOnlyBranches accepted a directory that is not a repository")
 	}
-	if _, err := unpushedTagNames(context.Background(), notARepo); err == nil {
+	if _, err := unpushedTagNames(context.Background(), realRunner(), notARepo); err == nil {
 		t.Fatal("unpushedTagNames accepted a directory that is not a repository")
 	}
-	if _, err := remoteRefNames(context.Background(), notARepo, "--heads", "refs/heads/"); err == nil {
+	if _, err := remoteRefNames(context.Background(), realRunner(), notARepo, "--heads", "refs/heads/"); err == nil {
 		t.Fatal("remoteRefNames accepted a directory that is not a repository")
 	}
-	if _, err := linkedWorktreePaths(context.Background(), notARepo); err == nil {
+	if _, err := linkedWorktreePaths(context.Background(), realRunner(), notARepo); err == nil {
 		t.Fatal("linkedWorktreePaths accepted a directory that is not a repository")
 	}
 }
 
 func TestRPCovLocalOnlyBranchesReportsAMissingRemote(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	run(t, dir, "git", "init", "-q", "-b", "main")
 	mustWriteFile(t, filepath.Join(dir, "f.txt"), "v1\n")
 	run(t, dir, "git", "add", "-A")
 	run(t, dir, "git", "commit", "-qm", "v1")
 
-	if _, err := localOnlyBranches(context.Background(), dir); err == nil {
+	if _, err := localOnlyBranches(context.Background(), realRunner(), dir); err == nil {
 		t.Fatal("localOnlyBranches succeeded for a repository with no origin remote")
 	}
 }
 
 func TestRPCovRemoteRefNamesSkipsMalformedLinesAndStripsThePeelSuffix(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	run(t, dir, "git", "init", "-q", "-b", "main")
 	payload := strings.Join([]string{
@@ -220,7 +222,7 @@ func TestRPCovRemoteRefNamesSkipsMalformedLinesAndStripsThePeelSuffix(t *testing
 	}, "\n") + "\n"
 	rpCovInstallGitOutputShim(t, "*ls-remote*", payload)
 
-	names, err := remoteRefNames(context.Background(), dir, "--heads", "refs/heads/")
+	names, err := remoteRefNames(context.Background(), realRunner(), dir, "--heads", "refs/heads/")
 	if err != nil {
 		t.Fatal(err)
 	}

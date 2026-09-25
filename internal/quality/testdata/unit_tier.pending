@@ -78,8 +78,9 @@ internal/agentguard/autotags_test.go	1	task-15
 internal/agents/changes_test.go	3	task-15
 internal/agents/env_test.go	6	task-15
 internal/agents/owner_test.go	8	task-15
-internal/archiveprune/archiveprune_test.go	7	task-15
-internal/archiveprune/rp_coverage_test.go	6	task-15
+internal/archiveprune/archiveprune_test.go	8	task-15
+internal/archiveprune/rp_coverage_test.go	10	task-15
+internal/archiveprune/runner_seam_test.go	3	task-15
 internal/canonicalrescue/canonicalrescue_test.go	25	task-15
 internal/canonicalrescue/zz_lgcov_canonicalrescue_test.go	27	task-15
 internal/checkoutmarker/checkoutmarker_test.go	10	task-15
