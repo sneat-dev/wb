@@ -1966,35 +1966,40 @@ func cleanupWantsResidueEvidence(options CleanupOptions) bool {
 	return options.AllowResidue || len(options.Tasks) > 0 || options.Task != ""
 }
 
-func listLayout(
-	ctx context.Context,
-	projectsRoot string,
-	home string,
-	layout wbhome.Layout,
-	tasks map[string]bool,
-	base, filter, absorbedBy string,
-	withGitHub bool,
-	workers int,
-	reporter *listProgressReporter,
-	policy inspectPolicy,
-) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, []PurgedArtefact, error) {
-	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil, nil, nil
-	}
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
-	}
-	results := make([]ListResult, 0)
-	diagnostics := make([]ListDiagnostic, 0)
-	artifacts := make([]LifecycleArtifact, 0)
-	purged := make([]PurgedArtefact, 0)
-	// The walk below is local and cheap; inspection is what contacts origin.
-	// Collect candidates first, then inspect them concurrently, so one slow
-	// remote cannot hold up the other several hundred.
-	pending := make([]pendingInspect, 0)
+// layoutListing carries one listLayout call's parameters and the
+// accumulators its steps build up: walkTasks discovers candidates on disk
+// and queues them (and records diagnostics/artifacts/purged terminal
+// records along the way), then inspectPending runs the concurrent Git/GitHub
+// inspection phase and folds its results in.
+type layoutListing struct {
+	ctx          context.Context
+	projectsRoot string
+	home         string
+	layout       wbhome.Layout
+	tasks        map[string]bool
+	base         string
+	filter       string
+	absorbedBy   string
+	withGitHub   bool
+	workers      int
+	reporter     *listProgressReporter
+	policy       inspectPolicy
+
+	results     []ListResult
+	diagnostics []ListDiagnostic
+	artifacts   []LifecycleArtifact
+	purged      []PurgedArtefact
+	pending     []pendingInspect
+}
+
+// walkTasks discovers this worktrees root's task directories and, within
+// each, its repository candidates: Git worktree roots are queued as pending
+// inspections, adopted-worktree pointers are resolved and queued the same
+// way, and everything else that cannot be a candidate becomes a diagnostic,
+// an internal lifecycle artifact, or is silently skipped.
+func (ll *layoutListing) walkTasks(taskEntries []os.DirEntry) {
 	for _, taskEntry := range taskEntries {
-		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || !taskSelectionMatches(tasks, taskEntry.Name()) {
+		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || !taskSelectionMatches(ll.tasks, taskEntry.Name()) {
 			continue
 		}
 		if !validSafeSegment(taskEntry.Name()) {
@@ -2002,14 +2007,14 @@ func listLayout(
 			// weigh against --filter, and the exact-match task argument already
 			// scopes which task directories are even looked at above. Report it
 			// unconditionally rather than guess at scope.
-			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), filepath.Join(layout.WorktreesRoot, taskEntry.Name()), "invalid task directory name"))
+			ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), filepath.Join(ll.layout.WorktreesRoot, taskEntry.Name()), "invalid task directory name"))
 			continue
 		}
-		taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
+		taskRoot := filepath.Join(ll.layout.WorktreesRoot, taskEntry.Name())
 		// Sweep this task's terminal artefacts before the directory is read, so
 		// what they leave behind never reaches the inventory as backlog and
 		// never becomes an `info:` line. See purgeTerminalArtefacts.
-		purged = append(purged, purgeTerminalArtefacts(layout.WorktreesRoot, taskEntry.Name())...)
+		ll.purged = append(ll.purged, purgeTerminalArtefacts(ll.layout.WorktreesRoot, taskEntry.Name())...)
 		_, lockErr := os.Stat(filepath.Join(taskRoot, ".lock"))
 		locked := lockErr == nil
 		if lockErr != nil && !vanishedDuringWalk(lockErr) {
@@ -2018,7 +2023,7 @@ func listLayout(
 			// directory read below, which recognises the vanished task for what it
 			// is. Anything else is a real inspection failure, and it is scoped to
 			// this task rather than discarding every other task in the sweep.
-			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("inspect task lock: %v", lockErr)))
+			ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("inspect task lock: %v", lockErr)))
 			continue
 		}
 		entries, readErr := os.ReadDir(taskRoot)
@@ -2029,22 +2034,22 @@ func listLayout(
 			if vanishedDuringWalk(readErr) {
 				continue
 			}
-			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("read task directory: %v", readErr)))
+			ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("read task directory: %v", readErr)))
 			continue
 		}
 		for _, entry := range entries {
 			candidate := filepath.Join(taskRoot, entry.Name())
-			if artifact, internal := inspectLifecycleArtifact(ctx, layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
-				artifacts = append(artifacts, artifact)
+			if artifact, internal := inspectLifecycleArtifact(ll.ctx, ll.layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
+				ll.artifacts = append(ll.artifacts, artifact)
 				continue
 			}
 			if !entry.IsDir() {
 				continue
 			}
-			if hasGitMetadata(candidate) && isGitRoot(ctx, candidate) {
-				pending = append(pending, pendingInspect{
+			if hasGitMetadata(candidate) && isGitRoot(ll.ctx, candidate) {
+				ll.pending = append(ll.pending, pendingInspect{
 					task: taskEntry.Name(), path: candidate, slug: entry.Name(),
-					locked: locked, commonDir: gitCommonDir(ctx, candidate),
+					locked: locked, commonDir: gitCommonDir(ll.ctx, candidate),
 				})
 				// A repository boundary is terminal. Never inspect its source or
 				// tool directories as candidate repositories.
@@ -2063,15 +2068,15 @@ func listLayout(
 			// the host branch below, or a port-hosted forge is rejected with a
 			// false "invalid owner" diagnostic and never inventoried.
 			if !repopath.SafeOwnerSegment(entry.Name()) {
-				if filterMatches(filter, candidate, entry.Name()) {
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
+				if filterMatches(ll.filter, candidate, entry.Name()) {
+					ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
 				}
 				continue
 			}
 			nested, nestedErr := os.ReadDir(candidate)
 			if nestedErr != nil {
-				if filterMatches(filter, candidate, entry.Name()) {
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), candidate, fmt.Sprintf("read candidate directory: %v", nestedErr)))
+				if filterMatches(ll.filter, candidate, entry.Name()) {
+					ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), candidate, fmt.Sprintf("read candidate directory: %v", nestedErr)))
 				}
 				continue
 			}
@@ -2092,13 +2097,13 @@ func listLayout(
 					// Repository-rename mismatches remain visible when their on-disk
 					// identity matches the filter; the documented filter contract is
 					// path-derived identity, not an unbounded canonical-name search.
-					if !filterMatches(filter, repositoryPath, slug) {
+					if !filterMatches(ll.filter, repositoryPath, slug) {
 						continue
 					}
-					if hasGitMetadata(repositoryPath) && isGitRoot(ctx, repositoryPath) {
-						pending = append(pending, pendingInspect{
+					if hasGitMetadata(repositoryPath) && isGitRoot(ll.ctx, repositoryPath) {
+						ll.pending = append(ll.pending, pendingInspect{
 							task: taskEntry.Name(), path: repositoryPath, ownerName: orgName,
-							slug: slug, locked: locked, commonDir: gitCommonDir(ctx, repositoryPath),
+							slug: slug, locked: locked, commonDir: gitCommonDir(ll.ctx, repositoryPath),
 						})
 						continue
 					}
@@ -2108,17 +2113,17 @@ func listLayout(
 					// operates on the real, never-relocated checkout the pointer
 					// names, exactly as if it had been created there directly.
 					if external, ok := readAdoptedWorktreePointer(repositoryPath); ok {
-						if !filterMatches(filter, external, slug) {
+						if !filterMatches(ll.filter, external, slug) {
 							continue
 						}
-						if !hasGitMetadata(external) || !isGitRoot(ctx, external) {
-							diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath,
+						if !hasGitMetadata(external) || !isGitRoot(ll.ctx, external) {
+							ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), repositoryPath,
 								fmt.Sprintf("adopted worktree registration points at %s, which is no longer a Git worktree root", external)))
 							continue
 						}
-						pending = append(pending, pendingInspect{
+						ll.pending = append(ll.pending, pendingInspect{
 							task: taskEntry.Name(), path: external, ownerName: orgName,
-							slug: slug, locked: locked, commonDir: gitCommonDir(ctx, external), external: true,
+							slug: slug, locked: locked, commonDir: gitCommonDir(ll.ctx, external), external: true,
 						})
 						continue
 					}
@@ -2126,19 +2131,19 @@ func listLayout(
 						continue
 					}
 					if !validSafeSegment(repositoryEntry.Name()) {
-						diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "invalid repository directory name"))
+						ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "invalid repository directory name"))
 						continue
 					}
-					diagnostic := listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root")
-					canonicalPath, canonicalErr := CanonicalRepositoryPath(projectsRoot, slug)
+					diagnostic := listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root")
+					canonicalPath, canonicalErr := CanonicalRepositoryPath(ll.projectsRoot, slug)
 					if canonicalErr != nil {
-						canonicalPath = filepath.Join(projectsRoot, filepath.FromSlash(slug))
+						canonicalPath = filepath.Join(ll.projectsRoot, filepath.FromSlash(slug))
 					}
-					if !hasGitMetadata(canonicalPath) || !isGitRoot(ctx, canonicalPath) {
+					if !hasGitMetadata(canonicalPath) || !isGitRoot(ll.ctx, canonicalPath) {
 						diagnostic.NonBlocking = true
 						diagnostic.Message = "foreign non-Git debris (no canonical repository); visible but does not block valid siblings"
 					}
-					diagnostics = append(diagnostics, diagnostic)
+					ll.diagnostics = append(ll.diagnostics, diagnostic)
 				}
 			}
 			// The central store interposes the literal host level:
@@ -2154,7 +2159,7 @@ func listLayout(
 					organizationPath := filepath.Join(candidate, organization.Name())
 					organizations, organizationErr := os.ReadDir(organizationPath)
 					if organizationErr != nil {
-						diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), organizationPath, fmt.Sprintf("read organization directory: %v", organizationErr)))
+						ll.diagnostics = append(ll.diagnostics, listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), organizationPath, fmt.Sprintf("read organization directory: %v", organizationErr)))
 						continue
 					}
 					collectRepositories(entry.Name()+"/", organization.Name(), organizationPath, organizations)
@@ -2164,12 +2169,53 @@ func listLayout(
 			collectRepositories("", entry.Name(), candidate, nested)
 		}
 	}
+}
+
+// inspectPending runs the concurrent inspection phase over every candidate
+// walkTasks queued and folds its results and diagnostics in.
+func (ll *layoutListing) inspectPending() {
 	inspected, inspectDiagnostics := runInspections(
-		ctx, pending, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy,
+		ll.ctx, ll.pending, ll.projectsRoot, ll.home, ll.layout, ll.base, ll.filter, ll.absorbedBy, ll.withGitHub, ll.workers, ll.reporter, ll.policy,
 	)
-	results = append(results, inspected...)
-	diagnostics = append(diagnostics, inspectDiagnostics...)
-	return results, diagnostics, artifacts, purged, nil
+	ll.results = append(ll.results, inspected...)
+	ll.diagnostics = append(ll.diagnostics, inspectDiagnostics...)
+}
+
+func listLayout(
+	ctx context.Context,
+	projectsRoot string,
+	home string,
+	layout wbhome.Layout,
+	tasks map[string]bool,
+	base, filter, absorbedBy string,
+	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
+	policy inspectPolicy,
+) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, []PurgedArtefact, error) {
+	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
+	}
+	ll := &layoutListing{
+		ctx: ctx, projectsRoot: projectsRoot, home: home, layout: layout, tasks: tasks,
+		base: base, filter: filter, absorbedBy: absorbedBy, withGitHub: withGitHub,
+		workers: workers, reporter: reporter, policy: policy,
+	}
+	ll.results = make([]ListResult, 0)
+	ll.diagnostics = make([]ListDiagnostic, 0)
+	ll.artifacts = make([]LifecycleArtifact, 0)
+	ll.purged = make([]PurgedArtefact, 0)
+	// The walk below is local and cheap; inspection is what contacts origin.
+	// Collect candidates first, then inspect them concurrently, so one slow
+	// remote cannot hold up the other several hundred.
+	ll.pending = make([]pendingInspect, 0)
+	ll.walkTasks(taskEntries)
+	ll.inspectPending()
+	return ll.results, ll.diagnostics, ll.artifacts, ll.purged, nil
 }
 
 // runInspections inspects every queued candidate, up to workers at a time,
