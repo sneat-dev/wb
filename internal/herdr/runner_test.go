@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	procrunner "github.com/sneat-dev/wb/internal/runner"
+	procrunnertest "github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -130,6 +132,7 @@ func TestResolveBinaryIgnoresEmptyHERDRBinPath(t *testing.T) {
 }
 
 func TestExecRunnerRunsArgvOnly(t *testing.T) {
+	procrunnertest.AllowRealProcess(t)
 	directory := t.TempDir()
 	argvFile := filepath.Join(directory, "argv")
 	script := "#!/bin/sh\n: > \"" + argvFile + "\"\nfor a in \"$@\"; do printf '%s\\0' \"$a\" >> \"" + argvFile + "\"; done\nprintf 'ok'\n"
@@ -155,6 +158,27 @@ func TestExecRunnerRunsArgvOnly(t *testing.T) {
 	want := []string{"one", "two three", "$(danger)"}
 	if !equalStrings(got, want) {
 		t.Fatalf("recorded argv = %#v, want %#v", got, want)
+	}
+}
+
+// TestExecRunnerRunUsesAnInjectedProcessRunner covers the resolveRunner
+// "r != nil" branch directly: a scripted runner.Runner (task-8's seam,
+// distinct from this package's own fakeRunner Runner) answers instead of
+// the production runner.Runner.
+func TestExecRunnerRunUsesAnInjectedProcessRunner(t *testing.T) {
+	t.Parallel()
+	fake := procrunnertest.New(t)
+	fake.Expect(func(c procrunnertest.Call) bool {
+		return c.Name == "herdr" && len(c.Args) == 1 && c.Args[0] == "--version"
+	}, procrunner.Result{Stdout: "herdr 1.0"}, nil)
+
+	runner := execRunner{Runner: fake}
+	stdout, _, err := runner.Run(context.Background(), "herdr", []string{"--version"}, []string{"X=1"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(stdout) != "herdr 1.0" {
+		t.Fatalf("stdout = %q, want %q", stdout, "herdr 1.0")
 	}
 }
 

@@ -1,7 +1,6 @@
 package herdr
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	procrunner "github.com/sneat-dev/wb/internal/runner"
 )
 
 // Runner executes one herdr invocation as argv — never through a shell —
@@ -21,17 +22,27 @@ type Runner interface {
 	Run(ctx context.Context, binary string, args []string, env []string) (stdout, stderr []byte, err error)
 }
 
-// execRunner is the production [Runner]: os/exec, argv only.
-type execRunner struct{}
+// execRunner is the production [Runner]: task-8's runner.Runner seam,
+// argv only, never a shell. Runner is nil in the package's own production
+// construction site (execRunner{} in client.go), which resolveRunner
+// defaults to the production runner.Runner; a unit test injects
+// runnertest.Fake instead of setting this field.
+type execRunner struct {
+	Runner procrunner.Runner
+}
 
-func (execRunner) Run(ctx context.Context, binary string, args []string, env []string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Env = env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+func (r execRunner) Run(ctx context.Context, binary string, args []string, env []string) ([]byte, []byte, error) {
+	result, err := resolveRunner(r.Runner).RunOpts(ctx, "", procrunner.RunOptions{Env: env}, binary, args...)
+	return []byte(result.Stdout), []byte(result.Stderr), err
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r procrunner.Runner) procrunner.Runner {
+	if r != nil {
+		return r
+	}
+	return procrunner.New()
 }
 
 // osEnviron is os.Environ, seamed so a test can prove [buildEnv] overrides

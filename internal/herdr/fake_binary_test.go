@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -98,6 +99,7 @@ func installFakeHerdr(t *testing.T) (argvFile, stdoutFile, exitFile string) {
 // boundary byte-for-byte, because exec.CommandContext never invokes a
 // shell.
 func TestFakeHERDRBinaryArgvQuotingEndToEnd(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	argvFile, _, _ := installFakeHerdr(t)
 
 	client, err := NewClient(lookupFromMap(nil)) // no HERDR_BIN_PATH: forces PATH resolution
@@ -135,6 +137,7 @@ func TestFakeHERDRBinaryArgvQuotingEndToEnd(t *testing.T) {
 // surfaces a herdr-reported structured error, using the JSON-error/exit-1
 // contract observed live against the real (read-only) herdr in this task.
 func TestFakeHERDRBinaryNonZeroExit(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	directory := t.TempDir()
 	argvFile := filepath.Join(directory, "argv.recorded")
 	prependToPATH(t, directory)

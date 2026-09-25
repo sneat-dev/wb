@@ -127,9 +127,9 @@ internal/gitops/zz_cov_gitops_helpers_test.go	11	task-8
 internal/gitops/zz_cov_gitops_land_test.go	28	task-8
 internal/gitops/zz_cov_gitops_repo_test.go	32	task-8
 internal/herdr/client_test.go	1	task-8
-internal/herdr/fake_binary_test.go	3	task-8
+internal/herdr/fake_binary_test.go	5	task-8
 internal/herdr/fake_runner_test.go	1	task-8
-internal/herdr/runner_test.go	9	task-8
+internal/herdr/runner_test.go	10	task-8
 internal/hooks/coverage_git_hkcov_test.go	7	task-15
 internal/hooks/coverage_manager_hkcov_test.go	7	task-15
 internal/hooks/coverage_run_pushtier_hkcov_test.go	11	task-15
