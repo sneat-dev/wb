@@ -300,6 +300,60 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 	}
 }
 
+// A dry run (no --apply) still persists its plan under --report-dir, so an
+// operator can inspect exactly what apply would do before running it for
+// real; it must never invoke a mutation.
+func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
+	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
+	})
+	projectsRoot := t.TempDir()
+	config := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return config }
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/docs"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutations := 0
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{Err: errors.New("dry run must never mutate")}
+	}
+	reportDir := t.TempDir()
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{repositories: []string{"acme/app"}, parallel: 1, reportDir: reportDir}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 0 {
+		t.Fatalf("dry run invoked %d mutation(s), want 0", mutations)
+	}
+	if report.ReportPath == "" {
+		t.Fatal("dry run report path is empty; --report-dir must still be honoured")
+	}
+	stored, err := os.ReadFile(report.ReportPath)
+	if err != nil {
+		t.Fatalf("dry run report was not persisted under --report-dir: %v", err)
+	}
+	if !strings.Contains(string(stored), "acme/app") {
+		t.Fatalf("persisted dry-run report = %q, want it to name the repository", stored)
+	}
+	if !strings.HasPrefix(report.ReportPath, reportDir) {
+		t.Fatalf("report path %q was not written under --report-dir %q", report.ReportPath, reportDir)
+	}
+}
+
 func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
 	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
 	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
