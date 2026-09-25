@@ -4,8 +4,6 @@ package ciaudit
 
 import "testing"
 
-const execSitesPendingPath = "internal/quality/testdata/exec_sites.pending"
-
 // TestContractCompareAgainstTargetRealGit is task-24's contract test for
 // CompareAgainstTarget: the plan's "contract tests beside each real adapter"
 // shape (spec/plans/coverage-to-100/README.md), run only in the e2e tier
