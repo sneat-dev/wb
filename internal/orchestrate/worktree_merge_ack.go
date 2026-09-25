@@ -328,6 +328,19 @@ type WorktreeMergeSelfSupersessionCorrectionOptions struct {
 // the caller must pin every observed digest and revision before --apply can
 // write the separate acknowledgement.
 func AcknowledgeWorktreeMergeReceiptCollision(ctx context.Context, options WorktreeMergeReceiptCollisionAcknowledgementOptions) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
+	return acknowledgeWorktreeMergeReceiptCollisionInjected(ctx, options, nil)
+}
+
+// acknowledgeWorktreeMergeReceiptCollisionInjected is
+// AcknowledgeWorktreeMergeReceiptCollision's test seam (task-9 PR-4, review
+// findings): production always reaches it through
+// AcknowledgeWorktreeMergeReceiptCollision, which passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector, including an Injector.Hook at the final persist's
+// StepLink, to build a real concurrent-collision race at the caller level,
+// covering both the "after atomic create collision" re-read and the
+// converging existing-acknowledgement return.
+func acknowledgeWorktreeMergeReceiptCollisionInjected(ctx context.Context, options WorktreeMergeReceiptCollisionAcknowledgementOptions, inj *filewrite.Injector) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
 	if err := requireReceiptCollisionExpectations(options); err != nil {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
 	}
@@ -422,7 +435,7 @@ func AcknowledgeWorktreeMergeReceiptCollision(ctx context.Context, options Workt
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistReceiptCollisionAcknowledgement(ackPath, ack); err != nil {
+	if err := persistReceiptCollisionAcknowledgementInjected(ackPath, ack, inj); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			existing, readErr := readReceiptCollisionAcknowledgement(ackPath, receipt)
 			if readErr != nil {
@@ -1317,6 +1330,19 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 // separate correction whose identity pins the exact existing acknowledgement,
 // receipt, immutable claim, and distinct replacement evidence.
 func CorrectValidationFailedSelfSupersession(ctx context.Context, options WorktreeMergeSelfSupersessionCorrectionOptions) (WorktreeMergeSelfSupersessionCorrection, error) {
+	return correctValidationFailedSelfSupersessionInjected(ctx, options, nil)
+}
+
+// correctValidationFailedSelfSupersessionInjected is
+// CorrectValidationFailedSelfSupersession's test seam (task-9 PR-4, review
+// findings): production always reaches it through
+// CorrectValidationFailedSelfSupersession, which passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector, including an Injector.Hook at the final persist's
+// StepLink, to build a real concurrent-correction race at the caller level,
+// covering both the post-link re-read/refuse branch and the converging
+// existing-correction return.
+func correctValidationFailedSelfSupersessionInjected(ctx context.Context, options WorktreeMergeSelfSupersessionCorrectionOptions, inj *filewrite.Injector) (WorktreeMergeSelfSupersessionCorrection, error) {
 	if strings.TrimSpace(options.ExpectedSupersessionSHA256) == "" || strings.TrimSpace(options.ExpectedImmutableClaimSHA256) == "" {
 		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("--expected-supersession-sha256 and --expected-immutable-claim-sha256 are required")
 	}
@@ -1427,7 +1453,7 @@ func CorrectValidationFailedSelfSupersession(ctx context.Context, options Worktr
 	if !options.Apply {
 		return correction, nil
 	}
-	if err := persistSelfSupersessionCorrection(correctionPath, correction); err != nil {
+	if err := persistSelfSupersessionCorrectionInjected(correctionPath, correction, inj); err != nil {
 		if !errors.Is(err, os.ErrExist) {
 			return WorktreeMergeSelfSupersessionCorrection{}, err
 		}

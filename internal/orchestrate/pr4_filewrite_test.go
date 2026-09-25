@@ -485,8 +485,8 @@ func TestPersistSelfSupersessionCorrectionInjectedHookCreatesARealRaceAtLinkPath
 	if !hookRan {
 		t.Fatal("Hook did not run")
 	}
-	if err == nil {
-		t.Fatal("persistSelfSupersessionCorrectionInjected = nil, want a real os.Link EEXIST error from the hook's competing write")
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("persistSelfSupersessionCorrectionInjected = %v, want a wrapped os.ErrExist from the hook's competing write", err)
 	}
 	got, readErr := os.ReadFile(path)
 	if readErr != nil {

@@ -658,8 +658,8 @@ func TestLinkPathReportsAnErrorOnAnExistingDestination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := LinkPath(oldPath, newPath, nil); err == nil {
-		t.Fatal("LinkPath(existing destination) = nil, want an error")
+	if err := LinkPath(oldPath, newPath, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath(existing destination) = %v, want a wrapped os.ErrExist", err)
 	}
 }
 
@@ -709,8 +709,8 @@ func TestLinkPathHookCreatesARealRaceBeforeTheLink(t *testing.T) {
 	if !hookRan {
 		t.Fatal("Hook did not run")
 	}
-	if err == nil {
-		t.Fatal("LinkPath after a Hook-created collision = nil, want an error")
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath after a Hook-created collision = %v, want a wrapped os.ErrExist", err)
 	}
 	contents, readErr := os.ReadFile(newPath)
 	if readErr != nil || string(contents) != "competing" {

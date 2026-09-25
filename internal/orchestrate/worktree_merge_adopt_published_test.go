@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,14 +258,22 @@ func TestPublishedCandidateAdoptionSourceProofRefusesDirtyMovedAndNonDescendant(
 }
 
 func TestPersistPublishedCandidateAdoptionFailsClosedOnExclusivePublish(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ack.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ack.json")
 	inj := &filewrite.Injector{Step: filewrite.StepLink, Err: os.ErrPermission}
 	err := persistPublishedCandidateAdoptionInjected(path, WorktreeMergePublishedCandidateAdoption{SchemaVersion: 1, Status: "published_candidate_adopted"}, inj)
-	if err == nil {
-		t.Fatal("expected exclusive publish failure")
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected exclusive publish failure wrapping os.ErrPermission, got %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("failed publication left visible acknowledgement: %v", statErr)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".published-candidate-adoption-*.tmp"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed publication left leftover temp files: %v", matches)
 	}
 }
 
