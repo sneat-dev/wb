@@ -98,7 +98,7 @@ internal/discover/discover_cov_extra_test.go	1	task-21
 internal/discover/local_index_cov_extra_test.go	1	task-21
 internal/diskusage/tailcov_diskusage_test.go	8	task-21
 internal/encode/tailcov_encode_test.go	5	task-21
-internal/envguard/tailcov_test.go	13	task-21
+internal/envguard/tailcov_test.go	8	task-21
 internal/githubobserver/zz_gpcov_test.go	1	task-21
 internal/gitops/zz_cov_gitops_fakegit_test.go	1	task-21
 internal/gitops/zz_cov_gitops_helpers_test.go	1	task-21
