@@ -343,17 +343,36 @@ func TestAnnouncementHeartbeatKeepsALiveHolderFromAging(t *testing.T) {
 // older than staleAfter — one no live writer could still be producing —
 // is removed the next time anything lists this directory; a fresh one
 // (still possibly a write genuinely in flight) is left alone.
+//
+// #753: the previous version used a deliberately tiny staleAfter (20ms) and
+// registered the live ticket FIRST, before two os.WriteFile calls plus an
+// os.Chtimes. Neither the old temp file's staleness nor the fresh temp
+// file's freshness ever depended on real elapsed time -- os.Chtimes
+// backdates the old one directly, and the fresh one only needs to still be
+// newer than staleAfter -- but the LIVE TICKET's own liveness check
+// (isLive: time.Since(UpdatedAt) < staleAfter) does depend on real elapsed
+// time, and 20ms is not a safe margin against ordinary CI scheduling
+// jitter: the CI failure that opened #753 recorded Total:0, meaning the
+// live ticket itself was reaped as stale by the time Peek finally ran,
+// exactly like the .tmp-old file next to it. The fix removes that
+// dependency at its source instead of masking it with a sleep or a retry
+// (decision 13): staleAfter is widened to a value no realistic amount of
+// setup work or scheduler jitter can exceed within one test function, and
+// the live ticket is registered and heartbeat-refreshed LAST, immediately
+// before the one Peek call that reads it back, so nothing dependent on the
+// staleness window sits between "UpdatedAt is set" and "UpdatedAt is
+// checked" except that single function call.
 func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
 	root := t.TempDir()
 	previous := staleAfter
-	staleAfter = 20 * time.Millisecond
+	staleAfter = 2 * time.Second
 	defer func() { staleAfter = previous }()
-
-	live := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
-	defer live.Forget()
 
 	dir := ticketDir(root)
 	oldTemp := filepath.Join(dir, ".tmp-old")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(oldTemp, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -365,6 +384,14 @@ func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
 	if err := os.WriteFile(freshTemp, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
+	// Register (and Forget) the live ticket only now, as close to Peek as
+	// possible, and Heartbeat it immediately beforehand so its UpdatedAt is
+	// set a function call, not a directory's worth of setup, before it is
+	// read back.
+	live := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
+	defer live.Forget()
+	live.Heartbeat()
 
 	if state := Peek(root, 1); state.Total != 1 {
 		t.Fatalf("Peek = %+v, want only the live ticket counted (temp files must never count)", state)
