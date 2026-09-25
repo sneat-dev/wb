@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/graduation"
 	"github.com/spf13/cobra"
 )
@@ -226,6 +227,15 @@ func readGraduationEvidence(path, flag string) ([]byte, error) {
 }
 
 func writeGraduationReceipt(path string, raw []byte) error {
+	return writeGraduationReceiptInjected(path, raw, nil)
+}
+
+// writeGraduationReceiptInjected is writeGraduationReceipt's test seam
+// (task-9 PR-2): every production call site reaches it only through
+// writeGraduationReceipt, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a write/sync/close failure branch deterministically.
+func writeGraduationReceiptInjected(path string, raw []byte, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
 	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 		if err != nil {
@@ -233,18 +243,18 @@ func writeGraduationReceipt(path string, raw []byte) error {
 		}
 		return fmt.Errorf("receipt output directory %s is not a directory", directory)
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	file, err := filewrite.CreateExclusivePath(path, 0o644, inj)
 	if err != nil {
 		return fmt.Errorf("create receipt output %s: %w", path, err)
 	}
 	defer func() { _ = file.Close() }()
-	if _, err := file.Write(raw); err != nil {
+	if err := filewrite.Write(file, raw, path, inj); err != nil {
 		return fmt.Errorf("write receipt output %s: %w", path, err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, path, inj); err != nil {
 		return fmt.Errorf("sync receipt output %s: %w", path, err)
 	}
-	return file.Close()
+	return filewrite.Close(file, path, inj)
 }
 
 func graduationRepositoryName(value string) bool {

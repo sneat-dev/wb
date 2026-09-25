@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 )
 
@@ -263,5 +264,50 @@ func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("report mode = %o, want 0600: it carries verbatim git output that can include a credentialed URL", perm)
+	}
+}
+
+// The following tests exercise writeSyncIssuesFileInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, write, close,
+// chmod, or rename failure deterministically needs the injector.
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
 	}
 }
