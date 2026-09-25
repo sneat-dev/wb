@@ -356,6 +356,7 @@ func cwWtMergeAckConstructors() []cwWtMergeAckConstructor {
 		{name: "adopt-published-candidate", build: func() *cobra.Command { return newWorktreeMergeAdoptPublishedCandidateCmd(&invocation{}) }, args: func(r string) []string { return []string{r, "https://example.test/pr/1"} }},
 		{name: "acknowledge-landed-failed", build: func() *cobra.Command { return newWorktreeMergeAcknowledgeLandedFailedCmd(&invocation{}) }, args: func(r string) []string { return []string{r} }},
 		{name: "acknowledge-stranded-landing", build: func() *cobra.Command { return newWorktreeMergeAcknowledgeStrandedLandingCmd(&invocation{}) }, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-retired-prepare-candidate", build: func() *cobra.Command { return newWorktreeMergeAcknowledgeRetiredPrepareCandidateCmd(&invocation{}) }, args: func(r string) []string { return []string{r} }},
 		{name: "acknowledge-absorbed-conflict", build: func() *cobra.Command { return newWorktreeMergeAcknowledgeAbsorbedConflictCmd(&invocation{}) }, args: func(r string) []string { return []string{r} }},
 		{name: "acknowledge-retired-publication", build: func() *cobra.Command { return newWorktreeMergeAcknowledgeRetiredPublicationCmd(&invocation{}) }, args: func(r string) []string { return []string{r} }},
 		{name: "acknowledge-retired-unpublished-validation-failure", build: func() *cobra.Command {
