@@ -18,6 +18,7 @@ import (
 // openAuthorityFDs finds the four descriptors that an acquisition has opened
 // for this test's unique temporary store. It runs inside the failing syscall,
 // before the acquisition's cleanup path has had a chance to close them.
+// The Darwin/Linux test runner must expose /dev/fd; absence fails the test.
 func openAuthorityFDs(t *testing.T, fixture smCovLockFixture) map[string]int {
 	t.Helper()
 	paths := map[string]string{
@@ -72,11 +73,13 @@ func TestAcquireExecutionLockClosesAuthorityAfterDependencyFailure(t *testing.T)
 		t.Run(fault, func(t *testing.T) {
 			fixture := smCovNewLockFixture(t)
 			var captured map[string]int
+			injectedCalls := 0
 			chmod := unix.Fchmod
 			flock := unix.Flock
 			switch fault {
 			case "chmod":
 				chmod = func(fd int, mode uint32) error {
+					injectedCalls++
 					captured = openAuthorityFDs(t, fixture)
 					if captured["lock"] != fd || mode != 0o600 {
 						t.Fatalf("chmod received fd %d mode %o, want lock fd %d mode 600", fd, mode, captured["lock"])
@@ -85,6 +88,7 @@ func TestAcquireExecutionLockClosesAuthorityAfterDependencyFailure(t *testing.T)
 				}
 			case "flock":
 				flock = func(fd, operation int) error {
+					injectedCalls++
 					captured = openAuthorityFDs(t, fixture)
 					if captured["lock"] != fd || operation != unix.LOCK_EX|unix.LOCK_NB {
 						t.Fatalf("flock received fd %d operation %d, want lock fd %d exclusive nonblocking", fd, operation, captured["lock"])
@@ -101,6 +105,9 @@ func TestAcquireExecutionLockClosesAuthorityAfterDependencyFailure(t *testing.T)
 			}
 			if !strings.Contains(err.Error(), map[string]string{"chmod": "secure handoff execution lock", "flock": "lock handoff execution"}[fault]) {
 				t.Fatalf("failed acquisition lost %s context: %v", fault, err)
+			}
+			if injectedCalls != 1 || len(captured) != 4 {
+				t.Fatalf("%s fault callback ran %d times and captured %d authority descriptors, want 1 and 4", fault, injectedCalls, len(captured))
 			}
 			for name, fd := range captured {
 				if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, syscall.EBADF) {
