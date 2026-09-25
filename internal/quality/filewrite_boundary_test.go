@@ -101,6 +101,166 @@ func TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent(t *testing
 	}
 }
 
+// TestNotAFileWritePublishExemptionsAreRenameOnlyOrAppendOnlyNeverBoth
+// asserts every NotAFileWritePublishExemptions entry is exactly one of
+// the list's two legitimate shapes: a pure rename/move, or a pure
+// append-only log. A function that both renames something and also
+// independently appends content of its own is neither, and must not be
+// on the permanent list either (round-3 review, N2).
+func TestNotAFileWritePublishExemptionsAreRenameOnlyOrAppendOnlyNeverBoth(t *testing.T) {
+	t.Parallel()
+	root, err := ParallelGuardModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid, err := findFunctionsNotRenameOnlyOrAppendOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, reason := range NotAFileWritePublishExemptions {
+		if invalid[key] {
+			t.Errorf("NotAFileWritePublishExemptions[%q] = %q, but this function is neither a pure rename/move nor a pure append-only log (it may do both, or neither) -- it does not belong on the permanent list", key, reason)
+		}
+	}
+}
+
+func TestFindFunctionsThatCreateAndWriteContentFlagsABareOSWriteFileCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/writefile_sidecar.go", `package pkg
+
+import "os"
+
+func writeSidecar(name string, content []byte) error {
+	return os.WriteFile(name, content, 0o600)
+}
+`)
+	creators, err := findFunctionsThatCreateAndWriteContent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creators["pkg/writefile_sidecar.go:writeSidecar"] {
+		t.Fatalf("creators = %v, want writeSidecar flagged (a bare os.WriteFile call both creates and writes a file in one call, even with no publish call alongside it -- see internal/lifecyclehooks/queue.go:Dispatcher.quarantineFile)", creators)
+	}
+}
+
+func TestFindFunctionsThatCreateAndWriteContentFlagsABareIOUtilWriteFileCall(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/writefile_sidecar_ioutil.go", `package pkg
+
+import "io/ioutil"
+
+func writeSidecar(name string, content []byte) error {
+	return ioutil.WriteFile(name, content, 0o600)
+}
+`)
+	creators, err := findFunctionsThatCreateAndWriteContent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creators["pkg/writefile_sidecar_ioutil.go:writeSidecar"] {
+		t.Fatalf("creators = %v, want writeSidecar flagged (ioutil.WriteFile is the same create-and-write shape as os.WriteFile)", creators)
+	}
+}
+
+func TestFindFunctionsNotRenameOnlyOrAppendOnlyIgnoresAPureRenameOnlyFunction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/rename_only.go", `package pkg
+
+import "os"
+
+func moveOnly(temporary, name string) error {
+	return os.Rename(temporary, name)
+}
+`)
+	invalid, err := findFunctionsNotRenameOnlyOrAppendOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid["pkg/rename_only.go:moveOnly"] {
+		t.Fatalf("invalid = %v, want moveOnly not flagged (a bare rename with no content write of its own is rename-only)", invalid)
+	}
+}
+
+func TestFindFunctionsNotRenameOnlyOrAppendOnlyIgnoresAPureAppendOnlyFunction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/append_only.go", `package pkg
+
+import "os"
+
+func appendLog(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		return err
+	}
+	return f.Close()
+}
+`)
+	invalid, err := findFunctionsNotRenameOnlyOrAppendOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid["pkg/append_only.go:appendLog"] {
+		t.Fatalf("invalid = %v, want appendLog not flagged (an O_APPEND open plus a write, with no publish call, is append-only)", invalid)
+	}
+}
+
+func TestFindFunctionsNotRenameOnlyOrAppendOnlyFlagsAFunctionThatIsNeither(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/neither.go", `package pkg
+
+import "os"
+
+func overwrite(name string, content []byte) error {
+	return os.WriteFile(name, content, 0o600)
+}
+`)
+	invalid, err := findFunctionsNotRenameOnlyOrAppendOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !invalid["pkg/neither.go:overwrite"] {
+		t.Fatalf("invalid = %v, want overwrite flagged (it writes content of its own, so it is not rename-only, and it calls no publish primitive itself but also opens nothing with O_APPEND, so it is not append-only either)", invalid)
+	}
+}
+
+func TestFindFunctionsNotRenameOnlyOrAppendOnlyFlagsAFunctionThatIsBothRenameAndAppend(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeBoundaryFixture(t, root, "pkg/rename_and_append.go", `package pkg
+
+import "os"
+
+func renameThenAppendSidecar(temporary, name, logPath string, content []byte) error {
+	if err := os.Rename(temporary, name); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		return err
+	}
+	return f.Close()
+}
+`)
+	invalid, err := findFunctionsNotRenameOnlyOrAppendOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !invalid["pkg/rename_and_append.go:renameThenAppendSidecar"] {
+		t.Fatalf("invalid = %v, want renameThenAppendSidecar flagged (it both renames a file and independently appends content of its own -- exactly the shape N2 exists to catch, since it would otherwise slip past the create-and-write check, which excludes O_APPEND opens)", invalid)
+	}
+}
+
 func writeBoundaryFixture(t *testing.T, dir, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, name)
@@ -804,6 +964,13 @@ func TestReceiverTypeNameReturnsEmptyForAnUnrecognisedExpressionShape(t *testing
 	got := receiverTypeName(&ast.BadExpr{})
 	if got != "" {
 		t.Fatalf("receiverTypeName(*ast.BadExpr) = %q, want \"\"", got)
+	}
+}
+
+func TestFindFunctionsNotRenameOnlyOrAppendOnlyReportsAWalkFailure(t *testing.T) {
+	t.Parallel()
+	if _, err := findFunctionsNotRenameOnlyOrAppendOnly(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("findFunctionsNotRenameOnlyOrAppendOnly accepted a root directory that does not exist")
 	}
 }
 

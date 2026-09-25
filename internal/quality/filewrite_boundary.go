@@ -75,10 +75,24 @@
 // TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent asserts
 // no NotAFileWritePublishExemptions entry -- exempted for a rename/move/
 // append reason -- also independently creates a file via a gated
-// OpenFile/Openat-with-create-flag call and writes content to it; a
-// round-2 review found internal/locallink/execports.go's Link function
-// misclassified this way (exempted as "renames ... into place", when it
-// also does two real O_CREATE|O_EXCL content writes before that rename).
+// OpenFile/Openat-with-create-flag call, an os.WriteFile/ioutil.WriteFile
+// call, or an unconditionally-banned create primitive, and writes content
+// to it; a round-2 review found internal/locallink/execports.go's Link
+// function misclassified this way (exempted as "renames ... into place",
+// when it also does two real O_CREATE|O_EXCL content writes before that
+// rename), and a round-3 review found the same true of
+// internal/lifecyclehooks/queue.go's Dispatcher.quarantineFile (renames
+// the quarantined file, then os.WriteFile's a ".reason.txt" sidecar of
+// its own).
+// TestNotAFileWritePublishExemptionsAreRenameOnlyOrAppendOnlyNeverBoth
+// asserts every remaining entry is exactly one of the list's two
+// legitimate shapes -- a pure rename/move (calls a publish primitive,
+// writes no content of its own) or a pure append-only log (opens
+// O_APPEND and writes, calls no publish primitive) -- never neither and
+// never both; a function doing both at once (rename plus an independent
+// append-write) would otherwise slip past the create-and-write check
+// above, since that check only looks for a *gated* create primitive and
+// O_APPEND opens are deliberately excluded from it.
 package quality
 
 import (
@@ -220,6 +234,14 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/orchestrate/worktree_merge_published_forward_repair.go:writePublishedForwardRepairPrompt": "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
 	"internal/orchestrate/worktree_merge_seal.go:writeValidationFailureSealPrompt":                      "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
 	"cmd/wb/deps_policy.go:fetchPolicy":                                                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- writes one HTTP download to a temp file returned to the caller for one-shot use",
+
+	// Category F (round 3): a function that renames or moves one file but
+	// also independently creates-and-writes (Dispatcher.quarantineFile) or
+	// appends content of its own (ExecGit.ExcludePath) is not rename-only,
+	// and moving a git exclude file is not a durable log either -- neither
+	// belongs on the permanent list (round-3 review, B2/N1).
+	"internal/lifecyclehooks/queue.go:Dispatcher.quarantineFile": "PR-8: misc-atomic-writers -- renames the quarantined file, then os.WriteFile's a \".reason.txt\" sidecar of its own -- not rename-only",
+	"internal/locallink/execports.go:ExecGit.ExcludePath":        "PR-8: misc-atomic-writers -- O_APPEND write to a git exclude file; not a durable log, so not permanent-list append-only",
 }
 
 // NotAFileWritePublishExemptions lists "relative/path.go:FuncName" (or
@@ -239,7 +261,6 @@ var PendingMigrationExemptions = map[string]string{
 var NotAFileWritePublishExemptions = map[string]string{
 	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":               "renames a queue job's state directory back to pending on recovery; not a file write",
 	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatch":                   "renames a queue job's state directory to claim it; not a file write",
-	"internal/lifecyclehooks/queue.go:Dispatcher.quarantineFile":               "renames (moves) a file into a quarantine directory; not a write publish",
 	"internal/streams/store.go:Store.archiveLocked":                            "renames a stream's directory into an archive location; not a file write",
 	"internal/locallink/execports.go:ExecNode.Unlink":                          "renames an existing backup directory back into place; not a temp-file write",
 	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":           "renames a request file into a quarantine directory; not a write publish",
@@ -261,12 +282,11 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// Append-only log writes: an O_APPEND descriptor with a flock (or a
 	// bare append), never a temp name, never a rename or link. There is no
 	// create/write/publish sequence here for internal/filewrite to replace.
-	"internal/agentguard/gh.go:recordGhPrMergeOverride":   "O_APPEND log write, not a create/publish sequence",
-	"internal/hooks/metrics.go:AppendEvents":              "O_APPEND log write, not a create/publish sequence",
-	"internal/runlog/runlog.go:Append":                    "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/streams/events.go:FileEventLog.Append":      "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/lifecyclehooks/queue.go:appendReceipt":      "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/locallink/execports.go:ExecGit.ExcludePath": "O_APPEND write to a git exclude file, not a create/publish sequence",
+	"internal/agentguard/gh.go:recordGhPrMergeOverride": "O_APPEND log write, not a create/publish sequence",
+	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
+	"internal/runlog/runlog.go:Append":                  "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/streams/events.go:FileEventLog.Append":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/lifecyclehooks/queue.go:appendReceipt":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
 }
 
 // InlineWriteSequenceViolation names one function outside
@@ -486,6 +506,12 @@ type inlineWriteSequenceClassification struct {
 	// shape the round-2 review's B1 finding was about.
 	createExclOrTruncBanned bool
 	hasContentWrite         bool
+	// appendFlagSeen reports whether any os.OpenFile/unix.Openat call in
+	// the function mentions an O_APPEND-family flag, regardless of
+	// whether a create flag or a content write is also present. Only
+	// functionRenameOnlyOrAppendOnly uses this, to classify a
+	// NotAFileWritePublishExemptions entry as append-only.
+	appendFlagSeen bool
 }
 
 // classifyInlineWriteSequence walks body once and reports every signal
@@ -525,7 +551,29 @@ func classifyInlineWriteSequence(body *ast.BlockStmt, aliases map[string]bool) i
 				c.createExclOrTruncBanned = true
 			case pkgName == "os" && fn.Sel.Name == "WriteFile":
 				c.hasContentWrite = true
+				// os.WriteFile creates-or-truncates the named file and
+				// writes its content in one call -- it is a
+				// create-and-write in its own right, not only when paired
+				// with a publish call. createExclOrTruncBanned (not
+				// createBanned) is deliberately the only field this sets:
+				// functionHasInlineWriteSequence's own bare-WriteFile
+				// carve-out (an ordinary overwrite is not itself a
+				// violation) stays intact, but
+				// functionCreatesAndWritesContentIgnoringPublish must
+				// still catch a function exempted for a rename/move
+				// reason that separately creates-and-writes a *different*
+				// file via os.WriteFile (round-3 review: internal/
+				// lifecyclehooks/queue.go:Dispatcher.quarantineFile writes
+				// a ".reason.txt" sidecar this way, alongside its
+				// unrelated os.Rename of the quarantined file itself).
+				c.createExclOrTruncBanned = true
+			case pkgName == "ioutil" && fn.Sel.Name == "WriteFile":
+				c.hasContentWrite = true
+				c.createExclOrTruncBanned = true
 			case (pkgName == "os" && fn.Sel.Name == "OpenFile") || (pkgName == "unix" && fn.Sel.Name == "Openat"):
+				if callArgsMentionAppendFlag(call.Args) {
+					c.appendFlagSeen = true
+				}
 				if callArgsMentionCreateFlag(call.Args) {
 					c.createBanned = true
 					if !callArgsMentionAppendFlag(call.Args) {
@@ -585,15 +633,36 @@ func functionCreatesAndWritesContentIgnoringPublish(body *ast.BlockStmt) bool {
 	return c.createExclOrTruncBanned && c.hasContentWrite
 }
 
-// findFunctionsThatCreateAndWriteContent walks root the same way
-// FindInlineWriteSequences does (same file/dir skip rules, same excluded
-// directories) and returns the set of "file:func" (or
-// "file:ReceiverType.func") keys for which
-// functionCreatesAndWritesContentIgnoringPublish is true. It is used only
-// by TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent.
-func findFunctionsThatCreateAndWriteContent(root string) (map[string]bool, error) {
+// functionRenameOnlyOrAppendOnly classifies body into exactly one of two
+// shapes NotAFileWritePublishExemptions is allowed to hold (round-3
+// review, N2): "rename-only" (calls a publish primitive, and writes no
+// content of its own -- the content was already written elsewhere; this
+// covers every move/quarantine/archive entry and the renameNoReplace OS
+// wrappers, which call nothing else at all) or "append-only" (opens with
+// an O_APPEND-family flag and writes content, and never calls a publish
+// primitive -- an ever-growing log). ok is false when body is neither (a
+// function that writes no content and calls no publish primitive is not
+// a candidate for this list at all) or, more importantly, both (a
+// function that both renames something and also independently appends
+// content of its own -- exactly the shape N2 exists to catch, since
+// renameOnly requires no content write of its own and appendOnly
+// requires no publish call, so a function doing both satisfies neither
+// and ok is false).
+func functionRenameOnlyOrAppendOnly(body *ast.BlockStmt) (renameOnly, appendOnly, ok bool) {
+	c := classifyInlineWriteSequence(body, nil)
+	renameOnly = c.publishBanned && !c.hasContentWrite
+	appendOnly = c.appendFlagSeen && c.hasContentWrite && !c.publishBanned
+	return renameOnly, appendOnly, renameOnly != appendOnly
+}
+
+// walkNonTestFunctionDecls walks root the same way FindInlineWriteSequences
+// does (same file/dir skip rules, same excluded directories) and calls
+// visit for every non-test top-level function declaration found, with rel
+// the file's slash-separated path relative to root. It exists so a second
+// (or third) detector predicate over the same repository does not need to
+// re-implement FindInlineWriteSequences's own walk and skip rules.
+func walkNonTestFunctionDecls(root string, visit func(rel string, fn *ast.FuncDecl)) error {
 	fset := token.NewFileSet()
-	keys := map[string]bool{}
 	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -623,15 +692,48 @@ func findFunctionsThatCreateAndWriteContent(root string) (map[string]bool, error
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if !functionCreatesAndWritesContentIgnoringPublish(fn.Body) {
-				continue
-			}
-			keys[rel+":"+qualifiedFuncName(fn)] = true
+			visit(rel, fn)
 		}
 		return nil
 	})
 	if walkErr != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, walkErr)
+		return fmt.Errorf("walk %s: %w", root, walkErr)
+	}
+	return nil
+}
+
+// findFunctionsThatCreateAndWriteContent returns the set of "file:func"
+// (or "file:ReceiverType.func") keys for which
+// functionCreatesAndWritesContentIgnoringPublish is true. It is used only
+// by TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent.
+func findFunctionsThatCreateAndWriteContent(root string) (map[string]bool, error) {
+	keys := map[string]bool{}
+	err := walkNonTestFunctionDecls(root, func(rel string, fn *ast.FuncDecl) {
+		if functionCreatesAndWritesContentIgnoringPublish(fn.Body) {
+			keys[rel+":"+qualifiedFuncName(fn)] = true
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// findFunctionsNotRenameOnlyOrAppendOnly returns the set of "file:func"
+// (or "file:ReceiverType.func") keys for which functionRenameOnlyOrAppendOnly
+// reports ok == false -- i.e. every function that is neither a pure
+// rename/move nor a pure append-only log, including one that is both at
+// once (round-3 review, N2). It is used only by
+// TestNotAFileWritePublishExemptionsAreRenameOnlyOrAppendOnlyNeverBoth.
+func findFunctionsNotRenameOnlyOrAppendOnly(root string) (map[string]bool, error) {
+	keys := map[string]bool{}
+	err := walkNonTestFunctionDecls(root, func(rel string, fn *ast.FuncDecl) {
+		if _, _, ok := functionRenameOnlyOrAppendOnly(fn.Body); !ok {
+			keys[rel+":"+qualifiedFuncName(fn)] = true
+		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	return keys, nil
 }
