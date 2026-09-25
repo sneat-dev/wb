@@ -9,6 +9,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -38,6 +39,12 @@ func write(t *testing.T, dir, name, content string) {
 // claim scanning from this machine's real fleet state.
 func installArchivedFakeGh(t *testing.T) {
 	t.Helper()
+	// Every caller here exercises the pruneArchived=true path, which reaches
+	// internal/archiveprune.Evaluate's own git calls (remote branch/tag/
+	// worktree listing) -- now routed through internal/runner, so the same
+	// runtime guard that blocks an unreviewed exec.Command in a unit test
+	// applies to this package's tests too.
+	runnertest.AllowRealProcess(t)
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nset -eu\nprintf 'true\\n'\n"), 0o755); err != nil {
@@ -170,7 +177,6 @@ func TestSyncSkipDirty(t *testing.T) {
 // deleted on nothing more than gitops.RepoStatus.Dirty(), gated by no flag at
 // all — this exact fixture would have been removed.
 func TestSyncArchivedDefaultDoesNotPrune(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	write(t, dir, "f.txt", "v1\n")
