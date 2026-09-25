@@ -9,8 +9,49 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+// TestAgentDispatchDepsWiresBeforeAndAfterCreateHooks proves the BeforeCreate
+// and AfterCreate closures agentDispatchDeps hands to agents.Dispatch reach
+// their real production targets - refreshManagedHooksBeforeWorktreeCreate and
+// markCreatedCheckouts - rather than staying defined-but-uncalled: no
+// existing test invokes a dispatch through to a successful worktree
+// creation, so these closures were never exercised at all.
+func TestAgentDispatchDepsWiresBeforeAndAfterCreateHooks(t *testing.T) {
+	home := agentTestEnv(t)
+	root := os.Getenv("WB_PROJECTS_ROOT")
+	if root == "" {
+		t.Fatal("agentTestEnv must set WB_PROJECTS_ROOT")
+	}
+	inv := &invocation{projectsRoot: root}
+	var stderr bytes.Buffer
+	_, deps, err := agentDispatchDeps(inv, &stderr, "main")
+	if err != nil {
+		t.Fatalf("agentDispatchDeps: %v", err)
+	}
+	if deps.Home != home {
+		t.Fatalf("deps.Home = %q, want %q", deps.Home, home)
+	}
+
+	// BeforeCreate refreshes managed hooks for the repository about to be
+	// created. A repository with no canonical clone yet is a real, exact
+	// refusal - proving the closure reaches the real hook refresh rather than
+	// a stub that always succeeds.
+	if err := deps.BeforeCreate([]string{"acme/app"}); err == nil {
+		t.Fatal("BeforeCreate against a nonexistent canonical clone must fail")
+	}
+
+	// AfterCreate writes the checkout marker beside the created worktree.
+	worktreeDir := filepath.Join(root, "acme", "app")
+	initTestRepository(t, worktreeDir)
+	deps.AfterCreate([]string{"acme/app"}, []worktrees.CreateResult{{Repository: "acme/app", WorktreeDir: worktreeDir}})
+	if _, statErr := os.Stat(filepath.Join(worktreeDir, checkoutmarker.FileName)); statErr != nil {
+		t.Fatalf("AfterCreate did not write %s: %v\nstderr: %s", checkoutmarker.FileName, statErr, stderr.String())
+	}
+}
 
 // remoteConfigHome writes a machine map pointing at a target, so a test can
 // exercise the SSH paths without the operator's real configuration.
@@ -115,6 +156,61 @@ func TestAgentRemoteEntryPointReportsRefusalsInsideTheResponse(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(agentHomeForTest(t), "agents", "never-created")); err == nil {
 		t.Fatal("a refused remote dispatch must not create anything")
+	}
+}
+
+// TestAgentRemoteEntryPointAnswersAwaitLogsAndStop proves the server-side
+// handleRemoteOperation branches for await, logs, and stop are themselves
+// reachable and answer with real state, not just the client-side SSH
+// courier paths the other tests in this file exercise.
+func TestAgentRemoteEntryPointAnswersAwaitLogsAndStop(t *testing.T) {
+	home := agentTestEnv(t)
+
+	completed := seedAgentRun(t, home, func(record *agents.Record) {
+		record.State = agents.StateCompleted
+		record.LogPath = filepath.Join(t.TempDir(), "run.log")
+		event := `{"type":"item.completed","item":{"type":"command_execution","command":"ls"}}` + "\n"
+		if err := os.WriteFile(record.LogPath, []byte(event), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// await: a terminal run answers immediately, without blocking on the
+	// poll loop, proving the store lookup at the top of the await case runs.
+	code, stdout, stderr := runAgentRemote(t, agents.RemoteRequest{
+		SchemaVersion: 1, Operation: agents.RemoteAwait, AgentID: completed.AgentID,
+	})
+	if code != 0 {
+		t.Fatalf("await exited %d: %s", code, stderr)
+	}
+	response := decodeRemoteResponseForTest(t, stdout)
+	if response.Failure != "" || response.Result == nil || response.Result.State != agents.StateCompleted {
+		t.Fatalf("await response = %#v", response)
+	}
+
+	// logs: the recorded transcript is rendered back inside the response.
+	code, stdout, stderr = runAgentRemote(t, agents.RemoteRequest{
+		SchemaVersion: 1, Operation: agents.RemoteLogs, AgentID: completed.AgentID,
+	})
+	if code != 0 {
+		t.Fatalf("logs exited %d: %s", code, stderr)
+	}
+	response = decodeRemoteResponseForTest(t, stdout)
+	if response.Failure != "" || !strings.Contains(response.Logs, "ran: ls") {
+		t.Fatalf("logs response = %#v", response)
+	}
+
+	// stop: a completed run is already terminal, so the store lookup runs and
+	// StopRun refuses it - a real refusal, not a transport failure.
+	code, stdout, stderr = runAgentRemote(t, agents.RemoteRequest{
+		SchemaVersion: 1, Operation: agents.RemoteStop, AgentID: completed.AgentID,
+	})
+	if code != 0 {
+		t.Fatalf("stop exited %d: %s", code, stderr)
+	}
+	response = decodeRemoteResponseForTest(t, stdout)
+	if !strings.Contains(response.Failure, "already") {
+		t.Fatalf("stop response = %#v", response)
 	}
 }
 
