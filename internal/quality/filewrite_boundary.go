@@ -119,13 +119,16 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
 	"internal/hooks/manager.go:writeExecutableAt":           "PR-5: hooks -- fd-relative create+chmod+write+renameNoReplace publish",
 
-	// Not a task-9 PR-series site: internal/execfile predates task-9's
-	// filewrite consolidation (task-21, #739) and was added independently
-	// of that plan. Routing it through internal/filewrite is a real future
-	// migration, just not one task-9's own PR series tracks; left as a
-	// named, reasoned exemption here rather than folded into a task-9 PR
-	// number that does not exist for it.
-	"internal/execfile/execfile.go:WriteExecutableFile": "task-21/#739: fd-relative CreateTemp+chmod+write+sync+close+Rename executable-file primitive, predates task-9's filewrite consolidation",
+	// internal/execfile predates task-9's filewrite consolidation (added by
+	// task-21/#739) and is exactly PR-8's own shape: a path-based
+	// CreateTemp+chmod+Rename publish with no sync call. It slots into the
+	// existing PR-8 misc-atomic-writers batch alongside the other 23
+	// entries below, not a separate series. PR-8's migration of this site
+	// must keep syscall.ForkLock.RLock held for the temp fd's whole open
+	// lifetime (see execfile.go's WriteExecutableFile doc comment for why:
+	// golang/go#22315) -- internal/filewrite has no such option today, so
+	// PR-8 must either add one or keep the RLock in the caller.
+	"internal/execfile/execfile.go:WriteExecutableFile": "PR-8: misc-atomic-writers -- path-based CreateTemp+chmod+Rename, no sync; migration must keep syscall.ForkLock.RLock held across the temp file's open lifetime",
 
 	// Category A: os.CreateTemp/os.OpenFile/os.WriteFile + os.Rename, all
 	// in the same function (spec/plans/coverage-to-100 task-9 PR-1 review,

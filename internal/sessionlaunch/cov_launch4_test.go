@@ -323,8 +323,8 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 				releasePath := filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), "release.json")
 				for {
 					if _, err := os.Stat(releasePath); err == nil {
-						_ = handles.fence.Close()
 						slCovReadOnly(t, slCovStateDir(fx.store.Root))
+						_ = handles.fence.Close()
 						return
 					}
 					time.Sleep(time.Millisecond)

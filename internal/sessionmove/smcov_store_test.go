@@ -502,7 +502,7 @@ func TestSmCovStoreAppendEventRefusesEventsPathThatIsNotADirectory(t *testing.T)
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
-	smCovWriteFile(t, smCovUnder(store, request.HandoffID, eventsDirName), []byte("not a directory"), 0o700)
+	smCovWriteFile(t, smCovUnder(store, request.HandoffID, eventsDirName), []byte("not a directory"), 0o600)
 
 	if _, err := store.AppendEvent(request.HandoffID, digest, HandoffEvent{Phase: PhaseReceived, At: smCovEventTime(1)}); err == nil || !strings.Contains(err.Error(), "events directory") {
 		t.Fatalf("AppendEvent(events is a file) error = %v", err)
@@ -1030,7 +1030,7 @@ func TestSmCovStoreOpenEventsAtRefusals(t *testing.T) {
 	fileStore := smCovStore(t)
 	fileRequest := validRequest()
 	smCovAdmit(t, fileStore, fileRequest)
-	smCovWriteFile(t, smCovUnder(fileStore, fileRequest.HandoffID, eventsDirName), []byte("regular"), 0o700)
+	smCovWriteFile(t, smCovUnder(fileStore, fileRequest.HandoffID, eventsDirName), []byte("regular"), 0o600)
 	fileHandoff := smCovOpenDirectory(t, smCovUnder(fileStore, fileRequest.HandoffID))
 	if _, err := openEventsAt(fileHandoff, true); err == nil || !strings.Contains(err.Error(), "events directory") {
 		t.Fatalf("openEventsAt(events is a file, create) error = %v", err)

@@ -25,21 +25,15 @@ var execWriteFileGuardExcludedDirs = []string{"internal/execfile"}
 // execute bit) that marks a write as producing an executable file.
 const execWriteFileExecutableBits = 0o111
 
-// execWriteFileGroupOtherBits is any group or other permission bit. This
-// repository's own convention is that a mode meant to make a file runnable
-// grants at least group or other access (0o755, the mode every genuine
-// fake-executable writer found while building this guard actually uses);
-// an owner-only mode such as 0o700 is this repository's convention for
-// locking a directory down, not for marking a file executable, and is never
-// itself exec'd. isExecWriteFileExecutableMode requires both, so an
-// owner-only mode is never misclassified as "will be exec'd" just because
-// it happens to also set the owner-execute bit.
-const execWriteFileGroupOtherBits = 0o077
-
 // isExecWriteFileExecutableMode reports whether mode marks a write as
-// producing a file this guard must protect from the ETXTBSY race.
+// producing a file this guard must protect from the ETXTBSY race. Any
+// owner, group, or other execute bit qualifies: an owner-only mode such as
+// 0o700 is exec'd just as readily as 0o755 by anything running as that
+// owner (which is exactly this repository's own test convention -- a fake
+// executable written at 0o700 and then run via exec.Command in the same
+// test), so restricting the check to a group-or-other bit left a real hole.
 func isExecWriteFileExecutableMode(mode int64) bool {
-	return mode&execWriteFileExecutableBits != 0 && mode&execWriteFileGroupOtherBits != 0
+	return mode&execWriteFileExecutableBits != 0
 }
 
 // ScanExecWriteFileCallSites walks every .go file under root (skipping
@@ -161,11 +155,10 @@ func collectExecWriteForwarders(order []string, files map[string]*ast.File) map[
 				if !ok {
 					return true
 				}
-				modeArg, argIndex := execWriteFileModeArg(call)
+				modeArg, _ := execWriteFileModeArg(call)
 				if modeArg == nil {
 					return true
 				}
-				_ = argIndex
 				ident, ok := modeArg.(*ast.Ident)
 				if !ok {
 					return true
