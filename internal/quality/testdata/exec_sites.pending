@@ -1,0 +1,79 @@
+# spec/plans/coverage-to-100 task-8: one line per non-test .go file,
+# outside internal/runner, internal/gitcli, internal/process and the
+# fd-inheriting secure git helpers, where the exec-site detector
+# (internal/quality/execsites.go) still matches, beyond zero. Format:
+# <path>\t<count>\t<owning task>. The grand total may not rise against
+# the base branch's copy of this file (ciaudit.CompareExecSitesPendingTotal,
+# wired into `wb ci audit --target`) unless the same PR shrinks other
+# entries by at least as much; the PR that creates this file is exempt.
+# Remove an entry once its count reaches 0, or once the owning task's
+# migration lands.
+cmd/wb/browser.go	1	task-16
+cmd/wb/ci.go	1	task-16
+cmd/wb/daemon.go	2	task-22
+cmd/wb/daemon_process_darwin.go	1	task-16
+cmd/wb/daemon_process_unix.go	1	task-16
+cmd/wb/daemon_process_windows.go	1	task-16
+cmd/wb/deps.go	1	task-16
+cmd/wb/fleet_default_branch.go	6	task-22
+cmd/wb/quality.go	2	task-16
+cmd/wb/remote_enroll.go	1	task-16
+cmd/wb/selfupdate.go	2	task-16
+cmd/wb/verify_receipt.go	4	task-16
+cmd/wb/worktree_end.go	4	task-16
+cmd/wb/worktree_marker.go	1	task-16
+internal/agents/changes.go	4	task-15
+internal/agents/owner.go	1	task-15
+internal/archiveprune/archiveprune.go	5	task-15
+internal/canonicalrescue/canonicalrescue.go	2	task-15
+internal/ciaudit/target.go	4	task-15
+internal/deps/command.go	1	task-14
+internal/disk/disk.go	1	task-15
+internal/envguard/envguard.go	3	task-15
+internal/githubobserver/observer.go	1	task-15
+internal/gitops/gitops.go	2	task-8
+internal/herdr/runner.go	1	task-8
+internal/hooks/git.go	5	task-15
+internal/hooks/manager.go	1	task-15
+internal/hooks/metrics.go	2	task-15
+internal/hooks/pushtier_classify.go	2	task-15
+internal/hooks/run.go	1	task-15
+internal/hostload/hostload.go	1	task-15
+internal/hostload/loadavg_darwin.go	1	task-15
+internal/layout/layout.go	2	task-14
+internal/lifecyclehooks/dispatch.go	1	task-15
+internal/locallink/execports.go	2	task-15
+internal/locallink/guard.go	2	task-15
+internal/migrate/campaign.go	1	task-15
+internal/npmrelease/release.go	1	task-15
+internal/orchestrate/command.go	1	task-17
+internal/orchestrate/pr_land.go	2	task-17
+internal/orchestrate/pr_land_keep.go	15	task-17
+internal/orchestrate/pr_land_local_sync.go	4	task-17
+internal/orchestrate/worktree_merge_pr_land.go	3	task-17
+internal/quality/changed_packages.go	2	task-15
+internal/quality/deadcode.go	1	task-15
+internal/quality/ratchet.go	6	task-15
+internal/recipe/command.go	1	task-15
+internal/remotessh/remotessh.go	1	task-8
+internal/runqueue/queue.go	1	task-14
+internal/sessioncourier/ssh.go	1	task-15
+internal/sessionlaunch/launch.go	3	task-14
+internal/sessionlaunch/private.go	2	task-14
+internal/sessionlaunch/tmux.go	5	task-14
+internal/sessionmessage/tmux.go	1	task-15
+internal/sessionparkcourier/ssh.go	1	task-8
+internal/streams/execports.go	1	task-15
+internal/streamsync/execports.go	1	task-15
+internal/syncreport/validate.go	1	task-8
+internal/testenv/testenv.go	2	task-15
+internal/worktrees/branches_quarantine.go	1	task-18
+internal/worktrees/clone_migrate.go	4	task-18
+internal/worktrees/git_capability_darwin.go	1	task-18
+internal/worktrees/git_executable_darwin.go	1	task-18
+internal/worktrees/heartbeat.go	2	task-18
+internal/worktrees/lifecycle.go	2	task-18
+internal/worktrees/patchid.go	2	task-18
+internal/worktrees/repository_relocate.go	5	task-18
+internal/worktrees/retire.go	2	task-18
+internal/worktrees/worktrees.go	4	task-18
