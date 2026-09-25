@@ -23,7 +23,10 @@
 // is added in the PR that first needs it, not spuriously ahead of time.
 // CreateTemp, CreateExclusivePath, ChmodPath, Rename, and the exported
 // Close were added in task-9 PR-2, the first PR with a path-based
-// (rather than fd-relative) call site. RenameAt, RenameNoReplace,
+// (rather than fd-relative) call site. ChmodFile was added in the same
+// PR's review round, for a call site holding an *os.File rather than a
+// bare fd, so it keeps file.Chmod's *fs.PathError wrapping instead of
+// Chmod's bare Fchmod errno. RenameAt, RenameNoReplace,
 // CreateOrTruncatePath, and WriteFile were added in task-9 PR-3.
 package filewrite
 
@@ -222,6 +225,21 @@ func Chmod(fd int, mode uint32, name string, inj *Injector) error {
 	return unix.Fchmod(fd, mode)
 }
 
+// ChmodFile re-asserts mode on an already-open *os.File via file.Chmod,
+// the belt-and-braces step a call site holding an *os.File (rather than a
+// bare fd from a fd-relative open) took explicitly. Unlike Chmod, which
+// wraps the bare unix.Fchmod errno, this preserves file.Chmod's own
+// *fs.PathError wrapping (path plus an EINTR retry on some platforms) --
+// the exact behaviour task-9 PR-2's daemon.go, fleet_default_branch.go,
+// peers.go and daemon_process_darwin.go call sites had before their
+// migration and must keep, since callers wrap or match on that error.
+func ChmodFile(file *os.File, mode os.FileMode, name string, inj *Injector) error {
+	if err := inj.run(StepChmod, name); err != nil {
+		return err
+	}
+	return file.Chmod(mode)
+}
+
 // Write writes the full contents of data to file in one call. A short
 // write (Write returning n < len(data) with a nil error) is reported as
 // *ShortWriteError rather than silently accepted -- new behaviour this
@@ -392,6 +410,15 @@ func OpenOrCreateRegular(directoryFD int, name string, mode uint32, inj *Injecto
 // an already-open parent directory descriptor. It shares StepOpenOrCreate
 // with CreateExclusive and OpenOrCreateRegular: all three produce a file
 // descriptor for a name that may not exist yet.
+//
+// The injector's Name key for this step is pattern, not the resolved
+// unique temp file name -- os.CreateTemp only picks the actual name once
+// it succeeds, so there is nothing else to key on before the call runs.
+// A later Step (Chmod, Write, Sync, Close, Rename, ...) on the same call
+// chain keys on the resolved name instead (temporary.Name()); a test that
+// wants to target both CreateTemp's own failure and a later step's
+// failure with one Injector.Name cannot -- every existing test targets one
+// step per Injector, so this has not mattered in practice.
 func CreateTemp(directory, pattern string, inj *Injector) (*os.File, error) {
 	if err := inj.run(StepOpenOrCreate, pattern); err != nil {
 		return nil, err

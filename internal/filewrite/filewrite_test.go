@@ -2,6 +2,7 @@ package filewrite
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +304,80 @@ func TestChmodHonoursAnInjectedFailure(t *testing.T) {
 	inj := &Injector{Step: StepChmod, Name: "f", Err: errBoom}
 	if err := Chmod(fd, 0o400, "f", inj); !errors.Is(err, errBoom) {
 		t.Fatalf("Chmod with injected failure = %v, want errBoom", err)
+	}
+}
+
+func TestChmodFileChangesTheModeOfAnOpenFile(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	t.Cleanup(func() { _ = file.Close() })
+	if err := ChmodFile(file, 0o400, "f", nil); err != nil {
+		t.Fatalf("ChmodFile: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o400 {
+		t.Fatalf("mode = %v, want 0400", info.Mode().Perm())
+	}
+}
+
+func TestChmodFileHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	t.Cleanup(func() { _ = file.Close() })
+	inj := &Injector{Step: StepChmod, Name: "f", Err: errBoom}
+	if err := ChmodFile(file, 0o400, "f", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("ChmodFile with injected failure = %v, want errBoom", err)
+	}
+	info, err := os.Stat(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode changed despite the injected failure: %v", info.Mode().Perm())
+	}
+}
+
+// TestChmodFileReportsARealFailureAsAPathError asserts ChmodFile keeps
+// file.Chmod's own *fs.PathError wrapping (path plus errno) rather than
+// the bare errno Chmod's Fchmod returns -- the exact drift the task-9
+// PR-2 review (B1) flagged: callers at daemon.go, fleet_default_branch.go
+// and daemon_process_darwin.go return this error unwrapped, and peers.go
+// wraps it with %w, so both need the "chmod <path>: <errno>" text and
+// errors.As(*fs.PathError) to keep working.
+func TestChmodFileReportsARealFailureAsAPathError(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = ChmodFile(file, 0o400, "f", nil)
+	if err == nil {
+		t.Fatal("ChmodFile on a closed file = nil, want an error")
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("ChmodFile error = %v (%T), want a *fs.PathError", err, err)
+	}
+	if pathErr.Op != "chmod" {
+		t.Fatalf("PathError.Op = %q, want %q", pathErr.Op, "chmod")
 	}
 }
 

@@ -942,6 +942,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCloseFailure(t *testing.
 	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
 	}
+	assertNoLeftoverDaemonLifecycleOwnerTempFile(t, root)
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
@@ -950,5 +951,26 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedRenameFailure(t *testing
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
 	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); err == nil || !strings.Contains(err.Error(), "replace daemon lifecycle owner") {
 		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+	assertNoLeftoverDaemonLifecycleOwnerTempFile(t, root)
+}
+
+// assertNoLeftoverDaemonLifecycleOwnerTempFile asserts
+// writeLifecycleOwnerPIDInjected's defer os.Remove(temporaryName) ran: no
+// ".daemon-lifecycle-owner-*" staging file survives a close or rename
+// failure (task-9 PR-2 review, B2 mutation evidence: deleting that defer
+// survived every test that only asserted the returned error).
+func assertNoLeftoverDaemonLifecycleOwnerTempFile(t *testing.T, root string) {
+	t.Helper()
+	path, err := daemonLifecycleOwnerPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".daemon-lifecycle-owner-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover daemon lifecycle owner temp file(s) after failure: %v", matches)
 	}
 }

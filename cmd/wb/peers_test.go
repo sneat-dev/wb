@@ -584,18 +584,38 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedSyncFailure(t *testing.T)
 }
 
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
 	}
+	assertNoLeftoverPeerUpstreamTempFile(t, dir)
 }
 
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+	assertNoLeftoverPeerUpstreamTempFile(t, dir)
+}
+
+// assertNoLeftoverPeerUpstreamTempFile asserts savePeerUpstreamStateInjected's
+// defer os.Remove(temporaryName) ran: no ".peer-upstream-*.json.tmp"
+// staging file survives a close or rename failure (task-9 PR-2 review,
+// B2 mutation evidence: deleting that defer survived every test that only
+// asserted the returned error).
+func assertNoLeftoverPeerUpstreamTempFile(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".peer-upstream-*.json.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover peer upstream temp file(s) after failure: %v", matches)
 	}
 }
 

@@ -2511,7 +2511,7 @@ func persistDefaultBranchReportInjected(report defaultBranchReport, inj *filewri
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := filewrite.Chmod(int(temporary.Fd()), 0o600, temporaryName, inj); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
