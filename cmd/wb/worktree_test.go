@@ -597,6 +597,35 @@ func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
 	}
 }
 
+// TestWorktreeRelocateApplyRefreshesTheCheckoutMarker proves --apply reaches
+// markRelocatedCheckouts, not just the dry-run reporting path every other
+// relocate test exercises.
+func TestWorktreeRelocateApplyRefreshesTheCheckoutMarker(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "relocate apply CLI fixture")
+
+	var stdout, stderr bytes.Buffer
+	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate-apply", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
+	if code := run(createArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	applyArgs := []string{"--projects-root", projects, "worktree", "relocate", "cli-relocate-apply", "--to=local", "--apply", "--format=json"}
+	code := run(applyArgs, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("relocate --apply exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var envelope worktrees.RelocateOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("relocate --apply JSON is not parseable: %v\n%s", err, stdout.String())
+	}
+	if len(envelope.Results) != 1 {
+		t.Fatalf("relocate --apply results = %#v", envelope.Results)
+	}
+}
+
 // setUpRenameCLIFixture creates a real canonical repository with a working
 // origin remote — `worktree create`'s canonical sync needs one to pull from —
 // and points WB_PROJECTS_ROOT (and related XDG state) at an isolated root.
