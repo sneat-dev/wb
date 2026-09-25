@@ -11,11 +11,21 @@ import (
 // These commands' RunE bodies are a single pass-through line into an
 // independently-tested runXxx function; every existing test for that inner
 // function calls it directly, bypassing the cobra wiring entirely. These
-// tests exercise the wiring itself — that invocation.projectsRoot and the
-// command's own flags actually reach the inner call — by driving each
-// command through Execute() far enough to observe the inner function's own
-// early, deterministic refusal (an unconfigured remote/hub), never a real
-// network or daemon call.
+// tests exercise the wiring itself — that Execute() actually reaches the
+// inner call at all, with the command's own parsed flags and args — by
+// observing the inner function's own early, deterministic refusal (an
+// unconfigured remote/hub), never a real network or daemon call.
+//
+// That refusal is the same text whichever projectsRoot reaches the inner
+// call (an unconfigured remote/hub refuses identically regardless of root),
+// so despite each test's *invocation carrying a real fixture root, none of
+// these proves inv.projectsRoot itself was threaded through - only that
+// Execute() reached the runXxx call at all. Do not read "Wires...Into..."
+// here as a root-specific assertion (sneat-dev/wb#760 review B5); a test
+// that must prove the root value itself reached its callee builds a fixture
+// where a wrong root is observably different, the way
+// TestSessionListCLIWiresProjectsRootIntoRunSessionList and
+// TestDefaultTaskOffloadDependenciesStoreOpensUnderProjectsRoot do.
 
 func remoteCLIExecute(t *testing.T, command *cobra.Command, args ...string) (string, error) {
 	t.Helper()
@@ -28,7 +38,7 @@ func remoteCLIExecute(t *testing.T, command *cobra.Command, args ...string) (str
 	return out.String(), err
 }
 
-func TestRemoteClaimCLIWiresProjectsRootAndArgsIntoRunRemoteClaim(t *testing.T) {
+func TestRemoteClaimCLIWiresIntoRunRemoteClaim(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteClaimCmd(&invocation{projectsRoot: root}), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
@@ -36,7 +46,7 @@ func TestRemoteClaimCLIWiresProjectsRootAndArgsIntoRunRemoteClaim(t *testing.T) 
 	}
 }
 
-func TestRemoteReleaseCLIWiresProjectsRootAndArgsIntoRunRemoteRelease(t *testing.T) {
+func TestRemoteReleaseCLIWiresIntoRunRemoteRelease(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteReleaseCmd(&invocation{projectsRoot: root}), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
@@ -44,7 +54,7 @@ func TestRemoteReleaseCLIWiresProjectsRootAndArgsIntoRunRemoteRelease(t *testing
 	}
 }
 
-func TestRemoteClaimsCLIWiresProjectsRootIntoRunRemoteClaims(t *testing.T) {
+func TestRemoteClaimsCLIWiresIntoRunRemoteClaims(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteClaimsCmd(&invocation{projectsRoot: root}))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
@@ -52,7 +62,7 @@ func TestRemoteClaimsCLIWiresProjectsRootIntoRunRemoteClaims(t *testing.T) {
 	}
 }
 
-func TestRemoteMachinesCLIWiresProjectsRootIntoRunRemoteMachines(t *testing.T) {
+func TestRemoteMachinesCLIWiresIntoRunRemoteMachines(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteMachinesCmd(&invocation{projectsRoot: root}))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
@@ -60,7 +70,7 @@ func TestRemoteMachinesCLIWiresProjectsRootIntoRunRemoteMachines(t *testing.T) {
 	}
 }
 
-func TestRemoteStatusCLIWiresProjectsRootIntoRunRemoteStatus(t *testing.T) {
+func TestRemoteStatusCLIWiresIntoRunRemoteStatus(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteStatusCmd(&invocation{projectsRoot: root}))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
@@ -68,7 +78,7 @@ func TestRemoteStatusCLIWiresProjectsRootIntoRunRemoteStatus(t *testing.T) {
 	}
 }
 
-func TestRemoteEnrollCLIWiresProjectsRootIntoRunRemoteEnroll(t *testing.T) {
+func TestRemoteEnrollCLIWiresIntoRunRemoteEnroll(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newRemoteEnrollCmd(&invocation{projectsRoot: root}))
 	if err == nil || !strings.Contains(err.Error(), "--machine is required") {
@@ -76,7 +86,7 @@ func TestRemoteEnrollCLIWiresProjectsRootIntoRunRemoteEnroll(t *testing.T) {
 	}
 }
 
-func TestPeersJoinCLIWiresProjectsRootAndArgsIntoRunPeersJoin(t *testing.T) {
+func TestPeersJoinCLIWiresIntoRunPeersJoin(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersJoinCmd(&invocation{projectsRoot: root}), "not-a-url")
 	if err == nil || !strings.Contains(err.Error(), "http") {
@@ -84,7 +94,7 @@ func TestPeersJoinCLIWiresProjectsRootAndArgsIntoRunPeersJoin(t *testing.T) {
 	}
 }
 
-func TestPeersInviteCLIWiresProjectsRootAndArgsIntoRunPeersInvite(t *testing.T) {
+func TestPeersInviteCLIWiresIntoRunPeersInvite(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersInviteCmd(&invocation{projectsRoot: root}), "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -92,7 +102,7 @@ func TestPeersInviteCLIWiresProjectsRootAndArgsIntoRunPeersInvite(t *testing.T) 
 	}
 }
 
-func TestPeersBlockCLIWiresProjectsRootAndArgsIntoRunPeersTrustChange(t *testing.T) {
+func TestPeersBlockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersBlockCmd(&invocation{projectsRoot: root}), "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -100,7 +110,7 @@ func TestPeersBlockCLIWiresProjectsRootAndArgsIntoRunPeersTrustChange(t *testing
 	}
 }
 
-func TestPeersUnblockCLIWiresProjectsRootAndArgsIntoRunPeersTrustChange(t *testing.T) {
+func TestPeersUnblockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersUnblockCmd(&invocation{projectsRoot: root}), "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -108,7 +118,7 @@ func TestPeersUnblockCLIWiresProjectsRootAndArgsIntoRunPeersTrustChange(t *testi
 	}
 }
 
-func TestPeersDisconnectCLIWiresProjectsRootAndArgsIntoRunPeersDisconnect(t *testing.T) {
+func TestPeersDisconnectCLIWiresIntoRunPeersDisconnect(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersDisconnectCmd(&invocation{projectsRoot: root}), "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -116,7 +126,7 @@ func TestPeersDisconnectCLIWiresProjectsRootAndArgsIntoRunPeersDisconnect(t *tes
 	}
 }
 
-func TestPeersGetCLIWiresProjectsRootAndArgsIntoRunPeersGet(t *testing.T) {
+func TestPeersGetCLIWiresIntoRunPeersGet(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersGetCmd(&invocation{projectsRoot: root}), "upstream")
 	if err == nil || !strings.Contains(err.Error(), "no upstream is configured") {
@@ -124,7 +134,7 @@ func TestPeersGetCLIWiresProjectsRootAndArgsIntoRunPeersGet(t *testing.T) {
 	}
 }
 
-func TestPeersListCLIWiresProjectsRootIntoRunPeersList(t *testing.T) {
+func TestPeersListCLIWiresIntoRunPeersList(t *testing.T) {
 	root := t.TempDir()
 	out, err := remoteCLIExecute(t, newPeersListCmd(&invocation{projectsRoot: root}))
 	if err != nil {

@@ -664,8 +664,8 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 }
 
 func TestCwDepsAcquireNpmPublicationLocksAndRelease(t *testing.T) {
-
-	locks, err := acquireNpmPublicationLocks(&invocation{}, "deps-npm-publish-cwfixture", []npmrelease.Release{cwDepsReleaseFixture()}, false)
+	root := t.TempDir()
+	locks, err := acquireNpmPublicationLocks(testInvocation(t, root), "deps-npm-publish-cwfixture", []npmrelease.Release{cwDepsReleaseFixture()}, false)
 	if err != nil {
 		t.Fatalf("acquire locks: %v", err)
 	}

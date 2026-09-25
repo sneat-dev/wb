@@ -104,6 +104,12 @@ type Options struct {
 	// MinimumAvailableRatio raises a finding when headroom falls below it.
 	// Zero applies the default.
 	MinimumAvailableRatio float64
+	// FilesystemProbe overrides how the volume's total/available bytes are
+	// read. Nil uses the real platform statfs (filesystemFor). Tests that
+	// must not depend on the host's own free space at test time inject a
+	// fake here instead of asserting on whatever headroom this machine
+	// happens to have.
+	FilesystemProbe func(path string) (Filesystem, error)
 }
 
 // DefaultMinimumAvailableRatio is the headroom below which a report complains.
@@ -130,8 +136,12 @@ func Collect(ctx context.Context, options Options) (Report, error) {
 		minimum = DefaultMinimumAvailableRatio
 	}
 
+	probe := options.FilesystemProbe
+	if probe == nil {
+		probe = filesystemFor
+	}
 	report := Report{}
-	filesystem, err := filesystemFor(projectsRoot)
+	filesystem, err := probe(projectsRoot)
 	if err != nil {
 		return Report{}, err
 	}

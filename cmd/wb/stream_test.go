@@ -76,7 +76,12 @@ func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
 // way into the engine's Store/Git/GitHub/Login/Machine wiring.
 func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("WB_PROJECTS_ROOT", root)
+	// WB_PROJECTS_ROOT is deliberately pointed at an empty decoy directory,
+	// not at root: wbhome falls back to this env var for an empty
+	// inv.projectsRoot (internal/wbhome/wbhome.go), so pointing it at root
+	// too would make a dropped/empty invocation (mutation M20) resolve the
+	// same fixture store by accident and this test would never notice.
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(t.TempDir(), "decoy-not-the-fixture-root"))
 	home := filepath.Join(root, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
@@ -93,6 +98,7 @@ func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
 		"stream", "join", "holder", "acme/newmember",
+		"--projects-root", root,
 		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
 		"--original-prompt-file", prompt,
 		"--format", "json", "--non-interactive",
@@ -103,6 +109,16 @@ func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
 	// mean newStreamEngine itself was never reached.
 	if strings.Contains(stderr.String(), "--model is required") || strings.Contains(stderr.String(), "stream name") || strings.Contains(stderr.String(), "unsupported role") {
 		t.Fatalf("stream join failed before reaching the stream engine: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	// A positive, root-dependent outcome: the engine must have found the
+	// "holder" stream this test seeded under root's own .wb/streams. A wrong
+	// or dropped inv.projectsRoot (e.g. reaching newStreamEngine with
+	// &invocation{}) resolves an empty/real-home store instead, where
+	// "holder" does not exist, and Join fails with streams.ErrNotFound
+	// ("stream not found") rather than any of the refusals above -
+	// mutation M20 (sneat-dev/wb#760 review B5).
+	if strings.Contains(stderr.String(), "stream not found") {
+		t.Fatalf("stream join could not find the fixture's own \"holder\" stream, so it did not use root's .wb/streams: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 

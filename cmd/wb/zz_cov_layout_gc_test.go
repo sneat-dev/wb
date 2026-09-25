@@ -18,13 +18,16 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// cwCovExec runs a command constructor in-process with the shared projectsRoot
-// global pointed at a fixture. Several cmd/wb commands read that global rather
-// than declaring a --projects-root flag of their own, so a test that only sets
-// the flag would never reach them. --filter is no longer part of this: it is
-// an *invocation field the built command's own --filter flag binds to, so a
-// test that needs a non-empty filter builds its command from an invocation
-// carrying it (see zz_cov_wt_marker_test.go, zz_cov_wt_extra_test.go).
+// cwCovExec runs a command constructor in-process. `projects` is the fixture
+// root the test set up (t.TempDir() or similar); the build closure is
+// responsible for actually threading it into the *invocation it constructs
+// (via testInvocation(t, projects), or a literal &invocation{projectsRoot:
+// projects} when a non-empty invocation is needed — see zz_cov_wt_marker_test.go,
+// zz_cov_wt_extra_test.go for the --filter case). cwCovExec itself no longer
+// points any global at `projects` (sneat-dev/wb#733 removed the package-level
+// projectsRoot this used to pin) — passing it here and building an unrelated
+// or empty invocation inside `build` silently runs the command against the
+// operator's real WB home instead of the fixture (sneat-dev/wb#760 review B2).
 func cwCovExec(t *testing.T, projects string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)

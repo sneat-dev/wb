@@ -267,21 +267,20 @@ jobs:
 
 func TestCwCovStreamSyncCommandUsageRefusals(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "cw-cov", "--library", "no-version")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "cw-cov", "--library", "no-version")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("bad --library exit = %d\n%s", code, stdout)
 	}
 	if !strings.Contains(err.Error(), "must be <name>@<version>") {
 		t.Errorf("bad --library error = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "cw-cov", "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "cw-cov", "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("bad --format error = %v", err)
 	}
 	// A stream that does not exist is an error, never a silent no-op.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "absent-stream"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "absent-stream"); err == nil {
 		t.Fatal("syncing an unknown stream must fail")
 	}
 }
@@ -585,6 +584,32 @@ func TestCwCovRunHierarchicalMigrationDefaultsGithubDirToProjectsRoot(t *testing
 	})
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (hierarchical requires exactly one source root)", code)
+	}
+}
+
+// TestCwCovRunHierarchicalMigrationDefaultedGithubDirActuallyResolvesUnderProjectsRoot
+// gives the defaulting a positive, root-dependent assertion (mutation M18,
+// sneat-dev/wb#760 review B5): the test above never supplies a source root,
+// so it exits before githubDir is used for anything observable and a
+// dropped/empty projectsRoot (githubDir = "") would exit 2 there too. With
+// exactly one (unusable) source root, execution reaches
+// wbhome.EnsureRoot(githubDir) before the campaign itself fails, so the
+// resulting ".wb" directory's location is direct proof of which root
+// --github-dir actually defaulted to.
+func TestCwCovRunHierarchicalMigrationDefaultedGithubDirActuallyResolvesUnderProjectsRoot(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "migration.hcl")
+	if err := os.WriteFile(specPath, []byte(cwCovMigrationSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	source := cwCovMigrationSource(t)
+	var stderr bytes.Buffer
+	_ = cwCovCaptureStdoutInt(t, func() int {
+		return runHierarchicalMigration(&invocation{projectsRoot: projectsRoot}, specPath, []string{source},
+			hierarchicalMigrationOptions{format: "json", progressOut: &stderr})
+	})
+	if _, err := os.Stat(filepath.Join(projectsRoot, ".wb")); err != nil {
+		t.Fatalf("--github-dir defaulted somewhere other than projectsRoot: %v (stderr=%s)", err, stderr.String())
 	}
 }
 

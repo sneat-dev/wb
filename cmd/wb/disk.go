@@ -18,6 +18,14 @@ type diskOptions struct {
 }
 
 func newDiskCmd(inv *invocation) *cobra.Command {
+	return newDiskCmdWithProbe(inv, nil)
+}
+
+// newDiskCmdWithProbe is newDiskCmd with an injectable filesystem probe, so a
+// test can supply a fixed total/available reading instead of depending on
+// whatever free space this host happens to have (sneat-dev/wb#760 review B4).
+// A nil probe uses the real platform statfs, exactly like newDiskCmd.
+func newDiskCmdWithProbe(inv *invocation, filesystemProbe func(string) (disk.Filesystem, error)) *cobra.Command {
 	options := diskOptions{format: "text"}
 	command := &cobra.Command{
 		Use:   "disk",
@@ -67,6 +75,7 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 				ProjectsRoot:          inv.projectsRoot,
 				SkipSizes:             options.skipSizes,
 				MinimumAvailableRatio: options.minimum,
+				FilesystemProbe:       filesystemProbe,
 			})
 			if err != nil {
 				return err

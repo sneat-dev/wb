@@ -44,13 +44,22 @@ func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 	// Hide gh without hiding git: the preflight itself shells out to git
 	// (branch-name validation) before the landing ever calls gh, so a PATH
 	// wiped down to an empty directory defeats the preflight too and this
-	// test would never reach GitHub in the first place. Restrict PATH to
-	// just git's own directory instead.
+	// test would never reach GitHub in the first place. A PATH restricted to
+	// git's own directory (e.g. /usr/bin) is not safe either: on this VM and
+	// on GitHub's own runners that directory also holds a real, authenticated
+	// gh, so the "missing gh" refusal this test wants would instead become a
+	// live call to the real GitHub API. Symlink only the git executable into
+	// an otherwise-empty directory and point PATH there, so gh is genuinely
+	// absent and git is genuinely present.
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Skipf("git not found on PATH: %v", err)
 	}
-	t.Setenv("PATH", filepath.Dir(gitPath))
+	binDir := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(binDir, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -65,6 +74,9 @@ func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 		t.Fatal("missing gh unexpectedly let the landing continue")
 	}
 	output := stderr.String()
+	if strings.Contains(output, "GitHub repos/") {
+		t.Fatalf("test reached the real GitHub API (PATH leaked a real gh):\n%s", output)
+	}
 	if !strings.Contains(output, "pr land: local link preflight: acme/app: started") ||
 		!strings.Contains(output, "pr land: local link preflight: acme/app: completed") {
 		t.Fatalf("local-link preflight did not complete before GitHub:\n%s", output)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -255,15 +256,39 @@ func TestSessionListJSONWithZeroSessionsEmitsEmptyArray(t *testing.T) {
 // cobra wiring; this proves wb session list itself reaches it with
 // inv.projectsRoot threaded through.
 func TestSessionListCLIWiresProjectsRootIntoRunSessionList(t *testing.T) {
-	withSessionWorktreeLister(t, func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error) {
+	var receivedRoot string
+	var received bool
+	withSessionWorktreeLister(t, func(_ context.Context, options worktrees.ListOptions) ([]worktrees.ListResult, error) {
+		received = true
+		receivedRoot = options.ProjectsRoot
 		return nil, nil
 	})
 	root := t.TempDir()
+	// runSessionList only reaches the worktree lister once at least one
+	// session has registered (an empty session list short-circuits before
+	// it), so a session must be registered here for the lister - and
+	// therefore the wired ProjectsRoot - to be reachable at all.
+	home, err := wbhome.Root(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerTestSession(t, filepath.Join(home, session.DirName), os.Getpid())
+
 	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newSessionListCmd(&invocation{projectsRoot: root}) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("wb session list: %v", err)
 	}
-	if strings.TrimSpace(stdout) != "[]" {
-		t.Fatalf("wb session list json = %q, want []", stdout)
+	if strings.TrimSpace(stdout) == "[]" || strings.TrimSpace(stdout) == "" {
+		t.Fatalf("wb session list json = %q, want the registered session's row", stdout)
+	}
+	// The output above does not by itself prove root reached the lister
+	// (mutation M19, sneat-dev/wb#760 review B5): the fake lister ignores
+	// its argument entirely, so only inspecting what it actually received
+	// proves the wiring.
+	if !received {
+		t.Fatal("wb session list never called the injected worktree lister")
+	}
+	if receivedRoot != root {
+		t.Fatalf("worktree lister received ProjectsRoot = %q, want %q", receivedRoot, root)
 	}
 }

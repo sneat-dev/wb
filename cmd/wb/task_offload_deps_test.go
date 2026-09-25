@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/taskoffload"
 )
 
 // Every existing offload test builds a fake taskOffloadDependencies, never
@@ -12,8 +15,20 @@ import (
 func TestDefaultTaskOffloadDependenciesStoreOpensUnderProjectsRoot(t *testing.T) {
 	root := t.TempDir()
 	deps := defaultTaskOffloadDependencies(&invocation{projectsRoot: root})
-	if _, err := deps.store(); err != nil {
+	store, err := deps.store()
+	if err != nil {
 		t.Fatalf("default task-offload store: %v", err)
+	}
+	// A dropped or empty projectsRoot (mutation M13, sneat-dev/wb#760 review
+	// B5: wbhome.Root("")) resolves this store under the operator's real WB
+	// home instead of the fixture; asserting only "no error" cannot tell the
+	// two apart. The store's own root must actually live under this test's
+	// isolated root, and never under the wbhome default's own directory name.
+	if !strings.HasPrefix(store.Root, root) {
+		t.Fatalf("task-offload store root = %q, want it under the fixture root %q", store.Root, root)
+	}
+	if !strings.HasSuffix(store.Root, taskoffload.DirName) {
+		t.Fatalf("task-offload store root = %q, want it to end in %q", store.Root, taskoffload.DirName)
 	}
 }
 

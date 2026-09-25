@@ -212,3 +212,41 @@ func TestPRCreateAutoMergeArmsAndRunsTheLiveLinkPreflight(t *testing.T) {
 		t.Fatalf("auto-merge was never armed; gh log:\n%s", fixture.ghLog(t))
 	}
 }
+
+// The test above cannot by itself tell a real LinkPreflight call apart from
+// a stub that always returns nil (mutation M17, sneat-dev/wb#760 review B5):
+// its fixture has no live link, so both the real guard and a no-op would
+// let auto-merge arm. This gives it a positive case: a live link recorded
+// against "acme/app" (the fixture's own canonical repository) must refuse
+// the arm before any gh call is ever made.
+func TestPRCreateAutoMergeRefusesToArmWithALiveLink(t *testing.T) {
+	fixture := newPRCreateLinkPreflightFixture(t)
+	worktree := fixture.createWorktree(t, "pr-create-automerge-linked", "feature/pr-create-automerge-linked")
+
+	home := filepath.Join(fixture.projects, ".wb")
+	linkedWorktree := filepath.Join(fixture.projects, "acme", "linked", ".worktrees", "task")
+	stateDir := filepath.Join(home, "streams", "known")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"schema_version":2,"phase":"open","members":[{"repository":"acme/app"}],"linked_consumers":[` +
+		`{"repository":"acme/app","worktree":` + jsonString(linkedWorktree) + `,"links":[` +
+		`{"library":"/path/to/library","library_repository":"acme/library","mechanism":"pnpm-link","identity":"@acme/library","created_at":"2026-09-06T00:00:00Z"}` +
+		`]}]}`
+	if err := os.WriteFile(filepath.Join(stateDir, "stream.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := newPRCreateCmd(&invocation{projectsRoot: fixture.projects})
+	command.SilenceUsage = true
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--auto-merge", "--format", "json", worktree})
+	if err := command.Execute(); err == nil {
+		t.Fatalf("pr create --auto-merge with a live link unexpectedly succeeded\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+	}
+	if strings.Contains(fixture.ghLog(t), "enablePullRequestAutoMerge") {
+		t.Fatalf("auto-merge was armed despite a live link; gh log:\n%s", fixture.ghLog(t))
+	}
+}

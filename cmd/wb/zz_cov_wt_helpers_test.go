@@ -32,6 +32,20 @@ func (writer *cwWtFailWriter) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
 
+// testInvocation is the one sanctioned way a test builds a real *invocation:
+// it always carries the fixture root the test already isolated with
+// t.TempDir() (or an equivalent fixture root), so a build closure passed to
+// cwCovExec/cwWtExecOut/cwWtRunCmd can never silently fall back to an empty
+// projectsRoot, which resolves to the operator's real WB home or a
+// cwd-relative queue directory instead of the fixture (sneat-dev/wb#760
+// review B2). A test that genuinely needs an empty root — proving that empty
+// root's own behaviour, not incidentally forgetting to set one — must say so
+// explicitly with a literal &invocation{}, not this helper.
+func testInvocation(t *testing.T, root string) *invocation {
+	t.Helper()
+	return &invocation{projectsRoot: root}
+}
+
 // cwWtExecOut is cwCovExec with caller-supplied output streams, so a test can
 // inject a writer that fails.
 func cwWtExecOut(t *testing.T, projects string, build func() *cobra.Command, stdout, stderr io.Writer, args ...string) error {

@@ -297,11 +297,11 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work, Argv: []string{"go", "version"},
 	}
-	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
+	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, mismatched); err == nil ||
+	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, mismatched); err == nil ||
 		!strings.Contains(err.Error(), "different worker") {
 		t.Fatalf("mismatched generation error = %v", err)
 	}
@@ -311,13 +311,13 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work,
 	}
-	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, empty); err == nil ||
+	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, empty); err == nil ||
 		!strings.Contains(err.Error(), "without a command") {
 		t.Fatalf("empty argv error = %v", err)
 	}
 
 	assignment := leased.Msg.Assignment
-	err = executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, assignment)
+	err = executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, assignment)
 	if err != nil {
 		t.Fatalf("executeWorkerAssignment: %v", err)
 	}
@@ -380,11 +380,11 @@ func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
 	if assignment.CpuUnits == 0 {
 		t.Fatal("assignment lost the explicit CpuUnits; test fixture no longer proves the explicit path")
 	}
-	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
+	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, assignment); err != nil {
+	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, assignment); err != nil {
 		t.Fatalf("executeWorkerAssignment with explicit CpuUnits: %v", err)
 	}
 	completed, err := client.GetOperation(ctx, connect.NewRequest(&daemonv1.GetOperationRequest{

@@ -74,6 +74,39 @@ func TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly(t *testing.
 	}
 }
 
+// The negative case above (no recorded live link, no refusal) cannot by
+// itself tell refuseLinkedReceiptWorktrees's real guard call apart from a
+// stub that always returns nil (mutation M09, sneat-dev/wb#760 review B5).
+// This gives it a positive case: a worktree WITH a recorded live link, using
+// the same linked_consumers fixture shape as
+// TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository, must still be
+// refused when it is named directly (not via a merge receipt).
+func TestRefuseLinkedReceiptWorktreesRefusesAWorktreeArgumentWithALiveLink(t *testing.T) {
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	home := filepath.Join(projectsRoot, ".wb")
+
+	linkedWorktree := filepath.Join(projectsRoot, "acme", "linked", ".worktrees", "task")
+	if err := os.MkdirAll(linkedWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(home, "streams", "known")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"schema_version":2,"phase":"open","members":[{"repository":"acme/member"}],"linked_consumers":[` +
+		`{"repository":"acme/linked","worktree":` + jsonString(linkedWorktree) + `,"links":[` +
+		`{"library":"/path/to/library","library_repository":"acme/library","mechanism":"pnpm-link","identity":"@acme/library","created_at":"2026-09-06T00:00:00Z"}` +
+		`]}]}`
+	if err := os.WriteFile(filepath.Join(stateDir, "stream.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := refuseLinkedReceiptWorktrees(&invocation{projectsRoot: projectsRoot}, linkedWorktree); err == nil {
+		t.Fatal("a worktree argument with a recorded live link was not refused")
+	}
+}
+
 func jsonString(value string) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
