@@ -2185,11 +2185,7 @@ internal/streamsync::TestExecBumperApplyNpmUsesTheLockfileOwner/#1	calls t.Seten
 internal/streamsync::TestExecGitCommitAllReportsAStagingOrCommitFailure	kept serial because a nested subtest must stay serial: staging failure
 internal/streamsync::TestExecGitCommitAllReportsAStagingOrCommitFailure/commit refusal	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/streamsync::TestExecGitCommitAllReportsAStagingOrCommitFailure/staging failure	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/syncreport::TestTailCovValidateInGitDBReportsCLIFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/syncreport::TestTailCovValidateInGitDBSurfacesATempDirectoryFailure	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/syncreport::TestTailCovValidateInGitDBValidatesACopiedDatabase	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/syncreport::TestTailCovValidatePathAcceptsAValidDatabase	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/syncreport::TestTailCovValidatePathReportsCLIFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/syncreport::TestValidateInGitDBSurfacesATempDirectoryFailure	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/testenv::TestGitAutoMaintenanceOffProcessExtendsTheProcessSequence	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/testenv::TestIsolateClearsAgentVarsAndPinsGoworkOff	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/testenv::TestIsolateLetsATestSetItsOwnAgentVarAfterward	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)

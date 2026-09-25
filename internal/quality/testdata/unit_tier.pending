@@ -261,8 +261,6 @@ internal/streams/misc_cov_test.go	1	task-15
 internal/streams/recovery_test.go	12	task-15
 internal/streamsync/execports_cov_test.go	52	task-15
 internal/streamsync/execports_test.go	26	task-15
-internal/syncreport/report_test.go	1	task-8
-internal/syncreport/tailcov_validate_test.go	2	task-8
 internal/testenv/testenv_test.go	13	task-15
 internal/wbhome/wbhome_test.go	2	task-15
 internal/worktrees/abort_test.go	54	task-18

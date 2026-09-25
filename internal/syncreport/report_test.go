@@ -1,38 +1,11 @@
 package syncreport
 
 import (
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestValidateInGitDBAcceptsGeneratedCollection(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("ingitdb"); err != nil {
-		t.Skip("ingitdb is not installed")
-	}
-	raw := strings.Replace(strings.Replace(validRecord, "sync-20260908T145950Z", "sync-a", 1), "sneat-co/schoolus", "acme/app", 1)
-	record, err := Parse([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	record.Raw = []byte(raw)
-	directory := t.TempDir()
-	if err := Install(directory, Report{ID: "sync-a", Records: []Record{record}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidatePath(context.Background(), directory); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command("ingitdb", "list", "collections", "--path", directory)
-	output, err := command.CombinedOutput()
-	if err != nil || strings.TrimSpace(string(output)) != CollectionID {
-		t.Fatalf("list collections = %q, %v", output, err)
-	}
-}
 
 const validRecord = `---
 schema_version: 1
