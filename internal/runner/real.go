@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/sneat-dev/wb/internal/process"
 )
@@ -24,32 +22,42 @@ func New() Real { return Real{} }
 // Run starts name with args in dir, waits for it to exit, and returns its
 // captured stdout, stderr and exit status.
 func (r Real) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
-	return r.RunEnv(ctx, dir, nil, name, args...)
+	return r.RunOpts(ctx, dir, RunOptions{}, name, args...)
 }
 
-// RunEnv is Run, but replaces the child's environment with env instead of
-// inheriting the caller's ambient one.
-func (r Real) RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
-	return r.runStdin(ctx, dir, env, nil, name, args...)
-}
-
-// RunStdin is RunEnv, but also feeds stdin's contents to the child's
-// standard input.
-func (r Real) RunStdin(ctx context.Context, dir string, env []string, stdin string, name string, args ...string) (Result, error) {
-	return r.runStdin(ctx, dir, env, strings.NewReader(stdin), name, args...)
-}
-
-// runStdin is RunEnv and RunStdin's shared implementation. A nil reader
-// leaves command.Stdin unset -- os/exec's own "read from the null device"
-// default -- exactly Run and RunEnv's existing behaviour.
-func (Real) runStdin(ctx context.Context, dir string, env []string, stdin io.Reader, name string, args ...string) (Result, error) {
+// RunWithInput is Run with input written to the child's stdin.
+func (Real) RunWithInput(ctx context.Context, dir string, input []byte, name string, args ...string) (Result, error) {
 	if err := guardRealProcess(); err != nil {
 		return Result{}, err
 	}
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
-	command.Env = env
-	command.Stdin = stdin
+	command.Stdin = bytes.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
+	return result, runErr
+}
+
+// RunOpts is Run with a RunOptions value: a per-call environment, stdin,
+// and/or WaitDelay.
+func (Real) RunOpts(ctx context.Context, dir string, opts RunOptions, name string, args ...string) (Result, error) {
+	if err := guardRealProcess(); err != nil {
+		return Result{}, err
+	}
+	command := process.CommandContext(ctx, name, args...)
+	command.Dir = dir
+	if opts.Env != nil {
+		command.Env = opts.Env
+	}
+	if len(opts.Stdin) > 0 {
+		command.Stdin = bytes.NewReader(opts.Stdin)
+	}
+	if opts.WaitDelay > 0 {
+		command.WaitDelay = opts.WaitDelay
+	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

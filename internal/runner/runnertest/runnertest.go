@@ -41,20 +41,19 @@ func AllowRealProcess(t testing.TB) {
 	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "1")
 }
 
-// Call records one Run/RunEnv/RunStdin/Start/Detach/Interactive invocation
-// the Fake received.
+// Call records one Run/RunWithInput/RunOpts/Start/Detach/Interactive
+// invocation the Fake received.
 type Call struct {
-	Op   string // "Run", "RunEnv", "RunStdin", "Start", "Detach" or "Interactive"
+	Op   string // "Run", "RunWithInput", "RunOpts", "Start", "Detach" or "Interactive"
 	Dir  string
 	Name string
 	Args []string
-	// Env is the replacement environment a RunEnv/RunStdin call carried. It
-	// is nil for Run/Start/Detach/Interactive, and for a RunEnv/RunStdin
-	// call made with a nil env (Run's own "inherit ambient" default).
-	Env []string
-	// Stdin is the content a RunStdin call fed to the child's standard
-	// input. It is "" for every other operation.
-	Stdin string
+	// Input is the stdin RunWithInput was given, or opts.Stdin for RunOpts.
+	// Empty for every other Op.
+	Input []byte
+	// Opts is the RunOptions a RunOpts call was given. Zero value for every
+	// other Op.
+	Opts runner.RunOptions
 }
 
 // Argv is Name followed by Args, the shape Expect's matcher predicates
@@ -183,14 +182,18 @@ func (f *Fake) Run(_ context.Context, dir, name string, args ...string) (runner.
 	return f.answer(Call{Op: "Run", Dir: dir, Name: name, Args: args})
 }
 
-// RunEnv implements runner.Runner.
-func (f *Fake) RunEnv(_ context.Context, dir string, env []string, name string, args ...string) (runner.Result, error) {
-	return f.answer(Call{Op: "RunEnv", Dir: dir, Env: env, Name: name, Args: args})
+// RunWithInput implements runner.Runner. The input the caller passed is
+// recorded on Call.Input, so a test can assert on it via Calls/ExpectArgv's
+// match function alongside the argv.
+func (f *Fake) RunWithInput(_ context.Context, dir string, input []byte, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "RunWithInput", Dir: dir, Name: name, Args: args, Input: input})
 }
 
-// RunStdin implements runner.Runner.
-func (f *Fake) RunStdin(_ context.Context, dir string, env []string, stdin string, name string, args ...string) (runner.Result, error) {
-	return f.answer(Call{Op: "RunStdin", Dir: dir, Env: env, Stdin: stdin, Name: name, Args: args})
+// RunOpts implements runner.Runner. opts is recorded on Call.Opts (and its
+// Stdin duplicated onto Call.Input alongside RunWithInput's), so a test can
+// assert on the environment/stdin/WaitDelay a call was given.
+func (f *Fake) RunOpts(_ context.Context, dir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "RunOpts", Dir: dir, Name: name, Args: args, Input: opts.Stdin, Opts: opts})
 }
 
 // Start implements runner.Runner. The returned Handle's Wait replays the

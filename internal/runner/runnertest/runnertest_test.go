@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/testsweep"
@@ -43,41 +44,43 @@ func TestFakeRunReturnsTheScriptedError(t *testing.T) {
 	}
 }
 
-func TestFakeRunEnvReturnsTheScriptedResultAndRecordsTheEnv(t *testing.T) {
+func TestFakeRunWithInputRecordsInputAndReturnsTheScriptedResult(t *testing.T) {
 	t.Parallel()
 	fake := New(t)
-	env := []string{"GIT_CONFIG_NOSYSTEM=1"}
-	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stdout: "clean"}, nil)
+	fake.ExpectArgv([]string{"ssh", "host"}, runner.Result{Stdout: "remote-out"}, nil)
 
-	result, err := fake.RunEnv(context.Background(), "/repo", env, "git", "status")
+	result, err := fake.RunWithInput(context.Background(), "/repo", []byte("request-body"), "ssh", "host")
 	if err != nil {
-		t.Fatalf("RunEnv: %v", err)
+		t.Fatalf("RunWithInput: %v", err)
 	}
-	if result.Stdout != "clean" {
+	if result.Stdout != "remote-out" {
 		t.Fatalf("result = %+v", result)
 	}
 	calls := fake.Calls()
-	if len(calls) != 1 || calls[0].Op != "RunEnv" || len(calls[0].Env) != 1 || calls[0].Env[0] != "GIT_CONFIG_NOSYSTEM=1" {
-		t.Fatalf("calls = %+v, want one RunEnv call recording the replacement env", calls)
+	if len(calls) != 1 || calls[0].Op != "RunWithInput" || string(calls[0].Input) != "request-body" {
+		t.Fatalf("Calls() = %+v, want one RunWithInput call carrying the input", calls)
 	}
 }
 
-func TestFakeRunStdinReturnsTheScriptedResultAndRecordsStdinAndEnv(t *testing.T) {
+func TestFakeRunOptsRecordsOptsAndReturnsTheScriptedResult(t *testing.T) {
 	t.Parallel()
 	fake := New(t)
-	env := []string{"WB_LINKED_PACKAGES=[]"}
-	fake.ExpectArgv([]string{"node", "-"}, runner.Result{Stdout: `{"visited":1}`}, nil)
+	fake.ExpectArgv([]string{"go", "env", "GOFLAGS"}, runner.Result{Stdout: "-race"}, nil)
 
-	result, err := fake.RunStdin(context.Background(), "/repo", env, "console.log(1)", "node", "-")
+	opts := runner.RunOptions{Env: []string{"GOWORK=off"}, Stdin: []byte("in"), WaitDelay: time.Second}
+	result, err := fake.RunOpts(context.Background(), "/repo", opts, "go", "env", "GOFLAGS")
 	if err != nil {
-		t.Fatalf("RunStdin: %v", err)
+		t.Fatalf("RunOpts: %v", err)
 	}
-	if result.Stdout != `{"visited":1}` {
+	if result.Stdout != "-race" {
 		t.Fatalf("result = %+v", result)
 	}
 	calls := fake.Calls()
-	if len(calls) != 1 || calls[0].Op != "RunStdin" || calls[0].Stdin != "console.log(1)" || len(calls[0].Env) != 1 {
-		t.Fatalf("calls = %+v, want one RunStdin call recording stdin and env", calls)
+	if len(calls) != 1 || calls[0].Op != "RunOpts" {
+		t.Fatalf("Calls() = %+v, want one RunOpts call", calls)
+	}
+	if string(calls[0].Input) != "in" || calls[0].Opts.WaitDelay != time.Second || len(calls[0].Opts.Env) != 1 {
+		t.Fatalf("Calls()[0] = %+v, want it to carry opts", calls[0])
 	}
 }
 
