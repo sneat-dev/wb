@@ -1,14 +1,7 @@
-//go:build !windows
-
 package archiveprune
 
-// openDirectoryAt and hashFileAt's replaced-while-planning guards: both
-// re-stat the entry after opening it and refuse when the identity no longer
-// matches what planning observed. golang.org/x/sys/unix has no Windows
-// implementation, so this coverage stays unix-only rather than routing
-// through internal/unixcompat, which the production code under test already
-// does cross-platform. Unit tier only: real temp-dir filesystem, no real
-// git.
+// Pack unit p02 coverage: openDirectoryAt and hashFileAt replaced-while-planning
+// guards. Unit tier only: real temp-dir filesystem, no real git.
 
 import (
 	"os"
