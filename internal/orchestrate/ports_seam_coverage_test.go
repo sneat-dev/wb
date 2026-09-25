@@ -156,3 +156,65 @@ func TestSyncLocalWorktreeAfterUpdateBranchUsesTheInjectedGitForTheFastForward(t
 		t.Fatalf("note = %q, want it to surface the injected git's StatusPorcelain error (proving options.resolveGit() reached the fake)", note)
 	}
 }
+
+// TestFastForwardWorktreeToUpdatedHeadNotesUncommittedChanges covers
+// fastForwardWorktreeToUpdatedHead's dirty-worktree branch
+// (pr_land_local_sync.go): this exact statement was covered on main by
+// TestLandLeavesADirtyWorktreeUntouched before that test moved to the e2e
+// tier (fastForwardWorktreeToUpdatedHead now resolves its Git port through
+// orchestrateGit), so it regressed to uncovered in the unit tier even
+// though the statement itself is unchanged. Reached the same way as the
+// error-propagation test above, through an injected Fake rather than a
+// real dirty worktree.
+//
+//nolint:paralleltest // calls a fixture helper (newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesUncommittedChanges(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "task-dirty-seam", "feature/dirty-seam", "seam3.txt", "seam3\n")
+
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir: map[string]gitclitest.Result{
+			source.WorktreeDir: {Value: " M dirty.txt\n"},
+		},
+	}
+	options := PullRequestLandOptions{
+		ProjectsRoot: fixture.githubDir,
+		Repository:   fixture.repository.Slug,
+		git:          fake,
+	}
+
+	note := syncLocalWorktreeAfterUpdateBranch(context.Background(), options, "feature/dirty-seam", "deadbeef")
+	if !strings.Contains(note, "uncommitted changes") {
+		t.Fatalf("note = %q, want it to report uncommitted changes", note)
+	}
+}
+
+// TestResolveReviewProofCheckoutFindsARegisteredWorktreeForTheHeadBranch
+// covers resolveReviewProofCheckout's registered-worktree branch
+// (pr_review_stale.go): also regressed to uncovered in the unit tier by an
+// earlier round's e2e-tier test move, on unchanged code. No Fake is needed
+// here -- this seam only reaches locateBranchCheckout, which is a plain
+// `git worktree list --porcelain` lookup unaffected by the git/run option
+// fields.
+//
+//nolint:paralleltest // calls a fixture helper (newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestResolveReviewProofCheckoutFindsARegisteredWorktreeForTheHeadBranch(t *testing.T) {
+	fixture := newEngineFixture(t)
+	createMergeSource(t, fixture, "task-review-checkout", "feature/review-checkout", "seam4.txt", "seam4\n")
+
+	options := PullRequestLandOptions{ProjectsRoot: fixture.githubDir, Repository: fixture.repository.Slug}
+	var view PullRequestView
+	view.Head.Ref = "feature/review-checkout"
+	view.Base.Ref = "main"
+
+	worktree, branch, found := resolveReviewProofCheckout(context.Background(), options, view)
+	if !found {
+		t.Fatalf("resolveReviewProofCheckout found = false, want true for a registered worktree on %q", view.Head.Ref)
+	}
+	if branch != view.Head.Ref {
+		t.Fatalf("branch = %q, want %q", branch, view.Head.Ref)
+	}
+	if filepath.Clean(worktree) != filepath.Clean(fixture.canonical) {
+		t.Fatalf("worktree = %q, want the fixture's canonical dir %q", worktree, fixture.canonical)
+	}
+}
