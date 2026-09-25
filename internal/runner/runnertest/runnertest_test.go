@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/testsweep"
@@ -40,6 +41,46 @@ func TestFakeRunReturnsTheScriptedError(t *testing.T) {
 	_, err := fake.Run(context.Background(), "/repo", "git", "push")
 	if err != wantErr {
 		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeRunWithInputRecordsInputAndReturnsTheScriptedResult(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"ssh", "host"}, runner.Result{Stdout: "remote-out"}, nil)
+
+	result, err := fake.RunWithInput(context.Background(), "/repo", []byte("request-body"), "ssh", "host")
+	if err != nil {
+		t.Fatalf("RunWithInput: %v", err)
+	}
+	if result.Stdout != "remote-out" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunWithInput" || string(calls[0].Input) != "request-body" {
+		t.Fatalf("Calls() = %+v, want one RunWithInput call carrying the input", calls)
+	}
+}
+
+func TestFakeRunOptsRecordsOptsAndReturnsTheScriptedResult(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOFLAGS"}, runner.Result{Stdout: "-race"}, nil)
+
+	opts := runner.RunOptions{Env: []string{"GOWORK=off"}, Stdin: []byte("in"), WaitDelay: time.Second}
+	result, err := fake.RunOpts(context.Background(), "/repo", opts, "go", "env", "GOFLAGS")
+	if err != nil {
+		t.Fatalf("RunOpts: %v", err)
+	}
+	if result.Stdout != "-race" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunOpts" {
+		t.Fatalf("Calls() = %+v, want one RunOpts call", calls)
+	}
+	if string(calls[0].Input) != "in" || calls[0].Opts.WaitDelay != time.Second || len(calls[0].Opts.Env) != 1 {
+		t.Fatalf("Calls()[0] = %+v, want it to carry opts", calls[0])
 	}
 }
 

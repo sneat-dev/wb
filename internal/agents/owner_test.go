@@ -493,7 +493,7 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	stopped, err := StopRun(store, record.AgentID)
+	stopped, err := StopRun(store, record.AgentID, DefaultOwnerDeps())
 	if err != nil {
 		t.Fatalf("StopRun: %v", err)
 	}
@@ -512,10 +512,10 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 	if final.State != StateFailed {
 		t.Fatalf("a stopped worker must reach a terminal outcome, got %s", final.State)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil {
 		t.Fatal("stopping a terminal run must be refused")
 	}
-	if _, err := StopRun(store, "agt-00000000000000000000000000000000"); err == nil {
+	if _, err := StopRun(store, "agt-00000000000000000000000000000000", DefaultOwnerDeps()); err == nil {
 		t.Fatal("stopping an unknown run must be refused")
 	}
 }
@@ -524,14 +524,6 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group termination is POSIX-only")
 	}
-	// The real stopGrace exists to give a well-behaved worker time to exit on
-	// its own; this test's whole point is a worker that never will, so
-	// shrinking the grace (and its poll interval) only removes dead wall-clock
-	// time, it never changes what is exercised: StopRun still polls, still
-	// times the grace period out, and still escalates to SIGKILL.
-	originalGrace, originalPoll := stopGrace, stopPollInterval
-	stopGrace, stopPollInterval = 200*time.Millisecond, 5*time.Millisecond
-	t.Cleanup(func() { stopGrace, stopPollInterval = originalGrace, originalPoll })
 	directory := t.TempDir()
 	path := filepath.Join(directory, HarnessCodex)
 	// The loop keeps the shell itself alive: a bare `sleep` would be killed by
@@ -544,6 +536,16 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	}
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
+	// The real StopGrace exists to give a well-behaved worker time to exit
+	// on its own; this test's whole point is a worker that never will, so
+	// shrinking the grace (and its poll interval) here, as a struct field
+	// rather than a package-level var, only removes dead wall-clock time —
+	// it never changes what is exercised: StopRun still polls, still times
+	// the grace period out, and still escalates to SIGKILL. Sleep stays the
+	// real time.Sleep (DefaultOwnerDeps' default): this loop genuinely
+	// waits on a real OS process, which no fake clock can shortcut.
+	deps.StopGrace = 200 * time.Millisecond
+	deps.StopPollInterval = 5 * time.Millisecond
 
 	store, record, worktree := ownedRun(t, "ignore termination", time.Minute)
 	done := make(chan struct{})
@@ -575,7 +577,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	if _, err := StopRun(store, record.AgentID); err != nil {
+	if _, err := StopRun(store, record.AgentID, deps); err != nil {
 		t.Fatalf("StopRun: %v", err)
 	}
 	loaded, err := store.Load(record.AgentID)
@@ -603,15 +605,85 @@ func TestStopRunRefusesARunWithNoLiveWorker(t *testing.T) {
 	if err := store.Create(record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil {
 		t.Fatal("a run with no recorded worker must be refused")
 	}
 	record.WorkerPID = 999999999
 	if err := store.Save(record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil || !strings.Contains(err.Error(), "already gone") {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil || !strings.Contains(err.Error(), "already gone") {
 		t.Fatalf("a dead worker must be reported: %v", err)
+	}
+}
+
+// TestWaitForProcessExitPollsUntilAliveReportsFalse proves StopRun's grace
+// poll (waitForProcessExit) sleeps exactly once per still-alive check, at
+// exactly pollInterval, and stops the instant alive() reports false — on a
+// fake clock, so no real process and no real wait are needed to prove the
+// exact call count.
+func TestWaitForProcessExitPollsUntilAliveReportsFalse(t *testing.T) {
+	t.Parallel()
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	remainingAliveChecks := 3
+	alive := func() bool {
+		if remainingAliveChecks <= 0 {
+			return false
+		}
+		remainingAliveChecks--
+		return true
+	}
+
+	exited := waitForProcessExit(now, sleep, 10*time.Millisecond, virtual.Add(time.Hour), alive)
+
+	if !exited {
+		t.Fatal("waitForProcessExit = false, want true once alive() reported false")
+	}
+	if len(slept) != 3 {
+		t.Fatalf("waitForProcessExit slept %d times, want 3 (once per still-alive check)", len(slept))
+	}
+	for _, d := range slept {
+		if d != 10*time.Millisecond {
+			t.Fatalf("waitForProcessExit slept %v, want every wait to be the 10ms poll interval", slept)
+		}
+	}
+}
+
+// TestWaitForProcessExitReturnsFalseWhenDeadlinePasses proves the timeout
+// branch: a worker that never exits makes waitForProcessExit stop polling
+// once now() reaches the deadline, reporting false — StopRun's signal to
+// escalate to SIGKILL — never blocking past it.
+func TestWaitForProcessExitReturnsFalseWhenDeadlinePasses(t *testing.T) {
+	t.Parallel()
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	deadline := virtual.Add(50 * time.Millisecond)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	alive := func() bool { return true }
+
+	exited := waitForProcessExit(now, sleep, 20*time.Millisecond, deadline, alive)
+
+	if exited {
+		t.Fatal("waitForProcessExit = true, want false: alive() never reported false")
+	}
+	wantSleeps := int(50*time.Millisecond/(20*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("waitForProcessExit slept %d times, want exactly %d (50ms deadline in 20ms steps)", len(slept), wantSleeps)
+	}
+	for _, d := range slept {
+		if d != 20*time.Millisecond {
+			t.Fatalf("waitForProcessExit slept %v, want every wait to be the 20ms poll interval", slept)
+		}
 	}
 }
 

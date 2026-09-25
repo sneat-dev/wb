@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -79,6 +80,118 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0 for a start failure (never reached a process exit)", result.ExitCode)
+	}
+}
+
+// TestRunnerHelperProcessEchoesStdin is the child half of
+// TestRealRunWithInputWritesToTheChildsStdin: it copies its stdin to
+// stdout, so the parent can assert the exact bytes RunWithInput wrote
+// reached the child.
+func TestRunnerHelperProcessEchoesStdin(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("WB_RUNNER_ECHO_STDIN") != "1" {
+		return
+	}
+	if _, err := io.Copy(os.Stdout, os.Stdin); err != nil { //nolint:forbidigo // helper-process fixture
+		os.Exit(9)
+	}
+	os.Exit(0)
+}
+
+func TestRealRunWithInputWritesToTheChildsStdin(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_ECHO_STDIN", "1")
+
+	result, err := runner.New().RunWithInput(context.Background(), t.TempDir(), []byte("hello-stdin"), os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesStdin$")
+	if err != nil {
+		t.Fatalf("RunWithInput: %v", err)
+	}
+	if result.Stdout != "hello-stdin" {
+		t.Fatalf("result.Stdout = %q, want the echoed stdin %q", result.Stdout, "hello-stdin")
+	}
+}
+
+func TestRealRunWithInputReportsNonZeroExitStatus(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_EXIT", "7")
+
+	result, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...)
+	if err == nil {
+		t.Fatal("want an error for a non-zero exit")
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", result.ExitCode)
+	}
+}
+
+func TestRealRunWithInputBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	if _, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunWithInput() err = %v, want runner.ErrRealProcessBlocked", err)
+	}
+}
+
+// TestRunnerHelperProcessEchoesAnEnvironmentVariable is the child half of
+// TestRealRunOptsAppliesACustomEnvironment: it prints WB_RUNNER_PROBE, which
+// exists in its environment only if RunOpts' Env override actually replaced
+// the inherited one (the parent process never sets it).
+func TestRunnerHelperProcessEchoesAnEnvironmentVariable(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("WB_RUNNER_ECHO_ENV") != "1" {
+		return
+	}
+	if _, err := fmt.Fprint(os.Stdout, os.Getenv("WB_RUNNER_PROBE")); err != nil { //nolint:forbidigo // helper-process fixture
+		os.Exit(9)
+	}
+	os.Exit(0)
+}
+
+func TestRealRunOptsAppliesACustomEnvironment(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_ECHO_ENV", "1")
+
+	opts := runner.RunOptions{Env: append(os.Environ(), "WB_RUNNER_ECHO_ENV=1", "WB_RUNNER_PROBE=from-runopts")}
+	result, err := runner.New().RunOpts(context.Background(), t.TempDir(), opts, os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesAnEnvironmentVariable$")
+	if err != nil {
+		t.Fatalf("RunOpts: %v", err)
+	}
+	if result.Stdout != "from-runopts" {
+		t.Fatalf("result.Stdout = %q, want the RunOpts-supplied WB_RUNNER_PROBE", result.Stdout)
+	}
+}
+
+func TestRealRunOptsWithoutEnvInheritsTheParentEnvironmentLikeRun(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_STDOUT", "opts-inherited")
+	t.Setenv("WB_RUNNER_EXIT", "0")
+
+	result, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{}, os.Args[0], helperArgs()...)
+	if err != nil {
+		t.Fatalf("RunOpts: %v", err)
+	}
+	if result.Stdout != "opts-inherited" {
+		t.Fatalf("result.Stdout = %q, want the parent's inherited WB_RUNNER_STDOUT", result.Stdout)
+	}
+}
+
+func TestRealRunOptsWritesStdinAndHonorsWaitDelay(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_ECHO_STDIN", "1")
+
+	opts := runner.RunOptions{Stdin: []byte("hello-opts-stdin"), WaitDelay: time.Second}
+	result, err := runner.New().RunOpts(context.Background(), t.TempDir(), opts, os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesStdin$")
+	if err != nil {
+		t.Fatalf("RunOpts: %v", err)
+	}
+	if result.Stdout != "hello-opts-stdin" {
+		t.Fatalf("result.Stdout = %q, want the echoed stdin", result.Stdout)
+	}
+}
+
+func TestRealRunOptsBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	if _, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{}, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunOpts() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 

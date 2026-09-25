@@ -867,7 +867,13 @@ func worktreeMergeReceiptPublishedUnlanded(receipt WorktreeMergeReceipt) bool {
 // auto-merge on a red result — that stays forbidden — this is retirement of
 // a candidate a rebatch has already replaced, so its armed auto-merge cannot
 // land it alongside the replacement.
-func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pullRequest string) error {
+//
+// sleep is the verify-retry backoff seam: every production caller passes
+// time.Sleep (through ensurePreparedWorktreeMergeRebatch); a test passes a
+// recorder. It is a function parameter, not a package-level mutable var, so
+// a test cannot leave shared package state mutated for another test running
+// in parallel.
+func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pullRequest string, sleep func(time.Duration)) error {
 	numberText, err := PullRequestNumber(pullRequest)
 	if err != nil {
 		return fmt.Errorf("resolve superseded pull request number: %w", err)
@@ -903,7 +909,7 @@ func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pu
 		if readErr == nil || !IsTransientReadFailure(readErr) || attempt == verifyAttempts {
 			break
 		}
-		time.Sleep(verifyDelay)
+		sleep(verifyDelay)
 	}
 	if readErr != nil {
 		return fmt.Errorf("verify superseded pull request %s was closed, not merged: %w", pullRequest, readErr)
@@ -917,7 +923,9 @@ func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pu
 	return nil
 }
 
-func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMergePreparedRebatch, replacement *WorktreeMergeReceipt) error {
+// sleep is threaded through to closeSupersededWorktreeMergePullRequest's
+// verify-retry seam; see that function's doc comment.
+func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMergePreparedRebatch, replacement *WorktreeMergeReceipt, sleep func(time.Duration)) error {
 	if rebatch == nil {
 		return errors.New("prepared rebatch evidence is required")
 	}
@@ -963,7 +971,7 @@ func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMe
 		if persistErr := persistWorktreeMergeReceipt(*replacement); persistErr != nil {
 			return persistErr
 		}
-		if closeErr := closeSupersededWorktreeMergePullRequest(ctx, original.Repository, original.PullRequest); closeErr != nil {
+		if closeErr := closeSupersededWorktreeMergePullRequest(ctx, original.Repository, original.PullRequest, sleep); closeErr != nil {
 			return fmt.Errorf("close superseded pull request %s before rebatch: %w", original.PullRequest, closeErr)
 		}
 		complete.ClosedPullRequest = original.PullRequest

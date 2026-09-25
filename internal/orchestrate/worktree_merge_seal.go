@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -294,20 +295,17 @@ func validateValidationFailureSealSource(ctx context.Context, projectsRoot strin
 }
 
 func writeValidationFailureSealPrompt(receipt WorktreeMergeReceipt, currentTarget, targetTree string, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-validation-failure-seal-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(path)
-		}
-	}()
-	if err = file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return "", err
-	}
+	return writeValidationFailureSealPromptInjected(receipt, currentTarget, targetTree, roots, actor, reason, nil)
+}
+
+// writeValidationFailureSealPromptInjected is
+// writeValidationFailureSealPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writeValidationFailureSealPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writeValidationFailureSealPromptInjected(receipt WorktreeMergeReceipt, currentTarget, targetTree string, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares a no-content ancestry seal for validation-failed receipt %s.\n", receipt.ReceiptPath)
 	fmt.Fprintf(&body, "Repository: %s\nTarget: %s at %s\nRequired tree: %s\n", receipt.Repository, receipt.Target, currentTarget, targetTree)
@@ -315,11 +313,8 @@ func writeValidationFailureSealPrompt(receipt WorktreeMergeReceipt, currentTarge
 		fmt.Fprintf(&body, "- %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err = file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err = file.Close(); err != nil {
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-validation-failure-seal-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

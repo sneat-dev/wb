@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/pathguard"
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -2870,7 +2871,7 @@ func addWorktreeAtSecureDestination(
 	// so serialize the complete add -> publish -> repair -> verify transaction
 	// repository-wide. Releasing between add and repair would expose Git's
 	// temporary stage registration to a sibling creator.
-	registrationLock, err := acquireRepositoryRegistrationLock(canonical)
+	registrationLock, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if err != nil {
 		return rollback(fmt.Errorf("acquire repository registration lock: %w", err), "", nil)
 	}
@@ -3367,12 +3368,21 @@ func verifyPublishedWorktree(
 // by os.Open, no unresolved home ancestor can be substituted between creation
 // and the first descriptor open. The returned descriptor remains valid even
 // if a later pathname swap makes the lexical spelling unsafe.
+//
+// The walk's own fd-relative opens go through secureopen.Real, the
+// production Opener; openAbsoluteDirectoryNoFollowWith below takes an
+// explicit Opener so a test can substitute secureopen.Fake instead, the
+// seam spec/plans/coverage-to-100 lane cov-seam-fs added.
 func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
+	return openAbsoluteDirectoryNoFollowWith(secureopen.Real{}, path, create)
+}
+
+func openAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, create bool) (*os.File, error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("secure directory path must be absolute: %s", path)
 	}
-	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	fd, err := opener.OpenRoot(string(filepath.Separator))
 	if err != nil {
 		return nil, fmt.Errorf("open filesystem root for secure directory %s: %w", path, err)
 	}
@@ -3391,12 +3401,11 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 		}
 		var next int
 		if create {
-			next, err = openOrCreateNoFollowDirectory(fd, segment)
+			next, err = openOrCreateNoFollowDirectoryWith(opener, fd, segment)
 		} else {
-			next, err = unix.Openat(fd, segment, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+			next, err = opener.OpenDir(fd, segment)
 			if err != nil {
-				var info unix.Stat_t
-				if statErr := unix.Fstatat(fd, segment, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
+				if opener.IsSymlink(fd, segment) {
 					err = fmt.Errorf("refusing symlinked secure worktree directory %s", segment)
 				} else {
 					err = fmt.Errorf("open secure worktree directory %s: %w", segment, err)
@@ -3630,13 +3639,16 @@ func directoryEmpty(directory *os.File) (bool, error) {
 }
 
 func openOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
-	if err := unix.Mkdirat(parentFD, name, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
+	return openOrCreateNoFollowDirectoryWith(secureopen.Real{}, parentFD, name)
+}
+
+func openOrCreateNoFollowDirectoryWith(opener secureopen.Opener, parentFD int, name string) (int, error) {
+	if err := opener.Mkdir(parentFD, name); err != nil && !errors.Is(err, unix.EEXIST) {
 		return -1, fmt.Errorf("create secure worktree directory %s: %w", name, err)
 	}
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	fd, err := opener.OpenDir(parentFD, name)
 	if err != nil {
-		var info unix.Stat_t
-		if statErr := unix.Fstatat(parentFD, name, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
+		if opener.IsSymlink(parentFD, name) {
 			return -1, fmt.Errorf("refusing symlinked secure worktree directory %s", name)
 		}
 		return -1, fmt.Errorf("open secure worktree directory %s: %w", name, err)
@@ -3973,7 +3985,7 @@ func rollbackCreatedWorktree(
 			}
 		}
 	}
-	registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical)
+	registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if lockErr != nil {
 		return errors.Join(append(failures, fmt.Errorf("acquire repository registration lock for rollback: %w", lockErr))...)
 	}

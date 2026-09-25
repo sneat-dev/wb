@@ -11,19 +11,28 @@ import "testing"
 // one. compareAgainstTarget's own composition, sorting and error-propagation
 // behaviour is pinned against fakes in unittier_target_test.go (review note
 // #764 B6); this test is the one place that still proves the real thing --
-// CompareCoverageFloors, CompareUnitTierPendingTotal and (task-8)
-// CompareExecSitesPendingTotal running against a real Git repository -- end
-// to end through the exported CompareAgainstTarget wrapper.
-// exec_sites.pending is seeded identically on both commits (unchanged
-// total) so this test keeps pinning exactly the two findings the floor and
-// unit-tier-pending changes below produce, without also asserting on
-// task-8's ratchet here -- that ratchet gets its own coverage in
-// TestContractCompareExecSitesPendingTotalRealGit below.
+// CompareCoverageFloors, CompareUnitTierPendingTotal, (task-8)
+// CompareExecSitesPendingTotal and (task-21)
+// CompareCampaignTestNamesPendingTotal running against a real Git repository
+// -- end to end through the exported CompareAgainstTarget wrapper.
+// exec_sites.pending and campaign_test_names.pending are both seeded
+// identically on both commits (unchanged total) so this test keeps pinning
+// exactly the two findings the floor and unit-tier-pending changes below
+// produce, without also asserting on task-8's or task-21's own ratchet here
+// -- those get their own coverage in
+// TestContractCompareExecSitesPendingTotalRealGit and
+// TestContractCompareCampaignTestNamesPendingTotalRealGit below. Every
+// comparator this fixture's synthetic repo doesn't seed a pending file for
+// fails to parse it (review round 1, B1): a fourth comparator added here
+// without a matching seed line broke this exact test in CI, not a plain
+// `go test ./...`, because only the e2e tier builds a real repository this
+// fixture's local pending-file reads can fail against.
 func TestContractCompareAgainstTargetRealGit(t *testing.T) {
 	t.Parallel()
 	fixture := newTargetFixture(t, "85")
 	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
 	write(t, fixture.Root, execSitesPendingPath, "pkg/a.go\t1\ttask-8\n")
+	write(t, fixture.Root, campaignTestNamesPendingPath, "c_test.go\t1\ttask-21\n")
 	targetGit(t, fixture.Root, "add", "-A")
 	targetGit(t, fixture.Root, "commit", "-qm", "seed the pending lists")
 	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
@@ -75,5 +84,33 @@ func TestContractCompareExecSitesPendingTotalRealGit(t *testing.T) {
 	}
 	if len(findings) != 1 || findings[0].Code != "exec-sites-pending-total-rose" {
 		t.Fatalf("findings = %+v, want exactly one exec-sites-pending-total-rose finding", findings)
+	}
+}
+
+// TestContractCompareCampaignTestNamesPendingTotalRealGit is task-21's own
+// contract test for CompareCampaignTestNamesPendingTotal, the
+// campaign_test_names.pending analogue of
+// TestContractCompareExecSitesPendingTotalRealGit's exec_sites.pending
+// coverage: a real Git repository, a total that rises between the target
+// commit and the current branch, reported through the exported wrapper.
+func TestContractCompareCampaignTestNamesPendingTotalRealGit(t *testing.T) {
+	t.Parallel()
+	fixture := newTargetFixture(t, "85")
+	write(t, fixture.Root, campaignTestNamesPendingPath, "a_zz_cov_test.go\t1\ttask-21\n")
+	targetGit(t, fixture.Root, "add", "-A")
+	targetGit(t, fixture.Root, "commit", "-qm", "seed the campaign-test-names pending list")
+	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+
+	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
+	write(t, fixture.Root, campaignTestNamesPendingPath, "a_zz_cov_test.go\t1\ttask-21\nb_zz_cov_test.go\t2\ttask-21\n")
+	targetGit(t, fixture.Root, "add", "-A")
+	targetGit(t, fixture.Root, "commit", "-qm", "grow the campaign-test-names pending total")
+
+	findings, err := CompareCampaignTestNamesPendingTotal(fixture.Root, "main")
+	if err != nil {
+		t.Fatalf("CompareCampaignTestNamesPendingTotal: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Code != "campaign-test-names-pending-total-rose" {
+		t.Fatalf("findings = %+v, want exactly one campaign-test-names-pending-total-rose finding", findings)
 	}
 }

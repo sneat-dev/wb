@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
 )
@@ -177,8 +178,19 @@ func TestPrepareWorktreeMergeRebatchRecoversATransientVerifyReadAfterClose(t *te
 	}
 	t.Setenv("WB_TEST_VERIFY_READ_FAIL_ONCE", marker)
 
+	// Sleep records instead of sleeping (the verify-retry seam — see
+	// WorktreeMergePrepareOptions.Sleep). This particular transient failure
+	// is absorbed by githubobserver's own, already-seamed internal retry
+	// (the marker is consumed after one "connection reset" read, so its
+	// next internal attempt succeeds) before ReadPullRequest ever returns
+	// an error to closeSupersededWorktreeMergePullRequest, so the assertion
+	// below expects zero uses of THIS seam — proving the outer verify-retry
+	// loop's own 500ms wait, which TestCloseSupersededWorktreeMergePullRequestExhaustsVerifyRetriesOnPersistentTransientRead
+	// (pr_create_pin_view_test.go) exercises directly, was never needed here.
+	var slept []time.Duration
 	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+		Sleep: func(d time.Duration) { slept = append(slept, d) },
 	})
 	if err != nil {
 		t.Fatalf("rebatch failed despite a recoverable transient verify-read failure: %v", err)
@@ -192,6 +204,9 @@ func TestPrepareWorktreeMergeRebatchRecoversATransientVerifyReadAfterClose(t *te
 	closedCalls, readErr := os.ReadFile(closedLog)
 	if readErr != nil || !strings.Contains(string(closedCalls), "pulls/41") {
 		t.Fatalf("superseded pull request was not closed: err=%v calls=%q", readErr, string(closedCalls))
+	}
+	if len(slept) != 0 {
+		t.Fatalf("PrepareWorktreeMerge slept %v via its outer verify-retry seam, want none: the transient read this test injects is absorbed by githubobserver's own internal retry before the outer loop ever sees a failure", slept)
 	}
 }
 

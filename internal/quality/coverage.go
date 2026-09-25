@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // CoverageReport is a deterministic, machine-readable coverage index.
@@ -151,6 +153,16 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 }
 
 func coverageProfilePath(retain string) (path string, remove bool, err error) {
+	return coverageProfilePathInjected(retain, nil)
+}
+
+// coverageProfilePathInjected is coverageProfilePath's test seam (task-9
+// PR-9): every production call site reaches it only through
+// coverageProfilePath, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path string, remove bool, err error) {
 	if retain != "" {
 		absolute, err := filepath.Abs(retain)
 		if err != nil {
@@ -158,13 +170,11 @@ func coverageProfilePath(retain string) (path string, remove bool, err error) {
 		}
 		return absolute, false, nil
 	}
-	profile, err := os.CreateTemp("", "wb-coverage-*.out")
+	path, err = filewrite.CreateScratch("", "wb-coverage-*.out", 0, nil, inj)
 	if err != nil {
-		return "", false, err
-	}
-	path = profile.Name()
-	if err := profile.Close(); err != nil {
-		_ = os.Remove(path)
+		if path != "" {
+			_ = os.Remove(path)
+		}
 		return "", false, err
 	}
 	return path, true, nil

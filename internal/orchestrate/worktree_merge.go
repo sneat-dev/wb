@@ -453,6 +453,11 @@ type WorktreeMergePrepareOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// Sleep is the retry-backoff seam for a rebatch's superseded-pull-request
+	// verify retry (see closeSupersededWorktreeMergePullRequest). Nil (every
+	// production caller) defaults to time.Sleep; a test supplies a recorder
+	// to exercise that retry without a real wait.
+	Sleep func(time.Duration)
 	// run overrides this package's generic command runner (ports.go); nil
 	// uses defaultRunner. A unit test sets this to a runnertest.Fake so a
 	// prepare call that reaches the migrated call sites
@@ -474,6 +479,10 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, options.PrepareTimeout)
 		defer cancel()
+	}
+	sleep := options.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
 	}
 	reportWorktreeMergeProgress(options.Progress, "inspect_sources", progress.Started, "validating source worktrees and target")
 	projectsRoot, err := filepath.Abs(strings.TrimSpace(options.ProjectsRoot))
@@ -653,7 +662,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 					}
 					return existing, ancestorErr
 				}
-				if err := ensurePreparedWorktreeMergeRebatch(ctx, rechecked, &current); err != nil {
+				if err := ensurePreparedWorktreeMergeRebatch(ctx, rechecked, &current, sleep); err != nil {
 					return existing, err
 				}
 				return current, nil
@@ -1063,7 +1072,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		return receipt, err
 	}
 	if rebatch != nil {
-		if err := ensurePreparedWorktreeMergeRebatch(ctx, rebatch, &receipt); err != nil {
+		if err := ensurePreparedWorktreeMergeRebatch(ctx, rebatch, &receipt, sleep); err != nil {
 			return receipt, err
 		}
 	}
@@ -2388,6 +2397,16 @@ func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) 
 }
 
 func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int) (*WorktreeMergePushGateReceipt, error) {
+	return runWorktreeMergePrePushGateInjected(ctx, worktree, localSHA, remoteRef, timeout, retry, nil)
+}
+
+// runWorktreeMergePrePushGateInjected is runWorktreeMergePrePushGate's test
+// seam (task-9 PR-9): every production call site reaches it only through
+// runWorktreeMergePrePushGate, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch input file's create/chmod/write/
+// close failure branches deterministically.
+func runWorktreeMergePrePushGateInjected(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int, inj *filewrite.Injector) (*WorktreeMergePushGateReceipt, error) {
 	remoteOutput, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
 	if err != nil {
 		return nil, fmt.Errorf("inspect exact remote ref before pre-push gate: %w", err)
@@ -2404,21 +2423,12 @@ func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remote
 	if err != nil {
 		return nil, fmt.Errorf("resolve local branch for pre-push gate: %w", err)
 	}
-	input, err := os.CreateTemp("", "wb-worktree-merge-pre-push-*.txt")
+	body := fmt.Sprintf("%s %s %s %s\n", strings.TrimSpace(localRef), localSHA, remoteRef, previousRemoteSHA)
+	inputPath, err := filewrite.CreateScratch("", "wb-worktree-merge-pre-push-*.txt", 0o600, []byte(body), inj)
+	if inputPath != "" {
+		defer func() { _ = os.Remove(inputPath) }()
+	}
 	if err != nil {
-		return nil, err
-	}
-	inputPath := input.Name()
-	defer func() { _ = os.Remove(inputPath) }()
-	if err := input.Chmod(0o600); err != nil {
-		_ = input.Close()
-		return nil, err
-	}
-	if _, err := fmt.Fprintf(input, "%s %s %s %s\n", strings.TrimSpace(localRef), localSHA, remoteRef, previousRemoteSHA); err != nil {
-		_ = input.Close()
-		return nil, err
-	}
-	if err := input.Close(); err != nil {
 		return nil, err
 	}
 	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
@@ -3469,6 +3479,16 @@ func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []wor
 // the inverse landing tree delta onto today's remote target. It never resets or
 // force-pushes shared history.
 func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string, timeout time.Duration, retry int) (WorktreeMergeReceipt, error) {
+	return prepareWorktreeMergeRevertInjected(ctx, projectsRoot, input, timeout, retry, nil)
+}
+
+// prepareWorktreeMergeRevertInjected is PrepareWorktreeMergeRevert's test
+// seam (task-9 PR-9): every production call site reaches it only through
+// PrepareWorktreeMergeRevert, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch git-diff patch file's create/write/close failure
+// branches deterministically.
+func prepareWorktreeMergeRevertInjected(ctx context.Context, projectsRoot, input string, timeout time.Duration, retry int, inj *filewrite.Injector) (WorktreeMergeReceipt, error) {
 	path, err := resolveWorktreeMergeReceiptPath(projectsRoot, input)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
@@ -3492,7 +3512,7 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 		CandidateSHA:      receipt.Candidate.SHA,
 	}
 	task := "revert-" + receipt.ID
-	prompt, err := writeWorktreeMergePrompt(receipt.Repository, receipt.Target, receipt.Sources)
+	prompt, err := writeWorktreeMergePromptInjected(receipt.Repository, receipt.Target, receipt.Sources, inj)
 	if err != nil {
 		return receipt, err
 	}
@@ -3511,17 +3531,11 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	if err != nil {
 		return receipt, err
 	}
-	patchFile, err := os.CreateTemp("", "wb-worktree-revert-*.patch")
+	patchPath, err := filewrite.CreateScratch("", "wb-worktree-revert-*.patch", 0, []byte(patchOutput), inj)
+	if patchPath != "" {
+		defer func() { _ = os.Remove(patchPath) }()
+	}
 	if err != nil {
-		return receipt, err
-	}
-	patchPath := patchFile.Name()
-	defer func() { _ = os.Remove(patchPath) }()
-	if _, err := patchFile.WriteString(patchOutput); err != nil {
-		_ = patchFile.Close()
-		return receipt, err
-	}
-	if err := patchFile.Close(); err != nil {
 		return receipt, err
 	}
 	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "apply", "--check", "--3way", "--reverse", patchPath); err != nil {
@@ -4874,28 +4888,39 @@ func canPreparePostTargetRepair(ctx context.Context, prior WorktreeMergeReceipt,
 }
 
 func writeWorktreeMergePrompt(repository, target string, sources []WorktreeMergeSource) (string, error) {
-	file, err := os.CreateTemp("", "wb-worktree-merge-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writeWorktreeMergePromptInjected(repository, target, sources, nil)
+}
+
+// writeWorktreeMergePromptInjected is writeWorktreeMergePrompt's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// writeWorktreeMergePrompt, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch prompt file's create/chmod/write/close failure branches
+// deterministically.
+func writeWorktreeMergePromptInjected(repository, target string, sources []WorktreeMergeSource, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB mechanically prepares an integration candidate for %s target %s from these exact source heads:\n", repository, target)
 	for _, source := range sources {
 		fmt.Fprintf(&body, "- %s %s %s\n", source.Branch, source.SHA, source.Worktree)
 	}
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	return writeWorktreeMergeScratchPromptInjected("wb-worktree-merge-prompt-*.txt", body.String(), inj)
+}
+
+// writeWorktreeMergeScratchPromptInjected is task-9 PR-9's shared shape for
+// the four worktree-merge prompt writers in this package
+// (writeWorktreeMergePrompt, writeConflictCandidateRefreshPrompt,
+// writePublishedForwardRepairPrompt, writeValidationFailureSealPrompt): a
+// private (0600) scratch temp file, written once with body and returned by
+// path for a single worktrees.Create call to consume, then removed by the
+// caller once that call returns. On any failure -- create, chmod, write, or
+// close -- the reservation is removed before returning, matching all four
+// original inline sequences' cleanup-on-any-error behaviour exactly.
+func writeWorktreeMergeScratchPromptInjected(pattern, body string, inj *filewrite.Injector) (string, error) {
+	path, err := filewrite.CreateScratch("", pattern, 0o600, []byte(body), inj)
+	if err != nil {
+		if path != "" {
+			_ = os.Remove(path)
+		}
 		return "", err
 	}
 	return path, nil

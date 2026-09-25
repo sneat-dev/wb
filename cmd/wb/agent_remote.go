@@ -164,7 +164,7 @@ func handleRemoteOperation(inv *invocation, ctx context.Context, request agents.
 		if err != nil {
 			return err
 		}
-		record, err := agents.StopRun(store, request.AgentID)
+		record, err := agents.StopRun(store, request.AgentID, agents.DefaultOwnerDeps())
 		if err != nil {
 			return err
 		}

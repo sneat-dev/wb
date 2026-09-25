@@ -3344,7 +3344,7 @@ func TestPrepareWorktreeMergeRebatchClosesSupersededPullRequest(t *testing.T) {
 	if err := os.Remove(closedLog); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensurePreparedWorktreeMergeRebatch(context.Background(), &WorktreeMergePreparedRebatch{ReceiptPath: first.ReceiptPath}, &replacement); err != nil {
+	if err := ensurePreparedWorktreeMergeRebatch(context.Background(), &WorktreeMergePreparedRebatch{ReceiptPath: first.ReceiptPath}, &replacement, time.Sleep); err != nil {
 		t.Fatal(err)
 	}
 	if _, statErr := os.Stat(closedLog); !os.IsNotExist(statErr) {

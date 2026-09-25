@@ -625,3 +625,55 @@ func WriteFile(path string, data []byte, mode os.FileMode, inj *Injector) error 
 	}
 	return os.WriteFile(path, data, mode)
 }
+
+// CreateScratch creates a uniquely-named temporary file in directory whose
+// name begins with pattern (an os.CreateTemp "*"-pattern), optionally
+// re-asserts mode on it, optionally writes content, and closes it --
+// task-9 PR-9's shared shape for a scratch reservation this repository
+// never publishes by rename or link: some callers write nothing through
+// this call at all (a coverage-profile placeholder another `go test
+// -coverprofile` invocation fills in later, a git-index or writability-probe
+// name reserved and then freed, never durably read back); others write
+// content once, for a single subprocess call to consume as its input, and
+// remove the reservation once that call returns.
+//
+// mode == 0 skips the ChmodFile step entirely (os.CreateTemp's own file
+// already carries mode 0600, so most callers have nothing to re-assert);
+// content == nil skips the Write step entirely, distinct from writing zero
+// bytes, which still makes one Write call. Passing both zero values reduces
+// this to a bare CreateTemp+Close, task-9 PR-9's Category D scratch shape.
+//
+// path is returned non-empty exactly when CreateTemp itself succeeded, even
+// if a later ChmodFile, Write, or Close then fails: a caller whose original
+// inline sequence removed the reservation on any such later failure needs
+// the name to do that; a caller whose original sequence left the
+// reservation in place (or silently ignored a Close failure) can tell the
+// two situations apart the same way, by checking path == "" -- did
+// CreateTemp itself produce a name, or not. Like every other single-step
+// primitive in this package (CreateTemp, Close, ...), CreateScratch never
+// removes the reservation itself on any failure: each call site keeps
+// deciding its own cleanup, exactly as its original inline sequence did, so
+// migrating to this composite changes no site's on-disk-failure behaviour.
+func CreateScratch(directory, pattern string, mode os.FileMode, content []byte, inj *Injector) (path string, err error) {
+	file, err := CreateTemp(directory, pattern, inj)
+	if err != nil {
+		return "", err
+	}
+	path = file.Name()
+	if mode != 0 {
+		if err := ChmodFile(file, mode, path, inj); err != nil {
+			_ = Close(file, path, inj)
+			return path, err
+		}
+	}
+	if content != nil {
+		if err := Write(file, content, path, inj); err != nil {
+			_ = Close(file, path, inj)
+			return path, err
+		}
+	}
+	if err := Close(file, path, inj); err != nil {
+		return path, err
+	}
+	return path, nil
+}
