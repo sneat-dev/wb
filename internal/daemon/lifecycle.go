@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const (
@@ -277,6 +279,15 @@ func (s Store) Load() (State, bool, error) {
 }
 
 func (s Store) Save(state State) error {
+	return s.saveInjected(state, nil)
+}
+
+// saveInjected is Save's test seam (task-9 PR-7): every production call site
+// reaches it only through Save, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the stage/chmod/write/sync/close/rename failure
+// branches deterministically.
+func (s Store) saveInjected(state State, inj *filewrite.Injector) error {
 	if err := state.Valid(); err != nil {
 		return err
 	}
@@ -287,28 +298,28 @@ func (s Store) Save(state State) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(s.Path), ".daemon-state-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(s.Path), ".daemon-state-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(data, '\n'), temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, s.Path)
+	return filewrite.Rename(temporaryName, s.Path, inj)
 }
 
 // ProvenanceForExecutable produces exact local evidence for a running binary.

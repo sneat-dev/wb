@@ -27,6 +27,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // SchemaVersion is the current on-disk schema for Acknowledgement. There is
@@ -271,6 +273,15 @@ func Path(receiptPath string) string {
 // Persist atomically writes ack to path (create-temp, fsync, rename), the
 // same durability shape every other WB receipt/sidecar uses.
 func Persist(path string, ack Acknowledgement) error {
+	return persistInjected(path, ack, nil)
+}
+
+// persistInjected is Persist's test seam (task-9 PR-7): every production
+// call site reaches it only through Persist, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the stage/chmod/write/sync/close/rename failure
+// branches deterministically.
+func persistInjected(path string, ack Acknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -279,28 +290,28 @@ func Persist(path string, ack Acknowledgement) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".absorbed-conflict-ack-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".absorbed-conflict-ack-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 // Load reads and fully validates the acknowledgement sidecar at path against
