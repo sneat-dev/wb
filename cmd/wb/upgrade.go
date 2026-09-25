@@ -33,8 +33,8 @@ import (
 // cli-install#req:self-update-equals-upgrade-self). cobracmd.NewUpgrade
 // panics when "wb" is absent from the compiled catalog, the identical
 // programming-error guarantee cobracmd.New already gives install.
-func newUpgradeCmd() *cobra.Command {
-	return newUpgradeCmdWithConfig(newSelfUpdateConfig())
+func newUpgradeCmd(inv *invocation) *cobra.Command {
+	return newUpgradeCmdWithConfig(inv, newSelfUpdateConfig())
 }
 
 // newUpgradeCmdWithConfig is newUpgradeCmd's testable core: it takes the
@@ -43,14 +43,14 @@ func newUpgradeCmd() *cobra.Command {
 // constructors and compare their outcomes without touching the network
 // (cli-install#req:host-target-is-running-binary; plan task-7's own
 // self-update-equals-upgrade-self verification).
-func newUpgradeCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
+func newUpgradeCmdWithConfig(inv *invocation, cfg selfupdate.Config) *cobra.Command {
 	var command *cobra.Command
 	command = cobracmd.NewUpgrade(cobracmd.UpgradeCommandOptions{
 		Short:           "Upgrade installed fleet CLIs, including wb itself",
 		HostID:          wbCatalogID,
 		Errors:          newUpgradeErrors(),
 		HostConfig:      cfg,
-		HostAfterUpdate: wbAfterUpdate(&command),
+		HostAfterUpdate: wbAfterUpdate(inv, &command),
 	})
 	setDiscoveryTerms(command, "upgrade fleet cli sibling update latest release brew cask relevant catalog check")
 	return command

@@ -54,7 +54,7 @@ func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 						Body:       io.NopCloser(strings.NewReader(`[{"tag_name":"v0.92.3","draft":false,"prerelease":false}]`)),
 					}, nil
 				})}
-				cmd := newSelfUpdateCmdWithConfig(cfg)
+				cmd := newSelfUpdateCmdWithConfig(&invocation{}, cfg)
 				var out, stderr bytes.Buffer
 				cmd.SetOut(&out)
 				cmd.SetErr(&stderr)

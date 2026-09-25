@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/spf13/cobra"
 	"github.com/strongo/cli-helpers/selfupdate"
 )
@@ -150,7 +151,7 @@ func TestNewSelfUpdateConfigDefaultAssetNaming(t *testing.T) {
 // --format json (JSONFormat), --version, and --allow-downgrade all present
 // (registered by cobracmd.New, not reimplemented here).
 func TestNewSelfUpdateCmdRegistration(t *testing.T) {
-	cmd := newSelfUpdateCmd()
+	cmd := newSelfUpdateCmd(&invocation{})
 
 	if cmd.Use != "self-update" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "self-update")
@@ -199,7 +200,7 @@ func TestRootCmdRegistersSelfUpdate(t *testing.T) {
 // from the self-update command's actual registered --version flag instead of
 // a hard-coded string, so the two can't silently drift apart.
 func TestSelfUpdateVersionFlagNotSwallowedByRoot(t *testing.T) {
-	cmd := newSelfUpdateCmd()
+	cmd := newSelfUpdateCmd(&invocation{})
 	if cmd.Flags().Lookup("version") == nil {
 		t.Fatal("self-update does not register its own --version flag")
 	}
@@ -318,16 +319,14 @@ func TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings(t *testing.T) {
 	}
 }
 
-// fakeSelfUpdateBinary writes an executable POSIX shell script standing in
-// for the exact installed executable identity supplied by the shared provider.
-func fakeSelfUpdateBinary(t *testing.T, body string) string {
+// fakeSelfUpdateBinary returns a plausible installed-executable path
+// standing in for the exact identity the shared provider supplies. It names
+// no real file: restartDaemonAfterSelfUpdate and syncSkillsAfterSelfUpdate
+// now reach it only through an injected runner.Runner (task-8), which
+// matches this exact path as argv[0] without starting a real process.
+func fakeSelfUpdateBinary(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "fake-wb")
-	script := "#!/bin/sh\n" + body + "\n"
-	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return filepath.Join(t.TempDir(), "fake-wb")
 }
 
 func successfulSelfUpdate(binary string) selfupdate.AfterUpdate {
@@ -341,14 +340,16 @@ func successfulSelfUpdate(binary string) selfupdate.AfterUpdate {
 }
 
 func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
+	binary := fakeSelfUpdateBinary(t)
 	cmd := &cobra.Command{Use: "self-update"}
 	cmd.Flags().String("format", "text", "")
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{binary, "skills", "sync"}, runner.Result{Stdout: "synced: skills sync\n"}, nil)
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), fake, successfulSelfUpdate(binary)); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Verified installed wb version: 0.96.3 (was 0.96.2).", "synced: skills sync"} {
@@ -362,29 +363,35 @@ func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget
 }
 
 func TestSyncSkillsAfterSelfUpdateSkipsAlreadyCurrentAndUnverifiedManagerOutcome(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "unexpected invocation"`)
+	binary := fakeSelfUpdateBinary(t)
 	cmd := &cobra.Command{Use: "self-update"}
 	cmd.Flags().String("format", "text", "")
+	// An unscripted Fake fails the test the instant anything calls it, which
+	// is exactly the assertion this test wants: neither branch below may
+	// ever reach the runner.
+	fake := runnertest.New(t)
 
 	current := successfulSelfUpdate(binary)
 	current.Outcome.Action = selfupdate.ActionAlreadyCurrent
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), current); err != nil {
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), fake, current); err != nil {
 		t.Fatalf("already-current callback = %v, want nil", err)
 	}
 
 	stale := successfulSelfUpdate(binary)
 	stale.Outcome.PostSwapWarning = errors.New("installed 0.96.2, want 0.96.3")
-	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), stale)
+	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), fake, stale)
 	if err == nil || !strings.Contains(err.Error(), "not verified") {
 		t.Fatalf("stale callback error = %v, want verification refusal", err)
 	}
 }
 
 func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "boom" 1>&2; exit 1`)
+	binary := fakeSelfUpdateBinary(t)
 	cmd := &cobra.Command{Use: "self-update"}
 	cmd.Flags().String("format", "text", "")
-	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary))
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{binary, "skills", "sync"}, runner.Result{Stderr: "boom\n"}, errors.New("exit status 1"))
+	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), fake, successfulSelfUpdate(binary))
 	if err == nil {
 		t.Fatal("skills sync error = nil, want warning source")
 	}
@@ -396,7 +403,7 @@ func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
 }
 
 func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "skills-sync-output"`)
+	binary := fakeSelfUpdateBinary(t)
 	cmd := &cobra.Command{Use: "self-update"}
 	cmd.Flags().String("format", "text", "")
 	if err := cmd.Flags().Set("format", "json"); err != nil {
@@ -406,7 +413,9 @@ func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{binary, "skills", "sync"}, runner.Result{Stdout: "skills-sync-output\n"}, nil)
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), fake, successfulSelfUpdate(binary)); err != nil {
 		t.Fatal(err)
 	}
 	if stdout.Len() != 0 {
@@ -457,15 +466,18 @@ func TestRestartDaemonAfterSelfUpdateSkipsWhenAlreadyCurrentOrPostSwapWarned(t *
 	command := &cobra.Command{Use: "self-update"}
 	var stderr bytes.Buffer
 	command.SetErr(&stderr)
+	// An unscripted Fake fails the test the instant anything calls it:
+	// neither branch below may ever reach the runner.
+	fake := runnertest.New(t)
 
-	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
+	restartDaemonAfterSelfUpdate(command, context.Background(), fake, selfupdate.AfterUpdate{
 		Outcome: selfupdate.Outcome{Action: selfupdate.ActionAlreadyCurrent},
 	})
 	if stderr.Len() != 0 {
 		t.Fatalf("already-current must not attempt a restart: %q", stderr.String())
 	}
 
-	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
+	restartDaemonAfterSelfUpdate(command, context.Background(), fake, selfupdate.AfterUpdate{
 		Outcome: selfupdate.Outcome{Action: selfupdate.ActionUpdated, PostSwapWarning: errors.New("post-swap probe did not confirm the expected version")},
 	})
 	if stderr.Len() != 0 {

@@ -14,11 +14,14 @@ import (
 	"github.com/strongo/cli-helpers/cliinstall"
 	"github.com/strongo/cli-helpers/cliinstall/cobracmd"
 	"github.com/strongo/cli-helpers/selfupdate"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // AC: install#req:upgrade-command-name, cli-install#req:host-identity-from-catalog
 func TestUpgradeCmd_Registration(t *testing.T) {
-	cmd := newUpgradeCmd()
+	cmd := newUpgradeCmd(&invocation{})
 	if cmd.Name() != "upgrade" {
 		t.Errorf("Name() = %q, want %q", cmd.Name(), "upgrade")
 	}
@@ -271,7 +274,7 @@ func TestUpgradeCmd_HostConfigConstructorIsDeterministic(t *testing.T) {
 // identical output, proving `wb self-update` and `wb upgrade wb` reach the
 // same after-update hook rather than two copies that could drift.
 func TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
+	binary := fakeSelfUpdateBinary(t)
 	var selfUpdateCmd, upgradeCmd *cobra.Command
 	selfUpdateCmd = &cobra.Command{Use: "self-update"}
 	selfUpdateCmd.Flags().String("format", "text", "")
@@ -284,11 +287,23 @@ func TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput(t *tes
 	upgradeCmd.SetOut(&upgradeOut)
 	upgradeCmd.SetErr(&upgradeErr)
 
+	// Both hooks resolve the SAME invocation's runner: each invocation makes
+	// the identical two calls (daemon restart, then skills sync), in the
+	// identical order, so one fake scripted twice proves the two commands
+	// reach the identical after-update path (cli-install#req:self-update-
+	// equals-upgrade-self).
+	fake := runnertest.New(t)
+	for range 2 {
+		fake.ExpectArgv([]string{binary, "daemon", "restart", "--if-running", "--format", "json"}, runner.Result{Stdout: "synced: daemon restart\n"}, nil)
+		fake.ExpectArgv([]string{binary, "skills", "sync"}, runner.Result{Stdout: "synced: skills sync\n"}, nil)
+	}
+	inv := &invocation{runner: fake}
+
 	update := successfulSelfUpdate(binary)
-	if err := wbAfterUpdate(&selfUpdateCmd)(context.Background(), update); err != nil {
+	if err := wbAfterUpdate(inv, &selfUpdateCmd)(context.Background(), update); err != nil {
 		t.Fatalf("self-update-shaped hook: %v", err)
 	}
-	if err := wbAfterUpdate(&upgradeCmd)(context.Background(), update); err != nil {
+	if err := wbAfterUpdate(inv, &upgradeCmd)(context.Background(), update); err != nil {
 		t.Fatalf("upgrade-shaped hook: %v", err)
 	}
 	if selfOut.String() != upgradeOut.String() {
@@ -308,9 +323,12 @@ func TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput(t *tes
 // against it): it falls back to a fresh *cobra.Command whose Out/Err
 // default to the process's own stdout/stderr rather than dereferencing nil.
 func TestWBAfterUpdate_NilCommandPointerFallsBackWithoutPanic(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
+	binary := fakeSelfUpdateBinary(t)
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{binary, "daemon", "restart", "--if-running", "--format", "json"}, runner.Result{Stdout: "synced: daemon restart\n"}, nil)
+	fake.ExpectArgv([]string{binary, "skills", "sync"}, runner.Result{Stdout: "synced: skills sync\n"}, nil)
 	var nilCmd *cobra.Command
-	hook := wbAfterUpdate(&nilCmd)
+	hook := wbAfterUpdate(&invocation{runner: fake}, &nilCmd)
 	if err := hook(context.Background(), successfulSelfUpdate(binary)); err != nil {
 		t.Fatalf("hook with nil command pointer = %v, want nil", err)
 	}

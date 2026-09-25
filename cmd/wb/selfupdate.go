@@ -1,17 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/strongo/cli-helpers/cliinstall"
 	"github.com/strongo/cli-helpers/selfupdate"
 	"github.com/strongo/cli-helpers/selfupdate/cobracmd"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // wbCatalogID is wb's own id in github.com/strongo/cli-helpers/cliinstall's
@@ -86,18 +86,18 @@ func newSelfUpdateConfig() selfupdate.Config {
 // selfupdate.Config it is given (REQ: library-provided-behavior). This
 // function's only job is to describe wb to that library and to translate
 // its outcomes onto wb's own three-code exit contract, via selfUpdateErrors.
-func newSelfUpdateCmd() *cobra.Command {
-	return newSelfUpdateCmdWithConfig(newSelfUpdateConfig())
+func newSelfUpdateCmd(inv *invocation) *cobra.Command {
+	return newSelfUpdateCmdWithConfig(inv, newSelfUpdateConfig())
 }
 
-func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
+func newSelfUpdateCmdWithConfig(inv *invocation, cfg selfupdate.Config) *cobra.Command {
 	var command *cobra.Command
 	command = cobracmd.New(cfg, cobracmd.CommandOptions{
 		Short:       "Update the installed wb binary to the latest release",
 		Aliases:     []string{"update"},
 		JSONFormat:  true,
 		Errors:      selfUpdateErrors{},
-		AfterUpdate: wbAfterUpdate(&command),
+		AfterUpdate: wbAfterUpdate(inv, &command),
 	})
 	return command
 }
@@ -126,14 +126,15 @@ func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 // fallback below keeps that a loud, visible bug (output still reaches the
 // terminal via a fresh command whose Out/Err default to the process's own
 // stdout/stderr) rather than a nil-pointer panic.
-func wbAfterUpdate(cmd **cobra.Command) selfupdate.AfterUpdateFunc {
+func wbAfterUpdate(inv *invocation, cmd **cobra.Command) selfupdate.AfterUpdateFunc {
 	return func(ctx context.Context, update selfupdate.AfterUpdate) error {
 		target := *cmd
 		if target == nil {
 			target = &cobra.Command{}
 		}
-		restartDaemonAfterSelfUpdate(target, ctx, update)
-		return syncSkillsAfterSelfUpdate(target, ctx, update)
+		r := inv.commandRunner()
+		restartDaemonAfterSelfUpdate(target, ctx, r, update)
+		return syncSkillsAfterSelfUpdate(target, ctx, r, update)
 	}
 }
 
@@ -155,7 +156,7 @@ func selfUpdateDaemonHandoffTimeout() time.Duration {
 	return daemonStopTimeout + daemonSupervisorRestartTimeout + selfUpdateDaemonHandoffMargin
 }
 
-func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) {
+func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, r runner.Runner, update selfupdate.AfterUpdate) {
 	if update.Outcome.Action == selfupdate.ActionAlreadyCurrent || update.Outcome.PostSwapWarning != nil {
 		return
 	}
@@ -164,21 +165,22 @@ func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, up
 	}
 	ctx, cancel := context.WithTimeout(parent, selfUpdateDaemonHandoffTimeout())
 	defer cancel()
-	child := exec.CommandContext(ctx, update.Executable.Path, "daemon", "restart", "--if-running", "--format", "json") //nolint:gosec // verified post-swap executable.
-	var output bytes.Buffer
-	child.Stdout, child.Stderr = &output, &output
-	if err := child.Run(); err != nil {
+	// stdout and stderr are combined into one diagnostic stream below, as
+	// the retired single shared *bytes.Buffer did.
+	result, err := r.Run(ctx, "", update.Executable.Path, "daemon", "restart", "--if-running", "--format", "json")
+	output := result.Stdout + result.Stderr
+	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but the daemon handoff did not finish within %s: %v; check `wb daemon status` and run `wb daemon restart --if-running` if it is not back\n", selfUpdateDaemonHandoffTimeout(), err)
 		} else {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but the daemon handoff reported a failure; check `wb daemon status` and run `wb daemon restart --if-running` if needed: %v\n", err)
 		}
-		_, _ = cmd.ErrOrStderr().Write(output.Bytes())
+		_, _ = cmd.ErrOrStderr().Write([]byte(output))
 		return
 	}
 	// The self-update command owns stdout (especially in JSON mode), so the
 	// child lifecycle receipt is diagnostic-only.
-	_, _ = cmd.ErrOrStderr().Write(output.Bytes())
+	_, _ = cmd.ErrOrStderr().Write([]byte(output))
 }
 
 func selfUpdateWriteVerifiedVersion(cmd *cobra.Command, previous, installed string) {
@@ -204,7 +206,7 @@ func selfUpdateWriteVerifiedVersion(cmd *cobra.Command, previous, installed stri
 // succeeded (or there was nothing to do), so a sync that cannot run --
 // offline, a permissions issue, no harness present yet -- is reported as a
 // warning on stderr rather than turned into a self-update failure.
-func syncSkillsAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) error {
+func syncSkillsAfterSelfUpdate(cmd *cobra.Command, parent context.Context, r runner.Runner, update selfupdate.AfterUpdate) error {
 	if update.Outcome.Action == selfupdate.ActionAlreadyCurrent {
 		return nil
 	}
@@ -223,21 +225,18 @@ func syncSkillsAfterSelfUpdate(cmd *cobra.Command, parent context.Context, updat
 	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	child := exec.CommandContext(ctx, update.Executable.Path, "skills", "sync") //nolint:gosec // path is resolved by the shared self-update provider
-	var stdout, stderr bytes.Buffer
-	child.Stdout = &stdout
-	child.Stderr = &stderr
-	if err := child.Run(); err != nil {
-		return fmt.Errorf("skills sync failed (%v); run `wb skills sync` to install/update WB's Agent Skills manually: %s", err, stderr.String())
+	result, err := r.Run(ctx, "", update.Executable.Path, "skills", "sync")
+	if err != nil {
+		return fmt.Errorf("skills sync failed (%v); run `wb skills sync` to install/update WB's Agent Skills manually: %s", err, result.Stderr)
 	}
 	// cobracmd deliberately keeps stdout to one JSON document. A successful
 	// nested skills sync is informational, so send it to stderr in JSON mode
 	// rather than corrupting the caller's machine-readable update outcome.
 	if format, _ := cmd.Flags().GetString("format"); format == "json" {
-		_, _ = cmd.ErrOrStderr().Write(stdout.Bytes())
+		_, _ = cmd.ErrOrStderr().Write([]byte(result.Stdout))
 		return nil
 	}
-	_, _ = cmd.OutOrStdout().Write(stdout.Bytes())
+	_, _ = cmd.OutOrStdout().Write([]byte(result.Stdout))
 	return nil
 }
 
