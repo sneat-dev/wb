@@ -223,6 +223,22 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 	}
 }
 
+// TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories drives "wb ci
+// audit --fleet" through the real CLI dispatch (not just a structural flag
+// check), so the RunE closure that reads inv.filterFlag before calling
+// runCIAudit actually executes.
+func TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"ci", "audit", "--fleet", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s, stderr=%s", args, code, stdout.String(), stderr.String())
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no output for a fleet with no repositories", stdout.String())
+	}
+}
+
 // TestPersistentFlagMatrix exercises every advertised root flag against every
 // leaf command without running the command. A supported cell must reach RunE;
 // every other cell must fail in PersistentPreRunE rather than be ignored.

@@ -27,6 +27,30 @@ func TestDashboardOpensHostedURL(t *testing.T) {
 	}
 }
 
+// TestDashboardNonInteractiveDoesNotOpenBrowser proves that an invocation
+// carrying nonInteractive: true (as --non-interactive sets it) stops "wb
+// dashboard" from opening a browser even in text format, where an
+// interactive invocation would: a mutation that swapped inv for a fresh
+// &invocation{} (sneat-dev/wb#733 PR-3 review, finding N1) would make this
+// test's open dependency fire, which it must not.
+func TestDashboardNonInteractiveDoesNotOpenBrowser(t *testing.T) {
+	opened := false
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { opened = true; return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "", "", errors.New("unexpected local lookup")
+		},
+	})
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if opened || !strings.Contains(output.String(), hostedDashboardURL) {
+		t.Fatalf("opened = %t, output = %q, want the URL printed but not opened", opened, output.String())
+	}
+}
+
 func TestDashboardJSONDoesNotOpenBrowser(t *testing.T) {
 	opened := false
 	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{

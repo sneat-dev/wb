@@ -1,9 +1,0 @@
-//go:build linux
-
-package worktrees
-
-import "github.com/sneat-dev/wb/internal/unixcompat"
-
-func renameNoReplace(fromFD int, from string, toFD int, to string) error {
-	return unix.Renameat2(fromFD, from, toFD, to, unix.RENAME_NOREPLACE)
-}

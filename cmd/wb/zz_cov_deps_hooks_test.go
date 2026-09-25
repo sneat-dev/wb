@@ -219,13 +219,13 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 	initTestRepository(t, filepath.Join(root, "acme", "other"))
 
 	// check before install: unmanaged hooks are findings, not a crash.
-	stdout, _, err := cwCovExec(t, root, newHooksCheckCmd, app)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app)
 	if _, ok := err.(*hooksCheckError); !ok {
 		t.Fatalf("check before install error = %v, want a hooks-check error\n%s", err, stdout)
 	}
 	// --format=json still exits non-zero for findings; the envelope is what
 	// matters, so the error is expected here.
-	jsonOut, _, jsonErr := cwCovExec(t, root, newHooksCheckCmd, app, "--format=json")
+	jsonOut, _, jsonErr := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app, "--format=json")
 	if _, ok := jsonErr.(*hooksCheckError); !ok {
 		t.Fatalf("check --format=json error = %v\n%s", jsonErr, jsonOut)
 	}
@@ -241,7 +241,7 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 	}
 
 	// install: the shims land and the report names the repository.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(false) }, app)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, app)
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, stdout)
 	}
@@ -255,22 +255,22 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Errorf("install did not write the managed pre-commit shim under %s: %v", checked.ManagedPath, statErr)
 	}
 	// The same repository now validates clean.
-	if stdout, _, err := cwCovExec(t, root, newHooksCheckCmd, app); err != nil {
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app); err != nil {
 		t.Fatalf("check after install: %v\n%s", err, stdout)
 	}
 
 	// A repository path with --fleet is refused rather than silently ignored.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(false) }, app, "--fleet"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, app, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("install --fleet with a path = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newHooksCheckCmd, app, "--fleet"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("check --fleet with a path = %v", err)
 	}
 
 	// Fleet install processes every local repository and reports the count.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(false) }, "--fleet")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, "--fleet")
 	if err != nil {
 		t.Fatalf("fleet install: %v\n%s", err, stdout)
 	}
@@ -278,10 +278,10 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Errorf("fleet install report = %q", stdout)
 	}
 	// Fleet check is then clean, in text and JSON.
-	if stdout, _, err := cwCovExec(t, root, newHooksCheckCmd, "--fleet"); err != nil {
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, "--fleet"); err != nil {
 		t.Fatalf("fleet check: %v\n%s", err, stdout)
 	}
-	fleetJSON, _, err := cwCovExec(t, root, newHooksCheckCmd, "--fleet", "--format=json")
+	fleetJSON, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, "--fleet", "--format=json")
 	if err != nil || !json.Valid([]byte(fleetJSON)) {
 		t.Fatalf("fleet check JSON = %v\n%s", err, fleetJSON)
 	}
@@ -290,7 +290,7 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Fatalf("fleet results = %+v, %v", fleetResults, err)
 	}
 	// The repair spelling reuses the same installer.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(true) }, app)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, true) }, app)
 	if err != nil || !strings.Contains(stdout, "hooks ready for") {
 		t.Fatalf("repair: %v\n%s", err, stdout)
 	}

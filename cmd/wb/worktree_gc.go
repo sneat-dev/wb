@@ -101,7 +101,7 @@ wb worktree gc --format json`,
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
 				ProjectsRoot: projectsRoot,
 				Tasks:        args,
-				Filter:       filterFlag,
+				Filter:       inv.filterFlag,
 				Base:         base,
 				Apply:        apply,
 				AllowResidue: allowResidue,

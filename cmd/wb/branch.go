@@ -19,20 +19,20 @@ import (
 // branch, most of which have no linked worktree and no WB Work Log claim, so
 // none of worktree cleanup's task/coordination machinery applies. See
 // spec/features/branch-hygiene/README.md.
-func newBranchCmd() *cobra.Command {
+func newBranchCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "branch",
 		Short: "Inventory and safely retire local and remote Git branches across the fleet",
 	}
-	command.AddCommand(newBranchListCmd())
-	command.AddCommand(newBranchCountCmd())
-	command.AddCommand(newBranchCleanupCmd())
+	command.AddCommand(newBranchListCmd(inv))
+	command.AddCommand(newBranchCountCmd(inv))
+	command.AddCommand(newBranchCleanupCmd(inv))
 	command.AddCommand(newBranchQuarantineCmd())
 	command.AddCommand(newBranchArchiveTargetCmd())
 	return command
 }
 
-func newBranchCountCmd() *cobra.Command {
+func newBranchCountCmd(inv *invocation) *cobra.Command {
 	var base, scope, only, format, repository, org, name string
 	var olderThan time.Duration
 	command := &cobra.Command{Use: "count", Short: "Count active branches plus retired branch and tag refs in locally discovered clones", Args: cobra.NoArgs,
@@ -40,7 +40,7 @@ func newBranchCountCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
 				return err
 			}
-			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, OlderThan: olderThan, Filter: filterFlag, Repository: repository, Org: org, Name: name, Progress: command.ErrOrStderr()})
+			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, OlderThan: olderThan, Filter: inv.filterFlag, Repository: repository, Org: org, Name: name, Progress: command.ErrOrStderr()})
 			if err != nil {
 				return err
 			}
@@ -114,7 +114,7 @@ func newBranchQuarantineCmd() *cobra.Command {
 	return command
 }
 
-func newBranchListCmd() *cobra.Command {
+func newBranchListCmd(inv *invocation) *cobra.Command {
 	var base, scope, only, format, repository, branch, org, name string
 	var includeRetired, withPRs bool
 	var olderThan time.Duration
@@ -179,7 +179,7 @@ reserved for the report.`,
 			progress := command.ErrOrStderr()
 			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, Org: org,
-				OlderThan: olderThan, Filter: filterFlag, Progress: progress,
+				OlderThan: olderThan, Filter: inv.filterFlag, Progress: progress,
 				Repository: repository, Branch: branch, Name: name,
 				IncludeRetired: includeRetired, WithPRs: withPRs,
 			})
@@ -222,7 +222,7 @@ reserved for the report.`,
 	return command
 }
 
-func newBranchCleanupCmd() *cobra.Command {
+func newBranchCleanupCmd(inv *invocation) *cobra.Command {
 	var base, scope, reportDir, format, absorbedBy, supersededBy, repository, branch string
 	var peerEvidence, requireHosts []string
 	var apply, receipts bool
@@ -302,7 +302,7 @@ in-use and therefore never a candidate.`,
 				AbsorbedBy:   absorbedBy,
 				SupersededBy: supersededBy,
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Apply: apply,
-				OlderThan: olderThan, ReportDir: reportDir, Filter: filterFlag, Progress: progress,
+				OlderThan: olderThan, ReportDir: reportDir, Filter: inv.filterFlag, Progress: progress,
 				Repository: repository, Branch: branch,
 				PeerEvidence: peerEvidence, RequireHosts: requireHosts,
 			})

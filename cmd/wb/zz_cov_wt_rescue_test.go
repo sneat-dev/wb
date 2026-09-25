@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
+	"github.com/spf13/cobra"
 )
 
 // cwWtDirtyCanonicalClone builds a real canonical clone with one uncommitted
@@ -28,7 +29,7 @@ func TestCwWtWorktreeRescueReportsAndApplies(t *testing.T) {
 	projects, clone := cwWtDirtyCanonicalClone(t)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, clone)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone)
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("rescue report exit = %d (%v)", code, err)
 	}
@@ -39,7 +40,7 @@ func TestCwWtWorktreeRescueReportsAndApplies(t *testing.T) {
 	}
 
 	// JSON reports the same facts without the exit-1 wrapper.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeRescueCmd, clone, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone, "--format", "json")
 	if err != nil {
 		t.Fatalf("rescue json: %v", err)
 	}
@@ -48,12 +49,12 @@ func TestCwWtWorktreeRescueReportsAndApplies(t *testing.T) {
 	}
 
 	// --restore without --apply is refused.
-	if _, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, clone, "--restore"); err == nil || !strings.Contains(err.Error(), "--restore requires --apply") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone, "--restore"); err == nil || !strings.Contains(err.Error(), "--restore requires --apply") {
 		t.Fatalf("rescue --restore alone = %v", err)
 	}
 
 	// --apply captures the content onto a branch and leaves the clone dirty.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeRescueCmd, clone, "--apply")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone, "--apply")
 	if err != nil {
 		t.Fatalf("rescue --apply: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestCwWtWorktreeRescuePushAndRestore(t *testing.T) {
 	projects, clone := cwWtDirtyCanonicalClone(t)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, clone, "--apply", "--push", "--restore", "--branch", "rescue/cw-wt")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone, "--apply", "--push", "--restore", "--branch", "rescue/cw-wt")
 	if err != nil {
 		t.Fatalf("rescue --apply --push --restore: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestCwWtWorktreeRescuePushAndRestore(t *testing.T) {
 	}
 
 	// A clean clone reports that there is nothing to do.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeRescueCmd, clone)
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, clone)
 	if err != nil {
 		t.Fatalf("rescue of a clean clone: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestCwWtWorktreeRescueFleetAndArgs(t *testing.T) {
 	projects, clone := cwWtDirtyCanonicalClone(t)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, "--fleet")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet")
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("rescue --fleet exit = %d (%v)", code, err)
 	}
@@ -106,20 +107,20 @@ func TestCwWtWorktreeRescueFleetAndArgs(t *testing.T) {
 		t.Fatalf("rescue --fleet output = %q", stdout)
 	}
 
-	if _, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, "--fleet", clone); err == nil || !strings.Contains(err.Error(), "do not also name one") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet", clone); err == nil || !strings.Contains(err.Error(), "do not also name one") {
 		t.Fatalf("--fleet with an argument = %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, "--fleet", "--apply"); err == nil || !strings.Contains(err.Error(), "only reports") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet", "--apply"); err == nil || !strings.Contains(err.Error(), "only reports") {
 		t.Fatalf("--fleet --apply = %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeRescueCmd, "--fleet", "--restore"); err == nil || !strings.Contains(err.Error(), "only reports") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet", "--restore"); err == nil || !strings.Contains(err.Error(), "only reports") {
 		t.Fatalf("--fleet --restore = %v", err)
 	}
 
 	// An all-clean fleet says so.
 	cleanProjects := t.TempDir()
 	cwCovCloneWithOrigin(t, t.TempDir(), "clean", filepath.Join(cleanProjects, "acme", "clean"))
-	stdout, _, err = cwCovExec(t, cleanProjects, newWorktreeRescueCmd, "--fleet")
+	stdout, _, err = cwCovExec(t, cleanProjects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet")
 	if err != nil {
 		t.Fatalf("clean fleet rescue: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestCwWtWorktreeRescueFleetAndArgs(t *testing.T) {
 	}
 	// The json fleet report encodes and exits 0: the findings exit code is a
 	// property of the text renderer, which returns the exitError itself.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeRescueCmd, "--fleet", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet", "--format", "json")
 	if err != nil {
 		t.Fatalf("fleet json: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestCwWtWorktreeRescueFleetAndArgs(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cwCovExec(t, blocker, newWorktreeRescueCmd, "--fleet"); err == nil || !strings.Contains(err.Error(), "scan local repositories") {
+	if _, _, err := cwCovExec(t, blocker, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) }, "--fleet"); err == nil || !strings.Contains(err.Error(), "scan local repositories") {
 		t.Fatalf("fleet rescue on an unreadable root = %v", err)
 	}
 }
@@ -188,13 +189,13 @@ func TestCwWtRenderRescueReportTruncationAndFailures(t *testing.T) {
 
 	// Every write failure is propagated.
 	for allow := 0; allow < 3; allow++ {
-		command := newWorktreeRescueCmd()
+		command := newWorktreeRescueCmd(&invocation{})
 		command.SetOut(&cwWtFailWriter{Allow: allow})
 		if err := renderRescueReport(command, "text", true, applied); err == nil {
 			t.Fatalf("renderRescueReport with %d writes allowed returned nil", allow)
 		}
 	}
-	command := newWorktreeRescueCmd()
+	command := newWorktreeRescueCmd(&invocation{})
 	command.SetOut(&cwWtFailWriter{Allow: 0})
 	if err := renderRescueReport(command, "text", false, canonicalrescue.Report{Path: "/tmp/clean"}); err == nil {
 		t.Fatal("clean renderRescueReport did not propagate the write failure")
@@ -208,10 +209,10 @@ func TestCwWtRunFleetRescueReportFailurePropagation(t *testing.T) {
 	projectsRoot = projects
 	t.Cleanup(func() { projectsRoot = previousRoot })
 
-	command := newWorktreeRescueCmd()
+	command := newWorktreeRescueCmd(&invocation{})
 	command.SetContext(context.Background())
 	command.SetOut(&cwWtFailWriter{Allow: 0})
-	if err := runFleetRescueReport(command, "text"); err == nil {
+	if err := runFleetRescueReport(&invocation{}, command, "text"); err == nil {
 		t.Fatal("runFleetRescueReport did not propagate the write failure")
 	}
 }

@@ -3554,23 +3554,6 @@ func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent
 // production behaviour is unchanged.
 var writeBytesImmutableAtBeforeRename = func(*os.File, string) {}
 
-// immutablePublishRename returns the caller-supplied rename function
-// filewrite.RenameNoReplace runs to publish writeBytesImmutableAtInjected's
-// staged content (task-9 PR-3): it moves temporary to name via the shared,
-// platform-gated renameNoReplace helper, writing no content of its own --
-// exempted in internal/quality's NotAFileWritePublishExemptions as a
-// move-only rename, like moveExpectedDirectoryNoReplaceAuthorized and
-// moveExpectedLockNoReplace. It exists as its own top-level function,
-// rather than an inline closure inside writeBytesImmutableAtInjected, so
-// the boundary detector's AST walk (which does not distinguish an inline
-// closure literal from the rest of its enclosing function's body) does not
-// see this as a raw renameNoReplace call inside a genuine write sequence.
-func immutablePublishRename(directory *os.File, temporary, name string) func() error {
-	return func() error {
-		return renameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name)
-	}
-}
-
 func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool) error {
 	return writeBytesImmutableAtInjected(directory, name, content, mode, idempotent, nil)
 }
@@ -3578,9 +3561,14 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 // writeBytesImmutableAtInjected is writeBytesImmutableAt's test seam
 // (task-9 PR-3): every production call site reaches it only through
 // writeBytesImmutableAt, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create/write/sync/close/rename-no-replace/dir-sync
-// failure branch deterministically.
+// so production behaviour is unchanged except for one deliberate flag
+// change (review-756 B3): the temp file's create now goes through
+// filewrite.CreateExclusive, which adds O_CLOEXEC where the old raw
+// unix.Openat here did not, closing a real fd leak into a concurrently
+// exec'd child process (git and friends) rather than preserving it; a
+// test passes its own Injector directly to reach a
+// create/write/sync/close/rename-no-replace/dir-sync failure branch
+// deterministically.
 func writeBytesImmutableAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool, inj *filewrite.Injector) error {
 	if strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe immutable filename %q", name)
@@ -3620,7 +3608,7 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 		return err
 	}
 	writeBytesImmutableAtBeforeRename(directory, name)
-	if err := filewrite.RenameNoReplace(immutablePublishRename(directory, temporary, name), name, inj); err != nil {
+	if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
 		if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
 			return nil
 		}
@@ -3674,9 +3662,14 @@ func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 // writeBytesAtomicAtInjected is writeBytesAtomicAt's test seam (task-9
 // PR-3): every production call site reaches it only through
 // writeBytesAtomicAt, which always passes a nil *filewrite.Injector, so
-// production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create/write/sync/close/rename/dir-sync failure
-// branch deterministically.
+// production behaviour is unchanged except for one deliberate flag change
+// (review-756 B3): the temp file's create now goes through
+// filewrite.CreateExclusive, which adds O_CLOEXEC where the old raw
+// unix.Openat here did not, closing a real fd leak into a concurrently
+// exec'd child process (git and friends) rather than preserving it; a
+// test passes its own Injector directly to reach a
+// create/write/sync/close/rename/dir-sync failure branch
+// deterministically.
 func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
 	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe atomic filename %q", name)

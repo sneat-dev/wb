@@ -72,17 +72,18 @@ func TestApplyAndCheckHooksFleet(t *testing.T) {
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	previousRoot, previousFilter := projectsRoot, filterFlag
-	projectsRoot, filterFlag = root, "acme/"
+	previousRoot := projectsRoot
+	projectsRoot = root
 	t.Cleanup(func() {
-		projectsRoot, filterFlag = previousRoot, previousFilter
+		projectsRoot = previousRoot
 	})
+	inv := &invocation{filterFlag: "acme/"}
 
 	command := &cobra.Command{}
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
-	if err := applyHooksFleet(command, "", false, false); err != nil {
+	if err := applyHooksFleet(inv, command, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); !strings.Contains(got, "acme/alpha") || !strings.Contains(got, "acme/beta") || !strings.Contains(got, "Processed 2 repositories; 0 failed") {
@@ -90,7 +91,7 @@ func TestApplyAndCheckHooksFleet(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := checkHooksFleet(command, "", false); err != nil {
+	if err := checkHooksFleet(inv, command, "", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); !strings.Contains(got, "Checked 2 repositories; 0 problems") {

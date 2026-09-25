@@ -1227,35 +1227,74 @@ func TestRenameAtReportsARealFailure(t *testing.T) {
 	}
 }
 
-// --- RenameNoReplace (task-9 PR-3) ---
+// --- RenameNoReplace (task-9 PR-3; performs its own syscall since
+// review-756 N1, rather than running a caller-supplied closure) ---
 
-func TestRenameNoReplaceRunsTheGivenRenameFunc(t *testing.T) {
+func TestRenameNoReplaceMovesFromNameToANewToName(t *testing.T) {
 	t.Parallel()
-	called := false
-	if err := RenameNoReplace(func() error { called = true; return nil }, "name", nil); err != nil {
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
-		t.Fatal("RenameNoReplace did not run its rename func")
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err == nil {
+		t.Fatal("fromName still exists after RenameNoReplace")
+	}
+}
+
+func TestRenameNoReplaceReportsARealFailureWhenToNameAlreadyExists(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("new-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir.Name(), "new"), []byte("existing-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameNoReplace onto an existing toName = nil, want an error")
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "existing-content" {
+		t.Fatalf("toName content = %q, want the original existing content unreplaced", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the no-replace refusal")
 	}
 }
 
 func TestRenameNoReplaceHonoursAnInjectedFailureWithoutRunningRename(t *testing.T) {
 	t.Parallel()
-	called := false
-	inj := &Injector{Step: StepRenameNoReplace, Name: "name", Err: errBoom}
-	if err := RenameNoReplace(func() error { called = true; return nil }, "name", inj); !errors.Is(err, errBoom) {
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepRenameNoReplace, Name: "new", Err: errBoom}
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", inj); !errors.Is(err, errBoom) {
 		t.Fatalf("RenameNoReplace with injected failure = %v, want errBoom", err)
 	}
-	if called {
-		t.Fatal("RenameNoReplace ran its rename func despite the injected failure")
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the injected failure")
 	}
 }
 
-func TestRenameNoReplaceReportsARealFailureFromRename(t *testing.T) {
+func TestRenameNoReplaceReportsARealFailureFromAMissingFromName(t *testing.T) {
 	t.Parallel()
-	if err := RenameNoReplace(func() error { return errBoom }, "name", nil); !errors.Is(err, errBoom) {
-		t.Fatalf("RenameNoReplace = %v, want errBoom", err)
+	dir := openTestDir(t)
+	if err := RenameNoReplace(int(dir.Fd()), "missing", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameNoReplace of a missing fromName = nil, want an error")
 	}
 }
 
@@ -1269,8 +1308,12 @@ func TestCreateOrTruncatePathCreatesAMissingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = file.Close() })
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatalf("created file missing: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("created file mode = %o, want 0600", perm)
 	}
 }
 
@@ -1328,6 +1371,13 @@ func TestWriteFileWritesTheGivenBytes(t *testing.T) {
 	}
 	if string(got) != "content" {
 		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("written file mode = %o, want 0600", perm)
 	}
 }
 

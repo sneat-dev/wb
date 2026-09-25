@@ -71,8 +71,12 @@ func TestWriteQuarantineReportPublishesReadableJSON(t *testing.T) {
 	if err := writeQuarantineReport(path, BranchQuarantineOutcome{Apply: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("quarantine report mode = %o, want 0600", perm)
 	}
 }
 
@@ -103,8 +107,12 @@ func TestWriteCleanupReportPublishesReadableJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("cleanup report mode = %o, want 0644", perm)
 	}
 }
 
@@ -135,8 +143,12 @@ func TestWriteRenameReportPublishesReadableJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("rename report mode = %o, want 0644", perm)
 	}
 }
 
@@ -166,8 +178,12 @@ func TestWriteRetiredStageReceiptPublishesReadableJSON(t *testing.T) {
 	if err := writeRetiredStageReceipt(path, RetiredStageRecoveryOutcome{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("retired stage receipt mode = %o, want 0600", perm)
 	}
 }
 
@@ -184,47 +200,57 @@ func TestWriteRetireReportInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 
 func TestWriteRetireReportInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
 	t.Parallel()
-	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
+	dir := t.TempDir()
+	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomPR3}
 	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
 }
 
 func TestWriteRetireReportInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	t.Parallel()
-	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
+	dir := t.TempDir()
+	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR3}
 	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
 }
 
 func TestWriteRetireReportInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 	t.Parallel()
-	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
+	dir := t.TempDir()
+	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomPR3}
 	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
 }
 
 func TestWriteRetireReportInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 	t.Parallel()
-	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
+	dir := t.TempDir()
+	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
 	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
 }
 
 func TestWriteRetireReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
 	t.Parallel()
-	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
+	dir := t.TempDir()
+	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomPR3}
 	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
 }
 
 func TestWriteRetireReportPublishesReadableJSON(t *testing.T) {
@@ -233,8 +259,12 @@ func TestWriteRetireReportPublishesReadableJSON(t *testing.T) {
 	if err := writeRetireReport(result); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(result.ReportPath); err != nil {
+	info, err := os.Stat(result.ReportPath)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("retire report mode = %o, want 0600", perm)
 	}
 }
 
@@ -384,12 +414,20 @@ func TestRetireCaptureFileComputesTheDigestOfTheCapturedBytes(t *testing.T) {
 	if err := os.WriteFile(source, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := retireCaptureFile(source, filepath.Join(dir, "dest"))
+	dest := filepath.Join(dir, "dest")
+	digest, err := retireCaptureFile(source, dest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if digest == "" {
 		t.Fatal("digest is empty")
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("captured file mode = %o, want 0600", perm)
 	}
 }
 
@@ -420,7 +458,11 @@ func TestWriteBranchCleanupReportPublishesReadableJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("branch cleanup report mode = %o, want 0644", perm)
 	}
 }

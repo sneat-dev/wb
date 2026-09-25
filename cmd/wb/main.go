@@ -32,7 +32,6 @@ const (
 
 var (
 	projectsRoot string
-	filterFlag   string
 )
 
 // invocation carries the mutable state one run()/runWithStdin() call reads
@@ -44,14 +43,14 @@ var (
 // *invocation per call and closing over it while constructing the command
 // tree (newRootCmdFor below) removes the shared mutable state.
 //
-// commandStarted, extraOrgs and nonInteractive have moved out of the
-// package-level block above; projectsRoot and filterFlag follow in later
-// PRs in this same sequence (task-5, spec/plans/coverage-to-100) — each
-// will bind its persistent flag directly to a field on *invocation instead
-// of to the package-level var, which is why this seam builds the invocation
-// before the command tree rather than after: a flag's bound target has to
-// exist when PersistentFlags().XxxVar(&target, ...) runs, during tree
-// construction, not later when the tree executes.
+// commandStarted, extraOrgs, nonInteractive and filterFlag have moved out of
+// the package-level block above; projectsRoot follows in a later PR in this
+// same sequence (task-5, spec/plans/coverage-to-100) — it will bind its
+// persistent flag directly to a field on *invocation instead of to the
+// package-level var, which is why this seam builds the invocation before the
+// command tree rather than after: a flag's bound target has to exist when
+// PersistentFlags().XxxVar(&target, ...) runs, during tree construction, not
+// later when the tree executes.
 type invocation struct {
 	// commandStarted records that cobra accepted the invocation and began
 	// running a command. See the PersistentPreRunE in newRootCmdFor.
@@ -62,6 +61,9 @@ type invocation struct {
 	// nonInteractive holds --non-interactive: never use a terminal UI or
 	// wait for input, even on a terminal.
 	nonInteractive bool
+	// filterFlag holds --filter: only repos whose org/name contains this
+	// substring.
+	filterFlag string
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -116,18 +118,18 @@ even when a terminal is attached.`
 // newRootCmd builds the command tree for callers that only inspect it (help
 // text, subcommand paths, flag matrices) rather than execute it through
 // runWithStdin. It is the ~50 existing test call sites' entry point, and
-// stays a zero-argument constructor so none of them need to change as more
-// package-level globals move onto *invocation in later PRs: it hands
-// newRootCmdFor a throwaway invocation that is never read back.
+// stays a zero-argument constructor so none of them need to change once the
+// last package-level global (projectsRoot) moves onto *invocation too: it
+// hands newRootCmdFor a throwaway invocation that is never read back.
 func newRootCmd() *cobra.Command {
 	return newRootCmdFor(&invocation{})
 }
 
 // newRootCmdFor builds the command tree for one invocation, closing over inv
-// so PersistentPreRunE and (in later PRs) flag bindings write into it
-// directly instead of into a package-level var or a value fished back out of
-// cobra's context. runWithStdin is the only caller that keeps inv afterwards
-// to read commandStarted.
+// so PersistentPreRunE and flag bindings write into it directly instead of
+// into a package-level var or a value fished back out of cobra's context.
+// runWithStdin is the only caller that keeps inv afterwards to read
+// commandStarted.
 func newRootCmdFor(inv *invocation) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wb",
@@ -184,7 +186,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
-	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")
+	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
 
@@ -198,7 +200,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newCreateCmd(), rootGroupAgent),
 		groupedRootCommand(newLandCmd(inv), rootGroupAgent),
 		groupedRootCommand(newPRCmd(), rootGroupAgent),
-		groupedRootCommand(newBranchCmd(), rootGroupAgent),
+		groupedRootCommand(newBranchCmd(inv), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(), rootGroupAgent),
 		groupedRootCommand(newAgentCmd(), rootGroupAgent),
 		groupedRootCommand(newTaskCmd(), rootGroupAgent),
@@ -215,7 +217,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newDiskCmd(), rootGroupMaintain),
 		groupedRootCommand(newCICmd(inv), rootGroupQuality),
 		groupedRootCommand(newWaitCmd(inv), rootGroupAgent),
-		groupedRootCommand(newHooksCmd(), rootGroupQuality),
+		groupedRootCommand(newHooksCmd(inv), rootGroupQuality),
 		groupedRootCommand(newDepsCmd(inv), rootGroupChange),
 		groupedRootCommand(newMigrateCmd(inv), rootGroupChange),
 		groupedRootCommand(newRunCmd(inv), rootGroupChange),
@@ -225,7 +227,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newRemoteCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newPeersCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
-		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
+		groupedRootCommand(newArchiveCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
 		groupedRootCommand(newInstallCmd(), rootGroupLearn),
 		groupedRootCommand(newUpgradeCmd(), rootGroupLearn),

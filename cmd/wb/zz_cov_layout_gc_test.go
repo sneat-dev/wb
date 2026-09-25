@@ -21,13 +21,16 @@ import (
 // cwCovExec runs a command constructor in-process with the shared projectsRoot
 // global pointed at a fixture. Several cmd/wb commands read that global rather
 // than declaring a --projects-root flag of their own, so a test that only sets
-// the flag would never reach them.
+// the flag would never reach them. --filter is no longer part of this: it is
+// an *invocation field the built command's own --filter flag binds to, so a
+// test that needs a non-empty filter builds its command from an invocation
+// carrying it (see zz_cov_wt_marker_test.go, zz_cov_wt_extra_test.go).
 func cwCovExec(t *testing.T, projects string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot, previousFilter := projectsRoot, filterFlag
-	projectsRoot, filterFlag = projects, ""
-	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
+	previousRoot := projectsRoot
+	projectsRoot = projects
+	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := build()
 	command.SilenceUsage = true

@@ -83,11 +83,11 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 
 	// A --filter that excludes every repository leaves the task unresolved and
 	// reports it rather than pretending the abort covered it.
-	previousRoot, previousFilter := projectsRoot, filterFlag
-	projectsRoot, filterFlag = projects, "no-such-repository"
-	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
+	previousRoot := projectsRoot
+	projectsRoot = projects
+	t.Cleanup(func() { projectsRoot = previousRoot })
 
-	command := newWorktreeAbortCmd()
+	command := newWorktreeAbortCmd(&invocation{filterFlag: "no-such-repository"})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out, errOut bytes.Buffer
@@ -107,7 +107,7 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 
 	// The json spelling carries the same excluded rows.
 	out.Reset()
-	command = newWorktreeAbortCmd()
+	command = newWorktreeAbortCmd(&invocation{filterFlag: "no-such-repository"})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetOut(&out)
@@ -192,7 +192,7 @@ func TestCwWtWorktreeRelocateAndGuardUsageErrors(t *testing.T) {
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
 	// --apply in manual mode without --initiator is refused by admission.
-	_, _, err := cwCovExec(t, projects, newWorktreeRelocateCmd, "absent-task", "--to", "local", "--apply", "--mode", "manual")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "absent-task", "--to", "local", "--apply", "--mode", "manual")
 	if err == nil || !strings.Contains(err.Error(), "--initiator") {
 		t.Fatalf("relocate --apply --mode manual = %v", err)
 	}
