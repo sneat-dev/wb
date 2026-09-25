@@ -796,14 +796,14 @@ func TestCwWtWorktreeRenameRealTaskInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 	// The fixture worktree is dirty, so the dry-run plans a skip whose reason
 	// is printed; either way the text renderer runs.
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown")
 	if err != nil && exitCodeOf(t, err) != exitFindings {
 		t.Fatalf("rename dry run of a real task: %v", err)
 	}
 	if !strings.Contains(stdout, "gc-cli") {
 		t.Fatalf("rename dry-run stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown", "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown", "--format", "json"); err != nil {
 		t.Fatalf("rename json of a real task: %v", err)
 	}
 }

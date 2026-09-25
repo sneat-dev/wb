@@ -132,11 +132,11 @@ func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
 	if len(checkouts) != 2 {
 		t.Fatalf("fleet checkouts = %v", checkouts)
 	}
-	checkouts, err = markerCheckouts(t.Context(), &invocation{filterFlag: "nothing-matches"}, true, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects, filterFlag: "nothing-matches"}, true, nil)
 	if err != nil || len(checkouts) != 0 {
 		t.Fatalf("filtered fleet checkouts = (%v, %v)", checkouts, err)
 	}
-	checkouts, err = markerCheckouts(t.Context(), &invocation{filterFlag: "acme/app"}, true, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects, filterFlag: "acme/app"}, true, nil)
 	if err != nil || len(checkouts) != 2 {
 		t.Fatalf("matching fleet checkouts = (%v, %v)", checkouts, err)
 	}
