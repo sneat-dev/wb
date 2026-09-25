@@ -182,6 +182,55 @@ func TestForwarderCallSiteWithExecutableLiteral(t *testing.T) {
 	}
 }
 
+// TestScanExecWriteFileCallSitesHandlesForwarderEdgeCases pins two edge
+// cases in the forwarder-call-site pass, neither of which is a violation:
+//
+//   - A call site with fewer syntactic arguments than the forwarding
+//     parameter's own index (go/parser does not type-check arity, so a
+//     call passing a single multi-value-returning expression, or any other
+//     arity mismatch, still parses) must not index out of call.Args.
+//   - A function sharing a name with a real forwarder (the forwarders map
+//     is keyed by function name only, not by package or file) but whose
+//     own parameters are unnamed must still have its parameter list walked
+//     without mismatching the other function's named forwarder key.
+func TestScanExecWriteFileCallSitesHandlesForwarderEdgeCases(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeQualityFile(t, filepath.Join(dir, "go.mod"), "module example.test/execwritefile\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(dir, "realforwarder", "fixture_test.go"), `package realforwarder
+
+import (
+	"os"
+	"testing"
+)
+
+func helper(t *testing.T, path string, mode os.FileMode) {
+	_ = os.WriteFile(path, nil, mode)
+}
+
+func TestArityMismatchCallSiteIsNotIndexedOutOfRange(t *testing.T) {
+	helper(t)
+}
+`)
+	writeQualityFile(t, filepath.Join(dir, "unnamedparams", "fixture_test.go"), `package unnamedparams
+
+import "testing"
+
+func helper(int, string) {}
+
+func TestCallToUnrelatedSameNamedHelper(t *testing.T) {
+	helper(1, "x")
+}
+`)
+	violations, err := ScanExecWriteFileCallSites(dir)
+	if err != nil {
+		t.Fatalf("ScanExecWriteFileCallSites: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("violations = %#v, want none (neither call site supplies a resolvable executable-literal mode)", violations)
+	}
+}
+
 // TestScanExecWriteFileCallSitesSkipsExecfileItself proves the guard's own
 // exclusion works: a fake fixture rooted at internal/execfile is not
 // scanned, even though it contains an executable-mode os.WriteFile.
