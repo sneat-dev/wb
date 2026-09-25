@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
@@ -813,7 +812,7 @@ func branchAhead(ctx context.Context, worktree, base string, options Options) (b
 }
 
 func openPullRequest(ctx context.Context, worktree, branch, base, title, body string, options Options) (string, error) {
-	output, err := githubobserver.Read(ctx, worktree, "pr", "list", "--head", branch, "--base", base,
+	output, err := ghObserver.Read(ctx, worktree, "pr", "list", "--head", branch, "--base", base,
 		"--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err == nil {
 		if existing := strings.TrimSpace(string(output)); existing != "" {

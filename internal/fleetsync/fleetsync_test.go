@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -31,19 +32,18 @@ func write(t *testing.T, dir, name, content string) {
 	}
 }
 
-// installArchivedFakeGh puts a fake `gh` on PATH that reports every
-// repository as archived, so tests exercising the pruneArchived=true path
+// installArchivedFakeGh stubs archiveprune's GitHub archived-status check
+// (via archiveprune.SetArchivedCheckForTest) to report every repository as
+// archived, so tests exercising the pruneArchived=true path
 // (internal/archiveprune.Evaluate's live GitHub check) never depend on
-// network access or real GitHub credentials. It also isolates WB Work Log
-// claim scanning from this machine's real fleet state.
+// network access or real GitHub credentials -- and no longer on a real gh
+// subprocess, which the task-24 guarded runner seam refuses under go test.
+// It also isolates WB Work Log claim scanning from this machine's real
+// fleet state.
 func installArchivedFakeGh(t *testing.T) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nset -eu\nprintf 'true\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	restore := archiveprune.SetArchivedCheckForTest(func(string) (bool, error) { return true, nil })
+	t.Cleanup(restore)
 	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 }
 

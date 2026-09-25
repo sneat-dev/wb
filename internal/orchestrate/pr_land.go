@@ -1197,7 +1197,7 @@ func landPreflightRefusal(view PullRequestView, repository, number string) *land
 }
 
 func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]ChangedFile, error) {
-	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+	responses, err := ghObserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/files?per_page=100",
 	}, 0)
@@ -1498,7 +1498,7 @@ type commitListEntry struct {
 
 // pullRequestCommits lists the branch's commits in order.
 func pullRequestCommits(ctx context.Context, repository, number string) ([]SourceCommit, error) {
-	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+	responses, err := ghObserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/commits?per_page=100",
 	}, 0)

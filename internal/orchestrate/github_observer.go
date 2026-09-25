@@ -8,8 +8,35 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
+// ghObserver is a package-private test seam over the githubobserver.Observer
+// this package reads/writes gh through (directly here, and via the
+// githubobserver.GetPages/Read package-level calls scattered across this
+// package's other files, which all default to the same
+// githubobserver.Default() this var starts from). Once those started
+// routing gh through the task-24 guarded runner seam, this package's tests
+// could no longer answer them with a fake `gh` on PATH (that real
+// subprocess start is refused under go test). Tests reassign it to one
+// built with githubobserver.NewTestObserver and restore it with
+// t.Cleanup; production callers never touch it.
+var ghObserver = githubobserver.Default()
+
+// SetGitHubObserverForTest overrides this package's githubobserver.Observer
+// for the duration of a test, and returns a restore func the caller must
+// invoke (typically via t.Cleanup) to put it back. It exists for OTHER
+// packages' tests that exercise code built on this package (internal/deps'
+// bump campaigns, ...): ghObserver above is unexported, so they cannot reach
+// it directly, and a real gh subprocess is refused by the task-24 guarded
+// runner seam under go test. Production code never calls this. The caller
+// is responsible for not running two tests that use it in parallel with
+// each other.
+func SetGitHubObserverForTest(o *githubobserver.Observer) (restore func()) {
+	original := ghObserver
+	ghObserver = o
+	return func() { ghObserver = original }
+}
+
 func githubRead(ctx context.Context, worktree string, args ...string) (string, error) {
-	output, err := githubobserver.Read(ctx, worktree, args...)
+	output, err := ghObserver.Read(ctx, worktree, args...)
 	if err != nil {
 		return "", err
 	}
@@ -17,7 +44,7 @@ func githubRead(ctx context.Context, worktree string, args ...string) (string, e
 }
 
 func githubGet(ctx context.Context, worktree, repository, target, head, endpoint string) ([]byte, error) {
-	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{
+	response, err := ghObserver.Get(ctx, githubobserver.GetRequest{
 		Dir:         worktree,
 		Repository:  strings.TrimSpace(repository),
 		Target:      strings.TrimSpace(target),
@@ -32,7 +59,7 @@ func githubGet(ctx context.Context, worktree, repository, target, head, endpoint
 }
 
 func githubExecute(ctx context.Context, worktree string, args ...string) githubobserver.CommandResponse {
-	return githubobserver.Execute(ctx, worktree, args...)
+	return ghObserver.Execute(ctx, worktree, args...)
 }
 
 // isTransientReadReason reports whether a "reason" string produced by one of

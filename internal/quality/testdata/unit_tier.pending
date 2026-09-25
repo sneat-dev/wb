@@ -108,7 +108,7 @@ internal/envguard/tailcov_test.go	9	task-15
 internal/execfile/execfile_test.go	2	task-9
 internal/fleetsync/diverged_test.go	22	task-15
 internal/fleetsync/emptyremote_test.go	18	task-15
-internal/fleetsync/fleetsync_test.go	51	task-15
+internal/fleetsync/fleetsync_test.go	49	task-15
 internal/fleetsync/host_level_test.go	1	task-15
 internal/fleetsync/receipt_test.go	14	task-15
 internal/fleetsync/rp_coverage_posix_test.go	7	task-15

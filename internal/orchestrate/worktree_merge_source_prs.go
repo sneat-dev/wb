@@ -215,7 +215,7 @@ func (githubSourcePullRequestRemote) associated(ctx context.Context, repository,
 }
 
 func (githubSourcePullRequestRemote) hasComment(ctx context.Context, repository string, number int, marker string) (bool, error) {
-	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+	responses, err := ghObserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repository, number),
 	}, 0)

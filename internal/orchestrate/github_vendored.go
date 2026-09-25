@@ -91,7 +91,7 @@ func ReadPullRequest(ctx context.Context, repository, selector string) (PullRequ
 // reading `--slurp` used to give them, with none of its version dependency.
 func activeBranchRules(ctx context.Context, repository, target string) ([][]githubActiveBranchRule, error) {
 	endpoint := "repos/" + repository + "/rules/branches/" + url.PathEscape(target) + "?per_page=100"
-	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+	responses, err := ghObserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Target:     target,
 		Endpoint:   endpoint,

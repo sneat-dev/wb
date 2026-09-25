@@ -39,6 +39,20 @@ import (
 // other, so the shared var carries no race.
 var isArchived = discover.IsArchived
 
+// SetArchivedCheckForTest overrides this package's GitHub archived-status
+// check for the duration of a test, and returns a restore func the caller
+// must invoke (typically via t.Cleanup) to put it back. It exists for OTHER
+// packages' tests that call Evaluate/Clean as a black box (fleetsync, ...):
+// isArchived above is unexported, so they cannot reach it directly, and a
+// real gh subprocess is refused by the task-24 guarded runner seam under go
+// test. Production code never calls this. The caller is responsible for not
+// running two tests that use it in parallel with each other.
+func SetArchivedCheckForTest(check func(slug string) (bool, error)) (restore func()) {
+	original := isArchived
+	isArchived = check
+	return func() { isArchived = original }
+}
+
 // Options selects and drives one clean run.
 type Options struct {
 	ProjectsRoot string
