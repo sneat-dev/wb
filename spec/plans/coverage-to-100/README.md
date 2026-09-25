@@ -9,7 +9,7 @@ status: Executing
 **Date:** 2026-09-23
 **Owner:** alex
 **Supersedes:** —
-**Reworked:** 2026-09-25, founder decisions 17–19 (two test tiers; thin `cmd/wb`; e2e on every PR)
+**Reworked:** 2026-09-25, founder decisions 17–20 (two test tiers; thin `cmd/wb`; e2e on every PR; e2e tests happy paths)
 
 ## Summary
 
@@ -87,6 +87,9 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
     - That is task-22. It starts without waiting for task-8.
     - Its first PR (`fleet default-branch`) declares its own consumer-side ports in the destination package. They are backed at first by today's helpers, and switch to task-8's runner when it lands.
 19. **E2E cadence (was Open Question 6).** Asked whether the e2e tier should be a required job on every PR, or run only on pushes to main and nightly, the founder answered "Every PR."
+20. **E2E scope.** The founder said: "I am thinking e2e tests can test only happy path, and maybe just few of failure cases".
+    - Each e2e journey tests its happy path.
+    - Failure cases belong to the unit tier, against the fakes. Only a few failure cases are e2e tests; task-23 names them.
 
 *Plan choices, not founder instructions:*
 - folding the seven existing per-package runners into one (task-8);
@@ -94,6 +97,7 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 - the 60-statement cap on `cmd/wb` functions (task-22);
 - the 10-minute e2e budget (task-23);
 - the runtime guard, the pending and allow lists (task-24, task-8);
+- the rule for which failure cases may be e2e tests, and one contract case per error kind a fake emulates (task-23, task-24);
 - making the e2e job required in branch protection through `gh api`, and running the e2e tier nightly (task-24).
 
 ## Journey
@@ -181,6 +185,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
   - A package with retry, timeout or backoff code also waits for task-10.
   - Packages that do neither proceed as before.
 - A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where unit tests keep the package's uncovered count flat. The ratchet enforces this.
+- Only a happy-path journey, or a failure case on task-23's list, moves to the e2e tier (decision 20). A legacy test of any other failure path is rewritten as a unit test, or deleted as redundant.
 - Some code only a real process can reach: the real runner, `internal/process`, task-8's allow-listed launchers, detach and `syscall.Exec` sites, and OS integration such as cgroups. It is tested with Go's helper-process pattern, where the test binary re-runs itself. Task-24 allows this, and it counts toward coverage.
 - The `e2e` build tag on test files (task-24) only selects a test tier. It hides no production code, so the ban on build-tag hiding still applies to production code.
 - A test PR stays under about 3,000 lines.
@@ -308,7 +313,7 @@ The setup is process-wide in `TestMain`, because `t.Setenv` blocks `t.Parallel()
 2. `internal/runner/runnertest` and an in-memory fake for each git port fail on demand in unit tests.
 3. Contract tests (`TestContract*`, in the e2e tier) run the same cases against `internal/gitcli` with real git and against the fakes, and pass for both.
 4. A mechanical check wired into CI fails on any direct call to `exec.Command`, `exec.CommandContext`, `os.StartProcess` or `syscall.Exec` in non-test Go files, and on any git invocation, outside `internal/runner`, `internal/gitcli` and the allow-list below.
-   - Exception: a file on the pending list `internal/quality/testdata/exec_sites.pending`. The list has one line per file, with its count and owning task. It follows task-24's rules: no package's total may rise, moves and renames are allowed when counts do not grow, and the creating PR is exempt.
+   - Exception: a file on the pending list `internal/quality/testdata/exec_sites.pending`. The list has one line per file, with its count and owning task. It follows task-24's rules: the list's total may not rise, an entry may grow only when the same PR removes at least as much from other entries, and the creating PR is exempt.
    - A git invocation is a literal `"git"` argv[0] passed to `os/exec`, `internal/process` or the runner, or a call to one of the named git helpers the check lists.
    - Type-only uses such as `exec.ExitError` are not flagged.
    - Any addition to the allow-list is named in the PR and approved in review.
@@ -610,6 +615,7 @@ Its tests therefore run whole commands, with fake scripts on `PATH` and real git
 - `go test -tags e2e -run '^TestE2E' ./e2e/...` builds wb and runs each journey below against real git in temporary directories.
 - It is green in its own required CI job on every PR.
 - Each journey asserts observable outcomes (refs, files, exit codes, output), not coverage.
+- Each journey tests its happy path. The suite has no more failure cases than task-23's list, below.
 - The suite stays within a 10-minute CI budget, recorded in the PR.
 
 Founder decision 17: "e2e testing with real git is also important".
@@ -622,13 +628,18 @@ Founder decision 17: "e2e testing with real git is also important".
 **Proposed first journeys:**
 1. Clone and `wb sync` a small fleet.
 2. `wb worktree create`, commit, push, then `wb worktree land` into the local target.
-3. A merge that conflicts, which wb must refuse.
-4. `wb worktree` rename and retire, with cleanup.
-5. `wb deps propagate local`.
+3. `wb worktree` rename and retire, with cleanup.
+4. `wb deps propagate local`.
+
+**Failure cases (decision 20).** The e2e tier has only a few, listed here:
+1. A merge that conflicts, which wb must refuse without changing the target branch.
+2. A push the remote rejects as non-fast-forward, which wb must report without retiring the branch.
+
+Adding a case to this list needs a PR that says why no fake can reproduce the behaviour faithfully. Every other failure path is tested in the unit tier.
 
 **Scope.**
 - Legacy process-starting tests that task-24's pending list assigns to task-23 move here once their package's unit tests cover the same statements.
-- The suite also carries the contract tests of task-8's git adapter.
+- The suite also carries the contract tests of task-8's git adapter. Contract tests are not journeys: they have one case for each error kind a fake emulates (for example a conflict, a missing ref or a rejected push). That keeps the unit tier's failure tests honest.
 - This tier is not measured for coverage (decision 17).
 
 ### Task 24: Test tiers: the unit tier and the real-git e2e tier
@@ -647,8 +658,9 @@ Founder decision 17: "e2e testing with real git is also important".
 3. **Allow list.** Helper-process tests stay permanently, in a separate committed and reviewed file, `internal/quality/testdata/unit_tier.allow`. Every addition is named in its PR and approved in review.
    - It covers tests of `internal/runner`, `internal/process`, task-8's allow-listed launchers, and detach, `syscall.Exec` and OS-integration sites.
    - Files on it may call `exec.Command(os.Args[0], …)` and `runnertest.AllowRealProcess`.
+   - Its tests re-run only the test binary itself, never real git or gh, so they pass in task-20's unit job, where `git` and `gh` are not on `PATH`.
    - It is not a pending list, and task-20 does not require it to be empty.
-4. **Pending list.** It is a committed file, `internal/quality/testdata/unit_tier.pending`, with one line per test file giving its match count and owning task. A CI step compares it with the base branch's copy and fails if the list's total count rises for any package. A file may be renamed or moved (for example by task-22), or its count may shift to another file, only if the same PR removes at least as many counts as it adds. The PR that creates the list is exempt. An entry is removed when its count reaches 0.
+4. **Pending list.** It is a committed file, `internal/quality/testdata/unit_tier.pending`, with one line per test file giving its match count and owning task. A CI step compares it with the base branch's copy and fails if the list's total count rises. A package's total, or a file's count, may rise only when the same PR removes at least as many counts from other entries, for example when task-22 moves a test file from `cmd/wb` into an `internal/` package. The PR that creates the list is exempt. An entry is removed when its count reaches 0.
 5. **Coverage source.** The CI coverage job measures the default tier only.
 
 Founder decisions 17 and 19.
@@ -671,7 +683,10 @@ Its rules:
 
 **Runtime guard.** A static check cannot see a test that reaches git by calling production code.
 - So, once task-8's runner exists, its real implementation refuses to start a process while `testing.Testing()` is true.
-- It makes two exceptions: the test is built with the `e2e` tag, or it calls `runnertest.AllowRealProcess(t)`. Only files on the pending list or the allow list may call that.
+- It makes three exceptions:
+  - the test is built with the `e2e` tag;
+  - it calls `runnertest.AllowRealProcess(t)`, which only files on the pending list or the allow list may call;
+  - the process is the re-run helper itself, marked by an environment variable such as `GO_WANT_HELPER_PROCESS=1`, since it has no `t` to call `AllowRealProcess` with.
 - After task-8's cutover, the CI unit job runs with `git` and `gh` removed from `PATH`, so any missed direct call fails loudly.
 
 **Transition.**
