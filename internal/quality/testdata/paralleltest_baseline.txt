@@ -478,7 +478,6 @@ internal/gen/wb/daemon/v1::TestDapbMessageDescriptorAndProtoReflect/#1	serial pe
 internal/gen/wb/daemon/v1::TestDapbResetClearsFields	kept serial because a nested subtest must stay serial: #1
 internal/gen/wb/daemon/v1::TestDapbResetClearsFields/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/githubobserver::TestGpCovDefaultObserverServesPackageLevelHelpers	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/githubobserver::TestGpCovRunGHReportsExitStatusAndStartFailure	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/githubobserver::TestGpCovStateDirResolutionOrder	kept serial because a nested subtest must stay serial: XDG_STATE_HOME
 internal/githubobserver::TestGpCovStateDirResolutionOrder/XDG_STATE_HOME	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/githubobserver::TestGpCovStateDirResolutionOrder/home directory	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)

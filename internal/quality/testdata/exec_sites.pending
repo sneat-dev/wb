@@ -29,7 +29,6 @@ internal/canonicalrescue/canonicalrescue.go	2	task-15
 internal/ciaudit/target.go	4	task-15
 internal/deps/command.go	1	task-14
 internal/envguard/envguard.go	3	task-15
-internal/githubobserver/observer.go	1	task-15
 internal/gitops/gitops.go	2	task-8
 internal/herdr/runner.go	1	task-8
 internal/hooks/git.go	5	task-15

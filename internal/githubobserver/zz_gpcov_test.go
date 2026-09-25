@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // This file adds targeted coverage for the githubobserver package. Every test
@@ -1187,18 +1188,16 @@ func TestGpCovStateDirResolutionOrder(t *testing.T) {
 	})
 }
 
-// runGH must report a real gh failure's exit status, its captured streams, and
-// fall back to exit code 1 when the process could not be started at all.
+// runGH must report a gh failure's exit status and its captured streams, and
+// fall back to exit code 1 when the runner's own error does not carry an
+// exit code at all (a start failure, or task-24's guard refusal).
 func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
-	binDir := t.TempDir()
-	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\nprintf 'stdout-line'\nprintf 'stderr-line' >&2\nexit 3\n"
-	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"gh", "api", "user"},
+		runner.Result{Stdout: "stdout-line", Stderr: "stderr-line", ExitCode: 3}, errors.New("exit status 3"))
 
-	result := runGH(context.Background(), "", "api", "user")
+	result := runGHWithRunner(context.Background(), "", fake, "api", "user")
 	if result.Err == nil {
 		t.Fatal("a nonzero gh exit must be reported as an error")
 	}
@@ -1209,21 +1208,31 @@ func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
 		t.Fatalf("stdout = %q stderr = %q, want both streams captured", result.Stdout, result.Stderr)
 	}
 
-	if err := testenv.WriteExecutableFile(ghPath, []byte("#!/bin/sh\nprintf 'ok'\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result = runGH(context.Background(), "", "version")
+	fake.ExpectArgv([]string{"gh", "version"}, runner.Result{Stdout: "ok"}, nil)
+	result = runGHWithRunner(context.Background(), "", fake, "version")
 	if result.Err != nil || result.ExitCode != 0 || string(result.Stdout) != "ok" {
 		t.Fatalf("successful run = %+v", result)
 	}
 
-	t.Setenv("PATH", t.TempDir())
-	result = runGH(context.Background(), "", "version")
+	fake.ExpectArgv([]string{"gh", "version"}, runner.Result{}, errors.New(`exec: "gh": executable file not found in $PATH`))
+	result = runGHWithRunner(context.Background(), "", fake, "version")
 	if result.Err == nil {
 		t.Fatal("a missing gh binary must be reported as an error")
 	}
 	if result.ExitCode != 1 {
 		t.Fatalf("ExitCode = %d, want the generic 1 for a process that never started", result.ExitCode)
+	}
+}
+
+// TestGpCovRunGHDefaultsToProductionRunner proves the exported runGH
+// resolves a nil runner to the production runner.Runner. Under `go test`,
+// runner.Real refuses to start a real process (task-24's guard), so this
+// observes the generic exit-1 fallback instead of shelling out to gh.
+func TestGpCovRunGHDefaultsToProductionRunner(t *testing.T) {
+	t.Parallel()
+	result := runGH(context.Background(), "", "version")
+	if result.Err == nil || result.ExitCode != 1 {
+		t.Fatalf("runGH with no injected runner = %+v, want the generic exit-1 fallback", result)
 	}
 }
 

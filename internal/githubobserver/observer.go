@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
+	procrunner "github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
@@ -866,24 +866,42 @@ func (o *Observer) retryDelay(attempt int, headers map[string]string) (time.Dura
 }
 
 func runGH(ctx context.Context, dir string, args ...string) commandResult {
-	command := exec.CommandContext(ctx, "gh", args...)
-	command.Dir = dir
-	command.Env = console.Env()
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
-	result := commandResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), Err: err}
+	return runGHWithRunner(ctx, dir, nil, args...)
+}
+
+// runGHWithRunner is runGH's testable core: r is the runner.Runner seam a
+// unit test substitutes with runnertest.Fake. A nil r resolves to the
+// production runner.Runner (resolveRunner), exactly as the exported runGH
+// does.
+//
+// runner.Result.ExitCode is already 0 whenever the failure never reached a
+// real process exit (a start failure, or here, task-24's guard refusal) --
+// see internal/runner.Real's exitCodeOf -- and a genuine exit of 0 always
+// pairs with a nil err, so on this err != nil branch ExitCode == 0
+// unambiguously means "not a real exit status", exactly the distinction the
+// direct *os/exec.ExitError type assertion this replaces used to draw.
+func runGHWithRunner(ctx context.Context, dir string, r procrunner.Runner, args ...string) commandResult {
+	opts := procrunner.RunOptions{Env: console.Env()}
+	runResult, err := resolveRunner(r).RunOpts(ctx, dir, opts, "gh", args...)
+	result := commandResult{Stdout: []byte(runResult.Stdout), Stderr: []byte(runResult.Stderr), Err: err}
 	if err == nil {
 		return result
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		result.ExitCode = exitErr.ExitCode()
+	if runResult.ExitCode != 0 {
+		result.ExitCode = runResult.ExitCode
 		return result
 	}
 	result.ExitCode = 1
 	return result
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r procrunner.Runner) procrunner.Runner {
+	if r != nil {
+		return r
+	}
+	return procrunner.New()
 }
 
 // attemptContext derives one attempt's bounded exec context, called fresh

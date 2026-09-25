@@ -117,7 +117,6 @@ internal/fleetsync/rp_coverage_test.go	10	task-15
 internal/fleetsync/skipignored_test.go	3	task-15
 internal/fleetsync/unpushed_test.go	24	task-15
 internal/githubobserver/observer_test.go	7	task-15
-internal/githubobserver/zz_gpcov_test.go	4	task-15
 internal/gitops/gitops_test.go	30	task-8
 internal/gitops/remotebranches_test.go	7	task-8
 internal/gitops/skipsync_test.go	11	task-8
