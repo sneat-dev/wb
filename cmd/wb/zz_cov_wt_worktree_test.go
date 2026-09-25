@@ -715,6 +715,57 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 	}
 }
 
+// TestWorktreeListFilterNarrowsResultsToMatchingRepository proves --filter
+// actually narrows worktree list's results, not just how they are described:
+// with live worktrees in two different orgs, an unfiltered list names both
+// tasks, and adding --filter for one org's slug names only that one.
+// Mutating ListOptions.Filter's application (internal/worktrees) to a no-op
+// turns this from PASS to FAIL, proving the value.
+func TestWorktreeListFilterNarrowsResultsToMatchingRepository(t *testing.T) {
+	projects := t.TempDir()
+	seeds := t.TempDir()
+	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prompt := writeOriginalPromptFixture(t, "filter fixture")
+
+	acmeClone := filepath.Join(projects, "acme", "app")
+	cwCovCloneWithOrigin(t, seeds, "app", acmeClone)
+	otherClone := filepath.Join(projects, "other-org", "app2")
+	cwCovCloneWithOrigin(t, seeds, "app2", otherClone)
+
+	for _, spec := range []struct{ task, repo string }{
+		{"cwwt-acme-task", "acme/app"},
+		{"cwwt-other-task", "other-org/app2"},
+	} {
+		if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) },
+			spec.task, spec.repo, "--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
+			"--original-prompt-file", prompt, "--no-claim"); err != nil {
+			t.Fatalf("create %s/%s: %v", spec.task, spec.repo, err)
+		}
+	}
+
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{projectsRoot: projects}) })
+	if err != nil {
+		t.Fatalf("worktree list: %v", err)
+	}
+	if !strings.Contains(stdout, "cwwt-acme-task") || !strings.Contains(stdout, "cwwt-other-task") {
+		t.Fatalf("unfiltered list = %q, want both tasks", stdout)
+	}
+
+	filtered, _, err := cwCovExec(t, projects, func() *cobra.Command {
+		return newWorktreeListCmd(&invocation{projectsRoot: projects, filterFlag: "acme"})
+	})
+	if err != nil {
+		t.Fatalf("worktree list --filter acme: %v", err)
+	}
+	if !strings.Contains(filtered, "cwwt-acme-task") {
+		t.Fatalf("filtered list = %q, want cwwt-acme-task", filtered)
+	}
+	if strings.Contains(filtered, "cwwt-other-task") {
+		t.Fatalf("filtered list still names the excluded task: %q", filtered)
+	}
+}
+
 func TestCwWtWorktreeBackfillAdoptOrphansInProcess(t *testing.T) {
 	projects := cwCovProjectsRoot(t, "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
