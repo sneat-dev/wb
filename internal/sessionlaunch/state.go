@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/unixcompat"
@@ -937,6 +938,19 @@ func (attempt *launchAttempt) publish(child, name string, raw []byte) (bool, err
 }
 
 func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, error) {
+	return publishLaunchArtifactInjected(directory, name, raw, nil)
+}
+
+// publishLaunchArtifactInjected is publishLaunchArtifact's test seam
+// (task-9 PR-7): every production call site reaches it only through
+// publishLaunchArtifact, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the create/chmod/write/sync/close/link/dir-sync failure branches
+// deterministically. filewrite.CreateExclusive uses the identical
+// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC flag set the original
+// unix.Openat call used, and filewrite.LinkNoReplace calls exactly the
+// original unix.Linkat(directoryFD, temporaryName, directoryFD, name, 0).
+func publishLaunchArtifactInjected(directory *os.File, name string, raw []byte, inj *filewrite.Injector) (bool, error) {
 	if len(raw) > maxLaunchArtifactBytes {
 		return false, fmt.Errorf("launch artifact exceeds %d bytes", maxLaunchArtifactBytes)
 	}
@@ -945,8 +959,7 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 		return false, err
 	}
 	temporaryName := ".pending-" + hex.EncodeToString(random[:])
-	fd, err := unix.Openat(int(directory.Fd()), temporaryName,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporaryName, 0o600, inj)
 	if err != nil {
 		return false, err
 	}
@@ -959,30 +972,30 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 	linked := false
 	defer func() {
 		if !closed {
-			_ = temporary.Close()
+			_ = filewrite.Close(temporary, temporaryName, inj)
 		}
 		if !linked {
 			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
 		}
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		return false, err
 	}
-	written, err := temporary.Write(raw)
-	if err != nil || written != len(raw) {
-		if err != nil {
-			return false, err
+	if err := filewrite.Write(temporary, raw, temporaryName, inj); err != nil {
+		var short *filewrite.ShortWriteError
+		if errors.As(err, &short) {
+			return false, io.ErrShortWrite
 		}
-		return false, io.ErrShortWrite
-	}
-	if err := temporary.Sync(); err != nil {
 		return false, err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
+		return false, err
+	}
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return false, err
 	}
 	closed = true
-	if err := unix.Linkat(int(directory.Fd()), temporaryName, int(directory.Fd()), name, 0); err != nil {
+	if err := filewrite.LinkNoReplace(int(directory.Fd()), temporaryName, name, inj); err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return false, nil
 		}
@@ -992,7 +1005,7 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 		return false, err
 	}
 	linked = true
-	if err := directory.Sync(); err != nil {
+	if err := filewrite.SyncDir(directory, inj); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -310,9 +310,19 @@ func (w *writer) Write(p []byte) (int, error) {
 // of assembling one []byte and calling Write once. With a nil Injector
 // this issues exactly the same file.Write calls, in the same chunks its
 // caller already made, and passes the same error up unwrapped: a
-// bufio.Writer or io.Copy already writes and errors byte-identically
-// whether its io.Writer happens to be *os.File directly or this thin
-// wrapper around it.
+// bufio.Writer already writes and errors byte-identically whether its
+// io.Writer happens to be *os.File directly or this thin wrapper around
+// it. This is NOT true for an io.Copy whose *source* is itself an
+// *os.File or a socket: io.Copy special-cases that pairing with
+// copy_file_range/splice/sendfile fast paths that require its destination
+// to implement io.ReaderFrom, which this plain io.Writer deliberately does
+// not, so io.Copy falls back to its ordinary buffered-read/Write loop
+// instead -- a real, usually-harmless behaviour and performance change,
+// not a byte-identical one, for that specific pairing (review-t9-pr6 N3).
+// No call site task-9 has migrated so far pairs this with an *os.File or
+// socket source; if one ever does, give writer a ReadFrom method that
+// delegates to file after the same injection check, to restore the fast
+// path.
 func Writer(file *os.File, name string, inj *Injector) io.Writer {
 	return &writer{file: file, name: name, inj: inj}
 }

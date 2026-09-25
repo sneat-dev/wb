@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const (
@@ -101,6 +103,16 @@ func Load(path string, id ReceiptIdentity) (Acknowledgement, error) {
 }
 
 func Persist(path string, a Acknowledgement) error {
+	return persistInjected(path, a, nil)
+}
+
+// persistInjected is Persist's test seam (task-9 PR-7): every production
+// call site reaches it only through Persist, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach a create/write/sync/close failure branch
+// deterministically. filewrite.CreateExclusivePath uses the identical
+// O_WRONLY|O_CREATE|O_EXCL flag set the original os.OpenFile call used.
+func persistInjected(path string, a Acknowledgement, inj *filewrite.Injector) error {
 	if a.ID == "" {
 		a.ID = ComputeID(a)
 	}
@@ -112,15 +124,15 @@ func Persist(path string, a Acknowledgement) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := filewrite.CreateExclusivePath(path, 0o600, inj)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(b); err != nil {
+	defer func() { _ = filewrite.Close(f, path, inj) }()
+	if err := filewrite.Write(f, b, path, inj); err != nil {
 		return err
 	}
-	return f.Sync()
+	return filewrite.Sync(f, path, inj)
 }
 
 func sameSources(a, b []Source) bool {

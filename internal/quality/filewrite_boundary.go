@@ -113,8 +113,6 @@ import (
 // through internal/filewrite. Every entry names the task-9 PR that will
 // migrate it; that PR removes the entry in the same commit it lands.
 var PendingMigrationExemptions = map[string]string{
-	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
-
 	// internal/execfile predates task-9's filewrite consolidation (added by
 	// task-21/#739) and is exactly PR-8's own shape: a path-based
 	// CreateTemp+chmod+Rename publish with no sync call. It slots into the
@@ -129,11 +127,8 @@ var PendingMigrationExemptions = map[string]string{
 	// Category A: os.CreateTemp/os.OpenFile/os.WriteFile + os.Rename, all
 	// in the same function (spec/plans/coverage-to-100 task-9 PR-1 review,
 	// B1 inventory items 1-47).
-	"internal/agents/run.go:Store.Save":                               "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
 	"internal/archiveprune/untracked.go:overwriteArchiveCleanReceipt": "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
 	"internal/checkoutmarker/checkoutmarker.go:writeFileAtomically":   "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/daemon/lifecycle.go:Store.Save":                         "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
-	"internal/daemon/service.go:Service.persistRecord":                "PR-7: session-and-lifecycle -- OpenFile+sync+Rename",
 	"internal/deps/github_actions.go:writeAtomic":                     "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/discover/local_index.go:writeLocalIndex":                "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/fleetsync/receipt.go:overwriteRemovalReceipt":           "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
@@ -142,7 +137,6 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/layout/migrate.go:writeManifest":                        "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
 	"internal/lifecyclehooks/gc.go:rewriteReceiptRecords":             "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
 	"internal/lifecyclehooks/queue.go:writeJSONAtomic":                "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
-	"internal/mergeack/mergeack.go:Persist":                           "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
 	"internal/migrate/engine.go:Apply":                                "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/npmrelease/release.go:writeAtomic":                      "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/repositoryevents/queue.go:Queue.persist":                "PR-8: misc-atomic-writers -- CreateTemp-based publish",
@@ -153,18 +147,10 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/wbconfig/peers.go:SetPeersUpstream":                     "PR-8: misc-atomic-writers -- CreateTemp-based publish",
 	"internal/wbconfig/remote.go:SetRemoteHub":                        "PR-8: misc-atomic-writers -- CreateTemp-based publish",
 
-	// Category B: publish through a package-level os.Link alias, or the
-	// write and the publish split across functions (review items 48-56).
-	"internal/nodeidentity/nodeidentity.go:publishNodeID":       "PR-7: session-and-lifecycle -- publishes via os.Link; its temp-file half writeNodeIDTempFile migrates in the same PR",
-	"internal/nodeidentity/nodeidentity.go:writeNodeIDTempFile": "PR-7: session-and-lifecycle -- CreateTemp+chmod+write+sync via package-var seams fileChmod/fileWriteString/fileSync/fileClose, escapes the OpenFile content-write gate; migrates with publishNodeID",
-
 	// Category C: create-exclusive, write, sync, no publish -- the
 	// write-once-immutable shape (review items 57-63, plus writeOneTimeToken
 	// and MarkParked found while regenerating this inventory against the
 	// call-based detector). PR-1 migrated this shape for sessionpark only.
-	"internal/retiredcandidateack/ack.go:Persist":              "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
-	"internal/session/session.go:MarkParked":                   "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once (parked lifecycle marker)",
-	"internal/session/session.go:MarkResumed":                  "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
 	"internal/locallink/execports.go:ExecNode.Link":            "PR-8: misc-atomic-writers -- two OpenFile O_CREATE|O_EXCL write-once marker/backup writes ahead of a rename; not rename-only, unlike ExecNode.Unlink",
 	"internal/locallink/execports.go:copyBuiltPackageContents": "PR-8: misc-atomic-writers -- OpenFile O_EXCL write-once (copy via io.Copy)",
 

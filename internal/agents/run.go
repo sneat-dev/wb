@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/session"
 )
 
@@ -305,6 +306,15 @@ func (store Store) Create(record Record) error {
 // Save atomically replaces the record, so a reader never observes a partially
 // written run.
 func (store Store) Save(record Record) error {
+	return store.saveInjected(record, nil)
+}
+
+// saveInjected is Save's test seam (task-9 PR-7): every production call site
+// reaches it only through Save, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the stage/chmod/write/sync/close/rename failure
+// branches deterministically.
+func (store Store) saveInjected(record Record, inj *filewrite.Injector) error {
 	if err := validateAgentID(record.AgentID); err != nil {
 		return err
 	}
@@ -315,28 +325,28 @@ func (store Store) Save(record Record) error {
 	}
 	raw = append(raw, '\n')
 	dir := store.Dir(record.AgentID)
-	temporary, err := os.CreateTemp(dir, ".run-*.json")
+	temporary, err := filewrite.CreateTemp(dir, ".run-*.json", inj)
 	if err != nil {
 		return fmt.Errorf("stage agent run record: %w", err)
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("protect staged agent run record: %w", err)
 	}
-	if _, err := temporary.Write(raw); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, raw, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("write agent run record: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("sync agent run record: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return fmt.Errorf("close agent run record: %w", err)
 	}
-	if err := os.Rename(name, filepath.Join(dir, recordFileName)); err != nil {
+	if err := filewrite.Rename(name, filepath.Join(dir, recordFileName), inj); err != nil {
 		return fmt.Errorf("replace agent run record: %w", err)
 	}
 	return nil
