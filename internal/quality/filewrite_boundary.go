@@ -114,7 +114,6 @@ import (
 // migrate it; that PR removes the entry in the same commit it lands.
 var PendingMigrationExemptions = map[string]string{
 	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
-	"internal/hooks/manager.go:writeExecutableAt":           "PR-5: hooks -- fd-relative create+chmod+write+renameNoReplace publish",
 
 	// internal/execfile predates task-9's filewrite consolidation (added by
 	// task-21/#739) and is exactly PR-8's own shape: a path-based
@@ -139,7 +138,6 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/discover/local_index.go:writeLocalIndex":                  "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/fleetsync/receipt.go:overwriteRemovalReceipt":             "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
 	"internal/githubobserver/observer.go:writeCacheEntry":               "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/hooks/pushtier_prlookup.go:savePRStatusCache":             "PR-5: hooks -- WriteFile-to-temp+Rename",
 	"internal/landinglane/landinglane.go:writeRecord":                   "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
 	"internal/layout/migrate.go:writeManifest":                          "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
 	"internal/lifecyclehooks/gc.go:rewriteReceiptRecords":               "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
