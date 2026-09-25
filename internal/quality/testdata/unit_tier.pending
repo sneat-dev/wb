@@ -17,7 +17,6 @@ cmd/wb/deps_peers_test.go	2	task-22
 cmd/wb/deps_propagate_test.go	5	task-22
 cmd/wb/deps_test.go	5	task-22
 cmd/wb/fleet_cmd_test.go	8	task-22
-cmd/wb/fleet_default_branch_test.go	21	task-22
 cmd/wb/hooks_agent_test.go	15	task-22
 cmd/wb/hooks_lifecycle_test.go	2	task-22
 cmd/wb/hooks_measure_test.go	1	task-22
@@ -87,6 +86,7 @@ internal/ciaudit/target_test.go	22	task-15
 internal/ciaudit/zz_gpcov_target_test.go	18	task-15
 internal/ciaudit/zz_gpcov_test.go	9	task-15
 internal/daemon/dqcov_lifecycle_test.go	1	task-14
+internal/defaultbranch/defaultbranch_test.go	21	task-22
 internal/deps/bump_fetch_cache_test.go	12	task-14
 internal/deps/bump_test.go	24	task-14
 internal/deps/command_test.go	2	task-14
