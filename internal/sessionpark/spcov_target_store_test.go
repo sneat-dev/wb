@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -759,33 +760,33 @@ func TestSpCovWriteImmutableAndExactPrivateArtifacts(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = directory.Close() })
 
-	created, err := writeImmutableAt(directory, "first.json", []byte("body\n"), 0o600)
+	created, err := filewrite.CreateExclusiveWriteSync(directory, "first.json", []byte("body\n"), 0o600, nil)
 	if err != nil || !created {
 		t.Fatalf("created=%t err=%v", created, err)
 	}
-	created, err = writeImmutableAt(directory, "first.json", []byte("body\n"), 0o600)
+	created, err = filewrite.CreateExclusiveWriteSync(directory, "first.json", []byte("body\n"), 0o600, nil)
 	if err != nil || created {
 		t.Fatalf("immutable rewrite created=%t err=%v", created, err)
 	}
-	if _, err := writeImmutableAt(directory, "nested/missing.json", []byte("x"), 0o600); err == nil {
+	if _, err := filewrite.CreateExclusiveWriteSync(directory, "nested/missing.json", []byte("x"), 0o600, nil); err == nil {
 		t.Fatal("write with a missing parent directory accepted")
 	}
-	if fd, err := openOrCreateRegularAt(int(directory.Fd()), "plain.lock", 0o600); err != nil {
-		t.Fatalf("openOrCreateRegularAt = %v", err)
+	if fd, err := filewrite.OpenOrCreateRegular(int(directory.Fd()), "plain.lock", 0o600, nil); err != nil {
+		t.Fatalf("OpenOrCreateRegular = %v", err)
 	} else {
 		_ = unix.Close(fd)
 	}
-	if fd, err := openOrCreateRegularAt(int(directory.Fd()), "plain.lock", 0o600); err != nil {
-		t.Fatalf("openOrCreateRegularAt reopen = %v", err)
+	if fd, err := filewrite.OpenOrCreateRegular(int(directory.Fd()), "plain.lock", 0o600, nil); err != nil {
+		t.Fatalf("OpenOrCreateRegular reopen = %v", err)
 	} else {
 		_ = unix.Close(fd)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "dir.lock"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if fd, err := openOrCreateRegularAt(int(directory.Fd()), "dir.lock", 0o600); err == nil {
+	if fd, err := filewrite.OpenOrCreateRegular(int(directory.Fd()), "dir.lock", 0o600, nil); err == nil {
 		_ = unix.Close(fd)
-		t.Fatal("directory accepted by openOrCreateRegularAt")
+		t.Fatal("directory accepted by OpenOrCreateRegular")
 	}
 
 	if err := writeExactPrivateAt(directory, "exact.json", []byte("same\n")); err != nil {
@@ -868,7 +869,7 @@ func TestSpCovOpenOrCreateRegularAtRejectsNonRegularDeviceNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dev.Close() })
-	fd, err := openOrCreateRegularAt(int(dev.Fd()), "null", 0o600)
+	fd, err := filewrite.OpenOrCreateRegular(int(dev.Fd()), "null", 0o600, nil)
 	if err == nil {
 		_ = unix.Close(fd)
 		t.Fatal("character device accepted as one regular file")
