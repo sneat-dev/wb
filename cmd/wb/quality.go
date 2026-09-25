@@ -140,6 +140,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.baselineFile, "baseline-file", "", "per-package uncovered-count baseline JSON for --changed; measures the merge base directly when empty or missing")
 	command.Flags().DurationVar(&options.baselineTimeout, "baseline-timeout", 20*time.Minute, "wall-time budget for measuring the merge base directly when --baseline-file is empty or missing")
 	command.AddCommand(newCoverageBaselineCmd())
+	command.AddCommand(newCoverageWorklistCmd())
 	return command
 }
 

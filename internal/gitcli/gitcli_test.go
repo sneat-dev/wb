@@ -7,6 +7,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/testsweep"
 )
 
 func TestClientCurrentBranchTrimsAndReturnsStdout(t *testing.T) {
@@ -128,6 +129,47 @@ func TestClientIsAncestorReturnsAGitErrorOnAnAmbiguousExitStatus(t *testing.T) {
 	if !errors.As(err, &gitErr) {
 		t.Fatalf("err = %v, want a *GitError", err)
 	}
+}
+
+// TestClientIsAncestorErrorReturnSweptByTestsweep is task-8's "prove it on
+// one real consumer" step: internal/testsweep.Sweep drives IsAncestor's
+// happy path (one runner call) and reruns it with that one call failing,
+// in place of TestClientIsAncestorReturnsAGitErrorOnAnAmbiguousExitStatus
+// above hand-writing the same case. IsAncestor's only error return is
+// reached this way: an injected failure carries no exit code, so it always
+// lands in the "neither yes nor no" ambiguous branch, never the "exit
+// status 1 means false, nil error" branch -- that branch returns no error
+// at all, so it is out of Sweep's scope by construction. internal/gitcli
+// was already at 100% statement coverage before this test (PR-1's
+// hand-written cases covered every branch), so this adds no newly covered
+// statement; it proves the generic sweep reaches the same production error
+// path a real consumer of runnertest.Fake would.
+func TestClientIsAncestorErrorReturnSweptByTestsweep(t *testing.T) {
+	t.Parallel()
+	failErr := errors.New("boom")
+
+	body := func(fake *runnertest.Fake) error {
+		fake.ExpectArgv([]string{"git", "merge-base", "--is-ancestor", "base", "head"}, runner.Result{}, nil)
+		_, err := New(fake).IsAncestor(context.Background(), "/repo", "base", "head")
+		return err
+	}
+
+	testsweep.Sweep(t, func() *runnertest.Fake { return runnertest.New(t) }, failErr, body,
+		func(t testing.TB, callNum, total int, err error) {
+			if total != 1 {
+				t.Fatalf("total = %d, want 1: IsAncestor makes exactly one runner call", total)
+			}
+			var gitErr *GitError
+			if !errors.As(err, &gitErr) {
+				t.Fatalf("call %d err = %v, want a *GitError", callNum, err)
+			}
+			if !errors.Is(err, failErr) {
+				t.Fatalf("call %d err = %v, want it to wrap the injected failure", callNum, err)
+			}
+			if !errors.Is(err, errIsAncestorAmbiguous) {
+				t.Fatalf("call %d err = %v, want it to wrap errIsAncestorAmbiguous", callNum, err)
+			}
+		})
 }
 
 func TestClientFetchSucceeds(t *testing.T) {

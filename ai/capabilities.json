@@ -1900,6 +1900,78 @@
       "notes": "go-ci.yml's coverage job runs this on every push to main and uploads its output as the wb-coverage-baseline artifact; wb coverage --changed --baseline-file reads it back for pull requests."
     },
     {
+      "id": "wb.coverage.worklist",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage worklist",
+              "flags": [
+                "--format",
+                "--module",
+                "--unit-size"
+              ],
+              "modes": [
+                "Reads an already-measured Go coverage profile plus the module source under --module and lists every uncovered block with its file, line range, statement count, and enclosing function, mapped with go/ast (spec/plans/coverage-to-100/README.md task-25).",
+                "Groups the uncovered blocks into units of about --unit-size statements (default 300): a function's blocks never split across units, and a file's functions stay in one unit while the running total allows it. Every unit that shares a file with another unit names it, so the coordinator never schedules them concurrently.",
+                "Deterministic for a given profile and module tree regardless of the profile's own line order, and every uncovered block appears in exactly one unit. --format text (default) prints a human summary; --format json emits the full unit/block structure."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage worklist --help",
+              "contains": [
+                "--module",
+                "--unit-size",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "The coordinator regenerates worklists ad hoc from the latest cov/integration profile; no standalone operator runbook is published yet."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/quality/worklist_test.go",
+              "name": "TestBuildWorklistGroupsWholeFunctionsAndMarksSharedFiles",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/worklist_test.go",
+              "name": "TestBuildWorklistIsDeterministicRegardlessOfProfileOrder",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_worklist_test.go",
+              "name": "TestCoverageWorklistWritesTextOutputAndNamesSharedFiles",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_worklist_test.go",
+              "name": "TestCoverageWorklistWritesJSONOutput",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A lane's brief carries its unit's blocks instead of exploration; the coordinator regenerates the list from the latest cov/integration profile before cutting new units."
+    },
+    {
       "id": "wb.create",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md",
