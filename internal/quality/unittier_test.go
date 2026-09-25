@@ -508,3 +508,270 @@ func TestCallFirstStringArgEqualsRejectsNoArguments(t *testing.T) {
 		t.Fatal("want false for a call with no arguments")
 	}
 }
+
+func TestFindUnitTierMatchesMarksSelfReexecForExecCommandOSArgsZero(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import "os/exec"
+import "os"
+
+func TestSomething(t *testing.T) {
+	exec.Command(os.Args[0], "-test.run=Helper")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || !matches[0].SelfReexec {
+		t.Fatalf("matches = %+v, want exactly one self-reexec match", matches)
+	}
+}
+
+func TestFindUnitTierMatchesDoesNotMarkSelfReexecForExecCommandOfGit(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import "os/exec"
+
+func TestSomething(t *testing.T) {
+	exec.Command("git", "status")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].SelfReexec {
+		t.Fatalf("matches = %+v, want exactly one non-self-reexec match", matches)
+	}
+}
+
+func TestFindUnitTierMatchesMarksSelfReexecForCommandContextArgOne(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import (
+	"context"
+	"os"
+	"os/exec"
+)
+
+func TestSomething(t *testing.T) {
+	exec.CommandContext(context.Background(), os.Args[0])
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || !matches[0].SelfReexec {
+		t.Fatalf("matches = %+v, want the CommandContext call flagged self-reexec", matches)
+	}
+}
+
+func TestFindUnitTierMatchesMarksSelfReexecForStartProcess(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import "os"
+
+func TestSomething(t *testing.T) {
+	os.StartProcess(os.Args[0], nil, nil)
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || !matches[0].SelfReexec {
+		t.Fatalf("matches = %+v, want the StartProcess call flagged self-reexec", matches)
+	}
+}
+
+func TestFindUnitTierMatchesFindsQualifiedGitHelperCall(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import "github.com/sneat-dev/wb/internal/testenv"
+
+func TestSomething(t *testing.T) {
+	testenv.ConfigureGitAutoMaintenanceOff(t, "/tmp/repo")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != UnitTierPatternGitHelper || matches[0].Detail != "testenv.ConfigureGitAutoMaintenanceOff" {
+		t.Fatalf("matches = %+v", matches)
+	}
+}
+
+func TestFindUnitTierMatchesResolvesAliasedExecImport(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import osexec "os/exec"
+
+func TestSomething(t *testing.T) {
+	osexec.Command("git", "status")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != UnitTierPatternExecStart || matches[0].Detail != "exec.Command" {
+		t.Fatalf("matches = %+v, want the aliased import resolved to exec.Command", matches)
+	}
+}
+
+func TestFindUnitTierMatchesResolvesAliasedTestenvImport(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import te "github.com/sneat-dev/wb/internal/testenv"
+
+func TestSomething(t *testing.T) {
+	te.WriteExecutableFile("path", []byte("#!/bin/sh\n"))
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != UnitTierPatternWriteExecutable {
+		t.Fatalf("matches = %+v, want the aliased testenv import still recognised", matches)
+	}
+}
+
+func TestFindUnitTierMatchesResolvesAliasedRunnertestImport(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import rt "github.com/sneat-dev/wb/internal/runner/runnertest"
+
+func TestSomething(t *testing.T) {
+	rt.AllowRealProcess(t)
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != UnitTierPatternAllowRealProcess {
+		t.Fatalf("matches = %+v, want the aliased runnertest import still recognised", matches)
+	}
+}
+
+func TestFindUnitTierMatchesIgnoresUnrelatedImportPath(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import "fmt"
+
+func TestSomething(t *testing.T) {
+	fmt.Println("hello")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %+v, want none for an unrelated import", matches)
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsShortArgList(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: nil}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false when the call has no argument at that index")
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsNonIndexExpr(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.Ident{Name: "path"}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false for a plain identifier argument")
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsIndexOfNonSelector(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.IndexExpr{
+		X:     &ast.Ident{Name: "args"},
+		Index: &ast.BasicLit{Kind: token.INT, Value: "0"},
+	}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false when the indexed expression is not a selector")
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsWrongSelectorField(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.IndexExpr{
+		X:     &ast.SelectorExpr{X: &ast.Ident{Name: "os"}, Sel: &ast.Ident{Name: "Environ"}},
+		Index: &ast.BasicLit{Kind: token.INT, Value: "0"},
+	}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false for os.Environ[0], not os.Args[0]")
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsWrongPackage(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.IndexExpr{
+		X:     &ast.SelectorExpr{X: &ast.Ident{Name: "notos"}, Sel: &ast.Ident{Name: "Args"}},
+		Index: &ast.BasicLit{Kind: token.INT, Value: "0"},
+	}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false for notos.Args[0]")
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsNonZeroIndex(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.IndexExpr{
+		X:     &ast.SelectorExpr{X: &ast.Ident{Name: "os"}, Sel: &ast.Ident{Name: "Args"}},
+		Index: &ast.BasicLit{Kind: token.INT, Value: "1"},
+	}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false for os.Args[1]")
+	}
+}
+
+func TestUnitTierPackageAliasesIgnoresUnquotableImportPath(t *testing.T) {
+	t.Parallel()
+	file := &ast.File{Imports: []*ast.ImportSpec{
+		{Path: &ast.BasicLit{Kind: token.STRING, Value: `"unterminated`}},
+	}}
+	aliases := unitTierPackageAliases(file)
+	if len(aliases) != 0 {
+		t.Fatalf("aliases = %+v, want none for an unquotable import path", aliases)
+	}
+}
+
+func TestCallArgIsOSArgsZeroRejectsNonIntIndexLiteral(t *testing.T) {
+	t.Parallel()
+	call := &ast.CallExpr{Args: []ast.Expr{&ast.IndexExpr{
+		X:     &ast.SelectorExpr{X: &ast.Ident{Name: "os"}, Sel: &ast.Ident{Name: "Args"}},
+		Index: &ast.BasicLit{Kind: token.STRING, Value: `"0"`},
+	}}}
+	if callArgIsOSArgsZero(call, 0) {
+		t.Fatal("want false when the index literal is not an INT token")
+	}
+}

@@ -445,7 +445,7 @@ jobs:
           cache: true
       - name: go test -tags e2e (real-git journeys and adapter contract tests)
         run: >-
-          go test -tags e2e -run '^Test(E2E|Contract)' ./...
+          go test -tags e2e -count=1 -run '^Test(E2E|Contract)' ./...
 
   windows:
     name: Native Windows compile and test

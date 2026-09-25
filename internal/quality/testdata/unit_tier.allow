@@ -8,4 +8,3 @@ internal/process/command_unix_test.go	re-runs the test binary itself (exec.Comma
 internal/quality/dqcov_fault_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) to force a fault-injection path
 internal/runlog/runlog_tailcov_unix_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) to exercise a tail-coverage helper process
 internal/worktrees/git_capability_linux_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)), twice, to exercise the fd-inheriting git-capability helper under a real Linux filesystem capability
-internal/worktrees/wtlife_secure_helper_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) to exercise a secure git helper's in-process core

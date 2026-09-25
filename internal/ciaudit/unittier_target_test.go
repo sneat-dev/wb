@@ -1,28 +1,66 @@
 package ciaudit
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
 
 const unitTierPendingPath = "internal/quality/testdata/unit_tier.pending"
+
+// fakeUnitTierGit is a unitTierGitRunner test double: it never spawns a
+// process or touches a real repository (review note #764 B4), and answers
+// each git subcommand compareUnitTierPendingTotal issues from fields set by
+// the test. A subcommand this fixture is not configured for is a test bug,
+// not a silent success, so it fails the test immediately via t.
+type fakeUnitTierGit struct {
+	t *testing.T
+
+	currentBranch    string
+	currentBranchErr error
+	fetchErr         error
+	showContent      string
+	showErr          error
+}
+
+func (f *fakeUnitTierGit) run(_ string, arguments ...string) (string, error) {
+	f.t.Helper()
+	if len(arguments) == 0 {
+		f.t.Fatalf("fakeUnitTierGit: called with no arguments")
+	}
+	switch arguments[0] {
+	case "rev-parse":
+		return f.currentBranch, f.currentBranchErr
+	case "fetch":
+		return "", f.fetchErr
+	case "show":
+		return f.showContent, f.showErr
+	default:
+		f.t.Fatalf("fakeUnitTierGit: unexpected git subcommand %q", arguments[0])
+		return "", nil
+	}
+}
+
+// gitShowPathMissingErr is the exact shape `git show <ref>:<path>` fails
+// with when path does not exist on ref -- the one error
+// compareUnitTierPendingTotal treats as "this PR creates the file",
+// isGitShowPathMissingOnTarget's own doc comment.
+func gitShowPathMissingErr(ref, path string) error {
+	return fmt.Errorf("git show %s:%s: exit status 128: fatal: path '%s' does not exist in '%s'", ref, path, path, ref)
+}
 
 // TestCompareUnitTierPendingTotalReportsARisingTotal pins task-24's cross-PR
 // ratchet: internal/quality/testdata/unit_tier.pending's grand total may not
 // rise against the base branch's committed copy.
 func TestCompareUnitTierPendingTotalReportsARisingTotal(t *testing.T) {
 	t.Parallel()
-	fixture := newTargetFixture(t, "85")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t1\ttask-2\n")
+	git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showContent: "a_test.go\t3\ttask-1\n"}
 
-	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t1\ttask-2\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "add a new pending entry without shrinking another")
-
-	findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+	findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 	if err != nil {
-		t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+		t.Fatalf("compareUnitTierPendingTotal: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly one finding, got %+v", findings)
@@ -45,20 +83,13 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("an unchanged total", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-		targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showContent: "a_test.go\t3\ttask-1\n"}
 
-		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-		write(t, fixture.Root, "README.md", "unrelated change\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "unrelated")
-
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("an unchanged total produced findings: %+v", findings)
@@ -67,20 +98,13 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("a total that shrank", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t2\ttask-2\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-		targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showContent: "a_test.go\t3\ttask-1\nb_test.go\t2\ttask-2\n"}
 
-		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "convert b_test.go and shrink a_test.go")
-
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("a shrinking total produced findings: %+v", findings)
@@ -89,20 +113,13 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("one entry grows while another shrinks by at least as much", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t5\ttask-2\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-		targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t5\ttask-1\nb_test.go\t3\ttask-2\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showContent: "a_test.go\t3\ttask-1\nb_test.go\t5\ttask-2\n"}
 
-		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t5\ttask-1\nb_test.go\t3\ttask-2\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "move matches from b_test.go to a_test.go")
-
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("an offsetting move produced findings: %+v", findings)
@@ -111,14 +128,13 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("the current branch already is the target", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "main"}
 
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("auditing main against itself produced findings: %+v", findings)
@@ -127,15 +143,13 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("the pending list is new on this branch (the creating PR)", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-		write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-		targetGit(t, fixture.Root, "add", "-A")
-		targetGit(t, fixture.Root, "commit", "-qm", "create the pending list")
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showErr: gitShowPathMissingErr("origin/main", unitTierPendingPath)}
 
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "main")
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("the creating PR produced findings: %+v", findings)
@@ -144,10 +158,12 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 
 	t.Run("an empty target is a no-op", func(t *testing.T) {
 		t.Parallel()
-		fixture := newTargetFixture(t, "85")
-		findings, err := CompareUnitTierPendingTotal(fixture.Root, "")
+		root := t.TempDir()
+		git := &fakeUnitTierGit{t: t}
+
+		findings, err := compareUnitTierPendingTotal(root, "", git.run)
 		if err != nil {
-			t.Fatalf("CompareUnitTierPendingTotal: %v", err)
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
 		}
 		if len(findings) != 0 {
 			t.Fatalf("an empty target produced findings: %+v", findings)
@@ -161,6 +177,150 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 // error, not a silently-zero total.
 func TestCompareUnitTierPendingTotalRejectsAMalformedLocalPendingFile(t *testing.T) {
 	t.Parallel()
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t-1\ttask-1\n")
+	git := &fakeUnitTierGit{t: t, currentBranch: "feature/x"}
+
+	if _, err := compareUnitTierPendingTotal(root, "main", git.run); err == nil {
+		t.Fatal("want an error for an invalid local unit_tier.pending")
+	}
+}
+
+// TestCompareUnitTierPendingTotalRejectsAMalformedTargetPendingFile pins the
+// same error path for the fetched target's copy.
+func TestCompareUnitTierPendingTotalRejectsAMalformedTargetPendingFile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
+	git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showContent: "a_test.go\t-1\ttask-1\n"}
+
+	if _, err := compareUnitTierPendingTotal(root, "main", git.run); err == nil {
+		t.Fatal("want an error for an invalid target unit_tier.pending")
+	}
+}
+
+// TestCompareUnitTierPendingTotalRejectsADeterminingCurrentBranchFailure
+// pins the "determine the current branch" error path.
+func TestCompareUnitTierPendingTotalRejectsADeterminingCurrentBranchFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
+	git := &fakeUnitTierGit{t: t, currentBranchErr: errors.New("not a git repository")}
+
+	if _, err := compareUnitTierPendingTotal(root, "main", git.run); err == nil {
+		t.Fatal("want an error when the current branch cannot be determined")
+	}
+}
+
+// TestCompareUnitTierPendingTotalRejectsAFetchFailure pins the "fetch
+// origin/<target>" error path.
+func TestCompareUnitTierPendingTotalRejectsAFetchFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
+	git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", fetchErr: errors.New("no origin remote configured")}
+
+	if _, err := compareUnitTierPendingTotal(root, "main", git.run); err == nil {
+		t.Fatal("want an error when origin/<target> cannot be fetched")
+	}
+}
+
+// TestCompareUnitTierPendingTotalRejectsANonMissingShowError pins the other
+// half of review note #764's "only treat 'path does not exist on target' as
+// the creating-PR exemption; any other git error must fail": a `git show`
+// failure that is not the path-missing shape (here, a bare "network error"
+// message with no "does not exist in" substring) must surface as an error,
+// never be swallowed the way a missing path is.
+func TestCompareUnitTierPendingTotalRejectsANonMissingShowError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
+	git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showErr: errors.New("fatal: unable to access origin: network error")}
+
+	if _, err := compareUnitTierPendingTotal(root, "main", git.run); err == nil {
+		t.Fatal("want an error for a non-path-missing git show failure")
+	}
+}
+
+// TestIsGitShowPathMissingOnTargetRejectsNilError pins the nil-error branch.
+func TestIsGitShowPathMissingOnTargetRejectsNilError(t *testing.T) {
+	t.Parallel()
+	if isGitShowPathMissingOnTarget(nil) {
+		t.Fatal("want false for a nil error")
+	}
+}
+
+// TestCompareAgainstTargetCombinesBothComparisonsSorted pins
+// CompareAgainstTarget's own contract (review note #764 B5): it runs both
+// CompareCoverageFloors and CompareUnitTierPendingTotal against the same
+// root and target and returns their findings combined into the one sorted
+// slice cmd/wb/ci.go used to build itself, from the two calls this function
+// now replaces. A real Git fixture is unavoidable here (unlike
+// compareUnitTierPendingTotal's own tests above): CompareCoverageFloors has
+// no git-reading port of its own to fake, and CompareAgainstTarget's whole
+// job is running both real, exported comparisons together.
+func TestCompareAgainstTargetCombinesBothComparisonsSorted(t *testing.T) {
+	t.Parallel()
+	fixture := newTargetFixture(t, "85")
+	write(t, fixture.Root, ".github/workflows/nightly.yml", `
+jobs:
+  build:
+    with:
+      min_test_coverage_percent: 85
+`)
+	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
+	targetGit(t, fixture.Root, "add", "-A")
+	targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
+	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+
+	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
+	write(t, fixture.Root, ".github/workflows/ci.yml", `
+jobs:
+  build:
+    with:
+      min_test_coverage_percent: 80
+`)
+	write(t, fixture.Root, ".github/workflows/nightly.yml", `
+jobs:
+  build:
+    with:
+      min_test_coverage_percent: 80
+`)
+	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t1\ttask-2\n")
+	targetGit(t, fixture.Root, "add", "-A")
+	targetGit(t, fixture.Root, "commit", "-qm", "lower both floors and grow the pending total")
+
+	findings, err := CompareAgainstTarget(fixture.Root, "main")
+	if err != nil {
+		t.Fatalf("CompareAgainstTarget: %v", err)
+	}
+	if len(findings) != 3 {
+		t.Fatalf("findings = %+v, want exactly 3 (two floors, one pending)", findings)
+	}
+	if findings[0].Code != "coverage-floor-lowered" || findings[1].Code != "coverage-floor-lowered" || findings[2].Code != "unit-tier-pending-total-rose" {
+		t.Fatalf("findings = %+v, want both coverage-floor-lowered findings before unit-tier-pending-total-rose", findings)
+	}
+	if findings[0].File >= findings[1].File {
+		t.Fatalf("findings = %+v, want the two same-code findings sorted by File", findings)
+	}
+}
+
+// TestCompareAgainstTargetPropagatesACoverageFloorsError pins the first
+// error branch: CompareAgainstTarget must surface a CompareCoverageFloors
+// failure rather than silently proceeding to the pending comparison.
+func TestCompareAgainstTargetPropagatesACoverageFloorsError(t *testing.T) {
+	t.Parallel()
+	if _, err := CompareAgainstTarget(t.TempDir(), "main"); err == nil {
+		t.Fatal("want an error for a directory that is not a Git repository")
+	}
+}
+
+// TestCompareAgainstTargetPropagatesAPendingTotalError pins the second error
+// branch: a CompareUnitTierPendingTotal failure (here, a malformed local
+// unit_tier.pending) surfaces even when CompareCoverageFloors itself found
+// nothing to report.
+func TestCompareAgainstTargetPropagatesAPendingTotalError(t *testing.T) {
+	t.Parallel()
 	fixture := newTargetFixture(t, "85")
 	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
 	targetGit(t, fixture.Root, "add", "-A")
@@ -172,53 +332,22 @@ func TestCompareUnitTierPendingTotalRejectsAMalformedLocalPendingFile(t *testing
 	targetGit(t, fixture.Root, "add", "-A")
 	targetGit(t, fixture.Root, "commit", "-qm", "corrupt the local pending file")
 
-	if _, err := CompareUnitTierPendingTotal(fixture.Root, "main"); err == nil {
+	if _, err := CompareAgainstTarget(fixture.Root, "main"); err == nil {
 		t.Fatal("want an error for an invalid local unit_tier.pending")
 	}
 }
 
-// TestCompareUnitTierPendingTotalRejectsAMalformedTargetPendingFile pins the
-// same error path for the fetched target's copy.
-func TestCompareUnitTierPendingTotalRejectsAMalformedTargetPendingFile(t *testing.T) {
+// TestCompareUnitTierPendingTotalExportedWrapperEmptyTarget covers
+// CompareUnitTierPendingTotal itself (not just its compareUnitTierPendingTotal
+// core): an empty target short-circuits before any git call, so this needs
+// no real repository and no fake.
+func TestCompareUnitTierPendingTotalExportedWrapperEmptyTarget(t *testing.T) {
 	t.Parallel()
-	fixture := newTargetFixture(t, "85")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t-1\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "seed a corrupt pending list")
-	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
-
-	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t1\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "fix the local pending list")
-
-	if _, err := CompareUnitTierPendingTotal(fixture.Root, "main"); err == nil {
-		t.Fatal("want an error for an invalid target unit_tier.pending")
+	findings, err := CompareUnitTierPendingTotal(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CompareUnitTierPendingTotal: %v", err)
 	}
-}
-
-// TestCompareUnitTierPendingTotalRejectsAPathThatIsNotAGitRepository pins
-// the "determine the current branch" error path.
-func TestCompareUnitTierPendingTotalRejectsAPathThatIsNotAGitRepository(t *testing.T) {
-	t.Parallel()
-	if _, err := CompareUnitTierPendingTotal(t.TempDir(), "main"); err == nil {
-		t.Fatal("want an error for a directory that is not a Git repository")
-	}
-}
-
-// TestCompareUnitTierPendingTotalRejectsAFetchFailure pins the "fetch
-// origin/<target>" error path: a repository with no "origin" remote at all.
-func TestCompareUnitTierPendingTotalRejectsAFetchFailure(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	targetGit(t, root, "init", "-q", "-b", "feature/x")
-	targetGit(t, root, "config", "user.email", "audit@example.test")
-	targetGit(t, root, "config", "user.name", "audit")
-	write(t, root, "README.md", "no origin remote configured\n")
-	targetGit(t, root, "add", "-A")
-	targetGit(t, root, "commit", "-qm", "init")
-
-	if _, err := CompareUnitTierPendingTotal(root, "main"); err == nil {
-		t.Fatal("want an error when origin/<target> cannot be fetched")
+	if len(findings) != 0 {
+		t.Fatalf("an empty target produced findings: %+v", findings)
 	}
 }

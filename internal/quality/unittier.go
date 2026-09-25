@@ -79,8 +79,14 @@ const (
 	UnitTierPatternGitHelper UnitTierPattern = "git-helper-call"
 	// UnitTierPatternHelperProcessEnv is a string literal naming the
 	// helper-process re-exec environment variable (GO_WANT_HELPER_PROCESS
-	// or this repository's GO_WANT_HELPER_PROCESS_OBSERVE variant). Task-24
-	// review note #764 N1: only a file on the allow list may use it.
+	// or this repository's GO_WANT_HELPER_PROCESS_OBSERVE variant). It is
+	// how the re-exec pattern's own child process finds out it should run
+	// as the helper rather than the ordinary test suite, so it is expected,
+	// alongside a genuine self-reexec exec-start match, in a file on
+	// unit_tier.allow -- TestUnitTierAllowListEntriesAreGenuineHelperProcessReexec
+	// permits it there. Outside the allow list it is unreviewed (review
+	// note #764 N1/N2) and stays subject to the ordinary pending-count rule
+	// like any other match.
 	UnitTierPatternHelperProcessEnv UnitTierPattern = "helper-process-env"
 )
 
@@ -150,6 +156,23 @@ var UnitTierGitHelperNames = map[string]bool{
 	"cwDepsGit": true, "gcGit": true, "hkCovGitRepository": true,
 	"initGitRepository": true, "initLifecycleGitRepository": true,
 	"initTestRepository": true, "agentGuardGit": true,
+
+	// internal/worktrees/wtlife_secure_cov_test.go's own caller-side
+	// dispatch helpers: they re-run the test binary (review note #764 B2),
+	// but the child they dispatch to (wtlife_secure_helper_test.go's
+	// TestWtLifeCovSecureHelperProcess) execs whatever git executable it is
+	// given, and most call sites pass wtLifeCovTrustedGit(t) -- real git.
+	// Naming these here keeps every caller counted even once their other
+	// matches are converted away.
+	"wtLifeCovRunSecureHelper": true, "wtLifeCovRunSecureHelperInvocation": true,
+
+	// internal/testenv helpers, called qualified as testenv.Xxx from other
+	// packages' test files (review note #764 N1/B1's own fix): the
+	// qualified-call fallback in classifyUnitTierCall matches these by
+	// Sel.Name regardless of package qualifier, so listing the bare name
+	// here is enough for both an unqualified, same-package call and a
+	// qualified testenv.Xxx one.
+	"InitBareRemoteForTest": true, // internal/testenv/testenv.go
 }
 
 // UnitTierMatch is one occurrence of a banned pattern in one default-tier
@@ -164,6 +187,15 @@ type UnitTierMatch struct {
 	// Detail is a short human-readable identifier for the match (the
 	// selector or identifier name), for a diagnostic message.
 	Detail string
+	// SelfReexec is set only for UnitTierPatternExecStart: it reports
+	// whether the program argument (the exec.Command/os.StartProcess
+	// argument that names the executable to run) is exactly the expression
+	// os.Args[0] -- Go's own helper-process pattern, re-running the test
+	// binary itself, rather than a real external program such as git.
+	// TestUnitTierAllowListEntriesAreGenuineHelperProcessReexec (review
+	// note #764 B1) requires this on every exec-start match in an
+	// allow-listed file.
+	SelfReexec bool
 }
 
 func (m UnitTierMatch) String() string {
@@ -252,12 +284,66 @@ func fileRequiresE2ETag(file *ast.File) bool {
 	return false
 }
 
+// unitTierAliasedPackages maps the import path of every package this
+// detector's qualified-call patterns name explicitly to its canonical short
+// name (the identifier its own unaliased import uses): "os/exec" -> "exec",
+// "os" -> "os", the repository's internal/testenv -> "testenv", and
+// internal/runner/runnertest -> "runnertest". unitTierPackageAliases uses it
+// to resolve an aliased import (`osexec "os/exec"`) back to "exec", so
+// classifyUnitTierCall's pkgName comparisons still match (review note #764
+// N1). It does not handle a dot import of any of these -- see the TODO on
+// classifyUnitTierCall.
+var unitTierAliasedPackages = map[string]string{
+	"os/exec": "exec",
+	"os":      "os",
+}
+
+const (
+	unitTierTestenvImportSuffix    = "/internal/testenv"
+	unitTierRunnertestImportSuffix = "/internal/runner/runnertest"
+)
+
+// unitTierPackageAliases resolves file's own imports of the packages
+// unitTierAliasedPackages names (plus internal/testenv and
+// internal/runner/runnertest, matched by path suffix since they are this
+// module's own packages) to their canonical short name, keyed by whatever
+// local identifier this file actually uses for them -- its explicit import
+// alias, or that canonical name itself when the import is unaliased. This
+// lets classifyUnitTierCall recognise `osexec.Command(...)` the same way it
+// recognises a plain `exec.Command(...)`.
+func unitTierPackageAliases(file *ast.File) map[string]string {
+	aliases := map[string]string{}
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		canonical, known := unitTierAliasedPackages[path]
+		switch {
+		case known:
+		case strings.HasSuffix(path, unitTierTestenvImportSuffix):
+			canonical = "testenv"
+		case strings.HasSuffix(path, unitTierRunnertestImportSuffix):
+			canonical = "runnertest"
+		default:
+			continue
+		}
+		local := canonical
+		if imp.Name != nil {
+			local = imp.Name.Name
+		}
+		aliases[local] = canonical
+	}
+	return aliases
+}
+
 func scanUnitTierFile(fset *token.FileSet, file *ast.File, rel string) []UnitTierMatch {
+	aliases := unitTierPackageAliases(file)
 	var out []UnitTierMatch
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.CallExpr:
-			if match, ok := classifyUnitTierCall(node); ok {
+			if match, ok := classifyUnitTierCall(node, aliases); ok {
 				match.File = rel
 				match.Line = fset.Position(node.Pos()).Line
 				out = append(out, match)
@@ -279,19 +365,42 @@ func scanUnitTierFile(fset *token.FileSet, file *ast.File, rel string) []UnitTie
 }
 
 // classifyUnitTierCall reports the UnitTierMatch (File/Line left zero,
-// filled in by the caller) call represents, if any.
-func classifyUnitTierCall(call *ast.CallExpr) (UnitTierMatch, bool) {
+// filled in by the caller) call represents, if any. aliases is the file's
+// own import-alias resolution from unitTierPackageAliases.
+//
+// TODO(task-24): known evasions this detector does not catch (review note
+// #764 N1), left as documented gaps rather than closed here because none is
+// currently used anywhere in this repository and closing all of them would
+// cost more than the risk warrants right now:
+//   - a dot import of "os/exec" (`. "os/exec"`), so a bare `Command(...)`
+//     call is indistinguishable from an unrelated identifier;
+//   - `&exec.Cmd{Path: ...}` built as a composite literal and run via
+//     `.Run()`/`.Start()`, rather than constructed through exec.Command;
+//   - syscall.ForkExec / syscall.Exec called directly;
+//   - a git helper called through a method value or a qualified call whose
+//     Sel.Name is not in UnitTierGitHelperNames (this repository's one
+//     instance, internal/orchestrate/pr_land_review_test.go's
+//     worktrees.Create(...), reaches git only through production code the
+//     task-8 runtime guard covers, not through a name this detector needs);
+//   - a git helper reached through a package-level function variable
+//     (`var run = exec.Command; run("git")`).
+func classifyUnitTierCall(call *ast.CallExpr, aliases map[string]string) (UnitTierMatch, bool) {
 	switch fn := call.Fun.(type) {
 	case *ast.SelectorExpr:
 		pkgName := ""
 		if pkg, ok := fn.X.(*ast.Ident); ok {
 			pkgName = pkg.Name
+			if canonical, resolved := aliases[pkgName]; resolved {
+				pkgName = canonical
+			}
 		}
 		switch {
-		case pkgName == "exec" && (fn.Sel.Name == "Command" || fn.Sel.Name == "CommandContext"):
-			return UnitTierMatch{Pattern: UnitTierPatternExecStart, Detail: pkgName + "." + fn.Sel.Name}, true
+		case pkgName == "exec" && fn.Sel.Name == "Command":
+			return UnitTierMatch{Pattern: UnitTierPatternExecStart, Detail: pkgName + "." + fn.Sel.Name, SelfReexec: callArgIsOSArgsZero(call, 0)}, true
+		case pkgName == "exec" && fn.Sel.Name == "CommandContext":
+			return UnitTierMatch{Pattern: UnitTierPatternExecStart, Detail: pkgName + "." + fn.Sel.Name, SelfReexec: callArgIsOSArgsZero(call, 1)}, true
 		case pkgName == "os" && fn.Sel.Name == "StartProcess":
-			return UnitTierMatch{Pattern: UnitTierPatternExecStart, Detail: pkgName + "." + fn.Sel.Name}, true
+			return UnitTierMatch{Pattern: UnitTierPatternExecStart, Detail: pkgName + "." + fn.Sel.Name, SelfReexec: callArgIsOSArgsZero(call, 0)}, true
 		case pkgName == "testenv" && fn.Sel.Name == "WriteExecutableFile":
 			return UnitTierMatch{Pattern: UnitTierPatternWriteExecutable, Detail: pkgName + "." + fn.Sel.Name}, true
 		case pkgName == "runnertest" && fn.Sel.Name == "AllowRealProcess":
@@ -302,6 +411,18 @@ func classifyUnitTierCall(call *ast.CallExpr) (UnitTierMatch, bool) {
 				receiver = "t"
 			}
 			return UnitTierMatch{Pattern: UnitTierPatternSetenvPath, Detail: receiver + `.Setenv("PATH", ...)`}, true
+		case UnitTierGitHelperNames[fn.Sel.Name]:
+			// A qualified call to a named git helper -- e.g.
+			// testenv.ConfigureGitAutoMaintenanceOff(...) -- reached from
+			// outside its own package. Matched by Sel.Name alone,
+			// regardless of the qualifier, so a helper this repository
+			// calls both ways (unqualified in its own package, qualified
+			// everywhere else) only needs one entry in the map.
+			detail := fn.Sel.Name
+			if pkgName != "" {
+				detail = pkgName + "." + fn.Sel.Name
+			}
+			return UnitTierMatch{Pattern: UnitTierPatternGitHelper, Detail: detail}, true
 		}
 	case *ast.Ident:
 		if UnitTierGitHelperNames[fn.Name] {
@@ -309,6 +430,31 @@ func classifyUnitTierCall(call *ast.CallExpr) (UnitTierMatch, bool) {
 		}
 	}
 	return UnitTierMatch{}, false
+}
+
+// callArgIsOSArgsZero reports whether call's argument at index is exactly
+// the expression os.Args[0] -- Go's own helper-process pattern for
+// re-running the test binary itself, the shape
+// TestUnitTierAllowListEntriesAreGenuineHelperProcessReexec (review note
+// #764 B1) requires of every exec-start match in an allow-listed file.
+func callArgIsOSArgsZero(call *ast.CallExpr, index int) bool {
+	if index >= len(call.Args) {
+		return false
+	}
+	indexExpr, ok := call.Args[index].(*ast.IndexExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := indexExpr.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Args" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != "os" {
+		return false
+	}
+	lit, ok := indexExpr.Index.(*ast.BasicLit)
+	return ok && lit.Kind == token.INT && lit.Value == "0"
 }
 
 // callFirstStringArgEquals reports whether call's first argument is a

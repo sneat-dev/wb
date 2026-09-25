@@ -311,16 +311,11 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 			return 1, err
 		}
 		if target != "" {
-			targetFindings, err := ciaudit.CompareCoverageFloors(absolute, target)
+			targetFindings, err := ciaudit.CompareAgainstTarget(absolute, target)
 			if err != nil {
 				return 1, err
 			}
 			report.Findings = append(report.Findings, targetFindings...)
-			pendingFindings, err := ciaudit.CompareUnitTierPendingTotal(absolute, target)
-			if err != nil {
-				return 1, err
-			}
-			report.Findings = append(report.Findings, pendingFindings...)
 			sort.Slice(report.Findings, func(i, j int) bool {
 				if report.Findings[i].Code == report.Findings[j].Code {
 					return report.Findings[i].File < report.Findings[j].File
