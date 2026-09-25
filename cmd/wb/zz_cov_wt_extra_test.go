@@ -197,11 +197,11 @@ func TestCwWtWorktreeRelocateAndGuardUsageErrors(t *testing.T) {
 
 	// The single ok: line is the only write on a clean checkout, so a writer
 	// that fails immediately must turn the successful report into an error.
-	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{}) },
+	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) },
 		&cwWtFailWriter{Allow: 0}, &bytes.Buffer{}, clone); err == nil {
 		t.Fatal("guard with a failing writer returned nil")
 	}
-	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{}) },
+	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) },
 		&cwWtFailWriter{Allow: 0}, &bytes.Buffer{}, clone, "--format", "json"); err == nil {
 		t.Fatal("guard json with a failing writer returned nil")
 	}
