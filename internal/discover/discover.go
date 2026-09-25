@@ -18,6 +18,16 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 )
 
+// ghObserver is a package-private test seam over the githubobserver.Observer
+// this package reads gh through. Once Get/Read started routing gh through
+// the task-24 guarded runner seam, this package's tests could no longer
+// answer them with a fake `gh` on PATH (that real subprocess start is
+// refused under go test). Tests reassign it to one built with
+// githubobserver.NewTestObserver and restore it with t.Cleanup; production
+// callers never touch it. None of the tests that reassign it run in
+// parallel with each other, so the shared var carries no race.
+var ghObserver = githubobserver.Default()
+
 // Repo identifies a single repository and where it lives.
 type Repo struct {
 	Org      string
@@ -154,7 +164,7 @@ func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalReposi
 	if err != nil || parsed.Identity.Host() != "github.com" || parsed.Identity.Repository != repo.Slug() {
 		return CanonicalRepository{}, fmt.Errorf("origin does not identify github.com/%s", repo.Slug())
 	}
-	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{Repository: repo.Slug(), Endpoint: "repos/" + repo.Slug()})
+	response, err := ghObserver.Get(ctx, githubobserver.GetRequest{Repository: repo.Slug(), Endpoint: "repos/" + repo.Slug()})
 	if err != nil {
 		return CanonicalRepository{}, err
 	}
@@ -277,7 +287,7 @@ type ghRepo struct {
 // ListRemote returns all repos for owner via gh. The archived flag is
 // preserved so callers can report and skip archived repos explicitly.
 func ListRemote(owner string) ([]Repo, error) {
-	out, err := githubobserver.Read(context.Background(), "", "repo", "list", owner,
+	out, err := ghObserver.Read(context.Background(), "", "repo", "list", owner,
 		"--limit", "1000",
 		"--json", "name,isArchived,isFork,sshUrl")
 	if err != nil {
@@ -313,7 +323,7 @@ func ListRemote(owner string) ([]Repo, error) {
 // must treat any error (network, auth, rate limit, unknown repository) as
 // "could not confirm" rather than guessing either way.
 func IsArchived(slug string) (bool, error) {
-	out, err := githubobserver.Read(context.Background(), "", "repo", "view", slug, "--json", "isArchived", "--jq", ".isArchived")
+	out, err := ghObserver.Read(context.Background(), "", "repo", "view", slug, "--json", "isArchived", "--jq", ".isArchived")
 	if err != nil {
 		return false, fmt.Errorf("confirm archived status of %s: %w", slug, err)
 	}
@@ -330,7 +340,7 @@ func IsArchived(slug string) (bool, error) {
 
 // AuthUser returns the authenticated GitHub login via gh.
 func AuthUser() (string, error) {
-	response, err := githubobserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user"})
+	response, err := ghObserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user"})
 	if err != nil {
 		return "", err
 	}
@@ -348,7 +358,7 @@ func AuthUser() (string, error) {
 // the authoritative source of "owners I control" — local directory names are
 // not, since they include third-party clones.
 func MemberOrgs() ([]string, error) {
-	response, err := githubobserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user/orgs"})
+	response, err := ghObserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user/orgs"})
 	if err != nil {
 		return nil, err
 	}

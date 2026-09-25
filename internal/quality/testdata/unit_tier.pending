@@ -78,7 +78,7 @@ internal/agentguard/autotags_test.go	1	task-15
 internal/agents/changes_test.go	10	task-15
 internal/agents/env_test.go	6	task-15
 internal/agents/owner_test.go	6	task-15
-internal/archiveprune/archiveprune_test.go	7	task-15
+internal/archiveprune/archiveprune_test.go	3	task-15
 internal/archiveprune/rp_coverage_test.go	6	task-15
 internal/canonicalrescue/canonicalrescue_test.go	25	task-15
 internal/canonicalrescue/zz_lgcov_canonicalrescue_test.go	27	task-15
@@ -102,8 +102,7 @@ internal/deps/zz_cov_bump_release_test.go	2	task-14
 internal/deps/zz_cov_drift_test.go	2	task-14
 internal/deps/zz_cov_graphs_test.go	14	task-14
 internal/deps/zz_cov_runtime_test.go	7	task-14
-internal/discover/discover_cov_extra_test.go	6	task-15
-internal/discover/discover_test.go	2	task-15
+internal/discover/discover_cov_extra_test.go	3	task-15
 internal/envguard/envguard_test.go	16	task-15
 internal/envguard/tailcov_test.go	9	task-15
 internal/execfile/execfile_test.go	2	task-9

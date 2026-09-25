@@ -2,11 +2,13 @@ package discover
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.T) {
@@ -44,26 +46,25 @@ func TestReconcileTransfersFoldsAnExistingDestinationClone(t *testing.T) {
 	}
 }
 
-// installFakeGhRepoView writes a fake `gh` on PATH that answers `gh repo view
-// <slug> --json isArchived --jq .isArchived` with the given stdout, or fails
-// the invocation entirely when ok is false — simulating GitHub being
-// unreachable, unauthenticated, or rate-limited.
+// installFakeGhRepoView stubs the package's ghObserver seam so it answers
+// `gh repo view <slug> --json isArchived --jq .isArchived` with the given
+// stdout, or fails the call entirely when ok is false — simulating GitHub
+// being unreachable, unauthenticated, or rate-limited. Real gh (a real
+// subprocess) is refused by the task-24 guarded runner seam under go test.
 func installFakeGhRepoView(t *testing.T, wantSlug, stdout string, ok bool) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	exit := "0"
-	if !ok {
-		exit = "1"
-	}
-	content := "#!/bin/sh\nset -eu\n" +
-		"if [ \"$1 $2 $3 $4 $5 $6 $7\" != \"repo view " + wantSlug + " --json isArchived --jq .isArchived\" ]; then\n" +
-		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
-		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	wantArgs := []string{"repo", "view", wantSlug, "--json", "isArchived", "--jq", ".isArchived"}
+	original := ghObserver
+	ghObserver = githubobserver.NewTestObserver(func(_ context.Context, _ string, args ...string) ([]byte, []byte, int, error) {
+		if strings.Join(args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("unexpected gh command: %v", args)
+		}
+		if !ok {
+			return nil, nil, 1, errors.New("exit status 1")
+		}
+		return []byte(stdout + "\n"), nil, 0, nil
+	})
+	t.Cleanup(func() { ghObserver = original })
 }
 
 func TestIsArchivedTrue(t *testing.T) {

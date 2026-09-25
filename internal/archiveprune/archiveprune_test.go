@@ -3,6 +3,7 @@ package archiveprune
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,29 +53,27 @@ func newFixture(t *testing.T, owner, name string) *fixture {
 
 func (f *fixture) slug() string { return f.owner + "/" + f.name }
 
-// installFakeGh writes a fake `gh` on PATH that answers `gh repo view <slug>
-// --json isArchived --jq .isArchived` with stdout, or fails when ok is false.
-func (f *fixture) installFakeGh(stdout string, ok bool) {
+// stubArchived replaces the package's isArchived seam so a test can answer
+// the GitHub archived-status check without a real gh subprocess (the real
+// path now runs through the task-24 guarded runner seam, which refuses to
+// start a real process under go test). Restored automatically at test end.
+func (f *fixture) stubArchived(archived bool, err error) {
 	f.t.Helper()
-	binDir := f.t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	exit := "0"
-	if !ok {
-		exit = "1"
+	original := isArchived
+	isArchived = func(slug string) (bool, error) {
+		if slug != f.slug() {
+			f.t.Fatalf("unexpected slug passed to isArchived: got %q, want %q", slug, f.slug())
+		}
+		return archived, err
 	}
-	content := "#!/bin/sh\nset -eu\n" +
-		"if [ \"$1 $2 $4 $5 $6\" != \"repo view --json isArchived --jq\" ]; then\n" +
-		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
-		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		f.t.Fatal(err)
-	}
-	f.t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	f.t.Cleanup(func() { isArchived = original })
 }
 
-func (f *fixture) archived()          { f.installFakeGh("true", true) }
-func (f *fixture) notArchived()       { f.installFakeGh("false", true) }
-func (f *fixture) githubUnreachable() { f.installFakeGh("", false) }
+func (f *fixture) archived()    { f.stubArchived(true, nil) }
+func (f *fixture) notArchived() { f.stubArchived(false, nil) }
+func (f *fixture) githubUnreachable() {
+	f.stubArchived(false, errors.New("confirm archived status of "+f.slug()+": gh: network unreachable"))
+}
 
 func mustMkdirAll(t *testing.T, path string) {
 	t.Helper()
@@ -609,7 +608,7 @@ func TestClean_OneGitHubCheckFailureDoesNotAbortTheSweep(t *testing.T) {
 	isolateWBHome(t)
 	good := newFixture(t, "acme", "widgets")
 	bad := newFixtureIn(t, good.projectsRoot, "acme", "gadgets")
-	installMixedFakeGh(t, bad.slug())
+	installMixedIsArchived(t, bad.slug())
 
 	outcome, err := Clean(context.Background(), Options{ProjectsRoot: good.projectsRoot, Apply: true})
 	if err != nil {
@@ -633,19 +632,19 @@ func TestClean_OneGitHubCheckFailureDoesNotAbortTheSweep(t *testing.T) {
 	}
 }
 
-// installMixedFakeGh answers `gh repo view <slug> ...` with archived=true for
-// every slug except failSlug, which fails the command entirely.
-func installMixedFakeGh(t *testing.T, failSlug string) {
+// installMixedIsArchived stubs the package's isArchived seam to answer
+// archived=true for every slug except failSlug, which fails the check
+// entirely (as a real `gh repo view` would when the command itself errors).
+func installMixedIsArchived(t *testing.T, failSlug string) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := "#!/bin/sh\nset -eu\n" +
-		"if [ \"$3\" = \"" + failSlug + "\" ]; then exit 1; fi\n" +
-		"printf 'true\\n'\n"
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
+	original := isArchived
+	isArchived = func(slug string) (bool, error) {
+		if slug == failSlug {
+			return false, errors.New("confirm archived status of " + slug + ": gh: exit status 1")
+		}
+		return true, nil
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { isArchived = original })
 }
 
 // newFixtureIn creates a second clone inside an existing projects root,

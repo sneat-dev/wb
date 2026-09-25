@@ -30,6 +30,15 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+// isArchived is a package-private test seam over discover.IsArchived. Once
+// discover.IsArchived started routing gh through the task-24 guarded runner
+// seam, this package's tests could no longer answer it with a fake `gh` on
+// PATH (that real subprocess start is refused under go test). Tests reassign
+// this var to a stub and restore it with t.Cleanup; production callers never
+// touch it. None of the tests that reassign it run in parallel with each
+// other, so the shared var carries no race.
+var isArchived = discover.IsArchived
+
 // Options selects and drives one clean run.
 type Options struct {
 	ProjectsRoot string
@@ -162,7 +171,7 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 		return result
 	}
 
-	archived, err := discover.IsArchived(repo.Slug())
+	archived, err := isArchived(repo.Slug())
 	if err != nil {
 		result.Reason = fmt.Sprintf("could not confirm archived status on GitHub: %v", err)
 		return result

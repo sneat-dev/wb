@@ -226,6 +226,28 @@ func IsTransientCommandFailure(ctx context.Context, response CommandResponse) bo
 	return retryable
 }
 
+// TestRun is the shape a test supplies to NewTestObserver: it answers one
+// `gh <args...>` invocation (args excludes the "gh" binary name itself) with
+// the process's stdout, stderr, exit code, and any launch error.
+type TestRun func(ctx context.Context, dir string, args ...string) (stdout, stderr []byte, exitCode int, err error)
+
+// NewTestObserver returns an Observer whose gh invocations are answered by
+// run instead of a real subprocess. It exists for OTHER packages' tests that
+// exercise code built on top of Get/Read (internal/discover,
+// internal/archiveprune, ...): once those call paths route gh through the
+// task-24 guarded runner seam, a real `gh` faked on PATH is refused under go
+// test, and those packages cannot reach this package's unexported Run field
+// or commandResult type directly. Production code never calls this. Set
+// StateDir on the returned Observer (a t.TempDir()) to isolate its on-disk
+// response cache; an empty StateDir falls back to the real user state
+// directory, which a test must not touch.
+func NewTestObserver(run TestRun) *Observer {
+	return &Observer{Run: func(ctx context.Context, dir string, args ...string) commandResult {
+		stdout, stderr, exitCode, err := run(ctx, dir, args...)
+		return commandResult{Stdout: stdout, Stderr: stderr, ExitCode: exitCode, Err: err}
+	}}
+}
+
 func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {
 	if request.Progress == nil {
 		request.Progress, _ = ctx.Value(progressContextKey{}).(progress.Reporter)

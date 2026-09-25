@@ -3,15 +3,15 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // lgCovGhCall is one canned `gh` invocation: the exact argument string the
@@ -25,48 +25,46 @@ type lgCovGhCall struct {
 	exit   int
 }
 
-// lgCovShellQuote wraps value in single quotes for a POSIX shell, escaping any
-// embedded single quote.
-func lgCovShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
-}
-
-// lgCovInstallFakeGh writes a fake `gh` executable at the front of PATH and
-// points the GitHub observer cache at a private directory. CODE under test
-// reaches it through exec.CommandContext, so PATH is the only seam.
+// lgCovInstallFakeGh stubs the package's ghObserver seam so it answers each
+// canned call by exact argument match, and isolates its on-disk response
+// cache in a private directory. Real gh (a real subprocess) is refused by
+// the task-24 guarded runner seam under go test, so code under test can no
+// longer be reached through a fake `gh` on PATH.
 func lgCovInstallFakeGh(t *testing.T, calls ...lgCovGhCall) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake gh fixture is a POSIX shell script")
-	}
-	testenv.Isolate(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	var script strings.Builder
-	script.WriteString("#!/bin/sh\n")
-	for _, call := range calls {
-		script.WriteString("if [ \"$*\" = " + lgCovShellQuote(call.args) + " ]; then\n")
-		script.WriteString("\tprintf '%s' " + lgCovShellQuote(call.stdout) + "\n")
-		if call.stderr != "" {
-			script.WriteString("\tprintf '%s' " + lgCovShellQuote(call.stderr) + " >&2\n")
+	original := ghObserver
+	testObserver := githubobserver.NewTestObserver(func(_ context.Context, _ string, args ...string) ([]byte, []byte, int, error) {
+		joined := strings.Join(args, " ")
+		for _, call := range calls {
+			if joined != call.args {
+				continue
+			}
+			var err error
+			if call.exit != 0 {
+				err = fmt.Errorf("exit status %d", call.exit)
+			}
+			return []byte(call.stdout), []byte(call.stderr), call.exit, err
 		}
-		script.WriteString("\texit " + strconv.Itoa(call.exit) + "\n")
-		script.WriteString("fi\n")
-	}
-	script.WriteString("printf 'unexpected gh invocation: %s\\n' \"$*\" >&2\nexit 3\n")
-	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script.String()), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Errorf("unexpected gh invocation: %s", joined)
+		return nil, []byte("unexpected gh invocation: " + joined), 3, errors.New("exit status 3")
+	})
+	testObserver.StateDir = t.TempDir()
+	ghObserver = testObserver
+	t.Cleanup(func() { ghObserver = original })
 }
 
-// lgCovInstallNoGh provides a PATH with no gh on it at all, so the observer's
-// exec lookup itself fails.
+// lgCovInstallNoGh simulates gh being absent from PATH: every invocation
+// fails as a launch failure (not a real process exit), matching what
+// exec.LookPath's failure looks like one layer up.
 func lgCovInstallNoGh(t *testing.T) {
 	t.Helper()
-	testenv.Isolate(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
+	original := ghObserver
+	testObserver := githubobserver.NewTestObserver(func(context.Context, string, ...string) ([]byte, []byte, int, error) {
+		return nil, nil, 0, errors.New(`exec: "gh": executable file not found in $PATH`)
+	})
+	testObserver.StateDir = t.TempDir()
+	ghObserver = testObserver
+	t.Cleanup(func() { ghObserver = original })
 }
 
 // lgCovRunGit runs git in dir and fails the test on any error.
