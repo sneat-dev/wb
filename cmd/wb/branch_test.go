@@ -83,6 +83,18 @@ func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
 	}
 }
 
+func TestBranchQuarantineRequiresRepoBranchAndReason(t *testing.T) {
+	root := t.TempDir()
+	command := newBranchQuarantineCmd(&invocation{projectsRoot: root})
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	command.SetOut(&stderr)
+	command.SetArgs(nil)
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "single quarantine requires --repo, --branch, and --reason") {
+		t.Fatalf("quarantine with no selector = %v, want a usage refusal", err)
+	}
+}
+
 func TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight(t *testing.T) {
 	original := branchArchiveTargetPreflight
 	t.Cleanup(func() { branchArchiveTargetPreflight = original })
