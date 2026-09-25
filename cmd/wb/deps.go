@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -19,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -150,7 +150,7 @@ func newDepsGraphCmd(inv *invocation) *cobra.Command {
 				return err
 			}
 			if options.open {
-				if err := openBrowser(paths.HTML); err != nil {
+				if err := openBrowser(inv.commandRunner(), paths.HTML); err != nil {
 					return fmt.Errorf("reports were written; open %s manually: %w", paths.HTML, err)
 				}
 			}
@@ -931,7 +931,7 @@ func dependencyRepositories(inv *invocation, args []string, options depsSetOptio
 		if err != nil {
 			return nil, err
 		}
-		slug, cloneURL, err := repositoryIdentity(absolute, inv.projectsRoot)
+		slug, cloneURL, err := repositoryIdentity(context.Background(), inv.commandRunner(), absolute, inv.projectsRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -986,10 +986,10 @@ func matchesDependencyRepository(slug, glob string, expression *regexp.Regexp) b
 	return expression == nil || expression.MatchString(slug)
 }
 
-func repositoryIdentity(repositoryPath, root string) (string, string, error) {
-	output, err := exec.Command("git", "-C", repositoryPath, "remote", "get-url", "origin").Output()
+func repositoryIdentity(ctx context.Context, r runner.Runner, repositoryPath, root string) (string, string, error) {
+	result, err := r.Run(ctx, "", "git", "-C", repositoryPath, "remote", "get-url", "origin")
 	if err == nil {
-		remote := strings.TrimSpace(string(output))
+		remote := strings.TrimSpace(result.Stdout)
 		if slug := githubSlug(remote); slug != "" {
 			return slug, remote, nil
 		}

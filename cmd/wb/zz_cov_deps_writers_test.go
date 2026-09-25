@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/spf13/cobra"
 )
@@ -222,32 +225,43 @@ func TestCwDepsExecuteDepsBumpWithoutCampaign(t *testing.T) {
 // repository's owner/name is established: its origin remote, and its position
 // under the projects root when there is no usable remote.
 func TestCwDepsRepositoryIdentityReadsOriginAndLayout(t *testing.T) {
+	ctx := context.Background()
 	root := t.TempDir()
-	withOrigin := initTestRepository(t, filepath.Join(root, "acme", "app"))
-	cwDepsGit(t, withOrigin, "remote", "add", "origin", "git@github.com:acme/app.git")
-	slug, cloneURL, err := repositoryIdentity(withOrigin, root)
+	withOrigin := filepath.Join(root, "acme", "app")
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", withOrigin, "remote", "get-url", "origin"},
+		runner.Result{Stdout: "git@github.com:acme/app.git\n"}, nil)
+	slug, cloneURL, err := repositoryIdentity(ctx, fake, withOrigin, root)
 	if err != nil || slug != "acme/app" || cloneURL != "git@github.com:acme/app.git" {
 		t.Fatalf("origin identity = (%q, %q, %v)", slug, cloneURL, err)
 	}
 
 	// No origin at all: the {org}/{repo} position under the projects root is
 	// the only identity available.
-	withoutOrigin := initTestRepository(t, filepath.Join(root, "beta", "tool"))
-	slug, cloneURL, err = repositoryIdentity(withoutOrigin, root)
+	withoutOrigin := filepath.Join(root, "beta", "tool")
+	fake = runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", withoutOrigin, "remote", "get-url", "origin"},
+		runner.Result{}, errors.New("exit status 2"))
+	slug, cloneURL, err = repositoryIdentity(ctx, fake, withoutOrigin, root)
 	if err != nil || slug != "beta/tool" || cloneURL != "" {
 		t.Fatalf("layout identity = (%q, %q, %v)", slug, cloneURL, err)
 	}
 
 	// A remote that is not GitHub falls back to the layout.
-	nonGitHub := initTestRepository(t, filepath.Join(root, "gamma", "widget"))
-	cwDepsGit(t, nonGitHub, "remote", "add", "origin", "https://gitlab.example.test/gamma/widget.git")
-	if slug, _, err := repositoryIdentity(nonGitHub, root); err != nil || slug != "gamma/widget" {
+	nonGitHub := filepath.Join(root, "gamma", "widget")
+	fake = runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", nonGitHub, "remote", "get-url", "origin"},
+		runner.Result{Stdout: "https://gitlab.example.test/gamma/widget.git\n"}, nil)
+	if slug, _, err := repositoryIdentity(ctx, fake, nonGitHub, root); err != nil || slug != "gamma/widget" {
 		t.Fatalf("non-GitHub remote identity = (%q, %v)", slug, err)
 	}
 
 	// Outside the projects root with no origin there is no identity to guess.
-	stranger := initTestRepository(t, filepath.Join(t.TempDir(), "somewhere-else"))
-	if _, _, err := repositoryIdentity(stranger, root); err == nil ||
+	stranger := filepath.Join(t.TempDir(), "somewhere-else")
+	fake = runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", stranger, "remote", "get-url", "origin"},
+		runner.Result{}, errors.New("exit status 2"))
+	if _, _, err := repositoryIdentity(ctx, fake, stranger, root); err == nil ||
 		!strings.Contains(err.Error(), "cannot determine GitHub owner/repository identity") {
 		t.Fatalf("unidentifiable repository error = %v", err)
 	}
@@ -260,6 +274,14 @@ func TestCwDepsRepositoryIdentityReadsOriginAndLayout(t *testing.T) {
 // TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet covers the
 // selection guardrails and both selection modes without any network.
 func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
+	// This file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22): dependencyRepositories resolves each candidate's identity
+	// through repositoryIdentity, which now runs through internal/runner
+	// (task-8) and is refused by its runtime guard unless allow-listed. The
+	// real git repositories this test builds below are exactly what
+	// repositoryIdentity reads, so allow the real process rather than fake
+	// it here.
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	app := initTestRepository(t, filepath.Join(root, "acme", "app"))
 	cwDepsGit(t, app, "remote", "add", "origin", "git@github.com:acme/app.git")
