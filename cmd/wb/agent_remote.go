@@ -60,7 +60,7 @@ func RunAgentRemote(inv *invocation, stdin io.Reader, stdout, stderr io.Writer) 
 	request, err := decodeRemoteRequest(stdin)
 	response := agents.RemoteResponse{SchemaVersion: 1, Operation: request.Operation}
 	if err == nil {
-		err = handleRemoteOperation(inv, context.Background(), request, &response)
+		err = handleRemoteOperation(inv, inv.context(), request, &response)
 	}
 	if err != nil {
 		response.Failure = err.Error()

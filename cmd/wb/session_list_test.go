@@ -66,7 +66,7 @@ func TestSessionListRendersDerivedColumns(t *testing.T) {
 	})
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, "unused", false, false, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, "unused", false, false, &out, &errOut); err != nil {
 		t.Fatalf("runSessionList: %v", err)
 	}
 	if errOut.Len() != 0 {
@@ -114,7 +114,7 @@ func TestSessionListJSONCarriesFullLists(t *testing.T) {
 	})
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, "unused", false, true, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, "unused", false, true, &out, &errOut); err != nil {
 		t.Fatalf("runSessionList: %v", err)
 	}
 	if errOut.Len() != 0 {
@@ -147,7 +147,7 @@ func TestSessionListJSONExposesParkedSessionIDForResume(t *testing.T) {
 	})
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, "unused", false, true, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, "unused", false, true, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	var rows []sessionRow
@@ -168,7 +168,7 @@ func TestSessionListDegradesWhenWorktreesScanFails(t *testing.T) {
 	})
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, "unused", false, false, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, "unused", false, false, &out, &errOut); err != nil {
 		t.Fatalf("runSessionList returned error, want nil: %v", err)
 	}
 	if !strings.Contains(errOut.String(), "derive worktree attribution:") {
@@ -198,7 +198,7 @@ func TestSessionListNoSessionsSkipsScan(t *testing.T) {
 	})
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, "unused", false, false, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, "unused", false, false, &out, &errOut); err != nil {
 		t.Fatalf("runSessionList: %v", err)
 	}
 	if !strings.Contains(out.String(), "no session has registered") {
@@ -220,7 +220,7 @@ func TestSessionListWithRealWorktreesLister(t *testing.T) {
 	registerTestSession(t, dir, os.Getpid())
 
 	var out, errOut bytes.Buffer
-	if err := runSessionList(dir, projectsRoot, false, false, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), dir, projectsRoot, false, false, &out, &errOut); err != nil {
 		t.Fatalf("runSessionList: %v", err)
 	}
 	if errOut.Len() != 0 {
@@ -241,7 +241,7 @@ func TestSessionListJSONWithZeroSessionsEmitsEmptyArray(t *testing.T) {
 		panic("worktrees.List must not be called when no sessions have registered")
 	})
 	var out, errOut bytes.Buffer
-	if err := runSessionList(t.TempDir(), t.TempDir(), false, true, &out, &errOut); err != nil {
+	if err := runSessionList(context.Background(), t.TempDir(), t.TempDir(), false, true, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(out.String()); got != "[]" {

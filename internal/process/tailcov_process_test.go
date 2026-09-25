@@ -64,8 +64,8 @@ func TestTailCovCommandContextOwnsTheProcessTree(t *testing.T) {
 	if command.Path != "/bin/echo" {
 		t.Fatalf("Path = %q, want /bin/echo", command.Path)
 	}
-	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid {
-		t.Fatalf("SysProcAttr = %#v, want Setpgid so cancellation is scoped to the child's group", command.SysProcAttr)
+	if command.SysProcAttr == nil || !command.SysProcAttr.Setsid {
+		t.Fatalf("SysProcAttr = %#v, want Setsid so cancellation is scoped to the child's own session and group", command.SysProcAttr)
 	}
 	if command.Cancel == nil {
 		t.Fatal("Cancel = nil, want a group-scoped cancellation")

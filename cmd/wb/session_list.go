@@ -49,7 +49,7 @@ not wb_session_id, to wb session resume.`,
 			if err != nil {
 				return err
 			}
-			return runSessionList(directory, inv.projectsRoot, onlyLive, format == "json", command.OutOrStdout(), command.ErrOrStderr())
+			return runSessionList(command.Context(), directory, inv.projectsRoot, onlyLive, format == "json", command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -62,7 +62,7 @@ not wb_session_id, to wb session resume.`,
 // on. It stays read-only — the caller resolves directory without creating
 // WB's home — and never fails on derivation: a worktrees.List error degrades
 // the derived columns to "-" rather than failing the command.
-func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out, errOut io.Writer) error {
+func runSessionList(ctx context.Context, directory, projectsRoot string, onlyLive, jsonOut bool, out, errOut io.Writer) error {
 	views, err := session.List(directory)
 	if err != nil {
 		return err
@@ -87,7 +87,7 @@ func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out,
 		return err
 	}
 
-	results, err := sessionWorktreeLister(context.Background(), worktrees.ListOptions{ProjectsRoot: projectsRoot})
+	results, err := sessionWorktreeLister(ctx, worktrees.ListOptions{ProjectsRoot: projectsRoot})
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "derive worktree attribution: %v\n", err)
 		results = nil

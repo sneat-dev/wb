@@ -918,7 +918,7 @@ func defaultBranchLocalClones(inv *invocation, filter string) (defaultBranchLoca
 		if clone.Host != "" && !strings.EqualFold(clone.Host, "github.com") {
 			continue
 		}
-		origin, err := defaultBranchGit(context.Background(), clone.Path, "remote", "get-url", "origin")
+		origin, err := defaultBranchGit(inv.context(), clone.Path, "remote", "get-url", "origin")
 		if err != nil {
 			if strings.EqualFold(clone.Host, "github.com") {
 				key := strings.ToLower(clone.Slug())

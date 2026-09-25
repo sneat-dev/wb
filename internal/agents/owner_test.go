@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/process"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -426,7 +427,7 @@ func TestRunOwnerSurvivesAMissingFinalMessage(t *testing.T) {
 
 func TestExitCodeOfToleratesAProcessThatNeverStarted(t *testing.T) {
 	t.Parallel()
-	if code := exitCodeOf(&exec.Cmd{}); code != nil {
+	if code := exitCodeOf(&process.Cmd{Cmd: &exec.Cmd{}}); code != nil {
 		t.Fatalf("exitCodeOf on a process that never started = %v, want nil", *code)
 	}
 }

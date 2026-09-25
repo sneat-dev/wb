@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -101,7 +102,7 @@ func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
 	if err := os.WriteFile(policyPath, []byte("version: 1\nunknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
+	reports := runVerificationTargets(context.Background(), []qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
 	if len(reports) != 1 || reports[0].Status != quality.StatusFailed || len(reports[0].Results) != 1 || !strings.Contains(reports[0].Results[0].Detail, "field unknown not found") {
 		t.Fatalf("verification policy failure = %#v", reports)
 	}
@@ -148,7 +149,7 @@ func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
 	git("-c", "commit.gpgSign=false", "commit", "-m", "initial")
 	wantRevision := git("rev-parse", "HEAD")
 
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	reports := runVerificationTargets(context.Background(), []qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
 	if len(reports) != 1 || reports[0].Revision != wantRevision || !reports[0].WorkspaceClean {
 		t.Fatalf("clean exact verification identity = %#v", reports)
 	}
@@ -156,7 +157,7 @@ func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reports = runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	reports = runVerificationTargets(context.Background(), []qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
 	if reports[0].Revision != "" || reports[0].WorkspaceClean {
 		t.Fatalf("dirty workspace received exact verification identity = %#v", reports[0])
 	}

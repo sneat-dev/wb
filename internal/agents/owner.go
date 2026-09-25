@@ -207,7 +207,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 	}
 }
 
-func exitCodeOf(command *exec.Cmd) *int {
+func exitCodeOf(command *process.Cmd) *int {
 	if command.ProcessState == nil {
 		return nil
 	}

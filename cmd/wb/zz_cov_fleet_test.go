@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -342,7 +343,7 @@ func TestCwCovFleetInventoryWorktreesAndLayout(t *testing.T) {
 		t.Fatal("an invalid --regex must be refused")
 	}
 
-	worktreeStats, err := fleetWorktreeRollup(root, "", options)
+	worktreeStats, err := fleetWorktreeRollup(context.Background(), root, "", options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +351,7 @@ func TestCwCovFleetInventoryWorktreesAndLayout(t *testing.T) {
 		t.Fatalf("worktrees = %+v, want no WB-managed worktrees", worktreeStats)
 	}
 
-	layoutStats, err := fleetLayoutRollup(root)
+	layoutStats, err := fleetLayoutRollup(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,14 +518,14 @@ func TestCwCovFleetRemoteAndHooksDepth(t *testing.T) {
 	}
 
 	// fleetRemoteRollup is also drivable directly.
-	remote, err := fleetRemoteRollup(root, "", qualityOptions{parallel: 1})
+	remote, err := fleetRemoteRollup(context.Background(), root, "", qualityOptions{parallel: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if remote.LocalOnly != 1 {
 		t.Fatalf("remote rollup = %+v, want one local-only repository", remote)
 	}
-	if _, err := fleetRemoteRollup(root, "", qualityOptions{parallel: 1, regex: `(`}); err == nil {
+	if _, err := fleetRemoteRollup(context.Background(), root, "", qualityOptions{parallel: 1, regex: `(`}); err == nil {
 		t.Fatal("an invalid --regex must be refused by fleetRemoteRollup")
 	}
 }

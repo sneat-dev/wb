@@ -272,6 +272,7 @@ func collectFleetStats(inv *invocation, projects, filter string, options quality
 }
 
 func collectFleetStatsAndStatus(inv *invocation, projects, filter string, options qualityOptions, depth fleetDepthOptions) (fleetStatsReport, statusIndex, error) {
+	ctx := inv.context()
 	options.fleet = true
 	targets, err := qualityTargets(".", projects, filter, options)
 	if err != nil {
@@ -283,11 +284,11 @@ func collectFleetStatsAndStatus(inv *invocation, projects, filter string, option
 	if err != nil {
 		return fleetStatsReport{}, statusIndex{}, err
 	}
-	worktreeStats, err := fleetWorktreeRollup(projects, filter, options)
+	worktreeStats, err := fleetWorktreeRollup(ctx, projects, filter, options)
 	if err != nil {
 		return fleetStatsReport{}, statusIndex{}, err
 	}
-	layoutStats, err := fleetLayoutRollup(projects)
+	layoutStats, err := fleetLayoutRollup(ctx, projects)
 	if err != nil {
 		return fleetStatsReport{}, statusIndex{}, err
 	}
@@ -299,7 +300,7 @@ func collectFleetStatsAndStatus(inv *invocation, projects, filter string, option
 		Worktrees:     worktreeStats,
 	}
 	if depth.remote {
-		remoteStats, remoteErr := fleetRemoteRollup(projects, filter, options)
+		remoteStats, remoteErr := fleetRemoteRollup(ctx, projects, filter, options)
 		if remoteErr != nil {
 			return fleetStatsReport{}, statusIndex{}, remoteErr
 		}
@@ -315,8 +316,8 @@ func collectFleetStatsAndStatus(inv *invocation, projects, filter string, option
 	return stats, fullStatus, nil
 }
 
-func fleetLayoutRollup(projects string) (fleetLayoutStats, error) {
-	summary, err := layout.Counts(context.Background(), projects)
+func fleetLayoutRollup(ctx context.Context, projects string) (fleetLayoutStats, error) {
+	summary, err := layout.Counts(ctx, projects)
 	if err != nil {
 		return fleetLayoutStats{}, err
 	}
@@ -326,7 +327,7 @@ func fleetLayoutRollup(projects string) (fleetLayoutStats, error) {
 	}, nil
 }
 
-func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRemoteStats, error) {
+func fleetRemoteRollup(ctx context.Context, projects, filter string, options qualityOptions) (fleetRemoteStats, error) {
 	repositories, err := fleet(projects, filter, func() []string { return fleetOwners(nil) })
 	if err != nil {
 		return fleetRemoteStats{}, err
@@ -349,7 +350,7 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 		// Always dry-run here, so pruneArchived=true only classifies what
 		// wb sync --prune-archived would do; nothing is ever deleted by a
 		// fleet status/overview pass.
-		result := fleetsync.Sync(context.Background(), repository, projects, true, true)
+		result := fleetsync.Sync(ctx, repository, projects, true, true)
 		switch result.Status {
 		case fleetsync.Cloned:
 			stats.WouldClone++
@@ -417,8 +418,8 @@ func fleetInventory(projects, filter string, options qualityOptions) (fleetInven
 	return fleetInventoryStats{Organizations: len(orgs), Repositories: count}, nil
 }
 
-func fleetWorktreeRollup(projects, filter string, options qualityOptions) (fleetWorktreeStats, error) {
-	results, err := worktrees.List(context.Background(), worktrees.ListOptions{
+func fleetWorktreeRollup(ctx context.Context, projects, filter string, options qualityOptions) (fleetWorktreeStats, error) {
+	results, err := worktrees.List(ctx, worktrees.ListOptions{
 		ProjectsRoot: projects,
 		Filter:       filter,
 	})

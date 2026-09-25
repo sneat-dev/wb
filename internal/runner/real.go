@@ -127,10 +127,10 @@ func (Real) Interactive(ctx context.Context, dir, name string, args ...string) e
 	return command.Run()
 }
 
-// realHandle is Real's Handle: a started *exec.Cmd whose output accumulates
-// in buffers Wait reads back.
+// realHandle is Real's Handle: a started *process.Cmd whose output
+// accumulates in buffers Wait reads back.
 type realHandle struct {
-	command *exec.Cmd
+	command *process.Cmd
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -227,7 +226,7 @@ func refuseLinkedRepositoryWorktrees(inv *invocation, repository string) error {
 // "I could not tell" spelled as "there is no link" that this file opens by
 // forbidding.
 func refuseLinkedWorktreesOfRepository(inv *invocation, repository string) error {
-	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
+	listed, err := worktrees.ListWithDiagnostics(inv.context(), worktrees.ListOptions{
 		ProjectsRoot: inv.projectsRoot,
 		Filter:       repository,
 	})

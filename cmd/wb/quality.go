@@ -113,7 +113,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
 			runOptions.CoverageProfile = options.coverageProfile
 			runOptions.Progress = progress.report
-			reports := runCoverageTargets(targets, options.parallel, runOptions)
+			reports := runCoverageTargets(cmd.Context(), targets, options.parallel, runOptions)
 			progress.finish()
 			report := quality.NewCoverageReport(reports)
 			if options.resume {
@@ -230,7 +230,7 @@ func newVerifyCmd(inv *invocation) *cobra.Command {
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			reports := runVerificationTargets(cmd.Context(), targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Checks: checks, Repositories: reports}
@@ -295,7 +295,7 @@ func newCheckCmd(inv *invocation) *cobra.Command {
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			reports := runVerificationTargets(cmd.Context(), targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Profile: profile, Checks: checks, Repositories: reports}
@@ -402,7 +402,7 @@ func matchesQualityTarget(repository, filter, glob string, expression *regexp.Re
 	return expression == nil || expression.MatchString(repository)
 }
 
-func runCoverageTargets(targets []qualityTarget, parallel int, options quality.RunOptions) []quality.RepositoryCoverage {
+func runCoverageTargets(ctx context.Context, targets []qualityTarget, parallel int, options quality.RunOptions) []quality.RepositoryCoverage {
 	reports := make([]quality.RepositoryCoverage, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
@@ -415,7 +415,7 @@ func runCoverageTargets(targets []qualityTarget, parallel int, options quality.R
 			reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 			return
 		}
-		reports[index] = quality.CoverWithOptions(context.Background(), target.repository, target.path, targetOptions)
+		reports[index] = quality.CoverWithOptions(ctx, target.repository, target.path, targetOptions)
 		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
@@ -426,7 +426,7 @@ func coverageRunOptionsForTarget(options quality.RunOptions, target qualityTarge
 	return quality.RepositoryRunOptions(target.path, options)
 }
 
-func runVerificationTargets(targets []qualityTarget, checks []quality.Check, parallel int, options quality.RunOptions) []quality.VerificationReport {
+func runVerificationTargets(ctx context.Context, targets []qualityTarget, checks []quality.Check, parallel int, options quality.RunOptions) []quality.VerificationReport {
 	reports := make([]quality.VerificationReport, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
@@ -442,7 +442,7 @@ func runVerificationTargets(targets []qualityTarget, checks []quality.Check, par
 			return
 		}
 		before := verificationGitSnapshot(target.path)
-		report := quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, targetOptions)
+		report := quality.VerifyWithOptions(ctx, target.repository, target.path, checks, targetOptions)
 		after := verificationGitSnapshot(target.path)
 		if before.err == nil && after.err == nil && before.clean && after.clean && before.revision == after.revision {
 			report.Revision = before.revision

@@ -63,6 +63,23 @@ type invocation struct {
 	// projectsRoot holds --projects-root: the root dir containing
 	// {host}/{org}/{repo} clones.
 	projectsRoot string
+	// ctx is the root context of this invocation, cancelled by the first
+	// interrupt signal (see newRootContext). It is only ever set for the
+	// hidden pre-cobra protocol paths in dispatchWithHandlers, which have no
+	// *cobra.Command of their own to carry one; a nil ctx here means "use
+	// context.Background()", which every reader falls back to.
+	ctx context.Context
+}
+
+// context returns inv's root context, falling back to context.Background()
+// when none was set -- a direct *invocation{} construction, as tests and a
+// few pre-cobra helpers still do, gets the same never-cancelled context it
+// always has.
+func (inv *invocation) context() context.Context {
+	if inv != nil && inv.ctx != nil {
+		return inv.ctx
+	}
+	return context.Background()
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -472,7 +489,12 @@ func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Read
 		// The private remote entry point is a validated protocol value on stdin,
 		// not a command line: it is handled here so a remote caller can never
 		// reach a flag parser, and so its request cannot be reinterpreted as
-		// shell text.
+		// shell text. It has no *cobra.Command of its own, so it gets its own
+		// root context here rather than inheriting one -- cancelled by the
+		// same interrupt handling as every other command.
+		ctx, stop := newRootContext()
+		defer stop()
+		inv.ctx = ctx
 		return handlers.agentRemote(inv, stdin, stdout, stderr)
 	}
 	installSessionResolver(inv)
@@ -531,7 +553,10 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return printBareVersion(stdout)
 	}
 
-	inv := &invocation{}
+	ctx, stop := newRootContext()
+	defer stop()
+
+	inv := &invocation{ctx: ctx}
 	// Keep the in-process test/embedding runner on the same admission and
 	// attribution path as the production main entrypoint. The resolver is
 	// read-only until a command explicitly mutates state.
@@ -546,7 +571,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 
 	prepareHelpPresentation(root, args)
-	err := executeWithFang(root)
+	err := executeWithFang(ctx, root)
 	// Always on stderr, and always after the command's own output, so a
 	// --format json or yaml document on stdout stays machine-parseable.
 	reportUndeclaredOwners(stderr)
@@ -584,9 +609,9 @@ func terminalPresentationDisabled(args []string) bool {
 	return false
 }
 
-func executeWithFang(root *cobra.Command) error {
+func executeWithFang(ctx context.Context, root *cobra.Command) error {
 	return fang.Execute(
-		context.Background(),
+		ctx,
 		root,
 		fang.WithoutVersion(),
 		fang.WithoutManpage(),

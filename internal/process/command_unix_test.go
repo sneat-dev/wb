@@ -53,6 +53,24 @@ func TestProcessHelper(t *testing.T) {
 	switch os.Getenv("WB_PROCESS_HELPER") {
 	case "sleep-child":
 		sleepUntilKilled()
+	case "block-until-signalled":
+		pidPath := os.Getenv("WB_PROCESS_CHILD_PID_PATH")
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "write pid: %v", err)
+			os.Exit(2)
+		}
+		sleepUntilKilled()
+	case "tty-probe":
+		resultPath := os.Getenv("WB_PROCESS_TTY_RESULT_PATH")
+		_, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		status := "ok"
+		if err != nil {
+			status = "err:" + err.Error()
+		}
+		if writeErr := os.WriteFile(resultPath, []byte(status), 0o600); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "write tty probe result: %v", writeErr)
+			os.Exit(2)
+		}
 	case "fork-child":
 		pidPath := os.Getenv("WB_PROCESS_CHILD_PID_PATH")
 		parentPIDPath := os.Getenv("WB_PROCESS_PARENT_PID_PATH")

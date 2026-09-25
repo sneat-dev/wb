@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -318,7 +319,7 @@ func TestCwCovRunCoverageTargetsSkipsAModulelessRepository(t *testing.T) {
 	// A repository with no Go module is skipped, not failed, and the completion
 	// callback still fires for it.
 	var completed []string
-	reports := runCoverageTargets([]qualityTarget{{repository: "acme/empty", path: empty}}, 1,
+	reports := runCoverageTargets(context.Background(), []qualityTarget{{repository: "acme/empty", path: empty}}, 1,
 		quality.RunOptions{Progress: func(event quality.Progress) {
 			if event.State == quality.ProgressRepositoryCompleted {
 				completed = append(completed, event.Repository)
@@ -331,7 +332,7 @@ func TestCwCovRunCoverageTargetsSkipsAModulelessRepository(t *testing.T) {
 		t.Fatalf("completion callbacks = %v", completed)
 	}
 	// Zero targets is a no-op rather than a deadlock.
-	if reports := runCoverageTargets(nil, 4, quality.RunOptions{}); len(reports) != 0 {
+	if reports := runCoverageTargets(context.Background(), nil, 4, quality.RunOptions{}); len(reports) != 0 {
 		t.Fatalf("no targets = %+v", reports)
 	}
 }
@@ -427,7 +428,7 @@ func TestCwCovRunVerificationTargetsReportsAnUnrunnableTarget(t *testing.T) {
 	// A directory that cannot hold a run is reported as a failed row, and the
 	// error is surfaced rather than swallowed.
 	missing := filepath.Join(t.TempDir(), "absent")
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/absent", path: missing}},
+	reports := runVerificationTargets(context.Background(), []qualityTarget{{repository: "acme/absent", path: missing}},
 		[]quality.Check{quality.CheckBuild}, 1, quality.RunOptions{})
 	if len(reports) != 1 {
 		t.Fatalf("reports = %+v", reports)
