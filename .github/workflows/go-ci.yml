@@ -466,6 +466,13 @@ jobs:
           cache: true
       - name: Compile all Go packages for Windows
         run: go build ./...
+      - name: go vet (Windows)
+        # go build above only compiles production code; go vet also compiles
+        # every package's test files, so this is the one step that would
+        # have caught a _test.go file using a POSIX-only symbol (e.g.
+        # golang.org/x/sys/unix, syscall.Kill) without needing every package
+        # named in an allow-list below.
+        run: go vet ./...
       - name: Test Windows-safe portability primitives
         run: >-
           go test ./internal/session
