@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -637,12 +639,24 @@ func TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration(t 
 
 func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
 	// A checkout that is not a repository has no identity; the hook dispatch
-	// must warn and return rather than fail the caller's update.
+	// must warn and return rather than fail the caller's update. The
+	// dispatch func is a fake: lifecycleCheckoutUpdated must never reach the
+	// real lifecyclehooks.Dispatch (and so never the real config/state/
+	// receipt paths or the real detached-worker launcher) from a test
+	// binary (#620).
 	var out bytes.Buffer
-	handler := lifecycleCheckoutUpdated(&out)
+	var dispatchCalls int
+	dispatch := func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error) {
+		dispatchCalls++
+		return lifecyclehooks.Report{}, nil
+	}
+	handler := lifecycleCheckoutUpdatedWith(&out, dispatch)
 	handler(t.Context(), orchestrate.CheckoutUpdate{Checkout: filepath.Join(t.TempDir(), "absent")})
 	if !strings.Contains(out.String(), "lifecycle hooks were not dispatched") {
 		t.Fatalf("missing-identity warning = %q", out.String())
+	}
+	if dispatchCalls != 0 {
+		t.Fatalf("dispatch calls = %d, want 0: an unidentifiable checkout must return before dispatching", dispatchCalls)
 	}
 
 	// A real repository is identified and the dispatch runs; with no hooks
@@ -662,12 +676,27 @@ func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
 		t.Fatalf("fixture identity = (%q, %v), want github.com/acme/app", identity, identityErr)
 	}
 	out.Reset()
-	t.Setenv("WB_HOME", t.TempDir())
 	handler(t.Context(), orchestrate.CheckoutUpdate{
 		Checkout: repo, OldSHA: "old", NewSHA: "new", Cause: "test",
 	})
 	if strings.Contains(out.String(), "identify updated checkout") {
 		t.Fatalf("a real repository should be identified:\n%s", out.String())
+	}
+	if dispatchCalls != 1 {
+		t.Fatalf("dispatch calls = %d, want 1: an identified checkout must dispatch exactly once", dispatchCalls)
+	}
+}
+
+// TestLifecycleCheckoutUpdatedDefaultsToRealDispatch confirms the production
+// wiring: lifecycleCheckoutUpdated (used unmodified by pr.go, pr_create.go
+// and worktree_merge.go) still builds its handler from the real
+// lifecyclehooks.Dispatch. The returned handler is never invoked here --
+// invoking it would call the real Dispatch and touch the developer's real
+// config/state/receipt paths (#620); the handler's own behavior is covered
+// through a fake dispatch by TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing.
+func TestLifecycleCheckoutUpdatedDefaultsToRealDispatch(t *testing.T) {
+	if handler := lifecycleCheckoutUpdated(io.Discard); handler == nil {
+		t.Fatal("lifecycleCheckoutUpdated returned a nil handler")
 	}
 }
 
