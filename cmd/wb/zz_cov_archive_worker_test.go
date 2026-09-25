@@ -21,6 +21,7 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
+	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
 func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
@@ -386,6 +387,27 @@ func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
 	command.SetErr(&bytes.Buffer{})
 	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, assignment); err != nil {
 		t.Fatalf("executeWorkerAssignment with explicit CpuUnits: %v", err)
+	}
+	// Positive proof that the explicit CpuUnits actually went through
+	// runqueue.AdmitExplicit's budget-sum pool (internal/runqueue.Acquire),
+	// not runqueue.Admit's argv-classified path (review finding, mutant
+	// M14: worker.go:215's AdmitExplicit->Admit swap previously survived
+	// because nothing here observed which path ran). Acquire's slot lock
+	// file is created with os.O_CREATE and is only ever unlocked and
+	// closed by Lease.Release, never removed (internal/runqueue/queue.go),
+	// so it is still on disk here. This assignment's argv is
+	// []string{"go", "version"}, which runqueue.Classify reports as
+	// KindNone (no test/vet/build verb) — under the M14 mutant,
+	// runqueue.Admit would take the KindNone branch and return an
+	// immediate no-op Admission without ever calling Acquire, so no slot
+	// lock file would exist. This does not depend on timing or on the
+	// host's CPU count: KindNone is Admit's first, unconditional case.
+	slotLocks, globErr := filepath.Glob(filepath.Join(runqueue.QueueDirForTest(root), "slot-*.lock"))
+	if globErr != nil {
+		t.Fatalf("glob CPU admission slot locks: %v", globErr)
+	}
+	if len(slotLocks) == 0 {
+		t.Fatal("no CPU admission slot lock file was left behind; the explicit CpuUnits assignment did not go through runqueue.AdmitExplicit's budget-sum pool")
 	}
 	completed, err := client.GetOperation(ctx, connect.NewRequest(&daemonv1.GetOperationRequest{
 		OperationId: operation.Msg.OperationId,
