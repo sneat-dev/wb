@@ -191,7 +191,7 @@ func TestRunPlacesVerboseHookReportsBesidePrivateMetricsState(t *testing.T) {
 	if strings.Contains(string(contents), repo) {
 		t.Fatalf("hook report root unexpectedly points into repository: %q", contents)
 	}
-	output, err := gitOutput(repo, "status", "--porcelain")
+	output, err := gitOutput(realRunner(), repo, "status", "--porcelain")
 	if err != nil {
 		t.Fatalf("inspect repository status: %v", err)
 	}
@@ -275,7 +275,7 @@ printf '%s\n' "$XDG_CACHE_HOME" >> "$WB_TEST_ENV_PATH"
 			t.Fatalf("hook runtime root still holds a private cache directory: %s", stale)
 		}
 	}
-	if output, statusErr := gitOutput(repo, "status", "--porcelain"); statusErr != nil || output != "" {
+	if output, statusErr := gitOutput(realRunner(), repo, "status", "--porcelain"); statusErr != nil || output != "" {
 		t.Fatalf("runtime hook dirtied repository: status=%q err=%v", output, statusErr)
 	}
 }

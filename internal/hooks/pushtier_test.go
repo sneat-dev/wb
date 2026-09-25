@@ -292,7 +292,6 @@ func TestDetectDefaultBranchHonoursExplicitOverride(t *testing.T) {
 }
 
 func TestDetectDefaultBranchReturnsEmptyWhenUnresolvable(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	if got := DetectDefaultBranch(repo); got != "" {
 		t.Fatalf("DetectDefaultBranch = %q, want empty (no origin configured)", got)

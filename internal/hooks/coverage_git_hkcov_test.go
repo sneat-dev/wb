@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestHkCovRepositoryRootResolvesBlankAndNonRepositoryPaths(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	root, err := RepositoryRoot("   ")
 	if err != nil {
@@ -29,17 +30,16 @@ func TestHkCovRepositoryRootResolvesBlankAndNonRepositoryPaths(t *testing.T) {
 }
 
 func TestHkCovGitCommonDirRejectsNonRepository(t *testing.T) {
-	t.Parallel()
-	if _, err := gitCommonDir(t.TempDir()); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := gitCommonDir(realRunner(), t.TempDir()); err == nil {
 		t.Fatal("gitCommonDir(non-repo) should fail")
 	}
 }
 
 func TestHkCovConfiguredHooksPathReturnsEmptyForBlankValue(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "config", "--local", "core.hooksPath", "")
-	path, err := configuredHooksPath(repo)
+	path, err := configuredHooksPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,6 @@ func TestHkCovSetHooksPathAtReportsMissingGit(t *testing.T) {
 // inherited descriptor that cannot be entered, proving the failure is surfaced
 // rather than silently ignored.
 func TestHkCovSetHooksPathAtReportsHelperFailure(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	repoFile, err := os.Open(repo)
 	if err != nil {
@@ -127,7 +126,6 @@ func TestHkCovSecureHooksGitHelperRejectsWrongArgumentCount(t *testing.T) {
 // TestHkCovSecureHooksGitHelperInheritedDescriptors exercises both inherited
 // descriptor failures through a real child process, plus the success path.
 func TestHkCovSecureHooksGitHelperInheritedDescriptors(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	gitDir := filepath.Join(repo, ".git")
 	gitExecutable, err := exec.LookPath("git")
@@ -212,10 +210,9 @@ func TestHkCovOriginSlugReadsHostedRemotes(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.remote, func(t *testing.T) {
-			t.Parallel()
 			repo := initRepo(t)
 			git(t, repo, "remote", "add", "origin", test.remote)
-			if got := originSlug(repo); got != test.want {
+			if got := originSlug(realRunner(), repo); got != test.want {
 				t.Fatalf("originSlug(%s) = %q, want %q", test.remote, got, test.want)
 			}
 		})

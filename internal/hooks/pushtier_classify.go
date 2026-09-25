@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // DefaultBranchEnv lets a repository or a fleet policy assert its default
@@ -51,16 +52,20 @@ func ClassifyPendingPush(stdin io.Reader, repoRoot string) (Classification, erro
 // means the default-branch publication test never matches, not that
 // classification fails.
 func DetectDefaultBranch(repoRoot string) string {
+	return detectDefaultBranch(realRunner(), repoRoot)
+}
+
+func detectDefaultBranch(r runner.Runner, repoRoot string) string {
 	if override := strings.TrimSpace(os.Getenv(DefaultBranchEnv)); override != "" {
 		return override
 	}
-	if symref, err := gitOutput(repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+	if symref, err := gitOutput(r, repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if name := strings.TrimPrefix(strings.TrimSpace(symref), "origin/"); name != "" {
 			return name
 		}
 	}
 	for _, candidate := range []string{"main", "master"} {
-		if _, err := gitOutput(repoRoot, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
+		if _, err := gitOutput(r, repoRoot, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
 			return candidate
 		}
 	}

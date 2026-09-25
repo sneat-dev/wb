@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // hkCovWithoutUsableCwd runs fn from a working directory that has been removed.
@@ -43,7 +45,8 @@ func hkCovInstall(t *testing.T, repo, executable string) ApplyResult {
 
 func hkCovManagedDir(t *testing.T, repo string) string {
 	t.Helper()
-	managed, err := managedPath(repo)
+	runnertest.AllowRealProcess(t)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +65,8 @@ func hkCovSwapRepo(t *testing.T, repo string) func() {
 }
 
 func TestHkCovManagedPathRejectsNonRepository(t *testing.T) {
-	t.Parallel()
-	if _, err := managedPath(t.TempDir()); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := managedPath(realRunner(), t.TempDir()); err == nil {
 		t.Fatal("managedPath(non-repo) should fail")
 	}
 }
@@ -702,7 +705,6 @@ func TestHkCovValidateManagedHooksDirectory(t *testing.T) {
 }
 
 func TestHkCovOpenManagedHooksDirectoryErrors(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	managed := hkCovManagedDir(t, repo)
 
@@ -1088,12 +1090,12 @@ func TestHkCovReplaceManagedSectionBranches(t *testing.T) {
 }
 
 func TestHkCovRepositoryHeadCommitTimeAndSourceModule(t *testing.T) {
-	t.Parallel()
-	if _, err := repositoryHeadCommitTime(t.TempDir()); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := repositoryHeadCommitTime(realRunner(), t.TempDir()); err == nil {
 		t.Fatal("repositoryHeadCommitTime(non-repo) should fail")
 	}
 	repo := initRepo(t)
-	commitTime, err := repositoryHeadCommitTime(repo)
+	commitTime, err := repositoryHeadCommitTime(realRunner(), repo)
 	if err != nil || commitTime.IsZero() {
 		t.Fatalf("repositoryHeadCommitTime = %v, %v", commitTime, err)
 	}
@@ -1111,12 +1113,12 @@ func TestHkCovRepositoryHeadCommitTimeAndSourceModule(t *testing.T) {
 }
 
 func TestHkCovActiveDefaultHooks(t *testing.T) {
-	t.Parallel()
-	if _, err := activeDefaultHooks(t.TempDir()); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := activeDefaultHooks(realRunner(), t.TempDir()); err == nil {
 		t.Fatal("activeDefaultHooks(non-repo) should fail")
 	}
 	repo := initRepo(t)
-	active, err := activeDefaultHooks(repo)
+	active, err := activeDefaultHooks(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1129,7 +1131,7 @@ func TestHkCovActiveDefaultHooks(t *testing.T) {
 	mustWrite(t, filepath.Join(hooksDir, "pre-push.sample"), "#!/bin/sh\nexit 0\n")
 	mustWrite(t, filepath.Join(hooksDir, "not-executable"), "#!/bin/sh\nexit 0\n")
 	mustMkdirAll(t, filepath.Join(hooksDir, "adir"))
-	active, err = activeDefaultHooks(repo)
+	active, err = activeDefaultHooks(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1144,7 @@ func TestHkCovActiveDefaultHooks(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(gone, ".git", "hooks")); err != nil {
 		t.Fatal(err)
 	}
-	active, err = activeDefaultHooks(gone)
+	active, err = activeDefaultHooks(realRunner(), gone)
 	if err != nil || len(active) != 0 {
 		t.Fatalf("activeDefaultHooks(missing hooks dir) = %v, %v; want none and nil", active, err)
 	}
@@ -1152,7 +1154,7 @@ func TestHkCovActiveDefaultHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(broken, ".git", "hooks"), "not a directory\n")
-	if _, err := activeDefaultHooks(broken); err == nil {
+	if _, err := activeDefaultHooks(realRunner(), broken); err == nil {
 		t.Fatal("activeDefaultHooks with an unreadable hooks path should fail")
 	}
 }

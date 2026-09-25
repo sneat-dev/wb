@@ -14,6 +14,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestMain(m *testing.M) {
@@ -402,7 +404,7 @@ func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
 	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: fakeWB, ProjectsRoot: projects}); err != nil {
 		t.Fatal(err)
 	}
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +695,7 @@ func hookEnvironment(overrides map[string]string, remove ...string) []string {
 func TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +1026,7 @@ func TestRepairRefusesStaleHookReplacementAfterFinalAuthorization(t *testing.T) 
 func TestSetHooksPathAtUsesRetainedRepositoryDescriptor(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,7 +1081,7 @@ func TestApplyUsesRetainedCommonDirectoryAfterFinalGitAuthorization(t *testing.T
 func TestApplyDoesNotFollowPlantedPredictableHookTempSymlink(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1119,7 +1121,7 @@ func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
 	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err != nil {
 		t.Fatal(err)
 	}
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1151,7 @@ func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
 func TestRefreshManagedShimsRefusesLexicallyConfiguredSymlinkedManagedDirectory(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	managed, err := managedPath(repo)
+	managed, err := managedPath(realRunner(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1214,6 +1216,7 @@ profiles:
 }
 
 func TestRepositoryPolicyUsesShardedCoverageForGoPrePush(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	repository, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -2116,6 +2119,16 @@ func TestReadEventsRejectsUnsupportedSchema(t *testing.T) {
 
 func initRepo(t *testing.T) string {
 	t.Helper()
+	// Every production entry point this fixture feeds (Check, Apply,
+	// RefreshManagedShims, Run, RepositoryRoot, DetectDefaultBranch, and the
+	// package's own gitOutput/gitCommonDir/... helpers exercised directly by
+	// name) now reaches a real git process only through internal/runner, so
+	// the same runtime guard that blocks an unreviewed exec.Command in a unit
+	// test applies here too. This fixture is the one place nearly every
+	// real-git test in this package starts from, so it is the one place that
+	// declares the whole suite's real-process dependency, rather than
+	// repeating AllowRealProcess at each of dozens of call sites.
+	runnertest.AllowRealProcess(t)
 	repo := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
 		repo = resolved

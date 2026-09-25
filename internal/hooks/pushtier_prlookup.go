@@ -52,7 +52,7 @@ type CachedGHPRLookup struct {
 func NewCachedGHPRLookup(repoRoot string) *CachedGHPRLookup {
 	return &CachedGHPRLookup{
 		RepoRoot:  repoRoot,
-		RepoSlug:  originSlug(repoRoot),
+		RepoSlug:  originSlug(realRunner(), repoRoot),
 		CachePath: defaultPRStatusCachePath(),
 		TTL:       defaultPRStatusCacheTTL,
 		Timeout:   defaultPRStatusLookupTimeout,

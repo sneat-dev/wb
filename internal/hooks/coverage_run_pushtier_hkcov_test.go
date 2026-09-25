@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -245,6 +246,7 @@ func TestHkCovRunTemplateErrorBranches(t *testing.T) {
 // branch and commit — and proves the pre-push hook accepts it and reports the
 // rescue block as a success.
 func TestHkCovRunVerifiesARealCanonicalRescueAttestation(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	testenv.Isolate(t)
 	projectsRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -316,7 +318,6 @@ func TestHkCovClassifyPushTierUnrecognizedNamespace(t *testing.T) {
 }
 
 func TestHkCovClassifyPendingPushRejectsMalformedInput(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	if _, err := ClassifyPendingPush(strings.NewReader("only two fields\n"), repo); err == nil || !strings.Contains(err.Error(), "malformed pushed-ref line") {
 		t.Fatalf("ClassifyPendingPush(malformed) error = %v", err)
@@ -419,7 +420,6 @@ func TestHkCovCachedGHPRLookupUsesTheDefaultRunner(t *testing.T) {
 }
 
 func TestHkCovCachedGHPRLookupRejectsBadJSON(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	lookup := &CachedGHPRLookup{
 		RepoRoot: repo, RepoSlug: "acme/widget",

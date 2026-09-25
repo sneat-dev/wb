@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,33 +9,53 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
+
+// realRunner is the production seam default: every exported entry point
+// that has no caller-supplied runner.Runner (this package has no shared
+// options struct every entry point threads through) resolves to this rather
+// than a package-level mutable var, so a test can never leave a stale fake
+// installed for a later, unrelated test.
+func realRunner() runner.Runner { return runner.New() }
+
+// resolveRunner returns r, or realRunner() when r is nil -- the same
+// zero-value-defaulting an existing options struct's Runner field gets
+// (mirroring internal/orchestrate's PullRequestLandOptions).
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return realRunner()
+}
 
 // SecureHooksGitHelperArgument selects the private WB child-process path that
 // enters an inherited repository descriptor before writing core.hooksPath.
 // It is handled before normal CLI parsing and is not a user command.
 const SecureHooksGitHelperArgument = "--wb-internal-hooks-git"
 
-func gitOutput(repoPath string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func gitOutput(r runner.Runner, repoPath string, args ...string) (string, error) {
 	// Run from the requested repository instead of spelling it with `git -C`.
 	// Git invokes hooks with relative GIT_DIR/GIT_WORK_TREE values. `-C` changes
 	// directory *before* resolving those values, so a hook already running from
 	// `.git` would incorrectly resolve GIT_DIR=. as `<repo>/.git/.git`. Setting
 	// the child working directory preserves the invoking Git context and yields
 	// the same behavior for ordinary callers.
-	cmd.Dir = repoPath
-	cmd.Env = console.Env()
-	out, err := cmd.CombinedOutput()
+	result, err := r.RunOpts(context.Background(), repoPath, runner.RunOptions{Env: console.Env()}, "git", args...)
+	combined := strings.TrimSpace(result.Stdout + result.Stderr)
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, combined)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return combined, nil
 }
 
 // RepositoryRoot resolves path to the enclosing non-bare Git worktree.
 func RepositoryRoot(path string) (string, error) {
+	return repositoryRoot(realRunner(), path)
+}
+
+func repositoryRoot(r runner.Runner, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		path = "."
 	}
@@ -42,15 +63,15 @@ func RepositoryRoot(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err := gitOutput(absolute, "rev-parse", "--show-toplevel")
+	root, err := gitOutput(r, absolute, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("%s is not a Git worktree: %w", absolute, err)
 	}
 	return filepath.Clean(root), nil
 }
 
-func gitCommonDir(repoRoot string) (string, error) {
-	dir, err := gitOutput(repoRoot, "rev-parse", "--git-common-dir")
+func gitCommonDir(r runner.Runner, repoRoot string) (string, error) {
+	dir, err := gitOutput(r, repoRoot, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
@@ -64,8 +85,8 @@ func gitCommonDir(repoRoot string) (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-func currentHooksPath(repoRoot string) (string, error) {
-	path, err := configuredHooksPath(repoRoot)
+func currentHooksPath(r runner.Runner, repoRoot string) (string, error) {
+	path, err := configuredHooksPath(r, repoRoot)
 	if err != nil || path == "" {
 		return path, err
 	}
@@ -76,8 +97,8 @@ func currentHooksPath(repoRoot string) (string, error) {
 // stores. Installers use this before resolving symlinks so a configured
 // .git/wb-hooks symlink cannot be misclassified as an unrelated external
 // hooks directory and skipped by a safety check.
-func configuredHooksPath(repoRoot string) (string, error) {
-	value, err := gitOutput(repoRoot, "config", "--local", "--get", "core.hooksPath")
+func configuredHooksPath(r runner.Runner, repoRoot string) (string, error) {
+	value, err := gitOutput(r, repoRoot, "config", "--local", "--get", "core.hooksPath")
 	if err != nil {
 		// git config exits 1 when the key is absent.
 		return "", nil
@@ -168,7 +189,7 @@ func RunSecureHooksGitHelper(args []string) int {
 	return 0
 }
 
-func originSlug(repoRoot string) string {
+func originSlug(r runner.Runner, repoRoot string) string {
 	// A linked worktree — including `.wb-stage-*/checkout` during create — is
 	// entered by Git hooks while `git worktree add` still holds the canonical
 	// repository lock. Spawning Git here deadlocks the add. The gitfile already
@@ -176,7 +197,7 @@ func originSlug(repoRoot string) string {
 	if canonical := canonicalRootFromCheckout(repoRoot); canonical != "" && filepath.Clean(canonical) != filepath.Clean(repoRoot) {
 		return checkoutSlug(canonical)
 	}
-	remote, err := gitOutput(repoRoot, "remote", "get-url", "origin")
+	remote, err := gitOutput(r, repoRoot, "remote", "get-url", "origin")
 	if err != nil || remote == "" {
 		return canonicalCheckoutSlug(repoRoot)
 	}

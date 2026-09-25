@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 const EventSchemaVersion = 1
@@ -47,11 +49,11 @@ type eventContext struct {
 	labels     map[string]string
 }
 
-func loadEventContext(repoRoot string, labels map[string]string) eventContext {
-	commit, _ := gitOutput(repoRoot, "rev-parse", "HEAD")
-	branch, _ := gitOutput(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+func loadEventContext(r runner.Runner, repoRoot string, labels map[string]string) eventContext {
+	commit, _ := gitOutput(r, repoRoot, "rev-parse", "HEAD")
+	branch, _ := gitOutput(r, repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
 	return eventContext{
-		repository: originSlug(repoRoot),
+		repository: originSlug(r, repoRoot),
 		commit:     commit,
 		branch:     branch,
 		labels:     cloneLabels(labels),

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -61,6 +62,10 @@ type ApplyOptions struct {
 	Repair             bool
 	Force              bool
 	Now                func() time.Time
+	// Runner is the seam every Git call Apply makes goes through. Nil (the
+	// production default) resolves to the real runner; a test injects
+	// runnertest.Fake.
+	Runner runner.Runner
 	// afterManagedHooksValidation is a test-only seam for ancestor-swap
 	// regressions. Production callers cannot influence managed-hook mutation.
 	afterManagedHooksValidation func()
@@ -89,8 +94,8 @@ type ApplyResult struct {
 	Actions []string
 }
 
-func managedPath(repoRoot string) (string, error) {
-	common, err := gitCommonDir(repoRoot)
+func managedPath(r runner.Runner, repoRoot string) (string, error) {
+	common, err := gitCommonDir(r, repoRoot)
 	if err != nil {
 		return "", err
 	}
@@ -261,6 +266,7 @@ func absoluteProjectsRoot(projectsRoot string) (string, error) {
 // Check validates config, core.hooksPath, generated shims, and executability
 // without changing repository state.
 func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport, error) {
+	r := realRunner()
 	// Generated shims intentionally contain no executable path. Normalize the
 	// current check process's launcher only for WB-source stale-build evidence;
 	// shim text comparison itself is independent of installation location.
@@ -279,7 +285,7 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 	if err != nil {
 		return CheckReport{}, err
 	}
-	managed, err := managedPath(policy.RepoRoot)
+	managed, err := managedPath(r, policy.RepoRoot)
 	if err != nil {
 		return CheckReport{}, err
 	}
@@ -303,7 +309,7 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		})
 		return report, nil
 	}
-	current, err := currentHooksPath(policy.RepoRoot)
+	current, err := currentHooksPath(r, policy.RepoRoot)
 	if err != nil {
 		return CheckReport{}, err
 	}
@@ -328,7 +334,7 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 	var checkedExecutableInfo os.FileInfo
 	checkExecutableStaleness := repositoryIsWBSourceModule(policy.RepoRoot)
 	if checkExecutableStaleness {
-		headCommitTime, headTimeErr = repositoryHeadCommitTime(policy.RepoRoot)
+		headCommitTime, headTimeErr = repositoryHeadCommitTime(r, policy.RepoRoot)
 		if resolved, resolveErr := filepath.EvalSymlinks(wbExecutable); resolveErr == nil {
 			if info, statErr := os.Stat(resolved); statErr == nil && info.Mode().IsRegular() {
 				checkedExecutablePath = filepath.Clean(resolved)
@@ -402,6 +408,7 @@ func explicitlyExcludedProfiles(policy Policy) []string {
 // Apply installs or repairs WB's local shims. It never overwrites unmanaged
 // hook files unless Force is set, and forced replacements are backed up.
 func Apply(options ApplyOptions) (ApplyResult, error) {
+	r := resolveRunner(options.Runner)
 	var err error
 	options.WBExecutable, err = durableWBExecutable(options.WBExecutable)
 	if err != nil {
@@ -421,11 +428,11 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 			return ApplyResult{}, err
 		}
 	}
-	managed, err := managedPath(policy.RepoRoot)
+	managed, err := managedPath(r, policy.RepoRoot)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	current, err := currentHooksPath(policy.RepoRoot)
+	current, err := currentHooksPath(r, policy.RepoRoot)
 	if err != nil {
 		return ApplyResult{}, err
 	}
@@ -433,7 +440,7 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		return ApplyResult{}, fmt.Errorf("core.hooksPath currently points to %s; migrate those hooks into WB templates, then run `wb hooks repair --force`", current)
 	}
 	if current == "" {
-		active, err := activeDefaultHooks(policy.RepoRoot)
+		active, err := activeDefaultHooks(r, policy.RepoRoot)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -610,6 +617,7 @@ func isTransientGoRunPath(path string) bool {
 // WB-managed hooks alone; a conflicting or malformed managed installation
 // fails the caller before it can create a split-layout checkout.
 func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string) (bool, error) {
+	r := realRunner()
 	var err error
 	wbExecutable, err = durableWBExecutable(wbExecutable)
 	if err != nil {
@@ -623,11 +631,11 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 	if err != nil {
 		return false, err
 	}
-	managed, err := managedPath(policy.RepoRoot)
+	managed, err := managedPath(r, policy.RepoRoot)
 	if err != nil {
 		return false, err
 	}
-	configured, err := configuredHooksPath(policy.RepoRoot)
+	configured, err := configuredHooksPath(r, policy.RepoRoot)
 	if err != nil {
 		return false, err
 	}
@@ -639,7 +647,7 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 			return false, err
 		}
 	}
-	current, err := currentHooksPath(policy.RepoRoot)
+	current, err := currentHooksPath(r, policy.RepoRoot)
 	if err != nil {
 		return false, err
 	}
@@ -1210,8 +1218,8 @@ func extractManagedSection(content string) (section string, managed, valid bool)
 // baseline available without relying on Go's automatic VCS build stamping
 // (which silently omits revision info when building from a linked worktree —
 // exactly how a dogfooded, branch-specific wb build is made).
-func repositoryHeadCommitTime(repoRoot string) (time.Time, error) {
-	value, err := gitOutput(repoRoot, "log", "-1", "--format=%cI")
+func repositoryHeadCommitTime(r runner.Runner, repoRoot string) (time.Time, error) {
+	value, err := gitOutput(r, repoRoot, "log", "-1", "--format=%cI")
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -1274,8 +1282,8 @@ func hasUserHookContent(content string) bool {
 	return false
 }
 
-func activeDefaultHooks(repoRoot string) ([]string, error) {
-	common, err := gitCommonDir(repoRoot)
+func activeDefaultHooks(r runner.Runner, repoRoot string) ([]string, error) {
+	common, err := gitCommonDir(r, repoRoot)
 	if err != nil {
 		return nil, err
 	}

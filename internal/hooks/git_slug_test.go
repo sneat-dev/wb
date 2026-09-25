@@ -7,19 +7,20 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "remote", "add", "origin", "git@github.com:acme/app.git")
-	if got := originSlug(repo); got != "acme/app" {
+	if got := originSlug(realRunner(), repo); got != "acme/app" {
 		t.Fatalf("originSlug = %q, want acme/app from the hosted remote", got)
 	}
 }
 
 func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -40,12 +41,13 @@ func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
 	mustWrite(t, filepath.Join(canonical, "README.md"), "test\n")
 	git(t, canonical, "add", "README.md")
 	git(t, canonical, "commit", "-m", "initial")
-	if got := originSlug(canonical); got != "acme/app" {
+	if got := originSlug(realRunner(), canonical); got != "acme/app" {
 		t.Fatalf("originSlug = %q, want acme/app from the checkout layout, not hr2/origin from the bare path", got)
 	}
 }
 
 func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -71,8 +73,8 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 	}
 	git(t, canonical, "worktree", "add", "-b", "feature/upgrade", stage, "main")
 
-	canonicalSlug := originSlug(canonical)
-	stageSlug := originSlug(stage)
+	canonicalSlug := originSlug(realRunner(), canonical)
+	stageSlug := originSlug(realRunner(), stage)
 	if canonicalSlug != "acme/app" {
 		t.Fatalf("canonical originSlug = %q, want acme/app", canonicalSlug)
 	}
@@ -84,7 +86,7 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 	}
 
 	t.Setenv("PATH", "/nonexistent")
-	if got := originSlug(stage); got != "acme/app" {
+	if got := originSlug(realRunner(), stage); got != "acme/app" {
 		t.Fatalf("originSlug on a staging worktree spawned Git or missed the gitfile: %q", got)
 	}
 	if got := canonicalCheckoutSlug(stage); got != "acme/app" {

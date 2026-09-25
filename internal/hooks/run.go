@@ -3,11 +3,9 @@ package hooks
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/envguard"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type RunOptions struct {
@@ -29,6 +28,10 @@ type RunOptions struct {
 	Now          func() time.Time
 	WBExecutable string
 	ProjectsRoot string
+	// Runner is the seam every hook-block execution and Git call Run makes
+	// goes through. Nil (the production default) resolves to the real
+	// runner; a test injects runnertest.Fake.
+	Runner runner.Runner
 }
 
 type RunResult struct {
@@ -71,6 +74,7 @@ func Run(options RunOptions) (RunResult, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
+	options.Runner = resolveRunner(options.Runner)
 	layout, err := ResolveExecutionLayout(policy.RepoRoot, options.ProjectsRoot)
 	if err != nil {
 		return RunResult{ExitCode: 2}, fmt.Errorf("resolve hook runtime layout: %w", err)
@@ -118,7 +122,7 @@ func Run(options RunOptions) (RunResult, error) {
 	}
 
 	var metricEvents []Event
-	executionContext := loadEventContext(policy.RepoRoot, policy.Metrics.Labels)
+	executionContext := loadEventContext(options.Runner, policy.RepoRoot, policy.Metrics.Labels)
 	started := options.Now()
 	exitCode := 0
 	var runErr error
@@ -169,8 +173,8 @@ func shouldReplicateStdin(hook string, blockCount int, stdinIsTerminal bool) boo
 	return !stdinIsTerminal
 }
 
-func runTemplate(policy Policy, block HookBlock, options RunOptions, context eventContext, layout ExecutionLayout) (int, error) {
-	return runTemplateInjected(policy, block, options, context, layout, nil)
+func runTemplate(policy Policy, block HookBlock, options RunOptions, eventCtx eventContext, layout ExecutionLayout) (int, error) {
+	return runTemplateInjected(policy, block, options, eventCtx, layout, nil)
 }
 
 // runTemplateInjected is runTemplate's test seam (task-9 PR-9): every
@@ -178,7 +182,7 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 // passes a nil *filewrite.Injector, so production behaviour is unchanged. A
 // test passes its own Injector to reach the built-in template scratch
 // file's create/write/close failure branches deterministically.
-func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, context eventContext, layout ExecutionLayout, inj *filewrite.Injector) (int, error) {
+func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, eventCtx eventContext, layout ExecutionLayout, inj *filewrite.Injector) (int, error) {
 	templatePath := block.Hook.Template
 	cleanup := func() {}
 	if block.Hook.Builtin {
@@ -198,11 +202,6 @@ func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, con
 	}
 	defer cleanup()
 
-	cmd := exec.Command("/bin/sh", append([]string{templatePath}, options.Args...)...)
-	cmd.Dir = policy.RepoRoot
-	cmd.Stdin = options.Stdin
-	cmd.Stdout = options.Stdout
-	cmd.Stderr = options.Stderr
 	wbExecutable := options.WBExecutable
 	if wbExecutable == "" {
 		wbExecutable, _ = os.Executable()
@@ -212,9 +211,9 @@ func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, con
 		"WB_PROFILE=" + block.Profile,
 		"WB_BLOCK=" + block.ID,
 		"WB_REPO_ROOT=" + policy.RepoRoot,
-		"WB_REPO_SLUG=" + context.repository,
-		"WB_HEAD_SHA=" + context.commit,
-		"WB_BRANCH=" + context.branch,
+		"WB_REPO_SLUG=" + eventCtx.repository,
+		"WB_HEAD_SHA=" + eventCtx.commit,
+		"WB_BRANCH=" + eventCtx.branch,
 		"WB_HOOKS_CONFIG=" + block.Hook.ConfigPath,
 		"WB_HOOK_RUNTIME_ROOT=" + layout.Root,
 		"WB_HOOK_METRICS_PATH=" + policy.Metrics.Path,
@@ -239,11 +238,13 @@ func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, con
 	if block.Hook.Template == BuiltinGoPreCommit || block.Hook.Template == BuiltinGoPrePush {
 		overrides = append(envguard.GoEnvOverrides(policy.RepoRoot), overrides...)
 	}
-	cmd.Env = envguard.SanitizeEnv(gitDirectoryEnvironmentCleared(os.Environ()), overrides...)
-	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), fmt.Errorf("%s block failed with exit %d", block.ID, exitErr.ExitCode())
+	env := envguard.SanitizeEnv(gitDirectoryEnvironmentCleared(os.Environ()), overrides...)
+	streamOpts := runner.StreamOptions{Env: env, Stdin: options.Stdin, Stdout: options.Stdout, Stderr: options.Stderr}
+	result, err := resolveRunner(options.Runner).Stream(context.Background(), policy.RepoRoot, streamOpts,
+		"/bin/sh", append([]string{templatePath}, options.Args...)...)
+	if err != nil {
+		if result.ExitCode != 0 {
+			return result.ExitCode, fmt.Errorf("%s block failed with exit %d", block.ID, result.ExitCode)
 		}
 		return 2, fmt.Errorf("run %s template %s: %w", block.ID, filepath.Clean(templatePath), err)
 	}

@@ -342,7 +342,6 @@ func TestHkCovBuiltinTemplateRejectsUnknownNames(t *testing.T) {
 // TestHkCovApplyProfilesDirectBranches exercises applyProfiles paths that
 // LoadPolicy cannot reach because its own layering always initialises Hooks.
 func TestHkCovApplyProfilesDirectBranches(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["ghost"] = ProfileDefinition{Name: "ghost"}
@@ -452,7 +451,6 @@ func TestHkCovMatchProfileAndGlobBranches(t *testing.T) {
 // TestHkCovHookBlocksSkipsEmptyProfileHooks asserts a profile entry whose hook
 // is disabled or template-less contributes no block.
 func TestHkCovHookBlocksSkipsEmptyProfileHooks(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["custom"] = ProfileDefinition{
