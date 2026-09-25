@@ -197,6 +197,13 @@ func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request 
 // AcquireExecutionLock waits interruptibly for the per-handoff receive fence.
 // Callers admit and authenticate exact request bytes before taking this lock.
 func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, digest Digest) (*ExecutionLock, error) {
+	return s.acquireExecutionLock(ctx, handoffID, digest, unix.Fchmod, unix.Flock)
+}
+
+// The two operations below can fail after all four authority descriptors have
+// been opened. Passing them per call keeps failure tests isolated from other
+// lock acquisitions without changing the production syscall path.
+func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, digest Digest, chmod func(int, uint32) error, flock func(int, int) error) (*ExecutionLock, error) {
 	if err := validateID("handoff_id", handoffID); err != nil {
 		return nil, err
 	}
@@ -263,7 +270,7 @@ func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, diges
 		}
 		return nil, fmt.Errorf("handoff execution lock is not one regular file")
 	}
-	if err := unix.Fchmod(fd, 0o600); err != nil {
+	if err := chmod(fd, 0o600); err != nil {
 		_ = file.Close()
 		_ = requestFile.Close()
 		_ = handoff.Close()
@@ -271,7 +278,7 @@ func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, diges
 		return nil, fmt.Errorf("secure handoff execution lock: %w", err)
 	}
 	for {
-		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		err := flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			return &ExecutionLock{
 				root: root, handoff: handoff, requestFile: requestFile, file: file, rootPath: rootPath,
