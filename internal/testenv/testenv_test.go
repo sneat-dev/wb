@@ -368,6 +368,107 @@ func TestConfigureGitAutoMaintenanceOffFailsLoudlyWhenGitConfigFails(t *testing.
 // re-exports): package-level coverage is measured per package, so a caller in
 // a different package does not count toward this file's own statement
 // coverage.
+// TestInitBareRemoteForTestCreatesAConfiguredBareRepo drives
+// InitBareRemoteForTest's success path: it must create path's parent
+// directory, initialize a bare repository there with an initial branch of
+// "main", and disable gc.auto/maintenance.auto/receive.autogc directly in
+// that repository's own config -- the same protection
+// ConfigureGitAutoMaintenanceOff gives on its own, but by construction, so a
+// caller cannot forget it.
+func TestInitBareRemoteForTestCreatesAConfiguredBareRepo(t *testing.T) {
+	t.Parallel()
+	remote := filepath.Join(t.TempDir(), "nested", "remote.git")
+
+	got := InitBareRemoteForTest(t, remote)
+
+	if got != remote {
+		t.Fatalf("InitBareRemoteForTest returned %q, want %q", got, remote)
+	}
+	cmd := exec.Command("git", "rev-parse", "--is-bare-repository")
+	cmd.Dir = remote
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse --is-bare-repository: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "true" {
+		t.Fatalf("is-bare-repository = %q, want true", got)
+	}
+	for key, want := range map[string]string{
+		"gc.auto":          "0",
+		"maintenance.auto": "false",
+		"receive.autogc":   "false",
+	} {
+		cmd := exec.Command("git", "config", "--local", "--get", key)
+		cmd.Dir = remote
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_COUNT=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git config --local --get %s: %v: %s", key, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Fatalf("git config --local --get %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestInitBareRemoteForTestFailsLoudlyWhenParentCannotBeCreated drives
+// InitBareRemoteForTest's MkdirAll error branch: path's parent collides with
+// an existing regular file, so MkdirAll can never create it as a directory.
+func TestInitBareRemoteForTestFailsLoudlyWhenParentCannotBeCreated(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "remote.git")
+	recorder := &recordingTB{}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		InitBareRemoteForTest(recorder, path)
+	}()
+	<-done
+
+	recorder.mu.Lock()
+	t.Cleanup(func() { recorder.mu.Unlock() })
+	if !recorder.fataled {
+		t.Fatal("InitBareRemoteForTest with an unmakeable parent did not fail")
+	}
+	if !strings.Contains(recorder.fatalMsg, "mkdir") {
+		t.Fatalf("Fatalf message = %q, want it to name the failing mkdir", recorder.fatalMsg)
+	}
+}
+
+// TestInitBareRemoteForTestFailsLoudlyWhenGitInitFails drives
+// InitBareRemoteForTest's `git init --bare` error branch: path already
+// exists as a regular file, so git can never initialize a repository there.
+func TestInitBareRemoteForTestFailsLoudlyWhenGitInitFails(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "remote.git")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &recordingTB{}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		InitBareRemoteForTest(recorder, path)
+	}()
+	<-done
+
+	recorder.mu.Lock()
+	t.Cleanup(func() { recorder.mu.Unlock() })
+	if !recorder.fataled {
+		t.Fatal("InitBareRemoteForTest against a path that is already a file did not fail")
+	}
+	if !strings.Contains(recorder.fatalMsg, "git init --bare") {
+		t.Fatalf("Fatalf message = %q, want it to name the failing git init", recorder.fatalMsg)
+	}
+}
+
 func TestWriteExecutableFileWritesAnExecutableFileAtTheGivenPath(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "script")
