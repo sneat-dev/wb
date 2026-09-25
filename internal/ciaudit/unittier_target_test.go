@@ -276,49 +276,45 @@ func TestIsGitShowPathMissingOnTargetRejectsNilError(t *testing.T) {
 	}
 }
 
+// fakeTargetComparator is a targetComparator test double: it returns
+// whatever findings/error the test configured and records that it was
+// called, without touching root or target at all -- compareAgainstTarget's
+// own job is composition, sorting and error propagation, none of which
+// needs a real comparison, real findings, or a real Git repository to
+// exercise (review note #764 B6: the round-1 B4 fake-port pattern applied to
+// this function too).
+type fakeTargetComparator struct {
+	findings []Finding
+	err      error
+	called   bool
+}
+
+func (f *fakeTargetComparator) run(_, _ string) ([]Finding, error) {
+	f.called = true
+	return f.findings, f.err
+}
+
 // TestCompareAgainstTargetCombinesBothComparisonsSorted pins
-// CompareAgainstTarget's own contract (review note #764 B5): it runs both
-// CompareCoverageFloors and CompareUnitTierPendingTotal against the same
-// root and target and returns their findings combined into the one sorted
-// slice cmd/wb/ci.go used to build itself, from the two calls this function
-// now replaces. A real Git fixture is unavoidable here (unlike
-// compareUnitTierPendingTotal's own tests above): CompareCoverageFloors has
-// no git-reading port of its own to fake, and CompareAgainstTarget's whole
-// job is running both real, exported comparisons together.
+// compareAgainstTarget's own contract (review note #764 B5, B6): it runs
+// both comparators against the same root and target and returns their
+// findings combined into the one sorted slice cmd/wb/ci.go used to build
+// itself, from the two calls this function now replaces.
 func TestCompareAgainstTargetCombinesBothComparisonsSorted(t *testing.T) {
 	t.Parallel()
-	fixture := newTargetFixture(t, "85")
-	write(t, fixture.Root, ".github/workflows/nightly.yml", `
-jobs:
-  build:
-    with:
-      min_test_coverage_percent: 85
-`)
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+	floors := &fakeTargetComparator{findings: []Finding{
+		{Code: "coverage-floor-lowered", File: ".github/workflows/nightly.yml"},
+		{Code: "coverage-floor-lowered", File: ".github/workflows/ci.yml"},
+	}}
+	pending := &fakeTargetComparator{findings: []Finding{
+		{Code: "unit-tier-pending-total-rose", File: unitTierPendingPath},
+	}}
 
-	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-	write(t, fixture.Root, ".github/workflows/ci.yml", `
-jobs:
-  build:
-    with:
-      min_test_coverage_percent: 80
-`)
-	write(t, fixture.Root, ".github/workflows/nightly.yml", `
-jobs:
-  build:
-    with:
-      min_test_coverage_percent: 80
-`)
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\nb_test.go\t1\ttask-2\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "lower both floors and grow the pending total")
-
-	findings, err := CompareAgainstTarget(fixture.Root, "main")
+	findings, err := compareAgainstTarget("/root", "main", floors.run, pending.run)
 	if err != nil {
-		t.Fatalf("CompareAgainstTarget: %v", err)
+		t.Fatalf("compareAgainstTarget: %v", err)
+	}
+	if !floors.called || !pending.called {
+		t.Fatalf("both comparators must be called: floors=%t pending=%t", floors.called, pending.called)
 	}
 	if len(findings) != 3 {
 		t.Fatalf("findings = %+v, want exactly 3 (two floors, one pending)", findings)
@@ -331,35 +327,51 @@ jobs:
 	}
 }
 
-// TestCompareAgainstTargetPropagatesACoverageFloorsError pins the first
-// error branch: CompareAgainstTarget must surface a CompareCoverageFloors
-// failure rather than silently proceeding to the pending comparison.
-func TestCompareAgainstTargetPropagatesACoverageFloorsError(t *testing.T) {
+// TestCompareAgainstTargetPropagatesAFloorsError pins the first error
+// branch: compareAgainstTarget must surface the floors comparator's failure
+// rather than silently proceeding to the pending comparator.
+func TestCompareAgainstTargetPropagatesAFloorsError(t *testing.T) {
 	t.Parallel()
-	if _, err := CompareAgainstTarget(t.TempDir(), "main"); err == nil {
-		t.Fatal("want an error for a directory that is not a Git repository")
+	floors := &fakeTargetComparator{err: errors.New("floors comparator failed")}
+	pending := &fakeTargetComparator{}
+
+	if _, err := compareAgainstTarget("/root", "main", floors.run, pending.run); err == nil {
+		t.Fatal("want an error when the floors comparator fails")
+	}
+	if pending.called {
+		t.Fatal("the pending comparator must not run once the floors comparator has failed")
 	}
 }
 
-// TestCompareAgainstTargetPropagatesAPendingTotalError pins the second error
-// branch: a CompareUnitTierPendingTotal failure (here, a malformed local
-// unit_tier.pending) surfaces even when CompareCoverageFloors itself found
-// nothing to report.
-func TestCompareAgainstTargetPropagatesAPendingTotalError(t *testing.T) {
+// TestCompareAgainstTargetPropagatesAPendingError pins the second error
+// branch: the pending comparator's failure surfaces even when the floors
+// comparator itself found nothing to report.
+func TestCompareAgainstTargetPropagatesAPendingError(t *testing.T) {
 	t.Parallel()
-	fixture := newTargetFixture(t, "85")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "seed the pending list")
-	targetGit(t, fixture.Root, "push", "-q", "origin", "main")
+	floors := &fakeTargetComparator{}
+	pending := &fakeTargetComparator{err: errors.New("pending comparator failed")}
 
-	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
-	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t-1\ttask-1\n")
-	targetGit(t, fixture.Root, "add", "-A")
-	targetGit(t, fixture.Root, "commit", "-qm", "corrupt the local pending file")
+	if _, err := compareAgainstTarget("/root", "main", floors.run, pending.run); err == nil {
+		t.Fatal("want an error when the pending comparator fails")
+	}
+	if !floors.called {
+		t.Fatal("the floors comparator must still run before the pending comparator")
+	}
+}
 
-	if _, err := CompareAgainstTarget(fixture.Root, "main"); err == nil {
-		t.Fatal("want an error for an invalid local unit_tier.pending")
+// TestCompareAgainstTargetWiresRealComparators pins CompareAgainstTarget's
+// own exported wrapper: it must pass CompareCoverageFloors and
+// CompareUnitTierPendingTotal, not some other pair, to compareAgainstTarget.
+// An empty target short-circuits both real comparators before either
+// touches git, so this needs no real repository.
+func TestCompareAgainstTargetWiresRealComparators(t *testing.T) {
+	t.Parallel()
+	findings, err := CompareAgainstTarget(t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("CompareAgainstTarget: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("an empty target produced findings: %+v", findings)
 	}
 }
 

@@ -122,6 +122,14 @@ func isGitShowPathMissingOnTarget(err error) bool {
 	return strings.Contains(message, "does not exist in") || strings.Contains(message, "exists on disk, but not in")
 }
 
+// targetComparator is one `wb ci audit --target` cross-branch comparison's
+// own signature -- CompareCoverageFloors's and CompareUnitTierPendingTotal's
+// shared shape. compareAgainstTarget takes both as parameters so its own
+// tests can substitute fakes: composition, sorting and error propagation are
+// the only things it does, and none of that needs a real comparison, let
+// alone a real Git repository, to exercise (review note #764 B6).
+type targetComparator func(root, target string) ([]Finding, error)
+
 // CompareAgainstTarget runs every `wb ci audit --target` cross-branch
 // comparison this package owns -- CompareCoverageFloors and
 // CompareUnitTierPendingTotal -- against root and target, and returns their
@@ -132,14 +140,19 @@ func isGitShowPathMissingOnTarget(err error) bool {
 // call here, not a new call site in cmd/wb (review note #764 B5: keep
 // cmd/wb's statement count over this path unchanged).
 func CompareAgainstTarget(root, target string) ([]Finding, error) {
+	return compareAgainstTarget(root, target, CompareCoverageFloors, CompareUnitTierPendingTotal)
+}
+
+// compareAgainstTarget is CompareAgainstTarget's comparator-agnostic core.
+func compareAgainstTarget(root, target string, floors, pending targetComparator) ([]Finding, error) {
 	var findings []Finding
-	floorFindings, err := CompareCoverageFloors(root, target)
+	floorFindings, err := floors(root, target)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, floorFindings...)
 
-	pendingFindings, err := CompareUnitTierPendingTotal(root, target)
+	pendingFindings, err := pending(root, target)
 	if err != nil {
 		return nil, err
 	}
