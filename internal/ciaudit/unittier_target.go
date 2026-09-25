@@ -132,17 +132,18 @@ type targetComparator func(root, target string) ([]Finding, error)
 
 // CompareAgainstTarget runs every `wb ci audit --target` cross-branch
 // comparison this package owns -- CompareCoverageFloors,
-// CompareUnitTierPendingTotal and CompareExecSitesPendingTotal -- against
-// root and target, and returns their findings combined and sorted the same
-// way cmd/wb/ci.go already sorts a target comparison's findings (by Code,
-// then File). Callers that want all three comparisons call this one
-// function instead of calling each separately, so adding a further such
-// comparison in the future costs this package a new call here, not a new
-// call site in cmd/wb (review note #764 B5: keep cmd/wb's statement count
-// over this path unchanged; task-8 reuses the same seam for its own
-// exec-sites ratchet rather than adding a parallel call site).
+// CompareUnitTierPendingTotal, CompareExecSitesPendingTotal and
+// CompareCampaignTestNamesPendingTotal -- against root and target, and
+// returns their findings combined and sorted the same way cmd/wb/ci.go
+// already sorts a target comparison's findings (by Code, then File).
+// Callers that want all four comparisons call this one function instead of
+// calling each separately, so adding a further such comparison in the
+// future costs this package a new call here, not a new call site in cmd/wb
+// (review note #764 B5: keep cmd/wb's statement count over this path
+// unchanged; task-8 and task-21 both reuse the same seam for their own
+// ratchets rather than adding a parallel call site).
 func CompareAgainstTarget(root, target string) ([]Finding, error) {
-	return compareAgainstTarget(root, target, CompareCoverageFloors, CompareUnitTierPendingTotal, CompareExecSitesPendingTotal)
+	return compareAgainstTarget(root, target, CompareCoverageFloors, CompareUnitTierPendingTotal, CompareExecSitesPendingTotal, CompareCampaignTestNamesPendingTotal)
 }
 
 // compareAgainstTarget is CompareAgainstTarget's comparator-agnostic core.
