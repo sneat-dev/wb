@@ -53,7 +53,6 @@ internal/quality/deadcode.go	1	task-15
 internal/quality/ratchet.go	6	task-15
 internal/recipe/command.go	1	task-15
 internal/remotessh/remotessh.go	1	task-8
-internal/runqueue/queue.go	1	task-14
 internal/sessioncourier/ssh.go	1	task-15
 internal/sessionlaunch/launch.go	3	task-14
 internal/sessionlaunch/private.go	2	task-14

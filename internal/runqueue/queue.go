@@ -5,14 +5,23 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return runner.New()
+}
 
 const retryInterval = 100 * time.Millisecond
 
@@ -123,7 +132,7 @@ func classifyGo(arguments []string) Kind {
 	if !hasAny(arguments, "test", "vet", "build") {
 		return KindNone
 	}
-	if hasPrefix(arguments, "-race") || hasPrefix(arguments, "-cover") || goflagsRaceOrCover() {
+	if hasPrefix(arguments, "-race") || hasPrefix(arguments, "-cover") || goflagsRaceOrCover(nil) {
 		return KindRaceOrCover
 	}
 	if hasBroadScope(arguments) || countGoPackagePaths(arguments) >= 2 {
@@ -137,8 +146,13 @@ func classifyGo(arguments []string) Kind {
 // the `go env -w GOFLAGS` persisted default when the environment variable
 // itself is unset — carries -race or -cover, so a caller that sets it
 // ambiently either way still gets the heavy classification.
-func goflagsRaceOrCover() bool {
-	fields := strings.Fields(EffectiveGOFLAGS())
+// r is goflagsRaceOrCover's own runner.Runner seam (see resolveRunner's
+// doc), threaded no further than classifyGo's nil call above -- Classify's
+// public signature, and every production caller's argv, stays unchanged.
+// A unit test calls this directly with runnertest.Fake to prove the `go
+// env` fallback without going through Classify's own guarded default.
+func goflagsRaceOrCover(r runner.Runner) bool {
+	fields := strings.Fields(effectiveGOFLAGS(r))
 	return hasPrefix(fields, "-race") || hasPrefix(fields, "-cover")
 }
 
@@ -685,14 +699,22 @@ func GovernGOMAXPROCS(existing string, units int) string {
 // PATH, e.g.) degrades to "", matching the pre-existing behavior of reading
 // only the process environment.
 func EffectiveGOFLAGS() string {
+	return effectiveGOFLAGS(nil)
+}
+
+// effectiveGOFLAGS is EffectiveGOFLAGS' testable core; see resolveRunner's
+// doc on r. classifyGo's call chain has no context of its own to thread
+// through (none of its callers do either), so, like the exec.Command this
+// replaces, this call carries none.
+func effectiveGOFLAGS(r runner.Runner) string {
 	if fromEnv := os.Getenv("GOFLAGS"); fromEnv != "" {
 		return fromEnv
 	}
-	output, err := exec.Command("go", "env", "GOFLAGS").Output()
+	result, err := resolveRunner(r).Run(context.Background(), "", "go", "env", "GOFLAGS")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(result.Stdout)
 }
 
 // LookupEnv returns the value of key in environment (an os.Environ()-shaped

@@ -3,12 +3,15 @@ package runqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
@@ -233,16 +236,29 @@ func TestAdmitHeavyWaitsWhenDefensiveMaxIsAlreadyReachedThenReportsCancellation(
 }
 
 // TestEffectiveGOFLAGSFallsBackToEmptyWhenGoIsMissing drives
-// EffectiveGOFLAGS's exec.Command error branch (queue.go): with PATH
-// pointing at an empty directory, "go env GOFLAGS" cannot find an
-// executable, so exec.Command's Output() genuinely errors.
+// effectiveGOFLAGS's runner-error branch (queue.go) against a scripted
+// runner.Runner instead of a real, PATH-starved `go`.
 //
 // Not parallel: t.Setenv is process-wide.
 func TestEffectiveGOFLAGSFallsBackToEmptyWhenGoIsMissing(t *testing.T) {
 	t.Setenv("GOFLAGS", "")
-	t.Setenv("PATH", t.TempDir())
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOFLAGS"}, runner.Result{}, errors.New(`exec: "go": executable file not found in $PATH`))
+	if got := effectiveGOFLAGS(fake); got != "" {
+		t.Fatalf("effectiveGOFLAGS(fake with no go) = %q, want \"\"", got)
+	}
+}
+
+// TestEffectiveGOFLAGSDefaultsToProductionRunner proves the exported
+// EffectiveGOFLAGS resolves a nil runner to the production runner.Runner.
+// Under `go test`, runner.Real refuses to start a real process (task-24's
+// guard), so this observes the fail-open "" instead of shelling out.
+//
+// Not parallel: t.Setenv is process-wide.
+func TestEffectiveGOFLAGSDefaultsToProductionRunner(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
 	if got := EffectiveGOFLAGS(); got != "" {
-		t.Fatalf("EffectiveGOFLAGS() with no go on PATH = %q, want \"\"", got)
+		t.Fatalf("EffectiveGOFLAGS() with no injected runner = %q, want \"\" (the guard blocks the real process)", got)
 	}
 }
 

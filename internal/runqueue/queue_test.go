@@ -3,11 +3,13 @@ package runqueue
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestBudgetLeavesOneLogicalCPU(t *testing.T) {
@@ -65,25 +67,19 @@ func TestClassifyGoRespectsGOFLAGSRaceOrCover(t *testing.T) {
 
 // TestGoflagsRaceOrCoverUsesEffectiveGOFLAGSGoEnvFallback pins the
 // re-review's Minor 3 finding: classification must catch -race/-cover
-// persisted via `go env -w GOFLAGS=...` (EffectiveGOFLAGS's `go env
+// persisted via `go env -w GOFLAGS=...` (effectiveGOFLAGS's `go env
 // GOFLAGS` fallback), not just the GOFLAGS environment variable itself.
-// Points GOENV at an isolated temp file first, so this never reads or
-// writes the machine's real go env config.
+// goflagsRaceOrCover is driven directly against a scripted runner.Runner --
+// Classify itself has no injection seam (its production callers must see
+// an unchanged signature), and task-24's guard would block the real `go
+// env -w` this test used to shell out to.
 func TestGoflagsRaceOrCoverUsesEffectiveGOFLAGSGoEnvFallback(t *testing.T) {
-	t.Setenv("GOENV", filepath.Join(t.TempDir(), "env"))
 	t.Setenv("GOFLAGS", "")
 
-	argv := []string{"go", "test", "./internal/runqueue"}
-	if got := Classify(argv); got != KindFocused {
-		t.Fatalf("Classify(%v) before go env -w = %v, want KindFocused", argv, got)
-	}
-
-	if output, err := exec.Command("go", "env", "-w", "GOFLAGS=-race").CombinedOutput(); err != nil {
-		t.Fatalf("go env -w GOFLAGS=-race: %v: %s", err, output)
-	}
-
-	if got := Classify(argv); got != KindRaceOrCover {
-		t.Fatalf("Classify(%v) after go env -w GOFLAGS=-race = %v, want KindRaceOrCover", argv, got)
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOFLAGS"}, runner.Result{Stdout: "-race\n"}, nil)
+	if got := goflagsRaceOrCover(fake); !got {
+		t.Fatal("goflagsRaceOrCover with a go-env-persisted GOFLAGS=-race = false, want true")
 	}
 }
 
