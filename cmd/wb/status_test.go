@@ -9,7 +9,31 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/spf13/cobra"
 )
+
+// TestStatusCommandReportsTheFleetWorklistInProcess proves that "wb status"
+// (with no path, the fleet worklist) reaches runRepositoryStatus through the
+// real command tree, threading its invocation into the progress reporter.
+func TestStatusCommandReportsTheFleetWorklistInProcess(t *testing.T) {
+	root := t.TempDir()
+	cwCovCloneWithOrigin(t, t.TempDir(), "app", filepath.Join(root, "acme", "app"))
+	var stdout string
+	var err error
+	stdout = cwCovCaptureStdout(t, func() {
+		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newStatusCmd(&invocation{}) }, "--format", "json", "--all")
+	})
+	if err != nil {
+		t.Fatalf("wb status: %v\n%s", err, stdout)
+	}
+	var report statusIndex
+	if jsonErr := json.Unmarshal([]byte(stdout), &report); jsonErr != nil {
+		t.Fatalf("status JSON: %v\n%s", jsonErr, stdout)
+	}
+	if len(report.Repositories) != 1 || report.Repositories[0].Repository != "acme/app" || report.Repositories[0].Status != "clean" {
+		t.Fatalf("status report = %+v", report)
+	}
+}
 
 // TestHideCleanRepositoriesKeepsTheWorklist pins the default filter to the
 // rows a caller can act on: clean is noise, attention is work, and error still

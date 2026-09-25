@@ -232,15 +232,15 @@ func TestSlCovReadPrivateArtifactAtEnforcesPrivateRegularFileShape(t *testing.T)
 func TestSlCovValidatePrivateLaunchFileRejectsInvalidDescriptorAndBadMode(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	// invalidFD must never be a real fd number captured from a file this
-	// process actually opened and closed: once closed, the OS is free to
-	// hand that exact number back out to any concurrent goroutine's own
-	// open() (fd numbers are a small, actively recycled, process-wide
-	// pool), so under t.Parallel() a sibling test can reuse it before this
-	// assertion runs, making validatePrivateLaunchFile operate on a real,
-	// unrelated, valid file instead of an invalid descriptor (task-21,
-	// #741). A fd number far outside any realistic table size is invalid
-	// by construction and immune to that race.
+	// invalidFD must never be a real fd number this process actually opened
+	// and then closed: once closed, the OS is free to hand that exact
+	// number back out to any concurrent goroutine's own open() (fd numbers
+	// are a small, actively recycled, process-wide pool), so under
+	// t.Parallel() a sibling test can reuse it before this assertion runs,
+	// making validatePrivateLaunchFile observe a real, unrelated, valid fd
+	// instead of an invalid descriptor (task-21, #741). A fd number far
+	// outside any realistic table size is invalid by construction and
+	// immune to that race.
 	const invalidFD = 1 << 24
 	if err := validatePrivateLaunchFile(invalidFD, "closed", 0); err == nil {
 		t.Fatal("validatePrivateLaunchFile accepted an invalid descriptor")

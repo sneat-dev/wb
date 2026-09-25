@@ -167,7 +167,7 @@ func TestWorktreeGCCLIEmitsAStableJSONPlan(t *testing.T) {
 
 // gc's help is the contract an agent reads before it reaches for raw Git.
 func TestWorktreeGCHelpStatesItsEvidenceAndItsRefusals(t *testing.T) {
-	command := newWorktreeGCCmd()
+	command := newWorktreeGCCmd(&invocation{})
 	for _, wanted := range []string{
 		"--allow-residue",
 		"--apply",

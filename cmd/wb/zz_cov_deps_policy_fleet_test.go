@@ -70,7 +70,7 @@ func cwCovRunDepsPolicy(t *testing.T, projects string, args ...string) (string, 
 	previousRoot, previousFilter := projectsRoot, filterFlag
 	projectsRoot, filterFlag = projects, ""
 	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
-	command := newDepsPolicyCmd()
+	command := newDepsPolicyCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out bytes.Buffer
@@ -387,7 +387,7 @@ func TestCwCovDepsPolicyImpactCommand(t *testing.T) {
 }
 
 func TestCwCovFleetRepositoriesReportsUsageErrors(t *testing.T) {
-	if _, err := fleetRepositories("", "("); err == nil {
+	if _, err := fleetRepositories(&invocation{}, "", "("); err == nil {
 		t.Fatal("an invalid --regex must be refused")
 	} else if exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("exit = %d, want usage", exitCodeOf(t, err))

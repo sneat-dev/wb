@@ -20,7 +20,7 @@ import (
 	"github.com/sneat-dev/wb/internal/tui"
 )
 
-func newSyncCmd() *cobra.Command {
+func newSyncCmd(inv *invocation) *cobra.Command {
 	var (
 		dryRun        bool
 		workers       int
@@ -58,8 +58,8 @@ wb sync --dry-run
 # Sync selected owners with bounded concurrency
 wb sync --org owner-a --org owner-b --parallel 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			owners := requestedSyncOwners(cmd, only)
-			if code := runSync(cmd.Context(), projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps(), cmd.OutOrStdout(), cmd.ErrOrStderr()); code != 0 {
+			owners := requestedSyncOwners(inv, cmd, only)
+			if code := runSync(cmd.Context(), inv, projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps(), cmd.OutOrStdout(), cmd.ErrOrStderr()); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "sync did not complete; see diagnostics above",
@@ -87,14 +87,14 @@ wb sync --org owner-a --org owner-b --parallel 4`,
 	return cmd
 }
 
-func requestedSyncOwners(cmd *cobra.Command, only []string) []string {
+func requestedSyncOwners(inv *invocation, cmd *cobra.Command, only []string) []string {
 	owners := append([]string(nil), only...)
 	// `wb --org acme sync` sets the root repeatable flag, while
 	// `wb sync --org acme` sets sync's command-local restriction. Both
 	// spellings are advertised by Cobra and therefore have identical selection
 	// semantics.
 	if rootOrg := cmd.Root().PersistentFlags().Lookup("org"); rootOrg != nil && rootOrg.Changed {
-		owners = append(owners, extraOrgs...)
+		owners = append(owners, inv.extraOrgs...)
 	}
 	return owners
 }
@@ -132,7 +132,7 @@ func resolveSyncOwners(
 	return append([]string{user}, orgs...), nil
 }
 
-func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps, out, errOut io.Writer) int {
+func runSync(ctx context.Context, inv *invocation, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps, out, errOut io.Writer) int {
 	startedAt := time.Now().UTC()
 	// discovered is filled in once the fleet is known. Until then a report can
 	// only describe a run that never got that far.
@@ -153,7 +153,7 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 			Discovered: discovered,
 		}
 	}
-	interactive := console.Interactive(out, nonInteractive)
+	interactive := console.Interactive(out, inv.nonInteractive)
 	reportOut := syncReportWriter(interactive, out, errOut)
 
 	owners, err := syncOwners(only)
@@ -195,7 +195,7 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 		printSyncSummary(reportOut, results, pruneArchived, interactive)
 	}
 
-	code := finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, reportOut, errOut)
+	code := finishSync(inv, meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, reportOut, errOut)
 	if dryRun {
 		return code
 	}
@@ -258,7 +258,7 @@ func syncReportWriter(interactive bool, out, errOut io.Writer) io.Writer {
 // errOut and never changes the sync exit code. dryRun short-circuits publish
 // entirely: a `--dry-run --publish` sync changed nothing, so publishing its
 // (unreal) outcome would be a lie.
-func finishSync(meta fleetsync.RunMeta, results []fleetsync.Result, publish, dryRun bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
+func finishSync(inv *invocation, meta fleetsync.RunMeta, results []fleetsync.Result, publish, dryRun bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
 	// Written before the error short-circuit below, because a run WITH errors
 	// is exactly the run whose report matters most. Unlike the checkout
 	// markers, this also runs for a dry run: dry-run detection is read-only
@@ -288,7 +288,7 @@ func finishSync(meta fleetsync.RunMeta, results []fleetsync.Result, publish, dry
 	if publish {
 		if dryRun {
 			_, _ = fmt.Fprintln(out, "dry-run: skipping remote publish")
-		} else if err := runRemotePublishWithProgress(deps, projectsRoot, filter, workers, false, false, out, errOut); err != nil {
+		} else if err := runRemotePublishWithProgress(deps, projectsRoot, filter, workers, false, false, out, errOut, inv); err != nil {
 			_, _ = fmt.Fprintln(errOut, "remote publish failed (sync itself succeeded):", err)
 		}
 	}

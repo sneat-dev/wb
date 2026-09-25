@@ -90,7 +90,7 @@ func loadRemote(deps remoteDeps, projectsRoot string) (remotestate.Config, remot
 	return cfg, provider, err
 }
 
-func newRemoteCmd() *cobra.Command {
+func newRemoteCmd(inv *invocation) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remote",
 		Short: "Publish this machine's fleet state and read other machines' state",
@@ -111,7 +111,7 @@ For the authenticated outbound HTTPS hub:
   wb remote release    release this machine's remote claim on a task
   wb remote claims     list every claim in the store, with staleness`,
 	}
-	cmd.AddCommand(newRemotePublishCmd())
+	cmd.AddCommand(newRemotePublishCmd(inv))
 	cmd.AddCommand(newRemoteStatusCmd())
 	cmd.AddCommand(newRemoteMachinesCmd())
 	cmd.AddCommand(newRemoteClaimCmd())

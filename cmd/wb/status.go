@@ -17,7 +17,7 @@ import (
 
 // newStatusCmd keeps the historical entry point. Prefer the explicit nouns:
 // wb fleet status / wb fleet stats / wb fleet, and wb repo status.
-func newStatusCmd() *cobra.Command {
+func newStatusCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{parallel: 4}
 	var details bool
 	var all bool
@@ -45,6 +45,7 @@ a terminal; --non-interactive disables it.`,
 				fleet = false
 			}
 			return runRepositoryStatus(repositoryStatusRequest{
+				inv:       inv,
 				path:      path,
 				fleet:     fleet,
 				all:       all,
@@ -70,6 +71,7 @@ const (
 )
 
 type repositoryStatusRequest struct {
+	inv       *invocation
 	path      string
 	fleet     bool
 	all       bool
@@ -103,7 +105,7 @@ func runRepositoryStatus(request repositoryStatusRequest) error {
 	}
 	progress := newStatusProgress(
 		request.progress,
-		console.Interactive(request.progress, nonInteractive),
+		console.Interactive(request.progress, request.inv.nonInteractive),
 	)
 	progress.start(len(targets))
 	repositories := runStatusTargetsWithProgress(targets, request.options.parallel, progress.complete)

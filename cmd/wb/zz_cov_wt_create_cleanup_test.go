@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestCwWtWorktreeCleanupApplyOnCleanFixture(t *testing.T) {
@@ -13,7 +15,7 @@ func TestCwWtWorktreeCleanupApplyOnCleanFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup dry run: %v", err)
 	}
@@ -26,7 +28,7 @@ func TestCwWtWorktreeCleanupApplyOnCleanFixture(t *testing.T) {
 
 	// Applying retires the checkout and reports the count; the named-task
 	// release path then runs to completion.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli", "--apply")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply")
 	if err != nil {
 		t.Fatalf("cleanup --apply: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestCwWtWorktreeCleanupApplyJSONWithReportDir(t *testing.T) {
 	}
 	reportDir := filepath.Join(t.TempDir(), "reports")
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli", "--apply", "--format", "json", "--report-dir", reportDir)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply", "--format", "json", "--report-dir", reportDir)
 	if err != nil {
 		t.Fatalf("cleanup --apply json: %v", err)
 	}
@@ -65,7 +67,7 @@ func TestCwWtWorktreeCleanupTextReportPathLine(t *testing.T) {
 	if err := os.Remove(filepath.Join(worktree, "wip.txt")); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli", "--report-dir", filepath.Join(t.TempDir(), "reports"))
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--report-dir", filepath.Join(t.TempDir(), "reports"))
 	if err != nil {
 		t.Fatalf("cleanup with a report dir: %v", err)
 	}

@@ -572,7 +572,7 @@ func TestCwCovWritePRInventoryOutput(t *testing.T) {
 	report := prinventory.Report{SchemaVersion: 1, Complete: true}
 	reportDir := filepath.Join(t.TempDir(), "reports")
 	for _, format := range []string{"markdown", "json"} {
-		command := newFleetPRsCmd()
+		command := newFleetPRsCmd(&invocation{})
 		var out bytes.Buffer
 		command.SetOut(&out)
 		command.SetErr(&out)
@@ -592,7 +592,7 @@ func TestCwCovWritePRInventoryOutput(t *testing.T) {
 			t.Errorf("%s is empty", name)
 		}
 	}
-	command := newFleetPRsCmd()
+	command := newFleetPRsCmd(&invocation{})
 	if err := writePRInventoryOutput(command, report, "toml", ""); err == nil ||
 		!strings.Contains(err.Error(), `unsupported --format "toml"`) {
 		t.Fatalf("unsupported format error = %v", err)

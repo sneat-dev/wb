@@ -16,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/spf13/cobra"
 )
 
 type defaultBranchFailWriter struct {
@@ -32,7 +33,7 @@ func (writer *defaultBranchFailWriter) Write(value []byte) (int, error) {
 }
 
 func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
-	command := newFleetDefaultBranchCmd()
+	command := newFleetDefaultBranchCmd(&invocation{})
 	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "migrate-pages-source", "rewrite-workflow-triggers", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
@@ -3695,4 +3696,27 @@ func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
 func repo(slug string) discover.Repo {
 	owner, name, _ := strings.Cut(slug, "/")
 	return discover.Repo{Org: owner, Name: name}
+}
+
+// TestCwFleetRequestedDefaultBranchOwnersReadsTheRootOrg proves that
+// --org is read from both the command-local selection and, once the root
+// persistent --org was actually set, the invocation's extraOrgs.
+func TestCwFleetRequestedDefaultBranchOwnersReadsTheRootOrg(t *testing.T) {
+	inv := &invocation{}
+	command := newFleetDefaultBranchCmd(inv)
+	if got := requestedDefaultBranchOwners(inv, command, []string{"local"}); len(got) != 1 || got[0] != "local" {
+		t.Fatalf("command-local owners = %v", got)
+	}
+	root := &cobra.Command{Use: "wb"}
+	root.PersistentFlags().StringArray("org", nil, "additional owner")
+	defaultBranch := newFleetDefaultBranchCmd(inv)
+	root.AddCommand(defaultBranch)
+	if err := root.PersistentFlags().Set("org", "root-org"); err != nil {
+		t.Fatal(err)
+	}
+	inv.extraOrgs = []string{"root-org"}
+	got := requestedDefaultBranchOwners(inv, defaultBranch, []string{"local"})
+	if len(got) != 2 || got[1] != "root-org" {
+		t.Fatalf("root owners = %v", got)
+	}
 }

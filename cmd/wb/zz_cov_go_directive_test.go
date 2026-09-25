@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/spf13/cobra"
 )
 
 func TestCwCovGoSyntaxLocalAndCodeQLRisk(t *testing.T) {
@@ -243,7 +244,7 @@ func TestCwCovDepsGoDirectiveReportCommand(t *testing.T) {
 	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
 	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, newDepsGoDirectiveReportCmd)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGoDirectiveReportCmd(&invocation{}) })
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("report exit = %d\n%s", code, stdout)
 	}
@@ -251,7 +252,7 @@ func TestCwCovDepsGoDirectiveReportCommand(t *testing.T) {
 		t.Errorf("report text = %s", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, root, newDepsGoDirectiveReportCmd, "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newDepsGoDirectiveReportCmd(&invocation{}) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("json report exit = %d", code)
 	}
@@ -264,11 +265,11 @@ func TestCwCovDepsGoDirectiveReportCommand(t *testing.T) {
 	}
 
 	// An unmatched filter is a usage error, never an empty clean report.
-	if _, _, err := cwCovExec(t, root, newDepsGoDirectiveReportCmd, "--match", "nothing/*"); exitCodeOf(t, err) != exitUsage {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGoDirectiveReportCmd(&invocation{}) }, "--match", "nothing/*"); exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("empty match exit = %v, want usage", err)
 	}
 	// An invalid regex is refused.
-	if _, _, err := cwCovExec(t, root, newDepsGoDirectiveReportCmd, "--regex", "("); exitCodeOf(t, err) != exitUsage {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGoDirectiveReportCmd(&invocation{}) }, "--regex", "("); exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("invalid regex exit = %v, want usage", err)
 	}
 }

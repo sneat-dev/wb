@@ -33,7 +33,7 @@ func TestGitHubSlugSupportsSSHAndHTTPS(t *testing.T) {
 
 func TestDepsCommandExposesCumulativeLifecycleFlags(t *testing.T) {
 	t.Parallel()
-	command := newDepsSetCmd()
+	command := newDepsSetCmd(&invocation{})
 	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "refresh-after", "dependency-order", "layer", "validation"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("deps set is missing --%s", name)
@@ -43,7 +43,7 @@ func TestDepsCommandExposesCumulativeLifecycleFlags(t *testing.T) {
 
 func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 	t.Parallel()
-	command := newDepsCmd()
+	command := newDepsCmd(&invocation{})
 	bump, _, err := command.Find([]string{"bump"})
 	if err != nil || bump == command {
 		t.Fatalf("find bump: command=%q, error=%v", bump.Name(), err)
@@ -75,7 +75,7 @@ func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			command := newDepsBumpCmd()
+			command := newDepsBumpCmd(&invocation{})
 			for name, value := range test.flags {
 				if err := command.Flags().Set(name, value); err != nil {
 					t.Fatal(err)
@@ -114,7 +114,7 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 		t.Fatalf("load initial report: report=%+v err=%v", persisted, err)
 	}
 
-	explicitCommand := newDepsBumpCmd()
+	explicitCommand := newDepsBumpCmd(&invocation{})
 	if err := explicitCommand.Flags().Set("parallel", "2"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 	}
 	explicitCommand.SetOut(io.Discard)
 	explicitCommand.SetErr(io.Discard)
-	explicit, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(explicitCommand, deps.EcosystemNPM, events, nil,
+	explicit, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(&invocation{}, explicitCommand, deps.EcosystemNPM, events, nil,
 		depsSetOptions{resume: true, reportDir: reportDir}, deps.Options{GitHubDir: githubDir, Ref: "main", Parallel: explicitParallel, Resume: true}, false)
 	if err != nil {
 		t.Fatalf("execute explicit resume: %v", err)
@@ -139,14 +139,14 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 		t.Fatalf("load explicit resume report: report=%+v err=%v", persisted, err)
 	}
 
-	omittedCommand := newDepsBumpCmd()
+	omittedCommand := newDepsBumpCmd(&invocation{})
 	omittedParallel, err := omittedCommand.Flags().GetInt("parallel")
 	if err != nil {
 		t.Fatal(err)
 	}
 	omittedCommand.SetOut(io.Discard)
 	omittedCommand.SetErr(io.Discard)
-	omitted, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(omittedCommand, deps.EcosystemNPM, events, nil,
+	omitted, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(&invocation{}, omittedCommand, deps.EcosystemNPM, events, nil,
 		depsSetOptions{resume: true, reportDir: reportDir}, deps.Options{GitHubDir: githubDir, Ref: "main", Parallel: omittedParallel, Resume: true}, false)
 	if err != nil {
 		t.Fatalf("execute omitted resume: %v", err)
@@ -208,7 +208,7 @@ func TestResolveDepsBumpResumeParallelRestoresExplicitAuthority(t *testing.T) {
 
 func TestDepsPublishCommandExposesExplicitPublicationAndPropagationFlags(t *testing.T) {
 	t.Parallel()
-	command := newDepsCmd()
+	command := newDepsCmd(&invocation{})
 	publish, _, err := command.Find([]string{"publish", "npm"})
 	if err != nil || publish == command {
 		t.Fatalf("find publish npm: command=%q, error=%v", publish.Name(), err)
@@ -224,7 +224,7 @@ func TestDepsPublishCommandExposesExplicitPublicationAndPropagationFlags(t *test
 }
 
 func TestDepsPublishRejectsUnalignedReleaseTuplesBeforeFleetDiscovery(t *testing.T) {
-	command := newDepsCmd()
+	command := newDepsCmd(&invocation{})
 	command.SetArgs([]string{"publish", "npm", "--fleet", "--repo", "acme/provider", "--workflow", "publish.yml", "--package", "@acme/provider", "--version", "1.0.0", "--version", "1.0.1"})
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
@@ -251,7 +251,7 @@ func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
 	var output bytes.Buffer
 	command := newRootCmd()
 	command.SetOut(&output)
-	if err := runPreparedNpmPublish(command, options, prepared); err != nil {
+	if err := runPreparedNpmPublish(command, options, prepared, &invocation{}); err != nil {
 		t.Fatalf("default plan shared bump error = %v", err)
 	}
 	if persisted, err := deps.LoadBumpReport(npmPublicationPlanReportDir(reportDir)); err != nil || persisted.Status != "completed" || !persisted.RegistryLookupsSkipped {
@@ -280,7 +280,7 @@ func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
 	command := newRootCmd()
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
-	err = runPreparedNpmPublish(command, options, prepared)
+	err = runPreparedNpmPublish(command, options, prepared, &invocation{})
 	if err == nil || !strings.Contains(err.Error(), "npm package @acme/duplicate is declared by") {
 		t.Fatalf("duplicate fleet plan error = %v", err)
 	}
@@ -328,7 +328,7 @@ func TestNpmPublishPreflightRejectsInvalidOptionsBeforeFleetDiscovery(t *testing
 			options := validNpmPublishOptions()
 			test.change(&options)
 			discovered := false
-			_, err := preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+			_, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				discovered = true
 				return nil, nil
 			})
@@ -361,7 +361,7 @@ func TestNpmPublishFreshReportRequiresResumeBeforeFleetDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	discovered := false
-	_, err = preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+	_, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 		discovered = true
 		return nil, nil
 	})
@@ -397,7 +397,7 @@ func TestNpmPublishJSONOnlyReportBlocksFreshApplyBeforeFleetDiscovery(t *testing
 		t.Fatal(err)
 	}
 	discovered := false
-	_, err = preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+	_, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 		discovered = true
 		return nil, nil
 	})
@@ -425,15 +425,15 @@ func TestNpmPublishRealAcceptanceCampaignPlansAsOneOperation(t *testing.T) {
 	var prepared npmPublishPrepared
 	runCalls := 0
 	var output bytes.Buffer
-	command := newNpmPublishCmdWithRun(func(command *cobra.Command, options npmPublishOptions) error {
+	command := newNpmPublishCmdWithRun(&invocation{}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
 		runCalls++
-		return runNpmPublishWithPreflight(command, options, func(options npmPublishOptions) (npmPublishPrepared, error) {
+		return runNpmPublishWithPreflight(command, options, func(_ *invocation, options npmPublishOptions) (npmPublishPrepared, error) {
 			var err error
-			prepared, err = preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+			prepared, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				return nil, nil
 			})
 			return prepared, err
-		})
+		}, inv)
 	})
 	command.SetOut(&output)
 	command.SetErr(io.Discard)
@@ -463,12 +463,12 @@ func TestNpmPublishCommandRejectsSeparatedDuplicateTuplesBeforeFleetDiscoveryOrW
 	reportDir := filepath.Join(t.TempDir(), "report")
 	fleetDiscoveryCalls := 0
 	commandRuns := 0
-	command := newNpmPublishCmdWithRun(func(command *cobra.Command, options npmPublishOptions) error {
+	command := newNpmPublishCmdWithRun(&invocation{}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
 		commandRuns++
-		return runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+		return runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 			fleetDiscoveryCalls++
 			return npmPublishPrepared{}, nil
-		})
+		}, inv)
 	})
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
@@ -511,7 +511,7 @@ func TestRunNpmPublishPlanRefusesActiveOperationLock(t *testing.T) {
 	defer func() { _ = owner.Release() }()
 	command := newRootCmd()
 	command.SetOut(io.Discard)
-	err = runPreparedNpmPublish(command, options, prepared)
+	err = runPreparedNpmPublish(command, options, prepared, &invocation{})
 	if err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("active plan lock error = %v", err)
 	}
@@ -545,13 +545,13 @@ func TestRunNpmPublishApplyRefusesActiveOperationLockBeforeFleetDiscovery(t *tes
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
 	preflightCalls := 0
-	err = runNpmPublishWithPreflight(command, options, func(got npmPublishOptions) (npmPublishPrepared, error) {
+	err = runNpmPublishWithPreflight(command, options, func(_ *invocation, got npmPublishOptions) (npmPublishPrepared, error) {
 		preflightCalls++
 		if got.apply != options.apply {
 			t.Fatalf("apply option changed before lock acquisition")
 		}
 		return prepared, nil
-	})
+	}, &invocation{})
 	if err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("active publication lock error = %v", err)
 	}
@@ -710,7 +710,7 @@ func TestNpmPublishOutputOmitsTokenLookingValueUnderSafeInputKey(t *testing.T) {
 
 func TestDepsCommandIncludesGraphViewsAndBrowserReportFlags(t *testing.T) {
 	t.Parallel()
-	command := newDepsCmd()
+	command := newDepsCmd(&invocation{})
 	graph, _, err := command.Find([]string{"graph"})
 	if err != nil || graph == command {
 		t.Fatalf("find graph: command=%q, error=%v", graph.Name(), err)
@@ -734,7 +734,7 @@ func TestDepsSetRejectsUnusableDependencyOrderCombinations(t *testing.T) {
 		{args: []string{"go", "example.com/a@v1.0.0", "--dependency-order", "--layer", "two"}, message: "invalid layer selection"},
 	}
 	for _, test := range tests {
-		command := newDepsSetCmd()
+		command := newDepsSetCmd(&invocation{})
 		command.SetArgs(test.args)
 		command.SetOut(io.Discard)
 		command.SetErr(io.Discard)
@@ -770,7 +770,7 @@ func TestParseReleaseEventsSupportsScopedNpmPackages(t *testing.T) {
 
 func TestDepsGraphAndBumpAcceptNpmEcosystem(t *testing.T) {
 	t.Parallel()
-	graph := newDepsGraphCmd()
+	graph := newDepsGraphCmd(&invocation{})
 	graph.SetArgs([]string{"--ecosystem", "cobol", "--fleet"})
 	graph.SetOut(io.Discard)
 	graph.SetErr(io.Discard)
@@ -779,7 +779,7 @@ func TestDepsGraphAndBumpAcceptNpmEcosystem(t *testing.T) {
 		t.Fatalf("deps graph --ecosystem cobol error = %v, want a go/npm ecosystem rejection", err)
 	}
 
-	bump := newDepsBumpCmd()
+	bump := newDepsBumpCmd(&invocation{})
 	bump.SetArgs([]string{"cobol", "--fleet", "--changed", "example.com/a@v1.0.0"})
 	bump.SetOut(io.Discard)
 	bump.SetErr(io.Discard)
@@ -794,7 +794,7 @@ func TestDepsGraphAndBumpAcceptNpmEcosystem(t *testing.T) {
 // seeded from whatever `--changed` happened to say, so the flag combination is
 // refused with the two ways out named.
 func TestDepsBumpRefusesAScopeWithoutLatest(t *testing.T) {
-	bump := newDepsBumpCmd()
+	bump := newDepsBumpCmd(&invocation{})
 	bump.SetArgs([]string{"npm", "--fleet", "--changed", "@acme/core@0.1.0", "--scope", "@acme/*"})
 	bump.SetOut(io.Discard)
 	bump.SetErr(io.Discard)
@@ -809,7 +809,7 @@ func TestDepsBumpRefusesAScopeWithoutLatest(t *testing.T) {
 // is discovered. A registry sweep with no selection is not a default anyone
 // wants applied to a whole fleet.
 func TestDepsBumpRefusesLatestWithoutAScope(t *testing.T) {
-	bump := newDepsBumpCmd()
+	bump := newDepsBumpCmd(&invocation{})
 	bump.SetArgs([]string{"npm", "--fleet", "--latest", "--dry-run"})
 	bump.SetOut(io.Discard)
 	bump.SetErr(io.Discard)

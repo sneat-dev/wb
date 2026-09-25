@@ -198,7 +198,7 @@ func TestCwWtMergeFinishWorktreeMergeProgressBranches(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			campaign := newWorktreeMergeProgress(command, worktreeMergeFlags{})
+			campaign := newWorktreeMergeProgress(&invocation{}, command, worktreeMergeFlags{})
 			finishWorktreeMergeProgress(campaign, testCase.receipt, testCase.err)
 			campaign.finish("again") // idempotent: a second finish must not panic
 		})
@@ -363,7 +363,7 @@ func cwWtMergeAckConstructors() []cwWtMergeAckConstructor {
 		{name: "supersede-validation-failed", build: newWorktreeMergeSupersedeValidationFailedCmd, args: func(r string) []string { return []string{r, r} }},
 		{name: "correct-self-supersession", build: newWorktreeMergeCorrectSelfSupersessionCmd, args: func(r string) []string { return []string{r, r} }},
 		{name: "prepare-published-forward-repair", build: newWorktreeMergePreparePublishedForwardRepairCmd, args: func(r string) []string { return []string{r, r} }},
-		{name: "prepare-conflict-replacement", build: newWorktreeMergePrepareConflictReplacementCmd, args: func(r string) []string { return []string{r, r} }},
+		{name: "prepare-conflict-replacement", build: func() *cobra.Command { return newWorktreeMergePrepareConflictReplacementCmd(&invocation{}) }, args: func(r string) []string { return []string{r, r} }},
 		{name: "seal-validation-failed", build: newWorktreeMergeSealValidationFailedCmd, args: func(r string) []string { return []string{r} }},
 	}
 }
@@ -422,7 +422,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 	projects := t.TempDir()
 
 	t.Run("bad format is refused before any work", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, "--format", "yaml", filepath.Join(projects, "nope"))
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeCmd(&invocation{}) }, "--format", "yaml", filepath.Join(projects, "nope"))
 		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 			t.Fatalf("combined --format yaml error = %v, want an unsupported-format refusal", err)
 		}
@@ -431,7 +431,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 	t.Run("saturated host refuses the run", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
 		source := filepath.Join(projects, "nope")
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, source)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeCmd(&invocation{}) }, source)
 		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
 			t.Fatalf("combined on a saturated host error = %v, want a host-load refusal", err)
 		}
@@ -439,7 +439,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 
 	t.Run("unusable source fails the merge and writes no receipt", func(t *testing.T) {
 		source := filepath.Join(projects, "definitely-absent")
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, source)
+		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeCmd(&invocation{}) }, source)
 		if err == nil {
 			t.Fatalf("combined with an absent source = nil error (stdout %q), want a refusal", stdout)
 		}
@@ -453,7 +453,7 @@ func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
 	projects := t.TempDir()
 
 	t.Run("bad format is refused", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, "--format", "yaml", filepath.Join(projects, "nope"))
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergePrepareCmd(&invocation{}) }, "--format", "yaml", filepath.Join(projects, "nope"))
 		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 			t.Fatalf("prepare --format yaml error = %v, want an unsupported-format refusal", err)
 		}
@@ -461,14 +461,14 @@ func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
 
 	t.Run("saturated host refuses the prepare", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
-		_, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, filepath.Join(projects, "nope"))
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergePrepareCmd(&invocation{}) }, filepath.Join(projects, "nope"))
 		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
 			t.Fatalf("prepare on a saturated host error = %v, want a host-load refusal", err)
 		}
 	})
 
 	t.Run("absent source is refused", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, filepath.Join(projects, "definitely-absent"))
+		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergePrepareCmd(&invocation{}) }, filepath.Join(projects, "definitely-absent"))
 		if err == nil {
 			t.Fatalf("prepare with an absent source = nil error (stdout %q), want a refusal", stdout)
 		}
@@ -480,7 +480,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 	absent := filepath.Join(projects, "absent-receipt.json")
 
 	t.Run("land rejects a bad format", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, "--format", "yaml", absent)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd(&invocation{}, "land") }, "--format", "yaml", absent)
 		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 			t.Fatalf("land --format yaml error = %v, want an unsupported-format refusal", err)
 		}
@@ -494,21 +494,21 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		if err := os.WriteFile(readable, []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, readable)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd(&invocation{}, "land") }, readable)
 		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
 			t.Fatalf("land on a saturated host error = %v, want a host-load refusal", err)
 		}
 	})
 
 	t.Run("land fails on a missing receipt", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, absent)
+		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd(&invocation{}, "land") }, absent)
 		if err == nil {
 			t.Fatalf("land with a missing receipt = nil error (stdout %q), want a refusal", stdout)
 		}
 	})
 
 	t.Run("revert rejects a bad format", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, "--format", "yaml", absent)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeRevertCmd(&invocation{}) }, "--format", "yaml", absent)
 		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 			t.Fatalf("revert --format yaml error = %v, want an unsupported-format refusal", err)
 		}
@@ -516,14 +516,14 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 
 	t.Run("revert on a saturated host refuses", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, absent)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeRevertCmd(&invocation{}) }, absent)
 		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
 			t.Fatalf("revert on a saturated host error = %v, want a host-load refusal", err)
 		}
 	})
 
 	t.Run("revert fails on a missing receipt", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, absent)
+		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeRevertCmd(&invocation{}) }, absent)
 		if err == nil {
 			t.Fatalf("revert with a missing receipt = nil error (stdout %q), want a refusal", stdout)
 		}
@@ -596,8 +596,8 @@ func TestCwWtMergeBindFlagsCoverBothJourneys(t *testing.T) {
 }
 
 func TestCwWtMergeNewLandAliasMatchesWorktreeLand(t *testing.T) {
-	alias := newLandCmd()
-	direct := newWorktreeLandCmd()
+	alias := newLandCmd(&invocation{})
+	direct := newWorktreeLandCmd(&invocation{})
 	if alias.Use != direct.Use || alias.Short != direct.Short || alias.Long != direct.Long {
 		t.Fatalf("wb land contract = %q/%q, want it identical to wb worktree land %q/%q", alias.Use, alias.Short, direct.Use, direct.Short)
 	}
@@ -607,7 +607,7 @@ func TestCwWtMergeNewLandAliasMatchesWorktreeLand(t *testing.T) {
 }
 
 func TestCwWtMergeRootMergeCommandIsWired(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("merge Use = %q, want the documented form", command.Use)
 	}
@@ -1292,7 +1292,7 @@ func TestCwWtMergePrepareConflictReplacementOutput(t *testing.T) {
 		"--expected-source-sha", strings.Join(expectedSources, ","),
 	)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePrepareConflictReplacementCmd, args...)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command { return newWorktreeMergePrepareConflictReplacementCmd(&invocation{}) }, args...)
 	if err != nil {
 		t.Fatalf("prepare-conflict-replacement dry run = %v, want nil", err)
 	}
@@ -1307,7 +1307,7 @@ func TestCwWtMergePrepareConflictReplacementOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePrepareConflictReplacementCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command { return newWorktreeMergePrepareConflictReplacementCmd(&invocation{}) },
 		append(append([]string{}, args...), "--format", "json")...)
 	if err != nil {
 		t.Fatalf("prepare-conflict-replacement --format json = %v, want nil", err)

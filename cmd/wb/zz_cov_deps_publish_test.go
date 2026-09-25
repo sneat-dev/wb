@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,26 @@ func cwDepsReleaseFixture() npmrelease.Release {
 // errTestPreflight is the injected preflight failure the command seam must
 // surface unchanged.
 var errTestPreflight = errors.New("fixture preflight failure")
+
+// cwDepsFakeNpmReleaseRunner is a scripted npmrelease.CommandRunner, the same
+// recording-and-replaying shape internal/npmrelease's own tests use to drive
+// Run's real Apply:true dispatch path without touching a real gh/npm
+// subprocess. It is wired in through npmPublishOptions.runner, the test-only
+// seam runPreparedNpmPublishLocked forwards into npmrelease.Options.
+type cwDepsFakeNpmReleaseRunner struct {
+	calls []string
+	steps []npmrelease.CommandResult
+}
+
+func (r *cwDepsFakeNpmReleaseRunner) Run(_ context.Context, _ string, args ...string) npmrelease.CommandResult {
+	r.calls = append(r.calls, strings.Join(args, " "))
+	if len(r.steps) == 0 {
+		return npmrelease.CommandResult{Code: 2, Err: errors.New("cwDepsFakeNpmReleaseRunner: unexpected command")}
+	}
+	result := r.steps[0]
+	r.steps = r.steps[1:]
+	return result
+}
 
 // cwDepsPublishOptionsFixture is a minimal options set that passes tuple
 // alignment for the fixture tuple.
@@ -328,7 +349,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 			options.versions = append([]string(nil), base.versions...)
 			test.mutate(&options)
 			called := false
-			_, err := preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+			_, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				called = true
 				return nil, nil
 			})
@@ -341,9 +362,21 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 		})
 	}
 	// A nil discovery seam is refused rather than panicking.
-	if _, err := preflightNpmPublishWithDiscovery(base, nil); err == nil ||
+	if _, err := preflightNpmPublishWithDiscovery(&invocation{}, base, nil); err == nil ||
 		!strings.Contains(err.Error(), "fleet discovery is unavailable") {
 		t.Fatalf("nil discovery = %v", err)
+	}
+}
+
+// TestPreflightNpmPublishDelegatesToRealDependencyDiscovery proves the
+// production preflightNpmPublish wrapper wires the real dependencyRepositories
+// discoverer into preflightNpmPublishWithDiscovery, not only a test fake: the
+// missing --fleet requirement it surfaces is the same validation
+// preflightNpmPublishWithDiscovery itself performs before ever calling discover.
+func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
+	if _, err := preflightNpmPublish(&invocation{}, npmPublishOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "deps publish npm requires --fleet") {
+		t.Fatalf("err = %v, want the --fleet requirement", err)
 	}
 }
 
@@ -357,7 +390,7 @@ func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	options.fleet = true
 	options.maxWaves = 1
 	var seenArgs []string
-	prepared, err := preflightNpmPublishWithDiscovery(options, func(args []string, _ depsSetOptions) ([]deps.Repository, error) {
+	prepared, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(_ *invocation, args []string, _ depsSetOptions) ([]deps.Repository, error) {
 		seenArgs = args
 		return []deps.Repository{{Slug: "acme/consumer", Path: filepath.Join(projectsRoot, "acme", "consumer")}}, nil
 	})
@@ -372,6 +405,76 @@ func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	}
 	if !strings.HasPrefix(prepared.reportDir, os.Getenv("WB_HOME")) {
 		t.Errorf("prepared report dir = %q", prepared.reportDir)
+	}
+}
+
+// cwDepsWorkflowRunFixture renders the exact gh run list/view JSON shape
+// npmrelease.Run decodes, mirroring internal/npmrelease's own workflowRunFixture.
+func cwDepsWorkflowRunFixture(id, status, conclusion string, headSHA string, created time.Time) string {
+	return fmt.Sprintf(
+		`{"databaseId":%s,"headSha":%q,"status":%q,"conclusion":%q,"event":"workflow_dispatch","createdAt":%q,"updatedAt":%q,"url":%q}`,
+		id, headSHA, status, conclusion, created.UTC().Format(time.RFC3339), created.UTC().Add(time.Second).Format(time.RFC3339),
+		"https://github.com/acme/app/actions/runs/"+id)
+}
+
+// TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry drives the
+// real --apply dispatch branch of runPreparedNpmPublishLocked end to end
+// through a scripted npmrelease.CommandRunner: resolve the release head,
+// dispatch the workflow, observe it complete, and verify the registry - the
+// same sequence internal/npmrelease's own TestRunDispatchWaitAndRegistryEvidence
+// proves at the package level, now proven reachable from the command tree.
+func TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, home)
+	previousRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousRoot })
+
+	const headSHA = "0123456789abcdef0123456789abcdef01234567"
+	created := time.Now().UTC().Truncate(time.Second)
+	run := cwDepsWorkflowRunFixture("123", "completed", "success", headSHA, created.Add(time.Second))
+	runner := &cwDepsFakeNpmReleaseRunner{steps: []npmrelease.CommandResult{
+		{Output: headSHA + "\n"},
+		{Output: `[]`},
+		{},
+		{Output: "[" + run + "]"},
+		{Output: run},
+		{Output: `"1.2.3"`},
+	}}
+
+	options := cwDepsPublishOptionsFixture()
+	options.fleet = true
+	options.apply = true
+	options.maxWaves = 1
+	options.runner = runner
+	prepared := npmPublishPrepared{
+		releases:  []npmrelease.Release{cwDepsReleaseFixture()},
+		checks:    []quality.Check{},
+		reportDir: filepath.Join(home, "reports", "cw-npm-apply-dispatch"),
+		operation: "deps-npm-publish-cwfixture",
+	}
+	var out bytes.Buffer
+	command := cwDepsNewOutCommand(&out)
+	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{}); err != nil {
+		t.Fatalf("apply publication: %v\nstdout: %s", err, out.String())
+	}
+	if !strings.Contains(strings.Join(runner.calls, "\n"), "npm view "+cwDepsReleaseFixture().Package+"@"+cwDepsReleaseFixture().Version) {
+		t.Fatalf("registry was not verified through the injected runner: %v", runner.calls)
+	}
+	// Read the durable JSON receipt directly rather than through
+	// npmrelease.LoadReport: that helper's YAML/JSON generation-consistency
+	// check is a separate concern from the invocation-threading this test
+	// covers, and is exercised by internal/npmrelease's own test suite.
+	persisted, err := os.ReadFile(filepath.Join(prepared.reportDir, "npm-publish.json"))
+	if err != nil {
+		t.Fatalf("read persisted report: %v", err)
+	}
+	var report npmrelease.Report
+	if err := json.Unmarshal(persisted, &report); err != nil {
+		t.Fatalf("decode persisted report: %v", err)
+	}
+	if report.Status != npmrelease.StatusPublished || len(report.Releases) != 1 || report.Releases[0].RunID != "123" {
+		t.Fatalf("persisted report = %+v", report)
 	}
 }
 
@@ -445,7 +548,7 @@ func TestCwDepsRunPreparedNpmPublishPlan(t *testing.T) {
 	var out, errOut bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
 	command.SetErr(&errOut)
-	err := runPreparedNpmPublishLocked(command, options, prepared)
+	err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{})
 	if err != nil {
 		t.Fatalf("plan publication: %v\nstdout: %s", err, out.String())
 	}
@@ -485,7 +588,7 @@ func TestCwDepsRunPreparedNpmPublishRefusesExistingReportWithoutResume(t *testin
 	}
 	var out bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
-	if err := runPreparedNpmPublishLocked(command, options, prepared); err == nil ||
+	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{}); err == nil ||
 		!strings.Contains(err.Error(), "requires --resume") {
 		t.Fatalf("existing report without --resume = %v", err)
 	}
@@ -514,15 +617,15 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 
 	// A preflight that reports a different operation is refused: the lock was
 	// claimed for one campaign and the plan describes another.
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{operation: "something-else"}, nil
-	}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
+	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
 		t.Fatalf("operation mismatch = %v", err)
 	}
 	// A failing preflight fails the selection campaign and surfaces the error.
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{}, errTestPreflight
-	}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
+	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
 		t.Fatalf("preflight failure = %v", err)
 	}
 	// A consistent preflight reaches the durable plan.
@@ -532,9 +635,9 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 		reportDir:    filepath.Join(home, "reports", "cw-npm-preflight"),
 		operation:    operation,
 	}
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return prepared, nil
-	}); err != nil {
+	}, &invocation{}); err != nil {
 		t.Fatalf("consistent preflight: %v\nstdout: %s", err, out.String())
 	}
 }
@@ -561,7 +664,7 @@ func TestCwDepsAcquireNpmPublicationLocksAndRelease(t *testing.T) {
 // recorder for Cobra parsing.
 func TestCwDepsPreflightNpmPublishCommandWiring(t *testing.T) {
 	var captured npmPublishOptions
-	command := newNpmPublishCmdWithRun(func(_ *cobra.Command, options npmPublishOptions) error {
+	command := newNpmPublishCmdWithRun(&invocation{}, func(_ *cobra.Command, options npmPublishOptions, _ *invocation) error {
 		captured = options
 		return nil
 	})
@@ -582,7 +685,7 @@ func TestCwDepsPreflightNpmPublishCommandWiring(t *testing.T) {
 	if !captured.parallelExplicit {
 		t.Error("--parallel must be recorded as explicit for the wave engine")
 	}
-	if newNpmPublishCmd() == nil {
+	if newNpmPublishCmd(&invocation{}) == nil {
 		t.Error("the production constructor returned no command")
 	}
 }

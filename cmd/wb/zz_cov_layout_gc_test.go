@@ -25,9 +25,9 @@ import (
 func cwCovExec(t *testing.T, projects string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot, previousFilter, previousOrgs := projectsRoot, filterFlag, extraOrgs
-	projectsRoot, filterFlag, extraOrgs = projects, "", nil
-	t.Cleanup(func() { projectsRoot, filterFlag, extraOrgs = previousRoot, previousFilter, previousOrgs })
+	previousRoot, previousFilter := projectsRoot, filterFlag
+	projectsRoot, filterFlag = projects, ""
+	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
 
 	command := build()
 	command.SilenceUsage = true
@@ -262,7 +262,7 @@ func TestCwCovPrintWorktreeGCRendersEveryRowShape(t *testing.T) {
 			"retired": 2, "eligible": 3, "refused": 1, "purged_artefacts": 4, "retired_shells": 5,
 		},
 	}
-	command := newWorktreeGCCmd()
+	command := newWorktreeGCCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	if err := printWorktreeGC(command, outcome); err != nil {
@@ -316,7 +316,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", t.TempDir())
 	root := t.TempDir()
 
-	stdout, _, err := cwCovExec(t, root, newWorktreeGCCmd, "--skip-sizes")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--skip-sizes")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc exit = %d\n%s", code, stdout)
 	}
@@ -324,7 +324,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 		t.Errorf("empty gc output = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, root, newWorktreeGCCmd, "--skip-sizes", "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--skip-sizes", "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc --format json exit = %d", code)
 	}
@@ -339,10 +339,10 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	}
 
 	// The two refusals the command makes before doing any work.
-	if _, _, err := cwCovExec(t, root, newWorktreeGCCmd, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("negative --session-freshness exit = %v, want usage", err)
 	}
-	if _, _, err := cwCovExec(t, root, newWorktreeGCCmd, "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("unknown --format error = %v, want a named format refusal", err)
 	}
