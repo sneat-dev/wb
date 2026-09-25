@@ -218,3 +218,133 @@ func TestResolveReviewProofCheckoutFindsARegisteredWorktreeForTheHeadBranch(t *t
 		t.Fatalf("worktree = %q, want the fixture's canonical dir %q", worktree, fixture.canonical)
 	}
 }
+
+// keptCommitsStubGit answers only the Git methods
+// rewriteBranchForKeptCommits (pr_land_keep.go) actually calls. It exists
+// because that function generates its own scratch worktree path with
+// os.MkdirTemp, which a fresh gitclitest.Fake cannot pre-script (its maps
+// are keyed by the exact directory string, unknowable before the call).
+// Embedding Git leaves every other method nil, which is safe here because
+// rewriteBranchForKeptCommits never reaches them.
+type keptCommitsStubGit struct {
+	Git
+
+	worktreeAddErr        error
+	cherryPickNoCommitErr error
+	cherryPickErr         error
+	commitNoVerifyErr     error
+	revParseValue         string
+	revParseErr           error
+	pushErr               error
+}
+
+func (g *keptCommitsStubGit) WorktreeAddDetached(context.Context, string, string, string) error {
+	return g.worktreeAddErr
+}
+
+func (g *keptCommitsStubGit) WorktreeRemoveForce(context.Context, string, string) error {
+	return nil
+}
+
+func (g *keptCommitsStubGit) CherryPickNoCommit(context.Context, string, ...string) error {
+	return g.cherryPickNoCommitErr
+}
+
+func (g *keptCommitsStubGit) CommitNoVerify(context.Context, string, string) error {
+	return g.commitNoVerifyErr
+}
+
+func (g *keptCommitsStubGit) CherryPick(context.Context, string, string) error {
+	return g.cherryPickErr
+}
+
+func (g *keptCommitsStubGit) RevParse(context.Context, string, string) (string, error) {
+	return g.revParseValue, g.revParseErr
+}
+
+func (g *keptCommitsStubGit) PushForceWithLeaseHead(context.Context, string, string, string) error {
+	return g.pushErr
+}
+
+// TestRewriteBranchForKeptCommitsRefusesWhenTheAggregateCherryPickFails
+// covers pr_land_keep.go's aggregate-step refusal: also regressed to
+// uncovered on unchanged code once the test that used to reach it (via a
+// real conflicting cherry-pick) moved to the e2e tier. rewriteBranchForKeptCommits
+// takes its Git and runner.Runner ports as plain parameters, so this
+// reaches the exact refusal branch through a stub, no real git needed.
+func TestRewriteBranchForKeptCommitsRefusesWhenTheAggregateCherryPickFails(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("boom: conflicting aggregate")
+	git := &keptCommitsStubGit{cherryPickNoCommitErr: wantErr}
+	plan := keepPlan{steps: []keepStep{{aggregate: true, sources: []SourceCommit{{SHA: "aaa111", Subject: "a"}}}}}
+
+	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
+	}
+	if landed != nil || head != "" {
+		t.Fatalf("landed=%v head=%q, want both zero on refusal", landed, head)
+	}
+	if refusal == nil || refusal.code != LandRefusalMergeRejected || !strings.Contains(refusal.reason, wantErr.Error()) {
+		t.Fatalf("refusal = %+v, want a LandRefusalMergeRejected naming %v", refusal, wantErr)
+	}
+}
+
+// TestRewriteBranchForKeptCommitsRefusesWhenAKeptCommitCherryPickFails covers
+// the same shape for the non-aggregate (kept) step's own cherry-pick.
+func TestRewriteBranchForKeptCommitsRefusesWhenAKeptCommitCherryPickFails(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("boom: conflicting kept commit")
+	git := &keptCommitsStubGit{cherryPickErr: wantErr}
+	plan := keepPlan{steps: []keepStep{{sources: []SourceCommit{{SHA: "bbb222", Subject: "b"}}}}}
+
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
+	}
+	if refusal == nil || refusal.code != LandRefusalMergeRejected || !strings.Contains(refusal.reason, wantErr.Error()) {
+		t.Fatalf("refusal = %+v, want a LandRefusalMergeRejected naming %v", refusal, wantErr)
+	}
+}
+
+// TestRewriteBranchForKeptCommitsRefusesWhenTheKeptCommitCannotBuild covers
+// rewriteBranchForKeptCommits' own buildAt(...) call site: a refusal from
+// buildAt (here, the scratch worktree's own uninferable-build case, since
+// the function's os.MkdirTemp scratch directory never actually gets a
+// go.mod) must short-circuit the same way a failing build does.
+func TestRewriteBranchForKeptCommitsRefusesWhenTheKeptCommitCannotBuild(t *testing.T) {
+	t.Parallel()
+	git := &keptCommitsStubGit{}
+	plan := keepPlan{steps: []keepStep{{sources: []SourceCommit{{SHA: "ccc333", Subject: "c"}}}}}
+
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
+	}
+	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
+		t.Fatalf("refusal = %+v, want LandRefusalKeepDoesNotBuild", refusal)
+	}
+}
+
+// TestRewriteBranchForKeptCommitsRefusesWhenThePushIsRejected covers the
+// final lease-push refusal, reached with an empty plan so the loop above it
+// does nothing.
+func TestRewriteBranchForKeptCommitsRefusesWhenThePushIsRejected(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("boom: stale lease")
+	git := &keptCommitsStubGit{revParseValue: "deadbeef", pushErr: wantErr}
+	view := PullRequestView{Title: "feat: x", Number: 9}
+	view.Head.SHA = "deadbeef"
+
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", keepPlan{}, view, nil, "", "", nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
+	}
+	if refusal == nil || refusal.code != LandRefusalHeadMoved || !strings.Contains(refusal.reason, wantErr.Error()) {
+		t.Fatalf("refusal = %+v, want a LandRefusalHeadMoved naming %v", refusal, wantErr)
+	}
+}
