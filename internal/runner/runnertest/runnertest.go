@@ -41,17 +41,20 @@ func AllowRealProcess(t testing.TB) {
 	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "1")
 }
 
-// Call records one Run/RunEnv/Start/Detach/Interactive invocation the Fake
-// received.
+// Call records one Run/RunEnv/RunStdin/Start/Detach/Interactive invocation
+// the Fake received.
 type Call struct {
-	Op   string // "Run", "RunEnv", "Start", "Detach" or "Interactive"
+	Op   string // "Run", "RunEnv", "RunStdin", "Start", "Detach" or "Interactive"
 	Dir  string
 	Name string
 	Args []string
-	// Env is the replacement environment a RunEnv call carried. It is nil
-	// for every other operation, and for a RunEnv call made with a nil env
-	// (Run's own "inherit ambient" default).
+	// Env is the replacement environment a RunEnv/RunStdin call carried. It
+	// is nil for Run/Start/Detach/Interactive, and for a RunEnv/RunStdin
+	// call made with a nil env (Run's own "inherit ambient" default).
 	Env []string
+	// Stdin is the content a RunStdin call fed to the child's standard
+	// input. It is "" for every other operation.
+	Stdin string
 }
 
 // Argv is Name followed by Args, the shape Expect's matcher predicates
@@ -183,6 +186,11 @@ func (f *Fake) Run(_ context.Context, dir, name string, args ...string) (runner.
 // RunEnv implements runner.Runner.
 func (f *Fake) RunEnv(_ context.Context, dir string, env []string, name string, args ...string) (runner.Result, error) {
 	return f.answer(Call{Op: "RunEnv", Dir: dir, Env: env, Name: name, Args: args})
+}
+
+// RunStdin implements runner.Runner.
+func (f *Fake) RunStdin(_ context.Context, dir string, env []string, stdin string, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "RunStdin", Dir: dir, Env: env, Stdin: stdin, Name: name, Args: args})
 }
 
 // Start implements runner.Runner. The returned Handle's Wait replays the

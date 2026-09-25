@@ -62,6 +62,25 @@ func TestFakeRunEnvReturnsTheScriptedResultAndRecordsTheEnv(t *testing.T) {
 	}
 }
 
+func TestFakeRunStdinReturnsTheScriptedResultAndRecordsStdinAndEnv(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	env := []string{"WB_LINKED_PACKAGES=[]"}
+	fake.ExpectArgv([]string{"node", "-"}, runner.Result{Stdout: `{"visited":1}`}, nil)
+
+	result, err := fake.RunStdin(context.Background(), "/repo", env, "console.log(1)", "node", "-")
+	if err != nil {
+		t.Fatalf("RunStdin: %v", err)
+	}
+	if result.Stdout != `{"visited":1}` {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunStdin" || calls[0].Stdin != "console.log(1)" || len(calls[0].Env) != 1 {
+		t.Fatalf("calls = %+v, want one RunStdin call recording stdin and env", calls)
+	}
+}
+
 func TestFakeExpectMatchesByPredicateNotJustExactArgv(t *testing.T) {
 	t.Parallel()
 	fake := New(t)

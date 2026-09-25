@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -27,6 +28,15 @@ func TestRunnerHelperProcess(t *testing.T) {
 	}
 	if _, err := fmt.Fprint(os.Stderr, os.Getenv("WB_RUNNER_STDERR")); err != nil { //nolint:forbidigo // helper-process fixture
 		os.Exit(9)
+	}
+	if os.Getenv("WB_RUNNER_ECHO_STDIN") == "1" {
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(9)
+		}
+		if _, err := os.Stdout.Write(input); err != nil {
+			os.Exit(9)
+		}
 	}
 	if os.Getenv("WB_RUNNER_SLEEP") == "1" {
 		time.Sleep(10 * time.Second)
@@ -103,6 +113,30 @@ func TestRealRunEnvBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testi
 	env := []string{"WB_RUNNER_HELPER=1", "WB_RUNNER_EXIT=0"}
 	if _, err := runner.New().RunEnv(context.Background(), t.TempDir(), env, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("RunEnv() err = %v, want runner.ErrRealProcessBlocked", err)
+	}
+}
+
+func TestRealRunStdinFeedsTheChildsStandardInput(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	env := []string{
+		"WB_RUNNER_HELPER=1",
+		"WB_RUNNER_ECHO_STDIN=1",
+		"WB_RUNNER_EXIT=0",
+	}
+
+	result, err := runner.New().RunStdin(context.Background(), t.TempDir(), env, "piped-input", os.Args[0], helperArgs()...)
+	if err != nil {
+		t.Fatalf("RunStdin: %v", err)
+	}
+	if result.Stdout != "piped-input" {
+		t.Fatalf("result.Stdout = %q, want the helper process's own stdin echoed back", result.Stdout)
+	}
+}
+
+func TestRealRunStdinBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	env := []string{"WB_RUNNER_HELPER=1", "WB_RUNNER_EXIT=0"}
+	if _, err := runner.New().RunStdin(context.Background(), t.TempDir(), env, "input", os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunStdin() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 

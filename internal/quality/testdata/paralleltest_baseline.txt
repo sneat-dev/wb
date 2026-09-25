@@ -1825,6 +1825,8 @@ internal/runner::TestRealRunEnvBlockedByTheRuntimeGuardReturnsErrRealProcessBloc
 internal/runner::TestRealRunEnvReplacesTheChildEnvironment	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealRunReportsAStartFailureWithZeroExitCode	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealRunReportsNonZeroExitStatus	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/runner::TestRealRunStdinBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/runner::TestRealRunStdinFeedsTheChildsStandardInput	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealStartAndHandleWaitReportOutputAndExitStatus	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/runner::TestRealStartBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealStartReturnsAnErrorForAProgramThatDoesNotExist	serial pending case-by-case review (sneat-dev/wb#623 baseline)

@@ -63,6 +63,12 @@ type Runner interface {
 	// global/system gitconfig, for example), which Run's own signature has
 	// no way to express.
 	RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error)
+	// RunStdin is RunEnv, but also feeds stdin's contents to the child's
+	// standard input before waiting for it to exit. It exists for a call
+	// site that must pipe input to a program rather than pass it as an
+	// argument (so the input never appears in a process listing or a log),
+	// which neither Run nor RunEnv's signature has any way to express.
+	RunStdin(ctx context.Context, dir string, env []string, stdin string, name string, args ...string) (Result, error)
 	// Start begins name with args in dir and returns a Handle without
 	// waiting for it to exit.
 	Start(ctx context.Context, dir, name string, args ...string) (Handle, error)

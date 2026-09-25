@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/process"
 )
@@ -27,13 +29,27 @@ func (r Real) Run(ctx context.Context, dir, name string, args ...string) (Result
 
 // RunEnv is Run, but replaces the child's environment with env instead of
 // inheriting the caller's ambient one.
-func (Real) RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
+func (r Real) RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
+	return r.runStdin(ctx, dir, env, nil, name, args...)
+}
+
+// RunStdin is RunEnv, but also feeds stdin's contents to the child's
+// standard input.
+func (r Real) RunStdin(ctx context.Context, dir string, env []string, stdin string, name string, args ...string) (Result, error) {
+	return r.runStdin(ctx, dir, env, strings.NewReader(stdin), name, args...)
+}
+
+// runStdin is RunEnv and RunStdin's shared implementation. A nil reader
+// leaves command.Stdin unset -- os/exec's own "read from the null device"
+// default -- exactly Run and RunEnv's existing behaviour.
+func (Real) runStdin(ctx context.Context, dir string, env []string, stdin io.Reader, name string, args ...string) (Result, error) {
 	if err := guardRealProcess(); err != nil {
 		return Result{}, err
 	}
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
 	command.Env = env
+	command.Stdin = stdin
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
