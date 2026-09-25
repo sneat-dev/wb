@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // This file raises statement coverage for internal/deps/drift.go,
@@ -27,7 +29,7 @@ func depsCovWriteFakeExecutable(t *testing.T, name, script string) {
 	}
 	dir := t.TempDir()
 	executable := filepath.Join(dir, name)
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

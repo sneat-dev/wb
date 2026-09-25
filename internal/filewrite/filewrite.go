@@ -18,10 +18,15 @@
 //
 // This package's exported surface only includes primitives spec/plans/
 // coverage-to-100 task-9's PR series has an actual production caller for
-// as of the PR that adds them; a primitive with no caller yet (a plain
-// Rename, a RenameNoReplace, Mkdirat, or a "create, chmod, write, sync,
-// but do not close" composite) is added in the PR that first needs it,
-// not spuriously ahead of time.
+// as of the PR that adds them; a primitive with no caller yet (a
+// RenameNoReplace, Mkdirat, or a "create, chmod, write, sync, but do not
+// close" composite) is added in the PR that first needs it, not
+// spuriously ahead of time. CreateTemp, CreateExclusivePath, ChmodPath,
+// Rename, and the exported Close were added in task-9 PR-2, the first PR
+// with a path-based (rather than fd-relative) call site. ChmodFile was
+// added in the same PR's review round, for a call site holding an
+// *os.File rather than a bare fd, so it keeps file.Chmod's *fs.PathError
+// wrapping instead of Chmod's bare Fchmod errno.
 package filewrite
 
 import (
@@ -66,6 +71,12 @@ const (
 	// separate from StepSync so a test can fail the directory fsync
 	// without also failing the regular file's own fsync.
 	StepDirSync Step = "dir_sync"
+	// StepRename covers a path-based os.Rename publish -- the sequence
+	// this package's cmd/wb call sites use in place of the fd-relative
+	// Linkat every internal/sessionpark/internal/sessionmove call site
+	// used (task-9 PR-2: these sites resolve a plain absolute path, with
+	// no already-open parent directory descriptor to rename relative to).
+	StepRename Step = "rename"
 )
 
 // Injector lets a test force one named step to fail, or run a hook
@@ -206,6 +217,21 @@ func Chmod(fd int, mode uint32, name string, inj *Injector) error {
 	return unix.Fchmod(fd, mode)
 }
 
+// ChmodFile re-asserts mode on an already-open *os.File via file.Chmod,
+// the belt-and-braces step a call site holding an *os.File (rather than a
+// bare fd from a fd-relative open) took explicitly. Unlike Chmod, which
+// wraps the bare unix.Fchmod errno, this preserves file.Chmod's own
+// *fs.PathError wrapping (path plus an EINTR retry on some platforms) --
+// the exact behaviour task-9 PR-2's daemon.go, fleet_default_branch.go,
+// peers.go and daemon_process_darwin.go call sites had before their
+// migration and must keep, since callers wrap or match on that error.
+func ChmodFile(file *os.File, mode os.FileMode, name string, inj *Injector) error {
+	if err := inj.run(StepChmod, name); err != nil {
+		return err
+	}
+	return file.Chmod(mode)
+}
+
 // Write writes the full contents of data to file in one call. A short
 // write (Write returning n < len(data) with a nil error) is reported as
 // *ShortWriteError rather than silently accepted -- new behaviour this
@@ -250,14 +276,15 @@ func Sync(file *os.File, name string, inj *Injector) error {
 	return file.Sync()
 }
 
-// closeFile closes a regular file. On an injected or real failure the
-// descriptor is still closed for real first, so injecting a close
-// failure in a test never leaks the fd. It is unexported: every current
-// production sequence that needs an injectable close reaches it through
-// CreateExclusiveWriteSync; a caller that needs to inject a close failure
-// on a sequence of its own is the PR that re-exports it (see this
-// package's doc comment).
-func closeFile(file *os.File, name string, inj *Injector) error {
+// Close closes a regular file (or a directory file descriptor opened as
+// an *os.File, e.g. for SyncDir's caller). On an injected or real failure
+// the descriptor is still closed for real first, so injecting a close
+// failure in a test never leaks the fd. Exported starting with task-9
+// PR-2: CreateExclusiveWriteSync was its only caller through PR-1, which
+// needed no exported access; PR-2's path-based write-then-rename sites
+// each close their own *os.File directly (not through a single shared
+// composite), so they need this call directly.
+func Close(file *os.File, name string, inj *Injector) error {
 	if err := inj.run(StepClose, name); err != nil {
 		_ = file.Close()
 		return err
@@ -325,7 +352,7 @@ func CreateExclusiveWriteSync(directory *os.File, name string, raw []byte, mode 
 		_ = file.Close()
 		return false, err
 	}
-	return true, closeFile(file, name, inj)
+	return true, Close(file, name, inj)
 }
 
 // OpenOrCreateRegular opens name under directoryFD for read-write,
@@ -366,4 +393,64 @@ func OpenOrCreateRegular(directoryFD int, name string, mode uint32, inj *Injecto
 		return -1, err
 	}
 	return fd, nil
+}
+
+// CreateTemp creates a new temporary file in directory whose name begins
+// with pattern (an os.CreateTemp "*"-pattern), returning the open file --
+// the path-based twin of CreateExclusive, for the cmd/wb call sites
+// (task-9 PR-2) that resolve a plain directory path rather than holding
+// an already-open parent directory descriptor. It shares StepOpenOrCreate
+// with CreateExclusive and OpenOrCreateRegular: all three produce a file
+// descriptor for a name that may not exist yet.
+//
+// The injector's Name key for this step is pattern, not the resolved
+// unique temp file name -- os.CreateTemp only picks the actual name once
+// it succeeds, so there is nothing else to key on before the call runs.
+// A later Step (Chmod, Write, Sync, Close, Rename, ...) on the same call
+// chain keys on the resolved name instead (temporary.Name()); a test that
+// wants to target both CreateTemp's own failure and a later step's
+// failure with one Injector.Name cannot -- every existing test targets one
+// step per Injector, so this has not mattered in practice.
+func CreateTemp(directory, pattern string, inj *Injector) (*os.File, error) {
+	if err := inj.run(StepOpenOrCreate, pattern); err != nil {
+		return nil, err
+	}
+	return os.CreateTemp(directory, pattern)
+}
+
+// CreateExclusivePath opens path for writing, creating it and failing if
+// it already exists: O_WRONLY|O_CREAT|O_EXCL, mode -- the path-based twin
+// of CreateExclusive for a cmd/wb call site (task-9 PR-2) that already has
+// a resolved absolute path and no parent directory descriptor to open
+// relative to. Unlike CreateExclusive's fd-relative Openat, this does not
+// add O_NOFOLLOW or O_CLOEXEC: every call site this replaces used plain
+// os.OpenFile with exactly this flag set, and preserving that exactly is
+// this migration's contract (adding either flag would be a behaviour
+// change, not a refactor).
+func CreateExclusivePath(path string, mode os.FileMode, inj *Injector) (*os.File, error) {
+	if err := inj.run(StepOpenOrCreate, path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+}
+
+// ChmodPath re-asserts mode on path (os.Chmod), the path-based twin of
+// Chmod's Fchmod for a cmd/wb call site (task-9 PR-2) that re-asserts a
+// temporary or existing file's mode after its descriptor is already
+// closed, or that never opened one at all.
+func ChmodPath(path string, mode os.FileMode, inj *Injector) error {
+	if err := inj.run(StepChmod, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
+}
+
+// Rename publishes oldpath to newpath (os.Rename) -- the path-based twin
+// of LinkNoReplace's Linkat for the cmd/wb call sites (task-9 PR-2) that
+// publish by replacing rather than by content-addressed hard link.
+func Rename(oldpath, newpath string, inj *Injector) error {
+	if err := inj.run(StepRename, newpath); err != nil {
+		return err
+	}
+	return os.Rename(oldpath, newpath)
 }

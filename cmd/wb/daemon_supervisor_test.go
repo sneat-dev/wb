@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // AC: supervisor-is-detected-and-reported (a directly-invoked, non-managed
@@ -1355,7 +1356,7 @@ func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 
 	dir := t.TempDir()
 	fakeSystemctl := filepath.Join(dir, "systemctl")
-	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(fakeSystemctl, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1518,7 +1519,7 @@ func TestDaemonStartDoesNotTouchASupervisedDaemonForAnUnrelatedBinary(t *testing
 	// becomes this test's own provenance: nothing here performs a
 	// self-update, so the two SHAs never converge.
 	unrelated := filepath.Join(root, "wb-unrelated-worktree-build")
-	if err := os.WriteFile(unrelated, []byte("an unrelated worktree build"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(unrelated, []byte("an unrelated worktree build"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps.executable = func() (string, error) { return unrelated, nil }

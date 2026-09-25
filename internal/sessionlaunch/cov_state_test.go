@@ -904,6 +904,69 @@ func TestSlCovExecFenceSemantics(t *testing.T) {
 	}
 }
 
+// TestSlCovExecFenceCloseUnlocksDuplicatedFD pins the #739 source fix at
+// state.go's execFence.Close: LOCK_UN must run before the fd closes, so a
+// duplicate fd created while the fence was open (simulating a stray forked-
+// but-not-yet-exec'd child holding the same open file description) does not
+// keep the fence reporting held after Close returns. Removing the LOCK_UN
+// call (leaving only File.Close) makes this test fail with held=true.
+func TestSlCovExecFenceCloseUnlocksDuplicatedFD(t *testing.T) {
+	t.Parallel()
+	state, _ := slCovOpenState(t)
+	attempt, err := state.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = attempt.Close() })
+
+	fence, err := attempt.acquireExecFence(41)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dupFD, err := unix.Dup(int(fence.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(dupFD) })
+
+	if err := fence.Close(); err != nil {
+		t.Fatal(err)
+	}
+	held, err := attempt.execFenceHeld(41)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("fence still held via duplicate after Close: held=true")
+	}
+}
+
+// TestSlCovAcquireExecFenceSurfacesFileWrapFailure pins acquireExecFence's
+// own wrap-failure branch: fenceFileForFD's error must propagate rather than
+// being swallowed. The real fileForFD only fails this way for a negative fd,
+// which acquireExecFence's own call site can never produce (its fd always
+// comes from a successful unix.Openat), so this exercises it via the
+// fenceFileForFD seam instead.
+//
+//nolint:paralleltest // mutates the package-level fenceFileForFD seam
+func TestSlCovAcquireExecFenceSurfacesFileWrapFailure(t *testing.T) {
+	state, _ := slCovOpenState(t)
+	attempt, err := state.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = attempt.Close() })
+	original := fenceFileForFD
+	fenceFileForFD = func(fd int, _ string) (*os.File, error) {
+		_ = unix.Close(fd)
+		return nil, errors.New("wrap failed")
+	}
+	t.Cleanup(func() { fenceFileForFD = original })
+	if _, err := attempt.acquireExecFence(41); err == nil || !strings.Contains(err.Error(), "wrap failed") {
+		t.Fatalf("acquireExecFence with a failing file wrap = %v", err)
+	}
+}
+
 func TestSlCovReadLaunchArtifactRejectsUnsafeShapes(t *testing.T) {
 	t.Parallel()
 	state, root := slCovOpenState(t)

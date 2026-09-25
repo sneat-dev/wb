@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // ratchetFixtureRepo builds a tiny real git repository containing a
@@ -585,7 +586,7 @@ func TestCoverageChangedFailsClosedWhenGitDiffCannotRun(t *testing.T) {
 		"done\n" +
 		"exec " + realGit + " \"$@\"\n"
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -628,7 +629,7 @@ func TestCoverageChangedFailsClosedWhenGitTouchedFilesCannotRun(t *testing.T) {
 		"done\n" +
 		"exec " + realGit + " \"$@\"\n"
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -677,7 +678,7 @@ func TestCoverageChangedFailsClosedWhenGitLineOffsetsCannotRun(t *testing.T) {
 		"fi\n" +
 		"exec " + realGit + " \"$@\"\n"
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -748,7 +749,7 @@ func TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) 
 		"fi\n" +
 		"exec " + realGo + " \"$@\"\n"
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))

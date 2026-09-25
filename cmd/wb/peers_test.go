@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/hub"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -541,5 +542,101 @@ func TestPeersBlockActsLocallyOnTheUpstream(t *testing.T) {
 	upstream, found, err = resolveUpstreamRow(deps, root)
 	if err != nil || !found || upstream.Status != "offline" {
 		t.Fatalf("upstream row after local unblock = %+v, %t, %v", upstream, found, err)
+	}
+}
+
+// The following tests exercise savePeerUpstreamStateInjected's and
+// writeOneTimeTokenInjected's filewrite.Injector-reachable error branches
+// (task-9 PR-2): their happy paths are already covered above and
+// elsewhere, but reaching a create, chmod, write, sync, close, or rename
+// failure deterministically needs the injector.
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+}
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+}
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+}
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+}
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+	assertNoLeftoverPeerUpstreamTempFile(t, dir)
+}
+
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+	assertNoLeftoverPeerUpstreamTempFile(t, dir)
+}
+
+// assertNoLeftoverPeerUpstreamTempFile asserts savePeerUpstreamStateInjected's
+// defer os.Remove(temporaryName) ran: no ".peer-upstream-*.json.tmp"
+// staging file survives a close or rename failure (task-9 PR-2 review,
+// B2 mutation evidence: deleting that defer survived every test that only
+// asserted the returned error).
+func assertNoLeftoverPeerUpstreamTempFile(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".peer-upstream-*.json.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover peer upstream temp file(s) after failure: %v", matches)
+	}
+}
+
+func TestWriteOneTimeTokenInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeOneTimeTokenInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeOneTimeTokenInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file not cleaned up after injected write failure: %v", err)
+	}
+}
+
+func TestWriteOneTimeTokenInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeOneTimeTokenInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeOneTimeTokenInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file not cleaned up after injected close failure: %v", err)
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestPreviousReleaseWorktreeUpgrade is intentionally black-box. It installs
@@ -413,7 +415,7 @@ func mustUpgradeWrite(t *testing.T, path, content string) {
 func mustUpgradeWriteExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	mustUpgradeMkdir(t, filepath.Dir(path))
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

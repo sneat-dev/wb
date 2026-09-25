@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // The fixture deliberately makes the claim branch survive at a different
@@ -397,7 +399,7 @@ func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$WB_TEST_OPEN_PULL\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$WB_TEST_OPEN_PULL\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal([]map[string]any{{

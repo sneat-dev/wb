@@ -20,6 +20,7 @@ import (
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/hub/web"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // e2eRepository is the one repository the journey is about. It is spelled the
@@ -312,7 +313,7 @@ func newFakeGitHubRemote(t *testing.T) *fakeGitHubRemote {
 	// `git@github.com:acme/app.git` a URL git can actually fetch while
 	// `git remote get-url` still reports the identity the processor checks.
 	script := filepath.Join(origin, "github-ssh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec git-upload-pack "+remote.bare+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nexec git-upload-pack "+remote.bare+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_SSH_COMMAND", script)

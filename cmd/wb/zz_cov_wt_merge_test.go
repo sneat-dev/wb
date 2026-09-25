@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -912,7 +913,7 @@ func cwWtMergeFakeGHPullRequest(t *testing.T, pullRequest, viewJSON string) {
 		"fi\n" +
 		"printf '%s\\n' '{}'\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1101,7 +1102,7 @@ func TestCwWtMergeAcknowledgeStrandedLandingOutput(t *testing.T) {
 func cwWtMergeFakeGH(t *testing.T, script string) {
 	t.Helper()
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

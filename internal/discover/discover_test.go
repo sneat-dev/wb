@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.T) {
@@ -58,7 +60,7 @@ func installFakeGhRepoView(t *testing.T, wantSlug, stdout string, ok bool) {
 		"if [ \"$1 $2 $3 $4 $5 $6 $7\" != \"repo view " + wantSlug + " --json isArchived --jq .isArchived\" ]; then\n" +
 		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
 		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

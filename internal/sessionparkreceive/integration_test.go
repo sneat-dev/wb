@@ -305,7 +305,7 @@ func installNoPullRequestsGitHubFixture(t *testing.T) {
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	content := "#!/bin/sh\nif [ \"$1\" = api ]; then printf '%s\\n' '[]'; exit 0; fi\necho \"unexpected gh command: $*\" >&2\nexit 2\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

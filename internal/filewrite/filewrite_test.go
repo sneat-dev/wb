@@ -2,8 +2,10 @@ package filewrite
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
@@ -305,6 +307,80 @@ func TestChmodHonoursAnInjectedFailure(t *testing.T) {
 	}
 }
 
+func TestChmodFileChangesTheModeOfAnOpenFile(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	t.Cleanup(func() { _ = file.Close() })
+	if err := ChmodFile(file, 0o400, "f", nil); err != nil {
+		t.Fatalf("ChmodFile: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o400 {
+		t.Fatalf("mode = %v, want 0400", info.Mode().Perm())
+	}
+}
+
+func TestChmodFileHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	t.Cleanup(func() { _ = file.Close() })
+	inj := &Injector{Step: StepChmod, Name: "f", Err: errBoom}
+	if err := ChmodFile(file, 0o400, "f", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("ChmodFile with injected failure = %v, want errBoom", err)
+	}
+	info, err := os.Stat(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode changed despite the injected failure: %v", info.Mode().Perm())
+	}
+}
+
+// TestChmodFileReportsARealFailureAsAPathError asserts ChmodFile keeps
+// file.Chmod's own *fs.PathError wrapping (path plus errno) rather than
+// the bare errno Chmod's Fchmod returns -- the exact drift the task-9
+// PR-2 review (B1) flagged: callers at daemon.go, fleet_default_branch.go
+// and daemon_process_darwin.go return this error unwrapped, and peers.go
+// wraps it with %w, so both need the "chmod <path>: <errno>" text and
+// errors.As(*fs.PathError) to keep working.
+func TestChmodFileReportsARealFailureAsAPathError(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), "f"))
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = ChmodFile(file, 0o400, "f", nil)
+	if err == nil {
+		t.Fatal("ChmodFile on a closed file = nil, want an error")
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("ChmodFile error = %v (%T), want a *fs.PathError", err, err)
+	}
+	if pathErr.Op != "chmod" {
+		t.Fatalf("PathError.Op = %q, want %q", pathErr.Op, "chmod")
+	}
+}
+
 // --- Write ---
 
 func openWritableFile(t *testing.T, dir *os.File, name string) *os.File {
@@ -419,14 +495,12 @@ func TestSyncHonoursAnInjectedFailure(t *testing.T) {
 	}
 }
 
-// closeFile is unexported (see filewrite.go's doc comment: no production
-// caller reaches a "close" step outside CreateExclusiveWriteSync), so it
-// is exercised directly here rather than through an exported wrapper --
-// TestCreateExclusiveWriteSyncReportsCreatedTrueEvenWhenCloseFails below
-// covers the same StepClose branch through the one production path that
-// uses it, and these three tests cover closeFile's own real-failure and
-// leak-prevention behaviour precisely.
-func TestCloseFileClosesTheFile(t *testing.T) {
+// Close is exported starting with task-9 PR-2 (see filewrite.go's doc
+// comment); TestCreateExclusiveWriteSyncReportsCreatedTrueEvenWhenCloseFails
+// below covers the same StepClose branch through CreateExclusiveWriteSync,
+// and these three tests cover Close's own real-failure and
+// leak-prevention behaviour directly.
+func TestCloseClosesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	fd, err := CreateExclusive(int(dir.Fd()), "f", 0o600, nil)
@@ -434,31 +508,31 @@ func TestCloseFileClosesTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := os.NewFile(uintptr(fd), "f")
-	if err := closeFile(file, "f", nil); err != nil {
-		t.Fatalf("closeFile: %v", err)
+	if err := Close(file, "f", nil); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 	if err := file.Close(); err == nil {
 		t.Fatal("file was not actually closed")
 	}
 }
 
-func TestCloseFileReportsARealFailureOnADoubleClose(t *testing.T) {
+func TestCloseReportsARealFailureOnADoubleClose(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	file := openWritableFile(t, dir, "f")
 	_ = file.Close()
-	if err := closeFile(file, "f", nil); err == nil {
-		t.Fatal("closeFile on an already-closed file = nil, want an error")
+	if err := Close(file, "f", nil); err == nil {
+		t.Fatal("Close on an already-closed file = nil, want an error")
 	}
 }
 
-func TestCloseFileHonoursAnInjectedFailureAndStillClosesTheDescriptor(t *testing.T) {
+func TestCloseHonoursAnInjectedFailureAndStillClosesTheDescriptor(t *testing.T) {
 	t.Parallel()
 	dir := openTestDir(t)
 	file := openWritableFile(t, dir, "f")
 	inj := &Injector{Step: StepClose, Name: "f", Err: errBoom}
-	if err := closeFile(file, "f", inj); !errors.Is(err, errBoom) {
-		t.Fatalf("closeFile with injected failure = %v, want errBoom", err)
+	if err := Close(file, "f", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("Close with injected failure = %v, want errBoom", err)
 	}
 	if err := file.Close(); err == nil {
 		t.Fatal("descriptor was leaked: a second Close still succeeded")
@@ -807,5 +881,185 @@ func TestOpenOrCreateRegularHonoursAnInjectedFailureOnTheChmod(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir.Name(), "f")); err != nil {
 		t.Fatalf("file created before the injected chmod failure is missing: %v", err)
+	}
+}
+
+// --- CreateTemp (task-9 PR-2) ---
+
+func TestCreateTempCreatesAUniquelyNamedFileUnderThePattern(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file, err := CreateTemp(dir, "prefix-*.tmp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	name := filepath.Base(file.Name())
+	if !strings.HasPrefix(name, "prefix-") || !strings.HasSuffix(name, ".tmp") {
+		t.Fatalf("CreateTemp name = %q, want prefix-*.tmp", name)
+	}
+}
+
+func TestCreateTempHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inj := &Injector{Step: StepOpenOrCreate, Err: errBoom}
+	if _, err := CreateTemp(dir, "prefix-*.tmp", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("CreateTemp with injected failure = %v, want errBoom", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("CreateTemp created a file despite the injected failure: %v", entries)
+	}
+}
+
+func TestCreateTempReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	if _, err := CreateTemp(filepath.Join(t.TempDir(), "missing"), "prefix-*.tmp", nil); err == nil {
+		t.Fatal("CreateTemp under a missing directory = nil, want an error")
+	}
+}
+
+// --- CreateExclusivePath (task-9 PR-2) ---
+
+func TestCreateExclusivePathCreatesTheFileWithExactlyTheGivenFlags(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	file, err := CreateExclusivePath(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestCreateExclusivePathFailsWhenTheFileAlreadyExists(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateExclusivePath(path, 0o600, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("CreateExclusivePath over an existing file = %v, want ErrExist", err)
+	}
+}
+
+func TestCreateExclusivePathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepOpenOrCreate, Name: path, Err: errBoom}
+	if _, err := CreateExclusivePath(path, 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("CreateExclusivePath with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("CreateExclusivePath created a file despite the injected failure")
+	}
+}
+
+// --- ChmodPath (task-9 PR-2) ---
+
+func TestChmodPathChangesTheModeOfAnExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ChmodPath(path, 0o600, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestChmodPathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepChmod, Name: path, Err: errBoom}
+	if err := ChmodPath(path, 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("ChmodPath with injected failure = %v, want errBoom", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode changed despite the injected failure: %v", info.Mode().Perm())
+	}
+}
+
+func TestChmodPathReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	if err := ChmodPath(filepath.Join(t.TempDir(), "missing"), 0o600, nil); err == nil {
+		t.Fatal("ChmodPath on a missing file = nil, want an error")
+	}
+}
+
+// --- Rename (task-9 PR-2) ---
+
+func TestRenamePublishesOldpathToNewpath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldpath := filepath.Join(dir, "old")
+	newpath := filepath.Join(dir, "new")
+	if err := os.WriteFile(oldpath, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rename(oldpath, newpath, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(newpath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	if _, err := os.Stat(oldpath); err == nil {
+		t.Fatal("oldpath still exists after Rename")
+	}
+}
+
+func TestRenameHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldpath := filepath.Join(dir, "old")
+	newpath := filepath.Join(dir, "new")
+	if err := os.WriteFile(oldpath, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepRename, Name: newpath, Err: errBoom}
+	if err := Rename(oldpath, newpath, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("Rename with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(oldpath); err != nil {
+		t.Fatal("oldpath was renamed away despite the injected failure")
+	}
+	if _, err := os.Stat(newpath); err == nil {
+		t.Fatal("newpath exists despite the injected failure")
+	}
+}
+
+func TestRenameReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := Rename(filepath.Join(dir, "missing"), filepath.Join(dir, "new"), nil); err == nil {
+		t.Fatal("Rename of a missing oldpath = nil, want an error")
 	}
 }

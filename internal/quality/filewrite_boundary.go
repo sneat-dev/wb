@@ -119,16 +119,20 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
 	"internal/hooks/manager.go:writeExecutableAt":           "PR-5: hooks -- fd-relative create+chmod+write+renameNoReplace publish",
 
+	// internal/execfile predates task-9's filewrite consolidation (added by
+	// task-21/#739) and is exactly PR-8's own shape: a path-based
+	// CreateTemp+chmod+Rename publish with no sync call. It slots into the
+	// existing PR-8 misc-atomic-writers batch alongside the other 23
+	// entries below, not a separate series. PR-8's migration of this site
+	// must keep syscall.ForkLock.RLock held for the temp fd's whole open
+	// lifetime (see execfile.go's WriteExecutableFile doc comment for why:
+	// golang/go#22315) -- internal/filewrite has no such option today, so
+	// PR-8 must either add one or keep the RLock in the caller.
+	"internal/execfile/execfile.go:WriteExecutableFile": "PR-8: misc-atomic-writers -- path-based CreateTemp+chmod+Rename, no sync; migration must keep syscall.ForkLock.RLock held across the temp file's open lifetime",
+
 	// Category A: os.CreateTemp/os.OpenFile/os.WriteFile + os.Rename, all
 	// in the same function (spec/plans/coverage-to-100 task-9 PR-1 review,
 	// B1 inventory items 1-47).
-	"cmd/wb/daemon.go:daemonController.writeLifecycleOwnerPID":                                                                 "PR-2: cmd/wb -- path-based CreateTemp+chmod+sync+Rename",
-	"cmd/wb/daemon_file_bridge.go:writeDaemonFileEnvelope":                                                                     "PR-2: cmd/wb -- OpenFile+write+sync+Rename",
-	"cmd/wb/daemon_process_darwin.go:startDaemonProcess":                                                                       "PR-2: cmd/wb -- CreateTemp plist+chmod+Rename",
-	"cmd/wb/fleet_default_branch.go:persistDefaultBranchReport":                                                                "PR-2: cmd/wb -- CreateTemp+chmod+sync+Rename",
-	"cmd/wb/hooks_agent.go:writeSettingsAtomically":                                                                            "PR-2: cmd/wb -- CreateTemp+chmod+Rename",
-	"cmd/wb/peers.go:savePeerUpstreamState":                                                                                    "PR-2: cmd/wb -- CreateTemp+chmod+sync+Rename",
-	"cmd/wb/sync_report.go:writeSyncIssuesFile":                                                                                "PR-2: cmd/wb -- CreateTemp+chmod+Rename",
 	"internal/agents/run.go:Store.Save":                                                                                        "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
 	"internal/archiveprune/untracked.go:overwriteArchiveCleanReceipt":                                                          "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
 	"internal/checkoutmarker/checkoutmarker.go:writeFileAtomically":                                                            "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
@@ -185,10 +189,6 @@ var PendingMigrationExemptions = map[string]string{
 	// write-once-immutable shape (review items 57-63, plus writeOneTimeToken
 	// and MarkParked found while regenerating this inventory against the
 	// call-based detector). PR-1 migrated this shape for sessionpark only.
-	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeKey":                   "PR-2: cmd/wb -- OpenFile O_CREATE|O_EXCL write-once",
-	"cmd/wb/peers.go:writeOneTimeToken":                                  "PR-2: cmd/wb -- OpenFile O_EXCL write-once (one-time token)",
-	"cmd/wb/remote_enroll.go:writePrivateCredential":                     "PR-2: cmd/wb -- chmod+OpenFile O_EXCL write-once",
-	"cmd/wb/verify_receipt.go:writeGraduationReceipt":                    "PR-2: cmd/wb -- OpenFile O_EXCL write-once",
 	"internal/retiredcandidateack/ack.go:Persist":                        "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
 	"internal/session/session.go:MarkParked":                             "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once (parked lifecycle marker)",
 	"internal/session/session.go:MarkResumed":                            "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",

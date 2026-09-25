@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/runlog"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -56,7 +57,7 @@ func TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess(t *testing.
 		`if [ "$1" = "repo" ] && [ "$2" = "list" ]; then printf '[]\n'; exit 0; fi` + "\n" +
 		`printf '{"total_count":0,"items":[]}\n'` + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

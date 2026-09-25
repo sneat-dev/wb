@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // tailCovTmux is a fully injectable tmux adapter so every paste-pipeline
@@ -519,7 +520,7 @@ func TestTailCovExecTmuxCommandRunnerPropagatesExitFailures(t *testing.T) {
 func TestTailCovNewOSTmuxResolution(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -546,7 +547,7 @@ func TestTailCovNewOSTmuxRejectsRelativePATHEntry(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(base)

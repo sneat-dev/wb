@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/spf13/cobra"
 	"github.com/strongo/cli-helpers/selfupdate"
 )
@@ -324,7 +324,7 @@ func fakeSelfUpdateBinary(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-wb")
 	script := "#!/bin/sh\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path

@@ -25,6 +25,7 @@ import (
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/nodeidentity"
@@ -1187,6 +1188,16 @@ func (controller daemonController) lifecycleOwnerPID(legacyLock *os.File) (int, 
 }
 
 func (controller daemonController) writeLifecycleOwnerPID(pid int) error {
+	return controller.writeLifecycleOwnerPIDInjected(pid, nil)
+}
+
+// writeLifecycleOwnerPIDInjected is writeLifecycleOwnerPID's test seam
+// (task-9 PR-2): every production call site reaches it only through
+// writeLifecycleOwnerPID, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/chmod/write/sync/close/rename failure
+// branch deterministically.
+func (controller daemonController) writeLifecycleOwnerPIDInjected(pid int, inj *filewrite.Injector) error {
 	path, err := daemonLifecycleOwnerPath(controller.root)
 	if err != nil {
 		return err
@@ -1195,13 +1206,13 @@ func (controller daemonController) writeLifecycleOwnerPID(pid int) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".daemon-lifecycle-owner-*")
+	temporary, err := filewrite.CreateTemp(directory, ".daemon-lifecycle-owner-*", inj)
 	if err != nil {
 		return fmt.Errorf("create daemon lifecycle owner: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
@@ -1209,18 +1220,18 @@ func (controller daemonController) writeLifecycleOwnerPID(pid int) error {
 		_ = temporary.Close()
 		return fmt.Errorf("protect daemon lifecycle owner: %w", err)
 	}
-	if _, err := fmt.Fprintf(temporary, "pid=%d\n", pid); err != nil {
+	if err := filewrite.Write(temporary, []byte(fmt.Sprintf("pid=%d\n", pid)), temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write daemon lifecycle owner: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("sync daemon lifecycle owner: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryName, path); err != nil {
+	if err := filewrite.Rename(temporaryName, path, inj); err != nil {
 		return fmt.Errorf("replace daemon lifecycle owner: %w", err)
 	}
 	return nil

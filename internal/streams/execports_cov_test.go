@@ -54,7 +54,7 @@ case "$1 $2" in
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -741,7 +741,7 @@ func TestPushBranchReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	mainSHA := strings.TrimSpace(runStreamGit(t, work, "rev-parse", "main"))
 
 	hook := filepath.Join(remote, "hooks", "post-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry(t *testing.T) {
@@ -221,7 +222,7 @@ func lifecycleTestExecutable(t *testing.T, root string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path

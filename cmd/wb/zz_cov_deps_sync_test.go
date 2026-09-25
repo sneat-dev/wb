@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/spf13/cobra"
 )
@@ -456,5 +457,5 @@ func cwCovWriteExecutable(path, body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(body), 0o755)
+	return testenv.WriteExecutableFile(path, []byte(body), 0o755)
 }

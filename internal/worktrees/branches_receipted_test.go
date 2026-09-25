@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installReceiptFixture puts a deterministic fake gh on PATH that answers the
@@ -25,7 +27,7 @@ func installReceiptFixture(t *testing.T, head, landingSHA string) {
 		"*\"$WB_TEST_RECEIPT_HEAD\"*) printf '%s\\n' \"$WB_TEST_RECEIPT_PULLS\";;\n" +
 		"*) printf '[]\\n';;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload := fmt.Sprintf(
@@ -43,7 +45,7 @@ func installPoisonedGitHubFixture(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'poisoned gh was invoked' >&2\nexit 7\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\necho 'poisoned gh was invoked' >&2\nexit 7\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

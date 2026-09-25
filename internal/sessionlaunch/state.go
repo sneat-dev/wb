@@ -998,7 +998,69 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 	return true, nil
 }
 
-func (attempt *launchAttempt) acquireExecFence(pid int) (*os.File, error) {
+// execFence is the handle acquireExecFence returns. It is a plain *os.File
+// wrapper (rather than *os.File itself) because Close has a real job of its
+// own: releasing the fence's flock explicitly before closing the fd (see
+// Close below).
+//
+// # The #739 fence-liveness race, and its source fix
+//
+// execFenceHeld relies on flock(2), whose lock is tied to the open file
+// description and is duplicated by fork(2): a short-lived child forked
+// anywhere in the same process while this fence's own fd is still open can
+// hold a duplicate reference until its own exec, so a bare Close() (which
+// only drops this one fd) leaves the lock held by that duplicate, and
+// execFenceHeld can still report held=true for a window after the true
+// holder believes it has released the fence (golang/go#22315).
+//
+// The fix is that flock's LOCK_UN is not symmetric with close(): unlocking
+// an open file description releases the lock for every fd that shares it --
+// including any inherited duplicate held by an unrelated forked-but-not-yet-
+// exec'd child -- immediately, regardless of how many other fds still
+// reference that description. Close (below) therefore unlocks before it
+// closes, which deterministically ends the race at its source rather than
+// relying on production being unable to reach it (acquireExecFence is only
+// called once per process today, via verifyPinnedWorktree's three
+// synchronous `exec.Command(...).Output()` git invocations, but that is an
+// incidental property of the current call site, not something this fix
+// depends on). Two alternatives were tried and rejected first: holding
+// syscall.ForkLock for the fence's whole open lifetime deadlocks under
+// concurrent exec.Command use (reproduced under this package's own stress
+// test), and corroborating held=true against a PID-liveness probe breaks
+// this package's own test convention of simulating "still held" via a
+// fabricated, non-existent PID.
+type execFence struct {
+	*os.File
+}
+
+// Close releases the fence's exclusive flock before closing its fd.
+// flock(2) locks are associated with the OPEN FILE DESCRIPTION, not the fd
+// number: LOCK_UN on any fd referencing that description releases the lock
+// for every fd that dup()s (including fork()) it, not just this one. Without
+// an explicit LOCK_UN, a stray child forked elsewhere in the process while
+// this fence's fd was open (golang/go#22315) keeps holding the lock via its
+// own inherited duplicate until ITS OWN exec, so execFenceHeld can observe
+// the fence as still held well after this Close returns. Explicitly
+// unlocking first closes that window: it releases the lock for every
+// description-sharing fd, including any such duplicate, deterministically,
+// with no dependency on when (or whether) an unrelated fork's own exec runs.
+func (fence *execFence) Close() error {
+	unlockErr := unix.Flock(int(fence.Fd()), unix.LOCK_UN)
+	if closeErr := fence.File.Close(); closeErr != nil {
+		return closeErr
+	}
+	return unlockErr
+}
+
+// fenceFileForFD wraps fileForFD for acquireExecFence's own use. It exists as
+// a seam (rather than calling fileForFD directly) so a test can exercise the
+// wrap-failure branch below deterministically: fileForFD's own nil-file case
+// only fires for a negative fd, which acquireExecFence's real call site never
+// produces (its fd always comes from a successful unix.Openat), so that
+// branch is otherwise unreachable through the public API.
+var fenceFileForFD = fileForFD
+
+func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
 	directory, err := attempt.directory(execDirectoryName)
 	if err != nil {
 		return nil, err
@@ -1017,7 +1079,11 @@ func (attempt *launchAttempt) acquireExecFence(pid int) (*os.File, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("acquire launcher exec-success fence for PID %d: %w", pid, err)
 	}
-	return fileForFD(fd, "wb-session-launch-exec-fence")
+	file, err := fenceFileForFD(fd, "wb-session-launch-exec-fence")
+	if err != nil {
+		return nil, err
+	}
+	return &execFence{File: file}, nil
 }
 
 // execFenceHeld reports whether the private WB wrapper still holds the

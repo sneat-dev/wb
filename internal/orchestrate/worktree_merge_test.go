@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -681,7 +682,7 @@ func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testin
 	observedOrigin := filepath.Join(t.TempDir(), "baseline-origin.txt")
 	bin := t.TempDir()
 	specscore := filepath.Join(bin, "specscore")
-	if err := os.WriteFile(specscore, []byte("#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"spec lint\" ]; then exit 2; fi\ngit remote get-url origin >\"$WB_TEST_BASELINE_ORIGIN\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(specscore, []byte("#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"spec lint\" ]; then exit 2; fi\ngit remote get-url origin >\"$WB_TEST_BASELINE_ORIGIN\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BASELINE_ORIGIN", observedOrigin)
@@ -705,7 +706,7 @@ func TestValidationCacheValidatorSHAsTrackSpecscoreExecutable(t *testing.T) {
 	specscore := filepath.Join(bin, "specscore")
 	write := func(contents string) {
 		t.Helper()
-		if err := os.WriteFile(specscore, []byte(contents), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(specscore, []byte(contents), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1180,7 +1181,7 @@ func TestWorktreeMergePushRunsExactHookOnceBeforeOpeningPushConnection(t *testin
 	hooksDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "pre-push.log")
 	hook := filepath.Join(hooksDir, "pre-push")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nset -eu\nprintf 'call %s %s\\n' \"$1\" \"$2\" >>\"$WB_TEST_PUSH_LOG\"\ncat >>\"$WB_TEST_PUSH_LOG\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\nset -eu\nprintf 'call %s %s\\n' \"$1\" \"$2\" >>\"$WB_TEST_PUSH_LOG\"\ncat >>\"$WB_TEST_PUSH_LOG\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_PUSH_LOG", logPath)
@@ -3947,7 +3948,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -4031,7 +4032,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -4059,7 +4060,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -4111,7 +4112,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -4130,7 +4131,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
