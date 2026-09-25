@@ -203,13 +203,13 @@ func TestCwWtRenderRescueReportTruncationAndFailures(t *testing.T) {
 }
 
 func TestCwWtRunFleetRescueReportFailurePropagation(t *testing.T) {
-	_, _ = cwWtDirtyCanonicalClone(t)
+	projects, _ := cwWtDirtyCanonicalClone(t)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	command := newWorktreeRescueCmd(&invocation{})
+	command := newWorktreeRescueCmd(&invocation{projectsRoot: projects})
 	command.SetContext(context.Background())
 	command.SetOut(&cwWtFailWriter{Allow: 0})
-	if err := runFleetRescueReport(&invocation{}, command, "text"); err == nil {
+	if err := runFleetRescueReport(&invocation{projectsRoot: projects}, command, "text"); err == nil {
 		t.Fatal("runFleetRescueReport did not propagate the write failure")
 	}
 }
