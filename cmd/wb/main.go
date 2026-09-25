@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -63,6 +64,26 @@ type invocation struct {
 	// projectsRoot holds --projects-root: the root dir containing
 	// {host}/{org}/{repo} clones.
 	projectsRoot string
+	// runner is spec/plans/coverage-to-100 task-8's command-runner port
+	// (internal/runner.Runner): the one seam cmd/wb uses to start git, gh
+	// and every other external program, so a unit test substitutes
+	// runnertest's fake instead of starting a real process. It is resolved
+	// once, lazily, through the commandRunner accessor below -- production
+	// (dispatchWithHandlers, runWithStdin) never sets it, so a real
+	// invocation always gets runner.New(); a test builds
+	// &invocation{runner: fake} to substitute one.
+	runner runner.Runner
+}
+
+// commandRunner returns inv's command runner, defaulting it to the real
+// implementation on first use. It is the single place cmd/wb resolves
+// runner.New(), mirroring internal/prinventory.Inventory's and
+// internal/agents.CallRemote's "if deps.Runner == nil" default pattern.
+func (inv *invocation) commandRunner() runner.Runner {
+	if inv.runner == nil {
+		inv.runner = runner.New()
+	}
+	return inv.runner
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -226,9 +247,9 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newPeersCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(inv), rootGroupMaintain),
-		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
+		groupedRootCommand(newSelfUpdateCmd(inv), rootGroupLearn),
 		groupedRootCommand(newInstallCmd(), rootGroupLearn),
-		groupedRootCommand(newUpgradeCmd(), rootGroupLearn),
+		groupedRootCommand(newUpgradeCmd(inv), rootGroupLearn),
 		groupedRootCommand(newSkillsCmd(), rootGroupLearn),
 		groupedRootCommand(newVersionCmd(), rootGroupLearn),
 		groupedRootCommand(newCommandsCmd(), rootGroupLearn),
