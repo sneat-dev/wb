@@ -1845,7 +1845,7 @@ func TestDefaultBranchReportPersistsAndPrintsCloneFindings(t *testing.T) {
 // the injector.
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1856,7 +1856,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1867,7 +1867,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1878,7 +1878,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure(t *testi
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1890,7 +1890,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1918,7 +1918,7 @@ func assertNoLeftoverDefaultBranchReportTempFile(t *testing.T, dir string) {
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
