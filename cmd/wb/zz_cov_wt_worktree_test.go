@@ -883,14 +883,14 @@ func TestCwWtWorktreeRelocateRealTaskInProcess(t *testing.T) {
 	if err := os.Remove(filepath.Join(worktree, "wip.txt")); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "gc-cli", "--to", "local")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--to", "local")
 	if err != nil {
 		t.Fatalf("relocate dry run of a real task: %v", err)
 	}
 	if !strings.Contains(stdout, "already there") && !strings.Contains(stdout, "would relocate") {
 		t.Fatalf("relocate dry-run stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "gc-cli", "--to", "local", "--json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--to", "local", "--json")
 	if err != nil {
 		t.Fatalf("relocate json of a real task: %v", err)
 	}

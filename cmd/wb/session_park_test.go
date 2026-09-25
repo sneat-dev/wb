@@ -485,7 +485,7 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 		t.Fatal("registry projection reached after actual custody refusal")
 		return session.Record{}, nil
 	}
-	command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
+	command := newSessionResumeCmdWithDependencies(&invocation{projectsRoot: projects}, deps)
 	command.SetArgs([]string{parkedID})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "newer session custody") {
