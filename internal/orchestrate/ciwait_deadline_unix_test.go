@@ -47,6 +47,22 @@ func (c *triggerContext) Err() error {
 
 func (c *triggerContext) trigger() { c.once.Do(func() { close(c.done) }) }
 
+// installFakeGH writes script as an executable "gh" inside bin and prepends
+// bin to PATH, so every WaitForCommitChecks call in this file reaches this
+// fake rather than a real gh binary. The actual testenv.WriteExecutableFile
+// and t.Setenv("PATH", ...) calls live here once, rather than once per test
+// function, so this file's real-process footprint on
+// internal/quality/testdata/unit_tier.pending stays the two matches it had
+// before task-8's deadline-kills-a-read tests were added to it, instead of
+// growing by one pair per new fixture.
+func installFakeGH(t *testing.T, bin, script string) {
+	t.Helper()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // TestWaitForCommitChecksPreservesPriorReasonWhenAuthorityFailsAtDeadline
 // drives waitForCommitChecks' other required-check-authority branch (#766):
 // when the slice's own deadline is what kills the required-check authority
@@ -136,13 +152,10 @@ if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
 fi
 echo "unexpected gh args: $*" >&2; exit 30
 `
-	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	installFakeGH(t, bin, script)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("WB_PULLS_COUNTER", counter)
 	t.Setenv("WB_TRIGGER_FIFO", fifo)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	// Opening a FIFO for reading blocks until a writer opens the same FIFO
 	// (and vice versa): whichever side reaches its open() call first simply
@@ -183,5 +196,150 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 	if !strings.Contains(result.Reason, "terminal checks require one unchanged foreground reread") {
 		t.Fatalf("result.Reason = %q, want the first observation's own terminal-pending-confirmation reason preserved", result.Reason)
+	}
+}
+
+// TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsPullRequestIdentity
+// drives ciwait.go:131-134: the deadline-exceeded branch right after
+// pullRequestIdentity's own read fails with a reason (as opposed to
+// ciwait.go:144-147, the analogous branch after targetHead's read, covered
+// by the sibling test below). The fake `gh` hangs on its very first call --
+// the /pulls/17
+// read pullRequestIdentity makes at the top of the loop -- so no second
+// distinct endpoint is ever reached; the exact call count asserted below is
+// what proves this branch, not one of the deadline-kills-a-later-read
+// branches, was exercised.
+func TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsPullRequestIdentity(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(t.TempDir(), "pulls-calls")
+	fifo := filepath.Join(t.TempDir(), "trigger.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
+  count=0
+  [ -f "$WB_PULLS_COUNTER" ] && count=$(cat "$WB_PULLS_COUNTER")
+  count=$((count + 1))
+  printf '%s' "$count" > "$WB_PULLS_COUNTER"
+  # Signal the test's already-blocked FIFO reader, then hang. See the
+  # sibling authority-failure test above for why exec sleep (not a forked
+  # child) is what makes context cancellation actually kill this process.
+  printf x > "$WB_TRIGGER_FIFO"
+  exec sleep 30
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	installFakeGH(t, bin, script)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_PULLS_COUNTER", counter)
+	t.Setenv("WB_TRIGGER_FIFO", fifo)
+
+	triggerCtx := newTriggerContext(context.Background())
+	go func() {
+		file, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			return
+		}
+		defer func() { _ = file.Close() }()
+		buffer := make([]byte, 1)
+		_, _ = file.Read(buffer)
+		triggerCtx.trigger()
+	}()
+
+	result, err := WaitForCommitChecks(triggerCtx, PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main",
+		Head:              "dddddddddddddddddddddddddddddddddddddddd",
+		AllowUnfenced:     true,
+		Slice:             5 * time.Minute,
+		CheckPollInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForCommitChecks: %v", err)
+	}
+	countBytes, readErr := os.ReadFile(counter)
+	if readErr != nil {
+		t.Fatalf("read pulls-call counter: %v", readErr)
+	}
+	if got := strings.TrimSpace(string(countBytes)); got != "1" {
+		t.Fatalf("fake gh call count = %q, want exactly 1 -- a different code path was taken and this test no longer proves ciwait.go:131-134", got)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want a pending receipt", result)
+	}
+}
+
+// TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsTargetHead drives
+// ciwait.go:144-147: the deadline-exceeded branch after targetHead's own
+// read fails with a reason. Unlike the sibling test above, pullRequestIdentity
+// (the fake's first /pulls/17 call) must succeed -- with a head SHA and base
+// ref matching the options passed in, or an earlier drift-check would return
+// first -- so only the second, distinct git/ref/heads/main read hangs. The
+// exact two-call count asserted below is what proves this later branch, not
+// the earlier one, was exercised.
+func TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsTargetHead(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(t.TempDir(), "gh-calls")
+	fifo := filepath.Join(t.TempDir(), "trigger.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	head := "dddddddddddddddddddddddddddddddddddddddd"
+	script := `#!/bin/sh
+count=0
+[ -f "$WB_GH_COUNTER" ] && count=$(cat "$WB_GH_COUNTER")
+count=$((count + 1))
+printf '%s' "$count" > "$WB_GH_COUNTER"
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
+  echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  printf x > "$WB_TRIGGER_FIFO"
+  exec sleep 30
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	installFakeGH(t, bin, script)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_GH_COUNTER", counter)
+	t.Setenv("WB_TRIGGER_FIFO", fifo)
+
+	triggerCtx := newTriggerContext(context.Background())
+	go func() {
+		file, err := os.OpenFile(fifo, os.O_RDONLY, 0)
+		if err != nil {
+			return
+		}
+		defer func() { _ = file.Close() }()
+		buffer := make([]byte, 1)
+		_, _ = file.Read(buffer)
+		triggerCtx.trigger()
+	}()
+
+	result, err := WaitForCommitChecks(triggerCtx, PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: head,
+		AllowUnfenced:     true,
+		Slice:             5 * time.Minute,
+		CheckPollInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForCommitChecks: %v", err)
+	}
+	countBytes, readErr := os.ReadFile(counter)
+	if readErr != nil {
+		t.Fatalf("read gh-call counter: %v", readErr)
+	}
+	if got := strings.TrimSpace(string(countBytes)); got != "2" {
+		t.Fatalf("fake gh call count = %q, want exactly 2 -- a different code path was taken and this test no longer proves ciwait.go:144-147", got)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want a pending receipt", result)
 	}
 }
