@@ -32,12 +32,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/diskusage"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // Filesystem is the capacity of the volume a path lives on.
@@ -110,6 +110,19 @@ type Options struct {
 	// fake here instead of asserting on whatever headroom this machine
 	// happens to have.
 	FilesystemProbe func(path string) (Filesystem, error)
+	// Runner starts `go env` while sizing the Go build and module caches.
+	// Nil resolves to the production runner.Runner (resolveRunner); a unit
+	// test injects runnertest.Fake instead.
+	Runner runner.Runner
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return runner.New()
 }
 
 // DefaultMinimumAvailableRatio is the headroom below which a report complains.
@@ -147,7 +160,7 @@ func Collect(ctx context.Context, options Options) (Report, error) {
 	}
 	report.Filesystem = filesystem
 
-	groups := candidateGroups(projectsRoot, home)
+	groups := candidateGroups(ctx, projectsRoot, home, resolveRunner(options.Runner))
 
 	// One walk across every category: a pnpm store hard-linked into a worktree
 	// belongs to whichever category is measured first and must not be added
@@ -212,7 +225,7 @@ type group struct {
 
 // candidateGroups names every place WB is known to put bytes. A path that does
 // not exist is dropped later rather than here, so the set stays declarative.
-func candidateGroups(projectsRoot, home string) []group {
+func candidateGroups(ctx context.Context, projectsRoot, home string, r runner.Runner) []group {
 	userHome, _ := os.UserHomeDir()
 	groups := []group{
 		{
@@ -222,12 +235,12 @@ func candidateGroups(projectsRoot, home string) []group {
 		},
 		{
 			name: "go-build-cache", kind: "cache",
-			roots: []string{goEnv("GOCACHE")},
+			roots: []string{goEnv(ctx, r, "GOCACHE")},
 			note:  "regenerable; shared across every worktree, so per-task copies multiply it",
 		},
 		{
 			name: "go-module-cache", kind: "cache",
-			roots: []string{goEnv("GOMODCACHE")},
+			roots: []string{goEnv(ctx, r, "GOMODCACHE")},
 			note:  "regenerable; re-downloading costs network, not correctness",
 		},
 		{
@@ -308,13 +321,12 @@ func scratchRoots() []string {
 
 // goEnv asks the toolchain rather than guessing a path that varies by platform
 // and by GOPATH. A missing toolchain yields no root rather than a wrong one.
-func goEnv(name string) string {
-	command := exec.Command("go", "env", name)
-	output, err := command.Output()
+func goEnv(ctx context.Context, r runner.Runner, name string) string {
+	result, err := r.Run(ctx, "", "go", "env", name)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(result.Stdout)
 }
 
 // findings converts the measurement into the few statements worth acting on.

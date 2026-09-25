@@ -28,7 +28,6 @@ internal/archiveprune/archiveprune.go	5	task-15
 internal/canonicalrescue/canonicalrescue.go	2	task-15
 internal/ciaudit/target.go	4	task-15
 internal/deps/command.go	1	task-14
-internal/disk/disk.go	1	task-15
 internal/envguard/envguard.go	3	task-15
 internal/githubobserver/observer.go	1	task-15
 internal/gitops/gitops.go	2	task-8

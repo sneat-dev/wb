@@ -2,10 +2,14 @@ package disk
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // isolate points every root Collect would otherwise discover on the real
@@ -186,6 +190,67 @@ func TestRenderLeadsWithHeadroomAndShowsBothFigures(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "something worth acting on") {
 		t.Fatalf("findings not rendered: %q", rendered)
+	}
+}
+
+// TestGoEnvReturnsTrimmedOutput covers goEnv's success path against a
+// scripted runner.Runner, asserting the exact argv it issues and that
+// trailing whitespace `go env` prints is trimmed.
+func TestGoEnvReturnsTrimmedOutput(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOCACHE"}, runner.Result{Stdout: "/tmp/gocache\n"}, nil)
+	if got := goEnv(context.Background(), fake, "GOCACHE"); got != "/tmp/gocache" {
+		t.Fatalf("goEnv(GOCACHE) = %q, want %q", got, "/tmp/gocache")
+	}
+}
+
+// TestGoEnvReturnsEmptyOnFailure pins the fail-open contract the package doc
+// promises: a missing toolchain yields no root, not an error.
+func TestGoEnvReturnsEmptyOnFailure(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOMODCACHE"}, runner.Result{}, errors.New("exec: \"go\": executable file not found in $PATH"))
+	if got := goEnv(context.Background(), fake, "GOMODCACHE"); got != "" {
+		t.Fatalf("goEnv(GOMODCACHE) with a failing runner = %q, want empty", got)
+	}
+}
+
+// TestCollectUsesInjectedRunnerForGoCaches proves Options.Runner threads all
+// the way through candidateGroups into goEnv: a scripted `go env` naming two
+// real, present directories makes them appear as the go-build-cache and
+// go-module-cache categories' roots.
+func TestCollectUsesInjectedRunnerForGoCaches(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	buildCache := filepath.Join(root, "go-build")
+	modCache := filepath.Join(root, "go-mod")
+	for _, dir := range []string{buildCache, modCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"go", "env", "GOCACHE"}, runner.Result{Stdout: buildCache + "\n"}, nil)
+	fake.ExpectArgv([]string{"go", "env", "GOMODCACHE"}, runner.Result{Stdout: modCache + "\n"}, nil)
+
+	report, err := Collect(context.Background(), Options{
+		ProjectsRoot: t.TempDir(),
+		WBHome:       filepath.Join(root, "absent-wb-home"),
+		Runner:       fake,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, category := range report.Categories {
+		if category.Name == "go-build-cache" || category.Name == "go-module-cache" {
+			found[category.Name] = len(category.Roots) == 1
+		}
+	}
+	if !found["go-build-cache"] || !found["go-module-cache"] {
+		t.Fatalf("categories = %#v, want go-build-cache and go-module-cache each with one root", report.Categories)
 	}
 }
 
