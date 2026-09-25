@@ -21,12 +21,19 @@ func New() Real { return Real{} }
 
 // Run starts name with args in dir, waits for it to exit, and returns its
 // captured stdout, stderr and exit status.
-func (Real) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
+func (r Real) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
+	return r.RunEnv(ctx, dir, nil, name, args...)
+}
+
+// RunEnv is Run, but replaces the child's environment with env instead of
+// inheriting the caller's ambient one.
+func (Real) RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
 	if err := guardRealProcess(); err != nil {
 		return Result{}, err
 	}
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	command.Env = env
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

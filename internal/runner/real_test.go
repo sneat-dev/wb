@@ -82,6 +82,30 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 	}
 }
 
+func TestRealRunEnvReplacesTheChildEnvironment(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	env := []string{
+		"WB_RUNNER_HELPER=1",
+		"WB_RUNNER_STDOUT=env-replaced",
+		"WB_RUNNER_EXIT=0",
+	}
+
+	result, err := runner.New().RunEnv(context.Background(), t.TempDir(), env, os.Args[0], helperArgs()...)
+	if err != nil {
+		t.Fatalf("RunEnv: %v", err)
+	}
+	if result.Stdout != "env-replaced" {
+		t.Fatalf("result.Stdout = %q, want the helper process's own output, proving env reached the child", result.Stdout)
+	}
+}
+
+func TestRealRunEnvBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	env := []string{"WB_RUNNER_HELPER=1", "WB_RUNNER_EXIT=0"}
+	if _, err := runner.New().RunEnv(context.Background(), t.TempDir(), env, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunEnv() err = %v, want runner.ErrRealProcessBlocked", err)
+	}
+}
+
 func TestRealStartAndHandleWaitReportOutputAndExitStatus(t *testing.T) {
 	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")

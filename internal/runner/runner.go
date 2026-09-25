@@ -54,6 +54,15 @@ type Runner interface {
 	// Run starts name with args in dir, waits for it to exit, and returns
 	// its captured stdout, stderr and exit status.
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
+	// RunEnv is Run, but the child's environment is env exactly, not
+	// inherited from the caller -- the same replace-not-merge semantics
+	// os/exec.Cmd.Env documents. A nil env is Run's own default: "inherit
+	// the caller's ambient environment unchanged". It exists for a call
+	// site that must run a program with a deliberately restricted or
+	// rebuilt environment (a git invocation that must not read a user's
+	// global/system gitconfig, for example), which Run's own signature has
+	// no way to express.
+	RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error)
 	// Start begins name with args in dir and returns a Handle without
 	// waiting for it to exit.
 	Start(ctx context.Context, dir, name string, args ...string) (Handle, error)

@@ -43,6 +43,25 @@ func TestFakeRunReturnsTheScriptedError(t *testing.T) {
 	}
 }
 
+func TestFakeRunEnvReturnsTheScriptedResultAndRecordsTheEnv(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	env := []string{"GIT_CONFIG_NOSYSTEM=1"}
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stdout: "clean"}, nil)
+
+	result, err := fake.RunEnv(context.Background(), "/repo", env, "git", "status")
+	if err != nil {
+		t.Fatalf("RunEnv: %v", err)
+	}
+	if result.Stdout != "clean" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunEnv" || len(calls[0].Env) != 1 || calls[0].Env[0] != "GIT_CONFIG_NOSYSTEM=1" {
+		t.Fatalf("calls = %+v, want one RunEnv call recording the replacement env", calls)
+	}
+}
+
 func TestFakeExpectMatchesByPredicateNotJustExactArgv(t *testing.T) {
 	t.Parallel()
 	fake := New(t)
