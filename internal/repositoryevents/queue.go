@@ -523,13 +523,7 @@ func (queue *Queue) persistInjected(item *job, inj *filewrite.Injector) error {
 	if err := filewrite.Rename(tempName, path, inj); err != nil {
 		return err
 	}
-	directory, err := os.Open(queue.directory)
-	if err != nil {
-		return err
-	}
-	syncErr := filewrite.SyncDir(directory, inj)
-	closeErr := directory.Close()
-	return errors.Join(syncErr, closeErr)
+	return syncDirectoryInjected(queue.directory, inj)
 }
 
 func (queue *Queue) notifyLocked() {

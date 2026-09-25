@@ -234,21 +234,23 @@ func (store CursorStore) saveStateInjected(state cursorState, inj *filewrite.Inj
 	if err := filewrite.Rename(name, store.Path, inj); err != nil {
 		return err
 	}
-	directory, err := os.Open(filepath.Dir(store.Path))
-	if err != nil {
-		return err
-	}
-	syncErr := filewrite.SyncDir(directory, inj)
-	closeErr := directory.Close()
-	return errors.Join(syncErr, closeErr)
+	return syncDirectoryInjected(filepath.Dir(store.Path), inj)
 }
 
-func syncDirectory(path string) error {
+// syncDirectoryInjected opens path, fsyncs it via filewrite.SyncDir and
+// closes it, joining any sync and close failure -- the shared tail both
+// Queue.persistInjected and CursorStore.saveStateInjected run after their
+// rename to make the rename itself durable (task-9 PR-8 review B1: routing
+// both inlined copies through one helper gives the os.Open failure branch
+// one place to be covered, instead of two uncovered inlined copies). A nil
+// Injector makes every call byte-identical to each site's previous inlined
+// open+sync+close+errors.Join sequence.
+func syncDirectoryInjected(path string, inj *filewrite.Injector) error {
 	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	syncErr := directory.Sync()
+	syncErr := filewrite.SyncDir(directory, inj)
 	closeErr := directory.Close()
 	return errors.Join(syncErr, closeErr)
 }
