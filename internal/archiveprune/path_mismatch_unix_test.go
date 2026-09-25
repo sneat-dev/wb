@@ -1,7 +1,13 @@
+//go:build !windows
+
 package archiveprune
 
 // Pack unit p02 coverage: openDirectoryAt and hashFileAt replaced-while-planning
 // guards. Unit tier only: real temp-dir filesystem, no real git.
+//
+// golang.org/x/sys/unix.Stat/Stat_t have no Windows implementation, so this
+// exercise is unix-only; the production code under test (untracked.go) goes
+// through internal/unixcompat, which does build on Windows.
 
 import (
 	"os"
