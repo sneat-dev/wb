@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -703,8 +704,9 @@ func TestBumpReportRoundTrip(t *testing.T) {
 // remote configured. The other repositories in the fleet must still be
 // planned; the broken one must show up as a discovery skip, not silently
 // vanish.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	adapter := newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -741,6 +743,10 @@ func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
 
 func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	seed := filepath.Join(root, name+"-seed")
 	remote := filepath.Join(root, name+".git")
 	canonical := filepath.Join(githubDir, "acme", name)
@@ -776,6 +782,10 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 // exactly modeling one physical repository cloned into two directories.
 func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOwner, canonicalName string, files map[string]string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	remote := filepath.Join(root, "remotes", owner, name+".git")
 	if _, err := os.Stat(remote); os.IsNotExist(err) {
 		seed := filepath.Join(root, "seed-"+owner+"-"+name)

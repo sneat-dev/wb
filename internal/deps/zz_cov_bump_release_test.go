@@ -60,8 +60,9 @@ func depsCovBumpReleaseWriteGoMod(t *testing.T, body string) string {
 // TestDepsCovBumpReleaseWaveHandlerInspectClassifiesAssessment pins every
 // assessment outcome waveHandler.Inspect can produce, plus the fatal path
 // where the adapter itself cannot read the repository at the given base.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpReleaseWaveHandlerInspectClassifiesAssessment(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	consumer := newBumpRepository(t, root, githubDir, "consumer", "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")

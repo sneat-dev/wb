@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -607,6 +608,7 @@ func TestWorktreeMergeRevertLandsAForwardRevertAfterASuccessfulPrepare(t *testin
 	// writes its own receipt for this exact repository+target lane, and a
 	// second PrepareWorktreeMerge call for the same lane is refused as an
 	// invalid resume once one exists.
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
@@ -677,6 +679,10 @@ func TestWorktreeMergeRevertLandsAForwardRevertAfterASuccessfulPrepare(t *testin
 
 func newCLIWorktreeMergeFixture(t *testing.T, sourceCount int) cliWorktreeMergeFixture {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")

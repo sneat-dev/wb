@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -16,6 +17,10 @@ import (
 // without a go.mod is what the discovery policy can prove irrelevant to Go.
 func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[string]string) string {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	seed := filepath.Join(fixture, "seed-"+name)
 	remote := filepath.Join(fixture, "remote-"+name+".git")
 	canonical := filepath.Join(fixture, "projects", "acme", name)
@@ -45,8 +50,9 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 // prove a website like this carries no go.mod at all. With the fallback,
 // this repository is fully discovered at its actual default branch instead
 // of merely being excused from failing the campaign.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -94,8 +100,9 @@ func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *t
 // over a routine default-branch mismatch is the exact production failure
 // this fallback exists to fix (7 master-default fleet repositories: e.g.
 // strongo/gamp, trakhimenok/badger).
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphFallsBackToDefaultBranchForGoRepositoryWithoutBaseRef(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -146,8 +153,9 @@ func deleteOriginHeadSymref(t *testing.T, canonical string) {
 // the refresh path specifically: EnsureCanonical must not depend solely on
 // a symref that `git clone` happened to cache; it must refresh it from
 // origin when absent.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -185,8 +193,9 @@ func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T
 // still fail loudly for a repository proven relevant by a local scan. The
 // fallback substitutes a known-good alternative; it is never license to swallow
 // a repository WB genuinely cannot read.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -228,8 +237,9 @@ func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testi
 // contains a literal `module module/path` placeholder — must not abort the
 // whole fleet. It is skipped with a warning naming the exact file and
 // repository instead.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -269,8 +279,9 @@ func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
 // unparseable ROOT go.mod must never be downgraded to a warning. WB cannot
 // safely assume irrelevance about a repository's own module declaration the
 // way it can about a nested generator template.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphFailsForUnparseableRootGoMod(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -306,6 +317,10 @@ func TestBuildGraphFailsForUnparseableRootGoMod(t *testing.T) {
 // all.
 func seedUnreadableCanonicalRepository(t *testing.T, fixture, name string, files map[string]string) string {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	canonical := filepath.Join(fixture, "projects", "acme", name)
 	for path, body := range files {
 		writeTestFile(t, filepath.Join(canonical, path), body)
@@ -326,8 +341,9 @@ func seedUnreadableCanonicalRepository(t *testing.T, fixture, name string, files
 // aborts the whole fleet over one repository whose local clone has no
 // 'origin' remote configured — even though that repository has a go.mod and
 // would otherwise be a hard blocker.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -363,8 +379,9 @@ func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
 
 // TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON is the npm
 // ecosystem's half of the same regression.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"package.json": `{"name": "@acme/app", "version": "1.0.0"}` + "\n",

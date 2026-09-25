@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runlog"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/testenv"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
@@ -560,6 +561,7 @@ func TestWorktreeMergeResumeOfValidationFailedReceiptIsRefusedUnderSaturatedLoad
 // receipt itself: host_load_admission.overridden is true and names the exact
 // load and floor the override admitted past.
 func TestWorktreeMergePrepareRecordsHostLoadOverrideOnReceipt(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -17,6 +18,10 @@ import (
 // given files, on "main".
 func newNpmBumpRepository(t *testing.T, root, githubDir, name string, files map[string]string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
+	runnertest.AllowRealProcess(t)
 	seed := filepath.Join(root, name+"-npm-seed")
 	remote := filepath.Join(root, name+"-npm.git")
 	canonical := filepath.Join(githubDir, "acme", name)
