@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 var supportedGoTestName = regexp.MustCompile(`^(Test|Example|Fuzz)[A-Za-z0-9_]*$`)
@@ -141,22 +143,36 @@ func readCoverageProfile(path string) (string, []coverageBlock, error) {
 	return mode, blocks, nil
 }
 
-func writeCoverageProfileAtomically(output, mode string, blocks map[string]coverageBlock) (err error) {
+func writeCoverageProfileAtomically(output, mode string, blocks map[string]coverageBlock) error {
+	return writeCoverageProfileAtomicallyInjected(output, mode, blocks, nil)
+}
+
+// writeCoverageProfileAtomicallyInjected is writeCoverageProfileAtomically's
+// test seam (task-9 PR-6): every production call site reaches it only
+// through writeCoverageProfileAtomically, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach a chmod/write/sync/close/rename failure branch
+// deterministically. The buffered fmt.Fprintf writes through bufio.Writer
+// stay bare (unrouted through filewrite.Write), matching the precedent set
+// by internal/orchestrate's extractWorktreeMergeArchive: filewrite.Write
+// takes one already-assembled []byte, not a streaming/buffered sequence of
+// small writes, so there is nothing in this package for it to wrap here.
+func writeCoverageProfileAtomicallyInjected(output, mode string, blocks map[string]coverageBlock, inj *filewrite.Injector) (err error) {
 	directory := filepath.Dir(output)
-	temporary, err := os.CreateTemp(directory, ".wb-coverage-merge-*.tmp")
+	temporary, err := filewrite.CreateTemp(directory, ".wb-coverage-merge-*.tmp", inj)
 	if err != nil {
 		return fmt.Errorf("create merged coverage profile beside %s: %w", output, err)
 	}
 	temporaryPath := temporary.Name()
 	defer func() {
 		if temporary != nil {
-			err = errors.Join(err, temporary.Close())
+			err = errors.Join(err, filewrite.Close(temporary, temporaryPath, inj))
 		}
 		if err != nil {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := temporary.Chmod(0o644); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o644, temporaryPath, inj); err != nil {
 		return fmt.Errorf("set merged coverage profile mode: %w", err)
 	}
 	writer := bufio.NewWriter(temporary)
@@ -177,14 +193,14 @@ func writeCoverageProfileAtomically(output, mode string, blocks map[string]cover
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("flush merged coverage profile: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		return fmt.Errorf("sync merged coverage profile: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return fmt.Errorf("close merged coverage profile: %w", err)
 	}
 	temporary = nil
-	if err := os.Rename(temporaryPath, output); err != nil {
+	if err := filewrite.Rename(temporaryPath, output, inj); err != nil {
 		return fmt.Errorf("publish merged coverage profile %s: %w", output, err)
 	}
 	return nil
