@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type skillCommandCoverage struct {
@@ -706,7 +709,14 @@ func parseSkillCommandExample(example string) error {
 	if len(parts) < 2 || parts[0] != "wb" {
 		return fmt.Errorf("example must begin with wb")
 	}
-	root := newRootCmd()
+	// A documented example's Args validator, e.g. "wb ci wait"'s, can reach
+	// task-8's command runner (validateCIWaitInputs' git check-ref-format
+	// check) purely to confirm the example's own shape parses -- never to
+	// observe real git or gh behaviour. skillExampleRunner answers every
+	// call as a success so that check passes without starting a real
+	// process, exactly as it silently did before task-8's runtime guard
+	// existed.
+	root := newRootCmdFor(&invocation{runner: skillExampleRunner{}})
 	command, remaining, err := root.Find(parts[1:])
 	if err != nil {
 		return err
@@ -720,6 +730,38 @@ func parseSkillCommandExample(example string) error {
 		}
 	}
 	return validateSkillExampleRequiredFlags(command)
+}
+
+// skillExampleRunner is parseSkillCommandExample's runner.Runner: every
+// call succeeds with an empty result, since parsing a documented example
+// only needs its Args validator's subprocess check to pass, never a real
+// process's actual output.
+type skillExampleRunner struct{}
+
+var _ runner.Runner = skillExampleRunner{}
+
+func (skillExampleRunner) Run(context.Context, string, string, ...string) (runner.Result, error) {
+	return runner.Result{}, nil
+}
+
+func (skillExampleRunner) RunWithInput(context.Context, string, []byte, string, ...string) (runner.Result, error) {
+	return runner.Result{}, nil
+}
+
+func (skillExampleRunner) RunOpts(context.Context, string, runner.RunOptions, string, ...string) (runner.Result, error) {
+	return runner.Result{}, nil
+}
+
+func (skillExampleRunner) Start(context.Context, string, string, ...string) (runner.Handle, error) {
+	return nil, nil
+}
+
+func (skillExampleRunner) Detach(string, string, ...string) (int, error) {
+	return 0, nil
+}
+
+func (skillExampleRunner) Interactive(context.Context, string, string, ...string) error {
+	return nil
 }
 
 func validateSkillExampleRequiredFlags(command *cobra.Command) error {
