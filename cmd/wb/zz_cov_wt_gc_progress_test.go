@@ -213,7 +213,7 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 
 func TestCwWtWorktreeGCCmdRefusesDirtyCheckoutInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) })
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("gc exit = %d (%v)\n%s", code, err, stdout)
 	}

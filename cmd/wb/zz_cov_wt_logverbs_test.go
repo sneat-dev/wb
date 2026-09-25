@@ -207,12 +207,12 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 
 	// A missing disposition is refused by the backend.
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err == nil || !strings.Contains(err.Error(), "disposition must be") {
 		t.Fatalf("abort without a disposition = %v", err)
 	}
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1")
 	if err != nil {
 		t.Fatalf("abort not_landed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 		t.Fatalf("abort stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1", "--format", "json")
 	if err != nil {
 		t.Fatalf("abort json: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 		t.Fatalf("abort json = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "handoff", "--successor", "s")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--disposition", "handoff", "--successor", "s")
 	if err != nil {
 		t.Fatalf("abort handoff: %v", err)
 	}
@@ -237,12 +237,12 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 	}
 
 	// orphaned requires an exact claim.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "orphaned", "--claim", "abc", "--actor", "a", "--reason", "r")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--disposition", "orphaned", "--claim", "abc", "--actor", "a", "--reason", "r")
 	if err == nil || !strings.Contains(err.Error(), "exact --claim ID") {
 		t.Fatalf("orphaned abort = %v", err)
 	}
 
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "s", "--format", "yaml"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--disposition", "not_landed", "--successor", "s", "--format", "yaml"); err == nil {
 		t.Fatal("abort --format yaml must fail")
 	}
 }
@@ -250,7 +250,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup dry run: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 		t.Fatalf("cleanup footer = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup json: %v", err)
 	}
@@ -269,14 +269,14 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 		t.Fatalf("cleanup json = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--retire-shells")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "--retire-shells")
 	if err != nil {
 		t.Fatalf("cleanup --retire-shells: %v", err)
 	}
 	if !strings.Contains(stdout, "logical task shell still has physical members") {
 		t.Fatalf("retire-shells stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--retire-shells", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "--retire-shells", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup --retire-shells json: %v", err)
 	}
@@ -285,20 +285,20 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 	}
 
 	// --recover-stages over a named task produces a per-task outcome.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--recover-stages", "gc-cli")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "--recover-stages", "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup --recover-stages: %v", err)
 	}
 	if stdout != "" && !strings.Contains(stdout, "preserved") && !strings.Contains(stdout, "would archive") {
 		t.Fatalf("recover-stages stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--recover-stages", "gc-cli", "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "--recover-stages", "gc-cli", "--format", "json"); err != nil {
 		t.Fatalf("cleanup --recover-stages json: %v", err)
 	}
 
 	// A named --apply that cannot satisfy cleanup safety exits with the
 	// rename/cleanup safety error rather than pretending success.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply", "--remote")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--apply", "--remote")
 	if err == nil || !strings.Contains(err.Error(), "did not satisfy cleanup safety") {
 		t.Fatalf("cleanup --apply on a dirty worktree = %v", err)
 	}
