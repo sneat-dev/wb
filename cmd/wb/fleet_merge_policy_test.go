@@ -22,7 +22,7 @@ import (
 )
 
 func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
-	command := newFleetMergePolicyCmd()
+	command := newFleetMergePolicyCmd(&invocation{})
 	for _, name := range []string{"apply", "org", "repo", "user", "parallel", "report-dir", "resume", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
@@ -42,7 +42,7 @@ func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
 }
 
 func TestFleetMergePolicyApplyRequiresExplicitScope(t *testing.T) {
-	command := newFleetMergePolicyCmd()
+	command := newFleetMergePolicyCmd(&invocation{})
 	if err := command.Flags().Set("apply", "true"); err != nil {
 		t.Fatal(err)
 	}

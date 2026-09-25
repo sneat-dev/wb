@@ -279,7 +279,7 @@ exit 30
 func TestWaitPRResumeLineQuotesSelectorsForAShell(t *testing.T) {
 	output := waitOutput{Targets: []waitTarget{{Selector: "acme/app#5", Status: waitStatusPending}}}
 	args := waitResumeArgs(output, waitUntilChecksSettled, time.Minute, time.Second, true)
-	command := newWaitPRCmd()
+	command := newWaitPRCmd(&invocation{})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	output.ResumeArgs = args
@@ -435,7 +435,7 @@ exit 30
 }
 
 func TestWaitPRPrintsWhyABlockedHeadCannotMerge(t *testing.T) {
-	command := newWaitPRCmd()
+	command := newWaitPRCmd(&invocation{})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	err := printWaitOutput(command, waitOutput{Targets: []waitTarget{{

@@ -230,7 +230,7 @@ var (
 	}
 )
 
-func newFleetDefaultBranchCmd() *cobra.Command {
+func newFleetDefaultBranchCmd(inv *invocation) *cobra.Command {
 	parallel := min(runqueue.Budget(), 4)
 	options := defaultBranchOptions{parallel: parallel}
 	command := &cobra.Command{Use: "default-branch", Short: "Audit or safely rename GitHub default branches", Long: `Audit the configured GitHub default branch across the accessible fleet. Audit is read-only.
@@ -243,7 +243,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 
 --temporarily-unarchive is an explicit exception for an archived repository that passes all existing branch-safety checks. WB checkpoints its numeric repository ID and original archive state, restores archival before local reconciliation, and provides a digest-bound restore-only recovery path.`, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			options.owners = requestedDefaultBranchOwners(cmd, options.owners)
+			options.owners = requestedDefaultBranchOwners(inv, cmd, options.owners)
 			if options.parallel < 1 || options.parallel > 16 {
 				return usageError("--parallel must be between 1 and 16")
 			}
@@ -974,10 +974,10 @@ func effectiveDefaultBranch(explicit string, cfg defaultBranchConfig, org string
 	}
 	return strings.TrimSpace(cfg.Fleet.DefaultBranch)
 }
-func requestedDefaultBranchOwners(command *cobra.Command, owners []string) []string {
+func requestedDefaultBranchOwners(inv *invocation, command *cobra.Command, owners []string) []string {
 	selected := append([]string(nil), owners...)
 	if rootOrg := command.Root().PersistentFlags().Lookup("org"); rootOrg != nil && rootOrg.Changed {
-		selected = append(selected, extraOrgs...)
+		selected = append(selected, inv.extraOrgs...)
 	}
 	return selected
 }

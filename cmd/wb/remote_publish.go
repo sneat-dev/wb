@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
-func newRemotePublishCmd() *cobra.Command {
+func newRemotePublishCmd(inv *invocation) *cobra.Command {
 	var dryRun, jsonOut bool
 	var parallel int
 	cmd := &cobra.Command{
@@ -24,7 +24,7 @@ task worktrees, and publishes one snapshot keyed <login>/<machine>.
 --dry-run prints the snapshot and writes nothing, locally or remotely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemotePublishWithProgress(defaultRemoteDeps(), projectsRoot, filterFlag, parallel, dryRun, jsonOut, os.Stdout, cmd.ErrOrStderr())
+			return runRemotePublishWithProgress(defaultRemoteDeps(), projectsRoot, filterFlag, parallel, dryRun, jsonOut, os.Stdout, cmd.ErrOrStderr(), inv)
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the snapshot; publish nothing")
@@ -42,10 +42,10 @@ type remotePublishReport struct {
 }
 
 func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
-	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil)
+	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil, &invocation{})
 }
 
-func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out, progressOut io.Writer) error {
+func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out, progressOut io.Writer, inv *invocation) error {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		return err
@@ -55,7 +55,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		return &exitError{code: exitUsage, message: fmt.Sprintf("wb remote needs the GitHub login to key this machine's entry (gh auth status): %v", err)}
 	}
 	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID()}
-	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, nonInteractive))
+	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive))
 	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
 	if err != nil {
 		progress.fail(err)

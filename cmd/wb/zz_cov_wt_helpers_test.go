@@ -38,9 +38,9 @@ func (writer *cwWtFailWriter) Write(payload []byte) (int, error) {
 func cwWtExecOut(t *testing.T, projects string, build func() *cobra.Command, stdout, stderr io.Writer, args ...string) error {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot, previousFilter, previousOrgs := projectsRoot, filterFlag, extraOrgs
-	projectsRoot, filterFlag, extraOrgs = projects, "", nil
-	t.Cleanup(func() { projectsRoot, filterFlag, extraOrgs = previousRoot, previousFilter, previousOrgs })
+	previousRoot, previousFilter := projectsRoot, filterFlag
+	projectsRoot, filterFlag = projects, ""
+	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
 
 	command := build()
 	command.SilenceUsage = true
@@ -56,9 +56,9 @@ func cwWtExecOut(t *testing.T, projects string, build func() *cobra.Command, std
 func cwWtRunCmd(t *testing.T, projects, stdin string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot, previousFilter, previousOrgs := projectsRoot, filterFlag, extraOrgs
-	projectsRoot, filterFlag, extraOrgs = projects, "", nil
-	t.Cleanup(func() { projectsRoot, filterFlag, extraOrgs = previousRoot, previousFilter, previousOrgs })
+	previousRoot, previousFilter := projectsRoot, filterFlag
+	projectsRoot, filterFlag = projects, ""
+	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
 
 	command := build()
 	command.SilenceUsage = true

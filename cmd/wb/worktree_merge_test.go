@@ -34,7 +34,7 @@ func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {
 }
 
 func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
@@ -143,7 +143,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 }
 
 func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
-	command := newWorktreeLandCmd()
+	command := newWorktreeLandCmd(&invocation{})
 	if command.Name() != "land" {
 		t.Fatalf("Name() = %q", command.Name())
 	}
@@ -163,8 +163,8 @@ func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
 // can never drift from the nested command's, and it resolves under the
 // AGENT WORKFLOW root group next to `wb worktree create`.
 func TestLandAliasSharesWorktreeLandContract(t *testing.T) {
-	alias := newLandCmd()
-	nested := newWorktreeLandCmd()
+	alias := newLandCmd(&invocation{})
+	nested := newWorktreeLandCmd(&invocation{})
 	if alias.Name() != "land" || nested.Name() != "land" {
 		t.Fatalf("Name() = %q / %q, want land / land", alias.Name(), nested.Name())
 	}
@@ -291,7 +291,7 @@ func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
 }
 
 func TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	child, _, err := command.Find([]string{"acknowledge-receipt-collision"})
 	if err != nil || child == nil {
 		t.Fatalf("find collision acknowledgement command: child=%v err=%v", child, err)
@@ -308,7 +308,7 @@ func TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence(t *testing
 }
 
 func TestWorktreeMergeCorrectSelfSupersessionCommandRequiresExpectedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	command.SetArgs([]string{"correct-self-supersession", "receipt.json", "replacement-worktree"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "--expected-supersession-sha256 and --expected-immutable-claim-sha256 are required") {
 		t.Fatalf("missing self-supersession evidence error = %v", err)
@@ -316,7 +316,7 @@ func TestWorktreeMergeCorrectSelfSupersessionCommandRequiresExpectedEvidence(t *
 }
 
 func TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	child, _, err := command.Find([]string{"prepare-published-forward-repair"})
 	if err != nil || child == nil {
 		t.Fatalf("find published forward-repair command: child=%v err=%v", child, err)

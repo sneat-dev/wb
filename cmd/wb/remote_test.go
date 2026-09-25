@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
@@ -602,7 +603,7 @@ func TestMachineRowsZeroPublishedButLastSeenIsNotError(t *testing.T) {
 }
 
 func TestSyncPublishFlagIsRegistered(t *testing.T) {
-	cmd := newSyncCmd()
+	cmd := newSyncCmd(&invocation{})
 	flag := cmd.Flags().Lookup("publish")
 	if flag == nil || flag.DefValue != "false" {
 		t.Fatalf("--publish flag = %+v, want bool default false", flag)
@@ -616,7 +617,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 		return nil, errors.New("store unreachable")
 	}
 	var out, errOut bytes.Buffer
-	if code := finishSync(fleetsync.RunMeta{}, nil, true, false, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, nil, true, false, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(errOut.String(), "remote publish failed (sync itself succeeded): store unreachable") {
@@ -627,7 +628,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 func TestFinishSyncPublishesAfterCleanSync(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
-	if code := finishSync(fleetsync.RunMeta{}, nil, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, nil, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "published alice/laptop") {
@@ -639,7 +640,7 @@ func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
 	failed := []fleetsync.Result{{Status: fleetsync.Failed}}
-	if code := finishSync(fleetsync.RunMeta{}, failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if strings.Contains(out.String(), "published") || strings.Contains(errOut.String(), "publish") {
@@ -658,7 +659,7 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 		return nil, errors.New("must not be called")
 	}
 	var out, errOut bytes.Buffer
-	if code := finishSync(fleetsync.RunMeta{}, nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "skipping remote publish") {
@@ -666,6 +667,22 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 	}
 	if errOut.String() != "" {
 		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+// TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress proves that
+// "wb remote publish" wires its production defaultRemoteDeps() and inv through
+// to runRemotePublishWithProgress via the real command tree, not just through
+// direct unit calls to that function: with no wb.yaml configured under an
+// isolated XDG_CONFIG_HOME, it surfaces the same named usage error that
+// TestRemotePublishUnconfiguredIsUsageError proves for the direct call.
+func TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, _, err := cwCovExec(t, root, func() *cobra.Command { return newRemotePublishCmd(&invocation{}) }, "--dry-run")
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
+		t.Fatalf("err = %v, want the same usage error as an unconfigured direct runRemotePublish call", err)
 	}
 }
 

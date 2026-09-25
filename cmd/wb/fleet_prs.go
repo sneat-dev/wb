@@ -21,7 +21,7 @@ type fleetPRsOptions struct {
 	parallel        int
 }
 
-func newFleetPRsCmd() *cobra.Command {
+func newFleetPRsCmd(inv *invocation) *cobra.Command {
 	options := fleetPRsOptions{format: "markdown", parallel: 8}
 	command := &cobra.Command{
 		Use:     "prs",
@@ -39,7 +39,7 @@ WB-managed worktrees.`,
 wb fleet prs --org sneat-dev --exclude-archived --report-dir reports`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			owners, diagnostics := resolvePRInventoryOwners(extraOrgs)
+			owners, diagnostics := resolvePRInventoryOwners(inv.extraOrgs)
 			report := prinventory.Inventory(cmd.Context(), prinventory.Options{Owners: owners,
 				ExcludeArchived: options.excludeArchived, CreatedBefore: options.createdBefore,
 				Parallel: options.parallel})

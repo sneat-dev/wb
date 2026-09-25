@@ -13,7 +13,30 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/runlog"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
+
+// TestRunListCommandDispatchesToRunRunInProcess proves that "wb run --list"
+// (recipe mode, no command after "--") reaches runRun through the real
+// command tree, threading the invocation's extraOrgs into it.
+func TestRunListCommandDispatchesToRunRunInProcess(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout string
+	var err error
+	stdout = cwCovCaptureStdout(t, func() {
+		_, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRunCmd(&invocation{}) },
+			"--list", "--config", configPath)
+	})
+	if err != nil {
+		t.Fatalf("wb run --list: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout, "refresh-ci") {
+		t.Fatalf("wb run --list output = %q, want the configured recipe name", stdout)
+	}
+}
 
 func TestRunCommandPreservesStreamsAndExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {

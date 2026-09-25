@@ -75,13 +75,13 @@ build list. Achievability is determined by resolving that build list with real
 grepping go.mod files — so the verdict is exact and names the forcing
 dependency when the policy cannot be met.`
 
-func newDepsGoDirectiveCmd() *cobra.Command {
+func newDepsGoDirectiveCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "go-directive",
 		Short: "Assess and land the fleet's go/toolchain directive policy",
 		Long:  goDirectiveLongHelp,
 	}
-	command.AddCommand(newDepsGoDirectiveCheckCmd(), newDepsGoDirectiveReportCmd())
+	command.AddCommand(newDepsGoDirectiveCheckCmd(), newDepsGoDirectiveReportCmd(inv))
 	return command
 }
 
@@ -216,7 +216,7 @@ type directiveRow struct {
 
 const verdictNoModule = "no-module"
 
-func newDepsGoDirectiveReportCmd() *cobra.Command {
+func newDepsGoDirectiveReportCmd(inv *invocation) *cobra.Command {
 	var match, regex, goVersion, toolchain, format, codeQLCeiling string
 	var timeout time.Duration
 	command := &cobra.Command{
@@ -234,7 +234,7 @@ the cannot-comply rows read as one worklist of which upstream module needs
 fixing first.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repositories, err := fleetRepositories(match, regex)
+			repositories, err := fleetRepositories(inv, match, regex)
 			if err != nil {
 				return err
 			}

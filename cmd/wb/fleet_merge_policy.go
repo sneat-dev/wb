@@ -197,7 +197,7 @@ var (
 	mergePolicyPersist = persistMergePolicyReport
 )
 
-func newFleetMergePolicyCmd() *cobra.Command {
+func newFleetMergePolicyCmd(inv *invocation) *cobra.Command {
 	defaultParallel := min(runqueue.Budget(), 16)
 	options := mergePolicyOptions{parallel: defaultParallel}
 	command := &cobra.Command{
@@ -225,7 +225,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 2 invalid usage.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			options.owners = requestedMergePolicyOwners(command, options.owners)
+			options.owners = requestedMergePolicyOwners(inv, command, options.owners)
 			if len(options.repositories) > 0 && (len(options.owners) > 0 || options.includeUser) {
 				return usageError("--repo cannot be combined with --org or --user")
 			}
@@ -435,10 +435,10 @@ func discoverRemoteMergePolicyFleet(filter string, explicitOwners, exactReposito
 	return repos, nil
 }
 
-func requestedMergePolicyOwners(command *cobra.Command, owners []string) []string {
+func requestedMergePolicyOwners(inv *invocation, command *cobra.Command, owners []string) []string {
 	selected := append([]string(nil), owners...)
 	if rootOrg := command.Root().PersistentFlags().Lookup("org"); rootOrg != nil && rootOrg.Changed {
-		selected = append(selected, extraOrgs...)
+		selected = append(selected, inv.extraOrgs...)
 	}
 	return selected
 }
