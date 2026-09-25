@@ -248,7 +248,7 @@ internal/sessionlaunch/tmux_test.go	4	task-14
 internal/sessionmessage/zz_tailcov_test.go	6	task-15
 internal/sessionmessage/zz_tailcov_unix_test.go	2	task-15
 internal/sessionmessenger/sd_cov_test.go	2	task-15
-internal/sessionparkcourier/zz_tailcov_ssh_test.go	2	task-8
+internal/sessionparkcourier/zz_tailcov_ssh_test.go	4	task-8
 internal/sessionparkreceive/integration_test.go	23	task-15
 internal/sessionparkreceive/tailcov_receive_test.go	1	task-15
 internal/sessiontransport/override_test.go	1	task-15

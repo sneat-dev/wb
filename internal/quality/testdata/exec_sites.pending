@@ -56,7 +56,6 @@ internal/sessionlaunch/launch.go	3	task-14
 internal/sessionlaunch/private.go	2	task-14
 internal/sessionlaunch/tmux.go	5	task-14
 internal/sessionmessage/tmux.go	1	task-15
-internal/sessionparkcourier/ssh.go	1	task-8
 internal/streams/execports.go	1	task-15
 internal/streamsync/execports.go	1	task-15
 internal/testenv/testenv.go	2	task-15

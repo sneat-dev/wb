@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionparkreceive"
@@ -92,6 +93,7 @@ func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
 // asserts the courier resolved that binary, forwarded the exact canonical
 // envelope bytes on stdin, and parsed the receipt.
 func TestTailCovNewSSHDelivererDrivesTheRealExecRunner(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	request, raw := courierEnvelope(t)
 	dir := t.TempDir()
 	result := filepath.Join(dir, "result.json")
@@ -136,7 +138,7 @@ func TestTailCovNewSSHDelivererDrivesTheRealExecRunner(t *testing.T) {
 // runner that actually launches a process, which the fake-runner tests never
 // touch.
 func TestTailCovExecCommandRunnerPipesStdinAndReportsExitStatus(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Fatalf("this platform has no sh: %v", err)
