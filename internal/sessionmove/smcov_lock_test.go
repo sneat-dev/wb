@@ -780,17 +780,21 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 		t.Fatalf("open execution lock does not name the stable %s inode", executionLockFileName)
 	}
 
-	closedDir, err := os.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open directory for closed-fd case: %v", err)
-	}
-	closedFD := int(closedDir.Fd())
-	if err := closedDir.Close(); err != nil {
-		t.Fatalf("close directory before reuse: %v", err)
-	}
-	if fd, err := openExecutionLockAt(closedFD); err == nil {
+	// invalidHandoffFD must never be a real fd number captured from a file
+	// this process actually opened and closed: once closed, the OS is free
+	// to hand that exact number back out to any concurrent goroutine's own
+	// open() (fd numbers are a small, actively recycled, process-wide
+	// pool), so under t.Parallel() a sibling test can reuse it before this
+	// assertion runs, making openExecutionLockAt operate on a real,
+	// unrelated, valid directory instead of an invalid descriptor (task-21,
+	// #741). A fd number far outside any realistic table size is invalid
+	// by construction and immune to that race: no real open() call ever
+	// returns it, so unix.Openat is guaranteed EBADF regardless of what
+	// else this process's other goroutines are doing concurrently.
+	const invalidHandoffFD = 1 << 24
+	if fd, err := openExecutionLockAt(invalidHandoffFD); err == nil {
 		_ = os.NewFile(uintptr(fd), "smcov-unexpected-lock").Close()
-		t.Fatalf("openExecutionLockAt succeeded with a closed handoff directory descriptor")
+		t.Fatalf("openExecutionLockAt succeeded with an invalid handoff directory descriptor")
 	}
 }
 
