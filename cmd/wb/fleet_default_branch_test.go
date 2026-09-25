@@ -291,7 +291,7 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 		source = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 				mutated = true
 				return githubobserver.CommandResponse{}
 			}
-			report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+			report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -506,7 +506,7 @@ func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) 
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2135,7 +2135,7 @@ func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
 			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + joined)}
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, rewriteWorkflowTriggers: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, rewriteWorkflowTriggers: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2322,9 +2322,9 @@ func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T)
 }
 
 func TestFleetDefaultBranchRootFilterRestrictsExactRepositoryScope(t *testing.T) {
-	originalFilter, originalProjects, originalConfig := filterFlag, projectsRoot, defaultBranchConfigPath
+	originalProjects, originalConfig := projectsRoot, defaultBranchConfigPath
 	t.Cleanup(func() {
-		filterFlag, projectsRoot, defaultBranchConfigPath = originalFilter, originalProjects, originalConfig
+		projectsRoot, defaultBranchConfigPath = originalProjects, originalConfig
 	})
 	testProjectsRoot := t.TempDir()
 	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
@@ -2407,7 +2407,7 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 		archived = true
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2426,7 +2426,7 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository ID") {
+	if _, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository ID") {
 		t.Fatalf("wrong ID restore err = %v", err)
 	}
 	if mutations != 0 {
@@ -2899,7 +2899,7 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 		}
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, temporarilyUnarchive: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, temporarilyUnarchive: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2914,7 +2914,7 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 }
 
 func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T) {
-	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{restoreArchiveFrom: "missing.json", restoreArchiveSHA256: "bad"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
+	if _, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{restoreArchiveFrom: "missing.json", restoreArchiveSHA256: "bad"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
 		t.Fatalf("invalid digest err = %v", err)
 	}
 	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}
@@ -2926,14 +2926,14 @@ func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{repositories: []string{"acme/missing"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no archived") {
+	if _, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{repositories: []string{"acme/missing"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no archived") {
 		t.Fatalf("wrong repository err = %v", err)
 	}
 	reportDir := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(reportDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: reportDir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: reportDir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("unwritable report directory err = %v", err)
 	}
 }
@@ -3091,7 +3091,7 @@ func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *tes
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err == nil || report.Repositories[0].Archive.Phase != "failed" || !report.Repositories[0].Archive.RecoveryRequired {
 		t.Fatalf("unsafe restore refusal was not durably recorded: %#v err=%v", report, err)
 	}
@@ -3171,7 +3171,7 @@ func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure
 				mutations++
 				return githubobserver.CommandResponse{Err: errors.New("network dropped")}
 			}
-			report, runErr := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+			report, runErr := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
 			if archived {
 				if runErr != nil || mutations != 0 || report.Repositories[0].Archive.Phase != "restored" || report.Repositories[0].Disposition != "compliant" {
 					t.Fatalf("already archived report = %#v err=%v mutations=%d", report, runErr, mutations)
@@ -3372,7 +3372,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3397,7 +3397,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 				t.Fatal(err)
 			}
 			calls, mutations = nil, 0
-			blocked, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: candidatePath, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			blocked, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: candidatePath, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3542,7 +3542,7 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 				t.Fatal(err)
 			}
 			mutations = 0
-			report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3614,7 +3614,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: priorPath, reconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: priorPath, reconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3646,7 +3646,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 	}
 	remoteHead = "0123456789abcdef0123456789abcdef01234567"
 	calls = nil
-	recovered, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: legacyPath, reconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
+	recovered, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: legacyPath, reconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3667,7 +3667,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 		return githubobserver.CommandResponse{Err: errors.New("unexpected remote mutation")}
 	}
 	calls = nil
-	secondHop, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: secondPath, reconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
+	secondHop, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: secondPath, reconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,19 @@ func (provider *retireStatusProvider) Status(context.Context) (remotestate.Statu
 	return provider.status, provider.err
 }
 
+// TestWorktreeRetireDryRunOnEmptyProjectsRootReportsNoMatch drives "wb
+// worktree retire" through the real CLI dispatch (not just a structural flag
+// check), so the RunE closure that reads inv.filterFlag into
+// worktrees.RetireOptions.Repository actually executes.
+func TestWorktreeRetireDryRunOnEmptyProjectsRootReportsNoMatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"worktree", "retire", "no-such-task", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code == 0 {
+		t.Fatalf("run(%q) exit = 0, want a failure for a task that has no worktree, stdout=%s", args, stdout.String())
+	}
+}
+
 func TestRetireRemoteOwnershipChecksClaimsAndMachineSnapshots(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {

@@ -37,7 +37,7 @@ func TestPrintBranchListExplainsRemotePullRequestEvidence(t *testing.T) {
 			entry := test.entry
 			entry.Repository, entry.Branch, entry.Scope = "acme/app", "feature/pr-evidence", worktrees.BranchScopeRemote
 			entry.Disposition, entry.Evidence = worktrees.BranchContained, "ancestor of main"
-			command := newBranchListCmd()
+			command := newBranchListCmd(&invocation{})
 			var output bytes.Buffer
 			command.SetOut(&output)
 			if err := printBranchList(command, worktrees.BranchListOutcome{

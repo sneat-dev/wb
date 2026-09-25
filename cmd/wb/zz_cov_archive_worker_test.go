@@ -34,7 +34,7 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	installArchivedFakeGh(t)
 	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, newArchiveCleanCmd)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) })
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("dry-run exit = %d\n%s", code, stdout)
 	}
@@ -53,7 +53,7 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	}
 
 	// JSON and YAML carry the same outcome machine-readably.
-	stdout, _, err = cwCovExec(t, root, newArchiveCleanCmd, "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("json exit = %d", code)
 	}
@@ -64,19 +64,19 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	if len(outcome.Results) != 2 || outcome.Apply {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	stdout, _, err = cwCovExec(t, root, newArchiveCleanCmd, "--format", "yaml")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "yaml")
 	if code := exitCodeOf(t, err); code != exitOK || !strings.Contains(stdout, "results:") {
 		t.Fatalf("yaml exit = %d\n%s", code, stdout)
 	}
 
 	// An unknown format is refused before anything is inspected.
-	if _, _, err := cwCovExec(t, root, newArchiveCleanCmd, "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("unknown format error = %v", err)
 	}
 
 	// --apply deletes the eligible clone and preserves the refused one.
-	stdout, _, err = cwCovExec(t, root, newArchiveCleanCmd, "--apply")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--apply")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("apply exit = %d\n%s", code, stdout)
 	}
@@ -104,7 +104,7 @@ func TestCwCovArchiveCleanFailedAndPrintArchiveClean(t *testing.T) {
 			}, ReceiptPath: "/tmp/receipt.json"},
 		},
 	}
-	command := newArchiveCleanCmd()
+	command := newArchiveCleanCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	printArchiveClean(command, outcome)

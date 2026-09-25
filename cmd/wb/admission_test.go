@@ -19,9 +19,9 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 		name        string
 		flagPresent func(string) bool
 	}{
-		{name: "adopt", flagPresent: func(name string) bool { return newWorktreeAdoptCmd().Flags().Lookup(name) != nil }},
-		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd().Flags().Lookup(name) != nil }},
-		{name: "retire", flagPresent: func(name string) bool { return newWorktreeRetireCmd().Flags().Lookup(name) != nil }},
+		{name: "adopt", flagPresent: func(name string) bool { return newWorktreeAdoptCmd(&invocation{}).Flags().Lookup(name) != nil }},
+		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd(&invocation{}).Flags().Lookup(name) != nil }},
+		{name: "retire", flagPresent: func(name string) bool { return newWorktreeRetireCmd(&invocation{}).Flags().Lookup(name) != nil }},
 		{name: "own", flagPresent: func(name string) bool { return newWorktreeOwnCmd().Flags().Lookup(name) != nil }},
 		{name: "correct-identity", flagPresent: func(name string) bool { return newWorktreeCorrectIdentityCmd().Flags().Lookup(name) != nil }},
 	}
@@ -183,7 +183,7 @@ func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := []*cobra.Command{newWorktreeAdoptCmd(), newWorktreeRenameCmd(), recoverCommand, archiveCommand}
+	commands := []*cobra.Command{newWorktreeAdoptCmd(&invocation{}), newWorktreeRenameCmd(&invocation{}), recoverCommand, archiveCommand}
 	for _, command := range commands {
 		if command == recoverCommand || command == archiveCommand {
 			if err := log.PersistentFlags().Set("mode", "agent"); err != nil {

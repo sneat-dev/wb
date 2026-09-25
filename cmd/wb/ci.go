@@ -24,7 +24,7 @@ func newCICmd(inv *invocation) *cobra.Command {
 		Use:   "ci",
 		Short: "Inspect and validate CI/CD policy",
 	}
-	cmd.AddCommand(newCIAuditCmd())
+	cmd.AddCommand(newCIAuditCmd(inv))
 	cmd.AddCommand(newCIWaitCmd(inv))
 	return cmd
 }
@@ -225,7 +225,7 @@ func shellQuoteCIWaitArg(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-func newCIAuditCmd() *cobra.Command {
+func newCIAuditCmd(inv *invocation) *cobra.Command {
 	var (
 		fleetMode bool
 		strict    bool
@@ -249,7 +249,7 @@ fetches origin/<target> (the one place this command is not read-only).`,
 			if len(args) == 1 {
 				path = args[0]
 			}
-			code, err := runCIAudit(path, projectsRoot, filterFlag, target, fleetMode, strict, jsonOut)
+			code, err := runCIAudit(path, projectsRoot, inv.filterFlag, target, fleetMode, strict, jsonOut)
 			if err != nil {
 				return err
 			}

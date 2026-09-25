@@ -83,11 +83,11 @@ func listActiveSessions(projectsRoot string) ([]session.View, error) {
 	return session.List(home + "/" + session.DirName)
 }
 
-func newWorktreeActiveCmd() *cobra.Command {
-	return newWorktreeActiveCmdWithDeps(defaultActiveWorktreeDeps())
+func newWorktreeActiveCmd(inv *invocation) *cobra.Command {
+	return newWorktreeActiveCmdWithDeps(inv, defaultActiveWorktreeDeps())
 }
 
-func newWorktreeActiveCmdWithDeps(deps activeWorktreeDeps) *cobra.Command {
+func newWorktreeActiveCmdWithDeps(inv *invocation, deps activeWorktreeDeps) *cobra.Command {
 	var format string
 	var localOnly bool
 	var stale time.Duration
@@ -116,7 +116,7 @@ Use --format json for agents and automation.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			report, err := runWorktreeActive(command.Context(), deps, projectsRoot, filterFlag, localOnly, stale)
+			report, err := runWorktreeActive(command.Context(), deps, projectsRoot, inv.filterFlag, localOnly, stale)
 			if err != nil {
 				return err
 			}

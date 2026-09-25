@@ -51,26 +51,26 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 		group   string
 	}{
 		{newWorktreeCreateCmd(), "start"},
-		{newWorktreeAdoptCmd(), "start"},
+		{newWorktreeAdoptCmd(inv), "start"},
 		{newWorktreeMergeCmd(inv), "finish"},
 		{newWorktreeLandCmd(inv), "finish"},
 		{newWorktreeEndCmd(), "finish"},
 		{newWorktreeCleanupCmd(inv), "finish"},
-		{newWorktreeRetireCmd(), "finish"},
+		{newWorktreeRetireCmd(inv), "finish"},
 		{newWorktreeGCCmd(inv), "finish"},
-		{newWorktreeAbortCmd(), "finish"},
-		{newWorktreeSummaryCmd(), "inspect"},
-		{newWorktreeActiveCmd(), "inspect"},
+		{newWorktreeAbortCmd(inv), "finish"},
+		{newWorktreeSummaryCmd(inv), "inspect"},
+		{newWorktreeActiveCmd(inv), "inspect"},
 		{newWorktreeInfoCmd(), "inspect"},
-		{newWorktreeListCmd(), "inspect"},
+		{newWorktreeListCmd(inv), "inspect"},
 		{newWorktreeGuardCmd(), "recover"},
-		{newWorktreeRescueCmd(), "recover"},
+		{newWorktreeRescueCmd(inv), "recover"},
 		{newWorktreeWorkLogCmd(), "recover"},
 		{newWorktreeCheckpointFetchCmd(), "recover"},
 		{newWorktreeOwnCmd(), "recover"},
-		{newWorktreeMarkerCmd(), "admin"},
-		{newWorktreeRelocateCmd(), "admin"},
-		{newWorktreeRenameCmd(), "admin"},
+		{newWorktreeMarkerCmd(inv), "admin"},
+		{newWorktreeRelocateCmd(inv), "admin"},
+		{newWorktreeRenameCmd(inv), "admin"},
 		{newWorktreeCorrectIdentityCmd(), "admin"},
 		{newWorktreeSetCmd(), "admin"},
 		{newWorktreeOrphansCmd(), "admin"},
@@ -83,7 +83,7 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 	return command
 }
 
-func newWorktreeRelocateCmd() *cobra.Command {
+func newWorktreeRelocateCmd(inv *invocation) *cobra.Command {
 	var to, format string
 	var apply, jsonShortcut bool
 	command := &cobra.Command{
@@ -146,7 +146,7 @@ keeps stdout machine-readable; progress and diagnostics use stderr.`,
 				}
 			}()
 			outcome, err := worktrees.Relocate(command.Context(), worktrees.RelocateOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Filter: filterFlag, To: to, Apply: apply,
+				ProjectsRoot: projectsRoot, Task: args[0], Filter: inv.filterFlag, To: to, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -970,7 +970,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 	return command
 }
 
-func newWorktreeAbortCmd() *cobra.Command {
+func newWorktreeAbortCmd(inv *invocation) *cobra.Command {
 	var base, disposition, successor, absorbedBy, format string
 	var claimID, actor, reason string
 	var model, cli, provider string
@@ -1039,7 +1039,7 @@ The default is a dry-run plan.`,
 				return err
 			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
+				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: inv.filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
 				AbsorbedBy: absorbedBy,
 				ClaimID:    claimID, Actor: actor, Reason: reason,
@@ -1681,7 +1681,7 @@ The default is a dry run.`,
 	return command
 }
 
-func newWorktreeAdoptCmd() *cobra.Command {
+func newWorktreeAdoptCmd(inv *invocation) *cobra.Command {
 	var base, format string
 	var allExternal, apply bool
 	command := &cobra.Command{
@@ -1734,7 +1734,7 @@ adoption is a mutation: --mode agent requires a live registered session, while
 			initiator, _ := command.Flags().GetString("initiator")
 			results, err := worktrees.Adopt(command.Context(), worktrees.AdoptOptions{
 				ProjectsRoot: projectsRoot, Base: base, Path: path, Initiator: initiator,
-				AllExternal: allExternal, Filter: filterFlag, Apply: apply,
+				AllExternal: allExternal, Filter: inv.filterFlag, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -1925,7 +1925,7 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 	return nil
 }
 
-func newWorktreeListCmd() *cobra.Command {
+func newWorktreeListCmd(inv *invocation) *cobra.Command {
 	var base, format, absorbedBy, ownerState string
 	var github, finalized, notFinalized bool
 	var parallel int
@@ -1974,7 +1974,7 @@ joined into this command.`,
 				ProjectsRoot: projectsRoot,
 				Task:         task,
 				Base:         base,
-				Filter:       filterFlag,
+				Filter:       inv.filterFlag,
 				OwnerState:   ownerState,
 				Finalized:    finalizedFilter,
 				AbsorbedBy:   absorbedBy,
@@ -2024,7 +2024,7 @@ joined into this command.`,
 	return command
 }
 
-func newWorktreeSummaryCmd() *cobra.Command {
+func newWorktreeSummaryCmd(inv *invocation) *cobra.Command {
 	var base, format string
 	var github bool
 	command := &cobra.Command{
@@ -2052,7 +2052,7 @@ wb worktree summary improve-login --github --format json`,
 				ProjectsRoot: projectsRoot,
 				Task:         args[0],
 				Base:         base,
-				Filter:       filterFlag,
+				Filter:       inv.filterFlag,
 				GitHub:       github,
 			})
 			if err != nil {
@@ -2234,7 +2234,7 @@ required to remove anything.`,
 			if retireShells {
 				outcome, err := worktrees.RetireTaskShells(command.Context(), worktrees.RetireShellsOptions{
 					ProjectsRoot: projectsRoot,
-					Filter:       filterFlag,
+					Filter:       inv.filterFlag,
 					Apply:        apply,
 				})
 				if err != nil {
@@ -2305,7 +2305,7 @@ required to remove anything.`,
 				ProjectsRoot:      projectsRoot,
 				Tasks:             tasks,
 				Base:              base,
-				Filter:            filterFlag,
+				Filter:            inv.filterFlag,
 				AbsorbedBy:        absorbedBy,
 				SupersededBy:      supersededBy,
 				AllMerged:         allMerged,
@@ -2500,7 +2500,7 @@ func printRetireTaskShells(command *cobra.Command, outcome worktrees.RetireShell
 	return err
 }
 
-func newWorktreeRenameCmd() *cobra.Command {
+func newWorktreeRenameCmd(inv *invocation) *cobra.Command {
 	var branch, branchPrefix, base, reportDir, format string
 	var force, apply, deleteRemote bool
 	var preserveCachePaths []string
@@ -2553,7 +2553,7 @@ for an explicit audit record.`,
 				ProjectsRoot:       projectsRoot,
 				OldTask:            args[0],
 				NewTask:            args[1],
-				Filter:             filterFlag,
+				Filter:             inv.filterFlag,
 				Branch:             branch,
 				BranchChosen:       command.Flags().Changed("branch"),
 				BranchPrefix:       branchPrefix,

@@ -19,16 +19,16 @@ import (
 // claim), and `wb sync` mutates by default (-n/--dry-run is opt-in) — the
 // wrong default shape to inherit for a more destructive check. See
 // spec/features/archived-clone-cleanup/README.md.
-func newArchiveCmd() *cobra.Command {
+func newArchiveCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "archive",
 		Short: "Inspect and safely remove local clones of repositories archived on GitHub",
 	}
-	command.AddCommand(newArchiveCleanCmd())
+	command.AddCommand(newArchiveCleanCmd(inv))
 	return command
 }
 
-func newArchiveCleanCmd() *cobra.Command {
+func newArchiveCleanCmd(inv *invocation) *cobra.Command {
 	var format string
 	var apply bool
 	var deleteUntracked bool
@@ -69,7 +69,7 @@ away as a bare count.`,
 			}
 			outcome, err := archiveprune.Clean(cmd.Context(), archiveprune.Options{
 				ProjectsRoot:    projectsRoot,
-				Filter:          filterFlag,
+				Filter:          inv.filterFlag,
 				Apply:           apply,
 				DeleteUntracked: deleteUntracked,
 				Progress:        cmd.ErrOrStderr(),

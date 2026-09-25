@@ -207,12 +207,12 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 
 	// A missing disposition is refused by the backend.
-	_, _, err := cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli")
 	if err == nil || !strings.Contains(err.Error(), "disposition must be") {
 		t.Fatalf("abort without a disposition = %v", err)
 	}
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1")
 	if err != nil {
 		t.Fatalf("abort not_landed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 		t.Fatalf("abort stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "succ-1", "--format", "json")
 	if err != nil {
 		t.Fatalf("abort json: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 		t.Fatalf("abort json = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli", "--disposition", "handoff", "--successor", "s")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "handoff", "--successor", "s")
 	if err != nil {
 		t.Fatalf("abort handoff: %v", err)
 	}
@@ -237,12 +237,12 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 	}
 
 	// orphaned requires an exact claim.
-	_, _, err = cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli", "--disposition", "orphaned", "--claim", "abc", "--actor", "a", "--reason", "r")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "orphaned", "--claim", "abc", "--actor", "a", "--reason", "r")
 	if err == nil || !strings.Contains(err.Error(), "exact --claim ID") {
 		t.Fatalf("orphaned abort = %v", err)
 	}
 
-	if _, _, err := cwCovExec(t, projects, newWorktreeAbortCmd, "gc-cli", "--disposition", "not_landed", "--successor", "s", "--format", "yaml"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAbortCmd(&invocation{}) }, "gc-cli", "--disposition", "not_landed", "--successor", "s", "--format", "yaml"); err == nil {
 		t.Fatal("abort --format yaml must fail")
 	}
 }

@@ -106,7 +106,7 @@ func TestApplyExplicitOrganizationNeverInspectsMemberOrganizations(t *testing.T)
 		}
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, owners: []string{"selected"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runMergePolicy(context.Background(), &invocation{}, mergePolicyOptions{apply: true, owners: []string{"selected"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	}
 	reportDir := t.TempDir()
 	var progress bytes.Buffer
-	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, parallel: 1, reportDir: reportDir}, &progress)
+	report, err := runMergePolicy(context.Background(), &invocation{}, mergePolicyOptions{apply: true, parallel: 1, reportDir: reportDir}, &progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestRunMergePolicyApplyIgnoresUnrelatedRepositoryResponseChanges(t *testing
 		return githubobserver.CommandResponse{}
 	}
 
-	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runMergePolicy(context.Background(), &invocation{}, mergePolicyOptions{apply: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestRunMergePolicyResumeCarriesPartialActions(t *testing.T) {
 	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, resume: true, parallel: 1, reportDir: reportDir}, &bytes.Buffer{})
+	report, err := runMergePolicy(context.Background(), &invocation{}, mergePolicyOptions{apply: true, resume: true, parallel: 1, reportDir: reportDir}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
