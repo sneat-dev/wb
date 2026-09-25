@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestDqCovProvenanceSameBinaryMatchesIdentityFields pins the exact fields that
@@ -217,7 +219,7 @@ func TestDqCovProvenanceForExecutableHashesResolvedBinary(t *testing.T) {
 	t.Parallel()
 	executable := filepath.Join(t.TempDir(), "wb")
 	contents := []byte("#!/bin/sh\necho wb\n")
-	if err := os.WriteFile(executable, contents, 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(executable, contents, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := ProvenanceForExecutable(executable, "1.2.3", "rev-1", "built-today")

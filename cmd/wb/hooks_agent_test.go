@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // agentGuardFixture builds a projects root with one canonical clone and one
@@ -452,7 +456,7 @@ func TestMergeAgentHookSettingsRefusesAnUnparseableFile(t *testing.T) {
 func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
-	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write self: %v", err)
 	}
 	onPath := filepath.Join(binDir, "wb")
@@ -473,11 +477,11 @@ func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) 
 func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
-	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write self: %v", err)
 	}
 	other := filepath.Join(binDir, "wb")
-	if err := os.WriteFile(other, []byte("#!/bin/sh\necho different\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(other, []byte("#!/bin/sh\necho different\n"), 0o755); err != nil {
 		t.Fatalf("write a different wb on PATH: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -505,7 +509,7 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 
 	binDir := t.TempDir()
 	onPath := filepath.Join(binDir, "wb")
-	if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write a wb on PATH: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -513,5 +517,71 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if got := resolveWBExecutableForHook(missing); got != missing {
 		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q (self unchanged)", missing, got, missing)
+	}
+}
+
+// The following tests exercise writeSettingsAtomicallyInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, write, close,
+// chmod, or rename failure deterministically needs the injector.
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+	assertNoLeftoverSettingsTempFile(t, dir)
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+	assertNoLeftoverSettingsTempFile(t, dir)
+}
+
+// assertNoLeftoverSettingsTempFile asserts writeSettingsAtomicallyInjected's
+// defer os.Remove(name) ran: no ".wb-settings-*" staging file survives a
+// close or rename failure. Mutation evidence (task-9 PR-2 review, B2):
+// deleting that defer at sibling call sites survived every test that only
+// asserted the returned error, since the staging file's mode (0600) leaves
+// it invisible to anything but a directory listing.
+func assertNoLeftoverSettingsTempFile(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".wb-settings-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover settings temp file(s) after failure: %v", matches)
 	}
 }

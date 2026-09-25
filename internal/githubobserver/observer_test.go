@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
@@ -468,7 +469,7 @@ func TestGetCoalescesAcrossProcesses(t *testing.T) {
 		"echo call >> " + shellQuote(logPath) + "\n" +
 		"sleep 0.2\n" +
 		"printf 'HTTP/2 200 OK\\nETag: \"etag-process\"\\n\\n{\"ok\":true}'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -515,7 +516,7 @@ func TestGetCoalescesZeroFreshWindowAcrossProcesses(t *testing.T) {
 		"echo call >> " + shellQuote(logPath) + "\n" +
 		"sleep 0.2\n" +
 		"printf 'HTTP/2 200 OK\\nETag: \"etag-zero\"\\n\\n{\"ok\":true}'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

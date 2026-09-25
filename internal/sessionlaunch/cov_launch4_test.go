@@ -225,7 +225,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	type handles struct{ fence *os.File }
+	type handles struct{ fence *execFence }
 	setup := func(t *testing.T) (*launcherRetryFixture, *handles) {
 		t.Helper()
 		fx := newLauncherRetryFixture(t)
@@ -292,6 +292,20 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 	t.Run("finalize started failure", func(t *testing.T) {
 		t.Parallel()
 		fx, handles := setup(t)
+		// The background goroutine below only becomes able to mark the
+		// launch directory read-only once release.json exists, which
+		// startWithDependencies only creates AFTER before returns -- so
+		// readOnly cannot be awaited from inside before itself (that would
+		// deadlock: before would be waiting on a signal that depends on
+		// its own return). Instead it is awaited after
+		// startWithDependencies returns, below, still before this subtest
+		// itself returns: slCovReadOnly chmods before it registers its own
+		// restoring t.Cleanup, so letting the subtest return first (without
+		// waiting for the goroutine) could race the test function's own
+		// return and leak a permanently read-only directory for a later
+		// t.TempDir() cleanup to trip over ("permission denied"; task-21,
+		// #740 review).
+		readOnly := make(chan struct{})
 		before := func(context.Context, Prepared) (string, error) {
 			state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
 			if err != nil {
@@ -305,11 +319,12 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 			_ = attempt.Close()
 			_ = state.Close()
 			go func(attemptID string) {
+				defer close(readOnly)
 				releasePath := filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), "release.json")
 				for {
 					if _, err := os.Stat(releasePath); err == nil {
-						_ = handles.fence.Close()
 						slCovReadOnly(t, slCovStateDir(fx.store.Root))
+						_ = handles.fence.Close()
 						return
 					}
 					time.Sleep(time.Millisecond)
@@ -320,6 +335,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 		if _, err := startWithDependencies(ctx, fx.options(before), fx.deps); err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("start finalized into a read-only launch directory: %v", err)
 		}
+		<-readOnly
 	})
 }
 

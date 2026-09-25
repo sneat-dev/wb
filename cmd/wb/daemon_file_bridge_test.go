@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 )
@@ -719,6 +720,138 @@ func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
 	}
 	if err := daemonFileBridgeHealthy(context.Background(), root, "60"); err == nil || !strings.Contains(err.Error(), "generation is 61, want 60") {
 		t.Fatalf("stale health generation error = %v", err)
+	}
+}
+
+// The following tests exercise daemonFileBridgeKeyInjected's and
+// writeDaemonFileEnvelopeInjected's filewrite.Injector-reachable error
+// branches (task-9 PR-2): the create/inspect/malformed/symlink branches
+// already have production-shaped coverage above and in
+// zz_cov_bridge_test.go, but reaching a write, sync, close, or rename
+// failure deterministically needs the injector, since none of those
+// syscalls can be made to fail by shaping ordinary filesystem state.
+
+func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if _, err := daemonFileBridgeKeyInjected(root, true, inj); err == nil || !strings.Contains(err.Error(), "create daemon file bridge key") {
+		t.Fatalf("daemonFileBridgeKeyInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("key file not cleaned up after injected create failure: %v", err)
+	}
+}
+
+func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if _, err := daemonFileBridgeKeyInjected(root, true, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge key") {
+		t.Fatalf("daemonFileBridgeKeyInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("key file not cleaned up after injected write failure: %v", err)
+	}
+}
+
+func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if _, err := daemonFileBridgeKeyInjected(root, true, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge key") {
+		t.Fatalf("daemonFileBridgeKeyInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("key file not cleaned up after injected sync failure: %v", err)
+	}
+}
+
+func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if _, err := daemonFileBridgeKeyInjected(root, true, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge key") {
+		t.Fatalf("daemonFileBridgeKeyInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("key file not cleaned up after injected close failure: %v", err)
+	}
+}
+
+func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	directory := t.TempDir()
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-write", PayloadSHA256: "x"}
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeDaemonFileEnvelopeInjected(directory, envelope.ID, envelope, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge envelope") {
+		t.Fatalf("writeDaemonFileEnvelopeInjected error = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary envelope file not cleaned up after injected write failure: %v", entries)
+	}
+}
+
+func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	directory := t.TempDir()
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-sync", PayloadSHA256: "x"}
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if err := writeDaemonFileEnvelopeInjected(directory, envelope.ID, envelope, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge envelope") {
+		t.Fatalf("writeDaemonFileEnvelopeInjected error = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary envelope file not cleaned up after injected sync failure: %v", entries)
+	}
+}
+
+func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	directory := t.TempDir()
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-close", PayloadSHA256: "x"}
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeDaemonFileEnvelopeInjected(directory, envelope.ID, envelope, inj); err == nil || !strings.Contains(err.Error(), "persist daemon file bridge envelope") {
+		t.Fatalf("writeDaemonFileEnvelopeInjected error = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary envelope file not cleaned up after injected close failure: %v", entries)
+	}
+}
+
+func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	directory := t.TempDir()
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-rename", PayloadSHA256: "x"}
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := writeDaemonFileEnvelopeInjected(directory, envelope.ID, envelope, inj); err == nil || !strings.Contains(err.Error(), "publish daemon file bridge envelope") {
+		t.Fatalf("writeDaemonFileEnvelopeInjected error = %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary envelope file not cleaned up after injected rename failure: %v", entries)
 	}
 }
 

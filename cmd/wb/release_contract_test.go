@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -454,7 +455,7 @@ func TestRaceShardsScriptIsDisjointAndCompleteAndTheGuardCatchesDrift(t *testing
 	writeBrokenScript := func(t *testing.T, contents string) string {
 		t.Helper()
 		broken := filepath.Join(t.TempDir(), "race-shards.sh")
-		if err := os.WriteFile(broken, []byte(contents), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(broken, []byte(contents), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return broken

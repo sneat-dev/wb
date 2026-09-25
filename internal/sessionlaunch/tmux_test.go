@@ -2,10 +2,11 @@ package sessionlaunch
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing.T) {
@@ -13,7 +14,7 @@ func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing
 	write := func(name, diagnostic string) string {
 		path := filepath.Join(t.TempDir(), name)
 		body := "#!/bin/sh\nprintf '%s\\n' \"" + diagnostic + "\" >&2\nexit 1\n"
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -36,7 +37,7 @@ if [ "$1" != "list-panes" ] || [ "$2" != "-s" ] || [ "$3" != "-t" ] || [ "$4" !=
 fi
 printf '4242\t0\n'
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pid, exists, err := (osTmux{executable: path}).PanePID(context.Background(), "wb-session-x")
@@ -55,7 +56,7 @@ case "$1" in
   *) printf 'unexpected argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	failure, found, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
@@ -73,7 +74,7 @@ case "$1" in
   *) printf 'unexpected argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	failure, found, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")

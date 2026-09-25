@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/runqueue"
@@ -2490,40 +2491,50 @@ func defaultBranchReportPath(dir string) (string, error) {
 	return path, nil
 }
 func persistDefaultBranchReport(report defaultBranchReport) error {
+	return persistDefaultBranchReportInjected(report, nil)
+}
+
+// persistDefaultBranchReportInjected is persistDefaultBranchReport's test
+// seam (task-9 PR-2): every production call site reaches it only through
+// persistDefaultBranchReport, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/chmod/write/sync/close/rename/dir-sync
+// failure branch deterministically.
+func persistDefaultBranchReportInjected(report defaultBranchReport, inj *filewrite.Injector) error {
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(report.ReportPath), ".default-branch-*.json")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(report.ReportPath), ".default-branch-*.json", inj)
 	if err != nil {
 		return err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(payload); err != nil {
+	if err := filewrite.Write(temporary, payload, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryName, report.ReportPath); err != nil {
+	if err := filewrite.Rename(temporaryName, report.ReportPath, inj); err != nil {
 		return err
 	}
 	directory, err := os.Open(filepath.Dir(report.ReportPath))
 	if err != nil {
 		return err
 	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
+	syncErr := filewrite.SyncDir(directory, inj)
+	closeErr := filewrite.Close(directory, directory.Name(), inj)
 	if syncErr != nil {
 		return syncErr
 	}

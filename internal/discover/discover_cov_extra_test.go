@@ -54,7 +54,7 @@ func lgCovInstallFakeGh(t *testing.T, calls ...lgCovGhCall) {
 		script.WriteString("fi\n")
 	}
 	script.WriteString("printf 'unexpected gh invocation: %s\\n' \"$*\" >&2\nexit 3\n")
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script.String()), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script.String()), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

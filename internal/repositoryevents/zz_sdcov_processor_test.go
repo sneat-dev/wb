@@ -375,7 +375,7 @@ func TestSdCovProcessorReportsTrackingFailure(t *testing.T) {
 	}
 	shim := t.TempDir()
 	script := "#!/bin/sh\ncase \"$1\" in\n  symbolic-ref) echo main; exit 0 ;;\n  config) echo refs/heads/main; exit 0 ;;\n  rev-parse) echo origin/main; exit 0 ;;\n  rev-list) echo only-one-field; exit 0 ;;\nesac\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))

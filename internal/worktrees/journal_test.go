@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func newJournalWorktree(t *testing.T) string {
@@ -297,7 +299,7 @@ func TestExcludeRuleDoesNotSwallowTrackedRepositoryPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	newPolicyFile := filepath.Join(policy, "repo-pre-commit.sh")
-	if err := os.WriteFile(newPolicyFile, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(newPolicyFile, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := WriteManifest(worktree, newCreatedManifest("effort")); err != nil {

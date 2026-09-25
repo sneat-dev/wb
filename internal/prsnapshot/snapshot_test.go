@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // writeFakeGH puts a fake `gh` on PATH ahead of any real one, so this
@@ -25,7 +27,7 @@ fi
 `
 		script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\n"+response, 1)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

@@ -362,3 +362,26 @@ func TestConfigureGitAutoMaintenanceOffFailsLoudlyWhenGitConfigFails(t *testing.
 		t.Fatalf("Fatalf message = %q, want it to name the failing git config call", recorder.fatalMsg)
 	}
 }
+
+// TestWriteExecutableFileWritesAnExecutableFileAtTheGivenPath exercises this
+// package's own WriteExecutableFile wrapper (not just the execfile package it
+// re-exports): package-level coverage is measured per package, so a caller in
+// a different package does not count toward this file's own statement
+// coverage.
+func TestWriteExecutableFileWritesAnExecutableFileAtTheGivenPath(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "script")
+	if err := WriteExecutableFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteExecutableFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode = %v, want 0o755", info.Mode().Perm())
+	}
+	if err := exec.Command(path).Run(); err != nil {
+		t.Fatalf("exec written file: %v", err)
+	}
+}

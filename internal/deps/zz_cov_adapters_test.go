@@ -55,7 +55,7 @@ func depsCovInstallShim(t *testing.T, tool, body string) string {
 		"printf 'args=%s gowork=%s\\n' \"$*\" \"$GOWORK\" >> " + depsCovShellQuote(logPath) + "\n" +
 		body
 	path := filepath.Join(dir, tool)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o755); err != nil {

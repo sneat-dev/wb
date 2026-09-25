@@ -467,7 +467,7 @@ func TestSlCovStartWithDependenciesSurfacesLiveStateConflicts(t *testing.T) {
 		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		pid := os.Getpid()
-		var fence *os.File
+		var fence *execFence
 		fx.tmux.onStart = func() {
 			fx.tmux.pid = pid
 			state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)

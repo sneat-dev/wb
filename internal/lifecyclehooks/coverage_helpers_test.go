@@ -6,16 +6,26 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
-// hkCovWriteFile writes content to path with the given mode and fails the test
-// on error.
+// hkCovWriteFile writes content to path with the given mode and fails the
+// test on error. It always goes through testenv.WriteExecutableFile (a
+// temp-file write-then-rename under a process-wide fork guard) rather than
+// os.WriteFile directly, whatever mode is: opening a writable fd at the
+// final path -- regardless of its mode -- leaves a window a concurrent
+// fork elsewhere in this parallel test binary can inherit before its own
+// exec, racing "text file busy" (golang/go#22315; task-21, #739).
+// testenv.WriteExecutableFile is safe for a non-executable mode too, so
+// there is no reason for this helper to branch on mode and keep a second,
+// unsafe code path around for callers that happen to pass one.
 func hkCovWriteFile(t *testing.T, path string, content string, mode os.FileMode) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(content), mode); err != nil {
 		t.Fatal(err)
 	}
 	return path

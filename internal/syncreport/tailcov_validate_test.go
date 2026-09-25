@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // tailCovParseValidRecord parses the shared fixture and attaches the raw bytes
@@ -28,7 +30,7 @@ func tailCovFakeIngitDB(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ingitdb")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

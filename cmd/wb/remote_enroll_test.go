@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 func TestRemoteEnrollKeepsCredentialOutOfOutputAndConfig(t *testing.T) {
@@ -92,3 +95,61 @@ func TestRemoteEnrollRequiresExplicitStdinAndDoesNotPersistUnverifiedToken(t *te
 type ioDiscard struct{}
 
 func (ioDiscard) Write(payload []byte) (int, error) { return len(payload), nil }
+
+// The following tests exercise writePrivateCredentialInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the create
+// path's happy case is already covered above, but reaching a create,
+// write, sync, close, or the pre-existing-file chmod failure
+// deterministically needs the injector.
+
+func TestWritePrivateCredentialInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+}
+
+func TestWritePrivateCredentialInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("credential file not cleaned up after injected write failure: %v", err)
+	}
+}
+
+func TestWritePrivateCredentialInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("credential file not cleaned up after injected sync failure: %v", err)
+	}
+}
+
+func TestWritePrivateCredentialInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("credential file not cleaned up after injected close failure: %v", err)
+	}
+}
+
+func TestWritePrivateCredentialInjectedHonoursAnInjectedChmodFailureOnAnExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+}

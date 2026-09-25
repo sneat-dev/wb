@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/strongo/cli-helpers/daemonlifecycle"
 	"google.golang.org/protobuf/proto"
 
@@ -66,6 +67,16 @@ func daemonFileBridgeKeyPath(root string) (string, error) {
 }
 
 func daemonFileBridgeKey(root string, create bool) (string, error) {
+	return daemonFileBridgeKeyInjected(root, create, nil)
+}
+
+// daemonFileBridgeKeyInjected is daemonFileBridgeKey's test seam (task-9
+// PR-2): every production call site reaches it only through
+// daemonFileBridgeKey, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/sync/close failure branch
+// deterministically.
+func daemonFileBridgeKeyInjected(root string, create bool, inj *filewrite.Injector) (string, error) {
 	path, err := daemonFileBridgeKeyPath(root)
 	if err != nil {
 		return "", err
@@ -78,15 +89,15 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 		if _, err := rand.Read(value); err != nil {
 			return "", fmt.Errorf("generate daemon file bridge key: %w", err)
 		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := filewrite.CreateExclusivePath(path, 0o600, inj)
 		if err == nil {
 			if err = daemonlifecycle.ProtectOwnerOnly(path); err != nil {
 				_ = file.Close()
 				_ = os.Remove(path)
 				return "", fmt.Errorf("protect daemon file bridge key: %w", err)
 			}
-			if _, err = file.Write([]byte(hex.EncodeToString(value))); err == nil {
-				err = file.Sync()
+			if err = filewrite.Write(file, []byte(hex.EncodeToString(value)), path, inj); err == nil {
+				err = filewrite.Sync(file, path, inj)
 			}
 			if err == nil {
 				err = daemonlifecycle.ProtectOwnerOnlyFile(file)
@@ -94,7 +105,7 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 			if err == nil {
 				err = daemonlifecycle.ValidateOwnerOnlyFile(file)
 			}
-			if closeErr := file.Close(); err == nil {
+			if closeErr := filewrite.Close(file, path, inj); err == nil {
 				err = closeErr
 			}
 			if err != nil {
@@ -769,6 +780,16 @@ func (transport *daemonFileBridgeTransport) pendingSubmit(procedure string, orig
 }
 
 func writeDaemonFileEnvelope(directory, id string, envelope daemonFileEnvelope) error {
+	return writeDaemonFileEnvelopeInjected(directory, id, envelope, nil)
+}
+
+// writeDaemonFileEnvelopeInjected is writeDaemonFileEnvelope's test seam
+// (task-9 PR-2): every production call site reaches it only through
+// writeDaemonFileEnvelope, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/sync/close/rename failure branch
+// deterministically.
+func writeDaemonFileEnvelopeInjected(directory, id string, envelope daemonFileEnvelope, inj *filewrite.Injector) error {
 	contents, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("encode daemon file bridge envelope: %w", err)
@@ -782,7 +803,7 @@ func writeDaemonFileEnvelope(directory, id string, envelope daemonFileEnvelope) 
 		return err
 	}
 	temporary := filepath.Join(directory, "."+id+"."+temporaryID+".tmp")
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := filewrite.CreateExclusivePath(temporary, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("create daemon file bridge envelope: %w", err)
 	}
@@ -796,16 +817,16 @@ func writeDaemonFileEnvelope(directory, id string, envelope daemonFileEnvelope) 
 	if err := daemonlifecycle.ProtectOwnerOnly(temporary); err != nil {
 		return fmt.Errorf("protect daemon file bridge envelope: %w", err)
 	}
-	if _, err = file.Write(contents); err == nil {
-		err = file.Sync()
+	if err = filewrite.Write(file, contents, temporary, inj); err == nil {
+		err = filewrite.Sync(file, temporary, inj)
 	}
-	if closeErr := file.Close(); err == nil {
+	if closeErr := filewrite.Close(file, temporary, inj); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return fmt.Errorf("persist daemon file bridge envelope: %w", err)
 	}
-	if err = os.Rename(temporary, path); err != nil {
+	if err = filewrite.Rename(temporary, path, inj); err != nil {
 		return fmt.Errorf("publish daemon file bridge envelope: %w", err)
 	}
 	remove = false

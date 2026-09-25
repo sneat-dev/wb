@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // lgCovFakeBin writes an executable shell script named name into a fresh temp
@@ -18,7 +20,7 @@ func lgCovFakeBin(t *testing.T, name, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir
