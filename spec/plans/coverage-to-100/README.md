@@ -9,7 +9,7 @@ status: Executing
 **Date:** 2026-09-23
 **Owner:** alex
 **Supersedes:** —
-**Reworked:** 2026-09-25, founder decisions 17–18 (two test tiers; thin `cmd/wb`)
+**Reworked:** 2026-09-25, founder decisions 17–19 (two test tiers; thin `cmd/wb`; e2e on every PR)
 
 ## Summary
 
@@ -26,18 +26,14 @@ Coverage is falling today. In the five days before 2026-09-23, 9,467 new stateme
 
 The plan changes the gate first, so progress sticks. Next it makes the suite fast and hermetic, then adds the seams that make error paths testable. Only then do package-by-package test waves close the gap. The last step switches to a hard 100% gate like specscore-cli's.
 
-**Two test tiers (rework of 2026-09-25, founder decisions 17–18).** 100% comes from fast unit tests, not from end-to-end runs.
-- Code reaches git, gh and every other external program only through a command-runner interface and narrow git-operation interfaces (task-8). Unit tests substitute fakes for them.
-- A separate end-to-end tier runs wb against real git to prove the pieces work together (task-7, task-23). It must pass on every PR but never counts toward coverage.
+**Two test tiers (rework of 2026-09-25, founder decisions 17–19).** 100% comes from fast unit tests, not from end-to-end runs.
+- Code reaches git, gh and every other external program through a command runner and narrow git-operation interfaces (task-8). Unit tests substitute fakes for them.
+- A separate end-to-end tier runs wb against real git to prove the pieces work together (task-24, task-23). It is a required job on every PR (decision 19), but it never counts toward coverage.
 - `cmd/wb` becomes a thin layer that parses flags and calls into `internal/` packages, so its own tests only check wiring (task-22).
 
 Where things stand on 2026-09-25 (main 493ff75, CI run 36097018926):
 - Coverage is 88.20%: 80,790 of 91,594 statements, 10,804 uncovered.
-- 237 of 863 tracked test files start real processes: git, fake executables on `PATH`, or other subprocesses. Those are what the rework moves off the coverage path.
-
-**Start condition — met 2026-09-23.** sneat-co/storygrapher#10 merged as 831f757, so task-1 is complete and the plan is Executing. The founder said: "Record plan now and wait for #10 to finish before starting implementation wb coverage increase." Task 1 records this gate where tooling can see it: no other task in this plan may start before `sneat-co/storygrapher#10` is merged. *Inference, not a founder quote:* the plan's author reads the reason as the founder's stated VM lane cap (see the `VM resource limits` / `Alex working preferences` memory: at most 3 concurrent lanes on the 4-core VM, at most 2 Go) — storygrapher#10 is itself occupying a Go lane. The founder did not state this reason; treat it as unconfirmed until the founder says otherwise.
-
-**Readiness caveat.** `specscore plan readiness coverage-to-100` reported `ready: true` while this plan's own `Status:` was `Blocked` and task-1 was unmet (before 2026-09-23) — it does not read this Plan's Status field or GitHub PR state (verified 2026-09-23; see task-1). Agents check this plan's `Status:` field and task-1 directly, not `specscore plan readiness`. Filed as [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216).
+- About 240 of 863 tracked test files start real processes: git, fake executables on `PATH`, or other subprocesses. That is a heuristic grep; task-24's check sets the exact list when it lands.
 
 ## Founder decisions (2026-09-23)
 
@@ -77,13 +73,23 @@ Asked one at a time; the chosen option label is quoted verbatim, except decision
 
 ## Founder decisions (2026-09-25, test tiers)
 
-Both are free-text instructions, quoted verbatim. *The text after each quote is the plan's reading, not a founder quote.*
+These are free-text answers, quoted verbatim. They are numbered by topic, not in the order given: 18 came first. *The text after each quote is the plan's reading, not a founder quote.*
 
-17. **Two test tiers.** "I think we should have fast unit tests and e2e integration tests. Getting 100% coverage with unit tests should be easy - define interface for external commands caller and git operations and substitute it in test. But e2e testing with real git is also important But. E2E testing is not the way to 100% test coverage. Rework the plan."
+17. **Two test tiers.** "And I think we should have fast unit tests and e2e integration tests. Getting 100% coverage with unit tests should be easy - define interface for external commands caller and git operations and substitute it in test. But e2e testing with real git is also important But. E2E testing is not the way to 100% test coverage. Rework the plan."
     - The coverage target is met by unit tests that use fakes for the command runner and the git operations (task-8).
-    - Real-git end-to-end tests form their own tier (task-7, task-23). That tier must pass, but it is not a source of coverage.
+    - Real-git end-to-end tests form their own tier (task-24, task-23). That tier must pass, but it is not a source of coverage.
     - At the end (task-20), the unit tier alone produces the coverage profile.
-18. **Thin `cmd/wb`.** Asked "Should I add that task to the plan and route the next free lane to it, starting with `fleet_default_branch`?", the founder answered "Yes, you should." The task moves the logic out of the largest `cmd/wb` files into `internal/` packages behind interfaces. It is task-22, and `cmd/wb`'s waves (task-16) now depend on it.
+18. **Thin `cmd/wb`.** The coordinator proposed to "add a "thin `cmd/wb`" task to the plan before task-16. Move the logic out of the biggest files (`fleet_default_branch`, `fleet_merge_policy`, `daemon`, `worktree`, `session_park`) into `internal/` packages behind interfaces, one command family per PR". It then asked "Should I add that task to the plan and route the next free lane to it, starting with `fleet_default_branch`?". The founder answered "Yes, you should."
+    - That is task-22. It starts without waiting for task-8.
+    - Its first PR (`fleet default-branch`) declares its own consumer-side ports in the destination package. They are backed at first by today's helpers, and switch to task-8's runner when it lands.
+19. **E2E cadence (was Open Question 6).** Asked whether the e2e tier should be a required job on every PR, or run only on pushes to main and nightly, the founder answered "Every PR."
+
+*Plan choices, not founder instructions:*
+- folding the seven existing per-package runners into one (task-8);
+- the gh port;
+- the 60-statement cap on `cmd/wb` functions (task-22);
+- the 10-minute e2e budget (task-23);
+- the runtime guard and the pending-list mechanics (task-24, task-8).
 
 ## Journey
 
@@ -98,21 +104,21 @@ Both are free-text instructions, quoted verbatim. *The text after each quote is 
 5. go-ci's coverage job is the ratchet's one and only baseline producer: task-3 exempts it from the validation-reuse skip on push events, so it runs on every push to main without exception and always uploads the per-package uncovered-count artifact. The nightly job is a separate, independent full-merged-suite run against main on a cron schedule (never on push) — it is the `--minimum=87` (later `=100`) backstop check, not a baseline source.
 6. A separate adversarial reviewer reads each refactor and wave diff before it lands; the reviewer's observable result is a review comment or approval recorded on the PR, not a self-report from the author.
 7. The supervisor (the agent or founder tracking this plan) re-measures coverage independently after each wave lands — never trusting a lane's own "it's green" claim — and updates the plan's task statuses.
-**Test tiers (decision 17), steps 9–12 below, built by tasks 7, 8 and 23:**
+8. Once every package reaches 100% (task-18 lands), the supervisor cuts task-20: the gate becomes specscore-cli's hard 100%-or-fail rule, the ratchet's per-package baseline machinery is retired, and both CI files move together.
+
+**Test tiers (decisions 17 and 19), built by tasks 8, 23 and 24:**
 
 9. A developer or agent runs `go test ./...` locally. That is the unit tier:
-   - It starts no process and touches no network.
-   - It runs in parallel and finishes within task-7's time budget on the VM.
+   - It starts no process and uses no external network.
+   - It runs in parallel.
    - Its coverage is what the ratchet and the final gate measure.
-10. To check integration, they run `go test -tags e2e ./...`.
+10. To check integration, they run `go test -tags e2e -run '^Test(E2E|Contract)' ./...`.
     - End-to-end tests build wb and drive it against real git repositories in temporary directories.
     - Contract tests run each fake and the real program through the same cases.
-11. On a PR, CI runs both tiers as separate required jobs.
-    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-7's pending list. As that list empties, the coverage profile becomes the unit tier's alone.
+11. On every PR, CI runs both tiers as separate required jobs.
+    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-24's pending list. As that list empties, the coverage profile becomes the unit tier's alone.
     - The e2e job has no coverage step.
 12. When a fake and real git disagree, a contract test in the e2e job fails and names the operation. The fake is fixed before any unit test that relies on it is trusted.
-
-8. Once every package reaches 100% (task-18 lands), the supervisor cuts task-20: the gate becomes specscore-cli's hard 100%-or-fail rule, the ratchet's per-package baseline machinery is retired, and both CI files move together.
 
 ## Approach
 
@@ -126,28 +132,32 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
    - Flaky tests #504, #505 and #539 remain.
 3. **The uncovered code cannot be made to fail.** 45% of the gap is error branches after file, OS, JSON, git and exec calls. `internal/worktrees` has 1,083 functions and no injection seams. Across `internal/worktrees` and `internal/orchestrate`, single functions reach 604 statements (`LandWorktreeMerge`, `internal/orchestrate/worktree_merge.go:1045`) and 450 (`Cleanup`, `internal/worktrees/lifecycle.go:2332`); `PrepareWorktreeMerge` is 381 statements at `internal/orchestrate/worktree_merge.go:426`. `LandWorktreeMerge` and `PrepareWorktreeMerge` live in `internal/orchestrate`, not `internal/worktrees` as an earlier draft of this plan implied.
 4. **Measurement hides coverage.** Coverage is per package, and secure git helpers strip `GOCOVERDIR`.
+5. **Coverage came in giant one-off PRs.** #554 was +90,783 lines. 286 test files are named after the campaign (`zz_cov_*`, `dqcov`, `tailcov`) rather than the behaviour they test.
 6. **Tests start real processes instead of using interfaces** (decision 17; measured 2026-09-25).
-   - 237 of 863 test files start git, fake executables on `PATH`, or other subprocesses.
+   - About 240 of 863 test files start git, fake executables on `PATH`, or other subprocesses (heuristic grep).
    - That makes the suite slow and serial: a test that sets `PATH` with `t.Setenv` cannot run in parallel.
    - It makes the suite flaky: "text file busy" (ETXTBSY) on fake executables (#739), and git's automatic garbage collection racing temporary-directory cleanup (#754).
    - It makes error branches hard to reach: a shell script cannot fail in exactly the way a test needs.
    - `cmd/wb` holds real logic: about 41,000 lines, with `worktree.go`, `daemon.go` and `fleet_default_branch.go` each over 2,500. So its tests run whole commands.
    - Three packages already define narrow consumer-side git interfaces (`internal/streams/ports.go` is the model), and seven define their own command runners. The rest call `exec.Command` or git helpers directly.
-5. **Coverage came in giant one-off PRs.** #554 was +90,783 lines. 286 test files are named after the campaign (`zz_cov_*`, `dqcov`, `tailcov`) rather than the behaviour they test.
 
-The sequence follows from that ranking. Task 1 is the start gate. The CI-policy predecessor (task-2) and the gate (task-3) go next, so every later change counts. #646 (task-4), the cmd/wb per-invocation context refactor (task-5) and the run-queue/output-truncation refactor (task-6) come next and can run in parallel, so test hermeticity (task-7) can consume both. Seams (tasks 8–13) come third (task-9 excepted: it starts right after task-4, founder decision 16), so error paths are reachable without contorted tests. Waves (tasks 14–18) close the statement gap. Task 19 builds the changed-package verb the hard gate needs. Task 20 switches to the hard gate.
+*Original sequence (2026-09-23), amended by the Rework block below.* The sequence follows from that ranking. Task 1 is the start gate. The CI-policy predecessor (task-2) and the gate (task-3) go next, so every later change counts. #646 (task-4), the cmd/wb per-invocation context refactor (task-5) and the run-queue/output-truncation refactor (task-6) come next and can run in parallel, so test hermeticity (task-7) can consume both. Seams (tasks 8–13) come third (task-9 excepted: it starts right after task-4, founder decision 16), so error paths are reachable without contorted tests. Waves (tasks 14–18) close the statement gap. Task 19 builds the changed-package verb the hard gate needs. Task 20 switches to the hard gate.
 
-**Rework (decisions 17–18, 2026-09-25).** The rework changes the order in four places:
-- Task-8 (the command-runner and git interfaces) moves up and starts as soon as a lane is free. Every later wave writes unit tests against its fakes, and it now depends only on task-4.
-- Task-7 splits the suite into a unit tier and an e2e tier.
-- Task-22 thins `cmd/wb` before task-16's waves.
+**Rework (decisions 17–19, 2026-09-25).**
+- Task-24 (new) sets up the two tiers: the `e2e` tag, the required e2e CI job, and the checks that keep process-starting tests out of the unit tier. It depends only on task-3.
+- Task-8 (the command runner and git interfaces) lands its interfaces, fakes and guard early; it depends on task-4 and task-24. Each package's call sites migrate in the refactor PR that precedes that package's wave or task-22 family.
+- Task-10 (the clock) now depends on task-4, not task-7.
+- Task-7 keeps only the hermetic setup: HOME, umask and the state directory.
+- Task-22 thins `cmd/wb` and starts now (decision 18); task-16 waits for it.
 - Task-23 builds the real-git e2e suite while the waves run.
+- Task-20 gates the unit tier alone, once every pending list is empty.
 
 **Lane cap (amended 2026-09-24 by founder decisions 14–16; these amendments supersede the original scheduling text below).**
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
 - Task-9 starts as soon as task-4 lands, ahead of tasks 5–7 (decision 16).
 - W1 (task-14) already started early for five packages (decision 14); its lanes finished with #719/#720, so task-14 has no running lane until a wave slot frees.
-- As of 2026-09-25, after task-6 landed, the 3 Go lanes are task-5, task-9 and a task-21 flaky-test lane (#739, #741).
+- As of 2026-09-25, the 3 Go lanes are task-5 (PR-4 #760), task-9 (PR-3 #756) and a task-21 flaky-test lane (#759).
+- The next free lane goes to task-22's `fleet default-branch` (decision 18), then to task-24 and task-8's first PR.
 - The original text follows for its reasoning.
 
 *Original:* The founder's standing VM cap applies to every task in this plan, not only the waves: at most 3 concurrent lanes, at most 2 of them Go lanes (`VM resource limits` memory). A concrete scheduling risk: once task-4 (#646) lands, task-5 (cmd/wb context refactor) and task-6 (run-queue seam + #582 fix) both become ready at once — that is already 2 Go lanes, so nothing else Go-lane-sized should start until one of them frees a lane. Once task-7 (hermetic tests) then lands, tasks 8, 9, 10 (three more Go refactor lanes), task-13 (failing-writer helper + cross-package diagnostic), and wave W1 (task-14, long-tail A) all become ready at once — more than 2 Go lanes' worth of ready work. Wave W2 (task-15, long-tail B) is not among them: it depends on task-11 for its one seam-needing package (`internal/hooks`), so it is not ready until task-11 lands. Schedule Go lanes in this order to respect the cap: land task-5 and task-6 together first (2 Go lanes); once task-7 lands, land task-8 (git/exec runner) and task-9 (file-write primitive) together next (2 Go lanes), then task-10 (clock/sleep seam) or task-13 (failing-writer + diagnostic) once one of those frees a lane, then start wave W1 (task-14) opportunistically in whatever Go lane is free — it needs no refactor seam. Wave W2 (task-15) becomes startable once task-11 lands. Do not start task-11, task-12 or task-19 until their own `Depends-On` tasks are landed, even if a lane is idle.
@@ -157,16 +167,17 @@ The sequence follows from that ranking. Task 1 is the start gate. The CI-policy 
 - Every test asserts an observable outcome.
 - Forbidden: deleting behaviour to gain coverage, `coverage:ignore`-style markers, build-tag hiding, and lowering the backstop or any package's ratchet baseline. The backstop stays at 87, is only ever raised, and `go-ci.yml` and `nightly-coverage.yml` move together (see task-3). No package's baseline uncovered count may rise.
 - Tests sit beside the code, are named after behaviour, and are safe to run in parallel.
-- Every new test is a unit test, as task-7 defines it (decision 17):
-  - no subprocess, no real git, no fake executable on `PATH`, no network, no `t.Setenv`/`os.Chdir`;
+- Every new test is a unit test, as task-24 defines it (decision 17):
+  - it starts no process and uses no external network; in-process `httptest` servers and unix sockets under `t.TempDir()` are allowed;
   - git, gh and other programs through task-8's fakes, files through task-9's injector, time through task-10's clock.
   A wave never adds a process-starting test to the default tier.
+- Wave ordering against the seams:
+  - A package that runs external programs starts its wave only after its task-8 migration PR lands.
+  - A package with retry, timeout or backoff code also waits for task-10.
+  - Packages that do neither proceed as before.
 - A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where unit tests keep the package's uncovered count flat. The ratchet enforces this.
-- The `e2e` build tag on test files (task-7) only selects a test tier. It hides no production code, so the ban on build-tag hiding still applies to production code.
-- A test PR stays under about 3,000 lines.
-- Package wall time may grow by at most 10%.
-- A separate adversarial reviewer reads each diff, and the supervisor re-measures coverage itself.
-- If a wave cannot reach its target, it stops and reports; it does not cut scope.
+- Some code only a real process can reach: the real runner, `internal/process`, task-8's allow-listed launchers, detach and `syscall.Exec` sites, and OS integration such as cgroups. It is tested with Go's helper-process pattern, where the test binary re-runs itself. Task-24 allows this, and it counts toward coverage.
+- The `e2e` build tag on test files (task-24) only selects a test tier. It hides no production code, so the ban on build-tag hiding still applies to production code.
 
 Generated proto/connect code is already at 100% and needs no exclusion. Darwin and Windows files stay outside Linux coverage, as in specscore-cli.
 
@@ -255,97 +266,86 @@ This is production code, not test-only, so it is its own refactor task per found
 - **Run-queue seam.** Give tests their own run queue so `TestRunCommandAdmitsCPUHeavyWorkBelowFloor` (and any test invoking `wb run`) does not join the machine-wide CPU admission queue behind the outer `wb run` that is executing it.
 - **#582 (coverage output truncation drops the middle, where the test failure is; OPEN as of 2026-09-23).** Change the coverage-diagnostics truncation to keep every `^--- FAIL` block, `^FAIL\b` line and `^panic:` line with its stack, spending only the remaining budget on head/tail, instead of a head+tail-only truncation that reliably keeps only passing `ok` lines.
 
-### Task 7: Two test tiers: hermetic unit tests and a real-git e2e tier
+### Task 7: Hermetic test setup
 
 **Id:** task-7
 **Depends-On:** task-5, task-6
 **Status:** planning
+**Note:** Narrowed 2026-09-25 (decision 17). The unit/e2e tier split moved to task-24, and the per-package time budgets moved to task-20.
 **Verifies:**
-1. The unit tier (`go test ./...`) starts no subprocess outside `internal/runner`'s own tests. A mechanical check in `internal/quality` fails on `exec.Command`, `testenv.WriteExecutableFile`, `t.Setenv("PATH", …)` or a git-running helper in any default-tier `_test.go` that is not on its pending list. The pending list can only shrink.
-2. `go test -tags e2e ./...` runs the e2e tier as its own required CI job, with no coverage step.
-3. The CI coverage job measures the default tier only.
-4. Once their pending lists are empty, the unit tier of `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each runs in at most 3 minutes on the VM, and the CI coverage job in at most 6.
-5. Issues #587 and #620 are closed with linked fix commits. (#504 and #539 moved to task-21 under decision 13.)
-6. A regression test proves `wb run --` no longer deadlocks its own tests, using task-6's run-queue seam.
+1. Every test binary's `TestMain`, through one shared `internal/testenv` helper, sets umask 022 and a private HOME and wb state directory before any test runs. A test fails if the suite reads the real `~/.wb` or the real projects root.
+2. Issues #587, #620 and #758 are closed with linked fix commits. (#504 and #539 moved to task-21 under decision 13.)
+3. A regression test proves `wb run --` no longer deadlocks its own tests, using task-6's run-queue seam.
+4. #623 step 4 is done: a per-package wall-time table, before and after, recorded in the PR.
 
-Founder decision 17 splits the tests into two tiers.
-
-**Unit tier: the default `go test ./...`.** It is hermetic and fast, and it is the coverage source.
-- It uses no subprocess, no real git, no fake executables on `PATH`, no network, and no `t.Setenv`/`os.Chdir`.
-- Tests call `t.Parallel()` by default and write files only under `t.TempDir()`.
-- Shared setup sets umask 022 and a private HOME and wb state directory (#587, #620). This also fixes #758: tests that set `WB_HOME`, which wb now ignores, and so scan the machine's real `~/.wb`.
-- Tests reach git, gh and other programs through task-8's fakes.
-- The one exception is `internal/runner`'s own tests. They exercise the real runner with Go's standard helper-process pattern, re-running the test binary.
-
-**E2E tier: `_test.go` files with `//go:build e2e`, run with `go test -tags e2e`.** It must pass on every PR as its own required CI job, has no coverage step, and never counts toward coverage. It holds two kinds of test:
-- Contract tests beside each real adapter. For example, task-8's git adapter runs against real git, proving each fake behaves like the program it replaces.
-- Black-box journey tests in a top-level `e2e/` package (task-23). They build the `wb` binary and drive it against real git repositories and a local bare remote.
-
-The build tag selects a test tier and never excludes production code, so the plan's ban on build-tag hiding is unchanged.
-
-**Transition from today's tests.**
-- The 237 process-starting test files (2026-09-25 count) go on the check's pending list.
-- Each entry names the task that converts it: task-22, a wave in tasks 14–18, or task-23.
-- A file leaves the list in one of three ways:
-  - it is rewritten as a unit test;
-  - it moves to the e2e tier in a PR whose unit tests keep the package's uncovered count flat (the ratchet enforces that);
-  - it is deleted as redundant under the same condition.
-- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the profile is the unit tier's alone, and that is what task-20 gates.
-
-This task uses two landed seams: task-5's per-invocation context, which removes the global state so `cmd/wb` unit tests can run in parallel, and task-6's run-queue seam. It makes no production-code changes of its own (decision 3); the runner and git interfaces belong to task-8. #623 step 4, a per-package wall-time table before and after recorded in the PR, stays here.
+The setup is process-wide in `TestMain`, because `t.Setenv` blocks `t.Parallel()`. This task uses task-5's per-invocation context and task-6's run-queue seam, and makes no production-code changes of its own (decision 3).
 
 *Moved to task-21 (decision 13); kept for the analysis.* #504 (`TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation`) and #539 (`TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository`) were checked (`gh issue view`, 2026-09-23) for a hidden production dependency the way #505 has one: neither `cmd/wb/daemon_file_bridge.go` nor the daemon package has a production `time.Sleep`/`time.After`, and `internal/repositoryevents`'s queue already exposes an injectable `queue.now` plus channel-based synchronization — both fixes are test-only (tighten the deadline-polling helpers in `cmd/wb/daemon_file_bridge_test.go`, and replace `time.After` timeouts with explicit barriers in `internal/repositoryevents/receiver_test.go`), so both stay here. #505 does not: see task-10.
 
 ### Task 8: Command-runner and git-operation interfaces
 
 **Id:** task-8
-**Depends-On:** task-4
+**Depends-On:** task-4, task-24
 **Status:** planning
-**Note:** Depends-On changed from task-7 to task-4 by founder decision 17. Every unit test after this task uses its fakes, so it starts as soon as a lane is free.
+**Note:** Depends-On changed from task-7 to task-4 and task-24 by founder decision 17. Every unit test after this task uses its fakes, and its contract tests need task-24's e2e job.
 **Verifies:**
-1. A mechanical check wired into CI finds zero git invocations outside the git adapter (`internal/gitcli`).
-2. While the migration runs, the remaining sites sit on a pending list that can only shrink, and each entry names its migration PR.
-3. The fake runner and every fake git port fail on demand in a unit test.
-4. Contract tests in the e2e tier run the same cases against the real adapter and the fake, and pass for both.
-5. The original exec check: a mechanical check wired into CI (searching non-test Go files for `exec.Command(`, `exec.CommandContext(` and other `os/exec` calls; type-only uses such as `exec.ExitError` are not flagged; the `ExtraFiles` grep is used only to build the allow-list) finds zero direct `exec.Command`/`os/exec` call sites outside the runner package and outside an explicit allow-list — the seven fd-inheriting secure-git-helper launcher/child pairs below, which must keep calling `exec.Command`/`exec.CommandContext` directly for fd inheritance both before and after task-11 splits each child into a thin shim plus a testable core; any addition to the allow-list is named in the PR and approved in review, not silently accepted by the check; a test exercises the fake runner failing on demand.
+1. `internal/runner` exists, built on `internal/process`, with that package's process-group cancellation preserved. It offers four operations:
+   - Run: captured output;
+   - Start: a handle with Wait and Signal;
+   - Detach: a process that outlives wb;
+   - Interactive: stdio passthrough.
 
-Founder decision 17: "define interface for external commands caller and git operations and substitute it in test." The task builds three things.
+   The real implementation carries task-24's runtime guard.
+2. `internal/runner/runnertest` and an in-memory fake for each git port fail on demand in unit tests.
+3. Contract tests (`TestContract*`, in the e2e tier) run the same cases against `internal/gitcli` with real git and against the fakes, and pass for both.
+4. A mechanical check wired into CI fails on any direct call to `exec.Command`, `exec.CommandContext`, `os.StartProcess` or `syscall.Exec` in non-test Go files, and on any git invocation, outside `internal/runner`, `internal/gitcli` and the allow-list below.
+   - Exception: a file on the pending list `internal/quality/testdata/exec_sites.pending`. The list has one line per file, with its count and owning task. CI fails if an entry is added or a count rises.
+   - A git invocation is a literal `"git"` argv[0] passed to `os/exec`, `internal/process` or the runner, or a call to one of the named git helpers the check lists.
+   - Type-only uses such as `exec.ExitError` are not flagged.
+   - Any addition to the allow-list is named in the PR and approved in review.
 
-**`internal/runner`**
-- One interface for starting any external program. It takes the argv, directory, environment and stdin, and returns stdout, stderr and the exit status.
-- A real implementation over `os/exec`, the only `os/exec` user outside the allow-list below.
-- `internal/runner/runnertest`, a scripted fake that matches the argv and returns canned output or a chosen error.
+Founder decision 17: "define interface for external commands caller and git operations and substitute it in test."
 
-**Git operations as narrow ports**
+**`internal/runner`.** One interface for starting external programs, built on the existing `internal/process` rather than beside it (`rule:reuse-existing-sneat-code`). Its four operations, with the call sites each serves:
+
+| Operation | What it does | Used by |
+|---|---|---|
+| Run | captures stdout, stderr and the exit status | most git and gh calls |
+| Start | returns a handle with Wait and Signal | long-running children wb supervises |
+| Detach | starts a process that outlives wb | daemon launch, `browser.go`, lifecycle hooks |
+| Interactive | passes stdio through | `wb run -- …`, tmux, agent harnesses |
+
+- `syscall.Exec` sites join the allow-list.
+- `internal/runner/runnertest` is a scripted fake: it matches the argv and returns canned output or a chosen error.
+
+**Git operations as narrow ports.**
 - Each package declares the git operations it needs as a small interface in its own `ports.go`, as `internal/streams/ports.go`, `internal/streamsync/ports.go` and `internal/locallink/ports.go` already do.
 - One real adapter, `internal/gitcli`, implements them over the runner. It builds the argv and parses the output, and its unit tests run against the fake runner.
 - In-memory fakes implement the ports for unit tests.
-- `internal/gitops` folds into this, and so do the seven existing per-package runner interfaces:
-  - `internal/npmrelease` (CommandRunner)
-  - `internal/remotessh` (Runner)
-  - `internal/prinventory` (Runner)
-  - `internal/herdr` (Runner)
-  - `internal/sessioncourier` (commandRunner)
-  - `internal/sessionparkcourier` (commandRunner)
-  - `internal/sessionmessage` (tmuxCommandRunner)
-
-  One runner, not eight.
 - gh is reached the same way: a port per consumer, backed by the runner, or by the existing GitHub API client where one is used.
+- *Plan choice:* `internal/gitops` and the seven per-package runner interfaces fold into the one runner, each in its own package's migration PR. The seven are:
+  - `npmrelease.CommandRunner`
+  - `remotessh.Runner`
+  - `prinventory.Runner`
+  - `herdr.Runner`
+  - `sessioncourier.commandRunner`
+  - `sessionparkcourier.commandRunner`
+  - `sessionmessage.tmuxCommandRunner`
 
-**Fake fidelity**
-- A fake that diverges from real git makes unit tests lie.
-- So every git port gets contract tests in the e2e tier. The same cases run against `internal/gitcli` with real git and against the fake.
+**Fake fidelity.** A fake that diverges from real git makes unit tests lie. So every git port gets contract tests: the same cases run against `internal/gitcli` with real git and against the fake.
 
-**Migration** follows task-9's proven shape.
-- PR-1 lands the runner, the adapter skeleton, the fakes and the guard. Every existing call site goes on the pending list, with a migration slot per package.
-- Later PRs migrate one slot each, and the task completes when the list is empty.
-- A wave for a package (tasks 14–18), or a task-22 command family, may start as soon as that package's slot has landed. It does not wait for all of task-8.
+**Git stays the CLI.** wb runs the `git` executable and imports no Go git library; the root README section "Why WB runs the `git` CLI" gives the reasons. On origin/main 493ff751, 49 of the 111 `exec.Command`/`exec.CommandContext` calls in non-test code pass a literal `"git"`. The ports keep the choice open: a library-backed adapter could implement some ports later without touching callers.
 
-**Git stays the CLI.** wb runs the `git` program today. It imports no Go git library: 67 non-test files and 34 direct `exec.Command(…, "git")` calls, as of 2026-09-25.
-- The adapter keeps the CLI, so behaviour stays identical to what users run: worktrees, hooks, `patch-id`, credential helpers, merge semantics and fd-inheriting secure helpers. Go libraries cover several of these only partly.
-- The ports keep the choice open: a library-backed adapter could implement some ports later without touching callers.
+**Scope and migration.**
+- This task lands five things: the runner, the adapter skeleton, the fakes, the contract-test harness, and the check with every existing site on the pending list, one migration slot per package. It is complete when those exist.
+- Each package's call sites then migrate in a behaviour-preserving refactor PR (decision 3). That PR is owned by whichever task covers the package, its wave in tasks 14–18 or its task-22 family, and lands before that package's tests are written.
+- Per `rule:cutover-verbs-mean-full-cutover`, the cutover is complete only when the pending list is empty, and task-20 checks that. Meanwhile, the check stops any new direct call.
+- Per decision 1, every PR carries tests for 100% of the statements it adds or changes, and stays under the ~3,000-line guideline.
+- This makes about 1,500–2,000 uncovered statements reachable (estimate).
 
-This is behaviour-preserving and makes about 1,500–2,000 uncovered statements reachable (estimate). The allow-list, found by grepping every `ExtraFiles` assignment repo-wide (2026-09-23) and tracing each to its launcher (which sets `command.ExtraFiles`) and child (which reads fd 3+ via `os.NewFile`):
+**Allow-list: the fd-inheriting secure git helpers.**
+- These must keep calling `exec.Command`/`exec.CommandContext` directly, because they rely on fd inheritance. That holds both before and after task-11 splits each child into a thin shim plus a testable core.
+- They were found by grepping every `ExtraFiles` assignment repo-wide (2026-09-23) and tracing each to its launcher, which sets `command.ExtraFiles`, and its child, which reads fd 3+ via `os.NewFile`.
 
 | Launcher (sets `ExtraFiles`) | Child (`RunSecure*GitHelper`) |
 |---|---|
@@ -357,7 +357,7 @@ This is behaviour-preserving and makes about 1,500–2,000 uncovered statements 
 | `runSecureRenameGitBytesWithHeldWorktree` (`internal/worktrees/rename.go:124`) | `RunSecureRenameGitHelper` (`internal/worktrees/rename.go:142`) |
 | `runSecureCleanupGitHelper` (`internal/worktrees/lifecycle.go:5505`) | `RunSecureCleanupGitHelper` (`internal/worktrees/lifecycle.go:5597`) |
 
-(`internal/worktrees/patchid.go:47` is a comment referencing this table, not a call site; `internal/worktrees/worktrees.go:2180`'s `gitWithExtraFiles` is called only with a nil `extraFiles` argument today — an ordinary git subprocess wrapper, not an fd-inheriting helper — so it is not allow-listed and routes through the new runner like any other plain git call.) Per `rule:cutover-verbs-mean-full-cutover`: this task inventories every current direct-call site first (the `exec.Command`/`os/exec` check above, run once before the change to size the work and again after to prove completion), removes the old direct-call path rather than adding the runner alongside it, and the mechanical check is wired into CI so a new direct call cannot be reintroduced. Per founder decision 1, this refactor PR is itself a change and must carry tests for 100% of every statement it adds or modifies — including the call sites it rewrites to go through the runner, not only new production code; size the PR (or split it along package lines) to stay within the ~3,000-line test-PR guideline above.
+(`internal/worktrees/patchid.go:47` is a comment referencing this table, not a call site; `internal/worktrees/worktrees.go:2180`'s `gitWithExtraFiles` is called only with a nil `extraFiles` argument today — an ordinary git subprocess wrapper, not an fd-inheriting helper — so it is not allow-listed and routes through the new runner like any other plain git call.)
 
 ### Task 9: Safe file-write primitive
 
@@ -372,8 +372,9 @@ Consolidate the temp-file write, sync, chmod, close and rename sequences into on
 ### Task 10: Clock and sleep seam
 
 **Id:** task-10
-**Depends-On:** task-7
+**Depends-On:** task-4
 **Status:** planning
+**Note:** Depends-On changed from task-7 to task-4 (decision 17). This is a production seam that unit tests need, and it does not wait for the test setup.
 **Verifies:** a mechanical check finds zero direct `time.Sleep`/`time.Now` calls in retry, timeout or backoff code paths outside the seam. (#505 moved to task-21 under decision 13.)
 
 Inject time and sleep wherever retries, timeouts or backoff exist. Estimated at about 180 statements. The sleep/retry sites to inject, as measured 2026-09-23 (excluding tests): `internal/remotestate/gitrepo/clonelock.go:71`, `internal/gitops/gitops.go:240`, `internal/remotestate/gitrepo/provider.go:211`, `internal/agents/owner.go:325`, `internal/orchestrate/pr_create.go:591`, `internal/orchestrate/worktree_merge_ack.go:891`, `internal/worktrees/repository_registration_lock.go:65`, `internal/worktrees/repository_registration_lock.go:81`, `cmd/wb/daemon_process_darwin.go:140`, `cmd/wb/daemon.go:997`. #505 (flaky `internal/runqueue` heartbeat and `cmd/wb` queue-wait grace tests) was originally assigned here; under founder decision 13 it moved to task-21, which fixes it at source, with its own refactor PR if a seam is needed. Per founder decision 1, this refactor PR must carry tests for 100% of every statement it adds or modifies.
@@ -416,7 +417,7 @@ Add a shared failing `io.Writer` test helper, worth about 160 statements. Run `-
 **Evidence:** https://github.com/sneat-dev/wb/pull/720
 **Verifies:** each of the following 7 packages reports 0 uncovered statements in the CI coverage profile at the wave's merge SHA (uncovered counts as measured 2026-09-23, from `_research/pkgs_all.txt`, summing to the 731 cited below): `internal/sessionmove` (155), `internal/layout` (148), `internal/deps` (107), `internal/runqueue` (96), `internal/sessionlaunch` (91), `internal/sessionpark` (76), `internal/daemon` (58).
 
-Seven smaller packages, 731 uncovered statements, to 100%. This wave needs no refactor seam (tasks 8–13): it depends only on the ratchet (task-3) and hermetic tests (task-7). Production-code edits in this wave are forbidden except where a package's own existing structure already supports a test without a shared seam; if a package turns out to need one of tasks 8–13's seams, it moves to a later wave rather than improvising a local one. `internal/hooks` (85 uncovered) is such a package — it contains `RunSecureHooksGitHelper`, one of task-8's allow-listed fd-inheriting helpers, so it moved to task-15 (W2), which depends on task-11, instead of staying here; that move is what keeps this wave seam-free.
+Seven smaller packages, 731 uncovered statements, to 100%. *Superseded 2026-09-25:* this wave was planned as seam-free, depending only on task-3 and task-7, and its progress note below shows that premise was wrong. Under the rework, a package here that runs external programs waits for its task-8 migration PR, and one with retry, timeout or backoff code waits for task-10 (see Rules). Production-code edits in this wave are forbidden except where a package's own existing structure already supports a test without a shared seam; if a package turns out to need one of tasks 8–13's seams, it moves to a later wave rather than improvising a local one. `internal/hooks` (85 uncovered) is such a package — it contains `RunSecureHooksGitHelper`, one of task-8's allow-listed fd-inheriting helpers, so it moved to task-15 (W2), which depends on task-11, instead of staying here; that move is what keeps this wave seam-free.
 
 Progress (early start, founder decision 14): #719 and #720 landed on 2026-09-24. Uncovered statements, measured from CI coverage profiles against main's published baseline. These CI counts differ by at most four statements from the 2026-09-23 local counts in the Verifies line above (runqueue: 96 local vs 92 CI; sessionlaunch and daemon match):
 
@@ -437,12 +438,12 @@ The "needs no refactor seam" premise above turned out to be wrong for the fd-hea
 **Status:** planning
 **Verifies:** each of the 53 packages listed in `_research/pkgs_all.txt` with uncovered > 0, excluding the three packages in the Summary's table and task-14's 7, reports 0 uncovered statements in the CI coverage profile at the wave's merge SHA. As measured 2026-09-23 that set sums to 851 statements over 53 packages (766 over the 52 packages that do not need a seam, plus `internal/hooks` (85), moved here from task-14 — see task-14's note): `internal/hooks`, `internal/locallink`, `internal/agents`, `internal/streams`, `internal/migrate`, `internal/lifecyclehooks`, `internal/session`, `internal/wbconfig`, `internal/quality`, `internal/repopath`, `internal/archiveprune`, `hub/redeliver`, `internal/githubobserver`, `api/githubapp`, `internal/repositoryevents`, `internal/disk`, `internal/pathguard`, `internal/agentguard`, `internal/hostload`, `internal/fleetsync`, `internal/waitregistry`, `internal/policy`, `internal/sessioncustody`, `internal/streamsync`, `internal/discover`, `internal/mergeack`, `internal/retiredcandidateack`, `internal/npmrelease`, `internal/sessioncourier`, `internal/checkoutmarker`, `internal/remotestate/gitrepo`, `internal/wbhome`, `internal/dashboard`, `internal/sessionmessage`, `internal/sessionparkreceive`, `internal/sessionreceive`, `internal/canonicalrescue`, `internal/diskusage`, `internal/peers`, `internal/prwatch`, `internal/runlog`, `internal/sessionmessenger`, `internal/prsnapshot`, `internal/recipe`, `internal/testenv`, `hub`, `internal/ciaudit`, `internal/envguard`, `internal/prmeta`, `internal/remotestate/hub`, `internal/sessiontransport`, `internal/sessiontransport/transporttest`, `internal/taskoffload`.
 
-Mostly the same seam-free rule as task-14, with one named exception: 52 of these 53 packages take no dependency on tasks 8–13 and no production-code edits beyond what their existing structure already supports. The exception is `internal/hooks`, which needs task-11's thin-shim seam for `RunSecureHooksGitHelper` — that single package is why this wave, unlike task-14, depends on task-11.
+Mostly the same seam-free rule as task-14, with one named exception: 52 of these 53 packages take no dependency on tasks 8–13 and no production-code edits beyond what their existing structure already supports. The exception is `internal/hooks`, which needs task-11's thin-shim seam for `RunSecureHooksGitHelper` — that single package is why this wave, unlike task-14, depends on task-11. Under the rework, packages here that run external programs wait for their task-8 migration PR (see Rules). Examples are `internal/streams`, `internal/locallink`, `internal/fleetsync`, `internal/remotestate/gitrepo` and `internal/npmrelease`.
 
 ### Task 16: Waves W3–W5, `cmd/wb` by command family
 
 **Id:** task-16
-**Depends-On:** task-7, task-8, task-13, task-22
+**Depends-On:** task-7, task-8, task-13, task-22, task-24
 **Status:** planning
 **Verifies:** `cmd/wb` reports 0 uncovered statements in the CI coverage profile at each wave's merge SHA.
 
@@ -483,15 +484,20 @@ Promote the changed-package computation that today lives embedded as shell insid
 ### Task 20: Hard 100% gate
 
 **Id:** task-20
-**Depends-On:** task-7, task-14, task-15, task-16, task-17, task-18, task-19, task-22, task-23
+**Depends-On:** task-7, task-8, task-14, task-15, task-16, task-17, task-18, task-19, task-22, task-23, task-24
 **Status:** planning
 **Verifies:**
-- `wb coverage --minimum=100` is the only coverage gate invoked by both `.github/workflows/go-ci.yml` and the pre-push hook, with no exclusions.
-- Both `go-ci.yml` and `nightly-coverage.yml` show `--minimum=100`, not `--minimum=87`.
-- The coverage job runs the unit tier only, because task-7's pending list is empty.
-- The e2e tier (task-23) passes as a separate required job.
+1. `wb coverage --minimum=100` is the only coverage gate invoked by both `.github/workflows/go-ci.yml` and the pre-push hook, with no exclusions.
+2. Both `go-ci.yml` and `nightly-coverage.yml` show `--minimum=100`, not `--minimum=87`.
+3. Every pending list is empty:
+   - task-24's `unit_tier.pending`;
+   - task-8's `exec_sites.pending`;
+   - task-22's `cmd/wb` function-size list.
+4. So the coverage job runs the unit tier only, and the CI unit job runs with `git` and `gh` removed from `PATH`.
+5. The unit tier of `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each runs in at most 3 minutes on the VM, and the CI coverage job in at most 6.
+6. The e2e tier (task-23, task-24) passes as a separate required job.
 
-The gate measures the unit tier alone (decision 17). No process-starting test contributes coverage, and the e2e tier stays a required pass/fail job with no coverage threshold.
+The gate measures the unit tier alone (decision 17). No process-starting test contributes coverage, apart from the helper-process tests task-24 allows. The e2e tier stays a required pass/fail job with no coverage threshold.
 
 Once every package is at 100%, replace the per-change ratchet and its 87 backstop with specscore-cli's gate: 100% or fail, with no exclusions. Per Task 3's decision, both the ratchet and this hard gate live in `wb coverage` — this task does not introduce a separate `scripts/coverage-gate.sh`; CI and the pre-push hook call `wb coverage --minimum=100`, with the pre-push invocation scoped to changed packages via task-19's `wb run --changed -- go test` / `wb coverage --changed`, because the full suite is too slow for a pre-push hook (`.wb/templates/go-sharded-pre-push.sh` has no coverage step today, and the full local suite takes about 27 minutes). `--minimum=87` is removed from both files, replaced by `--minimum=100` — not just lowered or left as dead configuration; this is a cutover per `rule:cutover-verbs-mean-full-cutover`, so this task also lists every workflow reference to the old `--minimum=87` invocation and updates each one. The nightly job keeps running unchanged in shape (same cron schedule, same full-merged-suite run) — only its threshold moves to 100, since it stays the independent backstop that catches a regression within 24 hours even though the PR-path gate is now scoped to changed packages. The per-package ratchet and its baseline-publishing machinery (task-3, including the push-event validation-reuse exemption) are retired once this gate lands — a single repo-wide 100% requirement makes a per-package baseline redundant. The hook comment must not suggest `--no-verify`, per `rule:hooks-are-never-bypassed`.
 
@@ -536,13 +542,16 @@ Production changes go through their own behaviour-preserving refactor PRs first 
 ### Task 22: Thin `cmd/wb`: logic moves into `internal/` behind interfaces
 
 **Id:** task-22
-**Depends-On:** task-5, task-8
+**Depends-On:** task-5
 **Status:** planning
+**Note:** It starts before task-8 (decision 18). Each family declares consumer-side ports in its destination package, backed at first by today's helpers, and switches to task-8's runner when that package's slot lands.
 **Verifies:**
 1. No non-test file in `cmd/wb` imports `os/exec` or runs git.
-2. A mechanical `go/ast` check fails on any `cmd/wb` function over 60 statements. It keeps a pending list that can only shrink.
-3. Each moved command family has unit tests in its new `internal/` package that use task-8's fakes. `cmd/wb`'s tests for that family check only flag parsing and dispatch.
-4. The family's existing tests pass unchanged across the move, or move to the e2e tier under task-7's transition rule.
+2. A mechanical `go/ast` check fails on any `cmd/wb` function over 60 statements, unless it is on a committed pending list that can only shrink.
+   - A statement is any `go/ast` Stmt node except BlockStmt. Function literals are counted separately.
+   - On 2026-09-25, 25 top-level functions are over the cap (29 counting closures); the largest is `reconcileDefaultBranchCanonical`, at 217.
+3. Each moved command family has unit tests in its destination package that use fakes. `cmd/wb`'s tests for that family check only flag parsing and dispatch.
+4. Each family's behaviour is unchanged: its existing tests pass across the move, with only mechanical edits (package qualifier and import), or through a temporary forwarder in `cmd/wb`.
 
 **Why (founder decision 18).** `cmd/wb` is 127 files and about 41,000 lines, a fifth of wb, and it holds real logic. The largest files, as of 2026-09-25:
 
@@ -555,12 +564,13 @@ Production changes go through their own behaviour-preserving refactor PRs first 
 | `fleet_merge_policy.go` | 1,148 |
 | `deps.go` | 1,065 |
 
-Its tests therefore run whole commands, with fake scripts on `PATH` and real git.
+Its tests therefore run whole commands, with fake scripts on `PATH` and real git. All 165 of its test files are white-box (`package main`).
 
 **What changes.**
 - Each command family's logic moves into an `internal/` package.
-- That package receives its dependencies as parameters: the runner, git ports, a gh port, the clock, the file writer and the output writer.
+- That package receives its dependencies as parameters: git ports, a gh port, the command runner, the clock, the file writer and the output writer.
 - `cmd/wb` is left to parse flags, build those dependencies from the invocation context (task-5), and call one function.
+- Print and format helpers over the cap may be split in place rather than moved.
 
 **How it lands.**
 - One command family per PR. Each is a behaviour-preserving refactor with its own adversarial review (decision 3).
@@ -574,18 +584,18 @@ Its tests therefore run whole commands, with fake scripts on `PATH` and real git
   7. `ci`
   8. `stream`
   9. `deps`
-- A family's existing tests are its safety net. They must pass unchanged across the move before any of them is converted.
-- Moved code falls under the ratchet's moved-code rule (decision 6). Code that is edited, not just moved, needs unit tests in the same PR.
+- **Moves are not free under the ratchet.** A cross-package move raises the destination package's uncovered count, or counts a new package from 0. Decision 6 exempts only moves within a package, and changing a signature to inject dependencies makes a line count as edited. So each PR carries unit tests, using fakes, that keep the destination's uncovered count at or below its baseline.
+- A family too large for one PR is split across several, each under the ~3,000-line guideline. `fleet_default_branch.go` alone is 2,592 lines.
 - A family whose logic already lives mostly in `internal/` (for example `worktree`, over `internal/worktrees`) moves only its remaining `cmd/wb` logic.
 - The logic lands in the existing `internal/` package that owns the domain (for example `internal/worktrees`, `internal/daemon` or `internal/deps`). Otherwise it goes in a new package named after the domain.
 
 ### Task 23: Real-git end-to-end suite
 
 **Id:** task-23
-**Depends-On:** task-7
+**Depends-On:** task-24
 **Status:** planning
 **Verifies:**
-- `go test -tags e2e ./e2e/...` builds wb and runs each journey below against real git in temporary directories.
+- `go test -tags e2e -run '^TestE2E' ./e2e/...` builds wb and runs each journey below against real git in temporary directories.
 - It is green in its own required CI job on every PR.
 - Each journey asserts observable outcomes (refs, files, exit codes, output), not coverage.
 - The suite stays within a 10-minute CI budget, recorded in the PR.
@@ -605,16 +615,64 @@ Founder decision 17: "e2e testing with real git is also important".
 5. `wb deps propagate local`.
 
 **Scope.**
-- Legacy process-starting tests that task-7's pending list assigns to task-23 move here once their package's unit tests cover the same statements.
+- Legacy process-starting tests that task-24's pending list assigns to task-23 move here once their package's unit tests cover the same statements.
 - The suite also carries the contract tests of task-8's git adapter.
 - This tier is not measured for coverage (decision 17).
+
+### Task 24: Test tiers: the unit tier and the real-git e2e tier
+
+**Id:** task-24
+**Depends-On:** task-3
+**Status:** planning
+**Verifies:**
+1. **E2E tier.** It consists of `_test.go` files with `//go:build e2e`, whose tests are named `TestE2E*` or `TestContract*`. CI runs them with `go test -tags e2e -run '^Test(E2E|Contract)' ./...` as their own job. The job is required on every PR (decision 19) and has no coverage step.
+2. **Static check.** A check in `internal/quality` fails on any default-tier `_test.go` that uses one of these patterns, beyond the file's count on the pending list:
+   - `exec.Command`, `exec.CommandContext` or `os.StartProcess`;
+   - `testenv.WriteExecutableFile`;
+   - `t.Setenv("PATH"`;
+   - `runnertest.AllowRealProcess`;
+   - a named git helper. The check keeps the full list, starting with `runGit`, `gitOutput`, `gitRawOutput`, `runGitIn`, `runGitWithFilesystemCapability` and `gitWithExtraFiles`.
+3. **Pending list.** It is a committed file, `internal/quality/testdata/unit_tier.pending`, with one line per test file giving its match count and owning task. A CI step compares it with the base branch's copy and fails if an entry is added or a count rises. An entry is removed when its count reaches 0.
+4. **Coverage source.** The CI coverage job measures the default tier only.
+
+Founder decisions 17 and 19.
+
+**Unit tier: the default `go test ./...`.** It is hermetic and fast, and it is the coverage source.
+- Tests start no process and use no external network. In-process `httptest` servers and unix sockets under `t.TempDir()` are allowed.
+- Tests reach git, gh and other programs through task-8's fakes.
+- The exception is Go's helper-process pattern, where the test binary re-runs itself, for code only a real process can reach. That covers tests of `internal/runner`, `internal/process`, task-8's allow-listed launchers, and detach, `syscall.Exec` and OS-integration sites. Those tests count toward coverage.
+- `t.Setenv` and `os.Chdir` stay under the repo's existing rule (never in a parallel test). They are not banned outright.
+
+**E2E tier.** It holds two kinds of test:
+- contract tests beside each real adapter, for example task-8's git adapter against real git, proving each fake behaves like the program it replaces;
+- black-box journey tests in a top-level `e2e/` package (task-23).
+
+Its rules:
+- Decision 13 applies: no retries or quarantine, and task-21's final re-probe includes the e2e job.
+- The coordinator landing this task makes the job required in branch protection (via `gh api`), or the founder does, where that needs admin rights.
+- The nightly job also runs the e2e tier.
+- The build tag selects a test tier and never excludes production code, so the plan's ban on build-tag hiding is unchanged.
+
+**Runtime guard.** A static check cannot see a test that reaches git by calling production code.
+- So, once task-8's runner exists, its real implementation refuses to start a process while `testing.Testing()` is true.
+- It makes two exceptions: the test is built with the `e2e` tag, or it calls `runnertest.AllowRealProcess(t)`. Only files on the pending list may call that.
+- After task-8's cutover, the CI unit job runs with `git` and `gh` removed from `PATH`, so any missed direct call fails loudly.
+
+**Transition.**
+- The check's first run writes today's process-starting files to the pending list. A heuristic grep on 2026-09-25 counted about 240.
+- Each entry names the task that converts it: task-22, a wave in tasks 14–18, or task-23.
+- A file's count falls in one of three ways:
+  - its tests are rewritten as unit tests;
+  - they move to the e2e tier in a PR whose unit tests keep the package's uncovered count flat (the ratchet enforces this);
+  - they are deleted as redundant, under the same condition.
+- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the profile is the unit tier's alone, and that is what task-20 gates.
 
 ## Estimates
 
 These are inferences, not measurements. The plan needs about 21 agent lanes over 3–5 calendar weeks, with at most two Go lanes at a time on the 4-core VM (three since founder decision 15). That is about 55–85k new test lines and roughly 100–200M tokens; no per-lane token data exists yet, so the token figure is a guess. The main risk is refactoring the landing and cleanup code agents use daily. It is mitigated by characterization tests first and a separate adversarial review per refactor.
 
 **Rework, 2026-09-25 (inference).**
-- Decisions 17–18 add work: task-8's interface cutover over about 120 `exec.Command` sites plus the git helpers, task-22's move of about 41,000 `cmd/wb` lines, and task-23's e2e suite.
+- Decisions 17–19 add work: task-8's interface cutover over 111 `exec.Command`/`exec.CommandContext` sites (origin/main 493ff751) plus the git helpers, task-22's move of most of the ~41,000 `cmd/wb` lines that are not flag parsing and dispatch, and task-23's e2e suite.
 - They make the waves cheaper. Once code takes interfaces, the error branches that were 45% of the gap become one-line fake failures instead of contrived subprocess setups.
 - Net: about 25 agent lanes over 4–6 calendar weeks, at up to three Go lanes.
 
@@ -622,10 +680,7 @@ These are inferences, not measurements. The plan needs about 21 agent lanes over
 
 Open Questions 1–5 were answered on 2026-09-23 and are recorded as founder decisions 6–10.
 
-6. **E2E job cadence (task-7, task-23).** Should the e2e tier be a required job on every PR, or run only on pushes to main and nightly?
-   - **Recommended: every PR.** It catches integration breaks before they land. The cost is one extra CI job, budgeted at 10 minutes and run in parallel with the unit and coverage job.
-   - The alternative saves that CI time, but a real-git break then surfaces after merge.
-   - Until the founder rules, the plan assumes every PR.
+Open Question 6 (e2e job cadence) was answered on 2026-09-25 and is recorded as founder decision 19.
 
 ## Research
 
