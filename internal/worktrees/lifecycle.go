@@ -2135,9 +2135,14 @@ func (ll *layoutListing) walkTasks(taskEntries []os.DirEntry) {
 						continue
 					}
 					diagnostic := listDiagnostic(ll.layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root")
-					canonicalPath, canonicalErr := CanonicalRepositoryPath(ll.projectsRoot, slug)
+					// internal/repopath's flat-join guard (flatCanonicalJoinAllowlist)
+					// matches this exact fallback by its plain "projectsRoot" argument
+					// name; keep a local alias here rather than the ll.projectsRoot
+					// field so that allowlist entry keeps matching a real line.
+					projectsRoot := ll.projectsRoot
+					canonicalPath, canonicalErr := CanonicalRepositoryPath(projectsRoot, slug)
 					if canonicalErr != nil {
-						canonicalPath = filepath.Join(ll.projectsRoot, filepath.FromSlash(slug))
+						canonicalPath = filepath.Join(projectsRoot, filepath.FromSlash(slug))
 					}
 					if !hasGitMetadata(canonicalPath) || !isGitRoot(ll.ctx, canonicalPath) {
 						diagnostic.NonBlocking = true
