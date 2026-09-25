@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -500,16 +501,17 @@ func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSel
 }
 
 func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-published-forward-repair-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writePublishedForwardRepairPromptInjected(receipt, supersession, currentTarget, sources, roots, actor, reason, nil)
+}
+
+// writePublishedForwardRepairPromptInjected is
+// writePublishedForwardRepairPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writePublishedForwardRepairPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writePublishedForwardRepairPromptInjected(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares one explicit published forward-repair candidate for failed receipt %s.\n", receipt.ReceiptPath)
 	fmt.Fprintf(&body, "Target: %s@%s; historical self-supersession: %s.\n", receipt.Target, currentTarget, supersession.AcknowledgementPath)
@@ -520,13 +522,8 @@ func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersessio
 		fmt.Fprintf(&body, "- immutable root %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-published-forward-repair-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

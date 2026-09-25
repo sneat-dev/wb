@@ -2467,6 +2467,16 @@ func defaultBranchHasFindings(report defaultBranchReport) bool {
 		report.Summary.CanonicalBlocked+report.Summary.CanonicalErrors > 0
 }
 func defaultBranchReportPath(inv *invocation, dir string) (string, error) {
+	return defaultBranchReportPathInjected(inv, dir, nil)
+}
+
+// defaultBranchReportPathInjected is defaultBranchReportPath's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// defaultBranchReportPath, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func defaultBranchReportPathInjected(inv *invocation, dir string, inj *filewrite.Injector) (string, error) {
 	if dir == "" {
 		home, err := wbhome.Root(inv.projectsRoot)
 		if err != nil {
@@ -2477,12 +2487,8 @@ func defaultBranchReportPath(inv *invocation, dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	reserved, err := os.CreateTemp(dir, "default-branch-"+time.Now().UTC().Format("20060102T150405.000000000Z")+"-*.json")
+	path, err := filewrite.CreateScratch(dir, "default-branch-"+time.Now().UTC().Format("20060102T150405.000000000Z")+"-*.json", 0, nil, inj)
 	if err != nil {
-		return "", err
-	}
-	path := reserved.Name()
-	if err := reserved.Close(); err != nil {
 		return "", err
 	}
 	if err := os.Remove(path); err != nil {

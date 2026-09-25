@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -536,13 +537,21 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 }
 
 func runShardedVerification(ctx context.Context, options RunOptions, module string) (string, int, error) {
-	profile, err := os.CreateTemp("", "wb-verify-coverage-*.out")
+	return runShardedVerificationInjected(ctx, options, module, nil)
+}
+
+// runShardedVerificationInjected is runShardedVerification's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// runShardedVerification, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func runShardedVerificationInjected(ctx context.Context, options RunOptions, module string, inj *filewrite.Injector) (string, int, error) {
+	profilePath, err := filewrite.CreateScratch("", "wb-verify-coverage-*.out", 0, nil, inj)
 	if err != nil {
-		return "", 0, err
-	}
-	profilePath := profile.Name()
-	if err := profile.Close(); err != nil {
-		_ = os.Remove(profilePath)
+		if profilePath != "" {
+			_ = os.Remove(profilePath)
+		}
 		return "", 0, err
 	}
 	defer func() { _ = os.Remove(profilePath) }()
