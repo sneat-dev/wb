@@ -153,6 +153,28 @@ func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 	}
 }
 
+// wb layout migrate's own recovery/inclusion behaviour is proven end-to-end
+// by real-git subprocess tests (layout_migrate_test.go), which run against a
+// built binary and so never reach in-process Go coverage instrumentation.
+// This test drives the cobra wiring itself in-process against an empty
+// projects root, where there is nothing to migrate, to prove the plumbing
+// (inv.projectsRoot into layout.Migrate, then into the JSON report) without
+// duplicating the real-git fixtures.
+func TestLayoutMigrateCLIWiresProjectsRootAndReportsNothingToMigrate(t *testing.T) {
+	root := t.TempDir()
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newLayoutMigrateCmd(&invocation{projectsRoot: root}) }, "--format", "json")
+	if err != nil {
+		t.Fatalf("layout migrate on an empty projects root: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("layout migrate json = %q: %v", stdout, err)
+	}
+	if report["schema_version"] == nil {
+		t.Fatalf("layout migrate report is missing schema_version: %q", stdout)
+	}
+}
+
 func TestCwCovWriteLayoutOutputAndReports(t *testing.T) {
 	command := newLayoutAuditCmd(&invocation{})
 	var out bytes.Buffer
