@@ -102,6 +102,12 @@ func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyError(t *test
 	}
 }
 
+// TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFetch
+// (worktree_merge_pr_land.go:464-465, the second of the function's two
+// commitExistsLocally error returns) lives in pr_land_test.go, next to the
+// landFixture it reuses for a real worktree/origin pair rather than building
+// one here.
+
 // TestBuildAtSurfacesAFailingBuildThroughTheInjectedRunner covers
 // pr_land_keep.go's buildAt: a kept commit whose build fails must be
 // refused with the failing command's own captured output, reached here

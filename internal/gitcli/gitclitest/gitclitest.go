@@ -76,8 +76,9 @@ var _ gitcli.Git = (*Fake)(nil)
 var _ testsweep.Failer = (*Fake)(nil)
 
 // CallCount reports how many calls the Fake has answered so far, across
-// CurrentBranch, RevParse, IsAncestor and Fetch combined, in the order it
-// answered them. It implements internal/testsweep.Failer.
+// CurrentBranch, RevParse, IsAncestor, Fetch and CommitObjectExists
+// combined, in the order it answered them. It implements
+// internal/testsweep.Failer.
 func (f *Fake) CallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,13 +86,20 @@ func (f *Fake) CallCount() int {
 }
 
 // FailCall arranges for the callNum'th call (1-indexed, counting
-// CurrentBranch, RevParse, IsAncestor and Fetch together in the order the
-// Fake answers them) to fail with failErr instead of returning its scripted
-// result; every other call keeps returning its own scripted result
-// unchanged, so FailCall fails exactly call N and passes the rest. The call
-// FailCall targets must still be scripted (present in the relevant map)
-// first -- FailCall replaces that call's result, not the lookup that
-// catches an unscripted call.
+// CurrentBranch, RevParse, IsAncestor, Fetch and CommitObjectExists together
+// in the order the Fake answers them) to fail with failErr instead of
+// returning its scripted result; every other call keeps returning its own
+// scripted result unchanged, so FailCall fails exactly call N and passes the
+// rest. The call FailCall targets must still be scripted (present in the
+// relevant map) first -- FailCall replaces that call's result, not the
+// lookup that catches an unscripted call.
+//
+// This is also how a caller gets two different results from the same
+// scripted case across two calls -- e.g. CommitObjectExists(dir, sha)
+// answering false on its first call and an error on its second, as
+// worktree_merge_pr_land.go's headLocal retry needs: script the case once
+// with the first result, then FailCall(2, secondErr) so only the second of
+// the two calls that key answers is overridden.
 //
 // It works standalone, or driven once per call number by
 // internal/testsweep.Sweep, which is why Fake implements
@@ -334,12 +342,19 @@ func (f *Fake) ShowTreeFormat(_ context.Context, dir, commit string) (string, er
 	return result.Value, result.Err
 }
 
-// CommitObjectExists implements orchestrate.Git.
+// CommitObjectExists implements orchestrate.Git. It counts toward
+// CallCount/FailCall (unlike the other orchestrate.Git port methods below),
+// so a test whose production code calls it twice for the same case -- e.g.
+// a retry after a best-effort fetch -- can make the second call answer
+// differently from the first via FailCall. See FailCall's doc comment.
 func (f *Fake) CommitObjectExists(_ context.Context, dir, sha string) (bool, error) {
 	caseKey := key(dir, sha)
 	result, ok := f.CommitObjectExistsByCase[caseKey]
 	if !ok {
 		panic("gitclitest.Fake: CommitObjectExists not scripted for " + caseKey)
+	}
+	if failErr, fail := f.record(); fail {
+		return false, failErr
 	}
 	return result.Value, result.Err
 }

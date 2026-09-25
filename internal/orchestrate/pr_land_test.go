@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -1227,5 +1229,46 @@ func TestLandReportsAFindingWhenTheWorktreeCannotBeRetired(t *testing.T) {
 	}
 	if keptResult.Outcome != LandSuccess || !keptResult.Kept {
 		t.Fatalf("--keep result = %#v", keptResult)
+	}
+}
+
+// TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFetch
+// covers worktree_merge_pr_land.go:464-465, the second of
+// verifyUpdateBranchMergeProof's two commitExistsLocally error returns: once
+// the best-effort `git fetch` for a not-yet-local head succeeds, the
+// retried commitExistsLocally call gets exactly the same treatment as the
+// first one (ports_seam_coverage_test.go's B5 test) -- a real command
+// failure must come back as an error, never be folded into headLocal=false.
+// Reaching it needs a real worktree with a real origin remote holding the
+// branch, so the fetch itself (worktree_merge_pr_land.go still calls
+// runCommand directly for it, not through the Git port) actually succeeds;
+// newLandFixture already builds exactly that pair, so this test borrows it
+// instead of standing up its own repo. The gitclitest.Fake standing in for
+// the Git port then answers the two commitExistsLocally calls differently
+// via FailCall, exactly as its doc comment describes for this case.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFetch(t *testing.T) {
+	fixture := newLandFixture(t, "feature/proof-retry", "go.mod")
+
+	const headSHA = "abc123headsha"
+	wantErr := errors.New("boom: guarded runner refused to start")
+	fake := &gitclitest.Fake{
+		CommitObjectExistsByCase: map[string]gitclitest.BoolResult{
+			fixture.canonical + "\x00" + headSHA: {Value: false},
+		},
+	}
+	fake.FailCall(2, wantErr)
+
+	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, fixture.canonical,
+		"feature/proof-retry", "main", "acme/app", "candidatesha", "targetparentsha", headSHA)
+	if proved {
+		t.Fatalf("proved = true, want false when the retried commitExistsLocally errors")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want it to be (or wrap) %v", err, wantErr)
+	}
+	if got := fake.CallCount(); got != 2 {
+		t.Fatalf("CallCount() = %d, want 2: commitExistsLocally must be called once before the fetch and once after it", got)
 	}
 }
