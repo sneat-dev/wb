@@ -769,8 +769,13 @@ func commandError(command, output string, err error) string {
 	// .wb/quality.yaml records the consequence — internal/orchestrate could not
 	// be added to the shard list because the failure it produced was unreadable.
 	//
-	// The error is appended rather than substituted, and appended at the end so
-	// the tail-preserving truncation below cannot drop it.
+	// The error is appended rather than substituted, and appended at the end
+	// so the tail-preserving truncation below keeps it whenever the tail
+	// survives at all. Heavy failure evidence recovered from the dropped
+	// middle (sneat-dev/wb#582) can still consume the whole budget and
+	// collapse the tail to nothing, taking this line with it — that is
+	// task-6's own stated trade-off ("spending only the remaining budget on
+	// head and tail"), not a bug this comment used to rule out.
 	if err != nil {
 		if failure := strings.TrimSpace(err.Error()); failure != "" {
 			switch {
@@ -890,15 +895,11 @@ func truncateCommandDetailTo(detail string, max int) string {
 	// N3: an over-long trigger line whose only possible fragment fell below
 	// the minimum meaningful length). Unlike legacy above, this must never
 	// exceed max (review finding B1: the evidence path's own contract), so
-	// it applies the same overflow clamp the surviving-evidence branch does
-	// — it does not reuse legacy's byte-for-byte historical formula, which
-	// is allowed to overflow at a tiny budget only when no evidence was
-	// ever found at all.
+	// it fits the tail and marker to budget rather than reusing legacy's
+	// byte-for-byte historical formula, which is allowed to overflow at a
+	// tiny budget only when no evidence was ever found at all.
 	evidenceCollapsedFallback := func() string {
-		tailBytes, marker := sizeTailAndMarker(available)
-		if len(marker)+tailBytes > available {
-			marker, tailBytes = "", 0
-		}
+		tailBytes, marker := fitTailAndMarkerToBudget(available)
 		var tail string
 		if tailBytes > 0 {
 			tail = detail[len(detail)-tailBytes:]
@@ -922,18 +923,17 @@ func truncateCommandDetailTo(detail string, max int) string {
 	// out the bottom.
 	for {
 		remaining := available - len(evidenceBlock)
-		tailBytes, marker := sizeTailAndMarker(remaining)
 		// Unlike the legacy fallback above (which reproduces the
 		// historical formula byte-for-byte, including its own
 		// long-standing imprecision at a budget too small to fit even a
 		// zero-byte marker), the evidence path must never exceed max
 		// (review finding B1): evidenceBlock has already consumed part
 		// of the head's own remaining room, so the same imprecision here
-		// would push the total over budget. Drop the tail and its marker
-		// entirely rather than exceed it.
-		if len(marker)+tailBytes > remaining {
-			marker, tailBytes = "", 0
-		}
+		// would push the total over budget. fitTailAndMarkerToBudget
+		// shrinks the tail by exactly the overflow at a marker
+		// digit-count boundary instead of dropping the whole tail over
+		// one byte (review finding B1, round 5).
+		tailBytes, marker := fitTailAndMarkerToBudget(remaining)
 		var tail string
 		if tailBytes > 0 {
 			tail = detail[len(detail)-tailBytes:]
@@ -1007,6 +1007,35 @@ func sizeTailAndMarker(budget int) (tailBytes int, marker string) {
 		tailBytes = 0
 	}
 	marker = fmt.Sprintf(truncationMarkerFormat, tailBytes)
+	return tailBytes, marker
+}
+
+// fitTailAndMarkerToBudget wraps sizeTailAndMarker for a caller that must
+// never exceed budget (review finding B1, round 5 of #582): at a marker
+// digit-count boundary (9→10, 99→100, 999→1000), sizeTailAndMarker's own
+// second rendering pass can grow the marker by one byte, one byte past what
+// its first pass already sized the tail for. The evidence path cannot reuse
+// the legacy fallback's tolerance for that historical imprecision — it has
+// already spent part of the head's own room on evidence, so the same
+// one-byte slip pushes the total over max. Rather than drop the marker and
+// the whole tail over that single byte, shrink the tail by exactly the
+// overflow and re-render: shrinking tailBytes can only shorten or hold its
+// digit count, never lengthen it, so this one correction cannot overflow
+// again. Only when budget cannot fit even a zero-byte-tail marker does the
+// tail (and its marker) drop entirely, exactly as sizeTailAndMarker's own
+// last resort already does.
+func fitTailAndMarkerToBudget(budget int) (tailBytes int, marker string) {
+	tailBytes, marker = sizeTailAndMarker(budget)
+	if overflow := len(marker) + tailBytes - budget; overflow > 0 {
+		tailBytes -= overflow
+		if tailBytes < 0 {
+			tailBytes = 0
+		}
+		marker = fmt.Sprintf(truncationMarkerFormat, tailBytes)
+		if len(marker)+tailBytes > budget {
+			marker, tailBytes = "", 0
+		}
+	}
 	return tailBytes, marker
 }
 

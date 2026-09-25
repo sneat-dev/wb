@@ -1282,9 +1282,15 @@ func TestTruncateCommandDetailToKeepsALaterGoroutinesFrameInATestTimeoutPanic(t 
 		"mypkg.TestSlow(0xc0000a2000)\n" +
 		"\t/home/ai/slow_test.go:9 +0x40\n"
 	tail := "FAIL\tmypkg\t30.001s\n"
-	detail := head + timeoutPanic + tail
+	// Review finding 3 (round 5 of #582): the original fixture (about 870
+	// bytes) was smaller than max, so truncateCommandDetailTo returned it
+	// unchanged and the test passed on any implementation, including the
+	// pre-fix code. Pad the middle so the input genuinely exceeds the
+	// budget and the truncation path actually runs.
+	filler := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 40)
+	detail := head + timeoutPanic + filler + tail
 
-	const max = 3000
+	const max = 1000
 	got := truncateCommandDetailTo(detail, max)
 	if len(got) > max {
 		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
@@ -1463,6 +1469,44 @@ func TestTruncateCommandDetailToNeverSplitsAMultibyteRuneEvenAtATinyBudget(t *te
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncated detail split a multibyte rune: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToNeverFallsWellShortOfBudgetAtAMarkerDigitBoundary
+// pins review finding B1 (round 5 of #582): sizeTailAndMarker's own
+// two-pass rendering can grow the marker by one byte when the tail's byte
+// count crosses a digit-count boundary (9→10, 99→100, 999→1000), pushing
+// `len(marker)+tailBytes` one byte past what the evidence path's budget has
+// left. The old clamp responded by dropping the marker AND the entire tail
+// — including the tail's own final, distinctive line — even though almost
+// the whole budget was still unused. Sweeping every budget across a range
+// that crosses all three boundaries must never leave the output more than a
+// few bytes short of the budget, and the tail's final line must survive at
+// the review's own cited budget (1429).
+func TestTruncateCommandDetailToNeverFallsWellShortOfBudgetAtAMarkerDigitBoundary(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 40)
+	failBlock := "--- FAIL: TestMiddle (0.01s)\n    fixture_test.go:1: middle failure\n"
+	okTail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 40)
+	const finalLine = "unsharded packages: exit status 1"
+	detail := head + failBlock + okTail + "FAIL\n" + finalLine
+
+	for max := 900; max <= 1500; max++ {
+		if len(detail) <= max {
+			continue
+		}
+		got := truncateCommandDetailTo(detail, max)
+		if len(got) > max {
+			t.Fatalf("max=%d: truncated detail (%d bytes) exceeds the budget", max, len(got))
+		}
+		if max-len(got) > 8 {
+			t.Fatalf("max=%d: truncated detail is %d bytes, %d bytes short of the budget (a marker digit-count boundary dropped the whole tail): %q", max, len(got), max-len(got), got)
+		}
+	}
+
+	got := truncateCommandDetailTo(detail, 1429)
+	if !strings.Contains(got, finalLine) {
+		t.Fatalf("truncated detail at budget 1429 dropped the tail's final line %q: %q", finalLine, got)
 	}
 }
 
