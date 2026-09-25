@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const (
@@ -312,6 +314,17 @@ func sameRetiredPublicationAcknowledgement(left, right WorktreeMergeRetiredPubli
 }
 
 func persistRetiredPublicationAcknowledgement(path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
+	return persistRetiredPublicationAcknowledgementInjected(path, ack, nil)
+}
+
+// persistRetiredPublicationAcknowledgementInjected is
+// persistRetiredPublicationAcknowledgement's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistRetiredPublicationAcknowledgement, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistRetiredPublicationAcknowledgementInjected(path string, ack WorktreeMergeRetiredPublicationAcknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -320,28 +333,28 @@ func persistRetiredPublicationAcknowledgement(path string, ack WorktreeMergeReti
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".retired-publication-ack-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".retired-publication-ack-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func readRetiredPublicationAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeRetiredPublicationAcknowledgement, error) {

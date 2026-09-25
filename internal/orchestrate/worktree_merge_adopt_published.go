@@ -12,15 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 const worktreeMergePublishedCandidateAdoptionSuffix = ".published-candidate.adopted.ack.json"
-
-// linkPublishedCandidateAdoption is a narrow durable-publication seam: an
-// acknowledgement becomes visible only through this create-if-absent link.
-var linkPublishedCandidateAdoption = os.Link
 
 // WorktreeMergePublishedCandidateAdoption records remote publication that
 // completed outside WB after prepare persisted but before it could record the
@@ -178,6 +175,19 @@ func publishedCandidateAdoptionID(a WorktreeMergePublishedCandidateAdoption) str
 	return hex.EncodeToString(h.Sum(nil))
 }
 func persistPublishedCandidateAdoption(path string, a WorktreeMergePublishedCandidateAdoption) error {
+	return persistPublishedCandidateAdoptionInjected(path, a, nil)
+}
+
+// persistPublishedCandidateAdoptionInjected is
+// persistPublishedCandidateAdoption's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistPublishedCandidateAdoption, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link/
+// dir-sync failure branch deterministically. It replaces the package-level
+// linkPublishedCandidateAdoption = os.Link alias that used to serve as this
+// function's only test seam.
+func persistPublishedCandidateAdoptionInjected(path string, a WorktreeMergePublishedCandidateAdoption, inj *filewrite.Injector) error {
 	b, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
 		return err
@@ -186,28 +196,28 @@ func persistPublishedCandidateAdoption(path string, a WorktreeMergePublishedCand
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".published-candidate-adoption-*.tmp")
+	f, err := filewrite.CreateTemp(filepath.Dir(path), ".published-candidate-adoption-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporary := f.Name()
 	defer func() { _ = os.Remove(temporary) }()
-	if err := f.Chmod(0600); err != nil {
+	if err := filewrite.ChmodFile(f, 0600, temporary, inj); err != nil {
 		_ = f.Close()
 		return err
 	}
-	if _, err = f.Write(b); err != nil {
+	if err := filewrite.Write(f, b, temporary, inj); err != nil {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := filewrite.Sync(f, temporary, inj); err != nil {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := filewrite.Close(f, temporary, inj); err != nil {
 		return err
 	}
-	if err := linkPublishedCandidateAdoption(temporary, path); err != nil {
+	if err := filewrite.LinkPath(temporary, path, inj); err != nil {
 		return err
 	}
 	directory, err := os.Open(filepath.Dir(path))
@@ -215,7 +225,7 @@ func persistPublishedCandidateAdoption(path string, a WorktreeMergePublishedCand
 		return err
 	}
 	defer func() { _ = directory.Close() }()
-	return directory.Sync()
+	return filewrite.SyncDir(directory, inj)
 }
 
 func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt WorktreeMergeReceipt) error {
