@@ -408,7 +408,7 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -599,7 +599,7 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestAbandonmentPublicationCrashReplaysExactlyOnce(t *testing.T) {
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)

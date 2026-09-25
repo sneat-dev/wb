@@ -150,7 +150,7 @@ func TestSlCovInspectPreparedRejectsCorruptPlan(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's subtests each acquire/Close an exec fence and then rely on startWithDependencies observing accurate fence liveness; running them (or a sibling top-level test) concurrently races any subtest's fork() (which duplicates the fd into the forked child until its own exec), making a fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: this test's subtests each acquire/Close an exec fence and then rely on startWithDependencies observing accurate fence liveness; running them (or a sibling top-level test) concurrently races any subtest's fork() (which duplicates the fd into the forked child until its own exec), making a fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T) {
 	ctx := context.Background()
 	//nolint:paralleltest // kept serial: see the parent test's reason
@@ -222,7 +222,7 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 	})
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 	ctx := context.Background()
 	type handles struct{ fence *execFence }

@@ -1003,25 +1003,63 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 // without changing every call site's declared variable type; today Close
 // only ever needs the embedded *os.File's own behavior.
 //
-// An earlier version of this function held syscall.ForkLock for reading
-// across the fence's whole open lifetime, to stop any unrelated fork
-// elsewhere in the process from ever duplicating this fd (see #739's
-// analysis: such a duplicate, held by a forked child until its own exec,
-// can make execFenceHeld observe this fence as still held after the true
-// holder already closed it). That is real, but the fence's open lifetime is
-// unbounded in both production (open for as long as the private launcher
-// takes to reach its own Exec) and several tests (deliberately held across
-// a whole subtest via keepFenceHeld) -- so holding a process-wide
-// ForkLock.RLock() for that long serializes every other exec.Command in the
-// process behind it, which deadlocks the moment a writer (another
-// exec.Command's own fork) queues up while this fence -- or several,
-// concurrently, across parallel subtests -- stays open (reproduced directly
-// under this package's own stress test). See the tests this comment's
-// change accompanies for how the actual flake is closed instead: the
-// specific tests that manufacture this race by acquiring and then
-// explicitly closing a fence in-process (simulating what a real Exec does
-// atomically) run serially, so no unrelated parallel test's fork can land
-// in the gap.
+// # The #739 fence-liveness race, and why it is test-only
+//
+// execFenceHeld relies on flock(2), whose lock is tied to the open file
+// description and is duplicated by fork(2): a short-lived child forked
+// anywhere in the same process while this fence's own fd is still open can
+// hold a duplicate reference until its own exec, so execFenceHeld can still
+// report held=true for a brief window after the true holder's own fd has
+// already closed (golang/go#22315).
+//
+// Two fixes were tried and rejected before landing on test-only
+// serialization:
+//
+//  1. Holding syscall.ForkLock for reading across the fence's whole open
+//     lifetime, to stop any unrelated fork from ever duplicating this fd.
+//     Rejected: the fence's open lifetime is unbounded in both production
+//     (open for as long as the private launcher takes to reach its own
+//     Exec) and several tests (deliberately held across a whole subtest),
+//     so holding a process-wide ForkLock.RLock() that long serializes every
+//     other exec.Command in the process behind it, which deadlocks the
+//     moment a writer (another exec.Command's own fork) queues up while
+//     this fence -- or several, concurrently, across parallel subtests --
+//     stays open (reproduced directly under this package's own stress
+//     test).
+//  2. Corroborating a raw held=true against a direct PID-liveness probe
+//     (proveProcessDead) before treating it as fatal. Rejected: this
+//     package's own test suite represents "the launcher is still alive and
+//     holding its fence" by leaving a fence's flock open under a
+//     deliberately fabricated, non-existent PID -- not a real subprocess --
+//     so a liveness probe against that fake PID always reports it dead,
+//     which the corroboration then (wrongly) reads as "stale duplicate,
+//     not held" and breaks that whole test convention. It is also
+//     unnecessary: see below.
+//
+// Why production cannot hit this race at all: acquireExecFence is called
+// exactly once per process, by the private launcher itself, for its own
+// PID (private.go's launcherPID := deps.pid()), and its exec-fence's Close
+// is deferred until that same function returns. Between acquiring the
+// fence and returning, the only subprocess calls that function makes are
+// verifyPinnedWorktree's two `exec.Command(...).Output()` git invocations --
+// both synchronous: Output() blocks until the child process has fully run
+// to completion, which requires it to have already reached (and returned
+// from) its own execve, so no unexeced duplicate of this fence's fd can
+// outlive that call. The eventual release itself is either an explicit
+// Close() on an error path, or deps.exec (syscall.Exec): an in-place image
+// replacement, not a fork, so it cannot itself create a new duplicate.
+// Production therefore never has an asynchronous, still-forking child
+// holding a duplicate of a fence past the point its true holder releases
+// it. The race is reachable only in this package's own tests, where dozens
+// of independent t.Parallel() subtests fork unrelated subprocesses inside
+// one shared test binary process, so an entirely unrelated subtest's fork
+// can duplicate another subtest's already-open fence fd. The specific
+// tests that manufacture this race by acquiring and then explicitly
+// closing a fence in-process (simulating what a real Exec does atomically)
+// are marked serial (t.Parallel() removed, //nolint:paralleltest with a
+// reason): Go's test scheduler runs every serial top-level test to
+// completion before any t.Parallel()-marked test starts, which removes
+// every such sibling from the race window.
 type execFence struct {
 	*os.File
 }
@@ -1029,6 +1067,14 @@ type execFence struct {
 func (fence *execFence) Close() error {
 	return fence.File.Close()
 }
+
+// fenceFileForFD wraps fileForFD for acquireExecFence's own use. It exists as
+// a seam (rather than calling fileForFD directly) so a test can exercise the
+// wrap-failure branch below deterministically: fileForFD's own nil-file case
+// only fires for a negative fd, which acquireExecFence's real call site never
+// produces (its fd always comes from a successful unix.Openat), so that
+// branch is otherwise unreachable through the public API.
+var fenceFileForFD = fileForFD
 
 func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
 	directory, err := attempt.directory(execDirectoryName)
@@ -1049,7 +1095,7 @@ func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("acquire launcher exec-success fence for PID %d: %w", pid, err)
 	}
-	file, err := fileForFD(fd, "wb-session-launch-exec-fence")
+	file, err := fenceFileForFD(fd, "wb-session-launch-exec-fence")
 	if err != nil {
 		return nil, err
 	}

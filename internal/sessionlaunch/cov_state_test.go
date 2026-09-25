@@ -163,7 +163,7 @@ func TestSlCovLoadReadyValidation(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: the "fence not held" subtest acquires and Closes an exec fence then relies on saveRelease observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: the "fence not held" subtest acquires and Closes an exec fence then relies on saveRelease observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovSaveReleaseGatesEveryPrecondition(t *testing.T) {
 	const pid = 6161
 	started := time.Date(2026, time.August, 25, 18, 0, 0, 0, time.UTC)
@@ -359,7 +359,7 @@ func injectSlCovAbandonment(t *testing.T, attempt *launchAttempt, plan launchPla
 	}
 }
 
-//nolint:paralleltest // kept serial: several subtests acquire and Close an exec fence then rely on saveAbandonment observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: several subtests acquire and Close an exec fence then rely on saveAbandonment observing accurate fence liveness; a concurrent sibling top-level test's fork() can duplicate the fd into its child until its own exec, making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovSaveAbandonmentRequiresExactTerminalEvidence(t *testing.T) {
 	const pid = 7171
 	now := time.Date(2026, time.August, 25, 18, 0, 0, 0, time.UTC)
@@ -866,7 +866,7 @@ func TestSlCovPreReleaseProcessEvidenceBindsOneExactPID(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739); serial removes every such sibling from the race window
+//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovExecFenceSemantics(t *testing.T) {
 	state, _ := slCovOpenState(t)
 	attempt, err := state.createAttempt()
@@ -901,6 +901,29 @@ func TestSlCovExecFenceSemantics(t *testing.T) {
 	}
 	if _, err := attempt.execFenceHeld(32); err == nil {
 		t.Fatal("execFenceHeld accepted a missing lock file")
+	}
+}
+
+// TestSlCovAcquireExecFenceSurfacesFileWrapFailure pins acquireExecFence's
+// own wrap-failure branch: fenceFileForFD's error must propagate rather than
+// being swallowed. The real fileForFD only fails this way for a negative fd,
+// which acquireExecFence's own call site can never produce (its fd always
+// comes from a successful unix.Openat), so this exercises it via the
+// fenceFileForFD seam instead.
+//
+//nolint:paralleltest // mutates the package-level fenceFileForFD seam
+func TestSlCovAcquireExecFenceSurfacesFileWrapFailure(t *testing.T) {
+	state, _ := slCovOpenState(t)
+	attempt, err := state.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = attempt.Close() })
+	original := fenceFileForFD
+	fenceFileForFD = func(int, string) (*os.File, error) { return nil, errors.New("wrap failed") }
+	t.Cleanup(func() { fenceFileForFD = original })
+	if _, err := attempt.acquireExecFence(41); err == nil || !strings.Contains(err.Error(), "wrap failed") {
+		t.Fatalf("acquireExecFence with a failing file wrap = %v", err)
 	}
 }
 
