@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -246,5 +248,22 @@ func TestSessionListJSONWithZeroSessionsEmitsEmptyArray(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "no session has registered") {
 		t.Fatalf("stderr = %q, want guidance", errOut.String())
+	}
+}
+
+// Every other test in this file calls runSessionList directly, bypassing the
+// cobra wiring; this proves wb session list itself reaches it with
+// inv.projectsRoot threaded through.
+func TestSessionListCLIWiresProjectsRootIntoRunSessionList(t *testing.T) {
+	withSessionWorktreeLister(t, func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error) {
+		return nil, nil
+	})
+	root := t.TempDir()
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newSessionListCmd(&invocation{projectsRoot: root}) }, "--format", "json")
+	if err != nil {
+		t.Fatalf("wb session list: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Fatalf("wb session list json = %q, want []", stdout)
 	}
 }
