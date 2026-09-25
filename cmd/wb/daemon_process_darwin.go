@@ -84,7 +84,7 @@ func launchdTargetFor(label string) string {
 }
 
 func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
-	return startDaemonProcessInjected(executable, args, logPath, nil)
+	return startDaemonProcessInjected(executable, args, logPath, nil, time.Now, time.Sleep)
 }
 
 // startDaemonProcessInjected is startDaemonProcess's test seam (task-9
@@ -95,9 +95,14 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 // deterministically. This file builds only on darwin, so Linux CI's
 // coverage ratchet cannot see any of it either way; verification here is
 // a darwin cross-compile (`GOOS=darwin go vet ./cmd/wb/`) plus this
-// package's own code review -- there is no launchctl-faked test exercising
-// this seam, on darwin or otherwise, as of task-9 PR-2's review round.
-func startDaemonProcessInjected(executable string, args []string, logPath string, inj *filewrite.Injector) (int, error) {
+// package's own code review.
+//
+// now and sleep are the clock and poll-backoff seam for the launchd-ready
+// wait below (task-10): startDaemonProcess always passes time.Now/
+// time.Sleep; a test passes fakes, combined with a faked runLaunchctl (see
+// its own doc comment), to exercise the ready-timeout branch without a
+// real wait. Both are function parameters, not package-level mutable vars.
+func startDaemonProcessInjected(executable string, args []string, logPath string, inj *filewrite.Injector, now func() time.Time, sleep func(time.Duration)) (int, error) {
 	if err := daemonRefuseTestBinary(executable); err != nil {
 		return 0, err
 	}
@@ -147,14 +152,29 @@ func startDaemonProcessInjected(executable string, args []string, logPath string
 	if output, err := runLaunchctl("kickstart", "-k", daemonLaunchdTarget()); err != nil {
 		return 0, fmt.Errorf("start WB launch agent: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	deadline := time.Now().Add(daemonReadyTimeout)
-	for time.Now().Before(deadline) {
-		if pid, ok := launchdPID(daemonLaunchdTarget()); ok {
-			return pid, nil
-		}
-		time.Sleep(50 * time.Millisecond)
+	deadline := now().Add(daemonReadyTimeout)
+	if pid, ok := awaitLaunchdReady(now, sleep, deadline, func() (int, bool) { return launchdPID(daemonLaunchdTarget()) }); ok {
+		return pid, nil
 	}
 	return 0, fmt.Errorf("WB launch agent did not report a running PID within %s", daemonReadyTimeout)
+}
+
+// awaitLaunchdReady polls lookupPID at 50ms steps (via the injected
+// clock/sleep seam, never a direct time.Now/time.Sleep call) until it
+// reports a PID or now() reaches deadline. It is factored out of
+// startDaemonProcessInjected so a test can exercise the poll/timeout logic
+// directly, on a fake clock, without going through
+// startDaemonProcessInjected's unconditional daemonRefuseTestBinary guard
+// (which always refuses inside a test binary — see its own doc comment —
+// and so can never be bypassed to reach this loop end-to-end in-process).
+func awaitLaunchdReady(now func() time.Time, sleep func(time.Duration), deadline time.Time, lookupPID func() (int, bool)) (int, bool) {
+	for now().Before(deadline) {
+		if pid, ok := lookupPID(); ok {
+			return pid, true
+		}
+		sleep(50 * time.Millisecond)
+	}
+	return 0, false
 }
 
 func launchdPlistBytes(executable string, args []string, logPath string) []byte {

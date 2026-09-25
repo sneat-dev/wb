@@ -2870,7 +2870,7 @@ func addWorktreeAtSecureDestination(
 	// so serialize the complete add -> publish -> repair -> verify transaction
 	// repository-wide. Releasing between add and repair would expose Git's
 	// temporary stage registration to a sibling creator.
-	registrationLock, err := acquireRepositoryRegistrationLock(canonical)
+	registrationLock, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if err != nil {
 		return rollback(fmt.Errorf("acquire repository registration lock: %w", err), "", nil)
 	}
@@ -3973,7 +3973,7 @@ func rollbackCreatedWorktree(
 			}
 		}
 	}
-	registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical)
+	registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if lockErr != nil {
 		return errors.Join(append(failures, fmt.Errorf("acquire repository registration lock for rollback: %w", lockErr))...)
 	}

@@ -422,6 +422,11 @@ type WorktreeMergePrepareOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// Sleep is the retry-backoff seam for a rebatch's superseded-pull-request
+	// verify retry (see closeSupersededWorktreeMergePullRequest). Nil (every
+	// production caller) defaults to time.Sleep; a test supplies a recorder
+	// to exercise that retry without a real wait.
+	Sleep func(time.Duration)
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (preparedReceipt WorktreeMergeReceipt, prepareErr error) {
@@ -429,6 +434,10 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, options.PrepareTimeout)
 		defer cancel()
+	}
+	sleep := options.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
 	}
 	reportWorktreeMergeProgress(options.Progress, "inspect_sources", progress.Started, "validating source worktrees and target")
 	projectsRoot, err := filepath.Abs(strings.TrimSpace(options.ProjectsRoot))
@@ -608,7 +617,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 					}
 					return existing, ancestorErr
 				}
-				if err := ensurePreparedWorktreeMergeRebatch(ctx, rechecked, &current); err != nil {
+				if err := ensurePreparedWorktreeMergeRebatch(ctx, rechecked, &current, sleep); err != nil {
 					return existing, err
 				}
 				return current, nil
@@ -1018,7 +1027,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		return receipt, err
 	}
 	if rebatch != nil {
-		if err := ensurePreparedWorktreeMergeRebatch(ctx, rebatch, &receipt); err != nil {
+		if err := ensurePreparedWorktreeMergeRebatch(ctx, rebatch, &receipt, sleep); err != nil {
 			return receipt, err
 		}
 	}

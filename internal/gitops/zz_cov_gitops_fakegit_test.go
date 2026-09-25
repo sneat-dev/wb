@@ -8,21 +8,15 @@ import (
 	"time"
 )
 
-// stubPullSleep replaces the retry-backoff seam with a no-op for the
-// duration of the test, so retry-exhaustion paths run at full speed while
-// still exercising every attempt Pull would otherwise wait between.
-func stubPullSleep(t *testing.T) {
-	t.Helper()
-	original := pullSleep
-	pullSleep = func(time.Duration) {}
-	t.Cleanup(func() { pullSleep = original })
-}
-
 // Pull retries a transport failure and returns success once a later attempt
 // gets through, so one dropped SSH handshake does not fail a whole sync.
+// pull's sleep is a recorder, not a package-level mutable var (the seam is a
+// function parameter — see gitops.go's pull), so retry-exhaustion paths run
+// at full speed while still proving exactly how many times, and for how
+// long, Pull waited between attempts.
 func TestLgCovPullRetriesTransientFailureThenSucceeds(t *testing.T) {
-	stubPullSleep(t)
-	state := filepath.Join(t.TempDir(), "attempts")
+	repoPath := t.TempDir()
+	state := filepath.Join(repoPath, "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
 	lgCovFakeGit(t, `
@@ -42,8 +36,9 @@ esac
 exit 1
 `)
 
-	if err := Pull(t.TempDir()); err != nil {
-		t.Fatalf("Pull: %v", err)
+	var slept []time.Duration
+	if err := pull(repoPath, func(d time.Duration) { slept = append(slept, d) }); err != nil {
+		t.Fatalf("pull: %v", err)
 	}
 	raw, err := os.ReadFile(state)
 	if err != nil {
@@ -52,13 +47,17 @@ exit 1
 	if got := strings.TrimSpace(string(raw)); got != "3" {
 		t.Fatalf("pull attempts = %s, want 3 (two transient failures then success)", got)
 	}
+	wantSlept := []time.Duration{pullRetryDelay(repoPath, 0), pullRetryDelay(repoPath, 1)}
+	if len(slept) != len(wantSlept) || slept[0] != wantSlept[0] || slept[1] != wantSlept[1] {
+		t.Fatalf("pull slept %v, want %v (one backoff before each of the two retries)", slept, wantSlept)
+	}
 }
 
 // Once the five attempts are exhausted the last transport error is returned, so
 // the caller can report the real failure instead of a silent success.
 func TestLgCovPullReturnsLastErrorAfterExhaustingRetries(t *testing.T) {
-	stubPullSleep(t)
-	state := filepath.Join(t.TempDir(), "attempts")
+	repoPath := t.TempDir()
+	state := filepath.Join(repoPath, "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
 	lgCovFakeGit(t, `
@@ -74,9 +73,10 @@ esac
 exit 1
 `)
 
-	err := Pull(t.TempDir())
+	var slept []time.Duration
+	err := pull(repoPath, func(d time.Duration) { slept = append(slept, d) })
 	if err == nil {
-		t.Fatal("Pull should return an error after every attempt failed")
+		t.Fatal("pull should return an error after every attempt failed")
 	}
 	if !strings.Contains(err.Error(), "Connection timed out") {
 		t.Fatalf("error = %q, want the last transport failure", err.Error())
@@ -87,6 +87,14 @@ exit 1
 	}
 	if got := strings.TrimSpace(string(raw)); got != "5" {
 		t.Fatalf("pull attempts = %s, want 5", got)
+	}
+	if len(slept) != 4 {
+		t.Fatalf("pull slept %d times, want 4 (once before each retry, never after the fifth and final attempt)", len(slept))
+	}
+	for attempt, d := range slept {
+		if want := pullRetryDelay(repoPath, attempt); d != want {
+			t.Fatalf("pull slept %s before attempt %d, want %s", d, attempt+1, want)
+		}
 	}
 }
 

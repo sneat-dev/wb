@@ -789,7 +789,7 @@ worker can signal it.`,
 			if err != nil {
 				return err
 			}
-			record, err := agents.StopRun(store, agentID)
+			record, err := agents.StopRun(store, agentID, agents.DefaultOwnerDeps())
 			if err != nil {
 				return agentLookupError(err)
 			}
