@@ -2177,6 +2177,9 @@ func canonicalOwnerDirectories(projectsRoot string) ([]repopath.Owner, []string)
 // the deadline that cancelled it.
 const gitCancellationGraceDelay = 5 * time.Second
 
+// gitWithExtraFiles runs the git executable, never a Go Git library. WB depends
+// on Git features such libraries lack and must behave exactly like the user's
+// own git (README: "Why WB runs the `git` CLI").
 func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, args ...string) (string, error) {
 	// Serve a repeated read-only query from the command-scoped memo when one
 	// is installed. Only plain queries qualify: a call carrying extra
