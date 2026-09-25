@@ -254,7 +254,6 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":           "renames a request file into a quarantine directory; not a write publish",
 	"internal/worktrees/worktrees.go:moveExpectedDirectoryNoReplaceAuthorized": "moves a worktree directory after an identity check; not a file write",
 	"internal/worktrees/worktrees.go:moveExpectedLockNoReplace":                "moves a lock file after an identity check, without writing new content; not a file write",
-	"internal/worktrees/worklog.go:immutablePublishRename":                     "returns the caller-supplied rename closure filewrite.RenameNoReplace runs to publish writeBytesImmutableAtInjected's staged content (task-9 PR-3); moves a file via renameNoReplace, writes no content of its own",
 	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":               "moves a managed hook after an identity check, without writing new content; not a file write",
 
 	// The renameNoReplace primitive's own per-OS implementation: a thin
@@ -263,10 +262,8 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// callers of renameNoReplace use for fault injection; the primitive
 	// itself stays where it is until the PR that folds it in (see N3 in
 	// the task-9 PR-1 review).
-	"internal/worktrees/rename_noreplace_darwin.go:renameNoReplace": "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/worktrees/rename_noreplace_linux.go:renameNoReplace":  "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/hooks/rename_noreplace_darwin.go:renameNoReplace":     "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/hooks/rename_noreplace_linux.go:renameNoReplace":      "OS-specific renameNoReplace syscall wrapper, not a write sequence",
+	"internal/hooks/rename_noreplace_darwin.go:renameNoReplace": "OS-specific renameNoReplace syscall wrapper, not a write sequence",
+	"internal/hooks/rename_noreplace_linux.go:renameNoReplace":  "OS-specific renameNoReplace syscall wrapper, not a write sequence",
 
 	// Append-only log writes: an O_APPEND descriptor with a flock (or a
 	// bare append), never a temp name, never a rename or link. There is no

@@ -193,8 +193,16 @@ func (e *ShortWriteError) Error() string {
 
 // CreateExclusive opens name under the directory identified by
 // directoryFD for writing, creating it and failing if it already exists:
-// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, the flag set every
-// write-once-immutable call site in this repository used. The returned
+// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC. Most write-once-immutable
+// call sites in this repository already used exactly this flag set before
+// migrating here. The two task-9 PR-3 exceptions --
+// internal/worktrees/worklog.go's writeBytesImmutableAtInjected and
+// writeBytesAtomicAtInjected -- previously opened their temp file with a
+// raw unix.Openat that omitted O_CLOEXEC; routing them through
+// CreateExclusive is a deliberate behaviour change (review-756 B3), not an
+// oversight: it closes a real fd leak, where a child process exec'd while
+// the temp file was open (git and friends) used to inherit a writable fd
+// on it, and nothing in this repository depends on that leak. The returned
 // error is the syscall's own (typically wrapped in nothing further, so
 // callers keep their existing errors.Is(err, unix.EEXIST) checks).
 func CreateExclusive(directoryFD int, name string, mode uint32, inj *Injector) (int, error) {
@@ -474,19 +482,26 @@ func RenameAt(fromDirectoryFD int, fromName string, toDirectoryFD int, toName st
 	return unix.Renameat(fromDirectoryFD, fromName, toDirectoryFD, toName)
 }
 
-// RenameNoReplace runs rename, an already-resolved, fd-relative,
-// no-replace rename publish a caller built itself (renameat2's
-// RENAME_NOREPLACE on Linux, renameatx_np's RENAME_EXCL on Darwin --
-// platform mechanics this package does not duplicate, since
-// internal/worktrees' own renameNoReplace already implements them and is
-// also called from unrelated, non-write-sequence call sites this task
-// does not touch), after first giving toName an injectable failure
-// point matching this package's other publish steps.
-func RenameNoReplace(rename func() error, toName string, inj *Injector) error {
+// RenameNoReplace publishes a fd-relative, no-replace rename
+// (renameat2's RENAME_NOREPLACE on Linux, renameatx_np's RENAME_EXCL on
+// Darwin, an explicit unsupported error elsewhere) -- the fd-relative,
+// content-addressed-publish twin of RenameAt, used where two racing
+// publishers of identical content must converge on whichever one wins
+// the rename instead of each producing its own inode.
+//
+// This package owns the platform mechanics itself (task-9 PR-3
+// review-756 N1): earlier, a caller built the already-resolved rename
+// itself and handed RenameNoReplace a closure to run, which meant this
+// package's 100% coverage said nothing about the renameat2/renameatx_np
+// mechanics. internal/worktrees' own renameNoReplace, which is also
+// called from unrelated, non-write-sequence call sites this task does
+// not touch, is now a thin delegate to this function instead of an
+// independent implementation.
+func RenameNoReplace(fromDirectoryFD int, fromName string, toDirectoryFD int, toName string, inj *Injector) error {
 	if err := inj.run(StepRenameNoReplace, toName); err != nil {
 		return err
 	}
-	return rename()
+	return renameNoReplaceSyscall(fromDirectoryFD, fromName, toDirectoryFD, toName)
 }
 
 // CreateOrTruncatePath opens path for writing, creating it if it does

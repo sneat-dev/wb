@@ -31,6 +31,21 @@ func openPR3TestDir(t *testing.T) *os.File {
 	return directory
 }
 
+// assertNoLeftoverPR3TempFile globs dir for pattern and fails the test if a
+// temp file the failed write should have unlinked or removed still exists
+// -- review-756 B1: a disabled cleanup defer must fail this assertion, not
+// merely leave the caller's own errors.Is check satisfied.
+func assertNoLeftoverPR3TempFile(t *testing.T, dir, pattern string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover temp file(s) after injected failure: %v", matches)
+	}
+}
+
 func TestWriteBytesImmutableAtInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 	t.Parallel()
 	directory := openPR3TestDir(t)
@@ -50,6 +65,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedWriteFailure(t *testing.T
 	if _, err := os.Stat(filepath.Join(directory.Name(), "f")); !os.IsNotExist(err) {
 		t.Fatalf("target file exists despite the injected write failure: %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesImmutableAtInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
@@ -59,6 +75,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedSyncFailure(t *testing.T)
 	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesImmutableAtInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
@@ -68,6 +85,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedCloseFailure(t *testing.T
 	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesImmutableAtInjectedHonoursAnInjectedRenameNoReplaceFailureNonIdempotent(t *testing.T) {
@@ -77,6 +95,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedRenameNoReplaceFailureNon
 	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v, want errBoomPR3", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesImmutableAtInjectedRenameNoReplaceFailureSurvivesIdenticalIdempotentContent(t *testing.T) {
@@ -119,6 +138,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesAtomicAtInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
@@ -128,6 +148,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesAtomicAtInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
@@ -137,6 +158,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesAtomicAtInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
@@ -146,6 +168,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedRenameFailure(t *testing.T) 
 	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesAtomicAtInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {
