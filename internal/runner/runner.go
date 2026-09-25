@@ -5,10 +5,18 @@
 // interface, never on os/exec directly, so a unit test substitutes
 // runnertest's scriptable fake instead of starting a real process.
 //
-// Runner has four operations, exactly as the plan defines them:
+// Runner has four operations, exactly as the plan defines them, plus one
+// gap the plan's own text names and invites filling when a real site needs
+// it (see task-8's "If the runner cannot express something a site needs"
+// note): RunWithInput, added for remotessh's SSH boundary, whose remote
+// side reads its request from stdin rather than argv, something none of the
+// four could express.
 //
 //   - Run captures stdout, stderr and the exit status -- most git and gh
 //     calls.
+//   - RunWithInput is Run with the child's stdin supplied by the caller,
+//     for the rare site that must pass a request body a remote or local
+//     child reads from stdin instead of argv.
 //   - Start returns a Handle with Wait and Signal, for a long-running child
 //     wb supervises.
 //   - Detach starts a process that outlives wb -- daemon launch,
@@ -54,6 +62,10 @@ type Runner interface {
 	// Run starts name with args in dir, waits for it to exit, and returns
 	// its captured stdout, stderr and exit status.
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
+	// RunWithInput is Run with input written to the child's stdin before its
+	// output is read. See the package doc's note on why this exists
+	// alongside Run rather than folding input into it.
+	RunWithInput(ctx context.Context, dir string, input []byte, name string, args ...string) (Result, error)
 	// Start begins name with args in dir and returns a Handle without
 	// waiting for it to exit.
 	Start(ctx context.Context, dir, name string, args ...string) (Handle, error)
