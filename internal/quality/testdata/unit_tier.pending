@@ -235,7 +235,7 @@ internal/repositoryevents/zz_sdcov_processor_test.go	7	task-15
 internal/runlog/runlog_tailcov_test.go	2	task-15
 internal/runlog/runlog_test.go	3	task-15
 internal/session/zz_gpcov_unix_test.go	5	task-15
-internal/sessioncourier/zz_sdcov_exec_test.go	2	task-15
+internal/sessioncourier/zz_sdcov_exec_test.go	7	task-15
 internal/sessionlaunch/cov_final_test.go	3	task-14
 internal/sessionlaunch/cov_helpers_test.go	2	task-14
 internal/sessionlaunch/cov_launch2_test.go	7	task-14

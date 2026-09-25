@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
 )
@@ -40,14 +41,40 @@ type commandRunner interface {
 	Run(context.Context, string, []string, []byte, io.Writer, io.Writer) error
 }
 
-type execCommandRunner struct{}
+// execCommandRunner is the production commandRunner, built on task-8's
+// runner.Runner seam rather than exec.CommandContext directly. Runner is
+// nil in every production construction site (execCommandRunner{}), which
+// resolveRunner defaults to the production runner.Runner; a unit test
+// injects scriptedCommandRunner at the commandRunner boundary instead of
+// setting this field.
+type execCommandRunner struct {
+	Runner runner.Runner
+}
 
-func (execCommandRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
-	command := exec.CommandContext(ctx, executable, args...)
-	command.Stdin = bytes.NewReader(stdin)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	return command.Run()
+// stdout/stderr are always this package's own boundedBuffer, whose Write
+// never fails and whose truncation is order-independent (see
+// internal/remotessh's identical note on its own LimitedBuffer), so
+// capturing the child's full output through RunWithInput and writing it
+// into the caller's writers in one shot each is behaviorally identical to
+// exec.Cmd streaming into them directly.
+func (r execCommandRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
+	result, err := resolveRunner(r.Runner).RunWithInput(ctx, "", stdin, executable, args...)
+	if _, writeErr := io.WriteString(stdout, result.Stdout); writeErr != nil && err == nil {
+		err = writeErr
+	}
+	if _, writeErr := io.WriteString(stderr, result.Stderr); writeErr != nil && err == nil {
+		err = writeErr
+	}
+	return err
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return runner.New()
 }
 
 type sshDeliverer struct {

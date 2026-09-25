@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
@@ -108,6 +109,7 @@ func sdCovWriteTempFile(t *testing.T, data []byte) string {
 }
 
 func TestSDCovDeliverSSHThroughResolvedExecutable(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	sdCovUseFakeExecutable(t, "ssh")
 	request, raw := courierTestRequest(t)
 	t.Setenv(sdCovFakeExecStdoutEnv, sdCovWriteTempFile(t, encodeCourierResult(t, validCourierResult(request, raw))))
@@ -131,6 +133,7 @@ func TestSDCovDeliverSSHThroughResolvedExecutable(t *testing.T) {
 }
 
 func TestSDCovDeliverSSHFailureBranchesThroughResolvedExecutable(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	sdCovUseFakeExecutable(t, "ssh")
 	_, raw := courierTestRequest(t)
 
@@ -162,6 +165,7 @@ func TestSDCovDeliverSSHFailureBranchesThroughResolvedExecutable(t *testing.T) {
 }
 
 func TestSDCovNewSSHMessageDelivererThroughResolvedExecutable(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	sdCovUseFakeExecutable(t, "ssh")
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
@@ -185,6 +189,7 @@ func TestSDCovNewSSHMessageDelivererThroughResolvedExecutable(t *testing.T) {
 }
 
 func TestSDCovNewSynchestraDelivererThroughResolvedExecutable(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	sdCovUseFakeExecutable(t, "synchestra")
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
@@ -215,6 +220,7 @@ func TestSDCovNewSynchestraDelivererThroughResolvedExecutable(t *testing.T) {
 }
 
 func TestSDCovNewSynchestraMessageDelivererThroughResolvedExecutable(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	sdCovUseFakeExecutable(t, "synchestra")
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)

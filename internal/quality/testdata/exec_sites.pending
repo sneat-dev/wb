@@ -52,7 +52,6 @@ internal/quality/changed_packages.go	2	task-15
 internal/quality/deadcode.go	1	task-15
 internal/quality/ratchet.go	6	task-15
 internal/recipe/command.go	1	task-15
-internal/sessioncourier/ssh.go	1	task-15
 internal/sessionlaunch/launch.go	3	task-14
 internal/sessionlaunch/private.go	2	task-14
 internal/sessionlaunch/tmux.go	5	task-14
