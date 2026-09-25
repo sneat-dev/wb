@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestPlanRejectsControlStateInsideCheckoutIncludingSymlinkedParent(t *testing.T) {
@@ -141,8 +140,11 @@ func TestAsyncFailureIsWarnedOnNextDispatchExactlyOnce(t *testing.T) {
 }
 
 func TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork(t *testing.T) {
-	runnertest.AllowRealProcess(t)
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
+	// This test is about quarantine behavior, not about executing the valid
+	// item's hook for real -- fake it out rather than needing a real process.
+	dispatcher.Run = func(context.Context, Invocation) error { return nil }
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{event}); err != nil {
 		t.Fatal(err)

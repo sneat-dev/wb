@@ -127,33 +127,17 @@ func rpCovHTTPBody(body string) string {
 	return "HTTP/2.0 200 OK\ncontent-type: application/json\n\n" + body + "\n"
 }
 
-func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testing.T) {
-	runnertest.AllowRealProcess(t)
+// TestRPCovOSCommandRunnerRefusesAnEmptyCommand covers the one branch of
+// OSCommandRunner.Run that returns before ever reaching a runner.Runner (no
+// name to start at all), so it needs no injected runner and starts no
+// process. The rest of Run's behavior -- captured output, coded and
+// uncoded exit failures -- is covered directly against runnertest.Fake in
+// os_command_runner_test.go; see that file's doc on why a real subprocess
+// is no longer needed to prove it.
+func TestRPCovOSCommandRunnerRefusesAnEmptyCommand(t *testing.T) {
+	t.Parallel()
 	if result := (OSCommandRunner{}).Run(context.Background(), ""); result.Code != 2 || result.Err == nil {
 		t.Fatalf("empty command result = %+v, want the usage refusal", result)
-	}
-
-	dir := t.TempDir()
-	ok := filepath.Join(dir, "ok-tool")
-	if err := testenv.WriteExecutableFile(ok, []byte("#!/bin/sh\necho out-$1\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result := OSCommandRunner{}.Run(context.Background(), dir, "./ok-tool", "hello")
-	if result.Err != nil || result.Code != 0 || result.Output != "out-hello\n" {
-		t.Fatalf("successful command result = %+v", result)
-	}
-
-	failing := filepath.Join(dir, "failing-tool")
-	if err := testenv.WriteExecutableFile(failing, []byte("#!/bin/sh\necho bad >&2\nexit 7\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result = OSCommandRunner{}.Run(context.Background(), dir, "./failing-tool")
-	if result.Err == nil || result.Code != 7 || !strings.Contains(result.Output, "bad") {
-		t.Fatalf("failing command result = %+v, want exit 7 with combined output", result)
-	}
-
-	if result := (OSCommandRunner{}).Run(context.Background(), dir, "./no-such-tool"); result.Err == nil || result.Code != 1 {
-		t.Fatalf("missing executable result = %+v, want code 1", result)
 	}
 }
 

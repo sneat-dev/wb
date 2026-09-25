@@ -129,7 +129,7 @@ internal/gitops/zz_cov_gitops_repo_test.go	32	task-8
 internal/herdr/client_test.go	1	task-8
 internal/herdr/fake_binary_test.go	5	task-8
 internal/herdr/fake_runner_test.go	1	task-8
-internal/herdr/runner_test.go	10	task-8
+internal/herdr/runner_test.go	8	task-8
 internal/hooks/coverage_git_hkcov_test.go	7	task-15
 internal/hooks/coverage_manager_hkcov_test.go	7	task-15
 internal/hooks/coverage_run_pushtier_hkcov_test.go	11	task-15
@@ -145,7 +145,7 @@ internal/lifecyclehooks/coverage_dispatch_test.go	5	task-15
 internal/lifecyclehooks/coverage_helpers_test.go	1	task-15
 internal/lifecyclehooks/coverage_security_test.go	1	task-15
 internal/lifecyclehooks/dispatch_test.go	3	task-15
-internal/lifecyclehooks/resilience_test.go	5	task-15
+internal/lifecyclehooks/resilience_test.go	4	task-15
 internal/lifecyclehooks/security_unix_test.go	1	task-15
 internal/locallink/execports_test.go	3	task-15
 internal/locallink/guard_test.go	6	task-15
@@ -162,7 +162,7 @@ internal/migrate/zz_migcov_campaign_helpers_test.go	8	task-15
 internal/migrate/zz_migcov_campaign_manifest_test.go	3	task-15
 internal/migrate/zz_migcov_campaign_phases_test.go	20	task-15
 internal/migrate/zz_migcov_campaign_pr_test.go	1	task-15
-internal/npmrelease/rp_commands_test.go	10	task-15
+internal/npmrelease/rp_commands_test.go	7	task-15
 internal/orchestrate/absorbed_conflict_lookup_test.go	4	task-17
 internal/orchestrate/ciwait_commitchecks_test.go	2	task-17
 internal/orchestrate/ciwait_deadline_unix_test.go	5	task-17
@@ -247,7 +247,7 @@ internal/sessionlaunch/tmux_test.go	4	task-14
 internal/sessionmessage/zz_tailcov_test.go	6	task-15
 internal/sessionmessage/zz_tailcov_unix_test.go	2	task-15
 internal/sessionmessenger/sd_cov_test.go	2	task-15
-internal/sessionparkcourier/zz_tailcov_ssh_test.go	4	task-8
+internal/sessionparkcourier/zz_tailcov_ssh_test.go	3	task-8
 internal/sessionparkreceive/integration_test.go	23	task-15
 internal/sessionparkreceive/tailcov_receive_test.go	1	task-15
 internal/sessiontransport/override_test.go	1	task-15

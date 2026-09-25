@@ -131,49 +131,35 @@ func TestResolveBinaryIgnoresEmptyHERDRBinPath(t *testing.T) {
 	}
 }
 
-func TestExecRunnerRunsArgvOnly(t *testing.T) {
-	procrunnertest.AllowRealProcess(t)
-	directory := t.TempDir()
-	argvFile := filepath.Join(directory, "argv")
-	script := "#!/bin/sh\n: > \"" + argvFile + "\"\nfor a in \"$@\"; do printf '%s\\0' \"$a\" >> \"" + argvFile + "\"; done\nprintf 'ok'\n"
-	scriptPath := filepath.Join(directory, "recorder")
-	if err := testenv.WriteExecutableFile(scriptPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	var runner execRunner
-	stdout, stderr, err := runner.Run(context.Background(), scriptPath, []string{"one", "two three", "$(danger)"}, nil)
-	if err != nil {
-		t.Fatalf("Run() error = %v, stderr = %s", err, stderr)
-	}
-	if string(stdout) != "ok" {
-		t.Fatalf("Run() stdout = %q, want %q", stdout, "ok")
-	}
-
-	recorded, err := os.ReadFile(argvFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := splitNulTerminated(recorded)
-	want := []string{"one", "two three", "$(danger)"}
-	if !equalStrings(got, want) {
-		t.Fatalf("recorded argv = %#v, want %#v", got, want)
-	}
-}
-
-// TestExecRunnerRunUsesAnInjectedProcessRunner covers the resolveRunner
+// TestExecRunnerRunUsesAnInjectedProcessRunner covers execRunner.Run's argv
+// pass-through directly against a scripted runner.Runner. It replaces a
+// former real-process test of the same property: no-shell argv fidelity is
+// now internal/runner.Real's own contract (proven by that package's
+// helper-process tests), and TestFakeHERDRBinaryArgvQuotingEndToEnd in
+// fake_binary_test.go already proves the same "no shell" property end to
+// end through a real process at the Client level, so a third real-process
+// test at this narrower layer would be pure duplication -- exactly what
+// the founder's "tests do not work around real processes" mandate argues
+// against. This also covers the resolveRunner
 // "r != nil" branch directly: a scripted runner.Runner (task-8's seam,
 // distinct from this package's own fakeRunner Runner) answers instead of
 // the production runner.Runner.
 func TestExecRunnerRunUsesAnInjectedProcessRunner(t *testing.T) {
 	t.Parallel()
+	// Shell-metacharacter-laden args, exactly as the real-process test this
+	// replaces used: execRunner.Run must forward each one to the Runner
+	// unchanged, as a single argv element -- never joined, split, or
+	// otherwise reinterpreted along the way.
+	args := []string{"one", "two three", "$(danger)"}
+	env := []string{"X=1"}
+
 	fake := procrunnertest.New(t)
 	fake.Expect(func(c procrunnertest.Call) bool {
-		return c.Name == "herdr" && len(c.Args) == 1 && c.Args[0] == "--version"
+		return c.Name == "herdr" && equalStrings(c.Args, args) && equalStrings(c.Opts.Env, env)
 	}, procrunner.Result{Stdout: "herdr 1.0"}, nil)
 
 	runner := execRunner{Runner: fake}
-	stdout, _, err := runner.Run(context.Background(), "herdr", []string{"--version"}, []string{"X=1"})
+	stdout, _, err := runner.Run(context.Background(), "herdr", args, env)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

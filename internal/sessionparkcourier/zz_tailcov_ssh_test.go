@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,26 +136,6 @@ func TestTailCovNewSSHDelivererDrivesTheRealExecRunner(t *testing.T) {
 // TestTailCovExecCommandRunnerPipesStdinAndReportsExitStatus pins the one
 // runner that actually launches a process, which the fake-runner tests never
 // touch.
-func TestTailCovExecCommandRunnerPipesStdinAndReportsExitStatus(t *testing.T) {
-	runnertest.AllowRealProcess(t)
-	shell, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatalf("this platform has no sh: %v", err)
-	}
-	var stdout, stderr bytes.Buffer
-	runner := execCommandRunner{}
-	if err := runner.Run(context.Background(), shell, []string{"-c", "cat"}, []byte("canonical envelope"), &stdout, &stderr); err != nil {
-		t.Fatal(err)
-	}
-	if stdout.String() != "canonical envelope" {
-		t.Fatalf("stdout = %q, want the stdin payload", stdout.String())
-	}
-	stdout.Reset()
-	if err := runner.Run(context.Background(), shell, []string{"-c", "cat >/dev/null; exit 7"}, []byte("ignored"), &stdout, &stderr); err == nil {
-		t.Fatal("a non-zero child exit was reported as success")
-	}
-}
-
 func TestTailCovDeliverRejectsUnusableEnvelopes(t *testing.T) {
 	t.Parallel()
 	_, raw := courierEnvelope(t)

@@ -3,6 +3,7 @@ package npmrelease
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/runner"
@@ -34,5 +35,29 @@ func TestOSCommandRunnerRunReportsAnUncodedFailureAsExitOne(t *testing.T) {
 	result := OSCommandRunner{Runner: fake}.Run(context.Background(), "/repo", "npm", "view", "pkg")
 	if result.Err == nil || result.Code != 1 {
 		t.Fatalf("result = %+v, want code 1 for an error without ExitCode", result)
+	}
+}
+
+// codedError implements exitCoder, standing in for what *os/exec.ExitError
+// carries after a real child exits non-zero, without starting one.
+type codedError struct{ code int }
+
+func (e codedError) Error() string { return "exit status" }
+func (e codedError) ExitCode() int { return e.code }
+
+// TestOSCommandRunnerRunReportsACodedFailuresExitCode covers the branch
+// where the runner's own error does implement ExitCode -- the shape
+// *os/exec.ExitError takes after a real child exits non-zero, exercised
+// here through a scripted error rather than a real process (the real
+// process integration itself is internal/runner's own contract, proven by
+// that package's tests).
+func TestOSCommandRunnerRunReportsACodedFailuresExitCode(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"npm", "view", "pkg"}, runner.Result{Stderr: "bad\n"}, codedError{code: 7})
+
+	result := OSCommandRunner{Runner: fake}.Run(context.Background(), "/repo", "npm", "view", "pkg")
+	if result.Err == nil || result.Code != 7 || !strings.Contains(result.Output, "bad") {
+		t.Fatalf("result = %+v, want exit 7 with the captured output", result)
 	}
 }
