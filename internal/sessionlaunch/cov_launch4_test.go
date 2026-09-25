@@ -292,6 +292,20 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 	t.Run("finalize started failure", func(t *testing.T) {
 		t.Parallel()
 		fx, handles := setup(t)
+		// The background goroutine below only becomes able to mark the
+		// launch directory read-only once release.json exists, which
+		// startWithDependencies only creates AFTER before returns -- so
+		// readOnly cannot be awaited from inside before itself (that would
+		// deadlock: before would be waiting on a signal that depends on
+		// its own return). Instead it is awaited after
+		// startWithDependencies returns, below, still before this subtest
+		// itself returns: slCovReadOnly chmods before it registers its own
+		// restoring t.Cleanup, so letting the subtest return first (without
+		// waiting for the goroutine) could race the test function's own
+		// return and leak a permanently read-only directory for a later
+		// t.TempDir() cleanup to trip over ("permission denied"; task-21,
+		// #740 review).
+		readOnly := make(chan struct{})
 		before := func(context.Context, Prepared) (string, error) {
 			state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
 			if err != nil {
@@ -304,14 +318,6 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 			attemptID := attempt.id
 			_ = attempt.Close()
 			_ = state.Close()
-			// Wait for the goroutine to finish marking the launch directory
-			// read-only (which itself registers slCovReadOnly's restoring
-			// t.Cleanup) before returning: slCovReadOnly chmods before it
-			// registers that cleanup, so returning first can race the test
-			// function's own return and leak a permanently read-only
-			// directory for a later t.TempDir() cleanup to trip over
-			// ("permission denied"; task-21, #740 review).
-			readOnly := make(chan struct{})
 			go func(attemptID string) {
 				defer close(readOnly)
 				releasePath := filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), "release.json")
@@ -324,12 +330,12 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 					time.Sleep(time.Millisecond)
 				}
 			}(attemptID)
-			<-readOnly
 			return "worklog", nil
 		}
 		if _, err := startWithDependencies(ctx, fx.options(before), fx.deps); err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("start finalized into a read-only launch directory: %v", err)
 		}
+		<-readOnly
 	})
 }
 
