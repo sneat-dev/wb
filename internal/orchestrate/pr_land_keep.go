@@ -146,28 +146,28 @@ func rewriteBranchForKeptCommits(
 		// context that the cancellation cannot reach.
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		_, _ = runGit(cleanupCtx, canonical, "worktree", "remove", "--force", worktree)
+		_ = orchestrateGit.WorktreeRemoveForce(cleanupCtx, canonical, worktree)
 		_ = os.RemoveAll(scratch)
 	}()
-	if _, err := runGit(ctx, canonical, "worktree", "add", "--detach", worktree, baseSHA); err != nil {
+	if err := orchestrateGit.WorktreeAddDetached(ctx, canonical, worktree, baseSHA); err != nil {
 		return nil, "", nil, fmt.Errorf("prepare landing scratch worktree: %w", err)
 	}
 
 	landed := make([]LandedCommit, 0, len(commits))
 	for _, step := range plan.steps {
 		if step.aggregate {
-			args := []string{"cherry-pick", "--no-commit"}
+			shas := make([]string, 0, len(step.sources))
 			for _, source := range step.sources {
-				args = append(args, source.SHA)
+				shas = append(shas, source.SHA)
 			}
-			if _, err := runGit(ctx, worktree, args...); err != nil {
+			if err := orchestrateGit.CherryPickNoCommit(ctx, worktree, shas...); err != nil {
 				return nil, "", &landRefusal{
 					code:   LandRefusalMergeRejected,
 					reason: "the aggregated commits do not replay cleanly onto the base: " + err.Error(),
 				}, nil
 			}
 			message := view.Title + "\n\n" + aggregatedCommitMessage(view, step.sources, approvedBy, reason)
-			if _, err := runGit(ctx, worktree, "commit", "--no-verify", "-m", message); err != nil {
+			if err := orchestrateGit.CommitNoVerify(ctx, worktree, message); err != nil {
 				return nil, "", nil, fmt.Errorf("write the aggregated commit: %w", err)
 			}
 			for _, source := range step.sources {
@@ -176,7 +176,7 @@ func rewriteBranchForKeptCommits(
 			continue
 		}
 		source := step.sources[0]
-		if _, err := runGit(ctx, worktree, "cherry-pick", source.SHA); err != nil {
+		if err := orchestrateGit.CherryPick(ctx, worktree, source.SHA); err != nil {
 			return nil, "", &landRefusal{
 				code:   LandRefusalMergeRejected,
 				reason: "kept commit " + shortMergeRevision(source.SHA) + " does not replay cleanly onto the base: " + err.Error(),
@@ -195,13 +195,11 @@ func rewriteBranchForKeptCommits(
 		landed = append(landed, LandedCommit{SourceSHA: source.SHA, Subject: source.Subject, Kept: true})
 	}
 
-	head, err := runGit(ctx, worktree, "rev-parse", "HEAD")
+	head, err := orchestrateGit.RevParse(ctx, worktree, "HEAD")
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if _, err := runGit(ctx, worktree, "push",
-		"--force-with-lease=refs/heads/"+headRef+":"+view.Head.SHA,
-		"origin", "HEAD:refs/heads/"+headRef); err != nil {
+	if err := orchestrateGit.PushForceWithLeaseHead(ctx, worktree, headRef, view.Head.SHA); err != nil {
 		return nil, "", &landRefusal{
 			code: LandRefusalHeadMoved,
 			reason: "the rewritten branch could not be published under a lease on " +
@@ -230,14 +228,13 @@ func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCom
 			command: "wb pr land … --keep-commits … --reason \"…\" --build-command \"<the repository's build>\"",
 		}
 	}
-	run := exec.CommandContext(ctx, command[0], command[1:]...)
-	run.Dir = worktree
-	run.Env = console.Env()
-	if output, err := run.CombinedOutput(); err != nil {
+	result, err := orchestrateRunner.Run(ctx, worktree, command[0], command[1:]...)
+	if err != nil {
+		output := result.Stdout + result.Stderr
 		return &landRefusal{
 			code: LandRefusalKeepDoesNotBuild,
 			reason: "kept commit " + shortMergeRevision(source.SHA) + " (" + source.Subject + ") does not build: " +
-				strings.TrimSpace(lastLines(string(output), 5)),
+				strings.TrimSpace(lastLines(output, 5)),
 			command: "wb pr land --keep-commits <a smaller set that excludes " + shortMergeRevision(source.SHA) + "> --reason \"…\"",
 		}
 	}
@@ -261,17 +258,6 @@ func lastLines(output string, count int) string {
 		return strings.Join(lines, "\n")
 	}
 	return strings.Join(lines[len(lines)-count:], "\n")
-}
-
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = dir
-	command.Env = console.Env()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-	}
-	return strings.TrimSpace(string(output)), nil
 }
 
 // runGitPushDeleteWithLease keeps a possibly credential-bearing push URL out
@@ -309,6 +295,12 @@ func runGitPushDeleteWithLease(ctx context.Context, dir, remoteURL, remoteRef, e
 	return detail, nil
 }
 
+// unusedTemporaryGitRemoteName is reached from runGitPushDeleteWithLease,
+// which every successful landing's deleteRemoteBranch calls -- the same
+// broad-blast-radius reason pr_land.go's resolveOriginPushURL comment gives
+// for not migrating that neighbouring call onto orchestrateGit in this PR
+// (task-17). It keeps its direct exec.CommandContext call rather than
+// routing through the guarded runner.
 func unusedTemporaryGitRemoteName(ctx context.Context, dir string) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		entropy := make([]byte, 16)
@@ -378,11 +370,10 @@ func landKeepingCommits(
 			command: "wb pr land " + options.Repository + "#" + number,
 		}, nil
 	}
-	if _, err := runGit(ctx, canonical, "fetch", "origin",
-		view.Base.Ref, view.Head.Ref); err != nil {
+	if err := orchestrateGit.FetchRefs(ctx, canonical, "origin", view.Base.Ref, view.Head.Ref); err != nil {
 		return nil, "", nil, fmt.Errorf("fetch the branch before rewriting it: %w", err)
 	}
-	baseSHA, err := runGit(ctx, canonical, "rev-parse", "refs/remotes/origin/"+view.Base.Ref)
+	baseSHA, err := orchestrateGit.RevParse(ctx, canonical, "refs/remotes/origin/"+view.Base.Ref)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -447,7 +438,7 @@ func MapLandedCommits(ctx context.Context, canonical, base, mergeBase string, la
 }
 
 func commitsBetween(ctx context.Context, canonical, from, to string) ([]string, error) {
-	output, err := runGit(ctx, canonical, "rev-list", "--reverse", from+".."+to)
+	output, err := orchestrateGit.RevListReverseRange(ctx, canonical, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -461,15 +452,18 @@ func commitsBetween(ctx context.Context, canonical, from, to string) ([]string, 
 }
 
 // patchIdentity is the content fingerprint of one commit.
+// patchIdentity runs its diff-tree/patch-id pipeline through orchestrateRunner
+// (spec/plans/coverage-to-100 task-17) rather than exec.CommandContext
+// directly. The pipe stays inside the "sh -c" script argument -- exactly as
+// it did before -- so this is still one child process (sh), not two piped
+// through the runner; only how that one child is started has changed.
 func patchIdentity(ctx context.Context, canonical, commit string) (string, error) {
-	command := exec.CommandContext(ctx, "sh", "-c",
+	result, err := orchestrateRunner.Run(ctx, "", "sh", "-c",
 		"git -C "+shellQuote(canonical)+" diff-tree -p --no-color "+shellQuote(commit)+" | git patch-id --stable")
-	command.Env = console.Env()
-	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("patch identity of %s: %w", shortMergeRevision(commit), err)
 	}
-	fields := strings.Fields(string(output))
+	fields := strings.Fields(result.Stdout)
 	if len(fields) == 0 {
 		return "", nil
 	}

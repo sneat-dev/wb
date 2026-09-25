@@ -7,6 +7,7 @@ package gitclitest
 
 import (
 	"context"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/gitcli"
 )
@@ -27,6 +28,29 @@ type Fake struct {
 	IsAncestorByCase map[string]BoolResult
 	// FetchErrByDirAndRemote maps "dir\x00remote" to Fetch's canned error.
 	FetchErrByDirAndRemote map[string]error
+
+	// The fields below back internal/orchestrate's Git port
+	// (spec/plans/coverage-to-100 task-17). Each map is keyed the same way
+	// as the fields above: dir joined with every other argument by "\x00",
+	// a variadic argument joined by "," first.
+
+	WorktreeRemoveForceErrByCase       map[string]error
+	WorktreeAddDetachedErrByCase       map[string]error
+	CherryPickNoCommitErrByCase        map[string]error
+	CommitNoVerifyErrByCase            map[string]error
+	CherryPickErrByCase                map[string]error
+	PushForceWithLeaseHeadErrByCase    map[string]error
+	FetchRefsErrByCase                 map[string]error
+	RevListReverseRangeByCase          map[string]Result
+	RemotePushURLByDirAndRemote        map[string]Result
+	StatusPorcelainByDir               map[string]Result
+	BranchShowCurrentByDir             map[string]Result
+	MergeBaseIsAncestorStrictErrByCase map[string]error
+	BranchSetUpstreamToErrByCase       map[string]error
+	MergeTreeWriteTreeByCase           map[string]Result
+	ShowTreeFormatByCase               map[string]Result
+	CommitObjectExistsByCase           map[string]bool
+	ConfigRegexpMatchesByCase          map[string]BoolResult
 }
 
 var _ gitcli.Git = (*Fake)(nil)
@@ -85,4 +109,172 @@ func (f *Fake) Fetch(_ context.Context, dir, remote string) error {
 		panic("gitclitest.Fake: Fetch not scripted for dir " + dir + " remote " + remote)
 	}
 	return err
+}
+
+// The methods below implement internal/orchestrate's Git port
+// (spec/plans/coverage-to-100 task-17) the same way every method above
+// implements gitcli.Git: look the case up by its scripted key, panic loudly
+// on an unscripted call.
+
+// WorktreeRemoveForce implements orchestrate.Git.
+func (f *Fake) WorktreeRemoveForce(_ context.Context, dir, worktree string) error {
+	err, ok := f.WorktreeRemoveForceErrByCase[key(dir, worktree)]
+	if !ok {
+		panic("gitclitest.Fake: WorktreeRemoveForce not scripted for " + key(dir, worktree))
+	}
+	return err
+}
+
+// WorktreeAddDetached implements orchestrate.Git.
+func (f *Fake) WorktreeAddDetached(_ context.Context, dir, path, revision string) error {
+	err, ok := f.WorktreeAddDetachedErrByCase[key(dir, path, revision)]
+	if !ok {
+		panic("gitclitest.Fake: WorktreeAddDetached not scripted for " + key(dir, path, revision))
+	}
+	return err
+}
+
+// CherryPickNoCommit implements orchestrate.Git.
+func (f *Fake) CherryPickNoCommit(_ context.Context, dir string, shas ...string) error {
+	caseKey := key(dir, strings.Join(shas, ","))
+	err, ok := f.CherryPickNoCommitErrByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: CherryPickNoCommit not scripted for " + caseKey)
+	}
+	return err
+}
+
+// CommitNoVerify implements orchestrate.Git.
+func (f *Fake) CommitNoVerify(_ context.Context, dir, message string) error {
+	err, ok := f.CommitNoVerifyErrByCase[key(dir, message)]
+	if !ok {
+		panic("gitclitest.Fake: CommitNoVerify not scripted for " + key(dir, message))
+	}
+	return err
+}
+
+// CherryPick implements orchestrate.Git.
+func (f *Fake) CherryPick(_ context.Context, dir, sha string) error {
+	err, ok := f.CherryPickErrByCase[key(dir, sha)]
+	if !ok {
+		panic("gitclitest.Fake: CherryPick not scripted for " + key(dir, sha))
+	}
+	return err
+}
+
+// PushForceWithLeaseHead implements orchestrate.Git.
+func (f *Fake) PushForceWithLeaseHead(_ context.Context, dir, ref, leaseSHA string) error {
+	caseKey := key(dir, ref, leaseSHA)
+	err, ok := f.PushForceWithLeaseHeadErrByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: PushForceWithLeaseHead not scripted for " + caseKey)
+	}
+	return err
+}
+
+// FetchRefs implements orchestrate.Git.
+func (f *Fake) FetchRefs(_ context.Context, dir, remote string, refs ...string) error {
+	caseKey := key(dir, remote, strings.Join(refs, ","))
+	err, ok := f.FetchRefsErrByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: FetchRefs not scripted for " + caseKey)
+	}
+	return err
+}
+
+// RevListReverseRange implements orchestrate.Git.
+func (f *Fake) RevListReverseRange(_ context.Context, dir, from, to string) (string, error) {
+	caseKey := key(dir, from, to)
+	result, ok := f.RevListReverseRangeByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: RevListReverseRange not scripted for " + caseKey)
+	}
+	return result.Value, result.Err
+}
+
+// RemotePushURL implements orchestrate.Git.
+func (f *Fake) RemotePushURL(_ context.Context, dir, remote string) (string, error) {
+	result, ok := f.RemotePushURLByDirAndRemote[key(dir, remote)]
+	if !ok {
+		panic("gitclitest.Fake: RemotePushURL not scripted for " + key(dir, remote))
+	}
+	return result.Value, result.Err
+}
+
+// StatusPorcelain implements orchestrate.Git.
+func (f *Fake) StatusPorcelain(_ context.Context, dir string) (string, error) {
+	result, ok := f.StatusPorcelainByDir[dir]
+	if !ok {
+		panic("gitclitest.Fake: StatusPorcelain not scripted for dir " + dir)
+	}
+	return result.Value, result.Err
+}
+
+// BranchShowCurrent implements orchestrate.Git.
+func (f *Fake) BranchShowCurrent(_ context.Context, dir string) (string, error) {
+	result, ok := f.BranchShowCurrentByDir[dir]
+	if !ok {
+		panic("gitclitest.Fake: BranchShowCurrent not scripted for dir " + dir)
+	}
+	return result.Value, result.Err
+}
+
+// MergeBaseIsAncestorStrict implements orchestrate.Git.
+func (f *Fake) MergeBaseIsAncestorStrict(_ context.Context, dir, ancestor, descendant string) error {
+	caseKey := key(dir, ancestor, descendant)
+	err, ok := f.MergeBaseIsAncestorStrictErrByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: MergeBaseIsAncestorStrict not scripted for " + caseKey)
+	}
+	return err
+}
+
+// BranchSetUpstreamTo implements orchestrate.Git.
+func (f *Fake) BranchSetUpstreamTo(_ context.Context, dir, upstream, branch string) error {
+	caseKey := key(dir, upstream, branch)
+	err, ok := f.BranchSetUpstreamToErrByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: BranchSetUpstreamTo not scripted for " + caseKey)
+	}
+	return err
+}
+
+// MergeTreeWriteTree implements orchestrate.Git.
+func (f *Fake) MergeTreeWriteTree(_ context.Context, dir, a, b string) (string, error) {
+	caseKey := key(dir, a, b)
+	result, ok := f.MergeTreeWriteTreeByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: MergeTreeWriteTree not scripted for " + caseKey)
+	}
+	return result.Value, result.Err
+}
+
+// ShowTreeFormat implements orchestrate.Git.
+func (f *Fake) ShowTreeFormat(_ context.Context, dir, commit string) (string, error) {
+	caseKey := key(dir, commit)
+	result, ok := f.ShowTreeFormatByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: ShowTreeFormat not scripted for " + caseKey)
+	}
+	return result.Value, result.Err
+}
+
+// CommitObjectExists implements orchestrate.Git.
+func (f *Fake) CommitObjectExists(_ context.Context, dir, sha string) bool {
+	caseKey := key(dir, sha)
+	value, ok := f.CommitObjectExistsByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: CommitObjectExists not scripted for " + caseKey)
+	}
+	return value
+}
+
+// ConfigRegexpMatches implements orchestrate.Git.
+func (f *Fake) ConfigRegexpMatches(_ context.Context, dir, pattern string) (bool, error) {
+	caseKey := key(dir, pattern)
+	result, ok := f.ConfigRegexpMatchesByCase[caseKey]
+	if !ok {
+		panic("gitclitest.Fake: ConfigRegexpMatches not scripted for " + caseKey)
+	}
+	return result.Value, result.Err
 }

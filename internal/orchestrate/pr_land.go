@@ -940,7 +940,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 		// The landed SHAs exist only now: a rebase merge replays every commit.
 		canonical, _, _, locateErr := locateBranchCheckout(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref)
 		if locateErr == nil && canonical != "" {
-			if _, fetchErr := runGit(ctx, canonical, "fetch", "origin", view.Base.Ref); fetchErr == nil {
+			if fetchErr := orchestrateGit.FetchRefs(ctx, canonical, "origin", view.Base.Ref); fetchErr == nil {
 				mapped, mapErr := MapLandedCommits(ctx, canonical, "refs/remotes/origin/"+view.Base.Ref, view.Base.SHA, result.Commits)
 				if mapErr == nil {
 					result.Commits = mapped
@@ -1321,10 +1321,20 @@ func deleteRemoteBranch(ctx context.Context, canonical, repository string, view,
 	if expected == "" {
 		return false, fmt.Errorf("refuse to delete branch %s without the merged pull request head SHA", ref)
 	}
-	remoteURL, remoteErr := runGit(ctx, canonical, "remote", "get-url", "--push", "origin")
+	// deleteRemoteBranch sits on every successful landing's happy path (not
+	// only the dedicated keep-commits/delete-branch tests), so migrating
+	// this call onto orchestrateGit -- unlike this file's other one
+	// (finalizeLandedPullRequest's FetchRefs, reached only when the landing
+	// tracked kept-commit SHAs) -- would require moving most of
+	// pr_land_test.go's suite behind the e2e tag as well. That is judged out
+	// of scope for this migration PR (task-17); this call keeps running
+	// through the package's existing retrying runCommand (command.go),
+	// which is real but unguarded, exactly as it did before this PR.
+	remoteURLRaw, _, remoteErr := runCommand(ctx, 0, 0, canonical, "git", "remote", "get-url", "--push", "origin")
 	if remoteErr != nil {
 		return false, fmt.Errorf("resolve origin before deleting branch %s: %w", ref, remoteErr)
 	}
+	remoteURL := strings.TrimSpace(remoteURLRaw)
 	remoteRef := "refs/heads/" + ref
 	_, deleteErr := runGitPushDeleteWithLease(ctx, canonical, remoteURL, remoteRef, expected)
 	if deleteErr != nil {

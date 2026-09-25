@@ -82,6 +82,18 @@ var execSiteAllowedFunctionNames = map[string]bool{
 	"runSecureStageCanonicalGitHelper": true, "RunSecureStageCanonicalGitHelper": true,
 	"runSecureRenameGitBytesWithHeldWorktree": true, "RunSecureRenameGitHelper": true,
 	"runSecureCleanupGitHelper": true, "RunSecureCleanupGitHelper": true,
+
+	// runGitPushDeleteWithLease (internal/orchestrate/pr_land_keep.go,
+	// task-17) keeps a possibly credential-bearing push URL out of argv and
+	// error text by configuring a throwaway git remote through
+	// GIT_CONFIG_COUNT/KEY/VALUE environment variables set only on its own
+	// child's environment. internal/runner.Runner.Run has no per-call env
+	// override (task-8's four operations take no env parameter), so this one
+	// call keeps its direct exec.CommandContext rather than losing that
+	// property to route through the runner. Named in task-17's PR per
+	// verifies #4's "any addition to the allow-list is named in the PR and
+	// approved in review."
+	"runGitPushDeleteWithLease": true,
 }
 
 // execSiteAllowedDirs are directory prefixes (relative to root, forward

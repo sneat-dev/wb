@@ -182,9 +182,9 @@ internal/orchestrate/misc_coverage_test.go	13	task-17
 internal/orchestrate/operation_lock_test.go	2	task-17
 internal/orchestrate/pr_create_test.go	50	task-17
 internal/orchestrate/pr_land_coverage_test.go	23	task-17
-internal/orchestrate/pr_land_keep_coverage_test.go	39	task-17
-internal/orchestrate/pr_land_local_sync_test.go	21	task-17
-internal/orchestrate/pr_land_review_minors_test.go	9	task-17
+internal/orchestrate/pr_land_keep_coverage_test.go	1	task-17
+internal/orchestrate/pr_land_local_sync_test.go	1	task-17
+internal/orchestrate/pr_land_review_minors_test.go	5	task-17
 internal/orchestrate/pr_land_test.go	28	task-17
 internal/orchestrate/pr_land_update_branch_test.go	4	task-17
 internal/orchestrate/worktree_merge_absorbed_conflict_go_test.go	17	task-17

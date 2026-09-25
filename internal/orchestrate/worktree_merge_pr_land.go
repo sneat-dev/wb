@@ -460,13 +460,13 @@ func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target,
 	if ancestorErr != nil || !targetAncestor {
 		return false, nil
 	}
-	writtenTree, treeErr := runGit(ctx, worktree, "merge-tree", "--write-tree", candidateSHA, targetParent)
+	writtenTree, treeErr := orchestrateGit.MergeTreeWriteTree(ctx, worktree, candidateSHA, targetParent)
 	if treeErr != nil {
 		return false, nil
 	}
 	var headTree string
 	if headLocal {
-		tree, headTreeErr := runGit(ctx, worktree, "show", "-s", "--format=%T", headSHA)
+		tree, headTreeErr := orchestrateGit.ShowTreeFormat(ctx, worktree, headSHA)
 		if headTreeErr != nil {
 			return false, nil
 		}
@@ -493,8 +493,7 @@ func commitExistsLocally(ctx context.Context, worktree, sha string) bool {
 	if sha == "" {
 		return false
 	}
-	_, err := runGit(ctx, worktree, "cat-file", "-e", sha+"^{commit}")
-	return err == nil
+	return orchestrateGit.CommitObjectExists(ctx, worktree, sha)
 }
 
 // adoptServerUpdatedWorktreeMergeHead closes red-team finding M5 for the one

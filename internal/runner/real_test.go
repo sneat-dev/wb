@@ -22,8 +22,8 @@ func TestRunnerHelperProcess(t *testing.T) {
 	if os.Getenv("WB_RUNNER_HELPER") != "1" {
 		return
 	}
-	fmt.Fprint(os.Stdout, os.Getenv("WB_RUNNER_STDOUT")) //nolint:forbidigo // helper-process fixture
-	fmt.Fprint(os.Stderr, os.Getenv("WB_RUNNER_STDERR")) //nolint:forbidigo // helper-process fixture
+	fmt.Fprint(os.Stdout, os.Getenv("WB_RUNNER_STDOUT")) //nolint:forbidigo,errcheck // helper-process fixture
+	fmt.Fprint(os.Stderr, os.Getenv("WB_RUNNER_STDERR")) //nolint:forbidigo,errcheck // helper-process fixture
 	if os.Getenv("WB_RUNNER_SLEEP") == "1" {
 		time.Sleep(10 * time.Second)
 	}

@@ -58,7 +58,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 	}
 	prefix := fmt.Sprintf("local worktree not fast-forwarded: %s: ", worktree)
 
-	status, err := runGit(ctx, worktree, "status", "--porcelain")
+	status, err := orchestrateGit.StatusPorcelain(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -66,7 +66,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 		return prefix + "uncommitted changes"
 	}
 
-	current, err := runGit(ctx, worktree, "branch", "--show-current")
+	current, err := orchestrateGit.BranchShowCurrent(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -89,7 +89,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 			shortMergeRevision(fetched), shortMergeRevision(updatedHead))
 	}
 
-	if _, ancestorErr := runGit(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", remoteRef); ancestorErr != nil {
+	if ancestorErr := orchestrateGit.MergeBaseIsAncestorStrict(ctx, worktree, "HEAD", remoteRef); ancestorErr != nil {
 		return prefix + "diverged local commits"
 	}
 
@@ -99,7 +99,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 
 	// Best effort: the fast-forward already succeeded, and a tracking-branch
 	// slip is not worth reporting as an obstacle to it.
-	_, _ = runGit(ctx, worktree, "branch", "--set-upstream-to=origin/"+branch, branch)
+	_ = orchestrateGit.BranchSetUpstreamTo(ctx, worktree, "origin/"+branch, branch)
 
 	return fmt.Sprintf("fast-forwarded worktree %s to %s", worktree, shortMergeRevision(updatedHead))
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -21,12 +22,20 @@ func New() Real { return Real{} }
 
 // Run starts name with args in dir, waits for it to exit, and returns its
 // captured stdout, stderr and exit status.
+//
+// Run is documented as the operation "most git and gh calls" use, so its
+// child always carries console.Env(): the non-interactive settings every
+// direct exec.Command git/gh call site in this repository has set by hand
+// (nonInteractiveChildEnv, GIT_SSH_COMMAND), so a consumer that migrates
+// onto Run keeps the same "never hangs on a prompt" guarantee without
+// reproducing that env-building itself.
 func (Real) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
 	if err := guardRealProcess(); err != nil {
 		return Result{}, err
 	}
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	command.Env = console.Env()
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
