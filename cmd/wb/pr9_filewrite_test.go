@@ -100,11 +100,19 @@ func TestDefaultBranchReportPathInjectedLeavesTheReservationOnAnInjectedCloseFai
 
 // --- applyClassicProtectionWithoutLinearHistoryInjected ---
 
+// TestApplyClassicProtectionWithoutLinearHistoryInjectedHonoursInjectedFailures
+// does not run its subtests under t.Parallel(): applyClassicProtectionWithoutLinearHistoryInjected
+// has no seam to give each case its own directory (it always reserves its
+// scratch file in the shared, package-wide os.TempDir()), and every case
+// globs that same "wb-merge-policy-protection-*.json" namespace to prove
+// what each failure leaves on disk. Run in parallel, one case's own live
+// scratch file is visible to a sibling case's glob and produces a false
+// "leftover scratch file" failure — the same hazard
+// internal/locallink/pr9_filewrite_test.go documents and avoids the same way.
 func TestApplyClassicProtectionWithoutLinearHistoryInjectedHonoursInjectedFailures(t *testing.T) {
 	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepChmod, filewrite.StepWrite, filewrite.StepClose} {
 		step := step
 		t.Run(string(step), func(t *testing.T) {
-			t.Parallel()
 			inj := &filewrite.Injector{Step: step, Err: errBoomPR9}
 			err := applyClassicProtectionWithoutLinearHistoryInjected(context.Background(), "repos/acme/app/branches/main/protection", []byte("{}"), inj)
 			if !errors.Is(err, errBoomPR9) {
