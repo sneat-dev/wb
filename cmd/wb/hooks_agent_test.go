@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // agentGuardFixture builds a projects root with one canonical clone and one
@@ -513,5 +516,42 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if got := resolveWBExecutableForHook(missing); got != missing {
 		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q (self unchanged)", missing, got, missing)
+	}
+}
+
+// The following tests exercise writeSettingsAtomicallyInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, write, close,
+// chmod, or rename failure deterministically needs the injector.
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
 	}
 }

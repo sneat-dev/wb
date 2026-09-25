@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -83,6 +84,19 @@ func launchdTargetFor(label string) string {
 }
 
 func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
+	return startDaemonProcessInjected(executable, args, logPath, nil)
+}
+
+// startDaemonProcessInjected is startDaemonProcess's test seam (task-9
+// PR-2): every production call site reaches it only through
+// startDaemonProcess, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/chmod/write/close/rename failure branch
+// deterministically. This file builds only on darwin, so Linux CI's
+// coverage ratchet cannot see any of it either way; verification here is
+// necessarily a darwin cross-compile plus a launchctl-faked test, not a
+// Linux coverage number.
+func startDaemonProcessInjected(executable string, args []string, logPath string, inj *filewrite.Injector) (int, error) {
 	if err := daemonRefuseTestBinary(executable); err != nil {
 		return 0, err
 	}
@@ -97,24 +111,24 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 		return 0, err
 	}
 	data := launchdPlistBytes(executable, args, logPath)
-	temporary, err := os.CreateTemp(filepath.Dir(plistPath), ".wb-daemon-*.plist")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(plistPath), ".wb-daemon-*.plist", inj)
 	if err != nil {
 		return 0, err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.Chmod(int(temporary.Fd()), 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return 0, err
 	}
-	if _, err := temporary.Write(data); err != nil {
+	if err := filewrite.Write(temporary, data, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return 0, err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return 0, err
 	}
-	if err := os.Rename(temporaryName, plistPath); err != nil {
+	if err := filewrite.Rename(temporaryName, plistPath, inj); err != nil {
 		return 0, err
 	}
 	// Re-bootstrap the exact per-user service so an older executable or

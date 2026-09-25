@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -224,19 +225,29 @@ func refuseExistingTokenFile(path string) error {
 // symlink — already sits at path, which is the real, race-free guarantee
 // behind refuseExistingTokenFile's earlier, friendlier check.
 func writeOneTimeToken(path, token string) error {
+	return writeOneTimeTokenInjected(path, token, nil)
+}
+
+// writeOneTimeTokenInjected is writeOneTimeToken's test seam (task-9
+// PR-2): every production call site reaches it only through
+// writeOneTimeToken, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/close failure branch deterministically.
+// This site never called Sync, and none is introduced here.
+func writeOneTimeTokenInjected(path, token string, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create token directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := filewrite.CreateExclusivePath(path, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("create token file: %w", err)
 	}
-	if _, err := io.WriteString(file, token+"\n"); err != nil {
+	if err := filewrite.Write(file, []byte(token+"\n"), path, inj); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return fmt.Errorf("write token file: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, path, inj); err != nil {
 		_ = os.Remove(path)
 		return fmt.Errorf("close token file: %w", err)
 	}
@@ -518,6 +529,16 @@ func loadPeerUpstreamState(path string) (peerUpstreamState, error) {
 // mid-write must never leave a half-written, unparseable state file behind —
 // loadPeerUpstreamState has no repair path, only a parse error.
 func savePeerUpstreamState(path string, state peerUpstreamState) error {
+	return savePeerUpstreamStateInjected(path, state, nil)
+}
+
+// savePeerUpstreamStateInjected is savePeerUpstreamState's test seam
+// (task-9 PR-2): every production call site reaches it only through
+// savePeerUpstreamState, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/chmod/write/sync/close/rename failure
+// branch deterministically.
+func savePeerUpstreamStateInjected(path string, state peerUpstreamState, inj *filewrite.Injector) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create upstream peer state directory: %w", err)
@@ -526,28 +547,28 @@ func savePeerUpstreamState(path string, state peerUpstreamState) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(dir, ".peer-upstream-*.json.tmp")
+	temporary, err := filewrite.CreateTemp(dir, ".peer-upstream-*.json.tmp", inj)
 	if err != nil {
 		return fmt.Errorf("stage upstream peer state: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.Chmod(int(temporary.Fd()), 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("protect staged upstream peer state: %w", err)
 	}
-	if _, err := temporary.Write(raw); err != nil {
+	if err := filewrite.Write(temporary, raw, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write upstream peer state: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("sync upstream peer state: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return fmt.Errorf("close upstream peer state: %w", err)
 	}
-	if err := os.Rename(temporaryName, path); err != nil {
+	if err := filewrite.Rename(temporaryName, path, inj); err != nil {
 		return fmt.Errorf("replace upstream peer state: %w", err)
 	}
 	return nil

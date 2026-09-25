@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
@@ -1837,6 +1838,81 @@ func TestDefaultBranchReportPersistsAndPrintsCloneFindings(t *testing.T) {
 		if err := printDefaultBranchReport(writer, report); err == nil {
 			t.Fatalf("output failure at write %d was ignored", failAt)
 		}
+	}
+}
+
+// The following tests exercise persistDefaultBranchReportInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, chmod, write,
+// sync, close, rename, or directory-sync failure deterministically needs
+// the injector.
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+}
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+}
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+}
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+}
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+}
+
+func TestPersistDefaultBranchReportInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {
+	path, err := defaultBranchReportPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepDirSync, Err: errBoomForCmdWB}
+	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("report was not published before the injected directory sync failure: %v", err)
 	}
 }
 

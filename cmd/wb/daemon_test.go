@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 func TestDaemonRequiresLoopbackListener(t *testing.T) {
@@ -891,4 +892,54 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		return pid, nil
 	}
 	return deps
+}
+
+// The following tests exercise writeLifecycleOwnerPIDInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, chmod, write,
+// sync, close, or rename failure deterministically needs the injector.
+
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+}
+
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); err == nil || !strings.Contains(err.Error(), "write daemon lifecycle owner") {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+}
+
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); err == nil || !strings.Contains(err.Error(), "sync daemon lifecycle owner") {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+}
+
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+}
+
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); err == nil || !strings.Contains(err.Error(), "replace daemon lifecycle owner") {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +12,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/graduation"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+// errBoomForCmdWB is a shared sentinel used across this package's
+// task-9 PR-2 fault-injection tests (each migrated cmd/wb call site
+// threads a *filewrite.Injector through so a test can force one write/
+// sync/chmod/rename/close step to fail deterministically).
+var errBoomForCmdWB = errors.New("boom")
 
 func TestVerifyReceiptComposesExactMachineReadableEvidence(t *testing.T) {
 	paths, now := writeGraduationEvidence(t)
@@ -172,6 +180,80 @@ func writeGraduationEvidence(t *testing.T) (graduationEvidencePaths, time.Time) 
 	writeReceiptTestJSON(t, paths.deployed, deployed)
 	writeReceiptTestJSON(t, paths.cleanup, cleanup)
 	return paths, cleanupAt.Add(time.Minute)
+}
+
+func TestWriteGraduationReceiptWritesTheRawBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := writeGraduationReceipt(path, []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("content = %q, want %q", got, "payload")
+	}
+}
+
+func TestWriteGraduationReceiptReportsAMissingOutputDirectory(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing", "receipt.json")
+	if err := writeGraduationReceipt(path, []byte("payload")); err == nil {
+		t.Fatal("writeGraduationReceipt under a missing directory = nil, want an error")
+	}
+}
+
+func TestWriteGraduationReceiptReportsTheOutputDirectoryBeingAFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	notADirectory := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(notADirectory, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(notADirectory, "receipt.json")
+	if err := writeGraduationReceipt(path, []byte("payload")); err == nil {
+		t.Fatal("writeGraduationReceipt with a file where the directory should be = nil, want an error")
+	}
+}
+
+func TestWriteGraduationReceiptReportsAnExistingReceiptFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, []byte("already here"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGraduationReceipt(path, []byte("payload")); err == nil {
+		t.Fatal("writeGraduationReceipt over an existing file = nil, want an error")
+	}
+}
+
+func TestWriteGraduationReceiptInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Name: path, Err: errBoomForCmdWB}
+	if err := writeGraduationReceiptInjected(path, []byte("payload"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeGraduationReceiptInjected with injected write failure = %v, want errBoomForCmdWB", err)
+	}
+}
+
+func TestWriteGraduationReceiptInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	inj := &filewrite.Injector{Step: filewrite.StepSync, Name: path, Err: errBoomForCmdWB}
+	if err := writeGraduationReceiptInjected(path, []byte("payload"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeGraduationReceiptInjected with injected sync failure = %v, want errBoomForCmdWB", err)
+	}
+}
+
+func TestWriteGraduationReceiptInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Name: path, Err: errBoomForCmdWB}
+	if err := writeGraduationReceiptInjected(path, []byte("payload"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeGraduationReceiptInjected with injected close failure = %v, want errBoomForCmdWB", err)
+	}
 }
 
 func writeReceiptTestJSON(t *testing.T, path string, value any) {
