@@ -25,6 +25,7 @@ import (
 	// to wb#631's harness-identity package.
 	"github.com/sneat-dev/wb/internal/filewrite"
 	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
+	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
@@ -3430,18 +3431,26 @@ func removeLegacyWorkLogProjection(worktree string) error {
 	return root.Sync()
 }
 
+// openWorkLogRun's fd-relative opens go through secureopen.Real, the
+// production Opener; openWorkLogRunWith below takes an explicit Opener so a
+// test can substitute secureopen.Fake instead, the seam spec/plans/
+// coverage-to-100 lane cov-seam-fs added.
 func openWorkLogRun(home, effort, run string, create bool) (*os.File, string, error) {
+	return openWorkLogRunWith(secureopen.Real{}, home, effort, run, create)
+}
+
+func openWorkLogRunWith(opener secureopen.Opener, home, effort, run string, create bool) (*os.File, string, error) {
 	if !validSafeSegment(effort) || !validSafeSegment(run) {
 		return nil, "", fmt.Errorf("invalid work-log effort/run identity")
 	}
-	homeDir, err := openAbsoluteDirectoryNoFollow(home, create)
+	homeDir, err := openAbsoluteDirectoryNoFollowWith(opener, home, create)
 	if err != nil {
 		return nil, "", err
 	}
 	defer func() { _ = homeDir.Close() }()
 	current := homeDir
 	for _, segment := range []string{"worklogs", effort, "runs", run} {
-		next, openErr := openPrivateChild(current, segment, create)
+		next, openErr := openPrivateChildWith(opener, current, segment, create)
 		if current != homeDir {
 			_ = current.Close()
 		}
@@ -3475,16 +3484,24 @@ func openWorkLogOutbox(home, effort string, create bool) (*os.File, error) {
 	return openPrivateChild(effortDir, "outbox", create)
 }
 
+// openPrivateChild's fd-relative opens go through secureopen.Real, the
+// production Opener; openPrivateChildWith below takes an explicit Opener so
+// a test can substitute secureopen.Fake instead, the seam spec/plans/
+// coverage-to-100 lane cov-seam-fs added.
 func openPrivateChild(parent *os.File, name string, create bool) (*os.File, error) {
+	return openPrivateChildWith(secureopen.Real{}, parent, name, create)
+}
+
+func openPrivateChildWith(opener secureopen.Opener, parent *os.File, name string, create bool) (*os.File, error) {
 	if !validSafeSegment(name) {
 		return nil, fmt.Errorf("unsafe private directory segment %q", name)
 	}
 	var fd int
 	var err error
 	if create {
-		fd, err = openOrCreateNoFollowDirectory(int(parent.Fd()), name)
+		fd, err = openOrCreateNoFollowDirectoryWith(opener, int(parent.Fd()), name)
 	} else {
-		fd, err = unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		fd, err = opener.OpenDir(int(parent.Fd()), name)
 	}
 	if err != nil {
 		return nil, err
