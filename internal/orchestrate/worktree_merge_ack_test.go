@@ -249,17 +249,16 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionNeverOverwritesConcurrentAcknow
 	}
 	conflictingBytes = append(conflictingBytes, '\n')
 	path := receiptCollisionAcknowledgementPath(receipt.ReceiptPath)
-	previousLink := linkReceiptCollisionAcknowledgement
-	linkReceiptCollisionAcknowledgement = func(_, destination string) error {
-		if destination != path {
-			t.Fatalf("atomic create destination = %s, want %s", destination, path)
-		}
-		if err := os.WriteFile(destination, conflictingBytes, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return os.ErrExist
+	// A genuine concurrent writer wins the race by publishing the
+	// conflicting acknowledgement before this call's own
+	// filewrite.LinkPath attempt, so os.Link itself returns a real
+	// os.ErrExist -- no injected mock is needed to reach this branch.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { linkReceiptCollisionAcknowledgement = previousLink })
+	if err := os.WriteFile(path, conflictingBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	options.Apply = true
 	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
@@ -270,7 +269,6 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionNeverOverwritesConcurrentAcknow
 		t.Fatalf("conflicting acknowledgement was replaced: err=%v", err)
 	}
 
-	linkReceiptCollisionAcknowledgement = previousLink
 	replayed, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
 	if err == nil || replayed.ID != "" {
 		t.Fatalf("conflicting replay was accepted: acknowledgement=%+v err=%v", replayed, err)
@@ -1946,14 +1944,17 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 		t.Fatal(err)
 	}
 	competingBytes = append(competingBytes, '\n')
-	previousLink := linkSelfSupersessionCorrection
-	linkSelfSupersessionCorrection = func(_, path string) error {
-		if err := os.WriteFile(path, competingBytes, 0o600); err != nil {
-			return err
-		}
-		return os.ErrExist
+	// A genuine concurrent writer wins the race by publishing the
+	// competing correction before this call's own filewrite.LinkPath
+	// attempt, so os.Link itself returns a real os.ErrExist -- no
+	// injected mock is needed to reach this branch.
+	competingPath := selfSupersessionCorrectionPath(receipt.ReceiptPath)
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { linkSelfSupersessionCorrection = previousLink })
+	if err := os.WriteFile(competingPath, competingBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), options); err == nil || !strings.Contains(err.Error(), "concurrent self-supersession correction") {
 		t.Fatalf("concurrent correction error = %v", err)
 	}

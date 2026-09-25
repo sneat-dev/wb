@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -242,6 +243,17 @@ func sameUnpublishedValidationFailureAcknowledgement(left, right WorktreeMergeUn
 }
 
 func persistUnpublishedValidationFailureAcknowledgement(path string, ack WorktreeMergeUnpublishedValidationFailureAcknowledgement) error {
+	return persistUnpublishedValidationFailureAcknowledgementInjected(path, ack, nil)
+}
+
+// persistUnpublishedValidationFailureAcknowledgementInjected is
+// persistUnpublishedValidationFailureAcknowledgement's test seam (task-9
+// PR-4): every production call site reaches it only through
+// persistUnpublishedValidationFailureAcknowledgement, which always passes a
+// nil *filewrite.Injector, so production behaviour is unchanged; a test
+// passes its own Injector directly to reach a
+// create/chmod/write/sync/close/rename failure branch deterministically.
+func persistUnpublishedValidationFailureAcknowledgementInjected(path string, ack WorktreeMergeUnpublishedValidationFailureAcknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -250,28 +262,28 @@ func persistUnpublishedValidationFailureAcknowledgement(path string, ack Worktre
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".unpublished-validation-failure-ack-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".unpublished-validation-failure-ack-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func readUnpublishedValidationFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeUnpublishedValidationFailureAcknowledgement, error) {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -38,28 +39,6 @@ const (
 	worktreeMergeConflictCandidateAdvanceSchemaVersion        = 1
 	worktreeMergeConflictCandidateAdvanceSuffix               = ".conflict-candidate-advanced.ack.json"
 )
-
-// linkSelfSupersessionCorrection publishes a fully synced temporary file without
-// replacing an existing correction. It is replaceable only by tests that prove
-// the concurrent create-if-absent path is fail-closed.
-var linkSelfSupersessionCorrection = os.Link
-
-// linkLegacyValidationFailureIdentity publishes a derived legacy identity
-// without replacing the historical receipt or a prior acknowledgement.
-var linkLegacyValidationFailureIdentity = os.Link
-
-// linkLegacyConflictIdentity publishes a derived identity for the legacy
-// unpublished-conflict shape whose receipt omitted candidate.SHA.
-var linkLegacyConflictIdentity = os.Link
-
-// linkMissingCleanupAcknowledgement publishes audited legacy cleanup evidence
-// without replacing either the historical receipt or missing Work Logs.
-var linkMissingCleanupAcknowledgement = os.Link
-
-// linkConflictCandidateAdvance publishes the resolved conflict transition
-// without replacing the original conflict receipt. A retry either reads this
-// exact evidence or refuses a different manual resolution.
-var linkConflictCandidateAdvance = os.Link
 
 // WorktreeMergeConflictCandidateAdvance is the append-only bridge between a
 // conflict receipt's original candidate and the clean, manually resolved
@@ -505,9 +484,21 @@ func sameReceiptCollisionAcknowledgement(left, right WorktreeMergeReceiptCollisi
 		left.Actor == right.Actor && left.Reason == right.Reason
 }
 
-var linkReceiptCollisionAcknowledgement = os.Link
-
 func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceiptCollisionAcknowledgement) error {
+	return persistReceiptCollisionAcknowledgementInjected(path, ack, nil)
+}
+
+// persistReceiptCollisionAcknowledgementInjected is
+// persistReceiptCollisionAcknowledgement's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistReceiptCollisionAcknowledgement, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link
+// failure branch deterministically, and can use Injector.Hook to build a
+// real concurrent-collision race at the final LinkPath call the way the
+// package-level linkReceiptCollisionAcknowledgement var this replaces used
+// to let a test do by reassignment.
+func persistReceiptCollisionAcknowledgementInjected(path string, ack WorktreeMergeReceiptCollisionAcknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -516,28 +507,28 @@ func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceip
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".receipt-collision-ack-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".receipt-collision-ack-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return linkReceiptCollisionAcknowledgement(temporaryPath, path)
+	return filewrite.LinkPath(temporaryPath, path, inj)
 }
 
 func readReceiptCollisionAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
@@ -800,6 +791,17 @@ func preparedRebatchID(rebatch WorktreeMergePreparedRebatch) string {
 func rebatchPath(receiptPath string) string { return receiptPath + worktreeMergePreparedRebatchSuffix }
 
 func persistPreparedWorktreeMergeRebatch(path string, rebatch WorktreeMergePreparedRebatch) error {
+	return persistPreparedWorktreeMergeRebatchInjected(path, rebatch, nil)
+}
+
+// persistPreparedWorktreeMergeRebatchInjected is
+// persistPreparedWorktreeMergeRebatch's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistPreparedWorktreeMergeRebatch, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistPreparedWorktreeMergeRebatchInjected(path string, rebatch WorktreeMergePreparedRebatch, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(rebatch, "", "  ")
 	if err != nil {
 		return err
@@ -808,28 +810,28 @@ func persistPreparedWorktreeMergeRebatch(path string, rebatch WorktreeMergePrepa
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".prepared-rebatch-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".prepared-rebatch-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 // persistPreparedWorktreeMergeRebatchForPrepare is a narrow test seam for the
@@ -1969,6 +1971,17 @@ func landedFailureAcknowledgementPath(receiptPath string) string {
 }
 
 func persistLandedFailureAcknowledgement(path string, ack WorktreeMergeLandedFailureAcknowledgement) error {
+	return persistLandedFailureAcknowledgementInjected(path, ack, nil)
+}
+
+// persistLandedFailureAcknowledgementInjected is
+// persistLandedFailureAcknowledgement's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistLandedFailureAcknowledgement, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistLandedFailureAcknowledgementInjected(path string, ack WorktreeMergeLandedFailureAcknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -1977,28 +1990,28 @@ func persistLandedFailureAcknowledgement(path string, ack WorktreeMergeLandedFai
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".landed-validation-failed-ack-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".landed-validation-failed-ack-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeLandedFailureAcknowledgement, error) {
@@ -2081,6 +2094,17 @@ func conflictCandidateAdvanceID(ack WorktreeMergeConflictCandidateAdvance) strin
 }
 
 func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandidateAdvance) error {
+	return persistConflictCandidateAdvanceInjected(path, ack, nil)
+}
+
+// persistConflictCandidateAdvanceInjected is
+// persistConflictCandidateAdvance's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistConflictCandidateAdvance, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link/
+// dir-sync failure branch deterministically.
+func persistConflictCandidateAdvanceInjected(path string, ack WorktreeMergeConflictCandidateAdvance, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -2089,28 +2113,28 @@ func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandi
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".conflict-candidate-advance-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".conflict-candidate-advance-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := linkConflictCandidateAdvance(temporaryPath, path); err != nil {
+	if err := filewrite.LinkPath(temporaryPath, path, inj); err != nil {
 		return err
 	}
 	directory, err := os.Open(filepath.Dir(path))
@@ -2118,7 +2142,7 @@ func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandi
 		return err
 	}
 	defer func() { _ = directory.Close() }()
-	return directory.Sync()
+	return filewrite.SyncDir(directory, inj)
 }
 
 func readConflictCandidateAdvance(path string) (WorktreeMergeConflictCandidateAdvance, error) {
@@ -2171,6 +2195,17 @@ func sameLegacyValidationFailureIdentity(left, right WorktreeMergeLegacyValidati
 }
 
 func persistLegacyValidationFailureIdentity(path string, ack WorktreeMergeLegacyValidationFailureIdentity) error {
+	return persistLegacyValidationFailureIdentityInjected(path, ack, nil)
+}
+
+// persistLegacyValidationFailureIdentityInjected is
+// persistLegacyValidationFailureIdentity's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistLegacyValidationFailureIdentity, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link
+// failure branch deterministically.
+func persistLegacyValidationFailureIdentityInjected(path string, ack WorktreeMergeLegacyValidationFailureIdentity, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -2179,28 +2214,28 @@ func persistLegacyValidationFailureIdentity(path string, ack WorktreeMergeLegacy
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".legacy-validation-failed-identity-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".legacy-validation-failed-identity-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return linkLegacyValidationFailureIdentity(temporaryPath, path)
+	return filewrite.LinkPath(temporaryPath, path, inj)
 }
 
 func readLegacyValidationFailureIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyValidationFailureIdentity, error) {
@@ -2255,6 +2290,16 @@ func sameLegacyConflictIdentity(left, right WorktreeMergeLegacyConflictIdentity)
 }
 
 func persistLegacyConflictIdentity(path string, ack WorktreeMergeLegacyConflictIdentity) error {
+	return persistLegacyConflictIdentityInjected(path, ack, nil)
+}
+
+// persistLegacyConflictIdentityInjected is persistLegacyConflictIdentity's
+// test seam (task-9 PR-4): every production call site reaches it only
+// through persistLegacyConflictIdentity, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link
+// failure branch deterministically.
+func persistLegacyConflictIdentityInjected(path string, ack WorktreeMergeLegacyConflictIdentity, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -2263,28 +2308,28 @@ func persistLegacyConflictIdentity(path string, ack WorktreeMergeLegacyConflictI
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".legacy-conflict-identity-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".legacy-conflict-identity-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return linkLegacyConflictIdentity(temporaryPath, path)
+	return filewrite.LinkPath(temporaryPath, path, inj)
 }
 
 func readLegacyConflictIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyConflictIdentity, error) {
@@ -2457,6 +2502,17 @@ func sameTerminalCleanupAssets(left, right []worktrees.TerminalWorkLogExpectatio
 }
 
 func persistMissingCleanupAcknowledgement(path string, ack WorktreeMergeMissingCleanupAcknowledgement) error {
+	return persistMissingCleanupAcknowledgementInjected(path, ack, nil)
+}
+
+// persistMissingCleanupAcknowledgementInjected is
+// persistMissingCleanupAcknowledgement's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistMissingCleanupAcknowledgement, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link
+// failure branch deterministically.
+func persistMissingCleanupAcknowledgementInjected(path string, ack WorktreeMergeMissingCleanupAcknowledgement, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -2465,28 +2521,28 @@ func persistMissingCleanupAcknowledgement(path string, ack WorktreeMergeMissingC
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".missing-cleanup-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".missing-cleanup-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return linkMissingCleanupAcknowledgement(temporaryPath, path)
+	return filewrite.LinkPath(temporaryPath, path, inj)
 }
 
 func readMissingCleanupAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeMissingCleanupAcknowledgement, error) {
@@ -2546,6 +2602,17 @@ func validateMissingCleanupAcknowledgement(ctx context.Context, projectsRoot str
 }
 
 func persistValidationFailureSupersession(path string, ack WorktreeMergeValidationFailureSupersession) error {
+	return persistValidationFailureSupersessionInjected(path, ack, nil)
+}
+
+// persistValidationFailureSupersessionInjected is
+// persistValidationFailureSupersession's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistValidationFailureSupersession, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistValidationFailureSupersessionInjected(path string, ack WorktreeMergeValidationFailureSupersession, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
 		return err
@@ -2554,28 +2621,28 @@ func persistValidationFailureSupersession(path string, ack WorktreeMergeValidati
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".validation-failed-supersession-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".validation-failed-supersession-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt) (WorktreeMergeValidationFailureSupersession, error) {
@@ -2876,6 +2943,20 @@ func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, s
 }
 
 func persistSelfSupersessionCorrection(path string, correction WorktreeMergeSelfSupersessionCorrection) error {
+	return persistSelfSupersessionCorrectionInjected(path, correction, nil)
+}
+
+// persistSelfSupersessionCorrectionInjected is
+// persistSelfSupersessionCorrection's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistSelfSupersessionCorrection, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/link
+// failure branch deterministically, and can use Injector.Hook to build a
+// real concurrent-correction race at the final LinkPath call the way the
+// package-level linkSelfSupersessionCorrection var this replaces used to
+// let a test do by reassignment.
+func persistSelfSupersessionCorrectionInjected(path string, correction WorktreeMergeSelfSupersessionCorrection, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(correction, "", "  ")
 	if err != nil {
 		return err
@@ -2884,26 +2965,26 @@ func persistSelfSupersessionCorrection(path string, correction WorktreeMergeSelf
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".validation-failed-self-supersession-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".validation-failed-self-supersession-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return linkSelfSupersessionCorrection(temporaryPath, path)
+	return filewrite.LinkPath(temporaryPath, path, inj)
 }

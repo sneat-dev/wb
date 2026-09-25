@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -256,10 +257,8 @@ func TestPublishedCandidateAdoptionSourceProofRefusesDirtyMovedAndNonDescendant(
 
 func TestPersistPublishedCandidateAdoptionFailsClosedOnExclusivePublish(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ack.json")
-	previous := linkPublishedCandidateAdoption
-	linkPublishedCandidateAdoption = func(_, _ string) error { return os.ErrPermission }
-	defer func() { linkPublishedCandidateAdoption = previous }()
-	err := persistPublishedCandidateAdoption(path, WorktreeMergePublishedCandidateAdoption{SchemaVersion: 1, Status: "published_candidate_adopted"})
+	inj := &filewrite.Injector{Step: filewrite.StepLink, Err: os.ErrPermission}
+	err := persistPublishedCandidateAdoptionInjected(path, WorktreeMergePublishedCandidateAdoption{SchemaVersion: 1, Status: "published_candidate_adopted"}, inj)
 	if err == nil {
 		t.Fatal("expected exclusive publish failure")
 	}

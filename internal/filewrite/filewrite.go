@@ -27,7 +27,11 @@
 // PR's review round, for a call site holding an *os.File rather than a
 // bare fd, so it keeps file.Chmod's *fs.PathError wrapping instead of
 // Chmod's bare Fchmod errno. RenameAt, RenameNoReplace,
-// CreateOrTruncatePath, and WriteFile were added in task-9 PR-3.
+// CreateOrTruncatePath, and WriteFile were added in task-9 PR-3. LinkPath
+// was added in task-9 PR-4, replacing 6 internal/orchestrate
+// package-level os.Link aliases (var linkXxx = os.Link) that existed only
+// as an ad hoc test seam -- exactly what this package's explicit
+// no-package-level-variable rule above exists to replace.
 package filewrite
 
 import (
@@ -333,6 +337,24 @@ func LinkNoReplace(directoryFD int, oldName, newName string, inj *Injector) erro
 		return err
 	}
 	return unix.Linkat(directoryFD, oldName, directoryFD, newName, 0)
+}
+
+// LinkPath hard-links oldpath to newpath, both resolved paths, failing
+// instead of replacing an existing newpath (os.Link's own contract) --
+// the path-based twin of LinkNoReplace for a task-9 PR-4
+// internal/orchestrate call site that already has a resolved absolute
+// destination path and no parent directory descriptor to link relative
+// to. It shares StepLink with LinkNoReplace: a test targets "the link"
+// step regardless of which of the two publishes it. An Injector's Hook
+// can create a real race here exactly as documented on Injector.Hook --
+// for example writing a competing acknowledgement to newpath and then
+// returning os.ErrExist, so the following assertion observes a real
+// collision instead of a simulated one.
+func LinkPath(oldpath, newpath string, inj *Injector) error {
+	if err := inj.run(StepLink, newpath); err != nil {
+		return err
+	}
+	return os.Link(oldpath, newpath)
 }
 
 // CreateExclusiveWriteSync creates name under directory (O_WRONLY|
