@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // lgCovWriteFile is a tiny helper so the scenarios below stay readable.
@@ -367,6 +369,7 @@ func lgCovStagedPackage(t *testing.T, consumer, packageName, manifest string) st
 }
 
 func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	ctx := context.Background()
 	node := ExecNode{}
 
@@ -514,6 +517,7 @@ func TestLgCovSamePathAndRemoveSiblingEdges(t *testing.T) {
 // verifyRuntimeGraph's failure surface, driven entirely through a fake node so
 // every branch is deterministic.
 func TestLgCovVerifyRuntimeGraphFailurePaths(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	ctx := context.Background()
 
 	t.Run("node absent", func(t *testing.T) {
@@ -585,7 +589,7 @@ func TestLgCovVerifyRuntimeGraphFailurePaths(t *testing.T) {
 // A clean graph resolves with the default timeout when ExecNode.Timeout is
 // unset, which is the production shape of the port.
 func TestLgCovVerifyRuntimeGraphAcceptsACleanGraph(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
 	}

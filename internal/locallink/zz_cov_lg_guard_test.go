@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -49,6 +50,7 @@ func TestLgCovHasLiveLinkReportsAnUnreadableWorkspace(t *testing.T) {
 }
 
 func TestLgCovGuardGitProbeFailures(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	t.Run("git cannot be run at all", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovRestrictPath(t, t.TempDir())
@@ -87,10 +89,11 @@ esac`)
 }
 
 func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	t.Run("a module directory that does not resolve", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./missing")
 		lgCovGitScript(t, "exit 0")
-		entries, err := unpublishedGoWorkEntries(worktree, []string{"./missing"})
+		entries, err := unpublishedGoWorkEntries(realRunner(), worktree, []string{"./missing"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,7 +108,7 @@ func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
 			t.Fatal(err)
 		}
 		lgCovGitScript(t, "exit 0")
-		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
+		entries, err := unpublishedGoWorkEntries(realRunner(), worktree, []string{"./mod"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,7 +125,7 @@ func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
   *"cat-file"*) exit 1 ;;
   *) exit 0 ;;
 esac`)
-		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
+		entries, err := unpublishedGoWorkEntries(realRunner(), worktree, []string{"./mod"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +138,7 @@ esac`)
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovWriteFile(t, filepath.Join(worktree, "mod", "go.mod"), "module example.test/mod\n")
 		lgCovGitScript(t, "exit 0")
-		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
+		entries, err := unpublishedGoWorkEntries(realRunner(), worktree, []string{"./mod"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +159,7 @@ esac`)
   *"diff --quiet"*) /bin/rm -f "$LGCOV_GIT_SELF"; exit 0 ;;
   *) exit 0 ;;
 esac`)
-		_, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
+		_, err := unpublishedGoWorkEntries(realRunner(), worktree, []string{"./mod"})
 		if err == nil || !strings.Contains(err.Error(), "inspect workspace module ./mod in "+worktree) {
 			t.Fatalf("error = %v, want the module-probe failure reported", err)
 		}
@@ -164,36 +167,37 @@ esac`)
 }
 
 func TestLgCovGuardGitProbeHelpers(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
 	root := initRepository(t)
 
 	// A path that is not in HEAD answers "absent" rather than erroring.
-	if exists, err := gitPathExistsAtHEAD(root, "go.work"); err != nil || exists {
+	if exists, err := gitPathExistsAtHEAD(realRunner(), root, "go.work"); err != nil || exists {
 		t.Fatalf("exists = %v, err = %v, want false for a path outside HEAD", exists, err)
 	}
-	if exists, err := gitPathExistsAtHEAD(root, "tracked.txt"); err != nil || !exists {
+	if exists, err := gitPathExistsAtHEAD(realRunner(), root, "tracked.txt"); err != nil || !exists {
 		t.Fatalf("exists = %v, err = %v, want true for a committed path", exists, err)
 	}
 
-	if unchanged, err := gitPathUnchangedFromHEAD(root, "tracked.txt"); err != nil || !unchanged {
+	if unchanged, err := gitPathUnchangedFromHEAD(realRunner(), root, "tracked.txt"); err != nil || !unchanged {
 		t.Fatalf("unchanged = %v, err = %v, want an untouched path to compare equal", unchanged, err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if unchanged, err := gitPathUnchangedFromHEAD(root, "tracked.txt"); err != nil || unchanged {
+	if unchanged, err := gitPathUnchangedFromHEAD(realRunner(), root, "tracked.txt"); err != nil || unchanged {
 		t.Fatalf("unchanged = %v, err = %v, want a modified path reported as changed", unchanged, err)
 	}
 
 	// With no git binary at all the probes see a failure that is not an exit
 	// status, and must report it rather than reading it as "absent".
 	lgCovRestrictPath(t, t.TempDir())
-	if _, err := gitPathExistsAtHEAD(root, "tracked.txt"); err == nil {
+	if _, err := gitPathExistsAtHEAD(realRunner(), root, "tracked.txt"); err == nil {
 		t.Fatal("probing with no git binary reported success")
 	}
-	if _, err := gitPathUnchangedFromHEAD(root, "tracked.txt"); err == nil {
+	if _, err := gitPathUnchangedFromHEAD(realRunner(), root, "tracked.txt"); err == nil {
 		t.Fatal("comparing with no git binary reported success")
 	}
 }

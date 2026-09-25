@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func initRepository(t *testing.T) string {
@@ -46,7 +48,7 @@ func initRepository(t *testing.T) string {
 // working tree including modified and untracked files, so an uncommitted
 // library still has an identity; ignored build output does not change it.
 func TestContentHashCoversModifiedAndUntrackedFilesButNotIgnoredOnes(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -100,7 +102,7 @@ func TestContentHashCoversModifiedAndUntrackedFilesButNotIgnoredOnes(t *testing.
 }
 
 func TestTrackedChangesIgnoresUntrackedArtefacts(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -131,7 +133,7 @@ func TestTrackedChangesIgnoresUntrackedArtefacts(t *testing.T) {
 // untracked, which is the only thing that proves the exclude landed where Git
 // reads it.
 func TestExcludePathUsesTheWorktreeExcludeFileAndNotTheTrackedGitignore(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := initRepository(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -438,7 +440,7 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 }
 
 func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	consumer := t.TempDir()
 	packages := []struct {
 		name         string
@@ -581,7 +583,7 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 // published singleton after the root has been linked to an unpublished build.
 // The local-link operation must detect that split before reporting success.
 func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	consumer := t.TempDir()
 	if err := os.WriteFile(filepath.Join(consumer, "package.json"), []byte(`{
 		"name":"consumer",

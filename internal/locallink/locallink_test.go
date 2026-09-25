@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -507,7 +508,7 @@ func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
 }
 
 func TestEngineRealPnpmSiblingFailureRetryAndUndoJourney(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	type packageSpec struct {
 		name         string
 		directory    string
@@ -901,7 +902,7 @@ func TestAppliedRecordWithoutOwnershipMarkerFailsClosed(t *testing.T) {
 }
 
 func TestRefreshBuildFailureKeepsAppliedRecoveryUntilUndo(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	fixture := newFixture(t,
 		map[string]string{
 			"package.json":           `{"private":true}`,
@@ -1281,7 +1282,7 @@ func TestNoLinkIsWrittenWhenTheRecordCannotBe(t *testing.T) {
 // MF-2. `--undo` clears a `go.work` that stream state has no record of, so the
 // command the merge guard names can actually satisfy the guard.
 func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})

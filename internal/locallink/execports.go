@@ -17,6 +17,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 const defaultCommandTimeout = 30 * time.Minute
@@ -24,10 +25,14 @@ const defaultCommandTimeout = 30 * time.Minute
 // ExecGit implements Git with the installed Git.
 type ExecGit struct {
 	Timeout time.Duration
+	// Runner overrides the process runner ExecGit uses to invoke git.
+	// Production leaves it nil, which resolveRunner defaults to the real
+	// runner; a test injects a runnertest.Fake.
+	Runner runner.Runner
 }
 
 func (git ExecGit) run(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	return runBounded(ctx, git.Timeout, dir, env, "git", args...)
+	return runBounded(ctx, resolveRunner(git.Runner), git.Timeout, dir, env, "git", args...)
 }
 
 // ContentHash computes a tree identity over the working tree, including
@@ -196,6 +201,11 @@ type ExecNode struct {
 	// ContentHash identifies the library tree the current build belongs to.
 	ContentHash string
 	Timeout     time.Duration
+	// Runner overrides the process runner ExecNode uses to invoke the
+	// package manager and node. Production leaves it nil, which
+	// resolveRunner defaults to the real runner; a test injects a
+	// runnertest.Fake.
+	Runner runner.Runner
 }
 
 // FrozenInstall implements Node.
@@ -215,7 +225,7 @@ func (node ExecNode) FrozenInstall(ctx context.Context, dir string) error {
 	if _, err := exec.LookPath(manager); err != nil {
 		return fmt.Errorf("%s is required to prove a frozen install of %s: %w", manager, dir, err)
 	}
-	if _, err := runBounded(ctx, node.Timeout, dir, nil, manager, install...); err != nil {
+	if _, err := runBounded(ctx, resolveRunner(node.Runner), node.Timeout, dir, nil, manager, install...); err != nil {
 		return err
 	}
 	return nil
@@ -257,7 +267,7 @@ func (node ExecNode) Build(ctx context.Context, libraryDir, packageDir string) (
 	if _, err := exec.LookPath(command); err != nil {
 		return "", fmt.Errorf("%s is required to build %s: %w", command, packageDir, err)
 	}
-	if _, err := runBounded(ctx, node.Timeout, libraryDir, nil, command, args...); err != nil {
+	if _, err := runBounded(ctx, resolveRunner(node.Runner), node.Timeout, libraryDir, nil, command, args...); err != nil {
 		return "", err
 	}
 	dist, err := builtDist(libraryDir, packageDir)
@@ -937,11 +947,11 @@ func (node ExecNode) verifyRuntimeGraph(ctx context.Context, consumerDir string,
 	}
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(bounded, "node", "--experimental-import-meta-resolve", "--input-type=module", "-")
-	command.Dir = consumerDir
-	command.Env = append(console.Env(), "WB_LINKED_PACKAGES="+string(linked))
-	command.Stdin = strings.NewReader(nodeRuntimeGraphProbeScript)
-	output, runErr := command.CombinedOutput()
+	env := append(console.Env(), "WB_LINKED_PACKAGES="+string(linked))
+	opts := runner.RunOptions{Env: env, Stdin: []byte(nodeRuntimeGraphProbeScript)}
+	result, runErr := resolveRunner(node.Runner).RunOpts(bounded, consumerDir, opts,
+		"node", "--experimental-import-meta-resolve", "--input-type=module", "-")
+	output := []byte(result.Stdout + result.Stderr)
 	if runErr != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			return fmt.Errorf("verify linked npm runtime graph timed out after %s: %s", timeout, strings.TrimSpace(string(output)))
@@ -1180,21 +1190,27 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func runBounded(ctx context.Context, timeout time.Duration, dir string, env []string, name string, args ...string) (string, error) {
+// runBounded runs name with args under a bounded context, replacing the
+// child's environment with console.Env() plus env exactly as the original
+// exec.Cmd-based implementation did. It approximates CombinedOutput's
+// interleaved capture by concatenating the runner's separately captured
+// stdout and stderr: every caller here only ever uses the returned string
+// for display (an error message or, on success, a value whose commands
+// write meaningfully to stdout alone), never for byte-exact interleaving,
+// so this is a disclosed, behaviour-preserving simplification.
+func runBounded(ctx context.Context, r runner.Runner, timeout time.Duration, dir string, env []string, name string, args ...string) (string, error) {
 	if timeout <= 0 {
 		timeout = defaultCommandTimeout
 	}
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(bounded, name, args...)
-	command.Dir = dir
-	command.Env = append(console.Env(), env...)
-	output, err := command.CombinedOutput()
+	result, err := r.RunOpts(bounded, dir, runner.RunOptions{Env: append(console.Env(), env...)}, name, args...)
+	combined := result.Stdout + result.Stderr
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
-			return string(output), fmt.Errorf("%s %s timed out after %s: %s", name, strings.Join(args, " "), timeout, strings.TrimSpace(string(output)))
+			return combined, fmt.Errorf("%s %s timed out after %s: %s", name, strings.Join(args, " "), timeout, strings.TrimSpace(combined))
 		}
-		return string(output), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return combined, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(combined))
 	}
-	return string(output), nil
+	return combined, nil
 }

@@ -1,16 +1,32 @@
 package locallink
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 )
+
+// realRunner returns the production [runner.Runner]. It is a function, not
+// a package-level var, so this package carries no mutable global seam.
+func realRunner() runner.Runner { return runner.New() }
+
+// resolveRunner defaults ExecGit.Runner/ExecNode.Runner: nil (production's
+// zero value) resolves to the real runner; a test's injected
+// [runnertest.Fake] passes through unchanged. Mirrors
+// internal/archiveprune's Options.Runner resolve-helper pattern.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return realRunner()
+}
 
 // LiveLink is one reason a worktree must not be pushed or landed.
 type LiveLink struct {
@@ -47,6 +63,14 @@ type LiveLinkStore interface {
 //
 // Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
 func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
+	return hasLiveLink(realRunner(), store, worktree)
+}
+
+// hasLiveLink is [HasLiveLink]'s test seam: every production call site
+// reaches it only through HasLiveLink, which always passes [realRunner], so
+// production behaviour is unchanged. A test passes a [runnertest.Fake] to
+// reach every git-outcome branch deterministically.
+func hasLiveLink(r runner.Runner, store LiveLinkStore, worktree string) ([]LiveLink, error) {
 	var found []LiveLink
 	if store != nil {
 		recorded, err := store.LiveLinksForWorktree(worktree)
@@ -66,7 +90,7 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 	if err != nil {
 		return nil, err
 	}
-	unpublished, err := unpublishedGoWorkEntries(worktree, entries)
+	unpublished, err := unpublishedGoWorkEntries(r, worktree, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +110,7 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 // is intrinsic only when it is portable, remains inside the physical worktree,
 // and its go.mod is present in HEAD. Everything else fails closed as a local
 // dependency link.
-func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, error) {
+func unpublishedGoWorkEntries(r runner.Runner, worktree string, entries []string) ([]string, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -94,14 +118,14 @@ func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, erro
 	if err != nil || !goWorkInfo.Mode().IsRegular() {
 		return entries, nil
 	}
-	tracked, err := gitPathExistsAtHEAD(worktree, "go.work")
+	tracked, err := gitPathExistsAtHEAD(r, worktree, "go.work")
 	if err != nil {
 		return nil, fmt.Errorf("inspect tracked go.work in %s: %w", worktree, err)
 	}
 	if !tracked {
 		return entries, nil
 	}
-	unchanged, err := gitPathUnchangedFromHEAD(worktree, "go.work")
+	unchanged, err := gitPathUnchangedFromHEAD(r, worktree, "go.work")
 	if err != nil {
 		return nil, fmt.Errorf("compare go.work with HEAD in %s: %w", worktree, err)
 	}
@@ -135,7 +159,7 @@ func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, erro
 			unpublished = append(unpublished, entry)
 			continue
 		}
-		moduleTracked, err := gitPathExistsAtHEAD(worktree, goMod)
+		moduleTracked, err := gitPathExistsAtHEAD(r, worktree, goMod)
 		if err != nil {
 			return nil, fmt.Errorf("inspect workspace module %s in %s: %w", entry, worktree, err)
 		}
@@ -151,27 +175,23 @@ func pathWithin(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
-func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
-	err := command.Run()
+func gitPathExistsAtHEAD(r runner.Runner, worktree, path string) (bool, error) {
+	result, err := r.Run(context.Background(), "", "git", "-C", worktree, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
 	if err == nil {
 		return true, nil
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if result.ExitCode != 0 {
 		return false, nil
 	}
 	return false, err
 }
 
-func gitPathUnchangedFromHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "diff", "--quiet", "HEAD", "--", path)
-	err := command.Run()
+func gitPathUnchangedFromHEAD(r runner.Runner, worktree, path string) (bool, error) {
+	result, err := r.Run(context.Background(), "", "git", "-C", worktree, "diff", "--quiet", "HEAD", "--", path)
 	if err == nil {
 		return true, nil
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+	if result.ExitCode == 1 {
 		return false, nil
 	}
 	return false, err

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -50,6 +51,7 @@ func lgCovRequireGit(t *testing.T) {
 // is not a repository at all, and a bare repository with no working tree. Each
 // must be reported rather than silently returning an empty identity.
 func TestLgCovContentHashFailurePaths(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
 
@@ -101,6 +103,7 @@ func TestLgCovTrackedChangesReportsGitFailure(t *testing.T) {
 // The exclude file is resolved through git; each failure of that resolution,
 // of reading the file, and of writing it must be reported.
 func TestLgCovExcludePathFailurePaths(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -219,7 +222,7 @@ func TestLgCovExcludePathFailurePaths(t *testing.T) {
 // ExcludedPatterns surfaces a missing exclude file as "no patterns" and an
 // unreadable one as an error — the two must not be spelled the same way.
 func TestLgCovExcludedPatternsMissingVersusUnreadable(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -248,6 +251,7 @@ func TestLgCovExcludedPatternsMissingVersusUnreadable(t *testing.T) {
 // FrozenInstall must select the lockfile's own manager, refuse when the
 // manager is absent, report a failed install, and pass a clean one.
 func TestLgCovFrozenInstallDrivesTheSelectedManager(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	ctx := context.Background()
 	node := ExecNode{Timeout: 30 * time.Second}
 
@@ -390,6 +394,7 @@ func lgCovBuildLibrary(t *testing.T, distRel string) (library, dist string) {
 // Build runs the repository's own build target, caches the dist by content
 // hash, and reports each way that can fail.
 func TestLgCovBuildRunsAndRecordsTheCachedDist(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	ctx := context.Background()
 
 	t.Run("success caches the dist", func(t *testing.T) {

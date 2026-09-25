@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // ExcludePath and ExcludedPatterns must report an unreadable exclude file
 // rather than treating it as empty.
 func TestLgCovExcludeReadFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -45,7 +47,7 @@ func TestLgCovExcludeReadFailures(t *testing.T) {
 // temporary index succeeds and only the final status probe fails; that failure
 // must be reported rather than read as a clean tree.
 func TestLgCovContentHashReportsAStatusFailure(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	lgCovRequireGit(t)
 	root := initRepository(t)
 	if err := os.WriteFile(filepath.Join(root, ".git", "index"), []byte("garbage"), 0o644); err != nil {
@@ -377,10 +379,11 @@ func TestLgCovRunBoundedSuccessTimeoutAndFailure(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Run("a zero timeout uses the default", func(t *testing.T) {
+		runnertest.AllowRealProcess(t)
 		bin := lgCovFakeBin(t, "lgcov-ok", "printf 'ran with %s' \"$WB_LGCOV_MARKER\"")
 		lgCovPrependPath(t, bin)
 		t.Setenv("WB_LGCOV_MARKER", "env-applied")
-		output, err := runBounded(ctx, 0, dir, nil, "lgcov-ok")
+		output, err := runBounded(ctx, realRunner(), 0, dir, nil, "lgcov-ok")
 		if err != nil {
 			t.Fatalf("runBounded: %v", err)
 		}
@@ -390,17 +393,18 @@ func TestLgCovRunBoundedSuccessTimeoutAndFailure(t *testing.T) {
 	})
 
 	t.Run("a command that overruns its timeout is reported", func(t *testing.T) {
+		runnertest.AllowRealProcess(t)
 		bin := lgCovFakeBin(t, "lgcov-slow", "sleep 5")
 		lgCovPrependPath(t, bin)
-		_, err := runBounded(ctx, 100*time.Millisecond, dir, nil, "lgcov-slow")
+		_, err := runBounded(ctx, realRunner(), 100*time.Millisecond, dir, nil, "lgcov-slow")
 		if err == nil || !strings.Contains(err.Error(), "timed out after") {
 			t.Fatalf("error = %v, want the timeout report", err)
 		}
 	})
 
 	t.Run("a missing command is reported with its arguments", func(t *testing.T) {
-		t.Parallel()
-		_, err := runBounded(ctx, time.Second, dir, nil, "lgcov-definitely-missing", "--flag")
+		runnertest.AllowRealProcess(t)
+		_, err := runBounded(ctx, realRunner(), time.Second, dir, nil, "lgcov-definitely-missing", "--flag")
 		if err == nil || !strings.Contains(err.Error(), "lgcov-definitely-missing --flag") {
 			t.Fatalf("error = %v, want the failing command named", err)
 		}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -57,7 +58,7 @@ func TestHasLiveLinkReportsARecordedLink(t *testing.T) {
 // go.work with a `use` entry and NO stream record still refuses. State alone
 // would miss it, which is why the two signals are independent.
 func TestHasLiveLinkReportsAHandWrittenGoWorkWithNoStreamRecord(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"), []byte("go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library/backend\n)\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -75,7 +76,7 @@ func TestHasLiveLinkReportsAHandWrittenGoWorkWithNoStreamRecord(t *testing.T) {
 }
 
 func TestHasLiveLinkAcceptsTrackedIntrinsicGoWorkspace(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse (\n\t./bookius\n\t./debtus\n)\n")
 	writeGuardTestFile(t, worktree, "bookius/go.mod", "module example.com/contracts/bookius\n\ngo 1.27\n")
@@ -89,7 +90,7 @@ func TestHasLiveLinkAcceptsTrackedIntrinsicGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsExternalEntryInTrackedGoWorkspace(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse /elsewhere/library\n")
 	commitGuardTestRepository(t, worktree)
@@ -104,7 +105,7 @@ func TestHasLiveLinkRejectsExternalEntryInTrackedGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsUntrackedInternalGoWorkspace(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "backend/go.mod", "module example.com/backend\n\ngo 1.27\n")
 	commitGuardTestRepository(t, worktree)
@@ -117,7 +118,7 @@ func TestHasLiveLinkRejectsUntrackedInternalGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsUntrackedModuleInTrackedGoWorkspace(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./local-module\n")
 	commitGuardTestRepository(t, worktree)
@@ -146,7 +147,7 @@ func TestHasLiveLinkRejectsTrackedGoWorkSymlink(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsTrackedGoModSymlink(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
 	writeGuardTestFile(t, worktree, "module-source.mod", "module example.com/module\n\ngo 1.27\n")
@@ -165,7 +166,7 @@ func TestHasLiveLinkRejectsTrackedGoModSymlink(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsMissingTrackedGoMod(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
 	writeGuardTestFile(t, worktree, "module/go.mod", "module example.com/module\n\ngo 1.27\n")

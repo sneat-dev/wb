@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // errBoomPR8 is task-9 PR-8's sentinel injected failure, distinct from any
@@ -18,7 +19,7 @@ import (
 var errBoomPR8 = errors.New("pr8 boom")
 
 func TestExecGitExcludePathInjectedHonoursInjectedFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepWrite} {
 		step := step
 		t.Run(string(step), func(t *testing.T) {
@@ -35,7 +36,7 @@ func TestExecGitExcludePathInjectedHonoursInjectedFailures(t *testing.T) {
 }
 
 func TestExecGitExcludePathInjectedAppendsThePattern(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := initRepository(t)
 	git := ExecGit{}
 	if err := git.excludePathInjected(context.Background(), dir, "*.log", nil); err != nil {
