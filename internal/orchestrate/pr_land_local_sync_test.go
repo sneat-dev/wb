@@ -1,6 +1,10 @@
 package orchestrate
 
-import "context"
+import (
+	"context"
+
+	"github.com/sneat-dev/wb/internal/runner"
+)
 
 // addLandWorktree (used only by the e2e-tier tests below) moved to
 // pr_land_local_sync_e2e_test.go alongside its only callers -- left here it
@@ -19,7 +23,7 @@ import "context"
 // runGitAllowFail is a thin runEngineGit variant that returns an error
 // instead of failing the test, for assertions that want to check
 // success/failure themselves (e.g. that a ref resolves at all).
-func runGitAllowFail(directory string, args ...string) (string, error) {
-	out, _, err := runCommand(context.Background(), 0, 0, directory, "git", args...)
+func runGitAllowFail(run runner.Runner, directory string, args ...string) (string, error) {
+	out, _, err := runCommand(context.Background(), run, 0, 0, directory, "git", args...)
 	return out, err
 }

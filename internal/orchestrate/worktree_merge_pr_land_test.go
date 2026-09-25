@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
@@ -48,8 +50,10 @@ func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
 // reports it as absorbed by this candidate. Advancing TargetSHA the way
 // adoptWorktreeMergeUpdateBranchAdvance does (via updateBranchMergeTargetParent)
 // closes the range and excludes it.
+//
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestAbsorbedSourceHeadsExcludesAnUnrelatedPullRequestOnceTargetSHAAdvances(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	runEngineGit(t, dir, "config", "user.name", "WB Test")

@@ -389,7 +389,7 @@ func acknowledgeWorktreeMergeReceiptCollisionInjected(ctx context.Context, optio
 	if claimHash != options.ExpectedImmutableClaimSHA256 {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
 	}
@@ -701,7 +701,7 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 }
 
 func validatePublishedUnlandedRebatch(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, repository, target string, sources []WorktreeMergeSource) error {
-	remote, _, err := runCommand(ctx, 30*time.Second, 0, receipt.Candidate.Worktree,
+	remote, _, err := runCommand(ctx, defaultRunner, 30*time.Second, 0, receipt.Candidate.Worktree,
 		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("read checks-failed candidate ref: %w", err)
@@ -1065,7 +1065,7 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("candidate is not clean: %w", err)
 	}
-	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("read candidate HEAD: %w", err)
 	}
@@ -1221,7 +1221,7 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
-	targetTree, err := mergeTreeRevision(ctx, replacement.Worktree, currentTarget)
+	targetTree, err := mergeTreeRevision(ctx, defaultRunner, replacement.Worktree, currentTarget)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read current target tree: %w", err)
 	}
@@ -1230,11 +1230,11 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 		allowedDescendantSHA := ""
 		if filepath.Clean(source.Worktree) == filepath.Clean(replacement.Worktree) {
 			allowedDescendantSHA = replacement.SHA
-		} else if sourceHead, headErr := mergeRevision(ctx, source.Worktree, "HEAD"); headErr != nil {
+		} else if sourceHead, headErr := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD"); headErr != nil {
 			return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, headErr)
 		} else if sourceHead != source.SHA {
 			allowedDescendantSHA = sourceHead
-			sourceTree, treeErr := mergeTreeRevision(ctx, source.Worktree, sourceHead)
+			sourceTree, treeErr := mergeTreeRevision(ctx, defaultRunner, source.Worktree, sourceHead)
 			if treeErr != nil {
 				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read advanced receipted source tree: %w", treeErr)
 			}
@@ -1491,7 +1491,7 @@ func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot str
 	if err := requireCleanMergeWorktree(ctx, candidate.Worktree); err != nil {
 		return nil, fmt.Errorf("candidate is not clean: %w", err)
 	}
-	head, err := mergeRevision(ctx, candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("read candidate HEAD: %w", err)
 	}
@@ -1514,7 +1514,7 @@ func validatePrepareFailureSupersessionCandidate(ctx context.Context, projectsRo
 		claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
 		return claim, "", err
 	}
-	observedHead, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	observedHead, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return nil, "", fmt.Errorf("read candidate HEAD: %w", err)
 	}
@@ -1548,7 +1548,7 @@ func validateValidationFailureReplacement(ctx context.Context, projectsRoot stri
 	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
 		return WorktreeMergeCandidate{}, nil, fmt.Errorf("replacement is not clean: %w", err)
 	}
-	head, err := mergeRevision(ctx, guard.Path, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
 	if err != nil {
 		return WorktreeMergeCandidate{}, nil, fmt.Errorf("read replacement HEAD: %w", err)
 	}
@@ -1669,7 +1669,7 @@ func resolveValidationFailedSupersessionReceipt(ctx context.Context, projectsRoo
 	}
 
 	candidate := receipt.Candidate
-	head, err := mergeRevision(ctx, candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("read legacy candidate HEAD: %w", err)
 	}
@@ -1758,7 +1758,7 @@ func resolveLegacyConflictSupersessionReceipt(ctx context.Context, projectsRoot 
 		return WorktreeMergeReceipt{}, nil, false, err
 	}
 	candidate := receipt.Candidate
-	head, err := mergeRevision(ctx, candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("read legacy conflict candidate HEAD: %w", err)
 	}
@@ -1900,7 +1900,7 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 	if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
 		return fmt.Errorf("receipted source %s is not clean: %w", source.Worktree, err)
 	}
-	head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 	if err != nil {
 		return fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
@@ -1952,7 +1952,7 @@ func validateValidationFailedSupersessionSource(ctx context.Context, projectsRoo
 	if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
 		return "", "", fmt.Errorf("receipted source %s is not clean: %w", source.Worktree, err)
 	}
-	head, err = mergeRevision(ctx, source.Worktree, "HEAD")
+	head, err = mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 	if err != nil {
 		return "", "", fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}

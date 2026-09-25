@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -47,6 +48,7 @@ func TestCanonicalClonePathFollowsTheCloneURL(t *testing.T) {
 // github.com is cloned to <root>/github.com/{org}/{repo} and no flat duplicate
 // is created. A git url.insteadOf rewrite stands in for the network.
 func TestEnsureCanonicalClonesIntoTheHostLevelDerivedFromTheCloneURL(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")

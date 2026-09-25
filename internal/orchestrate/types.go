@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // Repository identifies a canonical clone selected by command-level discovery.
@@ -98,6 +99,21 @@ type Options struct {
 	// engine's own fetches still refresh the memo, and its publication
 	// stages still invalidate through it.
 	FetchMemoDiscovery bool
+
+	// run overrides this package's generic command runner (ports.go); nil
+	// uses defaultRunner. A unit test sets this to a runnertest.Fake so an
+	// engine call that reaches the migrated call sites
+	// (spec/plans/coverage-to-100 task-17) never starts a real process.
+	run runner.Runner
+}
+
+// resolveRunner returns options.run, falling back to defaultRunner
+// (ports.go) when the caller left it nil.
+func (options Options) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return defaultRunner
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.

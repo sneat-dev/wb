@@ -84,12 +84,13 @@ type Git interface {
 var defaultGit Git = gitcli.New(runner.New())
 
 // defaultRunner is production's generic command runner, for this package's
-// non-git-port external calls (pr_land_keep.go's kept-commit build
-// verification and patch-identity shell pipeline). command.go's own
-// retrying runCommand keeps calling exec.CommandContext directly rather
-// than through this seam -- see its doc comment. Same immutability and
-// fallback shape as defaultGit: PullRequestLandOptions's resolveRunner()
-// accessor returns it only when the caller's own run field is nil.
+// non-git-port external calls: pr_land_keep.go's kept-commit build
+// verification and patch-identity shell pipeline, and command.go's own
+// retrying runCommand (and worktree_merge.go's mergeRevision, its one
+// package-internal caller that itself is not already behind the Git port --
+// spec/plans/coverage-to-100 task-17). Same immutability and fallback shape
+// as defaultGit: every Options type's resolveRunner() accessor returns it
+// only when the caller's own run field is nil.
 var defaultRunner runner.Runner = runner.New()
 
 var _ Git = gitcli.Client{}

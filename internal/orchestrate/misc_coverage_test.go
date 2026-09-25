@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/landinglane"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -38,9 +40,12 @@ func TestOrchCovMatchesHoldUsesPathMatchSemantics(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovRunCommandReportsATimeout(t *testing.T) {
-	t.Parallel()
-	_, attempts, err := runCommand(context.Background(), 20*time.Millisecond, 0, t.TempDir(), "sh", "-c", "sleep 5")
+	// runCommand's own timeout wrapping needs a real, killable child process
+	// (spec/plans/coverage-to-100 task-17).
+	runnertest.AllowRealProcess(t)
+	_, attempts, err := runCommand(context.Background(), runner.New(), 20*time.Millisecond, 0, t.TempDir(), "sh", "-c", "sleep 5")
 	if err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
 		t.Fatalf("timed-out command error = %v", err)
 	}
@@ -533,8 +538,9 @@ func TestOrchCovRefreshPublishedCandidateRefusesUnusableInput(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovRefreshPublishedCandidateReportsAnUnmergeableTarget(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := orchCovGitRepo(t)
 	receipt := &WorktreeMergeReceipt{
 		Candidate:   WorktreeMergeCandidate{Worktree: dir, SHA: "0123456789abcdef"},
@@ -553,8 +559,9 @@ func TestOrchCovRefreshPublishedCandidateReportsAnUnmergeableTarget(t *testing.T
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovRefreshPublishedCandidateNamesTheConflictingPaths(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := orchCovGitRepo(t)
 	runEngineGit(t, dir, "checkout", "-b", "side")
 	writeEngineFile(t, filepath.Join(dir, "conflict.txt"), "side\n")
@@ -582,8 +589,9 @@ func TestOrchCovRefreshPublishedCandidateNamesTheConflictingPaths(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovConflictingWorktreeMergePathsReportsAGitFailure(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	if _, err := conflictingWorktreeMergePaths(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("conflicting paths accepted a non-repository")
 	}

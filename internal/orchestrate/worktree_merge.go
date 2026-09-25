@@ -25,6 +25,7 @@ import (
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -364,6 +365,10 @@ type WorktreeMergeLandOptions struct {
 	// state. See resolveGit below and PullRequestLandOptions' identical
 	// seam in pr_land.go.
 	git Git
+	// run overrides this package's generic command runner (ports.go); nil
+	// uses defaultRunner. A unit test sets this to a runnertest.Fake for the
+	// same reason as git above.
+	run runner.Runner
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -374,6 +379,15 @@ func (options WorktreeMergeLandOptions) resolveGit() Git {
 		return options.git
 	}
 	return defaultGit
+}
+
+// resolveRunner returns options.run, falling back to defaultRunner
+// (ports.go) when the caller left it nil.
+func (options WorktreeMergeLandOptions) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return defaultRunner
 }
 
 type CheckoutUpdate struct {
@@ -439,6 +453,20 @@ type WorktreeMergePrepareOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// run overrides this package's generic command runner (ports.go); nil
+	// uses defaultRunner. A unit test sets this to a runnertest.Fake so a
+	// prepare call that reaches the migrated call sites
+	// (spec/plans/coverage-to-100 task-17) never starts a real process.
+	run runner.Runner
+}
+
+// resolveRunner returns options.run, falling back to defaultRunner
+// (ports.go) when the caller left it nil.
+func (options WorktreeMergePrepareOptions) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return defaultRunner
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (preparedReceipt WorktreeMergeReceipt, prepareErr error) {
@@ -848,9 +876,9 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if !targetContainsCandidate {
 			mergeArgs = []string{"merge", "--no-ff", "--no-edit", remoteTarget}
 		}
-		if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
+		if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 			if !targetContainsCandidate {
-				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 			}
 			return *prior, fmt.Errorf("advance repair candidate to landed target %s: %w", remoteTarget, mergeErr)
 		}
@@ -937,11 +965,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
 		}
 		if !containsOriginal {
-			if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
-				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+			if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr))
 			}
-			receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
+			receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
 			if err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 			}
@@ -959,8 +987,8 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
 		}
 		if !ancestor {
-			if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
-				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+			if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				conflict := fmt.Errorf("merge conflict while integrating %s at %s: %w", source.Branch, source.SHA, mergeErr)
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, conflict)
 			}
@@ -968,7 +996,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		source.Merged = true
 		progress.Report(options.Progress, progress.Event{Operation: "worktree_merge", Phase: "integrate_sources", Repository: repository,
 			State: progress.Running, Completed: index + 1, Total: len(receipt.Sources), Detail: source.Branch + "@" + shortMergeRevision(source.SHA)})
-		receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
+		receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
 		if err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
@@ -1025,7 +1053,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
 	receipt.Status = WorktreeMergePrepared
-	receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
+	receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
 	if err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
@@ -1290,7 +1318,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("validation_failed candidate is not safely resumable: %w", err))
 		}
-		head, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+		head, headErr := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
 		if headErr != nil || head != receipt.Candidate.SHA {
 			if headErr == nil {
 				headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
@@ -1369,7 +1397,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		// See adoptServerUpdatedWorktreeMergeHead (M5) and
 		// adoptWorktreeMergeUpdateBranchAdvance's M3 persist-first ordering,
 		// whose crash window this closes.
-		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, options.resolveGit(), &receipt)
+		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, options.resolveGit(), options.resolveRunner(), &receipt)
 		if adoptErr != nil {
 			if IsTransientGitHubFailure(adoptErr) {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
@@ -1386,7 +1414,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, options.resolveGit(), &receipt)
+		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, options.resolveGit(), options.resolveRunner(), &receipt)
 		if advanceErr != nil {
 			if IsTransientGitHubFailure(advanceErr) {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
@@ -1512,7 +1540,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
 	if err != nil || head != receipt.Candidate.SHA {
 		if err == nil {
 			err = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
@@ -1569,12 +1597,12 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
 			}
 			reportWorktreeMergeProgress(options.Progress, "rebase_candidate", progress.Started, shortMergeRevision(remoteTarget))
-			if _, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree,
+			if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, receipt.Candidate.Worktree,
 				"git", "rebase", "--rebase-merges", "--onto", remoteTarget, preparedTarget, receipt.Candidate.Branch); err != nil {
-				_, _, _ = runCommand(ctx, options.Timeout, 0, receipt.Candidate.Worktree, "git", "rebase", "--abort")
+				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, receipt.Candidate.Worktree, "git", "rebase", "--abort")
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("target drift conflicts while rebasing the isolated candidate onto %s: %w", remoteTarget, err))
 			}
-			receipt.Candidate.SHA, err = mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+			receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
 			if err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 			}
@@ -1697,7 +1725,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 			}
-			head, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+			head, headErr := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
 			if headErr != nil || head != receipt.Candidate.SHA {
 				if headErr == nil {
 					headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
@@ -1958,8 +1986,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	return receipt, nil
 }
 
-func advancePublishedWorktreeMergeCandidate(ctx context.Context, git Git, receipt *WorktreeMergeReceipt) (bool, error) {
-	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+func advancePublishedWorktreeMergeCandidate(ctx context.Context, git Git, run runner.Runner, receipt *WorktreeMergeReceipt) (bool, error) {
+	head, err := mergeRevision(ctx, run, receipt.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("read published candidate HEAD: %w", err)
 	}
@@ -1992,7 +2020,7 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, git Git, receip
 	// itself best-effort: the receipt is the durable record here, and the
 	// worktree is a convenience the next resume can still repair.
 	if worktreeMergeCandidateAdvanceRecorded(*receipt, head, receipt.Candidate.SHA) {
-		if note := fastForwardWorktreeToUpdatedHead(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
+		if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
 			receipt.LocalSync = note
 		}
 		return false, nil
@@ -2086,7 +2114,7 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
 		return false, fmt.Errorf("receipted candidate: %w", err)
 	}
-	remote, _, err := runCommand(ctx, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return false, fmt.Errorf("inspect receipted candidate publication state: %w", err)
 	}
@@ -2097,7 +2125,7 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 		return false, err
 	}
 
-	head, err := mergeRevision(ctx, guard.Path, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
 	if err != nil {
 		return false, err
 	}
@@ -2183,7 +2211,7 @@ func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projects
 	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
 		return false, fmt.Errorf("receipted conflict candidate: %w", err)
 	}
-	head, err := mergeRevision(ctx, guard.Path, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
 	if err != nil {
 		return false, err
 	}
@@ -2197,7 +2225,7 @@ func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projects
 	if !containsOriginal {
 		return false, fmt.Errorf("candidate HEAD %s is not a descendant of receipted candidate %s", head, receipt.Candidate.SHA)
 	}
-	remoteCandidate, _, err := runCommand(ctx, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remoteCandidate, _, err := runCommand(ctx, defaultRunner, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return false, fmt.Errorf("inspect receipted conflict candidate publication state: %w", err)
 	}
@@ -2339,12 +2367,12 @@ func proveConflictResolvedCandidateTargetNormalization(ctx context.Context, work
 }
 
 func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
-	rootOutput, _, err := runCommand(ctx, 0, 0, source, "git", "rev-parse", "--show-toplevel")
+	rootOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, source, "git", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
 	root := strings.TrimSpace(rootOutput)
-	commonOutput, _, err := runCommand(ctx, 0, 0, root, "git", "rev-parse", "--git-common-dir")
+	commonOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
@@ -2360,7 +2388,7 @@ func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) 
 }
 
 func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int) (*WorktreeMergePushGateReceipt, error) {
-	remoteOutput, _, err := runCommand(ctx, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
+	remoteOutput, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
 	if err != nil {
 		return nil, fmt.Errorf("inspect exact remote ref before pre-push gate: %w", err)
 	}
@@ -2368,11 +2396,11 @@ func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remote
 	if fields := strings.Fields(remoteOutput); len(fields) > 0 {
 		previousRemoteSHA = fields[0]
 	}
-	remoteURL, _, err := runCommand(ctx, timeout, retry, worktree, "git", "remote", "get-url", "--push", "origin")
+	remoteURL, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "remote", "get-url", "--push", "origin")
 	if err != nil {
 		return nil, fmt.Errorf("resolve push remote for pre-push gate: %w", err)
 	}
-	localRef, _, err := runCommand(ctx, timeout, retry, worktree, "git", "symbolic-ref", "-q", "HEAD")
+	localRef, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "symbolic-ref", "-q", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("resolve local branch for pre-push gate: %w", err)
 	}
@@ -2393,7 +2421,7 @@ func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remote
 	if err := input.Close(); err != nil {
 		return nil, err
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
 		"pre-push", "--", "origin", strings.TrimSpace(remoteURL)); err != nil {
 		return nil, fmt.Errorf("managed pre-push gate failed before opening the push connection: %w", err)
 	}
@@ -2409,7 +2437,7 @@ func pushWorktreeMergeRef(ctx context.Context, worktree, localSHA, remoteRef str
 		args = append(args, "-u")
 	}
 	args = append(args, "origin", localSHA+":"+remoteRef)
-	_, _, err := runCommand(ctx, timeout, retry, worktree, "git", args...)
+	_, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", args...)
 	return err
 }
 
@@ -2567,7 +2595,7 @@ func inspectWorktreeMergeSources(ctx context.Context, projectsRoot string, paths
 		} else if view.Claim.Repository != repository || filepath.Clean(guard.CanonicalDir) != filepath.Clean(canonical) {
 			return nil, "", "", fmt.Errorf("all source worktrees must belong to one repository; got %s and %s", repository, view.Claim.Repository)
 		}
-		head, err := mergeRevision(ctx, guard.Path, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -2751,14 +2779,14 @@ func pathInsideWorktreeMergeReports(reports, path string) bool {
 
 func fetchExactMergeTarget(ctx context.Context, worktree, target string) (string, error) {
 	refspec := "+refs/heads/" + target + ":refs/remotes/origin/" + target
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
 		return "", fmt.Errorf("fetch exact remote target %s: %w", target, err)
 	}
-	return mergeRevision(ctx, worktree, "refs/remotes/origin/"+target)
+	return mergeRevision(ctx, defaultRunner, worktree, "refs/remotes/origin/"+target)
 }
 
 func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (string, string, error) {
-	output, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "log", "--format=%s", receipt.TargetSHA+".."+receipt.Candidate.SHA)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "log", "--format=%s", receipt.TargetSHA+".."+receipt.Candidate.SHA)
 	if err != nil {
 		return "", "", err
 	}
@@ -3100,7 +3128,7 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	if receipt.PullRequest == "" {
 		return errors.New("published handoff has no pull request")
 	}
-	remote, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree,
+	remote, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, receipt.Candidate.Worktree,
 		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("read published candidate ref: %w", err)
@@ -3158,7 +3186,7 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 }
 
 func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int, checkoutUpdated func(context.Context, CheckoutUpdate)) (string, error) {
-	branch, _, err := runCommand(ctx, timeout, retry, canonical, "git", "branch", "--show-current")
+	branch, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "branch", "--show-current")
 	if err != nil {
 		return "", err
 	}
@@ -3168,17 +3196,17 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 	if err := requireCleanMergeWorktree(ctx, canonical); err != nil {
 		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: %w", err)
 	}
-	beforeHead, err := mergeRevision(ctx, canonical, "HEAD")
+	beforeHead, err := mergeRevision(ctx, defaultRunner, canonical, "HEAD")
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
 		return "blocked_fetch", err
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, canonical, "git", "merge", "--ff-only", "refs/remotes/origin/"+target); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "merge", "--ff-only", "refs/remotes/origin/"+target); err != nil {
 		return "blocked_diverged", fmt.Errorf("remote landed, but canonical target cannot fast-forward: %w", err)
 	}
-	head, err := mergeRevision(ctx, canonical, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, canonical, "HEAD")
 	containsLanding, ancestorErr := isMergeAncestor(ctx, canonical, landing, head)
 	if err != nil || ancestorErr != nil || !containsLanding {
 		if err == nil {
@@ -3356,14 +3384,14 @@ func requireTerminalCleanupBranchesAbsent(ctx context.Context, projectsRoot stri
 		if expectation.Branch == receipt.Target {
 			return fmt.Errorf("terminal cleanup recovery refuses receipt task %s because its branch is the target %s", expectation.Task, receipt.Target)
 		}
-		local, _, err := runCommand(ctx, timeout, retry, canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
+		local, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
 		if err != nil {
 			return fmt.Errorf("inspect local cleanup branch for task %s: %w", expectation.Task, err)
 		}
 		if strings.TrimSpace(local) != "" {
 			return fmt.Errorf("terminal cleanup recovery refuses task %s because local branch %s remains", expectation.Task, expectation.Branch)
 		}
-		remote, _, err := runCommand(ctx, timeout, retry, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
+		remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
 		if err != nil {
 			return fmt.Errorf("inspect remote cleanup branch for task %s: %w", expectation.Task, err)
 		}
@@ -3479,7 +3507,7 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	if len(created) != 1 {
 		return receipt, fmt.Errorf("revert candidate creation returned %d repositories", len(created))
 	}
-	patchOutput, _, err := runCommand(ctx, timeout, retry, created[0].WorktreeDir, "git", "diff", "--binary", revertOf.PreviousTargetSHA, revertOf.LandingSHA)
+	patchOutput, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "diff", "--binary", revertOf.PreviousTargetSHA, revertOf.LandingSHA)
 	if err != nil {
 		return receipt, err
 	}
@@ -3496,13 +3524,13 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	if err := patchFile.Close(); err != nil {
 		return receipt, err
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, created[0].WorktreeDir, "git", "apply", "--check", "--3way", "--reverse", patchPath); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "apply", "--check", "--3way", "--reverse", patchPath); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("forward revert conflicts with current target: %w", err))
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, created[0].WorktreeDir, "git", "apply", "--3way", "--reverse", "--index", patchPath); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "apply", "--3way", "--reverse", "--index", patchPath); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, created[0].WorktreeDir, "git", "commit", "-m", "revert: reverse worktree merge "+receipt.ID); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "commit", "-m", "revert: reverse worktree merge "+receipt.ID); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
 	receipt.Phase = WorktreeMergePhaseRevert
@@ -3510,7 +3538,7 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	receipt.TargetSHA = created[0].BaseSHA
 	receipt.Sources = nil
 	receipt.Candidate = WorktreeMergeCandidate{Task: task, Worktree: created[0].WorktreeDir, Branch: created[0].Branch}
-	receipt.Candidate.SHA, err = mergeRevision(ctx, created[0].WorktreeDir, "HEAD")
+	receipt.Candidate.SHA, err = mergeRevision(ctx, defaultRunner, created[0].WorktreeDir, "HEAD")
 	receipt.RevertOf = revertOf
 	receipt.Rebase = nil
 	receipt.Route = WorktreeMergeRouteDecision{}
@@ -3918,7 +3946,7 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	}
 	defer func() { _ = os.RemoveAll(temporary) }()
 	archivePath := filepath.Join(temporary, "target.tar")
-	if _, _, err := runCommand(ctx, timeout, retry, repositoryDir, "git", "archive", "--format=tar", "--output="+archivePath, targetSHA); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, repositoryDir, "git", "archive", "--format=tar", "--output="+archivePath, targetSHA); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("archive target %s: %w", targetSHA, err)
 	}
 	snapshot := filepath.Join(temporary, "tree")
@@ -3987,7 +4015,7 @@ func validationCacheValidatorSHAs(checks []quality.Check) map[string]string {
 }
 
 func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree, snapshot string, timeout time.Duration, retry int) error {
-	remote, _, err := runCommand(ctx, timeout, retry, candidateWorktree, "git", "remote", "get-url", "origin")
+	remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, candidateWorktree, "git", "remote", "get-url", "origin")
 	if err != nil {
 		return fmt.Errorf("read candidate origin remote for target baseline: %w", err)
 	}
@@ -3995,10 +4023,10 @@ func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree
 	if remote == "" {
 		return errors.New("candidate origin remote for target baseline is empty")
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, snapshot, "git", "init", "--quiet"); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, snapshot, "git", "init", "--quiet"); err != nil {
 		return fmt.Errorf("initialize target baseline Git context: %w", err)
 	}
-	if _, _, err := runCommand(ctx, timeout, retry, snapshot, "git", "remote", "add", "origin", remote); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, snapshot, "git", "remote", "add", "origin", remote); err != nil {
 		return fmt.Errorf("configure target baseline origin remote: %w", err)
 	}
 	return nil
@@ -4650,7 +4678,7 @@ func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeRece
 	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
 		return false, nil
 	}
-	remote, _, err := runCommand(ctx, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
 	if err != nil {
 		return false, err
 	}
@@ -4658,7 +4686,7 @@ func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeRece
 	if prior.PullRequest == "" {
 		return remote == "", nil
 	}
-	localHead, headErr := mergeRevision(ctx, prior.Candidate.Worktree, "HEAD")
+	localHead, headErr := mergeRevision(ctx, defaultRunner, prior.Candidate.Worktree, "HEAD")
 	if headErr != nil || localHead != prior.Candidate.SHA {
 		return false, headErr
 	}
@@ -4717,7 +4745,7 @@ func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot s
 			return false, fmt.Errorf("candidate %s does not contain immutable replay root %s", receipt.Candidate.SHA, root)
 		}
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return false, err
 	}
@@ -4742,7 +4770,7 @@ func validateExactPreparingWorktreeMergeReceipt(ctx context.Context, receipt Wor
 		return fmt.Errorf("receipt candidate is not safely resumable: %w", err)
 	}
 	if receipt.Candidate.SHA != "" {
-		head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
 		if err != nil {
 			return fmt.Errorf("read receipt candidate head: %w", err)
 		}
@@ -4750,7 +4778,7 @@ func validateExactPreparingWorktreeMergeReceipt(ctx context.Context, receipt Wor
 			return fmt.Errorf("receipt candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
 		}
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("read receipt candidate remote: %w", err)
 	}
@@ -4771,7 +4799,7 @@ func validatePreparingWorktreeMergeCandidate(ctx context.Context, receipt Worktr
 	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 		return fmt.Errorf("interrupted candidate is not clean: %w", err)
 	}
-	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return fmt.Errorf("read interrupted candidate head: %w", err)
 	}
@@ -4829,11 +4857,11 @@ func canPreparePostTargetRepair(ctx context.Context, prior WorktreeMergeReceipt,
 	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
 		return false, nil
 	}
-	localHead, err := mergeRevision(ctx, prior.Candidate.Worktree, "HEAD")
+	localHead, err := mergeRevision(ctx, defaultRunner, prior.Candidate.Worktree, "HEAD")
 	if err != nil || localHead != prior.Candidate.SHA {
 		return false, err
 	}
-	remote, _, err := runCommand(ctx, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
 	if err != nil {
 		return false, err
 	}
@@ -4959,7 +4987,7 @@ func failWorktreeMergeReceipt(receipt WorktreeMergeReceipt, status WorktreeMerge
 }
 
 func requireCleanMergeWorktree(ctx context.Context, path string) error {
-	status, _, err := runCommand(ctx, 0, 0, path, "git", "status", "--porcelain=v1")
+	status, _, err := runCommand(ctx, defaultRunner, 0, 0, path, "git", "status", "--porcelain=v1")
 	if err != nil {
 		return err
 	}
@@ -4974,7 +5002,7 @@ func recheckWorktreeMergeSources(ctx context.Context, sources []WorktreeMergeSou
 		if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
 			return fmt.Errorf("source %s changed during prepare: %w", source.Worktree, err)
 		}
-		head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 		if err != nil {
 			return err
 		}
@@ -4985,16 +5013,23 @@ func recheckWorktreeMergeSources(ctx context.Context, sources []WorktreeMergeSou
 	return nil
 }
 
-func mergeRevision(ctx context.Context, path, revision string) (string, error) {
-	output, _, err := runCommand(ctx, 0, 0, path, "git", "rev-parse", "--verify", revision+"^{commit}")
+// mergeRevision resolves revision to a commit SHA in path. Unlike the Git
+// port's RevParse (ports.go), this is `rev-parse --verify revision^{commit}`:
+// --verify makes an ambiguous or unresolvable revision a plain error instead
+// of printing usage, and ^{commit} requires the result to be a commit
+// object -- neither of which RevParse's own argv reproduces, so this stays
+// its own call through runCommand rather than a Git port method
+// (spec/plans/coverage-to-100 task-17).
+func mergeRevision(ctx context.Context, run runner.Runner, path, revision string) (string, error) {
+	output, _, err := runCommand(ctx, run, 0, 0, path, "git", "rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(output), nil
 }
 
-func mergeTreeRevision(ctx context.Context, path, revision string) (string, error) {
-	output, _, err := runCommand(ctx, 0, 0, path, "git", "rev-parse", "--verify", revision+"^{tree}")
+func mergeTreeRevision(ctx context.Context, run runner.Runner, path, revision string) (string, error) {
+	output, _, err := runCommand(ctx, run, 0, 0, path, "git", "rev-parse", "--verify", revision+"^{tree}")
 	if err != nil {
 		return "", err
 	}
@@ -5013,11 +5048,11 @@ func worktreeMergeCandidateAbsorbed(ctx context.Context, path string, prior Work
 	if err != nil || !containsLanding {
 		return false, false, err
 	}
-	candidateTree, err := mergeTreeRevision(ctx, path, prior.Candidate.SHA)
+	candidateTree, err := mergeTreeRevision(ctx, defaultRunner, path, prior.Candidate.SHA)
 	if err != nil {
 		return false, false, fmt.Errorf("resolve prior candidate tree %s: %w", prior.Candidate.SHA, err)
 	}
-	landingTree, err := mergeTreeRevision(ctx, path, prior.LandingSHA)
+	landingTree, err := mergeTreeRevision(ctx, defaultRunner, path, prior.LandingSHA)
 	if err != nil {
 		return false, false, fmt.Errorf("resolve prior landing tree %s: %w", prior.LandingSHA, err)
 	}
@@ -5025,7 +5060,7 @@ func worktreeMergeCandidateAbsorbed(ctx context.Context, path string, prior Work
 }
 
 func isMergeAncestor(ctx context.Context, path, ancestor, descendant string) (bool, error) {
-	output, _, err := runCommand(ctx, 0, 0, path, "git", "merge-base", ancestor, descendant)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, path, "git", "merge-base", ancestor, descendant)
 	if err != nil {
 		return false, err
 	}
@@ -5033,7 +5068,7 @@ func isMergeAncestor(ctx context.Context, path, ancestor, descendant string) (bo
 }
 
 func validMergeBranch(ctx context.Context, path, branch string) bool {
-	_, _, err := runCommand(ctx, 0, 0, path, "git", "check-ref-format", "--branch", branch)
+	_, _, err := runCommand(ctx, defaultRunner, 0, 0, path, "git", "check-ref-format", "--branch", branch)
 	return err == nil
 }
 

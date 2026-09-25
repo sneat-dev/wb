@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -135,6 +136,21 @@ type PullRequestCreateOptions struct {
 	Events              streams.EventAppender
 	Stream              string
 	EventsForRepository func(repository string) (streams.EventAppender, string)
+
+	// run overrides this package's generic command runner (ports.go); nil
+	// uses defaultRunner. A unit test sets this to a runnertest.Fake so a
+	// create call that reaches the migrated call sites
+	// (spec/plans/coverage-to-100 task-17) never starts a real process.
+	run runner.Runner
+}
+
+// resolveRunner returns options.run, falling back to defaultRunner
+// (ports.go) when the caller left it nil.
+func (options PullRequestCreateOptions) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return defaultRunner
 }
 
 // PullRequestCreateResult is the receipt, and the JSON envelope.
@@ -316,10 +332,10 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	result.BaseRef = base
 	result.HeadRef = branch
 
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "fetch", "--no-tags", "origin", base); err != nil {
+	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "fetch", "--no-tags", "origin", base); err != nil {
 		return result, fmt.Errorf("fetch base branch %s: %w", base, err)
 	}
-	subjectsRaw, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "log", "--format=%s", "origin/"+base+"..HEAD")
+	subjectsRaw, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "log", "--format=%s", "origin/"+base+"..HEAD")
 	if err != nil {
 		return result, fmt.Errorf("read commits ahead of %s: %w", base, err)
 	}
@@ -332,7 +348,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 		}), nil
 	}
 
-	headSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "rev-parse", "HEAD")
+	headSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return result, err
 	}
@@ -346,7 +362,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	// is already set to the same ref; and on a detached HEAD it pushes fine
 	// and simply sets nothing (Git only warns, and only via the message
 	// this command's own output already carries) rather than failing.
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "--set-upstream", "origin", "HEAD:refs/heads/"+branch); err != nil {
+	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "push", "--set-upstream", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return result, fmt.Errorf("push %s: %w", branch, err)
 	}
 
@@ -664,7 +680,7 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 		}
 	}
 	if !draft {
-		created, _, createErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create",
+		created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
 			"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", body)
 		if createErr != nil {
 			return "", false, createErr
@@ -678,7 +694,7 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
 		draftBody = prmeta.Append(draftBody, prmeta.Provenance{Effort: manifest.EffortID})
 	}
-	created, _, createErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create",
+	created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
 		"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", draftBody, "--draft")
 	if createErr != nil {
 		return "", false, createErr
@@ -732,7 +748,7 @@ func resolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argumen
 // pullRequestCreateDirtyPaths lists every uncommitted path in worktree, or
 // nil for a clean one.
 func pullRequestCreateDirtyPaths(ctx context.Context, worktree string) ([]string, error) {
-	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "status", "--porcelain")
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "status", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("read worktree status: %w", err)
 	}
@@ -828,7 +844,7 @@ func pullRequestCreateBodyWithoutCloses(options PullRequestCreateOptions, worktr
 		return string(contents), nil
 	}
 	if len(subjects) == 1 {
-		commitBody, _, err := runCommand(context.Background(), options.Timeout, options.Retry, worktree, "git", "log", "-1", "--format=%b")
+		commitBody, _, err := runCommand(context.Background(), options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "log", "-1", "--format=%b")
 		if err == nil {
 			if trimmed := strings.TrimSpace(commitBody); trimmed != "" {
 				return trimmed, nil
@@ -893,7 +909,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}
 		}
 		addArgs := append([]string{"add", "--"}, paths...)
-		if _, _, addErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", addArgs...); addErr != nil {
+		if _, _, addErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", addArgs...); addErr != nil {
 			return nil, nil, fmt.Errorf("git add -- %s: %w", strings.Join(paths, " "), addErr)
 		}
 		// Checking the STAGED diff, not the requested paths, is what catches a
@@ -912,7 +928,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		}
 		if len(secrets) > 0 {
 			unstageArgs := append([]string{"reset", "-q", "--"}, paths...)
-			_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", unstageArgs...)
+			_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", unstageArgs...)
 			return &createRefusal{
 				code:    CreateRefusalSecretPath,
 				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
@@ -920,7 +936,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}, nil, nil
 		}
 		commitArgs := append([]string{"commit", "-m", options.Message, "--"}, paths...)
-		if _, _, commitErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", commitArgs...); commitErr != nil {
+		if _, _, commitErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", commitArgs...); commitErr != nil {
 			if isNothingToCommit(commitErr) {
 				// A rerun with HEAD already ahead (the previous invocation's
 				// commit already landed the named paths) finds nothing left to
@@ -931,14 +947,14 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}
 			return nil, nil, fmt.Errorf("git commit: %w", commitErr)
 		}
-		committedRaw, _, treeErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+		committedRaw, _, treeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
 		if treeErr != nil {
 			return nil, nil, fmt.Errorf("read committed paths: %w", treeErr)
 		}
 		return nil, splitNonEmptyLines(committedRaw), nil
 	}
 	if options.CommitStaged {
-		staged, _, stagedErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "diff", "--cached", "--name-only")
+		staged, _, stagedErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "diff", "--cached", "--name-only")
 		if stagedErr != nil {
 			return nil, nil, fmt.Errorf("read staged changes: %w", stagedErr)
 		}
@@ -965,14 +981,14 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		}
 	}
 	if options.CommitAll {
-		if _, _, addErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "add", "-A"); addErr != nil {
+		if _, _, addErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "add", "-A"); addErr != nil {
 			return nil, nil, fmt.Errorf("git add -A: %w", addErr)
 		}
 		// .worktree.md is untracked and git-ignored on purpose (see CLAUDE.md),
 		// so `git add -A` never stages it in the first place. This unstages it
 		// defensively anyway, and is a no-op — never an error — when it was
 		// never staged to begin with.
-		_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "reset", "-q", "--", ".worktree.md")
+		_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "reset", "-q", "--", ".worktree.md")
 		// Checking the STAGED diff, not `git status --porcelain`, is what
 		// catches a secret inside an untracked directory: porcelain collapses
 		// an untracked directory to its own name ("?? config/"), never
@@ -989,7 +1005,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}
 		}
 		if len(secrets) > 0 {
-			_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "reset", "-q")
+			_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "reset", "-q")
 			return &createRefusal{
 				code:    CreateRefusalSecretPath,
 				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
@@ -997,7 +1013,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}, nil, nil
 		}
 	}
-	if _, _, commitErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "commit", "-m", options.Message); commitErr != nil {
+	if _, _, commitErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", options.Message); commitErr != nil {
 		if isNothingToCommit(commitErr) {
 			// A rerun with HEAD already ahead: the previous invocation's
 			// commit already happened, --commit-staged/--commit-all now find
@@ -1006,7 +1022,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		}
 		return nil, nil, fmt.Errorf("git commit: %w", commitErr)
 	}
-	committedRaw, _, treeErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	committedRaw, _, treeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
 	if treeErr != nil {
 		return nil, nil, fmt.Errorf("read committed paths: %w", treeErr)
 	}
@@ -1084,7 +1100,7 @@ func resolveAddPaths(ctx context.Context, worktree string, raw []string) ([]stri
 		}
 		rel = filepath.ToSlash(rel)
 		if _, statErr := os.Stat(absPath); statErr != nil {
-			statusOutput, _, gitErr := runCommand(ctx, 0, 0, worktree, "git", "status", "--porcelain", "--", rel)
+			statusOutput, _, gitErr := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "status", "--porcelain", "--", rel)
 			if gitErr != nil || strings.TrimSpace(statusOutput) == "" {
 				missing = append(missing, path)
 				continue
@@ -1130,7 +1146,7 @@ func stagedFileList(ctx context.Context, worktree string, timeout time.Duration,
 		args = append(args, "--")
 		args = append(args, pathspecs...)
 	}
-	output, _, err := runCommand(ctx, timeout, retry, worktree, "git", args...)
+	output, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", args...)
 	if err != nil {
 		return nil, fmt.Errorf("read staged paths: %w", err)
 	}

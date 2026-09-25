@@ -157,7 +157,7 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, state.roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
@@ -241,7 +241,7 @@ func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeC
 	if claimHash != options.ExpectedImmutableClaimSHA256 {
 		return conflictCandidateRefreshState{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return conflictCandidateRefreshState{}, fmt.Errorf("inspect failed candidate publication state: %w", err)
 	}

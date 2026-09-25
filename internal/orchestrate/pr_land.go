@@ -1362,7 +1362,7 @@ func deleteRemoteBranch(ctx context.Context, canonical, repository string, view,
 	// of scope for this migration PR (task-17); this call keeps running
 	// through the package's existing retrying runCommand (command.go),
 	// which is real but unguarded, exactly as it did before this PR.
-	remoteURLRaw, _, remoteErr := runCommand(ctx, 0, 0, canonical, "git", "remote", "get-url", "--push", "origin")
+	remoteURLRaw, _, remoteErr := runCommand(ctx, defaultRunner, 0, 0, canonical, "git", "remote", "get-url", "--push", "origin")
 	if remoteErr != nil {
 		return false, fmt.Errorf("resolve origin before deleting branch %s: %w", ref, remoteErr)
 	}

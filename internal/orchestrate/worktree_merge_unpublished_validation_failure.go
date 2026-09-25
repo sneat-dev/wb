@@ -115,7 +115,7 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate worktree is not clean: %w", err)
 		}
-		if head, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD"); headErr != nil || head != receipt.Candidate.SHA {
+		if head, headErr := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD"); headErr != nil || head != receipt.Candidate.SHA {
 			if headErr != nil {
 				return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("read candidate HEAD: %w", headErr)
 			}
@@ -134,14 +134,14 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		}
 		preserved := source
 		if receipt.Status == WorktreeMergePreparing {
-			preserved.SHA, err = mergeRevision(ctx, source.Worktree, "HEAD")
+			preserved.SHA, err = mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 			if err != nil {
 				return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("record preserved source HEAD: %w", err)
 			}
 		}
 		preservedSources = append(preservedSources, preserved)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, gitRoot, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("inspect candidate publication state: %w", err)
 	}

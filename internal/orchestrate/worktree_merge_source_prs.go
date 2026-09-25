@@ -50,7 +50,7 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 			heads[source.SHA] = true
 		}
 	}
-	output, _, err := runCommand(ctx, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
+	output, _, err := runCommand(ctx, defaultRunner, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
 	if err != nil {
 		return nil, err
 	}

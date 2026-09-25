@@ -159,7 +159,7 @@ func requireGoSumUpgradeLine(line string, upgrades map[string][2]string, added b
 }
 
 func gitFileContentsAtRevision(ctx context.Context, gitRoot, revision, path string) (string, bool) {
-	output, _, err := runCommand(ctx, 0, 0, gitRoot, "git", "show", revision+":"+path)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "show", revision+":"+path)
 	if err != nil {
 		return "", false
 	}

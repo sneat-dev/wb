@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestOrchCovNormalizeRejectsIncoherentLifecycleOptions(t *testing.T) {
@@ -140,8 +141,9 @@ func TestOrchCovParseLsRemoteSymrefReadsTheDefaultBranch(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovReadOriginHeadSymrefRefusesAnUnexpectedRef(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	if _, err := readOriginHeadSymref(context.Background(), dir, Options{Timeout: time.Minute}); err == nil {
@@ -411,8 +413,9 @@ func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovChangedFilesNamesEveryModifiedPath(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	writeEngineFile(t, filepath.Join(dir, "kept.txt"), "contents\n")

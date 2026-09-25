@@ -8,11 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -41,8 +43,9 @@ func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovEnsureCanonicalReportsAnUnclonableRepository(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "missing")
@@ -62,8 +65,9 @@ func TestOrchCovEnsureCanonicalReportsAFetchFailure(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -102,8 +106,9 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "broken")

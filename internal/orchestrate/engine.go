@@ -335,14 +335,14 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	}
 	if len(result.ChangedFiles) > 0 {
 		phase("commit")
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "add", "-A"); err != nil {
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "add", "-A"); err != nil {
 			return failResult(result, err)
 		}
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "commit", "-m", handler.CommitMessage(repository)); err != nil {
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", handler.CommitMessage(repository)); err != nil {
 			return failResult(result, err)
 		}
 	}
-	head, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "rev-parse", "HEAD")
+	head, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return failResult(result, err)
 	}
@@ -359,7 +359,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		// this run's view of origin unsound, and the only cost of
 		// over-invalidating is one extra fetch (see FetchMemo).
 		options.FetchMemo.MarkTouched(canonical)
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "-u", "origin", options.Branch); err != nil {
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "push", "-u", "origin", options.Branch); err != nil {
 			return failResult(result, err)
 		}
 		result.Pushed = true
@@ -476,7 +476,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 			return ResolvedBase{}, err
 		}
 		cloneURL := cloneURLFor(repository)
-		if _, _, err := runCommand(ctx, options.Timeout, 0, filepath.Dir(canonical), "git", "clone", "--quiet", cloneURL, canonical); err != nil {
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, 0, filepath.Dir(canonical), "git", "clone", "--quiet", cloneURL, canonical); err != nil {
 			return ResolvedBase{}, err
 		}
 	} else if err != nil {
@@ -489,7 +489,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 		// leaves FetchMemoDiscovery false so every wave's branch base comes
 		// from a fetch completed moments before (see Options.FetchMemoDiscovery).
 	} else {
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "fetch", "--quiet", "origin"); err != nil {
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "fetch", "--quiet", "origin"); err != nil {
 			return ResolvedBase{}, err
 		}
 		options.FetchMemo.MarkFetched(canonical)
@@ -508,7 +508,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 // verifyRemoteRef reports whether origin/<ref> resolves to a commit in the
 // canonical clone, without checking anything out.
 func verifyRemoteRef(ctx context.Context, canonical string, options Options, ref string) error {
-	_, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+ref+"^{commit}")
+	_, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+ref+"^{commit}")
 	return err
 }
 
@@ -524,12 +524,12 @@ func resolveOriginDefaultBranch(ctx context.Context, canonical string, options O
 	if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
 		return ref, nil
 	}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "remote", "set-head", "origin", "--auto"); err == nil {
+	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "remote", "set-head", "origin", "--auto"); err == nil {
 		if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
 			return ref, nil
 		}
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "ls-remote", "--symref", "origin", "HEAD")
+	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -541,7 +541,7 @@ func resolveOriginDefaultBranch(ctx context.Context, canonical string, options O
 }
 
 func readOriginHeadSymref(ctx context.Context, canonical string, options Options) (string, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -587,7 +587,7 @@ func operationWorktreePath(ctx context.Context, canonical, repository string, op
 			return registered, worktrees.WorktreePlacement{}, "", true, nil
 		}
 	}
-	baseSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+resolvedBase.Ref+"^{commit}")
+	baseSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+resolvedBase.Ref+"^{commit}")
 	if err != nil {
 		return "", worktrees.WorktreePlacement{}, "", false, err
 	}
@@ -604,7 +604,7 @@ func operationWorktreePath(ctx context.Context, canonical, repository string, op
 }
 
 func registeredWorktreeForBranch(ctx context.Context, canonical, branch string, options Options) (string, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "worktree", "list", "--porcelain")
+	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", err
 	}
@@ -630,7 +630,7 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 		if !options.Resume {
 			return nil, fmt.Errorf("operation worktree already exists: %s (use --resume or choose a different operation)", worktree)
 		}
-		current, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "branch", "--show-current")
+		current, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "branch", "--show-current")
 		if err != nil {
 			return nil, err
 		}
@@ -644,7 +644,7 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 	if registeredResume {
 		return nil, fmt.Errorf("registered resume worktree disappeared: %s", worktree)
 	}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		if !options.Resume {
 			return nil, fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
 		}
@@ -664,7 +664,7 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 // prompt from an earlier run is left untouched (a manifest is immutable by
 // design; see worktrees.WriteManifest).
 func recordWorktreeManifest(ctx context.Context, home, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
-	baseSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
+	baseSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
 	if err != nil {
 		return err
 	}
@@ -789,7 +789,7 @@ func changedFilesSince[T any](ctx context.Context, worktree string, before map[s
 }
 
 func worktreeStatus(ctx context.Context, worktree string, options Options) (map[string]string, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
+	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
 	if err != nil {
 		return nil, err
 	}
@@ -808,7 +808,7 @@ func worktreeStatus(ctx context.Context, worktree string, options Options) (map[
 }
 
 func branchAhead(ctx context.Context, worktree, base string, options Options) (bool, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "rev-list", base+"..HEAD")
+	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "rev-list", base+"..HEAD")
 	return strings.TrimSpace(output) != "", err
 }
 
@@ -823,7 +823,7 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
 		body = prmeta.Append(body, prmeta.Provenance{Effort: manifest.EffortID})
 	}
-	created, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
+	created, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
 	if err != nil {
 		return "", err
 	}
@@ -869,7 +869,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	// self-sufficiently sound rather than relying on that ordering.
 	options.FetchMemo.MarkTouched(result.CanonicalDir)
 	mergeArgs := []string{"pr", "merge", result.PR, "--match-head-commit", result.Commit, "--merge"}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", mergeArgs...); err != nil {
+	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, result.WorktreeDir, "gh", mergeArgs...); err != nil {
 		return err
 	}
 	result.Merged = true

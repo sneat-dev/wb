@@ -264,7 +264,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
@@ -338,7 +338,7 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 	if receipt.Candidate.SHA == "" {
 		return errors.New("failed receipt has no immutable candidate SHA for historical source provenance")
 	}
-	candidateSHA, err := mergeRevision(ctx, repositoryDir, receipt.Candidate.SHA)
+	candidateSHA, err := mergeRevision(ctx, defaultRunner, repositoryDir, receipt.Candidate.SHA)
 	if err != nil || candidateSHA != receipt.Candidate.SHA {
 		if err == nil {
 			err = fmt.Errorf("resolved %s", candidateSHA)
@@ -349,7 +349,7 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 			return errors.New("failed receipt contains an incomplete immutable historical source identity")
 		}
-		revision, err := mergeRevision(ctx, repositoryDir, source.SHA)
+		revision, err := mergeRevision(ctx, defaultRunner, repositoryDir, source.SHA)
 		if err != nil || revision != source.SHA {
 			if err == nil {
 				err = fmt.Errorf("resolved %s", revision)
@@ -401,7 +401,7 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 			continue
 		}
 		seen[root.SHA] = true
-		head, err := mergeRevision(ctx, worktree, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, worktree, "HEAD")
 		if err != nil {
 			return err
 		}
@@ -412,8 +412,8 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 		if contains {
 			continue
 		}
-		if _, _, err := runCommand(ctx, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
-			_, _, _ = runCommand(ctx, timeout, 0, worktree, "git", "merge", "--abort")
+		if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
+			_, _, _ = runCommand(ctx, defaultRunner, timeout, 0, worktree, "git", "merge", "--abort")
 			return fmt.Errorf("merge required %s root %s: %w", root.Kind, root.SHA, err)
 		}
 	}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // landWorktreeMergePullRequest drives the worktree-merge PR route's exact
@@ -120,7 +122,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		Lane:                options.Lane,
 		git:                 options.resolveGit(),
 		headUpdated: func(previous, updated string) error {
-			return adoptWorktreeMergeUpdateBranchAdvance(ctx, options.resolveGit(), &receipt, previous, updated)
+			return adoptWorktreeMergeUpdateBranchAdvance(ctx, options.resolveGit(), options.resolveRunner(), &receipt, previous, updated)
 		},
 	}
 
@@ -303,7 +305,7 @@ func pullRequestCommitParents(ctx context.Context, repository, sha string) ([]st
 // update-branch merge that already happened server-side; the fast-forward
 // failure is swallowed here (best effort) and left for
 // adoptServerUpdatedWorktreeMergeHead to reconcile on a later resume.
-func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, receipt *WorktreeMergeReceipt, previous, updated string) error {
+func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, run runner.Runner, receipt *WorktreeMergeReceipt, previous, updated string) error {
 	if receipt == nil {
 		return fmt.Errorf("worktree-merge PR-land hook called with no receipt")
 	}
@@ -334,7 +336,7 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, receipt
 	// recorded as a trusted advance merely because its two parents happen to
 	// match the shape this function checks for. Any failure to positively
 	// verify is a refusal, not a silent adoption.
-	proved, proofErr := verifyUpdateBranchMergeProof(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated)
+	proved, proofErr := verifyUpdateBranchMergeProof(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated)
 	if proofErr != nil {
 		// Minor 5 (review round on #614): a transient GitHub read failure
 		// while computing the proof (here, only commitTreeSHA's fallback
@@ -369,7 +371,7 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, receipt
 	// (pr_land_local_sync.go) is the one shared helper both this hook and
 	// the plain `wb pr land` route's own update-branch success path use;
 	// it never errors, only reports a note.
-	if note := fastForwardWorktreeToUpdatedHead(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, updated); note != "" {
+	if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, updated); note != "" {
 		receipt.LocalSync = note
 	}
 	return nil
@@ -437,7 +439,7 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 // is a blip WB never observed. That case alone returns (false, err) with err
 // satisfying IsTransientReadFailure, so a caller can tell "ask again" apart
 // from "refuse" instead of both collapsing into the same false.
-func verifyUpdateBranchMergeProof(ctx context.Context, git Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+func verifyUpdateBranchMergeProof(ctx context.Context, git Git, run runner.Runner, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 	worktree = strings.TrimSpace(worktree)
 	if worktree == "" {
 		return false, nil
@@ -457,7 +459,7 @@ func verifyUpdateBranchMergeProof(ctx context.Context, git Git, worktree, branch
 		// It was produced server-side by GitHub and this worktree has not
 		// necessarily fetched it yet. A failure here (deleted branch) is not
 		// fatal - the tree can still be read from GitHub's commit API below.
-		if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
+		if _, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
 			"+refs/heads/"+branch+":refs/remotes/origin/"+branch); err == nil {
 			headLocal, headLocalErr = commitExistsLocally(ctx, git, worktree, headSHA)
 			if headLocalErr != nil {
@@ -537,7 +539,7 @@ func commitExistsLocally(ctx context.Context, git Git, worktree, sha string) (bo
 // of head drift (a local push advancing the candidate worktree, a foreign
 // close, and so on) into a hard failure merely because this best-effort
 // verification could not complete.
-func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, receipt *WorktreeMergeReceipt) (bool, error) {
+func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, run runner.Runner, receipt *WorktreeMergeReceipt) (bool, error) {
 	if receipt == nil || receipt.PullRequest == "" || receipt.LandingSHA != "" || receipt.Candidate.SHA == "" {
 		return false, nil
 	}
@@ -568,7 +570,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, receipt *
 	// failure - transient or not - already falls through to "leave it for
 	// the ordinary drift/conflict handling to judge", so the error is
 	// intentionally discarded rather than given special treatment.
-	proved, _ := verifyUpdateBranchMergeProof(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA)
+	proved, _ := verifyUpdateBranchMergeProof(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA)
 	if !proved {
 		// Not an ordinary merge of our candidate and the target: leave it
 		// for the ordinary drift/conflict handling to judge.
@@ -584,7 +586,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, receipt *
 	receipt.TargetSHA = parents[1]
 	receipt.Candidate.SHA = view.Head.SHA
 	receipt.PublishedCandidateSHA = view.Head.SHA
-	if note := fastForwardWorktreeToUpdatedHead(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA); note != "" {
+	if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA); note != "" {
 		receipt.LocalSync = note
 	}
 	return true, nil

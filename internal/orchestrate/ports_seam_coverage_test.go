@@ -93,7 +93,7 @@ func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyError(t *test
 		},
 	}
 
-	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, worktree, "", "main", "acme/app", "candidatesha", "targetparentsha", headSHA)
+	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, runnertest.New(t), worktree, "", "main", "acme/app", "candidatesha", "targetparentsha", headSHA)
 	if proved {
 		t.Fatalf("proved = true, want false when commitExistsLocally errors")
 	}
@@ -216,7 +216,7 @@ func TestSyncLocalWorktreeAfterUpdateBranchReturnsEmptyWhenTheCanonicalPathFails
 // the uncommitted-changes test above.
 func TestFastForwardWorktreeToUpdatedHeadReturnsEmptyForABlankWorktree(t *testing.T) {
 	t.Parallel()
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), &gitclitest.Fake{}, "   ", "branch", "head")
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), &gitclitest.Fake{}, runnertest.New(t), "   ", "branch", "head")
 	if note != "" {
 		t.Fatalf("note = %q, want empty for a blank worktree", note)
 	}
@@ -237,7 +237,7 @@ func TestFastForwardWorktreeToUpdatedHeadPropagatesABranchShowCurrentError(t *te
 		StatusPorcelainByDir:   map[string]gitclitest.Result{worktree: {Value: ""}},
 		BranchShowCurrentByDir: map[string]gitclitest.Result{worktree: {Err: wantErr}},
 	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, worktree, "branch", "head")
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, runnertest.New(t), worktree, "branch", "head")
 	if !strings.Contains(note, wantErr.Error()) {
 		t.Fatalf("note = %q, want it to contain %q", note, wantErr.Error())
 	}
@@ -253,7 +253,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesHeadIsNotOnTheBranch(t *testing.T)
 		StatusPorcelainByDir:   map[string]gitclitest.Result{worktree: {Value: ""}},
 		BranchShowCurrentByDir: map[string]gitclitest.Result{worktree: {Value: "other-branch"}},
 	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, worktree, "expected-branch", "head")
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, runnertest.New(t), worktree, "expected-branch", "head")
 	if !strings.Contains(note, "HEAD is not on expected-branch") {
 		t.Fatalf("note = %q, want it to name the branch mismatch", note)
 	}

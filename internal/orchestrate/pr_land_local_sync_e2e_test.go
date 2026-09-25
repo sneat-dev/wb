@@ -59,7 +59,7 @@ func TestLandFastForwardsACleanWorktreeAfterUpdateBranch(t *testing.T) {
 	if !strings.Contains(result.LocalSync, "fast-forwarded worktree") {
 		t.Fatalf("LocalSync = %q, want a fast-forward note", result.LocalSync)
 	}
-	if _, err := runGitAllowFail(worktree, "rev-parse", "--abbrev-ref", "feature@{upstream}"); err != nil {
+	if _, err := runGitAllowFail(defaultRunner, worktree, "rev-parse", "--abbrev-ref", "feature@{upstream}"); err != nil {
 		t.Fatalf("feature@{upstream} does not resolve after fast-forward: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	runEngineGit(t, worktree, "config", "user.email", "wb@example.test")
 
 	const bogusHead = "0000000000000000000000000000000000000000"
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), defaultGit, worktree, "feature", bogusHead)
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), defaultGit, defaultRunner, worktree, "feature", bogusHead)
 	if !strings.Contains(note, "does not match updated head") {
 		t.Fatalf("note = %q, want a fetched-head mismatch note", note)
 	}

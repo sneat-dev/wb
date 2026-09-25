@@ -130,7 +130,7 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("inspect candidate publication state: %w", err)
 	}

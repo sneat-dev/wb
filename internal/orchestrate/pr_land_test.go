@@ -803,7 +803,7 @@ func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
 	if !result.BranchDeleted {
 		t.Fatal("rewritten pull request branch was not retired")
 	}
-	if output, err := runGitAllowFail(fixture.canonical, "ls-remote", "origin", "refs/heads/feature/keep-success"); err != nil {
+	if output, err := runGitAllowFail(defaultRunner, fixture.canonical, "ls-remote", "origin", "refs/heads/feature/keep-success"); err != nil {
 		t.Fatal(err)
 	} else if strings.TrimSpace(output) != "" {
 		t.Fatalf("rewritten remote branch still exists: %s", output)
@@ -1260,7 +1260,7 @@ func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFet
 	}
 	fake.FailCall(2, wantErr)
 
-	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, fixture.canonical,
+	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, defaultRunner, fixture.canonical,
 		"feature/proof-retry", "main", "acme/app", "candidatesha", "targetparentsha", headSHA)
 	if proved {
 		t.Fatalf("proved = true, want false when the retried commitExistsLocally errors")
@@ -1293,7 +1293,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedUpdatedHeadUnitTier(t *
 		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
 		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-mismatch"}},
 	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-mismatch", "not-the-real-head")
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-mismatch", "not-the-real-head")
 	if !strings.Contains(note, "does not match updated head") {
 		t.Fatalf("note = %q, want it to name the fetched/updated head mismatch", note)
 	}
@@ -1316,7 +1316,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier(t *te
 			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-diverged": wantErr,
 		},
 	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-diverged", fixture.headSHA)
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-diverged", fixture.headSHA)
 	if !strings.Contains(note, "diverged local commits") {
 		t.Fatalf("note = %q, want it to name diverged local commits", note)
 	}
@@ -1344,7 +1344,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier(t *tes
 			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-fail": nil,
 		},
 	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-fail", fixture.headSHA)
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-fail", fixture.headSHA)
 	if !strings.Contains(note, "fast-forward failed") {
 		t.Fatalf("note = %q, want it to name the fast-forward failure", note)
 	}

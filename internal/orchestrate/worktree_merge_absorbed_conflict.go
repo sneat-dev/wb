@@ -250,7 +250,7 @@ func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt W
 		branches = append(branches, source.Branch)
 	}
 	for _, branch := range branches {
-		refs, _, refErr := runCommand(ctx, 0, 0, root, "git", "for-each-ref", "--format=%(refname)", "refs/heads/"+branch)
+		refs, _, refErr := runCommand(ctx, defaultRunner, 0, 0, root, "git", "for-each-ref", "--format=%(refname)", "refs/heads/"+branch)
 		if refErr != nil {
 			return "", fmt.Errorf("inspect local branch %s: %w", branch, refErr)
 		}
@@ -267,7 +267,7 @@ func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt W
 // when a legacy receipt has no candidate SHA: an empty recorded SHA alone
 // does not prove that nobody subsequently published the branch.
 func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
-	remote, _, err := runCommand(ctx, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("inspect candidate publication state: %w", err)
 	}
@@ -305,12 +305,12 @@ func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget st
 	if ancestor {
 		return absorbedConflictProof{method: "ancestor"}, nil
 	}
-	mergeBaseOutput, _, err := runCommand(ctx, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
+	mergeBaseOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("resolve merge base with current target: %w", err)
 	}
 	mergeBase := strings.TrimSpace(mergeBaseOutput)
-	diffOutput, _, err := runCommand(ctx, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
+	diffOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("diff source from its merge base with current target: %w", err)
 	}
@@ -392,7 +392,7 @@ func proveLinesAbsorbedPath(ctx context.Context, worktree, mergeBase, sourceSHA,
 // to mergeBase, excluding the unified-diff file header (the "+++" line) and
 // hunk metadata, with the leading "+" stripped.
 func gitDiffAddedLines(ctx context.Context, worktree, mergeBase, sourceSHA, path string) ([]string, error) {
-	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "diff", "--no-color", "-U0", mergeBase, sourceSHA, "--", path)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "diff", "--no-color", "-U0", mergeBase, sourceSHA, "--", path)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +409,7 @@ func gitDiffAddedLines(ctx context.Context, worktree, mergeBase, sourceSHA, path
 // gitFileLines returns revision's copy of path split into lines, or
 // present=false if the path does not exist at that revision.
 func gitFileLines(ctx context.Context, worktree, revision, path string) (lines []string, present bool) {
-	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "show", revision+":"+path)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "show", revision+":"+path)
 	if err != nil {
 		return nil, false
 	}
@@ -461,13 +461,13 @@ func validateAbsorbedConflictDerivedPaths(ctx context.Context, worktree, current
 // neither the local store nor the current tip of its own origin branch
 // refuses closed.
 func resolveAbsorbedConflictSourceObject(ctx context.Context, worktree string, source WorktreeMergeSource) error {
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "cat-file", "-e", source.SHA+"^{commit}"); err == nil {
+	if _, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "cat-file", "-e", source.SHA+"^{commit}"); err == nil {
 		return nil
 	}
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", source.Branch); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", source.Branch); err != nil {
 		return fmt.Errorf("fetch origin %s to resolve receipted source %s: %w", source.Branch, source.SHA, err)
 	}
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "cat-file", "-e", source.SHA+"^{commit}"); err != nil {
+	if _, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "cat-file", "-e", source.SHA+"^{commit}"); err != nil {
 		return fmt.Errorf("receipted source commit %s is reachable from neither the local object store nor the current origin %s", source.SHA, source.Branch)
 	}
 	return nil
@@ -478,7 +478,7 @@ func resolveAbsorbedConflictSourceObject(ctx context.Context, worktree string, s
 // as "absent" so a real infrastructure error fails the equality comparison
 // closed rather than silently passing it.
 func gitBlobAtPath(ctx context.Context, worktree, revision, path string) (blob string, present bool) {
-	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "rev-parse", "--verify", "-q", revision+":"+path)
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "rev-parse", "--verify", "-q", revision+":"+path)
 	if err != nil {
 		return "", false
 	}
