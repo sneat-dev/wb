@@ -90,6 +90,12 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 20. **E2E scope.** The founder said: "I am thinking e2e tests can test only happy path, and maybe just few of failure cases".
     - Each e2e journey tests its happy path.
     - Failure cases belong to the unit tier, against the fakes. Only a few failure cases are e2e tests; task-23 names them.
+21. **Integration branch.** Asked whether the coverage programme's PRs should land in an integration branch, which then lands in main in batches, the founder answered "Yes, let's use integration branch". The coordinator had proposed this because `main` requires PR branches to be up to date. Every landing made each other open PR stale and cost it another ~17-minute CI run. The coordinator also named the costs: a large PR into main, and refactors that sit off main for up to a day.
+    - Lanes branch from `cov/integration`, and their PRs target it. Each PR still gets its own adversarial review and must pass CI, including the per-change ratchet against its `cov/integration` base.
+    - `cov/integration` has no up-to-date requirement, so a green, approved PR merges at once. It is merged with a merge commit, through `wb pr land`.
+    - The coordinator merges `origin/main` into `cov/integration` at least daily.
+    - The coordinator also lands `cov/integration` in `main` through one PR, at least daily and at the end of each wave. That PR is a merge commit, reviewed adversarially as a whole, with the full CI and the ratchet against main.
+    - A task's plan status becomes complete only once its work is on `main`.
 
 *Plan choices, not founder instructions:*
 - folding the seven existing per-package runners into one (task-8);
@@ -98,7 +104,8 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 - the 10-minute e2e budget (task-23);
 - the runtime guard, the pending and allow lists (task-24, task-8);
 - the rule for which failure cases may be e2e tests, and one contract case per error kind a fake emulates (task-23, task-24);
-- making the e2e job required in branch protection through `gh api`, and running the e2e tier nightly (task-24).
+- making the e2e job required in branch protection through `gh api`, and running the e2e tier nightly (task-24);
+- the daily landing cadence, the daily sync from main, and publishing the coverage baseline on pushes to `cov/integration` (decision 21).
 
 ## Journey
 

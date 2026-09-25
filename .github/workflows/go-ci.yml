@@ -2,7 +2,11 @@ name: Go CI
 
 on:
   push:
-    branches: [main]
+    # cov/integration: the coverage programme's integration branch
+    # (spec/plans/coverage-to-100 decision 21). Its pushes publish the
+    # coverage baseline its PRs' ratchet fetches; they are never
+    # release-eligible (.github/scripts/release-eligible.sh).
+    branches: [main, cov/integration]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
