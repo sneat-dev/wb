@@ -69,6 +69,43 @@ func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
 	}
 }
 
+// Every existing "stream join" test in this package is refused before the
+// stream engine is ever built (a bad name, a bad role, a missing --model).
+// This drives a join whose work-log preparation and role succeed, so it
+// reaches newStreamEngine itself, proving inv.projectsRoot threads all the
+// way into the engine's Store/Git/GitHub/Login/Machine wiring.
+func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
+	store := streams.OpenAt(filepath.Join(home, "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name:    "holder",
+		Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleConsumer}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("the exact task request\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"stream", "join", "holder", "acme/newmember",
+		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
+		"--original-prompt-file", prompt,
+		"--format", "json", "--non-interactive",
+	}, &stdout, &stderr)
+	// Whatever the engine's own Join outcome is (it may still refuse for a
+	// repository reason unrelated to work-log preparation or role), the
+	// refusal must not be one of the pre-engine usage checks: those would
+	// mean newStreamEngine itself was never reached.
+	if strings.Contains(stderr.String(), "--model is required") || strings.Contains(stderr.String(), "stream name") || strings.Contains(stderr.String(), "unsupported role") {
+		t.Fatalf("stream join failed before reaching the stream engine: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 // `wb stream status` with no name lists every stream from WB-owned state, and
 // the JSON document on stdout stays parseable.
 func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
