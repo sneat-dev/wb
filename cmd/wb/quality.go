@@ -63,7 +63,7 @@ type qualityTarget struct {
 	path       string
 }
 
-func newCoverageCmd() *cobra.Command {
+func newCoverageCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{testShards: 1, minimumCoverage: -1, baselineTimeout: 20 * time.Minute}
 	command := &cobra.Command{
 		Use:   "coverage [repository-path]",
@@ -106,7 +106,7 @@ func newCoverageCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "coverage", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), inv.nonInteractive), "coverage", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.GoTestShards = options.testShards
@@ -192,7 +192,7 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 	return nil
 }
 
-func newVerifyCmd() *cobra.Command {
+func newVerifyCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{}
 	command := &cobra.Command{
 		Use:   "verify [repository-path]",
@@ -225,7 +225,7 @@ func newVerifyCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "verify", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), inv.nonInteractive), "verify", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
@@ -256,7 +256,7 @@ func newVerifyCmd() *cobra.Command {
 	return command
 }
 
-func newCheckCmd() *cobra.Command {
+func newCheckCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{}
 	var profile string
 	command := &cobra.Command{
@@ -290,7 +290,7 @@ func newCheckCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "check", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), inv.nonInteractive), "check", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report

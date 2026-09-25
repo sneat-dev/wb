@@ -165,7 +165,7 @@ func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
 		Status: fleetsync.Failed,
 		Err:    errors.New("git pull: transport failure"),
 	}}
-	code := finishSync(syncReportMetaForTest(), results, false, false, remoteDeps{},
+	code := finishSync(&invocation{}, syncReportMetaForTest(), results, false, false, remoteDeps{},
 		filepath.Dir(home), "", 1, &out, &errOut)
 
 	if code != 1 {
@@ -188,7 +188,7 @@ func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
 	var out, errOut bytes.Buffer
 
-	code := finishSync(syncReportMetaForTest(), nil, false, false, remoteDeps{},
+	code := finishSync(&invocation{}, syncReportMetaForTest(), nil, false, false, remoteDeps{},
 		filepath.Dir(home), "", 1, &out, &errOut)
 
 	// The exit code is the point of this test and holds either way, so it is

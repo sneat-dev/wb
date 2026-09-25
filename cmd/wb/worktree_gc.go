@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorktreeGCCmd() *cobra.Command {
+func newWorktreeGCCmd(inv *invocation) *cobra.Command {
 	var base, format, supersededBy string
 	var apply, allowResidue, skipDetached, skipSizes, deleteRemote, verbose bool
 	var olderThan, ttl, sessionFreshness time.Duration
@@ -96,7 +96,7 @@ wb worktree gc --format json`,
 			if sessionFreshness < 0 {
 				return &exitError{code: exitUsage, message: "--session-freshness cannot be negative; use 0 to disable the in-use rule"}
 			}
-			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
+			progress := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
 				ProjectsRoot: projectsRoot,

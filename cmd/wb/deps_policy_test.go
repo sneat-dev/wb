@@ -71,7 +71,7 @@ func violatingModule(t *testing.T) string {
 
 func runPolicy(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	command := newDepsPolicyCmd()
+	command := newDepsPolicyCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out bytes.Buffer
@@ -314,7 +314,7 @@ func TestPolicyInitRefusesToOverwrite(t *testing.T) {
 }
 
 func TestPolicySubcommandsAndFlagsArePresent(t *testing.T) {
-	command := newDepsPolicyCmd()
+	command := newDepsPolicyCmd(&invocation{})
 	wanted := map[string][]string{
 		"check":    {"policy", "type", "format", "strict"},
 		"explain":  {"policy", "type"},

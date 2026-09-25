@@ -82,8 +82,8 @@ func sweep(repositories []deps.Repository, policyOverride string) []moduleOutcom
 	return outcomes
 }
 
-func fleetRepositories(match, regex string) ([]deps.Repository, error) {
-	repositories, err := dependencyRepositories(nil, depsSetOptions{
+func fleetRepositories(inv *invocation, match, regex string) ([]deps.Repository, error) {
+	repositories, err := dependencyRepositories(inv, nil, depsSetOptions{
 		fleet:    true,
 		match:    match,
 		regex:    regex,
@@ -97,7 +97,7 @@ func fleetRepositories(match, regex string) ([]deps.Repository, error) {
 
 // ---------------------------------------------------------------- report
 
-func newDepsPolicyReportCmd() *cobra.Command {
+func newDepsPolicyReportCmd(inv *invocation) *cobra.Command {
 	var match, regex, policyFlag, format string
 	command := &cobra.Command{
 		Use:   "report",
@@ -111,7 +111,7 @@ enforcing — and the command that says which repositories are keeping it there.
 Exits 1 when any enforcing rule is violated anywhere.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repositories, err := fleetRepositories(match, regex)
+			repositories, err := fleetRepositories(inv, match, regex)
 			if err != nil {
 				return err
 			}
@@ -233,7 +233,7 @@ func findingKey(finding policy.Finding) string {
 
 // ---------------------------------------------------------------- drift
 
-func newDepsPolicyDriftCmd() *cobra.Command {
+func newDepsPolicyDriftCmd(inv *invocation) *cobra.Command {
 	var match, regex, policyFlag, format string
 	command := &cobra.Command{
 		Use:   "drift",
@@ -248,7 +248,7 @@ version drift but coverage: a module nobody wired up is held to nothing at all.
 Exits 1 when any module is ungoverned or disagrees with detection.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repositories, err := fleetRepositories(match, regex)
+			repositories, err := fleetRepositories(inv, match, regex)
 			if err != nil {
 				return err
 			}
@@ -325,7 +325,7 @@ Exits 1 when any module is ungoverned or disagrees with detection.`,
 
 // ---------------------------------------------------------------- impact
 
-func newDepsPolicyImpactCmd() *cobra.Command {
+func newDepsPolicyImpactCmd(inv *invocation) *cobra.Command {
 	var match, regex, format string
 	command := &cobra.Command{
 		Use:   "impact <candidate-policy-file>",
@@ -346,7 +346,7 @@ Exits 1 when the candidate would newly fail any repository.`,
 			if _, err := policy.Load(candidatePath); err != nil {
 				return usageError(err.Error())
 			}
-			repositories, err := fleetRepositories(match, regex)
+			repositories, err := fleetRepositories(inv, match, regex)
 			if err != nil {
 				return err
 			}

@@ -25,11 +25,11 @@ import (
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
-func newRunCmd() *cobra.Command {
-	return newRunCmdWithDaemonDependencies(defaultDaemonDependencies())
+func newRunCmd(inv *invocation) *cobra.Command {
+	return newRunCmdWithDaemonDependencies(inv, defaultDaemonDependencies())
 }
 
-func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Command {
+func newRunCmdWithDaemonDependencies(inv *invocation, daemonDeps daemonDependencies) *cobra.Command {
 	var (
 		apply              bool
 		async              bool
@@ -220,7 +220,7 @@ wb run --changed --target origin/main -- go vet`,
 			if len(args) == 1 {
 				name = args[0]
 			}
-			if code := runRun(projectsRoot, filterFlag, extraOrgs, configPath, name, list, apply); code != 0 {
+			if code := runRun(projectsRoot, filterFlag, inv.extraOrgs, configPath, name, list, apply); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "the recipe reported errors, or drift that --apply would land; see the per-repository lines above",

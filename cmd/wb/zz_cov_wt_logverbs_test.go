@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestCwWtWorkLogVerbCommandsInProcess(t *testing.T) {
@@ -248,7 +250,7 @@ func TestCwWtWorktreeAbortCommand(t *testing.T) {
 func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup dry run: %v", err)
 	}
@@ -259,7 +261,7 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 		t.Fatalf("cleanup footer = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup json: %v", err)
 	}
@@ -267,14 +269,14 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 		t.Fatalf("cleanup json = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "--retire-shells")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--retire-shells")
 	if err != nil {
 		t.Fatalf("cleanup --retire-shells: %v", err)
 	}
 	if !strings.Contains(stdout, "logical task shell still has physical members") {
 		t.Fatalf("retire-shells stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "--retire-shells", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--retire-shells", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup --retire-shells json: %v", err)
 	}
@@ -283,20 +285,20 @@ func TestCwWtWorktreeCleanupAndRetireShellsInProcess(t *testing.T) {
 	}
 
 	// --recover-stages over a named task produces a per-task outcome.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "--recover-stages", "gc-cli")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--recover-stages", "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup --recover-stages: %v", err)
 	}
 	if stdout != "" && !strings.Contains(stdout, "preserved") && !strings.Contains(stdout, "would archive") {
 		t.Fatalf("recover-stages stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, "--recover-stages", "gc-cli", "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "--recover-stages", "gc-cli", "--format", "json"); err != nil {
 		t.Fatalf("cleanup --recover-stages json: %v", err)
 	}
 
 	// A named --apply that cannot satisfy cleanup safety exits with the
 	// rename/cleanup safety error rather than pretending success.
-	_, _, err = cwCovExec(t, projects, newWorktreeCleanupCmd, "gc-cli", "--apply", "--remote")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply", "--remote")
 	if err == nil || !strings.Contains(err.Error(), "did not satisfy cleanup safety") {
 		t.Fatalf("cleanup --apply on a dirty worktree = %v", err)
 	}

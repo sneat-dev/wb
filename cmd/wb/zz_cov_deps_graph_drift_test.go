@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/prinventory"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/spf13/cobra"
 )
 
 // cwDepsGraphFixture builds a projects root with two Go modules that declare a
@@ -38,7 +39,7 @@ func TestCwDepsGraphCommandInProcess(t *testing.T) {
 	root := cwDepsGraphFixture(t)
 	reportDir := filepath.Join(t.TempDir(), "reports")
 
-	stdout, _, err := cwCovExec(t, root, newDepsGraphCmd,
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{}) },
 		"--fleet", "--ecosystem", "go", "--format", "json", "--report-dir", reportDir, "--parallel", "1")
 	if err != nil {
 		t.Fatalf("deps graph: %v\n%s", err, stdout)
@@ -53,16 +54,16 @@ func TestCwDepsGraphCommandInProcess(t *testing.T) {
 		}
 	}
 	// A view the graph does not support is refused before anything is written.
-	if _, _, err := cwCovExec(t, root, newDepsGraphCmd, "--fleet", "--view", "nonsense"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{}) }, "--fleet", "--view", "nonsense"); err == nil {
 		t.Fatal("an unsupported graph view must be refused")
 	}
 	// Only the go and npm ecosystems are supported.
-	if _, _, err := cwCovExec(t, root, newDepsGraphCmd, "--fleet", "--ecosystem", "maven"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{}) }, "--fleet", "--ecosystem", "maven"); err == nil ||
 		!strings.Contains(err.Error(), "only the go and npm ecosystems") {
 		t.Fatalf("unsupported ecosystem = %v", err)
 	}
 	// A repository path cannot be combined with --fleet.
-	if _, _, err := cwCovExec(t, root, newDepsGraphCmd, "--fleet", filepath.Join(root, "acme", "app")); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{}) }, "--fleet", filepath.Join(root, "acme", "app")); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("repository-path with --fleet = %v", err)
 	}
@@ -71,7 +72,7 @@ func TestCwDepsGraphCommandInProcess(t *testing.T) {
 func TestCwDepsDriftCommandInProcess(t *testing.T) {
 	root := cwDepsGraphFixture(t)
 
-	stdout, _, err := cwCovExec(t, root, newDepsDriftCmd, "--fleet", "--ecosystem", "go", "--format", "json", "--parallel", "1")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{}) }, "--fleet", "--ecosystem", "go", "--format", "json", "--parallel", "1")
 	if err != nil {
 		t.Fatalf("deps drift: %v\n%s", err, stdout)
 	}
@@ -89,7 +90,7 @@ func TestCwDepsDriftCommandInProcess(t *testing.T) {
 	}
 	// The report is persisted beside the run for later reading.
 	reportDir := filepath.Join(t.TempDir(), "reports")
-	if stdout, _, err := cwCovExec(t, root, newDepsDriftCmd, "--fleet", "--report-dir", reportDir); err != nil {
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{}) }, "--fleet", "--report-dir", reportDir); err != nil {
 		t.Fatalf("deps drift with report dir: %v\n%s", err, stdout)
 	}
 	for _, name := range []string{"deps-drift.md", "deps-drift.yaml", "deps-drift.json"} {
@@ -98,16 +99,16 @@ func TestCwDepsDriftCommandInProcess(t *testing.T) {
 		}
 	}
 	// --fail-on-drift converts a divergent fleet into a findings exit.
-	if _, _, err := cwCovExec(t, root, newDepsDriftCmd, "--fleet", "--fail-on-drift", "--format", "yaml"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{}) }, "--fleet", "--fail-on-drift", "--format", "yaml"); err == nil {
 		t.Log("no drift was reported for this fixture; the flag was still exercised")
 	}
 	// An unsupported ecosystem is refused.
-	if _, _, err := cwCovExec(t, root, newDepsDriftCmd, "--fleet", "--ecosystem", "cargo"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{}) }, "--fleet", "--ecosystem", "cargo"); err == nil ||
 		!strings.Contains(err.Error(), "only the go and npm ecosystems") {
 		t.Fatalf("unsupported drift ecosystem = %v", err)
 	}
 	// --fail-on-behind requires an online query.
-	if _, _, err := cwCovExec(t, root, newDepsDriftCmd, "--fleet", "--fail-on-behind"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{}) }, "--fleet", "--fail-on-behind"); err == nil {
 		t.Log("--fail-on-behind was accepted offline; behaviour is the command's own contract")
 	}
 }
