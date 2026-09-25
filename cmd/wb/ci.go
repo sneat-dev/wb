@@ -19,13 +19,13 @@ import (
 	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
-func newCICmd() *cobra.Command {
+func newCICmd(inv *invocation) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ci",
 		Short: "Inspect and validate CI/CD policy",
 	}
 	cmd.AddCommand(newCIAuditCmd())
-	cmd.AddCommand(newCIWaitCmd())
+	cmd.AddCommand(newCIWaitCmd(inv))
 	return cmd
 }
 
@@ -46,7 +46,7 @@ type ciWaitOutput struct {
 // newCIWaitCmd provides a terminating foreground observation slice. It never
 // creates a daemon or background process: pending is a first-class finding
 // whose exact identity can be passed unchanged to the next invocation.
-func newCIWaitCmd() *cobra.Command {
+func newCIWaitCmd(inv *invocation) *cobra.Command {
 	var repository, pullRequest, target, head string
 	var slice, interval time.Duration
 	var jsonOut bool
@@ -86,7 +86,7 @@ it. This command never starts a detached watcher or background loop.`,
 		},
 		RunE: func(command *cobra.Command, args []string) error {
 			machineOutput := jsonOut || format == "json"
-			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			interactive := console.Interactive(command.ErrOrStderr(), inv.nonInteractive)
 			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{

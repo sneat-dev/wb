@@ -45,11 +45,11 @@ func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 	}
 }
 
-func newDashboardCmd() *cobra.Command {
-	return newDashboardCmdWithDependencies(defaultDashboardCommandDependencies())
+func newDashboardCmd(inv *invocation) *cobra.Command {
+	return newDashboardCmdWithDependencies(inv, defaultDashboardCommandDependencies())
 }
 
-func newDashboardCmdWithDependencies(deps dashboardCommandDependencies) *cobra.Command {
+func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDependencies) *cobra.Command {
 	var local, jsonOut bool
 	var format string
 	command := &cobra.Command{
@@ -74,7 +74,7 @@ func newDashboardCmdWithDependencies(deps dashboardCommandDependencies) *cobra.C
 				scope = "local"
 			}
 			result := dashboardOpenResult{URL: target, Scope: scope}
-			if format == "text" && !nonInteractive {
+			if format == "text" && !inv.nonInteractive {
 				if err := deps.open(target); err != nil {
 					return fmt.Errorf("open %s dashboard %s: %w", scope, target, err)
 				}

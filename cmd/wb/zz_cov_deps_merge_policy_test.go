@@ -278,21 +278,20 @@ func TestCwDepsDiscoverRemoteMergePolicyFleetStubsDiscovery(t *testing.T) {
 }
 
 func TestCwDepsRequestedMergePolicyOwnersReadsTheRootOrg(t *testing.T) {
-	command := newFleetMergePolicyCmd()
-	if got := requestedMergePolicyOwners(command, []string{"local"}); len(got) != 1 || got[0] != "local" {
+	inv := &invocation{}
+	command := newFleetMergePolicyCmd(inv)
+	if got := requestedMergePolicyOwners(inv, command, []string{"local"}); len(got) != 1 || got[0] != "local" {
 		t.Fatalf("command-local owners = %v", got)
 	}
 	root := &cobra.Command{Use: "wb"}
 	root.PersistentFlags().StringArray("org", nil, "additional owner")
-	mergePolicy := newFleetMergePolicyCmd()
+	mergePolicy := newFleetMergePolicyCmd(inv)
 	root.AddCommand(mergePolicy)
 	if err := root.PersistentFlags().Set("org", "root-org"); err != nil {
 		t.Fatal(err)
 	}
-	previous := extraOrgs
-	extraOrgs = []string{"root-org"}
-	t.Cleanup(func() { extraOrgs = previous })
-	got := requestedMergePolicyOwners(mergePolicy, []string{"local"})
+	inv.extraOrgs = []string{"root-org"}
+	got := requestedMergePolicyOwners(inv, mergePolicy, []string{"local"})
 	if len(got) != 2 || got[1] != "root-org" {
 		t.Fatalf("root owners = %v", got)
 	}
@@ -314,7 +313,7 @@ func TestCwDepsMergePolicyCommandUsageRefusals(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			stdout, _, err := cwCovExec(t, root, newFleetMergePolicyCmd, test.args...)
+			stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newFleetMergePolicyCmd(&invocation{}) }, test.args...)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("args %v error = %v, want %q\n%s", test.args, err, test.want, stdout)
 			}
@@ -406,7 +405,7 @@ func TestCwDepsMergePolicyApplyWithStubbedGitHub(t *testing.T) {
 	reportDir := filepath.Join(t.TempDir(), "reports")
 	calls := cwDepsStubMergePolicyGitHub(t, nil)
 
-	stdout, _, err := cwCovExec(t, t.TempDir(), newFleetMergePolicyCmd,
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newFleetMergePolicyCmd(&invocation{}) },
 		"--apply", "--repo", "acme/app", "--parallel", "1", "--report-dir", reportDir, "--format", "json")
 	if err != nil {
 		t.Fatalf("merge-policy --apply: %v\n%s", err, stdout)
@@ -460,7 +459,7 @@ func TestCwDepsMergePolicyApplyBlocksARepositoryThatChanged(t *testing.T) {
 		}
 		return nil
 	})
-	stdout, _, err := cwCovExec(t, t.TempDir(), newFleetMergePolicyCmd,
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newFleetMergePolicyCmd(&invocation{}) },
 		"--apply", "--repo", "acme/app", "--parallel", "1", "--format", "json")
 	if err == nil {
 		t.Fatalf("a repository that changed after planning must be blocked:\n%s", stdout)
@@ -485,7 +484,7 @@ func TestCwDepsMergePolicyApplyReportsAMutationFailure(t *testing.T) {
 		}
 		return githubobserver.CommandResponse{}
 	}
-	stdout, _, err := cwCovExec(t, t.TempDir(), newFleetMergePolicyCmd,
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newFleetMergePolicyCmd(&invocation{}) },
 		"--apply", "--repo", "acme/app", "--parallel", "1", "--format", "json")
 	if err == nil {
 		t.Fatalf("a refused mutation must be an error:\n%s", stdout)

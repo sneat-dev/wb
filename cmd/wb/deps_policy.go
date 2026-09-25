@@ -36,7 +36,7 @@ reaches every repository at once rather than waiting for each to opt in.
 The scan is lexical: import blocks and go.mod, never a resolved module graph.
 No credentials, no downloads, and a verdict even when the build cannot start.`
 
-func newDepsPolicyCmd() *cobra.Command {
+func newDepsPolicyCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "policy",
 		Short: "Check dependency and layering rules against a central policy",
@@ -49,9 +49,9 @@ func newDepsPolicyCmd() *cobra.Command {
 		newDepsPolicyValidateCmd(),
 		newDepsPolicyTestCmd(),
 		newDepsPolicyInitCmd(),
-		newDepsPolicyReportCmd(),
-		newDepsPolicyDriftCmd(),
-		newDepsPolicyImpactCmd(),
+		newDepsPolicyReportCmd(inv),
+		newDepsPolicyDriftCmd(inv),
+		newDepsPolicyImpactCmd(inv),
 	)
 	return command
 }

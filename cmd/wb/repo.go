@@ -8,12 +8,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newRepoCmd() *cobra.Command {
+func newRepoCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "repo",
 		Short: "Inspect or configure a single local repository",
 	}
-	command.AddCommand(newRepoStatusCmd())
+	command.AddCommand(newRepoStatusCmd(inv))
 	command.AddCommand(newRepoIgnoreCmd())
 	command.AddCommand(newRepoInitRemoteCmd())
 	command.AddCommand(newRepoTransferCmd())
@@ -78,7 +78,7 @@ func newRepoTransferCleanupCmd() *cobra.Command {
 	return command
 }
 
-func newRepoStatusCmd() *cobra.Command {
+func newRepoStatusCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{parallel: 4}
 	var details bool
 	command := &cobra.Command{
@@ -96,6 +96,7 @@ not scan the projects-root fleet.`,
 				path = args[0]
 			}
 			return runRepositoryStatus(repositoryStatusRequest{
+				inv:       inv,
 				path:      path,
 				fleet:     false,
 				all:       true,

@@ -175,7 +175,7 @@ func TestCwDepsRunBumpWritesReportAndFinishesCampaign(t *testing.T) {
 
 	options := depsSetOptions{campaign: campaign, reportDir: reportDir, maxWaves: 1, format: "markdown"}
 	lifecycle := deps.Options{GitHubDir: t.TempDir(), DryRun: true, Parallel: 1}
-	err := runDepsBump(command, deps.EcosystemGo, events, nil, options, lifecycle)
+	err := runDepsBump(&invocation{}, command, deps.EcosystemGo, events, nil, options, lifecycle)
 	if err != nil {
 		t.Fatalf("runDepsBump over an empty fleet: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestCwDepsExecuteDepsBumpWithoutCampaign(t *testing.T) {
 	command.SetErr(&errOut)
 	events := []deps.ReleaseEvent{{Dependency: "github.com/acme/lib", Version: "v1.2.3", Source: "explicit"}}
 
-	report, resolvedDir, err := executeDepsBump(command, deps.EcosystemGo, events, nil,
+	report, resolvedDir, err := executeDepsBump(&invocation{}, command, deps.EcosystemGo, events, nil,
 		depsSetOptions{reportDir: reportDir, maxWaves: 1}, deps.Options{GitHubDir: t.TempDir(), DryRun: true, Parallel: 1})
 	if err != nil {
 		t.Fatalf("executeDepsBump over an empty fleet: %v", err)
@@ -211,7 +211,7 @@ func TestCwDepsExecuteDepsBumpWithoutCampaign(t *testing.T) {
 	}
 
 	// --resume with nothing persisted names the file it wanted.
-	_, resumeDir, err := executeDepsBump(command, deps.EcosystemGo, events, nil,
+	_, resumeDir, err := executeDepsBump(&invocation{}, command, deps.EcosystemGo, events, nil,
 		depsSetOptions{reportDir: filepath.Join(home, "reports", "cw-deps-absent"), resume: true, maxWaves: 1}, deps.Options{GitHubDir: t.TempDir(), DryRun: true, Parallel: 1})
 	if err == nil || !strings.Contains(err.Error(), "--resume requires") {
 		t.Fatalf("resume without a report error = %v (dir %s)", err, resumeDir)
@@ -271,49 +271,49 @@ func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	// Guardrails are checked before any discovery happens.
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 0}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 0}); err == nil ||
 		!strings.Contains(err.Error(), "parallelism must be at least 1") {
 		t.Fatalf("parallel guard = %v", err)
 	}
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, retry: -1}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, retry: -1}); err == nil ||
 		!strings.Contains(err.Error(), "retry count must not be negative") {
 		t.Fatalf("retry guard = %v", err)
 	}
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, timeout: -1}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, timeout: -1}); err == nil ||
 		!strings.Contains(err.Error(), "timeout must not be negative") {
 		t.Fatalf("timeout guard = %v", err)
 	}
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, regex: "("}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, regex: "("}); err == nil ||
 		!strings.Contains(err.Error(), "invalid --regex") {
 		t.Fatalf("regex guard = %v", err)
 	}
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, match: "["}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, match: "["}); err == nil ||
 		!strings.Contains(err.Error(), "invalid --match") {
 		t.Fatalf("match guard = %v", err)
 	}
 
 	// Single-repository mode: the path is the third argument.
-	repositories, err := dependencyRepositories([]string{"go", "set", app}, depsSetOptions{parallel: 1})
+	repositories, err := dependencyRepositories(&invocation{}, []string{"go", "set", app}, depsSetOptions{parallel: 1})
 	if err != nil || len(repositories) != 1 || repositories[0].Slug != "acme/app" || repositories[0].Path != app {
 		t.Fatalf("single repository selection = %+v, %v", repositories, err)
 	}
 	// A --match that excludes the only candidate is refused, not reported as
 	// an empty successful run.
-	if _, err := dependencyRepositories([]string{"go", "set", app}, depsSetOptions{parallel: 1, match: "beta/*"}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set", app}, depsSetOptions{parallel: 1, match: "beta/*"}); err == nil ||
 		!strings.Contains(err.Error(), "does not match selected filters") {
 		t.Fatalf("unmatched single repository = %v", err)
 	}
 	// --filter is applied to the identity too.
 	previousFilter := filterFlag
 	filterFlag = "nothing-matches"
-	_, err = dependencyRepositories([]string{"go", "set", app}, depsSetOptions{parallel: 1})
+	_, err = dependencyRepositories(&invocation{}, []string{"go", "set", app}, depsSetOptions{parallel: 1})
 	filterFlag = previousFilter
 	if err == nil || !strings.Contains(err.Error(), "does not match --filter") {
 		t.Fatalf("filtered single repository = %v", err)
 	}
 
 	// Fleet mode reconciles local clones with the owned repositories.
-	repositories, err = dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, fleet: true, timeout: 0})
+	repositories, err = dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, fleet: true, timeout: 0})
 	if err != nil {
 		t.Fatalf("fleet selection: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
 			t.Fatalf("fleet selection is not sorted: %+v", repositories)
 		}
 	}
-	if _, err := dependencyRepositories([]string{"go", "set"}, depsSetOptions{parallel: 1, fleet: true, match: "nothing/*"}); err == nil ||
+	if _, err := dependencyRepositories(&invocation{}, []string{"go", "set"}, depsSetOptions{parallel: 1, fleet: true, match: "nothing/*"}); err == nil ||
 		!strings.Contains(err.Error(), "no repositories match the selected fleet filters") {
 		t.Fatalf("empty fleet selection = %v", err)
 	}

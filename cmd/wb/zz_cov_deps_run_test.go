@@ -82,9 +82,9 @@ func TestCwDepsRunRunDryRunClassifiesEveryRepositoryBucket(t *testing.T) {
 	root := cwDepsRunFixture(t)
 	configPath := cwDepsRecipeConfig(t)
 
-	previousRoot, previousOrgs := projectsRoot, extraOrgs
-	projectsRoot, extraOrgs = root, []string{"acme"}
-	t.Cleanup(func() { projectsRoot, extraOrgs = previousRoot, previousOrgs })
+	previousRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	var code int
 	out, errOut := cwDepsCaptureStderr(t, func() { code = runRun(root, "", []string{"acme"}, configPath, "readme", false, false) })

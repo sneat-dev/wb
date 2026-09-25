@@ -31,10 +31,8 @@ const (
 )
 
 var (
-	projectsRoot   string
-	filterFlag     string
-	extraOrgs      []string
-	nonInteractive bool
+	projectsRoot string
+	filterFlag   string
 )
 
 // invocation carries the mutable state one run()/runWithStdin() call reads
@@ -46,18 +44,24 @@ var (
 // *invocation per call and closing over it while constructing the command
 // tree (newRootCmdFor below) removes the shared mutable state.
 //
-// commandStarted is the first (and, for this PR, only) field moved out of
-// the package-level block above; projectsRoot, filterFlag, extraOrgs and
-// nonInteractive follow in later PRs in this same sequence (task-5,
-// spec/plans/coverage-to-100) — each will bind its persistent flag directly
-// to a field on *invocation instead of to the package-level var, which is why
-// this seam builds the invocation before the command tree rather than after:
-// a flag's bound target has to exist when PersistentFlags().XxxVar(&target,
-// ...) runs, during tree construction, not later when the tree executes.
+// commandStarted, extraOrgs and nonInteractive have moved out of the
+// package-level block above; projectsRoot and filterFlag follow in later
+// PRs in this same sequence (task-5, spec/plans/coverage-to-100) — each
+// will bind its persistent flag directly to a field on *invocation instead
+// of to the package-level var, which is why this seam builds the invocation
+// before the command tree rather than after: a flag's bound target has to
+// exist when PersistentFlags().XxxVar(&target, ...) runs, during tree
+// construction, not later when the tree executes.
 type invocation struct {
 	// commandStarted records that cobra accepted the invocation and began
 	// running a command. See the PersistentPreRunE in newRootCmdFor.
 	commandStarted bool
+	// extraOrgs holds --org, repeatable additional GitHub owners a fleet
+	// command queries beyond the ones --projects-root discovers locally.
+	extraOrgs []string
+	// nonInteractive holds --non-interactive: never use a terminal UI or
+	// wait for input, even on a terminal.
+	nonInteractive bool
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -181,8 +185,8 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
 	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")
-	root.PersistentFlags().StringArrayVar(&extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
-	root.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
+	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
+	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
 
 	// --version is what people and agents reach for first; `wb version` carries
 	// the same information and adds --json for programmatic use.
@@ -190,35 +194,35 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 
 	configureRootHelp(root)
 	root.AddCommand(
-		groupedRootCommand(newWorktreeCmd(), rootGroupAgent),
+		groupedRootCommand(newWorktreeCmd(inv), rootGroupAgent),
 		groupedRootCommand(newCreateCmd(), rootGroupAgent),
-		groupedRootCommand(newLandCmd(), rootGroupAgent),
+		groupedRootCommand(newLandCmd(inv), rootGroupAgent),
 		groupedRootCommand(newPRCmd(), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(), rootGroupAgent),
 		groupedRootCommand(newAgentCmd(), rootGroupAgent),
 		groupedRootCommand(newTaskCmd(), rootGroupAgent),
 		groupedRootCommand(newStreamCmd(), rootGroupChange),
-		groupedRootCommand(newStatusCmd(), rootGroupFleet),
-		groupedRootCommand(newFleetCmd(), rootGroupFleet),
-		groupedRootCommand(newSyncCmd(), rootGroupFleet),
+		groupedRootCommand(newStatusCmd(inv), rootGroupFleet),
+		groupedRootCommand(newFleetCmd(inv), rootGroupFleet),
+		groupedRootCommand(newSyncCmd(inv), rootGroupFleet),
 		groupedRootCommand(newSyncReportCmd(), rootGroupFleet),
-		groupedRootCommand(newRepoCmd(), rootGroupFleet),
-		groupedRootCommand(newCoverageCmd(), rootGroupQuality),
-		groupedRootCommand(newVerifyCmd(), rootGroupQuality),
-		groupedRootCommand(newCheckCmd(), rootGroupQuality),
+		groupedRootCommand(newRepoCmd(inv), rootGroupFleet),
+		groupedRootCommand(newCoverageCmd(inv), rootGroupQuality),
+		groupedRootCommand(newVerifyCmd(inv), rootGroupQuality),
+		groupedRootCommand(newCheckCmd(inv), rootGroupQuality),
 		groupedRootCommand(newDeadcodeCmd(), rootGroupQuality),
 		groupedRootCommand(newDiskCmd(), rootGroupMaintain),
-		groupedRootCommand(newCICmd(), rootGroupQuality),
-		groupedRootCommand(newWaitCmd(), rootGroupAgent),
+		groupedRootCommand(newCICmd(inv), rootGroupQuality),
+		groupedRootCommand(newWaitCmd(inv), rootGroupAgent),
 		groupedRootCommand(newHooksCmd(), rootGroupQuality),
-		groupedRootCommand(newDepsCmd(), rootGroupChange),
-		groupedRootCommand(newMigrateCmd(), rootGroupChange),
-		groupedRootCommand(newRunCmd(), rootGroupChange),
+		groupedRootCommand(newDepsCmd(inv), rootGroupChange),
+		groupedRootCommand(newMigrateCmd(inv), rootGroupChange),
+		groupedRootCommand(newRunCmd(inv), rootGroupChange),
 		groupedRootCommand(newWorkerCmd(defaultDaemonDependencies()), rootGroupMaintain),
-		groupedRootCommand(newDashboardCmd(), rootGroupFleet),
+		groupedRootCommand(newDashboardCmd(inv), rootGroupFleet),
 		groupedRootCommand(newDaemonCmd(), rootGroupMaintain),
-		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
+		groupedRootCommand(newRemoteCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newPeersCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),

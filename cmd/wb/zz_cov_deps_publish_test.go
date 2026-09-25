@@ -328,7 +328,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 			options.versions = append([]string(nil), base.versions...)
 			test.mutate(&options)
 			called := false
-			_, err := preflightNpmPublishWithDiscovery(options, func([]string, depsSetOptions) ([]deps.Repository, error) {
+			_, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				called = true
 				return nil, nil
 			})
@@ -341,7 +341,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 		})
 	}
 	// A nil discovery seam is refused rather than panicking.
-	if _, err := preflightNpmPublishWithDiscovery(base, nil); err == nil ||
+	if _, err := preflightNpmPublishWithDiscovery(&invocation{}, base, nil); err == nil ||
 		!strings.Contains(err.Error(), "fleet discovery is unavailable") {
 		t.Fatalf("nil discovery = %v", err)
 	}
@@ -357,7 +357,7 @@ func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	options.fleet = true
 	options.maxWaves = 1
 	var seenArgs []string
-	prepared, err := preflightNpmPublishWithDiscovery(options, func(args []string, _ depsSetOptions) ([]deps.Repository, error) {
+	prepared, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(_ *invocation, args []string, _ depsSetOptions) ([]deps.Repository, error) {
 		seenArgs = args
 		return []deps.Repository{{Slug: "acme/consumer", Path: filepath.Join(projectsRoot, "acme", "consumer")}}, nil
 	})
@@ -445,7 +445,7 @@ func TestCwDepsRunPreparedNpmPublishPlan(t *testing.T) {
 	var out, errOut bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
 	command.SetErr(&errOut)
-	err := runPreparedNpmPublishLocked(command, options, prepared)
+	err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{})
 	if err != nil {
 		t.Fatalf("plan publication: %v\nstdout: %s", err, out.String())
 	}
@@ -485,7 +485,7 @@ func TestCwDepsRunPreparedNpmPublishRefusesExistingReportWithoutResume(t *testin
 	}
 	var out bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
-	if err := runPreparedNpmPublishLocked(command, options, prepared); err == nil ||
+	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{}); err == nil ||
 		!strings.Contains(err.Error(), "requires --resume") {
 		t.Fatalf("existing report without --resume = %v", err)
 	}
@@ -516,13 +516,13 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 	// claimed for one campaign and the plan describes another.
 	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{operation: "something-else"}, nil
-	}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
+	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
 		t.Fatalf("operation mismatch = %v", err)
 	}
 	// A failing preflight fails the selection campaign and surfaces the error.
 	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{}, errTestPreflight
-	}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
+	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
 		t.Fatalf("preflight failure = %v", err)
 	}
 	// A consistent preflight reaches the durable plan.
@@ -534,7 +534,7 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 	}
 	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
 		return prepared, nil
-	}); err != nil {
+	}, &invocation{}); err != nil {
 		t.Fatalf("consistent preflight: %v\nstdout: %s", err, out.String())
 	}
 }
@@ -561,7 +561,7 @@ func TestCwDepsAcquireNpmPublicationLocksAndRelease(t *testing.T) {
 // recorder for Cobra parsing.
 func TestCwDepsPreflightNpmPublishCommandWiring(t *testing.T) {
 	var captured npmPublishOptions
-	command := newNpmPublishCmdWithRun(func(_ *cobra.Command, options npmPublishOptions) error {
+	command := newNpmPublishCmdWithRun(&invocation{}, func(_ *cobra.Command, options npmPublishOptions, _ *invocation) error {
 		captured = options
 		return nil
 	})
@@ -582,7 +582,7 @@ func TestCwDepsPreflightNpmPublishCommandWiring(t *testing.T) {
 	if !captured.parallelExplicit {
 		t.Error("--parallel must be recorded as explicit for the wave engine")
 	}
-	if newNpmPublishCmd() == nil {
+	if newNpmPublishCmd(&invocation{}) == nil {
 		t.Error("the production constructor returned no command")
 	}
 }

@@ -53,25 +53,25 @@ type npmPublishPrepared struct {
 	bumpPrevious *deps.BumpReport
 }
 
-func newDepsPublishCmd() *cobra.Command {
+func newDepsPublishCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "publish",
 		Aliases: []string{"release"},
 		Short:   "Publish approved npm packages through repository workflows, verify the registry, and propagate dependency waves",
 	}
-	command.AddCommand(newNpmPublishCmd())
+	command.AddCommand(newNpmPublishCmd(inv))
 	return command
 }
 
-func newNpmPublishCmd() *cobra.Command {
-	return newNpmPublishCmdWithRun(runNpmPublish)
+func newNpmPublishCmd(inv *invocation) *cobra.Command {
+	return newNpmPublishCmdWithRun(inv, runNpmPublish)
 }
 
 // newNpmPublishCmdWithRun keeps Cobra parsing testable without allowing tests
 // to replace the production publication path. The production constructor above
 // always supplies runNpmPublish; tests can supply a recorder and then exercise
 // the same no-I/O preflight/plan seams explicitly.
-func newNpmPublishCmdWithRun(run func(*cobra.Command, npmPublishOptions) error) *cobra.Command {
+func newNpmPublishCmdWithRun(inv *invocation, run func(*cobra.Command, npmPublishOptions, *invocation) error) *cobra.Command {
 	options := npmPublishOptions{}
 	command := &cobra.Command{
 		Use:   "npm",
@@ -106,7 +106,7 @@ workflow dispatch only.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			options.parallelExplicit = depsBumpParallelExplicit(command)
-			return run(command, options)
+			return run(command, options, inv)
 		},
 	}
 	command.Flags().StringArrayVar(&options.repositories, "repo", nil, "provider GitHub repository owner/name (repeatable, aligned with --workflow/--package/--version)")
@@ -141,13 +141,15 @@ workflow dispatch only.`,
 	return command
 }
 
-func runNpmPublish(command *cobra.Command, options npmPublishOptions) error {
-	return runNpmPublishWithPreflight(command, options, preflightNpmPublish)
+func runNpmPublish(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
+	return runNpmPublishWithPreflight(command, options, func(o npmPublishOptions) (npmPublishPrepared, error) {
+		return preflightNpmPublish(inv, o)
+	}, inv)
 }
 
 type npmPublishPreflight func(npmPublishOptions) (npmPublishPrepared, error)
 
-func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOptions, preflight npmPublishPreflight) error {
+func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOptions, preflight npmPublishPreflight, inv *invocation) error {
 	releases, operation, err := npmPublicationIdentity(options)
 	if err != nil {
 		return err
@@ -161,7 +163,7 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 		return err
 	}
 	defer locks.Release()
-	selectionProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps publish npm")
+	selectionProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps publish npm")
 	options.campaign = selectionProgress
 	prepared, err := preflight(options)
 	if err != nil {
@@ -175,7 +177,7 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 	if prepared.operation != operation {
 		return fmt.Errorf("npm publication preflight changed the requested operation; refusing to dispatch")
 	}
-	return runPreparedNpmPublishLocked(command, options, prepared)
+	return runPreparedNpmPublishLocked(command, options, prepared, inv)
 }
 
 // npmPublicationIdentity validates the explicit tuple identity needed to
@@ -227,7 +229,7 @@ func (locks npmPublicationLocks) Release() {
 // runPreparedNpmPublish owns the irreversible boundary after the complete
 // preflight has selected a stable fleet. Keeping it separate makes the
 // campaign-lock contract directly testable without a live GitHub or npm call.
-func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared) error {
+func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared, inv *invocation) error {
 	// Every path below writes a durable report. Take both campaign and
 	// package-version locks before either a dry-run plan or --apply can touch
 	// it, so a plan cannot overwrite an in-progress apply/resume handoff and an
@@ -237,10 +239,10 @@ func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, pr
 		return err
 	}
 	defer locks.Release()
-	return runPreparedNpmPublishLocked(command, options, prepared)
+	return runPreparedNpmPublishLocked(command, options, prepared, inv)
 }
 
-func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared) error {
+func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared, inv *invocation) error {
 	publication, err := plannedNpmPublication(commandExecutionContext(command), prepared, options)
 	if err != nil {
 		return err
@@ -254,7 +256,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 		// deps-bump receipt in the publication report directory.
 		planPrepared := prepared
 		planPrepared.reportDir = npmPublicationPlanReportDir(prepared.reportDir)
-		bumpReport, bumpErr := runNpmPublicationBump(command, planPrepared, options, plannedNpmReleaseEvents(publication), true, false, true)
+		bumpReport, bumpErr := runNpmPublicationBump(command, planPrepared, options, plannedNpmReleaseEvents(publication), true, false, true, inv)
 		attachNpmPropagation(&publication, bumpReport)
 		if err := writeNpmPublishOutput(command, npmPublishOutput{Publication: publication, Propagation: publication.Propagation}, options.format); err != nil {
 			return err
@@ -279,7 +281,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 
 	var preDispatchBump deps.BumpReport
 	if !publicationHasDispatch(previous) {
-		preDispatchBump, err = runNpmPublicationBump(command, prepared, options, plannedNpmReleaseEvents(publication), true, false, true)
+		preDispatchBump, err = runNpmPublicationBump(command, prepared, options, plannedNpmReleaseEvents(publication), true, false, true, inv)
 		attachNpmPropagation(&publication, preDispatchBump)
 		if err != nil {
 			if outputErr := writeNpmPublishOutput(command, npmPublishOutput{Publication: publication, Propagation: publication.Propagation}, options.format); outputErr != nil {
@@ -289,7 +291,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 		}
 	}
 
-	publicationProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps publish npm")
+	publicationProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps publish npm")
 	publication, publicationErr := npmrelease.Run(commandExecutionContext(command), prepared.releases, npmrelease.Options{
 		Apply: true, Resume: options.resume, Ref: options.ref,
 		Timeout: options.timeout, PollInterval: options.workflowPoll, Registry: options.registry,
@@ -319,7 +321,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 		return err
 	}
 	resumeBump := options.resume && prepared.bumpPrevious != nil
-	bumpReport, bumpErr := runNpmPublicationBump(command, prepared, options, events, !options.merge, resumeBump, false)
+	bumpReport, bumpErr := runNpmPublicationBump(command, prepared, options, events, !options.merge, resumeBump, false, inv)
 	attachNpmPropagation(&publication, bumpReport)
 	if err := npmrelease.WriteReport(prepared.reportDir, publication); err != nil {
 		return err
@@ -333,13 +335,13 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 // npmRepositoryDiscovery keeps the option-validation boundary testable: all
 // command and propagation flags must be rejected before fleet discovery (and
 // therefore before any provider workflow can possibly be dispatched).
-type npmRepositoryDiscovery func([]string, depsSetOptions) ([]deps.Repository, error)
+type npmRepositoryDiscovery func(*invocation, []string, depsSetOptions) ([]deps.Repository, error)
 
-func preflightNpmPublish(options npmPublishOptions) (npmPublishPrepared, error) {
-	return preflightNpmPublishWithDiscovery(options, dependencyRepositories)
+func preflightNpmPublish(inv *invocation, options npmPublishOptions) (npmPublishPrepared, error) {
+	return preflightNpmPublishWithDiscovery(inv, options, dependencyRepositories)
 }
 
-func preflightNpmPublishWithDiscovery(options npmPublishOptions, discover npmRepositoryDiscovery) (npmPublishPrepared, error) {
+func preflightNpmPublishWithDiscovery(inv *invocation, options npmPublishOptions, discover npmRepositoryDiscovery) (npmPublishPrepared, error) {
 	if !options.fleet {
 		return npmPublishPrepared{}, fmt.Errorf("deps publish npm requires --fleet for downstream propagation")
 	}
@@ -426,7 +428,7 @@ func preflightNpmPublishWithDiscovery(options npmPublishOptions, discover npmRep
 	if discover == nil {
 		return npmPublishPrepared{}, fmt.Errorf("npm publication fleet discovery is unavailable")
 	}
-	prepared.repositories, err = discover([]string{"npm", "events"}, options.depsSetOptions)
+	prepared.repositories, err = discover(inv, []string{"npm", "events"}, options.depsSetOptions)
 	if err != nil {
 		return npmPublishPrepared{}, err
 	}
@@ -558,9 +560,9 @@ func npmPublicationPropagationOptions(options npmPublishOptions, reportDir strin
 	return propagation
 }
 
-func runNpmPublicationBump(command *cobra.Command, prepared npmPublishPrepared, options npmPublishOptions, events []deps.ReleaseEvent, dryRun, resume, noRegistry bool) (deps.BumpReport, error) {
+func runNpmPublicationBump(command *cobra.Command, prepared npmPublishPrepared, options npmPublishOptions, events []deps.ReleaseEvent, dryRun, resume, noRegistry bool, inv *invocation) (deps.BumpReport, error) {
 	propagation := npmPublicationPropagationOptions(options, prepared.reportDir, dryRun, resume)
-	report, _, err := executeDepsBumpWithRegistryPolicy(command, deps.EcosystemNPM, events, prepared.repositories, propagation, dependencyOptions(propagation, prepared.checks), noRegistry)
+	report, _, err := executeDepsBumpWithRegistryPolicy(inv, command, deps.EcosystemNPM, events, prepared.repositories, propagation, dependencyOptions(propagation, prepared.checks), noRegistry)
 	return report, err
 }
 

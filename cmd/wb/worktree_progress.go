@@ -40,10 +40,10 @@ type inventoryProgress struct {
 // newInventoryProgress renders when there is a human at the terminal, or when
 // verbose forces it. Forcing matters most for the unattended case: a scripted
 // or backgrounded run is exactly where a silent forty-minute stall is invisible.
-func newInventoryProgress(out io.Writer, verbose bool) *inventoryProgress {
+func newInventoryProgress(inv *invocation, out io.Writer, verbose bool) *inventoryProgress {
 	return &inventoryProgress{
 		out:     out,
-		enabled: verbose || console.Interactive(os.Stderr, nonInteractive),
+		enabled: verbose || console.Interactive(os.Stderr, inv.nonInteractive),
 		started: time.Now(),
 	}
 }

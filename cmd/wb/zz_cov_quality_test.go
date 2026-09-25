@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/spf13/cobra"
 )
 
 func cwCovCoverageFixture() quality.CoverageReport {
@@ -344,7 +345,7 @@ func TestCwCovQualityCommandsInProcess(t *testing.T) {
 	var stdout string
 	var err error
 	stdout = cwCovCaptureStdout(t, func() {
-		_, _, err = cwCovExec(t, root, newCoverageCmd, root, "--format", "json")
+		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--format", "json")
 	})
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("coverage exit = %d\n%s", code, stdout)
@@ -359,7 +360,7 @@ func TestCwCovQualityCommandsInProcess(t *testing.T) {
 
 	// verify with only the build check over an empty directory.
 	stdout = cwCovCaptureStdout(t, func() {
-		_, _, err = cwCovExec(t, root, newVerifyCmd, root, "--checks", "build", "--format", "json")
+		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newVerifyCmd(&invocation{}) }, root, "--checks", "build", "--format", "json")
 	})
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("verify exit = %d\n%s", code, stdout)
@@ -373,36 +374,36 @@ func TestCwCovQualityCommandsInProcess(t *testing.T) {
 	}
 
 	// Usage refusals happen before any check runs.
-	if _, _, err := cwCovExec(t, root, newCoverageCmd, root, "--fleet"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("coverage --fleet with a path = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newVerifyCmd, root, "--fleet"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newVerifyCmd(&invocation{}) }, root, "--fleet"); err == nil {
 		t.Fatal("verify --fleet with a path must be refused")
 	}
-	if _, _, err := cwCovExec(t, root, newCheckCmd, root, "--fleet", "--profile", "fast"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCheckCmd(&invocation{}) }, root, "--fleet", "--profile", "fast"); err == nil {
 		t.Fatal("check --fleet with a path must be refused")
 	}
-	if _, _, err := cwCovExec(t, root, newCoverageCmd, root, "--minimum", "200"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--minimum", "200"); err == nil ||
 		!strings.Contains(err.Error(), "--minimum must be between") {
 		t.Fatalf("coverage --minimum 200 = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newCoverageCmd, root, "--test-shards", "0"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--test-shards", "0"); err == nil {
 		t.Fatal("coverage --test-shards 0 must be refused")
 	}
-	if _, _, err := cwCovExec(t, root, newVerifyCmd, root, "--checks", "lint,bogus"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newVerifyCmd(&invocation{}) }, root, "--checks", "lint,bogus"); err == nil {
 		t.Fatal("verify must refuse an unknown check")
 	}
-	if _, _, err := cwCovExec(t, root, newCheckCmd, root, "--profile", "turbo"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCheckCmd(&invocation{}) }, root, "--profile", "turbo"); err == nil ||
 		!strings.Contains(err.Error(), "unknown check profile") {
 		t.Fatalf("check --profile turbo = %v", err)
 	}
 	// --resume without --report-dir is refused, not silently ignored.
-	if _, _, err := cwCovExec(t, root, newCoverageCmd, root, "--resume"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--resume"); err == nil ||
 		!strings.Contains(err.Error(), "--report-dir") {
 		t.Fatalf("coverage --resume without report dir = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newVerifyCmd, root, "--resume", "--checks", "build"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newVerifyCmd(&invocation{}) }, root, "--resume", "--checks", "build"); err == nil ||
 		!strings.Contains(err.Error(), "--report-dir") {
 		t.Fatalf("verify --resume without report dir = %v", err)
 	}

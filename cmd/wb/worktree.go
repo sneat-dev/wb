@@ -33,7 +33,7 @@ func remoteClaimWriter(cmd *cobra.Command) io.Writer {
 	return cmd.ErrOrStderr()
 }
 
-func newWorktreeCmd() *cobra.Command {
+func newWorktreeCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "worktree",
 		Aliases: []string{"worktrees", "wt"},
@@ -52,12 +52,12 @@ func newWorktreeCmd() *cobra.Command {
 	}{
 		{newWorktreeCreateCmd(), "start"},
 		{newWorktreeAdoptCmd(), "start"},
-		{newWorktreeMergeCmd(), "finish"},
-		{newWorktreeLandCmd(), "finish"},
+		{newWorktreeMergeCmd(inv), "finish"},
+		{newWorktreeLandCmd(inv), "finish"},
 		{newWorktreeEndCmd(), "finish"},
-		{newWorktreeCleanupCmd(), "finish"},
+		{newWorktreeCleanupCmd(inv), "finish"},
 		{newWorktreeRetireCmd(), "finish"},
-		{newWorktreeGCCmd(), "finish"},
+		{newWorktreeGCCmd(inv), "finish"},
 		{newWorktreeAbortCmd(), "finish"},
 		{newWorktreeSummaryCmd(), "inspect"},
 		{newWorktreeActiveCmd(), "inspect"},
@@ -2087,7 +2087,7 @@ wb worktree summary improve-login --github --format json`,
 	return command
 }
 
-func newWorktreeCleanupCmd() *cobra.Command {
+func newWorktreeCleanupCmd(inv *invocation) *cobra.Command {
 	var base, format, reportDir, absorbedBy, supersededBy string
 	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, recoverStages, verbose bool
 	var olderThan time.Duration
@@ -2299,7 +2299,7 @@ required to remove anything.`,
 				return fmt.Errorf("--resume-interrupted requires one explicit task")
 			}
 			now := time.Now()
-			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
+			progress := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
 				ProjectsRoot:      projectsRoot,

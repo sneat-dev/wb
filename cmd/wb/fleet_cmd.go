@@ -19,7 +19,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func newFleetCmd() *cobra.Command {
+func newFleetCmd(inv *invocation) *cobra.Command {
 	overview := newFleetOverviewOptions()
 	command := &cobra.Command{
 		Use:   "fleet",
@@ -51,10 +51,10 @@ worklist and wb sync --dry-run for a full sync plan.`,
 	overview.bind(overviewCmd)
 	command.AddCommand(overviewCmd)
 	command.AddCommand(newFleetStatsCmd())
-	command.AddCommand(newFleetStatusCmd())
-	command.AddCommand(newFleetPRsCmd())
-	command.AddCommand(newFleetMergePolicyCmd())
-	command.AddCommand(newFleetDefaultBranchCmd())
+	command.AddCommand(newFleetStatusCmd(inv))
+	command.AddCommand(newFleetPRsCmd(inv))
+	command.AddCommand(newFleetMergePolicyCmd(inv))
+	command.AddCommand(newFleetDefaultBranchCmd(inv))
 	return command
 }
 
@@ -143,7 +143,7 @@ func bindFleetDepthFlags(command *cobra.Command, depth *fleetDepthOptions) {
 	command.Flags().BoolVar(&depth.hooks, "hooks", false, "include managed-hook finding counts across local clones")
 }
 
-func newFleetStatusCmd() *cobra.Command {
+func newFleetStatusCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{parallel: 4, fleet: true}
 	var details bool
 	var all bool
@@ -160,6 +160,7 @@ disables it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRepositoryStatus(repositoryStatusRequest{
+				inv:       inv,
 				path:      ".",
 				fleet:     true,
 				all:       all,
