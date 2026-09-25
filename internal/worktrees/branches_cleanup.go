@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -655,6 +656,16 @@ type branchCleanupReport struct {
 }
 
 func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult) (string, error) {
+	return writeBranchCleanupReportInjected(reportDir, options, now, results, nil)
+}
+
+// writeBranchCleanupReportInjected is writeBranchCleanupReport's test seam
+// (task-9 PR-3): every production call site reaches it only through
+// writeBranchCleanupReport, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach writeDurableFileInjected's or Rename's failure branch
+// deterministically.
+func writeBranchCleanupReportInjected(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult, inj *filewrite.Injector) (string, error) {
 	if err := rejectSymlinkAncestors(reportDir); err != nil {
 		return "", err
 	}
@@ -675,10 +686,10 @@ func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, no
 	content = append(content, '\n')
 	path := filepath.Join(reportDir, "cleanup.json")
 	temporary := path + ".tmp"
-	if err := writeDurableFile(temporary, content, 0o644); err != nil {
+	if err := writeDurableFileInjected(temporary, content, 0o644, inj); err != nil {
 		return "", fmt.Errorf("write branch cleanup report: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return "", fmt.Errorf("activate branch cleanup report: %w", err)
 	}
 	if err := syncDirectory(reportDir); err != nil {
@@ -756,19 +767,30 @@ func rejectSymlinkAncestors(path string) error {
 }
 
 func copyFileSHA256(source, destination string) (digest string, resultErr error) {
+	return copyFileSHA256Injected(source, destination, nil)
+}
+
+// copyFileSHA256Injected is copyFileSHA256's test seam (task-9 PR-3):
+// every production call site reaches it only through copyFileSHA256,
+// which always passes a nil *filewrite.Injector, so production behaviour
+// is unchanged; a test passes its own Injector directly to reach a
+// create/sync/close failure branch deterministically. The streaming
+// io.Copy through a hash is left bare -- no filewrite primitive fits a
+// multi-writer copy.
+func copyFileSHA256Injected(source, destination string, inj *filewrite.Injector) (digest string, resultErr error) {
 	input, err := os.Open(source)
 	if err != nil {
 		return "", err
 	}
 	defer func() { resultErr = errors.Join(resultErr, input.Close()) }()
-	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	output, err := filewrite.CreateExclusivePath(destination, 0o600, inj)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
-	syncErr := output.Sync()
-	closeErr := output.Close()
+	syncErr := filewrite.Sync(output, destination, inj)
+	closeErr := filewrite.Close(output, destination, inj)
 	if copyErr != nil {
 		return "", copyErr
 	}
@@ -782,13 +804,26 @@ func copyFileSHA256(source, destination string) (digest string, resultErr error)
 }
 
 func writeDurableFile(path string, content []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	return writeDurableFileInjected(path, content, mode, nil)
+}
+
+// writeDurableFileInjected is writeDurableFile's test seam (task-9 PR-3):
+// every production call site reaches it only through writeDurableFile,
+// which always passes a nil *filewrite.Injector, so production behaviour
+// is unchanged; a test passes its own Injector directly to reach a
+// create/write/sync/close failure branch deterministically. Sync and
+// Close run unconditionally even after a write failure, and errors are
+// checked in write, sync, close order -- preserved exactly, since two
+// call sites (a direct manifest write and writeBranchCleanupReport's
+// temp-file half) depend on this behaviour.
+func writeDurableFileInjected(path string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
+	file, err := filewrite.CreateExclusivePath(path, mode, inj)
 	if err != nil {
 		return err
 	}
-	_, writeErr := file.Write(content)
-	syncErr := file.Sync()
-	closeErr := file.Close()
+	writeErr := filewrite.Write(file, content, path, inj)
+	syncErr := filewrite.Sync(file, path, inj)
+	closeErr := filewrite.Close(file, path, inj)
 	if writeErr != nil {
 		return writeErr
 	}
