@@ -51,6 +51,31 @@ func (Real) RunWithInput(ctx context.Context, dir string, input []byte, name str
 	return result, runErr
 }
 
+// RunOpts is Run with a RunOptions value: a per-call environment, stdin,
+// and/or WaitDelay.
+func (Real) RunOpts(ctx context.Context, dir string, opts RunOptions, name string, args ...string) (Result, error) {
+	if err := guardRealProcess(); err != nil {
+		return Result{}, err
+	}
+	command := process.CommandContext(ctx, name, args...)
+	command.Dir = dir
+	if opts.Env != nil {
+		command.Env = opts.Env
+	}
+	if len(opts.Stdin) > 0 {
+		command.Stdin = bytes.NewReader(opts.Stdin)
+	}
+	if opts.WaitDelay > 0 {
+		command.WaitDelay = opts.WaitDelay
+	}
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
+	return result, runErr
+}
+
 // Start begins name with args in dir and returns a Handle without waiting
 // for it to exit.
 func (Real) Start(ctx context.Context, dir, name string, args ...string) (Handle, error) {
