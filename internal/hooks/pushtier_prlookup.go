@@ -201,7 +201,10 @@ func savePRStatusCacheInjected(path string, cache map[string]prStatusCacheEntry,
 	// deliberate behaviour improvement: removing a temp file that was
 	// already renamed away is a harmless no-op ENOENT, and it stops a
 	// failed cache write from leaving trash for the next call to trip
-	// over.
+	// over. (review-767 N2: two concurrent pushes already shared this fixed
+	// temp name and could race before this change too; this defer cannot
+	// make that race worse, since the cache is best-effort and a lost
+	// update was already possible via the pre-existing Rename race.)
 	defer func() { _ = os.Remove(temporary) }()
 	if err := filewrite.WriteFile(temporary, encoded, 0o644, inj); err != nil {
 		return err

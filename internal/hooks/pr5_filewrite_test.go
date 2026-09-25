@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
@@ -95,6 +96,43 @@ func TestWriteExecutableAtPublishesAt0755(t *testing.T) {
 	}
 }
 
+// TestWriteExecutableAtInjectedRestoresQuarantinedHookOnRenameFailure covers
+// review-767's B2 finding: manager.go:1123's restore call (and its own
+// filewrite.RenameNoReplace publish attempt) had no test, because every
+// other fault-injection subtest passes absentManagedHookIdentity(), so
+// quarantineManagedHook never parks an existing hook and parkedName is
+// always "". Installing a real prior hook and injecting the primary
+// publish's own StepRenameNoReplace failure forces the restore branch, and
+// proves the restore is unaffected by the injected failure -- exactly why
+// the restore call passes a nil Injector rather than reusing inj.
+func TestWriteExecutableAtInjectedRestoresQuarantinedHookOnRenameFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	managed := newTestManagedHooksDirectory(t, dir)
+	original := "#!/bin/sh\necho original\n"
+	mustWriteExecutable(t, filepath.Join(dir, "pre-commit"), original)
+	identity, err := managedHookIdentityAt(managed.directory, "pre-commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inj := &filewrite.Injector{Step: filewrite.StepRenameNoReplace, Err: errBoomPR5}
+	writeErr := writeExecutableAtInjected(managed, "pre-commit", []byte("#!/bin/sh\necho new\n"), identity, nil, inj)
+	if !errors.Is(writeErr, errBoomPR5) {
+		t.Fatalf("writeExecutableAtInjected(rename failure) = %v, want errBoomPR5", writeErr)
+	}
+	if restored := mustReadFile(t, filepath.Join(dir, "pre-commit")); restored != original {
+		t.Fatalf("original hook was not restored: got %q, want %q", restored, original)
+	}
+	restoredIdentity, err := managedHookIdentityAt(managed.directory, "pre-commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredIdentity != identity {
+		t.Fatalf("restored hook identity = %+v, want the original %+v", restoredIdentity, identity)
+	}
+}
+
 // --- savePRStatusCacheInjected ---
 
 func TestSavePRStatusCacheInjectedHonoursInjectedFailures(t *testing.T) {
@@ -118,26 +156,31 @@ func TestSavePRStatusCacheInjectedHonoursInjectedFailures(t *testing.T) {
 	}
 }
 
-func TestSavePRStatusCachePublishesAt0644(t *testing.T) {
+// TestSavePRStatusCacheInjectedRefusesUnmarshalableEntry covers review-767's
+// B3 finding: the return err after json.Marshal (changed from the
+// pre-migration code's bare return, since that path is what this test
+// reaches) had no test. json.Marshal fails encoding a time.Time whose year
+// falls outside [0,9999]; CheckedAt is exactly such a field.
+func TestSavePRStatusCacheInjectedRefusesUnmarshalableEntry(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cache.json")
-	// Unlike writeExecutableAt, savePRStatusCache has no separate chmod
-	// step to lose: filewrite.WriteFile creates the file with the given
-	// mode directly (os.WriteFile's own OpenFile|O_CREATE call), so there
-	// is no CreateTemp-style default to mask a dropped mode argument. This
-	// assertion is a direct, sufficient proof.
-	if err := savePRStatusCacheInjected(path, map[string]prStatusCacheEntry{"acme/widget#feature": {Open: true}}, nil); err != nil {
-		t.Fatal(err)
+	err := savePRStatusCacheInjected(path, map[string]prStatusCacheEntry{
+		"acme/widget#feature": {Open: true, CheckedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}, nil)
+	if err == nil {
+		t.Fatal("savePRStatusCacheInjected(unmarshalable CheckedAt) = nil, want an error")
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("failed save published a visible cache: %v", statErr)
 	}
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("published cache mode = %v, want 0644", info.Mode().Perm())
-	}
+	assertNoLeftoverPR5TempFile(t, dir, "cache.json.tmp")
 }
+
+// TestSavePRStatusCachePublishesAt0644 lives in pr5_filewrite_umask_test.go
+// (review-767 N5): it pins the process umask, which needs a !windows build
+// tag (Windows has no umask concept and golang.org/x/sys/unix does not
+// build there).
 
 // assertNoBareTemporaryHook asserts writeExecutableAtInjected's random
 // temporary name for name is gone from dir -- either it was never created,

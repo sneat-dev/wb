@@ -339,6 +339,16 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionConvergesOnIdenticalConcurrentA
 	if !sameReceiptCollisionAcknowledgement(result, intended) {
 		t.Fatalf("converged result = %+v, want the identical concurrent acknowledgement %+v", result, intended)
 	}
+	// sameReceiptCollisionAcknowledgement deliberately ignores RecordedAt
+	// (review-763), so on its own it cannot tell a converged read of the
+	// on-disk acknowledgement apart from the caller silently returning its
+	// own freshly recomputed ack (which would carry Apply-time's RecordedAt,
+	// not the earlier dry-run timestamp actually on disk). The competitor
+	// published intendedBytes verbatim, so this proves result really came
+	// from that read (review-767 N3).
+	if !result.RecordedAt.Equal(intended.RecordedAt) {
+		t.Fatalf("converged result.RecordedAt = %v, want the on-disk acknowledgement's %v (not a freshly recomputed one)", result.RecordedAt, intended.RecordedAt)
+	}
 	current, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(current, intendedBytes) {
 		t.Fatalf("identical concurrent acknowledgement was replaced: err=%v", err)
@@ -2104,6 +2114,16 @@ func TestCorrectValidationFailedSelfSupersessionConvergesOnIdenticalConcurrentCo
 	}
 	if !sameSelfSupersessionCorrection(result, intended) {
 		t.Fatalf("converged result = %+v, want the identical concurrent correction %+v", result, intended)
+	}
+	// sameSelfSupersessionCorrection deliberately ignores RecordedAt
+	// (review-763), so on its own it cannot tell a converged read of the
+	// on-disk correction apart from the caller silently returning its own
+	// freshly recomputed correction (which would carry Apply-time's
+	// RecordedAt, not the earlier dry-run timestamp actually on disk). The
+	// competitor published intendedBytes verbatim, so this proves result
+	// really came from that read (review-767 N3).
+	if !result.RecordedAt.Equal(intended.RecordedAt) {
+		t.Fatalf("converged result.RecordedAt = %v, want the on-disk correction's %v (not a freshly recomputed one)", result.RecordedAt, intended.RecordedAt)
 	}
 	current, err := os.ReadFile(correctionPath)
 	if err != nil || !bytes.Equal(current, intendedBytes) {

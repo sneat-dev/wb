@@ -1097,7 +1097,7 @@ func writeExecutableAtInjected(managed managedHooksDirectory, name string, conte
 			_, _ = quarantineManagedHook(managed, temporaryName, temporaryIdentity, nil)
 		}
 	}()
-	if err := filewrite.ChmodFile(file, 0o755, temporaryName, inj); err != nil {
+	if err := filewrite.Chmod(int(file.Fd()), 0o755, temporaryName, inj); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("chmod temporary hook %s: %w", name, err)
 	}
