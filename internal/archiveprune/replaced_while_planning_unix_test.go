@@ -1,7 +1,13 @@
+//go:build !windows
+
 package archiveprune
 
-// Pack unit p02 coverage: openDirectoryAt and hashFileAt replaced-while-planning
-// guards. Unit tier only: real temp-dir filesystem, no real git.
+// openDirectoryAt and hashFileAt's replaced-while-planning guards: both
+// re-stat the entry after opening it and refuse when the identity no longer
+// matches what planning observed. golang.org/x/sys/unix has no Windows
+// implementation, so this coverage stays unix-only rather than routing
+// through internal/unixcompat, which the production code under test already
+// does cross-platform.
 
 import (
 	"os"
@@ -11,7 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestPkp02OpenDirectoryAtMismatch(t *testing.T) {
+func TestOpenDirectoryAtRejectsInodeMismatch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	sub := filepath.Join(root, "child")
@@ -36,7 +42,7 @@ func TestPkp02OpenDirectoryAtMismatch(t *testing.T) {
 	}
 }
 
-func TestPkp02HashFileAtMismatch(t *testing.T) {
+func TestHashFileAtRejectsSizeMismatch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	filePath := filepath.Join(root, "file.txt")
