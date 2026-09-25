@@ -4,6 +4,13 @@
 // that must start a real process. Every consumer of internal/runner depends
 // on the runner.Runner interface, never on internal/runner.Real directly,
 // so a unit test substitutes Fake here instead.
+//
+// Fake also has task-8's fail-call-N mode (decision 23): FailCall makes one
+// chosen call fail on its own, standalone, and Fake implements
+// internal/testsweep.Failer so internal/testsweep.Sweep can drive it once
+// per call a happy-path body makes, to cover every error return a
+// multi-call body reaches without a hand-written failure test per call. See
+// FailCall's doc comment and internal/testsweep's package doc for usage.
 package runnertest
 
 import (
@@ -15,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testsweep"
 )
 
 // AllowRealProcess lets t start a real process through
@@ -61,15 +69,24 @@ type script struct {
 // An unmatched call fails the test immediately through t, rather than
 // silently succeeding: a fake that answers a call nobody scripted would
 // hide the exact case task-8's contract tests exist to catch.
+//
+// Fake also has task-8's fail-call-N mode (decision 23): FailCall makes one
+// chosen call number fail regardless of its scripted result, on its own or
+// driven by internal/testsweep.Sweep across every call a happy path makes.
+// See CallCount and FailCall, and the package example.
 type Fake struct {
 	t testing.TB
 
 	mu      sync.Mutex
 	scripts []script
 	calls   []Call
+
+	failAt  int // 1-indexed call number FailCall targets; 0 disables it.
+	failErr error
 }
 
 var _ runner.Runner = (*Fake)(nil)
+var _ testsweep.Failer = (*Fake)(nil)
 
 // New returns a Fake that reports an unmatched or unexpected call through t.
 func New(t testing.TB) *Fake {
@@ -103,15 +120,49 @@ func (f *Fake) Calls() []Call {
 	return append([]Call(nil), f.calls...)
 }
 
+// CallCount reports how many calls the Fake has answered so far, across
+// Run, Start, Detach and Interactive combined, in the order it answered
+// them. It implements internal/testsweep.Failer.
+func (f *Fake) CallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// FailCall arranges for the callNum'th call (1-indexed, counting Run,
+// Start, Detach and Interactive together in the order the Fake answers
+// them) to fail with failErr instead of returning its scripted result;
+// every other call keeps returning its own script unchanged, so FailCall
+// fails exactly call N and passes the rest. The call FailCall targets must
+// still be scripted via Expect/ExpectArgv first -- FailCall replaces that
+// call's result, not the argv match that catches an unexpected call.
+//
+// It works standalone, or driven once per call number by
+// internal/testsweep.Sweep, which is why Fake implements
+// internal/testsweep.Failer. A callNum of 0 disables the override; calling
+// FailCall again replaces the previous target rather than adding a second
+// one.
+func (f *Fake) FailCall(callNum int, failErr error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAt = callNum
+	f.failErr = failErr
+}
+
 // answer records call and returns the first unconsumed script matching it,
-// failing the test if none match.
+// failing the test if none match. When call is the call number FailCall
+// last targeted, it returns failErr instead of that script's own result.
 func (f *Fake) answer(call Call) (runner.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
+	n := len(f.calls)
 	for i, s := range f.scripts {
 		if s.match(call) {
 			f.scripts = append(f.scripts[:i], f.scripts[i+1:]...)
+			if f.failAt != 0 && n == f.failAt {
+				return runner.Result{}, f.failErr
+			}
 			return s.result, s.err
 		}
 	}

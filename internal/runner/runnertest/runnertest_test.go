@@ -2,10 +2,12 @@ package runnertest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testsweep"
 )
 
 func TestAllowRealProcessSetsTheRunnerAllowEnvironmentVariable(t *testing.T) {
@@ -167,6 +169,124 @@ func TestFakeInteractiveReturnsTheScriptedError(t *testing.T) {
 	err := fake.Interactive(context.Background(), "/repo", "vim")
 	if err != wantErr {
 		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeCallCountReportsCallsAnsweredSoFar(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{}, nil)
+	fake.ExpectArgv([]string{"git", "fetch"}, runner.Result{}, nil)
+
+	if got := fake.CallCount(); got != 0 {
+		t.Fatalf("CallCount() = %d before any call, want 0", got)
+	}
+	_, _ = fake.Run(context.Background(), "/repo", "git", "status")
+	if got := fake.CallCount(); got != 1 {
+		t.Fatalf("CallCount() = %d after one call, want 1", got)
+	}
+	_, _ = fake.Run(context.Background(), "/repo", "git", "fetch")
+	if got := fake.CallCount(); got != 2 {
+		t.Fatalf("CallCount() = %d after two calls, want 2", got)
+	}
+}
+
+func TestFakeFailCallFailsExactlyOneCallAndPassesTheRest(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	errBoom := errors.New("boom")
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stdout: "first"}, nil)
+	fake.ExpectArgv([]string{"git", "fetch"}, runner.Result{Stdout: "second"}, nil)
+	fake.ExpectArgv([]string{"git", "push"}, runner.Result{Stdout: "third"}, nil)
+	fake.FailCall(2, errBoom)
+
+	first, err := fake.Run(context.Background(), "/repo", "git", "status")
+	if err != nil || first.Stdout != "first" {
+		t.Fatalf("call 1 = (%+v, %v), want (\"first\", nil)", first, err)
+	}
+	second, err := fake.Run(context.Background(), "/repo", "git", "fetch")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("call 2 err = %v, want errBoom", err)
+	}
+	if second != (runner.Result{}) {
+		t.Fatalf("call 2 result = %+v, want the zero Result when FailCall overrides it", second)
+	}
+	third, err := fake.Run(context.Background(), "/repo", "git", "push")
+	if err != nil || third.Stdout != "third" {
+		t.Fatalf("call 3 = (%+v, %v), want (\"third\", nil): FailCall must pass every call but the one it targets", third, err)
+	}
+}
+
+func TestFakeFailCallOfZeroDisablesTheOverride(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stdout: "ok"}, nil)
+	fake.FailCall(1, errors.New("boom"))
+	fake.FailCall(0, nil)
+
+	result, err := fake.Run(context.Background(), "/repo", "git", "status")
+	if err != nil || result.Stdout != "ok" {
+		t.Fatalf("Run() = (%+v, %v), want (\"ok\", nil): FailCall(0, ...) should disable the override", result, err)
+	}
+}
+
+func TestFakeFailCallReplacesItsPreviousTarget(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	errBoom := errors.New("boom")
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stdout: "ok"}, nil)
+	fake.ExpectArgv([]string{"git", "fetch"}, runner.Result{Stdout: "ok"}, nil)
+	fake.FailCall(1, errors.New("stale target"))
+	fake.FailCall(2, errBoom)
+
+	_, err := fake.Run(context.Background(), "/repo", "git", "status")
+	if err != nil {
+		t.Fatalf("call 1 err = %v, want nil: the later FailCall(2, ...) must replace the FailCall(1, ...) target", err)
+	}
+	_, err = fake.Run(context.Background(), "/repo", "git", "fetch")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("call 2 err = %v, want errBoom", err)
+	}
+}
+
+// TestFakeWorksAsATestsweepFailer is task-8's proof that Fake plugs into
+// internal/testsweep.Sweep: a happy-path body making three real Runner
+// calls gets swept end to end, one call number at a time.
+func TestFakeWorksAsATestsweepFailer(t *testing.T) {
+	t.Parallel()
+	errBoom := errors.New("boom")
+
+	body := func(fake *Fake) error {
+		fake.ExpectArgv([]string{"git", "fetch"}, runner.Result{}, nil)
+		fake.ExpectArgv([]string{"git", "merge"}, runner.Result{}, nil)
+		fake.ExpectArgv([]string{"git", "push"}, runner.Result{}, nil)
+
+		if _, err := fake.Run(context.Background(), "/repo", "git", "fetch"); err != nil {
+			return err
+		}
+		if _, err := fake.Run(context.Background(), "/repo", "git", "merge"); err != nil {
+			return err
+		}
+		_, err := fake.Run(context.Background(), "/repo", "git", "push")
+		return err
+	}
+
+	sawCallNums := map[int]bool{}
+	testsweep.Sweep(t, func() *Fake { return New(t) }, errBoom, body,
+		func(t testing.TB, callNum, total int, err error) {
+			if total != 3 {
+				t.Fatalf("total = %d, want 3", total)
+			}
+			if !errors.Is(err, errBoom) {
+				t.Fatalf("call %d err = %v, want it to wrap errBoom", callNum, err)
+			}
+			sawCallNums[callNum] = true
+		})
+
+	for _, want := range []int{1, 2, 3} {
+		if !sawCallNums[want] {
+			t.Fatalf("Sweep never checked call %d", want)
+		}
 	}
 }
 
