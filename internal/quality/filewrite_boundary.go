@@ -54,8 +54,9 @@
 //     the file's own package doc for internal/filewrite states the
 //     Verifies goal as "zero direct temp-file write/sync/chmod/close/
 //     rename sequences outside the new package", with no carve-out for
-//     scratch files, so these are pending a future filewrite.CreateScratch
-//     helper rather than permanently exempt.
+//     scratch files, so these migrate through internal/filewrite's
+//     CreateScratch helper (landed in task-9 PR-9) rather than staying
+//     permanently exempt.
 //   - NotAFileWritePublishExemptions: sites this detector's necessarily
 //     conservative rules flag, but that are not a temp-file write-and-
 //     publish sequence at all -- a queue-state move, an archive/quarantine
@@ -150,36 +151,27 @@ var PendingMigrationExemptions = map[string]string{
 	// written to. Not detected before this round, since os.CreateTemp was
 	// previously gated by the same content-write check os.OpenFile/
 	// unix.Openat still use; the round-2 review made os.CreateTemp
-	// unconditional, which now catches these. Per the coordinator's
-	// scratch-file policy (spec/plans/coverage-to-100 task-9 round-2
-	// review), these are pending migration to a new filewrite.CreateScratch
-	// helper, not permanently exempt as a non-write-publish site.
-	"cmd/wb/coverage_ratchet.go:runChangedCoverage":          "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes and reuses it, never writes",
-	"cmd/wb/fleet_default_branch.go:defaultBranchReportPath": "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique report path then frees it via os.Remove, never writes",
-	"internal/locallink/execports.go:ExecGit.ContentHash":    "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a name for git plumbing output, closes and removes it, never writes",
-	"internal/pathguard/pathguard.go:OSProbe":                "PR-9: scratch-helper (filewrite.CreateScratch) -- writability probe: create, close, remove, never writes",
-	"internal/quality/coverage.go:coverageProfilePath":       "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes it, never writes",
-	"internal/quality/verify.go:runShardedVerification":      "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique verify-coverage-profile path, closes it, never writes",
+	// unconditional, which now catches these. Every entry this category
+	// used to list is now migrated: PR-9's six scratch/name-reservation
+	// sites (runChangedCoverage, defaultBranchReportPath,
+	// ExecGit.ContentHash, OSProbe, coverageProfilePath,
+	// runShardedVerification) all route through internal/filewrite's new
+	// CreateScratch composite now, mode 0 and content nil.
 
 	// Category E (round 2): ephemeral scratch temp files moved here from
 	// NotAFileWritePublishExemptions per the coordinator's round-2 policy
 	// override -- created, written, used as one subprocess's input (gh api,
 	// git diff/push, a hook template, an HTTP download), and removed in the
-	// same function or its immediate caller, never durably read back. The
-	// task-9 plan's Verifies goal is "zero direct temp-file write/sync/
-	// chmod/close/rename sequences outside the new package" with no
-	// carve-out for scratch files, so these are pending a
-	// filewrite.CreateScratch helper rather than permanently exempt.
-	"cmd/wb/fleet_merge_policy.go:applyClassicProtectionWithoutLinearHistory":                           "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp file passed as gh api --input, removed by defer",
-	"cmd/wb/fleet_merge_policy.go:applySharedRuleset":                                                   "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp file passed as gh api --input, removed by defer",
-	"internal/hooks/run.go:runTemplate":                                                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- ephemeral temp script for one subprocess execution, removed by defer",
-	"internal/orchestrate/worktree_merge.go:PrepareWorktreeMergeRevert":                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral git-diff patch temp file, removed by defer",
-	"internal/orchestrate/worktree_merge.go:runWorktreeMergePrePushGate":                                "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral pre-push gate input temp file, removed by defer",
-	"internal/orchestrate/worktree_merge.go:writeWorktreeMergePrompt":                                   "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
-	"internal/orchestrate/worktree_merge_conflict_replacement.go:writeConflictCandidateRefreshPrompt":   "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
-	"internal/orchestrate/worktree_merge_published_forward_repair.go:writePublishedForwardRepairPrompt": "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
-	"internal/orchestrate/worktree_merge_seal.go:writeValidationFailureSealPrompt":                      "PR-9: scratch-helper (filewrite.CreateScratch) -- writes an ephemeral prompt temp file for one worktree-create call; caller removes it by defer",
-	"cmd/wb/deps_policy.go:fetchPolicy":                                                                 "PR-9: scratch-helper (filewrite.CreateScratch) -- writes one HTTP download to a temp file returned to the caller for one-shot use",
+	// same function or its immediate caller, never durably read back. Every
+	// entry this category used to list is now migrated: PR-9's ten
+	// write-then-remove scratch sites (applyClassicProtectionWithoutLinear
+	// History, applySharedRuleset, runTemplate, PrepareWorktreeMergeRevert,
+	// runWorktreeMergePrePushGate, the four worktree-merge prompt writers,
+	// and fetchPolicy) all route through internal/filewrite's CreateScratch
+	// composite (the four prompt writers and runWorktreeMergePrePushGate
+	// share one internal/orchestrate helper,
+	// writeWorktreeMergeScratchPromptInjected, built on it) or, for
+	// fetchPolicy's streamed download, CreateTemp+Writer+Close directly.
 
 	// Category F (round 3): a function that renames or moves one file but
 	// also independently creates-and-writes (Dispatcher.quarantineFile) or

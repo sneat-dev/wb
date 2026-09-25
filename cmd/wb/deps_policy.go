@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/policy"
 )
 
@@ -143,6 +144,15 @@ func findModuleDir(dir string) (string, error) {
 // force is the caller's to decide, and a stale cache would quietly reintroduce
 // the pinning that repositories are not allowed to do.
 func fetchPolicy(url string) (string, error) {
+	return fetchPolicyInjected(url, nil)
+}
+
+// fetchPolicyInjected is fetchPolicy's test seam (task-9 PR-9): every
+// production call site reaches it only through fetchPolicy, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the scratch download file's
+// create/write/close failure branches deterministically.
+func fetchPolicyInjected(url string, inj *filewrite.Injector) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	response, err := client.Get(url)
 	if err != nil {
@@ -152,15 +162,16 @@ func fetchPolicy(url string) (string, error) {
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("fetch policy %s: %s", url, response.Status)
 	}
-	file, err := os.CreateTemp("", "wb-policy-*.yaml")
+	file, err := filewrite.CreateTemp("", "wb-policy-*.yaml", inj)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = file.Close() }()
-	if _, err := io.Copy(file, io.LimitReader(response.Body, 1<<20)); err != nil {
+	name := file.Name()
+	defer func() { _ = filewrite.Close(file, name, inj) }()
+	if _, err := io.Copy(filewrite.Writer(file, name, inj), io.LimitReader(response.Body, 1<<20)); err != nil {
 		return "", err
 	}
-	return file.Name(), nil
+	return name, nil
 }
 
 func usageError(message string) error {

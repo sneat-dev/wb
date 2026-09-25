@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // Role names why WB needs to write to a declared path. The role is what makes
@@ -201,18 +203,26 @@ func CanonicalRequirement(canonicalPath string) Requirement {
 // removes a `.wb-writable-probe-*` entry in it, because creating the checkout
 // root is the permission being tested and no read-only check answers it.
 func OSProbe(path string) error {
+	return osProbeInjected(path, nil)
+}
+
+// osProbeInjected is OSProbe's test seam (task-9 PR-9): every production
+// call site reaches it only through OSProbe, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged (and OSProbe
+// keeps its exact `func(path string) error` shape, since it is assigned
+// directly to the Probe type). A test passes its own Injector to reach the
+// probe reservation's create/close failure branches deterministically.
+func osProbeInjected(path string, inj *filewrite.Injector) error {
 	directory, err := nearestExistingDirectory(path)
 	if err != nil {
 		return err
 	}
-	probe, err := os.CreateTemp(directory, ".wb-writable-probe-")
+	name, err := filewrite.CreateScratch(directory, ".wb-writable-probe-", 0, nil, inj)
 	if err != nil {
+		if name != "" {
+			_ = os.Remove(name)
+		}
 		return err
-	}
-	name := probe.Name()
-	if closeErr := probe.Close(); closeErr != nil {
-		_ = os.Remove(name)
-		return closeErr
 	}
 	if removeErr := os.Remove(name); removeErr != nil {
 		return removeErr

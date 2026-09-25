@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -95,16 +96,9 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return err
 	}
 
-	profilePath := options.coverageProfile
-	removeProfile := false
-	if profilePath == "" {
-		file, err := os.CreateTemp("", "wb-coverage-changed-*.out")
-		if err != nil {
-			return err
-		}
-		profilePath = file.Name()
-		_ = file.Close()
-		removeProfile = true
+	profilePath, removeProfile, err := changedCoverageProfilePathInjected(options.coverageProfile, nil)
+	if err != nil {
+		return err
 	}
 	if removeProfile {
 		defer func() { _ = os.Remove(profilePath) }()
@@ -167,6 +161,31 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return ratchetErr
 	}
 	return nil
+}
+
+// changedCoverageProfilePathInjected resolves the coverage profile path
+// runChangedCoverage measures into: existing verbatim if the caller
+// supplied one via --coverage-profile (removeProfile false -- the caller's
+// own file, kept for them to inspect or reuse), or a freshly reserved,
+// uniquely-named scratch path when it did not (removeProfile true -- the
+// caller removes it once done). Test seam: task-9 PR-9; every production
+// call site reaches this only through runChangedCoverage, which always
+// passes a nil *filewrite.Injector.
+//
+// A scratch reservation's Close failure is deliberately ignored here, not
+// propagated: the original inline sequence this replaces (`_ =
+// file.Close()`) never checked it either, since the file is about to be
+// overwritten wholesale by `go test -coverprofile` regardless of whether
+// its own empty-file Close succeeded cleanly.
+func changedCoverageProfilePathInjected(existing string, inj *filewrite.Injector) (path string, removeProfile bool, err error) {
+	if existing != "" {
+		return existing, false, nil
+	}
+	path, err = filewrite.CreateScratch("", "wb-coverage-changed-*.out", 0, nil, inj)
+	if err != nil && path == "" {
+		return "", false, err
+	}
+	return path, true, nil
 }
 
 // loadOrMeasureBaseline reads the published per-package baseline when
