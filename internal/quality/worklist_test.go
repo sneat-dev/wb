@@ -317,12 +317,16 @@ func TestBuildWorklistMergesEveryBlockOfTheSameFunctionIntoOneGroup(t *testing.T
 		{File: modulePath + "/pkg/multi.go", StartLine: 4, StartCol: 2, EndLine: 4, EndCol: 8, Statements: 3, Count: 0},
 		{File: modulePath + "/pkg/multi.go", StartLine: 5, StartCol: 2, EndLine: 5, EndCol: 10, Statements: 4, Count: 0},
 	}
-	worklist, err := BuildWorklist(blocks, modulePath, moduleRoot, 300)
+	// unitSize (6) is deliberately smaller than the two blocks' combined 7
+	// statements: if the two blocks were not merged into one funcGroup before
+	// packing, the packer would flush between them into two separate units
+	// (this is what pins the merge, not just the final counts).
+	worklist, err := BuildWorklist(blocks, modulePath, moduleRoot, 6)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(worklist.Units) != 1 {
-		t.Fatalf("units = %#v, want 1", worklist.Units)
+		t.Fatalf("units = %#v, want 1 (both blocks belong to one function and must never split across units)", worklist.Units)
 	}
 	unit := worklist.Units[0]
 	if unit.Statements != 7 || len(unit.Blocks) != 2 {
