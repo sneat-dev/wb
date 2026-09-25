@@ -4667,7 +4667,7 @@
         },
         "help": {"status":"Full","anchors":[{"command":"wb fleet default-branch --help","contains":["read-only","--all-orgs","--apply","never rewrites"]}],"limitation":null},
         "ai_skill": {"status":"Full","skills":[{"path":"ai/skills/wb-fleet/references/default-branch.md","marker":"# Audit and safely migrate GitHub default branches","examples":["wb fleet default-branch --all-orgs --format json"]}],"limitation":null},
-        "tests": {"status":"Full","references":[{"path":"cmd/wb/fleet_default_branch_test.go","name":"TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof","kind":"integration"}],"limitation":null}
+        "tests": {"status":"Full","references":[{"path":"internal/defaultbranch/defaultbranch_test.go","name":"TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof","kind":"integration"}],"limitation":null}
       },
       "notes": "Default branch changes are report-first, source/head-bound, and fail closed for unsafe migration effects. Workflow content is never rewritten; canonical clone reconciliation records dirty, unpublished, diverged, destination-conflicting, or linked-worktree state as a blocker."
     },

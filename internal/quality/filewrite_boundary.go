@@ -154,12 +154,12 @@ var PendingMigrationExemptions = map[string]string{
 	// scratch-file policy (spec/plans/coverage-to-100 task-9 round-2
 	// review), these are pending migration to a new filewrite.CreateScratch
 	// helper, not permanently exempt as a non-write-publish site.
-	"cmd/wb/coverage_ratchet.go:runChangedCoverage":          "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes and reuses it, never writes",
-	"cmd/wb/fleet_default_branch.go:defaultBranchReportPath": "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique report path then frees it via os.Remove, never writes",
-	"internal/locallink/execports.go:ExecGit.ContentHash":    "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a name for git plumbing output, closes and removes it, never writes",
-	"internal/pathguard/pathguard.go:OSProbe":                "PR-9: scratch-helper (filewrite.CreateScratch) -- writability probe: create, close, remove, never writes",
-	"internal/quality/coverage.go:coverageProfilePath":       "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes it, never writes",
-	"internal/quality/verify.go:runShardedVerification":      "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique verify-coverage-profile path, closes it, never writes",
+	"cmd/wb/coverage_ratchet.go:runChangedCoverage":                   "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes and reuses it, never writes",
+	"internal/defaultbranch/defaultbranch.go:defaultBranchReportPath": "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique report path then frees it via os.Remove, never writes; moved from cmd/wb/fleet_default_branch.go by task-22",
+	"internal/locallink/execports.go:ExecGit.ContentHash":             "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a name for git plumbing output, closes and removes it, never writes",
+	"internal/pathguard/pathguard.go:OSProbe":                         "PR-9: scratch-helper (filewrite.CreateScratch) -- writability probe: create, close, remove, never writes",
+	"internal/quality/coverage.go:coverageProfilePath":                "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique coverage-profile path, closes it, never writes",
+	"internal/quality/verify.go:runShardedVerification":               "PR-9: scratch-helper (filewrite.CreateScratch) -- reserves a unique verify-coverage-profile path, closes it, never writes",
 
 	// Category E (round 2): ephemeral scratch temp files moved here from
 	// NotAFileWritePublishExemptions per the coordinator's round-2 policy
