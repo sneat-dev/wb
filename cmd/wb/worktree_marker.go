@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -182,7 +182,7 @@ func markerCheckouts(ctx context.Context, inv *invocation, fleet bool, args []st
 		if canonical == "" {
 			continue
 		}
-		for _, path := range append([]string{canonical}, registeredWorktrees(ctx, canonical)...) {
+		for _, path := range append([]string{canonical}, registeredWorktrees(ctx, inv.commandRunner(), canonical)...) {
 			// Dedupe on the resolved path. Git reports physical paths, so the
 			// canonical clone comes back from `git worktree list` in a
 			// different spelling than the one built from --projects-root, and
@@ -206,15 +206,13 @@ func markerCheckouts(ctx context.Context, inv *invocation, fleet bool, args []st
 // and a directory walk would both miss relocated worktrees and wander into
 // build trees. A clone Git cannot read contributes no worktrees rather than
 // failing the sweep.
-func registeredWorktrees(ctx context.Context, canonical string) []string {
-	command := exec.CommandContext(ctx, "git", "-C", canonical, "worktree", "list", "--porcelain")
-	command.Env = console.Env()
-	output, err := command.Output()
+func registeredWorktrees(ctx context.Context, r runner.Runner, canonical string) []string {
+	result, err := r.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", "-C", canonical, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil
 	}
 	var paths []string
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	scanner := bufio.NewScanner(strings.NewReader(result.Stdout))
 	for scanner.Scan() {
 		path, found := strings.CutPrefix(scanner.Text(), "worktree ")
 		if !found {

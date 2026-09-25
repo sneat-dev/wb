@@ -11,6 +11,8 @@ import (
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -65,6 +67,11 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 }
 
 func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
+	// registeredWorktrees now runs its `git worktree list` through
+	// internal/runner (task-8), and this test's fleet sweep depends on real
+	// git registering the linked worktree built below. This file is already
+	// on internal/quality/testdata/unit_tier.pending (task-22).
+	runnertest.AllowRealProcess(t)
 	seeds := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
@@ -109,6 +116,13 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 }
 
 func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
+	// registeredWorktrees now runs its `git worktree list` through
+	// internal/runner (task-8), and this test's whole point is to observe
+	// real git's own registration of the linked worktree built below. This
+	// file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22).
+	runnertest.AllowRealProcess(t)
+	realRunner := runner.New()
 	seeds := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
@@ -141,11 +155,11 @@ func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
 		t.Fatalf("matching fleet checkouts = (%v, %v)", checkouts, err)
 	}
 
-	registered := registeredWorktrees(t.Context(), clone)
+	registered := registeredWorktrees(t.Context(), realRunner, clone)
 	if len(registered) != 1 {
 		t.Fatalf("registered worktrees = %v", registered)
 	}
-	if got := registeredWorktrees(t.Context(), filepath.Join(projects, "not-a-clone")); got != nil {
+	if got := registeredWorktrees(t.Context(), realRunner, filepath.Join(projects, "not-a-clone")); got != nil {
 		t.Fatalf("registered worktrees of a non-clone = %v", got)
 	}
 
