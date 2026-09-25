@@ -233,7 +233,7 @@ func TestGitOutputRunsWithARestrictedEnvironment(t *testing.T) {
 	fake := runnertest.New(t)
 	var seen []string
 	fake.Expect(func(c runnertest.Call) bool {
-		seen = c.Env
+		seen = c.Opts.Env
 		return c.Name == "git"
 	}, runner.Result{Stdout: "ok"}, nil)
 

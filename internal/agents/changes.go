@@ -84,7 +84,7 @@ func parseShortstat(output string) (insertions, deletions int) {
 
 func gitOutput(ctx context.Context, r runner.Runner, dir string, arguments ...string) (string, error) {
 	env := append(gitEnvironment(), "GIT_OPTIONAL_LOCKS=0")
-	result, err := r.RunEnv(ctx, "", env, "git", append([]string{"-C", dir}, arguments...)...)
+	result, err := r.RunOpts(ctx, "", runner.RunOptions{Env: env}, "git", append([]string{"-C", dir}, arguments...)...)
 	if err != nil {
 		return "", fmt.Errorf("git %s in %s: %w", strings.Join(arguments, " "), dir, err)
 	}

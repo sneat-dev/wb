@@ -311,7 +311,7 @@ func plural(n int, noun string) string {
 // prompt so a missing credential or unknown host key fails fast instead of
 // blocking on a terminal nobody is watching.
 func runGit(ctx context.Context, r runner.Runner, dir string, args ...string) (string, error) {
-	result, err := r.RunEnv(ctx, dir, console.Env(), "git", args...)
+	result, err := r.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env()}, "git", args...)
 	if err != nil {
 		if result.ExitCode != 0 {
 			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(result.Stderr))
