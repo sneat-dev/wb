@@ -32,7 +32,7 @@ func (Real) Run(ctx context.Context, dir, name string, args ...string) (Result, 
 	command.Stderr = &stderr
 	runErr := command.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
-	return result, runErr
+	return withoutSpuriousWaitDelay(command, result, runErr)
 }
 
 // RunWithInput is Run with input written to the child's stdin.
@@ -48,7 +48,7 @@ func (Real) RunWithInput(ctx context.Context, dir string, input []byte, name str
 	command.Stderr = &stderr
 	runErr := command.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
-	return result, runErr
+	return withoutSpuriousWaitDelay(command, result, runErr)
 }
 
 // RunOpts is Run with a RunOptions value: a per-call environment, stdin,
@@ -73,7 +73,7 @@ func (Real) RunOpts(ctx context.Context, dir string, opts RunOptions, name strin
 	command.Stderr = &stderr
 	runErr := command.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
-	return result, runErr
+	return withoutSpuriousWaitDelay(command, result, runErr)
 }
 
 // Start begins name with args in dir and returns a Handle without waiting
@@ -137,7 +137,8 @@ type realHandle struct {
 
 func (h *realHandle) Wait() (Result, error) {
 	waitErr := h.command.Wait()
-	return Result{Stdout: h.stdout.String(), Stderr: h.stderr.String(), ExitCode: exitCodeOf(waitErr)}, waitErr
+	result := Result{Stdout: h.stdout.String(), Stderr: h.stderr.String(), ExitCode: exitCodeOf(waitErr)}
+	return withoutSpuriousWaitDelay(h.command, result, waitErr)
 }
 
 // Signal and Pid are only ever called on a Handle Start returned, and Start
@@ -150,6 +151,30 @@ func (h *realHandle) Signal(signal os.Signal) error {
 
 func (h *realHandle) Pid() int {
 	return h.command.Process.Pid
+}
+
+// withoutSpuriousWaitDelay clears runErr when Cmd.Wait returned the bare
+// exec.ErrWaitDelay sentinel: a grandchild that inherited the child's
+// stdout/stderr (an ssh ControlPersist master from `git ls-remote`/`fetch`
+// over ssh, a credential helper) kept one of those pipes open past
+// command.WaitDelay after the child itself had already exited successfully.
+// The child's own captured output is complete by then -- only the
+// lingering descendant's pipe was force-closed -- so callers must see
+// success rather than a spurious failure the child never had.
+//
+// Per os/exec's Cmd.Wait (awaitGoroutines), that bare, unwrapped
+// exec.ErrWaitDelay is returned only on the path where the process's own
+// exit was already successful: a non-zero exit becomes *exec.ExitError
+// before the I/O goroutines are ever consulted, so it never reaches this
+// function and keeps its error untouched. command.ProcessState.Success()
+// is checked all the same, defensively, so a future stdlib change that
+// widened when ErrWaitDelay can appear would not silently swallow a real
+// failure.
+func withoutSpuriousWaitDelay(command *exec.Cmd, result Result, runErr error) (Result, error) {
+	if errors.Is(runErr, exec.ErrWaitDelay) && command.ProcessState != nil && command.ProcessState.Success() {
+		return result, nil
+	}
+	return result, runErr
 }
 
 // exitCodeOf reports err's process exit code, or 0 for a nil error (success)
