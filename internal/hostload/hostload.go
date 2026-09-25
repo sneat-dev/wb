@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -44,8 +43,20 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset. Consumers is a bare package function (no options struct to
+// hang a field off), so the seam is a plain parameter, threaded down to
+// runner.Runner the same way syncreport's validatePath does.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return runner.New()
+}
 
 // Reader returns the current 1-minute load average for this host.
 type Reader func() (float64, error)
@@ -190,21 +201,6 @@ func Check(read Reader, floor float64, allow bool) error {
 // var, not a const, so tests can shrink it instead of actually waiting.
 var consumersTimeout = 2 * time.Second
 
-// consumerRunner executes the consumer-listing command and returns its raw
-// output. It must honor ctx the way exec.CommandContext does — return once
-// ctx is done, not before — so Consumers stays bounded by consumersTimeout
-// regardless of implementation. Tests inject a fake that blocks on
-// ctx.Done() to simulate a hang, or one that fails outright, without
-// depending on a real `ps` binary or the real clock.
-var consumerRunner = runConsumerCommand
-
-func runConsumerCommand(ctx context.Context) ([]byte, error) {
-	// pid,pcpu,etime,comm — never "command"/"args": the executable name only,
-	// never argv, so a secret passed as a CLI flag (e.g. --token=...) can
-	// never be echoed into a refusal message. See truncateConsumerName.
-	return exec.CommandContext(ctx, "ps", "-Ao", "pid,pcpu,etime,comm").Output()
-}
-
 // Consumers returns up to n lines describing the busiest processes on the
 // host, most CPU-hungry first, for use in a refusal message. Best-effort:
 // any failure to run or parse `ps`, or a timeout, yields either an empty
@@ -212,19 +208,32 @@ func runConsumerCommand(ctx context.Context) ([]byte, error) {
 // blocks admission: the command is bounded by consumersTimeout regardless of
 // how long a real `ps` would otherwise take.
 func Consumers(n int) []string {
+	return consumers(n, nil)
+}
+
+// consumers is Consumers' testable core; see resolveRunner's doc on r. A
+// unit test substitutes runnertest.Fake, which answers synchronously, so the
+// "bounded by consumersTimeout" branch is exercised by shrinking
+// consumersTimeout to an already-expired duration rather than by an
+// injected runner that actually blocks -- that real bounded-ness is
+// internal/runner.Real's own contract, proven by internal/runner's tests.
+func consumers(n int, r runner.Runner) []string {
 	if n <= 0 {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), consumersTimeout)
 	defer cancel()
-	output, err := consumerRunner(ctx)
+	// pid,pcpu,etime,comm — never "command"/"args": the executable name only,
+	// never argv, so a secret passed as a CLI flag (e.g. --token=...) can
+	// never be echoed into a refusal message. See truncateConsumerName.
+	result, err := resolveRunner(r).Run(ctx, "", "ps", "-Ao", "pid,pcpu,etime,comm")
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return []string{"(process diagnostics omitted: ps timed out)"}
 		}
 		return nil
 	}
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(result.Stdout, "\n")
 	if len(lines) <= 1 {
 		return nil
 	}
@@ -259,11 +268,11 @@ func Consumers(n int) []string {
 	if len(entries) > n {
 		entries = entries[:n]
 	}
-	result := make([]string, len(entries))
+	texts := make([]string, len(entries))
 	for i, e := range entries {
-		result[i] = e.text
+		texts[i] = e.text
 	}
-	return result
+	return texts
 }
 
 const maxConsumerNameLength = 60

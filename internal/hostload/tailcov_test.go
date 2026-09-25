@@ -6,12 +6,14 @@ package hostload
 // in hostload_test.go.
 
 import (
-	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // TestTailCovDisabledNamesWhyAdmissionIsOff pins Disabled's contract: it
@@ -120,87 +122,121 @@ func TestTailCovCheckAdmitsWithoutAnyReader(t *testing.T) {
 	}
 }
 
-// TestTailCovConsumersIgnoresOutputWithoutDataLines pins that empty and
-// header-only `ps` output yield no consumers at all, rather than a one-line
-// note or a panic. The empty output is the zero value; the header-only output
-// is an empty (never nil) list.
-func TestTailCovConsumersIgnoresOutputWithoutDataLines(t *testing.T) {
-	withConsumerRunner(t, 2*time.Second, func(context.Context) ([]byte, error) {
-		return nil, nil
-	})
-	if got := Consumers(5); got != nil {
-		t.Fatalf("Consumers(empty output) = %v, want nil", got)
-	}
+// fakePS returns a runnertest.Fake scripted to answer the exact `ps` argv
+// Consumers issues with stdout, so a test can drive consumers' parsing and
+// ordering logic without a real process.
+func fakePS(t *testing.T, stdout string) *runnertest.Fake {
+	t.Helper()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ps", "-Ao", "pid,pcpu,etime,comm"}, runner.Result{Stdout: stdout}, nil)
+	return fake
+}
 
-	withConsumerRunner(t, 2*time.Second, func(context.Context) ([]byte, error) {
-		return []byte("PID %CPU ELAPSED COMM\n"), nil
-	})
-	if got := Consumers(5); len(got) != 0 {
-		t.Fatalf("Consumers(header-only output) = %v, want no consumers", got)
+// TestConsumersIgnoresOutputWithoutDataLines pins that empty and header-only
+// `ps` output yield no consumers at all, rather than a one-line note or a
+// panic. The empty output is the zero value; the header-only output is an
+// empty (never nil) list.
+func TestConsumersIgnoresOutputWithoutDataLines(t *testing.T) {
+	t.Parallel()
+	if got := consumers(5, fakePS(t, "")); got != nil {
+		t.Fatalf("consumers(empty output) = %v, want nil", got)
+	}
+	if got := consumers(5, fakePS(t, "PID %CPU ELAPSED COMM\n")); len(got) != 0 {
+		t.Fatalf("consumers(header-only output) = %v, want no consumers", got)
 	}
 }
 
-// TestTailCovConsumersSkipsRowsItCannotTrust pins the two parse guards: a row
-// with fewer than the four expected fields and a row whose %CPU is not a
-// number are both dropped, while a well-formed row beside them survives.
-func TestTailCovConsumersSkipsRowsItCannotTrust(t *testing.T) {
-	withConsumerRunner(t, 2*time.Second, func(context.Context) ([]byte, error) {
-		return []byte("PID %CPU ELAPSED COMM\n" +
-			"1 2\n" +
-			"7 not-a-number 00:01 greedy\n" +
-			"9 12.5 00:02 keeper\n"), nil
-	})
-	got := Consumers(5)
+// TestConsumersSkipsRowsItCannotTrust pins the two parse guards: a row with
+// fewer than the four expected fields and a row whose %CPU is not a number
+// are both dropped, while a well-formed row beside them survives.
+func TestConsumersSkipsRowsItCannotTrust(t *testing.T) {
+	t.Parallel()
+	fake := fakePS(t, "PID %CPU ELAPSED COMM\n"+
+		"1 2\n"+
+		"7 not-a-number 00:01 greedy\n"+
+		"9 12.5 00:02 keeper\n")
+	got := consumers(5, fake)
 	if len(got) != 1 {
-		t.Fatalf("Consumers(malformed rows) = %v, want exactly the one well-formed row", got)
+		t.Fatalf("consumers(malformed rows) = %v, want exactly the one well-formed row", got)
 	}
 	if !strings.Contains(got[0], "pid=9") || !strings.Contains(got[0], "comm=keeper") {
-		t.Fatalf("Consumers kept the wrong row: %q", got[0])
+		t.Fatalf("consumers kept the wrong row: %q", got[0])
 	}
 }
 
-// TestTailCovConsumersOrdersAndBoundsTheList pins the two behaviours the
-// refusal message depends on: busiest process first, and never more than the
+// TestConsumersOrdersAndBoundsTheList pins the two behaviours the refusal
+// message depends on: busiest process first, and never more than the
 // requested number of lines.
-func TestTailCovConsumersOrdersAndBoundsTheList(t *testing.T) {
-	withConsumerRunner(t, 2*time.Second, func(context.Context) ([]byte, error) {
-		return []byte("PID %CPU ELAPSED COMM\n" +
-			"1 5.0 00:01 quiet\n" +
-			"2 80.0 00:02 loudest\n" +
-			"3 40.0 00:03 middle\n"), nil
-	})
-	got := Consumers(2)
+func TestConsumersOrdersAndBoundsTheList(t *testing.T) {
+	t.Parallel()
+	fake := fakePS(t, "PID %CPU ELAPSED COMM\n"+
+		"1 5.0 00:01 quiet\n"+
+		"2 80.0 00:02 loudest\n"+
+		"3 40.0 00:03 middle\n")
+	got := consumers(2, fake)
 	if len(got) != 2 {
-		t.Fatalf("Consumers(2) = %v, want exactly 2 lines", got)
+		t.Fatalf("consumers(2) = %v, want exactly 2 lines", got)
 	}
 	if !strings.Contains(got[0], "comm=loudest") || !strings.Contains(got[1], "comm=middle") {
-		t.Fatalf("Consumers(2) = %v, want loudest then middle", got)
+		t.Fatalf("consumers(2) = %v, want loudest then middle", got)
 	}
 }
 
-// TestTailCovConsumersReducesLongCommandNames pins the bound on the comm field:
-// a name longer than maxConsumerNameLength is cut, and a path is reduced to
-// its executable basename, so one runaway executable cannot bloat the refusal.
-func TestTailCovConsumersReducesLongCommandNames(t *testing.T) {
+// TestConsumersReducesLongCommandNames pins the bound on the comm field: a
+// name longer than maxConsumerNameLength is cut, and a path is reduced to
+// its executable basename, so one runaway executable cannot bloat the
+// refusal.
+func TestConsumersReducesLongCommandNames(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("z", maxConsumerNameLength+10)
-	withConsumerRunner(t, 2*time.Second, func(context.Context) ([]byte, error) {
-		return []byte("PID %CPU ELAPSED COMM\n" +
-			"1 90.0 00:01 " + long + "\n" +
-			"2 10.0 00:02 /opt/homebrew/bin/python3\n"), nil
-	})
-	got := Consumers(5)
+	fake := fakePS(t, "PID %CPU ELAPSED COMM\n"+
+		"1 90.0 00:01 "+long+"\n"+
+		"2 10.0 00:02 /opt/homebrew/bin/python3\n")
+	got := consumers(5, fake)
 	if len(got) != 2 {
-		t.Fatalf("Consumers(long comm) = %v, want 2 lines", got)
+		t.Fatalf("consumers(long comm) = %v, want 2 lines", got)
 	}
 	want := "comm=" + strings.Repeat("z", maxConsumerNameLength) + "…"
 	if !strings.Contains(got[0], want) {
-		t.Fatalf("Consumers(long comm) = %q, want it to contain %q", got[0], want)
+		t.Fatalf("consumers(long comm) = %q, want it to contain %q", got[0], want)
 	}
 	if strings.Contains(got[0], long) {
 		t.Fatalf("a comm longer than %d was not truncated: %q", maxConsumerNameLength, got[0])
 	}
 	if !strings.Contains(got[1], "comm=python3") {
-		t.Fatalf("Consumers(path comm) = %q, want the basename comm=python3", got[1])
+		t.Fatalf("consumers(path comm) = %q, want the basename comm=python3", got[1])
+	}
+}
+
+// TestConsumersOmitsListOnFailingRunner covers the non-timeout failure
+// branch: the runner errors, but the context has not expired, so Consumers
+// omits the list instead of reporting a timeout.
+func TestConsumersOmitsListOnFailingRunner(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ps", "-Ao", "pid,pcpu,etime,comm"}, runner.Result{}, errors.New("ps: no such process source"))
+	if got := consumers(5, fake); got != nil {
+		t.Fatalf("consumers(failing runner) = %v, want nil (omitted, not an error)", got)
+	}
+}
+
+// TestConsumersReportsATimeoutWhenTheContextHasAlreadyExpired covers the
+// bounded-ness branch: consumersTimeout is shrunk to an already-expired
+// duration, so the context is Done before consumers ever calls the runner,
+// and any runner failure is reported as a timeout rather than an omission.
+// It cannot coexist with t.Parallel (it mutates the package-level
+// consumersTimeout), matching every other consumersTimeout-mutating test in
+// this package.
+func TestConsumersReportsATimeoutWhenTheContextHasAlreadyExpired(t *testing.T) {
+	previous := consumersTimeout
+	consumersTimeout = -1
+	t.Cleanup(func() { consumersTimeout = previous })
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ps", "-Ao", "pid,pcpu,etime,comm"}, runner.Result{}, errors.New("irrelevant"))
+	got := consumers(5, fake)
+	if len(got) != 1 || !strings.Contains(got[0], "timed out") {
+		t.Fatalf("consumers(expired context) = %v, want a single one-line timeout note", got)
 	}
 }
 

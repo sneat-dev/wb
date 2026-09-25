@@ -1,14 +1,15 @@
 package hostload
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // clearAdmissionEnv isolates a test from the real process environment's CI
@@ -201,17 +202,6 @@ func TestResolveEnvOverrideSetsPositiveFloorAndWinsOverCI(t *testing.T) {
 	}
 }
 
-func TestConsumersOrdersMostCPUFirst(t *testing.T) {
-	t.Parallel()
-	consumers := Consumers(5)
-	// Best-effort and host-dependent: only assert it never exceeds the
-	// requested count and never errors out (ps must always be present in
-	// CI and dev environments this test runs in).
-	if len(consumers) > 5 {
-		t.Fatalf("Consumers(5) returned %d lines, want at most 5", len(consumers))
-	}
-}
-
 func TestConsumersZeroReturnsNothing(t *testing.T) {
 	t.Parallel()
 	if got := Consumers(0); got != nil {
@@ -219,57 +209,36 @@ func TestConsumersZeroReturnsNothing(t *testing.T) {
 	}
 }
 
-// withConsumerRunner temporarily replaces consumerRunner and shrinks
-// consumersTimeout so a simulated hang or slow command does not make the
-// test itself slow. Both are restored afterward.
-func withConsumerRunner(t *testing.T, timeout time.Duration, runner func(context.Context) ([]byte, error)) {
-	t.Helper()
-	previousRunner, previousTimeout := consumerRunner, consumersTimeout
-	consumerRunner, consumersTimeout = runner, timeout
-	t.Cleanup(func() { consumerRunner, consumersTimeout = previousRunner, previousTimeout })
-}
-
-func TestConsumersNeverBlocksOnAHangingRunner(t *testing.T) {
-	withConsumerRunner(t, 20*time.Millisecond, func(ctx context.Context) ([]byte, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	started := time.Now()
-	got := Consumers(5)
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("Consumers blocked for %v on a hanging runner, want bounded by consumersTimeout", elapsed)
-	}
-	if len(got) != 1 || !strings.Contains(got[0], "timed out") {
-		t.Fatalf("Consumers(hanging runner) = %v, want a single one-line timeout note", got)
-	}
-}
-
-func TestConsumersOmitsListOnFailingRunner(t *testing.T) {
-	withConsumerRunner(t, 2*time.Second, func(ctx context.Context) ([]byte, error) {
-		return nil, errors.New("ps: no such process source")
-	})
+// TestConsumersDefaultsToProductionRunner proves the exported Consumers
+// resolves a nil runner to the production runner.Runner rather than doing
+// nothing. Under `go test`, runner.Real refuses to start a real process
+// (task-24's guard), so consumers fails open (nil, no panic) instead of
+// shelling out to ps.
+func TestConsumersDefaultsToProductionRunner(t *testing.T) {
+	t.Parallel()
 	if got := Consumers(5); got != nil {
-		t.Fatalf("Consumers(failing runner) = %v, want nil (omitted, not an error)", got)
+		t.Fatalf("Consumers with no injected runner = %v, want nil (the guard blocks the real process and consumers fails open)", got)
 	}
 }
 
+// TestConsumersNeverEchoesArgv pins a security property: a stub ps that
+// ignores the "comm"-only contract this package requests and instead
+// reports a line shaped like full argv, including a secret flag. Consumers
+// must never echo it -- only the first four fields are trusted, and the
+// fourth is reduced to an executable basename.
 func TestConsumersNeverEchoesArgv(t *testing.T) {
-	// A stub ps that ignores the "comm"-only contract this package requests
-	// and instead reports a line shaped like full argv, including a secret
-	// flag. Consumers must never echo it: only the first four fields are
-	// trusted, and the fourth is reduced to an executable basename.
-	withConsumerRunner(t, 2*time.Second, func(ctx context.Context) ([]byte, error) {
-		return []byte("PID  %CPU ELAPSED COMMAND\n" +
-			"4242 87.5 01:02:03 /usr/bin/malicious --token=SECRET --extra=leak\n"), nil
-	})
-	got := Consumers(5)
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ps", "-Ao", "pid,pcpu,etime,comm"}, runner.Result{Stdout: "PID  %CPU ELAPSED COMMAND\n" +
+		"4242 87.5 01:02:03 /usr/bin/malicious --token=SECRET --extra=leak\n"}, nil)
+	got := consumers(5, fake)
 	if len(got) != 1 {
-		t.Fatalf("Consumers(argv-shaped stub) = %v, want exactly one entry", got)
+		t.Fatalf("consumers(argv-shaped stub) = %v, want exactly one entry", got)
 	}
 	if strings.Contains(got[0], "SECRET") || strings.Contains(got[0], "--token") || strings.Contains(got[0], "leak") {
-		t.Fatalf("Consumers echoed argv: %q", got[0])
+		t.Fatalf("consumers echoed argv: %q", got[0])
 	}
 	if !strings.Contains(got[0], "pid=4242") || !strings.Contains(got[0], "comm=malicious") {
-		t.Fatalf("Consumers(argv-shaped stub) = %q, want pid=4242 and comm=malicious only", got[0])
+		t.Fatalf("consumers(argv-shaped stub) = %q, want pid=4242 and comm=malicious only", got[0])
 	}
 }

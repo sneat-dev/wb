@@ -38,8 +38,6 @@ internal/hooks/manager.go	1	task-15
 internal/hooks/metrics.go	2	task-15
 internal/hooks/pushtier_classify.go	2	task-15
 internal/hooks/run.go	1	task-15
-internal/hostload/hostload.go	1	task-15
-internal/hostload/loadavg_darwin.go	1	task-15
 internal/layout/layout.go	2	task-14
 internal/lifecyclehooks/dispatch.go	1	task-15
 internal/locallink/execports.go	2	task-15

@@ -138,7 +138,6 @@ internal/hooks/coverage_runtime_metrics_hkcov_test.go	1	task-15
 internal/hooks/execution_test.go	10	task-15
 internal/hooks/git_slug_test.go	29	task-15
 internal/hooks/hooks_test.go	30	task-15
-internal/hostload/loadavg_darwin_tailcov_test.go	2	task-15
 internal/layout/host_level_test.go	5	task-14
 internal/layout/layout_test.go	4	task-14
 internal/layout/migrate_test.go	4	task-14
