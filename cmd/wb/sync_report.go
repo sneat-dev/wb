@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -62,18 +63,29 @@ func writeSyncIssuesReport(
 // directory. An agent reads this path unprompted, so it must never observe a
 // half-written report: rename is atomic, a partial write is not.
 func writeSyncIssuesFile(path, contents string) error {
+	return writeSyncIssuesFileInjected(path, contents, nil)
+}
+
+// writeSyncIssuesFileInjected is writeSyncIssuesFile's test seam (task-9
+// PR-2): every production call site reaches it only through
+// writeSyncIssuesFile, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/close/chmod/rename failure branch
+// deterministically. The chmod runs path-based, after close, exactly as
+// before, so it uses filewrite.ChmodPath rather than filewrite.Chmod.
+func writeSyncIssuesFileInjected(path, contents string, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".wb-sync-issues-*")
+	temporary, err := filewrite.CreateTemp(directory, ".wb-sync-issues-*", inj)
 	if err != nil {
 		return fmt.Errorf("stage a replacement for %s: %w", path, err)
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if _, err := temporary.WriteString(contents); err != nil {
+	if err := filewrite.Write(temporary, []byte(contents), name, inj); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return fmt.Errorf("close %s: %w", name, err)
 	}
 	// 0o600, not something wider: the report carries verbatim git output,
@@ -82,10 +94,10 @@ func writeSyncIssuesFile(path, contents string) error {
 	// verbatim in failure text). os.CreateTemp already yields 0600; this
 	// makes that guarantee explicit rather than implicit, matching
 	// archiveprune's receipt files.
-	if err := os.Chmod(name, 0o600); err != nil {
+	if err := filewrite.ChmodPath(name, 0o600, inj); err != nil {
 		return fmt.Errorf("set permissions on %s: %w", name, err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := filewrite.Rename(name, path, inj); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil
