@@ -517,3 +517,24 @@ func TestExecSitesPendingTotalSumsEveryEntry(t *testing.T) {
 		t.Fatalf("total = %d, want 7", total)
 	}
 }
+
+// TestFormatExecSitesPendingUsesItsOwnHeaderNotUnitTierPendings pins that
+// FormatExecSitesPending writes execSitesPendingHeader, not
+// unitTierPendingHeader -- formatPendingList is shared between the two
+// Format functions (unittier.go), and a header naming task-24's detector or
+// ciaudit.CompareUnitTierPendingTotal in a committed exec_sites.pending
+// would describe the wrong detector and the wrong ratchet.
+func TestFormatExecSitesPendingUsesItsOwnHeaderNotUnitTierPendings(t *testing.T) {
+	t.Parallel()
+	entries := map[string]UnitTierPendingEntry{"pkg/a.go": {File: "pkg/a.go", Count: 1, Owner: "task-8"}}
+	formatted := FormatExecSitesPending(entries)
+	if !strings.Contains(formatted, "task-8") || !strings.Contains(formatted, "CompareExecSitesPendingTotal") {
+		t.Fatalf("FormatExecSitesPending output missing its own header:\n%s", formatted)
+	}
+	if strings.Contains(formatted, "task-24") || strings.Contains(formatted, "CompareUnitTierPendingTotal") {
+		t.Fatalf("FormatExecSitesPending output uses unit_tier.pending's header:\n%s", formatted)
+	}
+	if formatted == FormatUnitTierPending(entries) {
+		t.Fatal("FormatExecSitesPending must not render identically to FormatUnitTierPending")
+	}
+}
