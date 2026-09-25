@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // rpCovRunner is a deterministic Runner that records the exact argv of every
@@ -424,7 +426,7 @@ func rpCovInstallFakeGh(t *testing.T, payload string) {
 	}
 	script := "#!/bin/sh\nset -eu\ncat " + rpCovShellQuote(payloadPath) + "\n"
 	ghPath := filepath.Join(dir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -460,7 +462,7 @@ func rpCovFailGh(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\necho 'gh: not logged in' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // prependToPATH puts directory first on PATH, ahead of the real PATH, so a
@@ -68,7 +70,7 @@ func installFakeHerdr(t *testing.T) (argvFile, stdoutFile, exitFile string) {
 	t.Helper()
 	directory := t.TempDir()
 	scriptPath := filepath.Join(directory, "herdr")
-	if err := os.WriteFile(scriptPath, []byte(fakeHerdrScript), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(fakeHerdrScript), 0o700); err != nil {
 		t.Fatalf("write fake herdr script: %v", err)
 	}
 
@@ -151,7 +153,7 @@ done
 echo '{"error":{"code":"agent_not_found","message":"agent target ghost not found"}}' 1>&2
 exit 1
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 

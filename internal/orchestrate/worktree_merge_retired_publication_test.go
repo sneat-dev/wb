@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installRetiredPublicationGH fakes the exact `gh pr view` invocation
@@ -22,7 +24,7 @@ func installRetiredPublicationGH(t *testing.T, repository, pullRequest string) {
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

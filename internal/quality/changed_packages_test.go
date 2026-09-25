@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestGitMergeBaseFailsWithoutExitErrorWhenGitCannotEvenStart exercises the
@@ -310,7 +312,7 @@ func installFakeGitFailingDiff(t *testing.T) {
 		"done\n" +
 		"exec " + realGit + " \"$@\"\n"
 	path := filepath.Join(dir, "git")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -677,7 +679,7 @@ func installFakeGitReportingMissingTopLevel(t *testing.T) string {
 		"fi\n" +
 		"exec " + realGit + " \"$@\"\n"
 	path := filepath.Join(dir, "git")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

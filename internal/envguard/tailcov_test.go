@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/execfile"
 )
 
 // tailCovWriteFile writes a fixture file inside dir, creating dir first.
@@ -28,7 +30,7 @@ func tailCovWriteFile(t *testing.T, dir, name, content string) string {
 func tailCovWriteExecutable(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(content), 0o755); err != nil {
+	if err := execfile.WriteExecutableFile(filepath.Join(dir, "git"), []byte(content), 0o755); err != nil {
 		t.Fatalf("stage fake git: %v", err)
 	}
 	return dir

@@ -89,7 +89,7 @@ fi
 printf '{"total_count":0,"items":[]}\n'
 exit 0
 `, user, string(orgsJSON), remoteReposJSON)
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -415,7 +415,7 @@ func TestCwCovFleetOwnersAndFleetDiscovery(t *testing.T) {
 
 func TestCwCovFleetOwnersFallsBackToExtraOrgsOnGHFailure(t *testing.T) {
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -554,7 +554,7 @@ func TestCwCovResolvePRInventoryOwnersDedupesAndDiagnoses(t *testing.T) {
 
 	// With discovery broken the failure must be reported, not silently ignored.
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestTailCovAppliesToReportsStatFailures pins that a path that cannot be
@@ -123,7 +125,7 @@ func TestTailCovEvaluateTemplateSectionFailures(t *testing.T) {
 			"if [ \"$1\" = \"symbolic-ref\" ]; then exit 1; fi\n" +
 			"if [ \"$1\" = \"remote\" ] && [ \"$2\" = \"show\" ]; then exit 1; fi\n" +
 			"exit 0\n"
-		if err := os.WriteFile(fake, []byte(body), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(fake, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

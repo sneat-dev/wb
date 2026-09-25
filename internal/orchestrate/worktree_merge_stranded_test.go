@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -94,7 +95,7 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_REMOTE", remoteGitDir)

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // dqCovInstallGitShim puts a `git` wrapper first on PATH that fails only for
@@ -29,7 +31,7 @@ func dqCovInstallGitShim(t *testing.T, failSubcommand string) {
 		"  exit 3\n" +
 		"fi\n" +
 		"exec " + dqCovShellQuote(realGit) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionparkreceive"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
@@ -99,7 +100,7 @@ func TestTailCovNewSSHDelivererDrivesTheRealExecRunner(t *testing.T) {
 	}
 	script := filepath.Join(dir, "ssh")
 	body := "#!/bin/sh\ncat > \"$0.stdin\"\ncat '" + result + "'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

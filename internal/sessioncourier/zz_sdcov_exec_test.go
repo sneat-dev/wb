@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // sdCov exercises the production exec seam without depending on a real ssh or
@@ -90,7 +91,7 @@ func sdCovUseFakeExecutable(t *testing.T, name string) {
 	if runtime.GOOS == "windows" {
 		file += ".exe"
 	}
-	if err := os.WriteFile(file, raw, 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(file, raw, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(sdCovFakeExecModeEnv, "1")

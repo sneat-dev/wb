@@ -19,6 +19,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -518,7 +519,7 @@ func journeyGitOutput(t *testing.T, directory string, args ...string) string {
 
 func writeJourneyExecutable(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // dqCovFakeGo installs a deterministic POSIX shell `go` shim on PATH for the
@@ -74,7 +76,7 @@ pkg/a.go:1.1,2.2 2 1"
 esac
 exit 0
 `
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

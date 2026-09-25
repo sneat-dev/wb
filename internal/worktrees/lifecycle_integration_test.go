@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -2736,7 +2737,7 @@ if [ "$1 $2" != "api --paginate" ]; then
 fi
 printf '%s\n' "$WB_TEST_MERGED_PULLS"
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal([]map[string]any{{
@@ -2776,7 +2777,7 @@ if [ "$1 $2" != "api --paginate" ]; then
 fi
 printf '%s\n' "$WB_TEST_MERGED_PULLS"
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pulls := make([]map[string]any, 0, len(heads))
@@ -2815,7 +2816,7 @@ if [ "$1 $2" != "api --paginate" ]; then
 fi
 printf '%s\n' "$WB_TEST_PULLS"
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pulls := []map[string]any{
@@ -2854,7 +2855,7 @@ if [ "$1 $2" != "api --paginate" ]; then
 fi
 printf '%s\n' "$WB_TEST_PULLS"
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal([]map[string]any{{
@@ -2896,7 +2897,7 @@ func installFailingGitHubFixture(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'gh must not run' >&2\nexit 99\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\necho 'gh must not run' >&2\nexit 99\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3011,7 +3012,7 @@ fi
 echo "unexpected gh command: $*" >&2
 exit 2
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pull := map[string]any{
@@ -3974,7 +3975,7 @@ JSON
 echo "gh: No commit found for SHA (HTTP 422)" >&2
 exit 1
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -4007,7 +4008,7 @@ func TestCleanupTreatsUnpushedHeadAsHavingNoAssociatedPullRequest(t *testing.T) 
 func TestCleanupStillReportsAnUnrelatedPullRequestQueryFailure(t *testing.T) {
 	fixture, _, _, _, mergedAt := prepareAbsorbedCandidate(t, "cleanup-gh-broken")
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"),
 		[]byte("#!/bin/sh\necho 'gh: server error' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

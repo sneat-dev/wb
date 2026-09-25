@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestRPCovCleanReportsAnUnscannableProjectsRoot(t *testing.T) {
@@ -609,7 +610,7 @@ func rpCovInstallGitFailShim(t *testing.T, pattern string) {
 	dir := t.TempDir()
 	script := "#!/bin/sh\ncase \"$*\" in\n  " + pattern + ") echo 'shim: refused' >&2; exit 128;;\nesac\n" +
 		"exec " + rpCovShellQuote(realGit) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -630,7 +631,7 @@ func rpCovInstallGitOutputShim(t *testing.T, pattern, payload string) {
 	}
 	script := "#!/bin/sh\ncase \"$*\" in\n  " + pattern + ") cat " + rpCovShellQuote(payloadPath) + "; exit 0;;\nesac\n" +
 		"exec " + rpCovShellQuote(realGit) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

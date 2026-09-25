@@ -549,7 +549,7 @@ func TestLgCovPushReportsAnUnreadableRemoteAfterPushing(t *testing.T) {
 	lgCovBareRepo(t, receive)
 	hook := filepath.Join(receive, "hooks", "post-receive")
 	script := "#!/bin/sh\nrm -rf '" + fetch + "'\n"
-	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gitIn(t, repositories.Canonical, "remote", "add", "hooked", fetch)

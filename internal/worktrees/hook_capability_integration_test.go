@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestSecureCleanupGitHelperRunsRealGoHookWithSharedCachesAndAuthorizedMetrics(t *testing.T) {
@@ -148,7 +149,7 @@ func mustWriteHookCapabilityFile(t *testing.T, path, content string) {
 
 func mustWriteHookCapabilityExecutable(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
