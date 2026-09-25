@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,40 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("progress output missing %q: %q", want, rendered)
 		}
+	}
+}
+
+// TestCIWaitProgressFailReportsTheUnderlyingError proves fail's message
+// formatting: the only way `ci wait` ever produces a non-nil error, from
+// waitForCommitChecks's own upfront usage checks (an empty repository/target/
+// head, or a bad slice/interval), is guarded identically by Args' own
+// validateCIWaitInputs before RunE ever runs, so the CLI itself cannot drive
+// this branch — it is exercised here directly, the way it would need to be
+// reached if that duplicated Args guard were ever narrowed.
+func TestCIWaitProgressFailReportsTheUnderlyingError(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	progress := newCIWaitProgress(&out, true)
+	progress.fail(errors.New("check wait slice must be positive and at most 9m0s"))
+	rendered := out.String()
+	if !strings.Contains(rendered, "ci wait: failed: check wait slice must be positive and at most 9m0s") {
+		t.Fatalf("fail did not report the underlying error: %q", rendered)
+	}
+}
+
+// TestCIWaitProgressFailOmitsTrailingColonForABlankError proves fail never
+// prints a dangling ": " when the error carries no message.
+func TestCIWaitProgressFailOmitsTrailingColonForABlankError(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	progress := newCIWaitProgress(&out, true)
+	progress.fail(errors.New(""))
+	rendered := out.String()
+	if !strings.Contains(rendered, "ci wait: failed") {
+		t.Fatalf("fail did not report anything: %q", rendered)
+	}
+	if strings.Contains(rendered, "ci wait: failed:") {
+		t.Fatalf("fail printed a dangling colon for a blank error: %q", rendered)
 	}
 }
 
