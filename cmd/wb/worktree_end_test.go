@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -19,6 +21,12 @@ func TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
+	// gitStashCapture now runs every git call through internal/runner
+	// (task-8), and this test's whole point is to observe real git's
+	// stash/status behaviour against the real repository built below. This
+	// file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22).
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
@@ -49,7 +57,7 @@ func TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	capture := gitStashCapture{}
+	capture := gitStashCapture{runner: runner.New()}
 	ctx := context.Background()
 	dirty, err := capture.DirtyPaths(ctx, root)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestCwWtCleanupRetirerRetiresCleanWorktree(t *testing.T) {
@@ -38,6 +40,10 @@ func TestCwWtCleanupRetirerReportsUnretiredCandidate(t *testing.T) {
 }
 
 func TestCwWtWorktreeEndDryRunIsNotAFinding(t *testing.T) {
+	// gitStashCapture now runs every git call through internal/runner
+	// (task-8), and the end engine calls it (DirtyPaths) even on a dry
+	// run.
+	runnertest.AllowRealProcess(t)
 	projects, _, _ := initGCFixture(t)
 	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli"); err != nil {
 		t.Fatalf("worktree end dry run: %v", err)

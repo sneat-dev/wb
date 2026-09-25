@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
@@ -92,15 +95,19 @@ func TestCwWtWorktreeInventoryAndRunGitIn(t *testing.T) {
 		t.Fatalf("inventory of a missing root = (%+v, %v)", found, err)
 	}
 
-	out, err := runGitIn(context.Background(), filepath.Join(projects, "acme", "app"), "rev-parse", "--is-inside-work-tree")
+	clone := filepath.Join(projects, "acme", "app")
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--is-inside-work-tree"}, runner.Result{Stdout: "true\n"}, nil)
+	out, err := gitRunIn(context.Background(), fake, clone, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
-		t.Fatalf("runGitIn: %v", err)
+		t.Fatalf("gitRunIn: %v", err)
 	}
 	if strings.TrimSpace(out) != "true" {
-		t.Fatalf("runGitIn output = %q", out)
+		t.Fatalf("gitRunIn output = %q", out)
 	}
-	if _, err := runGitIn(context.Background(), filepath.Join(t.TempDir(), "missing"), "status"); err == nil {
-		t.Fatal("runGitIn in a missing directory must fail")
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{}, errors.New("not a git repository"))
+	if _, err := gitRunIn(context.Background(), fake, filepath.Join(t.TempDir(), "missing"), "status"); err == nil {
+		t.Fatal("gitRunIn in a missing directory must fail")
 	}
 }
 
@@ -148,6 +155,11 @@ func TestCwWtStreamLinkGuard(t *testing.T) {
 }
 
 func TestCwWtGitStashCaptureAndNotesAndRetirer(t *testing.T) {
+	// gitStashCapture now runs every git call through internal/runner
+	// (task-8), and this test's whole point is to observe real git's
+	// stash/status behaviour. This file is already on
+	// internal/quality/testdata/unit_tier.pending (task-22).
+	runnertest.AllowRealProcess(t)
 	checkout := cwWtGitRepo(t, filepath.Join(t.TempDir(), "checkout"))
 	if err := os.WriteFile(filepath.Join(checkout, "modified.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -156,7 +168,7 @@ func TestCwWtGitStashCaptureAndNotesAndRetirer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	capture := gitStashCapture{}
+	capture := gitStashCapture{runner: runner.New()}
 	paths, err := capture.DirtyPaths(context.Background(), checkout)
 	if err != nil {
 		t.Fatalf("DirtyPaths: %v", err)
@@ -207,6 +219,11 @@ func TestCwWtGitStashCaptureAndNotesAndRetirer(t *testing.T) {
 }
 
 func TestCwWtWorktreeEndInProcess(t *testing.T) {
+	// gitStashCapture now runs every git call through internal/runner
+	// (task-8), and the end engine calls it (DirtyPaths) even on a dry
+	// run. This file is already on
+	// internal/quality/testdata/unit_tier.pending (task-22).
+	runnertest.AllowRealProcess(t)
 	projects, _, _ := initGCFixture(t)
 	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {

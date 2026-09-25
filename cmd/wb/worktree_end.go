@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -69,7 +69,7 @@ wb worktree end improve-login --repo acme/app --apply --note "landed in #412"`,
 				ProjectsRoot: inv.projectsRoot,
 				Inventory:    worktreeInventory{},
 				Links:        streamLinkGuard{store: store},
-				Capture:      gitStashCapture{},
+				Capture:      gitStashCapture{runner: inv.commandRunner()},
 				Notes:        workLogNotes{},
 				Retirer:      cleanupRetirer{},
 				Claims:       claimReleaser{writer: command.ErrOrStderr()},
@@ -212,10 +212,12 @@ func (guard streamLinkGuard) LiveLinks(worktree string) ([]string, []string, err
 // the working tree; `git stash store` then anchors it under refs/stash in the
 // repository's COMMON directory, which outlives the worktree being removed.
 // That is what makes the printed ref recoverable after the checkout is gone.
-type gitStashCapture struct{}
+type gitStashCapture struct {
+	runner runner.Runner
+}
 
-func (gitStashCapture) DirtyPaths(ctx context.Context, worktree string) ([]string, error) {
-	out, err := runGitIn(ctx, worktree, "status", "--porcelain")
+func (c gitStashCapture) DirtyPaths(ctx context.Context, worktree string) ([]string, error) {
+	out, err := gitRunIn(ctx, c.runner, worktree, "status", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +231,7 @@ func (gitStashCapture) DirtyPaths(ctx context.Context, worktree string) ([]strin
 	return paths, nil
 }
 
-func (gitStashCapture) Preserve(ctx context.Context, worktree, message string) (string, error) {
+func (c gitStashCapture) Preserve(ctx context.Context, worktree, message string) (string, error) {
 	// `git stash push --include-untracked` is used rather than
 	// `stash create` + `store` for two reasons. It captures files Git has
 	// never seen — an agent's unfinished work is routinely untracked, and a
@@ -237,14 +239,14 @@ func (gitStashCapture) Preserve(ctx context.Context, worktree, message string) (
 	// leaves the working tree CLEAN, which is what lets the existing cleanup
 	// transaction retire the checkout at all. A capture that left the tree
 	// dirty would be recorded and then refused by cleanup one step later.
-	if _, err := runGitIn(ctx, worktree, "stash", "push", "--include-untracked", "--message", message); err != nil {
+	if _, err := gitRunIn(ctx, c.runner, worktree, "stash", "push", "--include-untracked", "--message", message); err != nil {
 		return "", fmt.Errorf("capture uncommitted work in %s: %w", worktree, err)
 	}
 	// refs/stash lives in the repository's common directory, so the captured
 	// commit outlives the worktree this verb is about to remove. Resolving it
 	// to an immutable SHA means the printed reference still names this exact
 	// capture after later stashes push it down the reflog.
-	head, err := runGitIn(ctx, worktree, "rev-parse", "refs/stash")
+	head, err := gitRunIn(ctx, c.runner, worktree, "rev-parse", "refs/stash")
 	if err != nil {
 		return "", fmt.Errorf("resolve the capture reference in %s: %w", worktree, err)
 	}
@@ -299,13 +301,18 @@ func (releaser claimReleaser) Release(projectsRoot, task string) string {
 	return "released through the remote-claim path"
 }
 
-func runGitIn(ctx context.Context, dir string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = dir
-	command.Env = console.Env()
-	output, err := command.CombinedOutput()
+// gitRunIn runs "git args..." in dir through r with console.Env()'s
+// non-interactive environment, matching the retired
+// exec.CommandContext(...).CombinedOutput() call's argv, dir, env and
+// output handling exactly. It is deliberately not named "runGitIn": that
+// name is one of internal/quality's git-helper-call detector's names for
+// an unmigrated direct-exec helper, and this one already routes through
+// task-8's runner.
+func gitRunIn(ctx context.Context, r runner.Runner, dir string, args ...string) (string, error) {
+	result, err := r.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env()}, "git", args...)
+	output := result.Stdout + result.Stderr
 	if err != nil {
-		return "", fmt.Errorf("git %s in %s: %w: %s", strings.Join(args, " "), dir, err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("git %s in %s: %w: %s", strings.Join(args, " "), dir, err, strings.TrimSpace(output))
 	}
-	return string(output), nil
+	return output, nil
 }
