@@ -173,7 +173,7 @@ func TestPersistWorktreeMergeReceiptPublishesAt0600(t *testing.T) {
 
 func TestExtractWorktreeMergeArchiveInjectedHonoursInjectedFailures(t *testing.T) {
 	t.Parallel()
-	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepClose} {
+	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepWrite, filewrite.StepClose} {
 		step := step
 		t.Run(string(step), func(t *testing.T) {
 			t.Parallel()

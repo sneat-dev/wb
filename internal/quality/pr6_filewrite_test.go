@@ -2,8 +2,10 @@ package quality
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
@@ -48,6 +50,83 @@ func TestWriteCoverageProfileAtomicallyInjectedHonoursInjectedFailures(t *testin
 			assertNoLeftoverPR6TempFile(t, dir, ".wb-coverage-merge-*.tmp")
 		})
 	}
+}
+
+// The following three tests cover review-t9-pr6's B1 finding: the buffered
+// fmt.Fprintf/writer.Flush calls now go through
+// bufio.NewWriter(filewrite.Writer(...)), so a StepWrite Injector can reach
+// all three of their error branches. Each payload's size is chosen so
+// bufio.Writer's default-sized internal buffer forces the real underlying
+// Write to happen exactly where each test needs it, matching what a plain
+// *os.File sink would have done -- filewrite.Writer changes nothing about
+// when or how much bufio writes, only whether the resulting Write call is
+// injectable.
+
+// TestWriteCoverageProfileAtomicallyInjectedSurfacesModeHeaderWriteFailure
+// covers go_test_shards.go's mode-header Fprintf failure branch: a mode
+// string bigger than bufio's default buffer forces bufio to write it
+// directly to the underlying writer (nothing was buffered yet to flush
+// first), so the injected StepWrite failure -- the first and only
+// occurrence -- surfaces from this very Fprintf call.
+func TestWriteCoverageProfileAtomicallyInjectedSurfacesModeHeaderWriteFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	output := filepath.Join(dir, "coverage.out")
+	hugeMode := strings.Repeat("x", 8192)
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR6}
+	err := writeCoverageProfileAtomicallyInjected(output, hugeMode, nil, inj)
+	if !errors.Is(err, errBoomPR6) {
+		t.Fatalf("writeCoverageProfileAtomicallyInjected(huge mode header failure) = %v, want errBoomPR6", err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("failed merge published a visible coverage profile: %v", statErr)
+	}
+	assertNoLeftoverPR6TempFile(t, dir, ".wb-coverage-merge-*.tmp")
+}
+
+// TestWriteCoverageProfileAtomicallyInjectedSurfacesBlockWriteFailure covers
+// go_test_shards.go's per-block Fprintf failure branch: the mode header
+// stays small (buffered, no real write yet), but one block's location
+// string is bigger than bufio's default buffer, forcing its own Fprintf to
+// write directly -- the first StepWrite occurrence.
+func TestWriteCoverageProfileAtomicallyInjectedSurfacesBlockWriteFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	output := filepath.Join(dir, "coverage.out")
+	hugeLocation := fmt.Sprintf("pkg/%s.go:1.1,2.2", strings.Repeat("x", 8192))
+	blocks := map[string]coverageBlock{hugeLocation: {location: hugeLocation, statements: 1, count: 1}}
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR6}
+	err := writeCoverageProfileAtomicallyInjected(output, "atomic", blocks, inj)
+	if !errors.Is(err, errBoomPR6) {
+		t.Fatalf("writeCoverageProfileAtomicallyInjected(huge block failure) = %v, want errBoomPR6", err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("failed merge published a visible coverage profile: %v", statErr)
+	}
+	assertNoLeftoverPR6TempFile(t, dir, ".wb-coverage-merge-*.tmp")
+}
+
+// TestWriteCoverageProfileAtomicallyInjectedSurfacesFlushFailure covers
+// go_test_shards.go's final writer.Flush failure branch: every payload
+// here is small enough to stay fully buffered, so the first (and only)
+// real underlying Write happens inside Flush itself.
+func TestWriteCoverageProfileAtomicallyInjectedSurfacesFlushFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	output := filepath.Join(dir, "coverage.out")
+	blocks := map[string]coverageBlock{"pkg/file.go:1.1,2.2": {location: "pkg/file.go:1.1,2.2", statements: 1, count: 1}}
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR6}
+	err := writeCoverageProfileAtomicallyInjected(output, "atomic", blocks, inj)
+	if !errors.Is(err, errBoomPR6) {
+		t.Fatalf("writeCoverageProfileAtomicallyInjected(flush failure) = %v, want errBoomPR6", err)
+	}
+	if !strings.Contains(err.Error(), "flush merged coverage profile") {
+		t.Fatalf("writeCoverageProfileAtomicallyInjected(flush failure) = %q, want it to name the flush step", err.Error())
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("failed merge published a visible coverage profile: %v", statErr)
+	}
+	assertNoLeftoverPR6TempFile(t, dir, ".wb-coverage-merge-*.tmp")
 }
 
 // TestWriteCoverageProfileAtomicallyInjectedPublishesAt0644 covers

@@ -64,9 +64,16 @@ func TestWriteExecutableAtInjectedReportsRestoreFailureIfQuarantinedHookCannotBe
 	// manager.go's restore-failure message names both the primary error and
 	// the restore error, so its text is the only observable proof the
 	// restore branch actually ran (rather than, say, silently swallowing
-	// the failed restore).
+	// the failed restore). The restore error is formatted with %v, not
+	// %w, so errors.Is cannot see it; matching "file exists" in the
+	// message text pins the restore failure to a genuine EEXIST from the
+	// real renameat2(RENAME_NOREPLACE) syscall (review-t9-pr6 N2), not
+	// merely to some other, unrelated restore failure.
 	if !regexp.MustCompile(`preserve quarantined hook`).MatchString(writeErr.Error()) {
 		t.Fatalf("writeExecutableAtInjected(unrestorable quarantine) = %q, want it to mention the preserved quarantined hook", writeErr.Error())
+	}
+	if !regexp.MustCompile(`file exists`).MatchString(writeErr.Error()) {
+		t.Fatalf("writeExecutableAtInjected(unrestorable quarantine) = %q, want the restore failure to be a real EEXIST (\"file exists\")", writeErr.Error())
 	}
 
 	if got := mustReadFile(t, filepath.Join(dir, "pre-commit")); got != competingContent {
