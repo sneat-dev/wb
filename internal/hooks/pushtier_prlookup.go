@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
@@ -171,21 +172,39 @@ func loadPRStatusCache(path string) map[string]prStatusCacheEntry {
 }
 
 func savePRStatusCache(path string, cache map[string]prStatusCacheEntry) {
+	// Best-effort: a cache write failure must never fail the push-tier
+	// decision that is already in hand.
+	_ = savePRStatusCacheInjected(path, cache, nil)
+}
+
+// savePRStatusCacheInjected is savePRStatusCache's test seam (task-9
+// PR-5): every production call site reaches it only through
+// savePRStatusCache, which always passes a nil *filewrite.Injector and
+// discards the error (a cache write is best-effort), so production
+// behaviour is unchanged. A test passes its own Injector to reach a
+// write/rename failure branch deterministically.
+func savePRStatusCacheInjected(path string, cache map[string]prStatusCacheEntry, inj *filewrite.Injector) error {
 	if strings.TrimSpace(path) == "" {
-		return
+		return nil
 	}
 	encoded, err := json.Marshal(cache)
 	if err != nil {
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
+		return err
 	}
-	// Best-effort: a cache write failure must never fail the push-tier
-	// decision that is already in hand.
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, 0o644); err != nil {
-		return
+	// review-756 B1 (task-9 PR-5): the pre-migration code left this fixed-
+	// name temp file behind on a Rename failure (a silent leftover, since
+	// the whole function swallows every error). This defer is a small,
+	// deliberate behaviour improvement: removing a temp file that was
+	// already renamed away is a harmless no-op ENOENT, and it stops a
+	// failed cache write from leaving trash for the next call to trip
+	// over.
+	defer func() { _ = os.Remove(temporary) }()
+	if err := filewrite.WriteFile(temporary, encoded, 0o644, inj); err != nil {
+		return err
 	}
-	_ = os.Rename(temporary, path)
+	return filewrite.Rename(temporary, path, inj)
 }

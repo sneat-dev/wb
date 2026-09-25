@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -1035,6 +1036,23 @@ func readManagedHook(directory *os.File, name string) (managedHookSnapshot, erro
 }
 
 func writeExecutableAt(managed managedHooksDirectory, name string, content []byte, expected managedHookIdentity, afterAuthorization func(name string)) error {
+	return writeExecutableAtInjected(managed, name, content, expected, afterAuthorization, nil)
+}
+
+// writeExecutableAtInjected is writeExecutableAt's test seam (task-9
+// PR-5): every production call site reaches it only through
+// writeExecutableAt, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged with one deliberate exception carried
+// over from task-9 PR-3 review-756 finding B3: the temporary hook's
+// create now goes through filewrite.CreateExclusive, which adds
+// O_CLOEXEC to the original raw unix.Openat call. This matches Go's own
+// os.OpenFile default and stops a writable temp-file fd from leaking into
+// a forked child (a hook file is, by definition, about to be executed by
+// git, which forks); see internal/filewrite's CreateExclusive doc.
+// A test passes its own Injector to reach a create/chmod/write/close/
+// rename-no-replace failure branch deterministically, including via
+// Injector.Hook to build a real race at the publish step.
+func writeExecutableAtInjected(managed managedHooksDirectory, name string, content []byte, expected managedHookIdentity, afterAuthorization func(name string), inj *filewrite.Injector) error {
 	if filepath.Base(name) != name || name == "." || name == "" {
 		return fmt.Errorf("invalid managed hook name %q", name)
 	}
@@ -1046,7 +1064,7 @@ func writeExecutableAt(managed managedHooksDirectory, name string, content []byt
 			return fmt.Errorf("generate temporary hook name for %s: %w", name, err)
 		}
 		temporaryName = fmt.Sprintf(".%s.wb-tmp-%x", name, token[:])
-		fd, err := unix.Openat(int(managed.directory.Fd()), temporaryName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o755)
+		fd, err := filewrite.CreateExclusive(int(managed.directory.Fd()), temporaryName, 0o755, inj)
 		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
@@ -1079,24 +1097,30 @@ func writeExecutableAt(managed managedHooksDirectory, name string, content []byt
 			_, _ = quarantineManagedHook(managed, temporaryName, temporaryIdentity, nil)
 		}
 	}()
-	if err := unix.Fchmod(int(file.Fd()), 0o755); err != nil {
+	if err := filewrite.ChmodFile(file, 0o755, temporaryName, inj); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("chmod temporary hook %s: %w", name, err)
 	}
-	if _, err := file.Write(content); err != nil {
+	if err := filewrite.Write(file, content, temporaryName, inj); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write hook %s: %w", name, err)
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporaryName, inj); err != nil {
 		return fmt.Errorf("close temporary hook %s: %w", name, err)
 	}
 	parkedName, err := quarantineManagedHook(managed, name, expected, afterAuthorization)
 	if err != nil {
 		return err
 	}
-	if err := renameNoReplace(int(managed.directory.Fd()), temporaryName, int(managed.directory.Fd()), name); err != nil {
+	if err := filewrite.RenameNoReplace(int(managed.directory.Fd()), temporaryName, int(managed.directory.Fd()), name, inj); err != nil {
 		if parkedName != "" {
-			if restoreErr := renameNoReplace(int(managed.directory.Fd()), parkedName, int(managed.directory.Fd()), name); restoreErr != nil {
+			// The restore always passes a nil Injector: it is a best-effort
+			// recovery of the pre-existing hook after the primary publish
+			// above has already failed, not itself a call this migration
+			// needs to fault-inject, and reusing inj here (same Step, same
+			// toName) would let one Injector accidentally also fail the
+			// restore it is meant to let succeed.
+			if restoreErr := filewrite.RenameNoReplace(int(managed.directory.Fd()), parkedName, int(managed.directory.Fd()), name, nil); restoreErr != nil {
 				return fmt.Errorf("activate hook %s: %w; preserve quarantined hook %s: %v", name, err, parkedName, restoreErr)
 			}
 		}
