@@ -418,6 +418,35 @@ jobs:
           ./internal/fleetsync/...
           ./internal/runqueue/...
 
+  e2e:
+    name: E2E tier (real git)
+    needs: [release-eligibility, validation-reuse, go-scope]
+    # spec/plans/coverage-to-100/README.md task-24: the e2e tier is a
+    # required job on every PR (founder decision 19), never a source of
+    # coverage (decision 17) -- this job carries no coverage step at all.
+    # It follows the same go-scope/validation-reuse condition as source,
+    # static, lint, and race: skipped when a PR touches nothing Go-relevant,
+    # and skipped on a push whose validation an exact trusted PR run already
+    # covered.
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
+    runs-on: ubuntu-latest
+    # Task-23's 10-minute e2e budget (spec/plans/coverage-to-100/README.md
+    # "Plan choices, not founder instructions").
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -tags e2e (real-git journeys and adapter contract tests)
+        run: >-
+          go test -tags e2e -run '^Test(E2E|Contract)' ./...
+
   windows:
     name: Native Windows compile and test
     needs: [windows-scope, validation-reuse, go-scope]
@@ -457,7 +486,7 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, windows]
+    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, e2e, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -475,6 +504,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RACE_RESULT: ${{ needs.race.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           set -eu
@@ -521,7 +551,7 @@ jobs:
           else
             expected_coverage=$expected
           fi
-          for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
+          for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT" "E2E tier (real git):$E2E_RESULT"; do
             name=${check%%:*}
             result=${check#*:}
             if [ "$name" = "Eligibility" ]; then
