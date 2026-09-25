@@ -237,13 +237,14 @@ func TestCompareExecSitesPendingTotalExportedWrapperEmptyTarget(t *testing.T) {
 	}
 }
 
-// TestCompareAgainstTargetWiresAllThreeRealComparators pins
-// CompareAgainstTarget's own exported wrapper after task-8's third
+// TestCompareAgainstTargetWiresAllFourRealComparators pins
+// CompareAgainstTarget's own exported wrapper after task-21's fourth
 // comparator was wired in: it must pass CompareCoverageFloors,
-// CompareUnitTierPendingTotal and CompareExecSitesPendingTotal, not just
-// the first two. An empty target short-circuits all three real comparators
-// before any of them touches git, so this needs no real repository.
-func TestCompareAgainstTargetWiresAllThreeRealComparators(t *testing.T) {
+// CompareUnitTierPendingTotal, CompareExecSitesPendingTotal and
+// CompareCampaignTestNamesPendingTotal, not just the first three. An empty
+// target short-circuits all four real comparators before any of them
+// touches git, so this needs no real repository.
+func TestCompareAgainstTargetWiresAllFourRealComparators(t *testing.T) {
 	t.Parallel()
 	findings, err := CompareAgainstTarget(t.TempDir(), "")
 	if err != nil {
@@ -254,12 +255,12 @@ func TestCompareAgainstTargetWiresAllThreeRealComparators(t *testing.T) {
 	}
 }
 
-// TestCompareAgainstTargetCombinesThreeComparatorsSorted extends
-// TestCompareAgainstTargetCombinesBothComparisonsSorted to three
+// TestCompareAgainstTargetCombinesFourComparatorsSorted extends
+// TestCompareAgainstTargetCombinesBothComparisonsSorted to four
 // comparators, pinning that compareAgainstTarget's variadic signature
 // still calls every comparator it is given and still sorts their combined
 // findings by Code then File.
-func TestCompareAgainstTargetCombinesThreeComparatorsSorted(t *testing.T) {
+func TestCompareAgainstTargetCombinesFourComparatorsSorted(t *testing.T) {
 	t.Parallel()
 	floors := &fakeTargetComparator{findings: []Finding{
 		{Code: "coverage-floor-lowered", File: ".github/workflows/ci.yml"},
@@ -270,19 +271,22 @@ func TestCompareAgainstTargetCombinesThreeComparatorsSorted(t *testing.T) {
 	execSites := &fakeTargetComparator{findings: []Finding{
 		{Code: "exec-sites-pending-total-rose", File: execSitesPendingPath},
 	}}
+	campaignNames := &fakeTargetComparator{findings: []Finding{
+		{Code: "campaign-test-names-pending-total-rose", File: campaignTestNamesPendingPath},
+	}}
 
-	findings, err := compareAgainstTarget("/root", "main", floors.run, unitTier.run, execSites.run)
+	findings, err := compareAgainstTarget("/root", "main", floors.run, unitTier.run, execSites.run, campaignNames.run)
 	if err != nil {
 		t.Fatalf("compareAgainstTarget: %v", err)
 	}
-	if !floors.called || !unitTier.called || !execSites.called {
-		t.Fatalf("all three comparators must be called: floors=%t unitTier=%t execSites=%t", floors.called, unitTier.called, execSites.called)
+	if !floors.called || !unitTier.called || !execSites.called || !campaignNames.called {
+		t.Fatalf("all four comparators must be called: floors=%t unitTier=%t execSites=%t campaignNames=%t", floors.called, unitTier.called, execSites.called, campaignNames.called)
 	}
-	if len(findings) != 3 {
-		t.Fatalf("findings = %+v, want exactly 3", findings)
+	if len(findings) != 4 {
+		t.Fatalf("findings = %+v, want exactly 4", findings)
 	}
-	if findings[0].Code != "coverage-floor-lowered" || findings[1].Code != "exec-sites-pending-total-rose" || findings[2].Code != "unit-tier-pending-total-rose" {
-		t.Fatalf("findings = %+v, want coverage-floor-lowered, exec-sites-pending-total-rose, unit-tier-pending-total-rose in Code order", findings)
+	if findings[0].Code != "campaign-test-names-pending-total-rose" || findings[1].Code != "coverage-floor-lowered" || findings[2].Code != "exec-sites-pending-total-rose" || findings[3].Code != "unit-tier-pending-total-rose" {
+		t.Fatalf("findings = %+v, want campaign-test-names-pending-total-rose, coverage-floor-lowered, exec-sites-pending-total-rose, unit-tier-pending-total-rose in Code order", findings)
 	}
 }
 
