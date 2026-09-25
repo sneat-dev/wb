@@ -306,6 +306,19 @@ func TestTailCovLoadValidatesExcusedPathsAndProofs(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects a Go dependency-upgrade path proof with nonzero added lines", func(t *testing.T) {
+		t.Parallel()
+		receiptPath := newReceipt(t)
+		_, err := tailCovPersistAck(t, receiptPath, func(ack *Acknowledgement) {
+			proof := tailCovPathProofSourceProof("go_dependency_upgrade", 1, 0)
+			proof.PathProofs[0].Path = "go.mod"
+			ack.SourceProofs = []SourceProof{proof}
+		})
+		if err == nil || !strings.Contains(err.Error(), "has an invalid Go dependency-upgrade path") {
+			t.Fatalf("Load error = %v, want an invalid Go dependency-upgrade path failure", err)
+		}
+	})
+
 	t.Run("rejects a lines absorbed proof with unmatched counts", func(t *testing.T) {
 		t.Parallel()
 		receiptPath := newReceipt(t)
