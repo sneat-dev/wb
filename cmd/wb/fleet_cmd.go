@@ -84,7 +84,7 @@ func (options *fleetOverviewOptions) bind(command *cobra.Command) {
 }
 
 func (options *fleetOverviewOptions) run(cmd *cobra.Command, args []string) error {
-	report, err := collectFleetOverview(projectsRoot, options.inv.filterFlag, options.status, options.all, options.depth)
+	report, err := collectFleetOverview(options.inv, options.inv.projectsRoot, options.inv.filterFlag, options.status, options.all, options.depth)
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ attention detail, wb layout audit for placement findings, and
 wb worktree orphans for linked-worktree debt outside the managed hierarchy.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := collectFleetStats(projectsRoot, inv.filterFlag, options, depth)
+			report, err := collectFleetStats(inv, inv.projectsRoot, inv.filterFlag, options, depth)
 			if err != nil {
 				return err
 			}
@@ -168,7 +168,7 @@ disables it.`,
 				details:   details,
 				options:   options,
 				filter:    inv.filterFlag,
-				projects:  projectsRoot,
+				projects:  inv.projectsRoot,
 				titleKind: statusTitleFleet,
 				progress:  cmd.ErrOrStderr(),
 			})
@@ -250,8 +250,8 @@ type fleetOverviewReport struct {
 	Status        statusIndex      `yaml:"status" json:"status"`
 }
 
-func collectFleetOverview(projects, filter string, options qualityOptions, all bool, depth fleetDepthOptions) (fleetOverviewReport, error) {
-	stats, fullStatus, err := collectFleetStatsAndStatus(projects, filter, options, depth)
+func collectFleetOverview(inv *invocation, projects, filter string, options qualityOptions, all bool, depth fleetDepthOptions) (fleetOverviewReport, error) {
+	stats, fullStatus, err := collectFleetStatsAndStatus(inv, projects, filter, options, depth)
 	if err != nil {
 		return fleetOverviewReport{}, err
 	}
@@ -266,12 +266,12 @@ func collectFleetOverview(projects, filter string, options qualityOptions, all b
 	}, nil
 }
 
-func collectFleetStats(projects, filter string, options qualityOptions, depth fleetDepthOptions) (fleetStatsReport, error) {
-	stats, _, err := collectFleetStatsAndStatus(projects, filter, options, depth)
+func collectFleetStats(inv *invocation, projects, filter string, options qualityOptions, depth fleetDepthOptions) (fleetStatsReport, error) {
+	stats, _, err := collectFleetStatsAndStatus(inv, projects, filter, options, depth)
 	return stats, err
 }
 
-func collectFleetStatsAndStatus(projects, filter string, options qualityOptions, depth fleetDepthOptions) (fleetStatsReport, statusIndex, error) {
+func collectFleetStatsAndStatus(inv *invocation, projects, filter string, options qualityOptions, depth fleetDepthOptions) (fleetStatsReport, statusIndex, error) {
 	options.fleet = true
 	targets, err := qualityTargets(".", projects, filter, options)
 	if err != nil {
@@ -306,7 +306,7 @@ func collectFleetStatsAndStatus(projects, filter string, options qualityOptions,
 		stats.Remote = &remoteStats
 	}
 	if depth.hooks {
-		hooksStats, hooksErr := fleetHooksRollup(targets, options.parallel)
+		hooksStats, hooksErr := fleetHooksRollup(inv, targets, options.parallel)
 		if hooksErr != nil {
 			return fleetStatsReport{}, statusIndex{}, hooksErr
 		}
@@ -372,7 +372,7 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 	return stats, nil
 }
 
-func fleetHooksRollup(targets []qualityTarget, parallel int) (fleetHooksStats, error) {
+func fleetHooksRollup(inv *invocation, targets []qualityTarget, parallel int) (fleetHooksStats, error) {
 	stats := fleetHooksStats{Repositories: len(targets)}
 	type result struct {
 		findings int
@@ -380,7 +380,7 @@ func fleetHooksRollup(targets []qualityTarget, parallel int) (fleetHooksStats, e
 	}
 	results := make([]result, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
-		report, err := hooks.Check(targets[index].path, "", hookExecutable(), projectsRoot)
+		report, err := hooks.Check(targets[index].path, "", hookExecutable(), inv.projectsRoot)
 		if err != nil {
 			results[index].err = true
 			return

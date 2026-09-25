@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestCwWtWorktreeGuardPublishedCanonicalClone(t *testing.T) {
@@ -14,7 +16,7 @@ func TestCwWtWorktreeGuardPublishedCanonicalClone(t *testing.T) {
 	cwCovCloneWithOrigin(t, seed, "app", clone)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, stderr, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--published")
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--published")
 	if err != nil {
 		t.Fatalf("guard --published on a published canonical clone: %v (stderr=%s)", err, stderr)
 	}
@@ -24,7 +26,7 @@ func TestCwWtWorktreeGuardPublishedCanonicalClone(t *testing.T) {
 	if !strings.Contains(stdout, "(fresh against origin/main") {
 		t.Fatalf("guard --published did not report freshness: %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--published", "--quiet"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--published", "--quiet"); err != nil {
 		t.Fatalf("guard --published --quiet: %v", err)
 	}
 
@@ -33,7 +35,7 @@ func TestCwWtWorktreeGuardPublishedCanonicalClone(t *testing.T) {
 	// A detached HEAD is refused before publication can even be judged: a
 	// commit there is reachable from no branch.
 	runGit(t, clone, "checkout", "--detach", "HEAD")
-	if _, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--published"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--published"); err == nil {
 		t.Fatal("guard --published on a detached HEAD must be refused")
 	}
 }
@@ -54,24 +56,24 @@ func TestCwWtWorktreeGuardAdmissionWarningOnUnrecordedWorktree(t *testing.T) {
 	runGit(t, clone, "worktree", "add", "-b", "cw-wt-task", managed)
 
 	// Without a manifest the checkout is refused outright, naming the remedy.
-	_, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, managed, "--admission", "enforce")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, managed, "--admission", "enforce")
 	if err == nil || !strings.Contains(err.Error(), "no WB manifest") {
 		t.Fatalf("guard admission without a manifest = %v", err)
 	}
 
 	// Backfill gives it a manifest but never fabricates a prompt, which is
 	// exactly the state --admission warn exists to surface.
-	if _, _, err := cwCovExec(t, projects, newWorktreeBackfillCmd, "--apply"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{projectsRoot: projects}) }, "--apply"); err != nil {
 		t.Fatalf("backfill before admission: %v", err)
 	}
 	// enforce refuses the same checkout outright.
-	_, _, err = cwCovExec(t, projects, newWorktreeGuardCmd, managed, "--admission", "enforce")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, managed, "--admission", "enforce")
 	if err == nil {
 		t.Fatal("guard --admission enforce after backfill must refuse an unrecorded effort")
 	}
 
 	// warn reports the same fact as a warning without refusing.
-	_, stderr, err := cwCovExec(t, projects, newWorktreeGuardCmd, managed, "--admission", "warn")
+	_, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, managed, "--admission", "warn")
 	if err != nil {
 		t.Fatalf("guard --admission warn after backfill: %v (stderr=%s)", err, stderr)
 	}
@@ -80,7 +82,7 @@ func TestCwWtWorktreeGuardAdmissionWarningOnUnrecordedWorktree(t *testing.T) {
 	}
 
 	// --quiet still prints the admission warning: warn mode exists to be seen.
-	stdout, stderr, err := cwCovExec(t, projects, newWorktreeGuardCmd, managed, "--admission", "warn", "--quiet")
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, managed, "--admission", "warn", "--quiet")
 	if err != nil {
 		t.Fatalf("guard --admission warn --quiet: %v", err)
 	}
@@ -103,7 +105,7 @@ func TestCwWtWorktreeGuardRefusesMisplacedWorktree(t *testing.T) {
 
 	// A linked checkout outside every recognized hierarchy is refused with a
 	// remedy naming the command that creates a valid one.
-	_, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, external)
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, external)
 	if err == nil || !strings.Contains(err.Error(), "must be below a resolver-recognized") {
 		t.Fatalf("guard on a misplaced worktree = %v", err)
 	}
@@ -112,7 +114,7 @@ func TestCwWtWorktreeGuardRefusesMisplacedWorktree(t *testing.T) {
 func TestCwWtWorktreeInfoOnMissingPath(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
-	if _, _, err := cwCovExec(t, projects, newWorktreeInfoCmd, filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeInfoCmd(&invocation{}) }, filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("worktree info on a missing path must fail")
 	}
 }
@@ -134,18 +136,18 @@ func TestCwWtWorktreeLogBackendErrors(t *testing.T) {
 		{"archive", missing, "--mode", "manual", "--initiator", "cwWt"},
 	}
 	for _, args := range verbs {
-		if _, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, args...); err == nil {
+		if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, args...); err == nil {
 			t.Errorf("log %s on a missing worktree returned nil", args[0])
 		}
 	}
 
 	// checkpoint without --skip-remote still refuses an unknown worktree.
-	if _, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "checkpoint", missing, "--mode", "manual", "--initiator", "cwWt"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "checkpoint", missing, "--mode", "manual", "--initiator", "cwWt"); err == nil {
 		t.Error("log checkpoint on a missing worktree returned nil")
 	}
 
 	// set propagates the backend refusal too.
-	if _, _, err := cwCovExec(t, projects, newWorktreeSetCmd, missing, "--prompt", "x"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSetCmd(&invocation{}) }, missing, "--prompt", "x"); err == nil {
 		t.Error("worktree set on a missing worktree returned nil")
 	}
 
@@ -154,7 +156,7 @@ func TestCwWtWorktreeLogBackendErrors(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cwCovExec(t, blocker, newWorktreeWorkLogCmd, "show", missing); err == nil {
+	if _, _, err := cwCovExec(t, blocker, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", missing); err == nil {
 		t.Error("log show against an unreadable root returned nil")
 	}
 }

@@ -527,15 +527,17 @@ func defaultDaemonDependencies() daemonDependencies {
 	}
 }
 
-func newDaemonCmd() *cobra.Command { return newDaemonCmdWithDependencies(defaultDaemonDependencies()) }
+func newDaemonCmd(inv *invocation) *cobra.Command {
+	return newDaemonCmdWithDependencies(inv, defaultDaemonDependencies())
+}
 
-func newDaemonCmdWithDependencies(deps daemonDependencies) *cobra.Command {
+func newDaemonCmdWithDependencies(inv *invocation, deps daemonDependencies) *cobra.Command {
 	command := &cobra.Command{Use: "daemon", Short: "Operate WB's local loopback dashboard and scheduler lifecycle"}
-	command.AddCommand(newDaemonServeCmd(deps), newDaemonStartCmd(deps), newDaemonStatusCmd(deps), newDaemonStopCmd(deps), newDaemonRestartCmd(deps), newDaemonRecoverCmd(deps), newDaemonOperationCmd(deps))
+	command.AddCommand(newDaemonServeCmd(inv, deps), newDaemonStartCmd(inv, deps), newDaemonStatusCmd(inv, deps), newDaemonStopCmd(inv, deps), newDaemonRestartCmd(inv, deps), newDaemonRecoverCmd(inv, deps), newDaemonOperationCmd(inv, deps))
 	return command
 }
 
-func newDaemonServeCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonServeCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var listenAddress, stateFile string
 	var quiet, managedStartFlag bool
 	command := &cobra.Command{
@@ -578,7 +580,7 @@ with your own cloudflared or ngrok credentials — see hub/README.md.`,
 			pinnedStatePath := stateFile
 			managedStart := managedStartFlag || stateFile != ""
 			if stateFile == "" {
-				resolved, resolveErr := daemonStatePath(projectsRoot)
+				resolved, resolveErr := daemonStatePath(inv.projectsRoot)
 				if resolveErr != nil {
 					return resolveErr
 				}
@@ -601,7 +603,7 @@ with your own cloudflared or ngrok credentials — see hub/README.md.`,
 					return err
 				}
 			}
-			return serveDashboard(command, deps, listenAddress, daemon.Store{Path: stateFile}, ownerToken, quiet, managedStart)
+			return serveDashboard(inv, command, deps, listenAddress, daemon.Store{Path: stateFile}, ownerToken, quiet, managedStart)
 		},
 	}
 	command.Flags().StringVar(&listenAddress, "listen", daemonDefaultListen, "loopback listen address")
@@ -624,7 +626,7 @@ func reportPinnedLifecycleState(out io.Writer, pinned, resolved string) {
 	_, _ = fmt.Fprintf(out, "daemon lifecycle state is pinned to %s by an explicit --lifecycle-state; an unpinned daemon would resolve %s\n", pinned, resolved)
 }
 
-func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonStartCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var listen, format string
 	var jsonOut, forceDetached bool
 	command := &cobra.Command{Use: "start", Short: "Start the local WB daemon, or hand off to the installed WB binary", Args: cobra.NoArgs,
@@ -636,7 +638,7 @@ func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon start: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, projectsRoot).StartWithProgress(command.Context(), listen, progress, forceDetached)
+			result, err := newDaemonController(deps, inv.projectsRoot).StartWithProgress(command.Context(), listen, progress, forceDetached)
 			if err != nil {
 				return err
 			}
@@ -649,7 +651,7 @@ func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonStatusCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonStatusCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut bool
 	command := &cobra.Command{Use: "status", Short: "Report which home owns the local daemon, its provenance, and its reachability", Args: cobra.NoArgs,
@@ -658,7 +660,7 @@ func newDaemonStatusCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			result, err := newDaemonController(deps, projectsRoot).Status(command.Context())
+			result, err := newDaemonController(deps, inv.projectsRoot).Status(command.Context())
 			if err != nil {
 				return err
 			}
@@ -669,7 +671,7 @@ func newDaemonStatusCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonStopCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut bool
 	command := &cobra.Command{Use: "stop", Short: "Drain and stop the local WB daemon", Args: cobra.NoArgs,
@@ -678,7 +680,7 @@ func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			result, err := newDaemonController(deps, projectsRoot).Stop(command.Context())
+			result, err := newDaemonController(deps, inv.projectsRoot).Stop(command.Context())
 			if err != nil {
 				return err
 			}
@@ -709,7 +711,7 @@ func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonRestartCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut, ifRunning, forceDetached bool
 	command := &cobra.Command{Use: "restart", Short: "Drain, hand off the durable queue, and start the installed WB daemon", Args: cobra.NoArgs,
@@ -721,7 +723,7 @@ func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress, forceDetached)
+			result, err := newDaemonController(deps, inv.projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress, forceDetached)
 			if err != nil {
 				return err
 			}
@@ -750,7 +752,7 @@ type daemonRecoveryResult struct {
 
 var errDaemonLifecycleBusy = errors.New("daemon lifecycle transition is already in progress")
 
-func newDaemonRecoverCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonRecoverCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var apply bool
 	var format string
 	var jsonOut bool
@@ -771,7 +773,7 @@ interrupted start or drain becomes stopped. It never deletes an active lock path
 			if err != nil {
 				return usageError(err.Error())
 			}
-			result, err := newDaemonController(deps, projectsRoot).RecoverLifecycleLock(command.Context(), apply)
+			result, err := newDaemonController(deps, inv.projectsRoot).RecoverLifecycleLock(command.Context(), apply)
 			if err != nil {
 				return err
 			}
@@ -2345,8 +2347,8 @@ func daemonProcessStartedAt(pid int) time.Time {
 	return started
 }
 
-func serveDashboard(command *cobra.Command, deps daemonDependencies, address string, store daemon.Store, ownerToken string, quiet, managedStart bool) (serveErr error) {
-	location, err := resolveDaemonLocation(projectsRoot)
+func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependencies, address string, store daemon.Store, ownerToken string, quiet, managedStart bool) (serveErr error) {
+	location, err := resolveDaemonLocation(inv.projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -2360,12 +2362,12 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		}
 		return fmt.Errorf("listen for WB daemon on %s: %w", address, err)
 	}
-	provenance, err := newDaemonController(deps, projectsRoot).provenance()
+	provenance, err := newDaemonController(deps, inv.projectsRoot).provenance()
 	if err != nil {
 		_ = listener.Close()
 		return err
 	}
-	controller := newDaemonController(deps, projectsRoot)
+	controller := newDaemonController(deps, inv.projectsRoot)
 	releaseState, err := controller.stateLock()
 	if err != nil {
 		_ = listener.Close()
@@ -2423,7 +2425,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		return err
 	}
 	releaseState()
-	localListener, err := listenDaemonLocal(projectsRoot)
+	localListener, err := listenDaemonLocal(inv.projectsRoot)
 	if err != nil {
 		_ = listener.Close()
 		return err
@@ -2434,13 +2436,13 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_ = listener.Close()
 		return fmt.Errorf("resolve daemon raw-execution policy: %w", err)
 	}
-	operationsDirectory, err := daemon.OperationsDir(projectsRoot)
+	operationsDirectory, err := daemon.OperationsDir(inv.projectsRoot)
 	if err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("resolve daemon operation store: %w", err)
 	}
-	queue, err := daemon.NewService(projectsRoot, operationsDirectory, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
-		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, projectsRoot)
+	queue, err := daemon.NewService(inv.projectsRoot, operationsDirectory, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
+		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, inv.projectsRoot)
 	})
 	if err != nil {
 		_ = listener.Close()
@@ -2504,7 +2506,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// it never blocks the daemon from serving everything else.
 	// daemonStartLogPath is the cross-platform accessor (daemonLogPath is
 	// !darwin-only; darwin's launchd unit owns a fixed, home-derived path).
-	logPath, _ := daemonStartLogPath(projectsRoot)
+	logPath, _ := daemonStartLogPath(inv.projectsRoot)
 	// The peers read API is mounted unconditionally — with or without a hub
 	// section — per peer-connectivity#req:peers-api's "mounted...on every
 	// node": a laptop-only install answers "no downstream peers" instead of
@@ -2516,7 +2518,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
-		ProjectsRoot: projectsRoot, Version: collectVersion().Version,
+		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
 		Mounts: mount.handlers(), Hub: mount.hubHealth(), LogPath: logPath,
 		Peers: peersHandler,
@@ -2529,7 +2531,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// TCP dashboard listener (peer-connectivity#req:admin-requires-owner-
 	// credential).
 	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
-	fileBridge, err := newDaemonFileBridgeServer(projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
+	fileBridge, err := newDaemonFileBridgeServer(inv.projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("prepare daemon file bridge: %w", err)
@@ -2538,7 +2540,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
 	queue.StartLeaseRecovery(ctx)
-	if err := startRepositoryEventReceiver(ctx, projectsRoot, hubConfigPath(), command.ErrOrStderr()); err != nil {
+	if err := startRepositoryEventReceiver(ctx, inv.projectsRoot, hubConfigPath(), command.ErrOrStderr()); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "repository event receiver disabled:", err)
 	}
 	go func() {

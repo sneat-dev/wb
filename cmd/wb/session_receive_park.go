@@ -43,11 +43,11 @@ func defaultSessionReceiveParkDependencies() sessionReceiveParkDependencies {
 	}
 }
 
-func newSessionReceiveParkCmd() *cobra.Command {
-	return newSessionReceiveParkCmdWithDeps(defaultSessionReceiveParkDependencies())
+func newSessionReceiveParkCmd(inv *invocation) *cobra.Command {
+	return newSessionReceiveParkCmdWithDeps(inv, defaultSessionReceiveParkDependencies())
 }
 
-func newSessionReceiveParkCmdWithDeps(deps sessionReceiveParkDependencies) *cobra.Command {
+func newSessionReceiveParkCmdWithDeps(inv *invocation, deps sessionReceiveParkDependencies) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "receive-park",
@@ -72,12 +72,12 @@ attached to that successor. Private continuation material is never printed.`,
 			if err != nil {
 				return fmt.Errorf("load validated local remote.machine for parked-session receive: %w", err)
 			}
-			store, err := deps.store(projectsRoot)
+			store, err := deps.store(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
 			result, err := deps.receive(command.Context(), sessionparkreceive.Options{
-				Store: store, ProjectsRoot: projectsRoot, LocalMachine: machine, RawEnvelope: raw,
+				Store: store, ProjectsRoot: inv.projectsRoot, LocalMachine: machine, RawEnvelope: raw,
 			})
 			if err != nil {
 				return err

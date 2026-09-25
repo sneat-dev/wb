@@ -35,8 +35,8 @@ import (
 // worktree straight past the guard.
 //
 // Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
-func refuseLinkedWorktrees(worktrees []string) error {
-	store, err := streams.Open(projectsRoot)
+func refuseLinkedWorktrees(inv *invocation, worktrees []string) error {
+	store, err := streams.Open(inv.projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -59,17 +59,17 @@ func refuseLinkedWorktrees(worktrees []string) error {
 // and the land verbs are the ones that actually push. They are addressed by a
 // receipt, so the worktrees to guard are read out of it. A receipt WB cannot
 // read is not a reason to skip the guard — it is a reason to say so and stop.
-func refuseLinkedReceiptWorktrees(receiptPath string) error {
+func refuseLinkedReceiptWorktrees(inv *invocation, receiptPath string) error {
 	worktrees, err := worktreeMergeReceiptWorktrees(receiptPath)
 	if err != nil {
 		// A path that is a worktree rather than a receipt is the documented
 		// second form of the argument; guard it directly.
 		if info, statErr := os.Stat(receiptPath); statErr == nil && info.IsDir() {
-			return refuseLinkedWorktrees([]string{receiptPath})
+			return refuseLinkedWorktrees(inv, []string{receiptPath})
 		}
 		return err
 	}
-	return refuseLinkedWorktrees(worktrees)
+	return refuseLinkedWorktrees(inv, worktrees)
 }
 
 // worktreeMergeReceiptWorktrees reads every source and candidate worktree a
@@ -170,8 +170,8 @@ var landingSurface = map[string]string{
 // resolves them from the open streams that hold this repository. It runs before
 // any GitHub call: a refusal that has to reach the network first is a refusal
 // that fails differently when the network does.
-func refuseLinkedRepositoryWorktrees(repository string) error {
-	store, err := streams.Open(projectsRoot)
+func refuseLinkedRepositoryWorktrees(inv *invocation, repository string) error {
+	store, err := streams.Open(inv.projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -197,7 +197,7 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 		// Outside every stream a hand-written go.work is still a live link, and
 		// it is the signal stream state cannot see. Guard every WB worktree of
 		// this repository directly.
-		return refuseLinkedWorktreesOfRepository(repository)
+		return refuseLinkedWorktreesOfRepository(inv, repository)
 	}
 	worktrees := make([]string, 0, len(stream.Members)+len(stream.LinkedConsumers))
 	for _, member := range stream.Members {
@@ -214,7 +214,7 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 			worktrees = append(worktrees, consumer.Worktree)
 		}
 	}
-	return refuseLinkedWorktrees(worktrees)
+	return refuseLinkedWorktrees(inv, worktrees)
 }
 
 // refuseLinkedWorktreesOfRepository guards a repository that belongs to no
@@ -226,9 +226,9 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 // there is — and skipping the guard because the first is empty is exactly the
 // "I could not tell" spelled as "there is no link" that this file opens by
 // forbidding.
-func refuseLinkedWorktreesOfRepository(repository string) error {
+func refuseLinkedWorktreesOfRepository(inv *invocation, repository string) error {
 	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: inv.projectsRoot,
 		Filter:       repository,
 	})
 	if err != nil {
@@ -240,5 +240,5 @@ func refuseLinkedWorktreesOfRepository(repository string) error {
 			paths = append(paths, entry.WorktreeDir)
 		}
 	}
-	return refuseLinkedWorktrees(paths)
+	return refuseLinkedWorktrees(inv, paths)
 }

@@ -913,7 +913,7 @@ func TestTryAutoReleaseFailedWhenUnreachable(t *testing.T) {
 }
 
 func TestWorktreeCreateHasNoClaimFlag(t *testing.T) {
-	flag := newWorktreeCreateCmd().Flags().Lookup("no-claim")
+	flag := newWorktreeCreateCmd(&invocation{}).Flags().Lookup("no-claim")
 	if flag == nil {
 		t.Fatal("newWorktreeCreateCmd() has no --no-claim flag")
 	}
@@ -1007,8 +1007,6 @@ func TestWorktreeCreateCLINoClaimKeepsPlainJSONArray(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
 	prompt := writeOriginalPromptFixture(t, "no-claim original request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
@@ -1040,8 +1038,6 @@ func TestWorktreeAbortCLIDiscardedRunsAutoReleaseWithoutBreakingSuccess(t *testi
 	projects := setUpRenameCLIFixture(t)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
 	prompt := writeOriginalPromptFixture(t, "abort discarded original request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-discard", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {

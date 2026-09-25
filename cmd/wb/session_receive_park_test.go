@@ -39,11 +39,10 @@ func TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt(t *testing.T)
 			}, nil
 		},
 	}
-	command := newSessionReceiveParkCmdWithDeps(deps)
+	command := newSessionReceiveParkCmdWithDeps(&invocation{projectsRoot: "/projects"}, deps)
 	command.SetIn(bytes.NewReader(raw))
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
-	projectsRoot = "/projects"
 	if err := command.ExecuteContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +59,7 @@ func TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt(t *testing.T)
 
 func TestSessionReceiveParkRejectsOversizeBeforeDependencies(t *testing.T) {
 	called := false
-	command := newSessionReceiveParkCmdWithDeps(sessionReceiveParkDependencies{
+	command := newSessionReceiveParkCmdWithDeps(&invocation{}, sessionReceiveParkDependencies{
 		localMachine: func() (string, error) { called = true; return "", nil },
 	})
 	command.SetIn(bytes.NewReader(bytes.Repeat([]byte("x"), sessionpark.MaxEnvelopeBytes+1)))
@@ -77,7 +76,7 @@ func TestSessionReceiveParkJSONDoesNotDiscloseContinuation(t *testing.T) {
 	raw := testReceiveParkEnvelope(t, secret)
 	request, _ := sessionpark.DecodeEnvelope(raw)
 	result := sessionparkreceive.Result{ResumeID: request.Request.ResumeID, Phase: sessionparkreceive.PhaseCompleted, Receipt: &sessionpark.Receipt{SuccessorWBSessionID: request.Request.SuccessorWBSessionID}}
-	command := newSessionReceiveParkCmdWithDeps(sessionReceiveParkDependencies{
+	command := newSessionReceiveParkCmdWithDeps(&invocation{}, sessionReceiveParkDependencies{
 		localMachine: func() (string, error) { return "target", nil },
 		store:        func(string) (sessionpark.TargetStore, error) { return sessionpark.NewTargetStore(t.TempDir()), nil },
 		receive: func(context.Context, sessionparkreceive.Options) (sessionparkreceive.Result, error) {

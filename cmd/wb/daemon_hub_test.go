@@ -78,9 +78,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
@@ -97,7 +95,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -348,9 +346,7 @@ func TestEnsureLocalEnrollmentSkipsAnAlreadyResolvableCredential(t *testing.T) {
 // `wb daemon status` gained.
 func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 	root := daemonTestRoot(t)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
@@ -358,7 +354,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 
 	run := func(t *testing.T, args ...string) string {
 		t.Helper()
-		command := newDaemonStatusCmd(deps)
+		command := newDaemonStatusCmd(&invocation{projectsRoot: projectsRoot}, deps)
 		var output bytes.Buffer
 		command.SetOut(&output)
 		command.SetArgs(args)

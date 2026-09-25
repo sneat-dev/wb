@@ -30,27 +30,23 @@ const (
 	exitUsage    = 2 // the invocation was rejected before any work started
 )
 
-var (
-	projectsRoot string
-)
-
 // invocation carries the mutable state one run()/runWithStdin() call reads
-// and writes, as opposed to the package-level `var` block above (#733): a
-// real CLI process calls run() exactly once, so package-level globals never
-// raced there, but many cmd/wb tests call run()/runWithStdin() directly with
+// and writes, in place of package-level `var` globals (#733): a real CLI
+// process calls run() exactly once, so package-level globals never raced
+// there, but many cmd/wb tests call run()/runWithStdin() directly with
 // t.Parallel(), and every such call shared the same package-level storage —
 // a genuine data race the race detector catches (issue #733). Building one
 // *invocation per call and closing over it while constructing the command
 // tree (newRootCmdFor below) removes the shared mutable state.
 //
-// commandStarted, extraOrgs, nonInteractive and filterFlag have moved out of
-// the package-level block above; projectsRoot follows in a later PR in this
-// same sequence (task-5, spec/plans/coverage-to-100) — it will bind its
-// persistent flag directly to a field on *invocation instead of to the
-// package-level var, which is why this seam builds the invocation before the
-// command tree rather than after: a flag's bound target has to exist when
+// commandStarted, extraOrgs, nonInteractive, filterFlag and projectsRoot
+// have all moved off package-level globals onto this struct: it binds every
+// persistent flag directly to a field here instead of to a package-level
+// var, which is why this seam builds the invocation before the command tree
+// rather than after — a flag's bound target has to exist when
 // PersistentFlags().XxxVar(&target, ...) runs, during tree construction, not
-// later when the tree executes.
+// later when the tree executes. cmd/wb/noglobals_test.go statically enforces
+// that no new package-level flag-bound global reappears here.
 type invocation struct {
 	// commandStarted records that cobra accepted the invocation and began
 	// running a command. See the PersistentPreRunE in newRootCmdFor.
@@ -64,6 +60,9 @@ type invocation struct {
 	// filterFlag holds --filter: only repos whose org/name contains this
 	// substring.
 	filterFlag string
+	// projectsRoot holds --projects-root: the root dir containing
+	// {host}/{org}/{repo} clones.
+	projectsRoot string
 }
 
 // defaultProjectsRoot is the root a command uses when --projects-root is not
@@ -118,9 +117,8 @@ even when a terminal is attached.`
 // newRootCmd builds the command tree for callers that only inspect it (help
 // text, subcommand paths, flag matrices) rather than execute it through
 // runWithStdin. It is the ~50 existing test call sites' entry point, and
-// stays a zero-argument constructor so none of them need to change once the
-// last package-level global (projectsRoot) moves onto *invocation too: it
-// hands newRootCmdFor a throwaway invocation that is never read back.
+// stays a zero-argument constructor: it hands newRootCmdFor a throwaway
+// invocation that is never read back.
 func newRootCmd() *cobra.Command {
 	return newRootCmdFor(&invocation{})
 }
@@ -156,7 +154,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			// WB_HOME no longer selects anything. Report the ignored value
 			// before any work starts, on stderr, without touching the exit
 			// code — a retired variable must not become a rejected command.
-			warnIgnoredWBHome(cmd)
+			warnIgnoredWBHome(inv, cmd)
 			inv.commandStarted = true
 			id := persistentCommandID(cmd)
 			// `wb version` (including --json) MUST stay side-effect-free
@@ -185,7 +183,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			return nil
 		},
 	}
-	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
+	root.PersistentFlags().StringVar(&inv.projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
 	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
@@ -197,36 +195,36 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	configureRootHelp(root)
 	root.AddCommand(
 		groupedRootCommand(newWorktreeCmd(inv), rootGroupAgent),
-		groupedRootCommand(newCreateCmd(), rootGroupAgent),
+		groupedRootCommand(newCreateCmd(inv), rootGroupAgent),
 		groupedRootCommand(newLandCmd(inv), rootGroupAgent),
-		groupedRootCommand(newPRCmd(), rootGroupAgent),
+		groupedRootCommand(newPRCmd(inv), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(inv), rootGroupAgent),
-		groupedRootCommand(newSessionCmd(), rootGroupAgent),
-		groupedRootCommand(newAgentCmd(), rootGroupAgent),
-		groupedRootCommand(newTaskCmd(), rootGroupAgent),
-		groupedRootCommand(newStreamCmd(), rootGroupChange),
+		groupedRootCommand(newSessionCmd(inv), rootGroupAgent),
+		groupedRootCommand(newAgentCmd(inv), rootGroupAgent),
+		groupedRootCommand(newTaskCmd(inv), rootGroupAgent),
+		groupedRootCommand(newStreamCmd(inv), rootGroupChange),
 		groupedRootCommand(newStatusCmd(inv), rootGroupFleet),
 		groupedRootCommand(newFleetCmd(inv), rootGroupFleet),
 		groupedRootCommand(newSyncCmd(inv), rootGroupFleet),
-		groupedRootCommand(newSyncReportCmd(), rootGroupFleet),
+		groupedRootCommand(newSyncReportCmd(inv), rootGroupFleet),
 		groupedRootCommand(newRepoCmd(inv), rootGroupFleet),
 		groupedRootCommand(newCoverageCmd(inv), rootGroupQuality),
 		groupedRootCommand(newVerifyCmd(inv), rootGroupQuality),
 		groupedRootCommand(newCheckCmd(inv), rootGroupQuality),
 		groupedRootCommand(newDeadcodeCmd(), rootGroupQuality),
-		groupedRootCommand(newDiskCmd(), rootGroupMaintain),
+		groupedRootCommand(newDiskCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newCICmd(inv), rootGroupQuality),
 		groupedRootCommand(newWaitCmd(inv), rootGroupAgent),
 		groupedRootCommand(newHooksCmd(inv), rootGroupQuality),
 		groupedRootCommand(newDepsCmd(inv), rootGroupChange),
 		groupedRootCommand(newMigrateCmd(inv), rootGroupChange),
 		groupedRootCommand(newRunCmd(inv), rootGroupChange),
-		groupedRootCommand(newWorkerCmd(defaultDaemonDependencies()), rootGroupMaintain),
+		groupedRootCommand(newWorkerCmd(inv, defaultDaemonDependencies()), rootGroupMaintain),
 		groupedRootCommand(newDashboardCmd(inv), rootGroupFleet),
-		groupedRootCommand(newDaemonCmd(), rootGroupMaintain),
+		groupedRootCommand(newDaemonCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(inv), rootGroupMaintain),
-		groupedRootCommand(newPeersCmd(), rootGroupMaintain),
-		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
+		groupedRootCommand(newPeersCmd(inv), rootGroupMaintain),
+		groupedRootCommand(newLayoutCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
 		groupedRootCommand(newInstallCmd(), rootGroupLearn),
@@ -397,7 +395,7 @@ func main() {
 type processHandlers struct {
 	privateLauncher func(args []string) int
 	ownerCLI        func(args []string, deps agents.OwnerDeps) int
-	agentRemote     func(stdin io.Reader, stdout, stderr io.Writer) int
+	agentRemote     func(inv *invocation, stdin io.Reader, stdout, stderr io.Writer) int
 	// secureGitHelper resolves one hidden argv value to its helper. The second
 	// result reports whether the argument named a helper at all; an unknown
 	// value falls through to cobra, exactly as the previous if-chain did.
@@ -452,6 +450,10 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // before any child Git hook is spawned. It returns the documented exit code
 // rather than exiting, which is what keeps this routing testable in-process.
 func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// A fresh invocation for the hidden pre-cobra protocol paths below: none of
+	// them parse --projects-root, so this mirrors the zero-value the retired
+	// package-level global always held at this point too.
+	inv := &invocation{}
 	// Both the first token and the argument tail are derived once, from a
 	// length-checked slice: `wb` with no arguments at all is a valid invocation
 	// that must reach cobra, not a slice-bounds panic.
@@ -471,9 +473,9 @@ func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Read
 		// not a command line: it is handled here so a remote caller can never
 		// reach a flag parser, and so its request cannot be reinterpreted as
 		// shell text.
-		return handlers.agentRemote(stdin, stdout, stderr)
+		return handlers.agentRemote(inv, stdin, stdout, stderr)
 	}
-	installSessionResolver()
+	installSessionResolver(inv)
 	if err := propagateRuntimeWBExecutable(handlers.lookupEnv, handlers.executable, handlers.setEnv); err != nil {
 		_, _ = fmt.Fprintln(stderr, "wb: establish runtime executable for child Git hooks:", err)
 		return exitFindings
@@ -533,7 +535,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	// Keep the in-process test/embedding runner on the same admission and
 	// attribution path as the production main entrypoint. The resolver is
 	// read-only until a command explicitly mutates state.
-	installSessionResolver()
+	installSessionResolver(inv)
 	root := newRootCmdFor(inv)
 	root.SetArgs(args)
 	root.SetIn(stdin)

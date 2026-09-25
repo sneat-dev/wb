@@ -206,9 +206,6 @@ func TestCwWtDaemonManagedServeLifecycle(t *testing.T) {
 	root := cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
 	deps := daemonTestDependencies(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	defer func() { projectsRoot = previousRoot }()
 
 	if err := secureDaemonRuntime(root); err != nil {
 		t.Fatal(err)
@@ -236,7 +233,7 @@ func TestCwWtDaemonManagedServeLifecycle(t *testing.T) {
 		time.Sleep(700 * time.Millisecond)
 		cancel()
 	}()
-	command := newDaemonServeCmd(deps)
+	command := newDaemonServeCmd(&invocation{projectsRoot: root}, deps)
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetContext(ctx)
@@ -274,9 +271,6 @@ func TestCwWtDaemonManagedServeRefusesSupersededOwnership(t *testing.T) {
 	root := cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
 	deps := daemonTestDependencies(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	defer func() { projectsRoot = previousRoot }()
 	if err := secureDaemonRuntime(root); err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +282,7 @@ func TestCwWtDaemonManagedServeRefusesSupersededOwnership(t *testing.T) {
 	if err := (daemon.Store{Path: statePath}).Save(ready); err != nil {
 		t.Fatal(err)
 	}
-	command := newDaemonServeCmd(deps)
+	command := newDaemonServeCmd(&invocation{}, deps)
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetContext(context.Background())

@@ -296,7 +296,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 			resumedActions[repo.Repository] = append([]string(nil), repo.AppliedActions...)
 		}
 	}
-	repos, err := mergePolicyDiscover(projectsRoot, inv.filterFlag, options.owners, options.repositories, options.includeUser)
+	repos, err := mergePolicyDiscover(inv.projectsRoot, inv.filterFlag, options.owners, options.repositories, options.includeUser)
 	if err != nil {
 		return mergePolicyReport{}, err
 	}
@@ -337,7 +337,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 	buildMergePolicyRulesetPlan(ctx, &report)
 	summarizeMergePolicy(&report)
 	if options.apply {
-		path, err := mergePolicyReportPath(options.reportDir)
+		path, err := mergePolicyReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -356,7 +356,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 			return report, err
 		}
 	} else if strings.TrimSpace(options.reportDir) != "" {
-		path, err := mergePolicyReportPath(options.reportDir)
+		path, err := mergePolicyReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -1048,10 +1048,10 @@ func summarizeMergePolicy(report *mergePolicyReport) {
 	}
 }
 
-func mergePolicyReportPath(explicit string) (string, error) {
+func mergePolicyReportPath(inv *invocation, explicit string) (string, error) {
 	dir := strings.TrimSpace(explicit)
 	if dir == "" {
-		home, err := wbhome.EnsureRoot(projectsRoot)
+		home, err := wbhome.EnsureRoot(inv.projectsRoot)
 		if err != nil {
 			return "", err
 		}

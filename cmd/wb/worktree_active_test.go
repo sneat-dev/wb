@@ -154,9 +154,6 @@ func TestWorktreeActiveCommandWritesStaleReportThenReturnsFinding(t *testing.T) 
 				return activeProvider{entries: []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "vm", PublishedAt: now.Add(-48 * time.Hour)}}}}, nil
 			}},
 	}
-	oldProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = oldProjectsRoot })
 	command := newWorktreeActiveCmdWithDeps(&invocation{}, deps)
 	var output bytes.Buffer
 	command.SetOut(&output)

@@ -91,7 +91,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			if options.changed {
 				return runChangedCoverage(cmd, path, options)
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}
@@ -210,7 +210,7 @@ func newVerifyCmd(inv *invocation) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}
@@ -275,7 +275,7 @@ func newCheckCmd(inv *invocation) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}

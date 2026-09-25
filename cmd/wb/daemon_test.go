@@ -36,10 +36,8 @@ func TestDaemonRequiresLoopbackListener(t *testing.T) {
 func TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
-	command := newDaemonStatusCmd(deps)
+	projectsRoot := root
+	command := newDaemonStatusCmd(&invocation{projectsRoot: projectsRoot}, deps)
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{"--json"})
@@ -224,15 +222,12 @@ func TestDaemonRecoverReturnsJSONForActiveTransitionAndApplyRefuses(t *testing.T
 		t.Fatal(err)
 	}
 	defer release()
-	previousRoot := projectsRoot
-	projectsRoot = root
-	defer func() { projectsRoot = previousRoot }()
 
 	for _, test := range []struct {
 		args    []string
 		wantErr bool
 	}{{args: []string{"--json"}}, {args: []string{"--apply", "--json"}, wantErr: true}} {
-		command := newDaemonRecoverCmd(deps)
+		command := newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps)
 		var output bytes.Buffer
 		command.SetOut(&output)
 		command.SetErr(io.Discard)
@@ -757,10 +752,8 @@ func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 			if _, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen); err != nil {
 				t.Fatal(err)
 			}
-			previousRoot := projectsRoot
-			projectsRoot = root
-			t.Cleanup(func() { projectsRoot = previousRoot })
-			command := newDaemonRestartCmd(deps)
+			projectsRoot := root
+			command := newDaemonRestartCmd(&invocation{projectsRoot: projectsRoot}, deps)
 			var stdout, stderr bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)

@@ -28,9 +28,6 @@ func TestManagedServeRecordsSupervisorAndSurvivesStop(t *testing.T) {
 	deps.getppid = func() int { return 1 }
 	env := map[string]string{"INVOCATION_ID": "managed-invocation", "SYSTEMD_EXEC_PID": "4242"}
 	deps.getenv = func(name string) string { return env[name] }
-	previousRoot := projectsRoot
-	projectsRoot = root
-	defer func() { projectsRoot = previousRoot }()
 	if err := secureDaemonRuntime(root); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +42,7 @@ func TestManagedServeRecordsSupervisorAndSurvivesStop(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 		cancel()
 	}()
-	command := newDaemonServeCmd(deps)
+	command := newDaemonServeCmd(&invocation{projectsRoot: root}, deps)
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetContext(ctx)

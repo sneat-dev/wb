@@ -45,11 +45,11 @@ func defaultSessionReceiveDependencies() sessionReceiveDependencies {
 	}
 }
 
-func newSessionReceiveCmd() *cobra.Command {
-	return newSessionReceiveCmdWithDeps(defaultSessionReceiveDependencies())
+func newSessionReceiveCmd(inv *invocation) *cobra.Command {
+	return newSessionReceiveCmdWithDeps(inv, defaultSessionReceiveDependencies())
 }
 
-func newSessionReceiveCmdWithDeps(deps sessionReceiveDependencies) *cobra.Command {
+func newSessionReceiveCmdWithDeps(inv *invocation, deps sessionReceiveDependencies) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "receive",
@@ -77,12 +77,12 @@ Predecessor custody remains a source-side acknowledgement transaction.`,
 			if err != nil {
 				return fmt.Errorf("load validated local remote.machine for session receive: %w", err)
 			}
-			store, err := deps.store(projectsRoot)
+			store, err := deps.store(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
 			result, err := deps.receive(command.Context(), sessionreceive.Options{
-				Store: store, ProjectsRoot: projectsRoot, LocalMachine: machine, RawRequest: raw,
+				Store: store, ProjectsRoot: inv.projectsRoot, LocalMachine: machine, RawRequest: raw,
 			})
 			if err != nil {
 				return err

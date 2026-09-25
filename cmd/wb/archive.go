@@ -68,7 +68,7 @@ away as a bare count.`,
 				return err
 			}
 			outcome, err := archiveprune.Clean(cmd.Context(), archiveprune.Options{
-				ProjectsRoot:    projectsRoot,
+				ProjectsRoot:    inv.projectsRoot,
 				Filter:          inv.filterFlag,
 				Apply:           apply,
 				DeleteUntracked: deleteUntracked,

@@ -99,7 +99,7 @@ wb worktree gc --format json`,
 			progress := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Tasks:        args,
 				Filter:       inv.filterFlag,
 				Base:         base,

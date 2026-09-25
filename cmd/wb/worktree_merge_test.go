@@ -595,6 +595,86 @@ type cliWorktreeMergeFixture struct {
 	sources      []worktrees.CreateResult
 }
 
+// TestWorktreeMergeRevertLandsAForwardRevertAfterASuccessfulPrepare proves
+// `wb worktree merge revert` reaches its land call (worktree_merge.go:590)
+// after a successful PrepareWorktreeMergeRevert, not just the missing- or
+// malformed-receipt refusals every other revert test exercises. It fabricates
+// a "landed" receipt by fast-forwarding the canonical clone's target branch
+// to a real candidate commit, so PreviousTargetSHA/LandingSHA name real,
+// diffable commits, exactly as a genuinely landed merge would.
+func TestWorktreeMergeRevertLandsAForwardRevertAfterASuccessfulPrepare(t *testing.T) {
+	// Built directly, not through newCLIWorktreeMergeFixture: that helper
+	// writes its own receipt for this exact repository+target lane, and a
+	// second PrepareWorktreeMerge call for the same lane is refused as an
+	// invalid resume once one exists.
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	seed := filepath.Join(root, "seed")
+	remote := filepath.Join(root, "remote.git")
+	canonical := filepath.Join(projectsRoot, "acme", "app")
+	writeCLIWorktreeFile(t, filepath.Join(seed, "initial.txt"), "initial\n")
+	runCLIWorktreeGit(t, seed, "init", "-b", "main")
+	runCLIWorktreeGit(t, seed, "config", "user.name", "WB Test")
+	runCLIWorktreeGit(t, seed, "config", "user.email", "wb@example.test")
+	runCLIWorktreeGit(t, seed, "add", "-A")
+	runCLIWorktreeGit(t, seed, "commit", "-m", "initial")
+	runCLIWorktreeGit(t, root, "clone", "--bare", seed, remote)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runCLIWorktreeGit(t, root, "clone", remote, canonical)
+	runCLIWorktreeGit(t, canonical, "config", "user.name", "WB Test")
+	runCLIWorktreeGit(t, canonical, "config", "user.email", "wb@example.test")
+	fixture := cliWorktreeMergeFixture{projectsRoot: projectsRoot, canonical: canonical}
+	source := createCLIWorktreeSource(t, fixture, "revert-source", "feature/revert-source", "revert-source.txt", "revert-source\n")
+
+	previousTargetSHA := strings.TrimSpace(runCLIWorktreeGit(t, canonical, "rev-parse", "main"))
+
+	receipt, err := orchestrate.PrepareWorktreeMerge(context.Background(), orchestrate.WorktreeMergePrepareOptions{
+		ProjectsRoot: projectsRoot, Sources: []string{source.WorktreeDir}, Target: "main",
+		Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate landing: fast-forward the canonical clone's target to the
+	// prepared candidate and push it, so the candidate is really reachable.
+	runCLIWorktreeGit(t, canonical, "checkout", "main")
+	runCLIWorktreeGit(t, canonical, "reset", "--hard", receipt.Candidate.SHA)
+	runCLIWorktreeGit(t, canonical, "push", "origin", "main")
+
+	receipt.Status = orchestrate.WorktreeMergeLanded
+	receipt.PreviousTargetSHA = previousTargetSHA
+	receipt.LandingSHA = receipt.Candidate.SHA
+	contents, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = append(contents, '\n')
+	if err := os.WriteFile(receipt.ReceiptPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := newWorktreeMergeRevertCmd(&invocation{projectsRoot: fixture.projectsRoot})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--format", "json", receipt.ReceiptPath})
+	// This environment has no real `gh`, so the land phase this test
+	// fabricates is refused once it reaches GitHub evidence - what matters is
+	// that PrepareWorktreeMergeRevert succeeded and the land call was
+	// actually reached (the receipt's phase advances from "revert" prepare
+	// to "land"), not that the whole journey completes.
+	if err := command.Execute(); err == nil {
+		t.Fatal("revert land without a real gh must be refused")
+	}
+	if !strings.Contains(stdout.String(), `"phase": "land"`) {
+		t.Fatalf("revert stdout = %q, want the land call to have been reached", stdout.String())
+	}
+}
+
 func newCLIWorktreeMergeFixture(t *testing.T, sourceCount int) cliWorktreeMergeFixture {
 	t.Helper()
 	root := t.TempDir()

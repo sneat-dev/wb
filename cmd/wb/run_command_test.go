@@ -68,8 +68,9 @@ func TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess(t *testing.
 	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	inv := &invocation{extraOrgs: []string{"target-org-9f3"}}
-	if _, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRunCmd(inv) },
+	projectsRoot := t.TempDir()
+	inv := &invocation{projectsRoot: projectsRoot, extraOrgs: []string{"target-org-9f3"}}
+	if _, _, err := cwCovExec(t, projectsRoot, func() *cobra.Command { return newRunCmd(inv) },
 		"refresh-ci", "--config", configPath); err != nil {
 		t.Fatalf("wb run refresh-ci: %v", err)
 	}
@@ -164,9 +165,6 @@ func TestRunIdempotencyKeyRequiresAsyncCommandMode(t *testing.T) {
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	t.Chdir(root)
 
 	deps := daemonTestDependencies(t, root)
@@ -174,7 +172,7 @@ func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}
-	command := newDaemonOperationSubmitCmd(deps)
+	command := newDaemonOperationSubmitCmd(&invocation{}, deps)
 	command.SetArgs([]string{"--", "/bin/echo", "hello"})
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)

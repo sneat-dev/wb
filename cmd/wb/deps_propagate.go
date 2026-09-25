@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newDepsPropagateCmd() *cobra.Command {
+func newDepsPropagateCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "propagate",
 		Short: "Build consumers against a library's working tree, or publish and bump at the end",
@@ -27,7 +27,7 @@ every affected repository before anything is published.
 The remote half — publish, then bump exactly the repositories the stream linked
 — is the end-of-stream wave and is not part of this command yet.`,
 	}
-	command.AddCommand(newDepsPropagateLocalCmd())
+	command.AddCommand(newDepsPropagateLocalCmd(inv))
 	setDiscoveryTerms(command, "propagate local remote link library consumer unpublished working tree stream")
 	return command
 }
@@ -41,7 +41,7 @@ type depsPropagateLocalOptions struct {
 	timeout   time.Duration
 }
 
-func newDepsPropagateLocalCmd() *cobra.Command {
+func newDepsPropagateLocalCmd(inv *invocation) *cobra.Command {
 	options := depsPropagateLocalOptions{}
 	command := &cobra.Command{
 		Use:   "local [library-worktree]",
@@ -121,11 +121,11 @@ wb deps propagate local --to /path/to/app --undo`,
 			if len(options.consumers) == 0 {
 				return fmt.Errorf("at least one --to <consumer-worktree> is required")
 			}
-			store, err := streams.Open(projectsRoot)
+			store, err := streams.Open(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
-			home, err := wbhome.Root(projectsRoot)
+			home, err := wbhome.Root(inv.projectsRoot)
 			if err != nil {
 				return err
 			}

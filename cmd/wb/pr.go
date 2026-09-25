@@ -12,17 +12,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newPRCmd() *cobra.Command {
+func newPRCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "pr",
 		Short: "Land and inspect pull requests as one deterministic operation",
 	}
-	command.AddCommand(newPRCreateCmd())
-	command.AddCommand(newPRLandCmd())
+	command.AddCommand(newPRCreateCmd(inv))
+	command.AddCommand(newPRLandCmd(inv))
 	return command
 }
 
-func newPRLandCmd() *cobra.Command {
+func newPRLandCmd(inv *invocation) *cobra.Command {
 	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile string
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
@@ -138,16 +138,16 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			// GitHub read: a worktree of this repository still building against
 			// an unpublished tree makes every check observation meaningless.
 			progress.live.update("pr land: local link preflight: " + repository + ": started")
-			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+			if err := refuseLinkedRepositoryWorktrees(inv, repository); err != nil {
 				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
 				return err
 			}
 			progress.live.update("pr land: local link preflight: " + repository + ": completed")
-			events, streamName := landingEventLog(repository)
+			events, streamName := landingEventLog(inv, repository)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:          repository,
 				PullRequest:         number,
-				ProjectsRoot:        projectsRoot,
+				ProjectsRoot:        inv.projectsRoot,
 				Keep:                keep,
 				ApprovedBy:          approvedBy,
 				ReviewComment:       reviewComment,
@@ -166,7 +166,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				OperationProgress:   progress.operationReporter("pr land"),
 				Events:              events,
 				Stream:              streamName,
-				Lane:                landingLaneGuardRequest("wb pr land", laneReason, takeOverLane),
+				Lane:                landingLaneGuardRequest(inv, "wb pr land", laneReason, takeOverLane),
 				CheckoutUpdated:     lifecycleCheckoutUpdated(command.ErrOrStderr()),
 			})
 			if err != nil {
@@ -341,8 +341,8 @@ func shortSHAForDisplay(sha string) string {
 // `wb report stream` able to show the landing beside the work that produced it.
 // A landing outside every stream still writes an event — the analytics exist to
 // measure verbs, not only streams — into the fleet log.
-func landingEventLog(repository string) (streams.EventAppender, string) {
-	store, err := streams.Open(projectsRoot)
+func landingEventLog(inv *invocation, repository string) (streams.EventAppender, string) {
+	store, err := streams.Open(inv.projectsRoot)
 	if err != nil {
 		return streams.DiscardEvents{}, ""
 	}

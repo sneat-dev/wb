@@ -69,6 +69,59 @@ func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
 	}
 }
 
+// Every existing "stream join" test in this package is refused before the
+// stream engine is ever built (a bad name, a bad role, a missing --model).
+// This drives a join whose work-log preparation and role succeed, so it
+// reaches newStreamEngine itself, proving inv.projectsRoot threads all the
+// way into the engine's Store/Git/GitHub/Login/Machine wiring.
+func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
+	root := t.TempDir()
+	// WB_PROJECTS_ROOT is deliberately pointed at an empty decoy directory,
+	// not at root: wbhome falls back to this env var for an empty
+	// inv.projectsRoot (internal/wbhome/wbhome.go), so pointing it at root
+	// too would make a dropped/empty invocation (mutation M20) resolve the
+	// same fixture store by accident and this test would never notice.
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(t.TempDir(), "decoy-not-the-fixture-root"))
+	home := filepath.Join(root, ".wb")
+	store := streams.OpenAt(filepath.Join(home, "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name:    "holder",
+		Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleConsumer}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("the exact task request\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"stream", "join", "holder", "acme/newmember",
+		"--projects-root", root,
+		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
+		"--original-prompt-file", prompt,
+		"--format", "json", "--non-interactive",
+	}, &stdout, &stderr)
+	// Whatever the engine's own Join outcome is (it may still refuse for a
+	// repository reason unrelated to work-log preparation or role), the
+	// refusal must not be one of the pre-engine usage checks: those would
+	// mean newStreamEngine itself was never reached.
+	if strings.Contains(stderr.String(), "--model is required") || strings.Contains(stderr.String(), "stream name") || strings.Contains(stderr.String(), "unsupported role") {
+		t.Fatalf("stream join failed before reaching the stream engine: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	// A positive, root-dependent outcome: the engine must have found the
+	// "holder" stream this test seeded under root's own .wb/streams. A wrong
+	// or dropped inv.projectsRoot (e.g. reaching newStreamEngine with
+	// &invocation{}) resolves an empty/real-home store instead, where
+	// "holder" does not exist, and Join fails with streams.ErrNotFound
+	// ("stream not found") rather than any of the refusals above -
+	// mutation M20 (sneat-dev/wb#760 review B5).
+	if strings.Contains(stderr.String(), "stream not found") {
+		t.Fatalf("stream join could not find the fixture's own \"holder\" stream, so it did not use root's .wb/streams: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 // `wb stream status` with no name lists every stream from WB-owned state, and
 // the JSON document on stdout stays parseable.
 func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
@@ -117,7 +170,7 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 // buried persistence field. Status must fail with findings and print the WB
 // verb that safely retries publication.
 func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
-	command := newStreamStatusCmd()
+	command := newStreamStatusCmd(&invocation{})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
@@ -147,7 +200,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("status output = %q, want timestamped historical summary without a live-looking transcript", output)
 	}
 
-	jsonCommand := newStreamStatusCmd()
+	jsonCommand := newStreamStatusCmd(&invocation{})
 	var jsonOut bytes.Buffer
 	jsonCommand.SetOut(&jsonOut)
 	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
@@ -176,7 +229,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("JSON member status = %#v, want separate current and timestamped historical findings", jsonMember)
 	}
 
-	blockedCommand := newStreamStatusCmd()
+	blockedCommand := newStreamStatusCmd(&invocation{})
 	var blockedOut bytes.Buffer
 	blockedCommand.SetOut(&blockedOut)
 	status.Members[0].PullRequestRecovery = ""
@@ -188,7 +241,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
 	}
 
-	unrecordedCommand := newStreamStatusCmd()
+	unrecordedCommand := newStreamStatusCmd(&invocation{})
 	var unrecordedOut bytes.Buffer
 	unrecordedCommand.SetOut(&unrecordedOut)
 	status.Members[0].PullRequest = 242

@@ -365,7 +365,7 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 	// Default dependencies against an empty root.
 	projects := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projects)
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--local-only")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--local-only")
 	if err != nil {
 		t.Fatalf("active --local-only: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 		t.Fatalf("active text stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--format", "json", "--local-only")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--format", "json", "--local-only")
 	if err != nil {
 		t.Fatalf("active json: %v", err)
 	}
@@ -382,12 +382,12 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 	}
 
 	// Without a configured remote the preflight is incomplete: exit 1.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) })
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("active without a remote exit = %d (%v)", code, err)
 	}
 
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--format", "bogus"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus"); err == nil {
 		t.Fatal("active with a bogus format must fail")
 	}
 }
