@@ -985,6 +985,7 @@
             {
               "path": "wb ci wait",
               "flags": [
+                "--check",
                 "--format",
                 "--head",
                 "--interval",
@@ -992,7 +993,8 @@
                 "--pr",
                 "--repo",
                 "--slice",
-                "--target"
+                "--target",
+                "--workflow"
               ],
               "modes": [
                 "Waits one terminating foreground slice for all observed checks on an exact head SHA",
@@ -1000,7 +1002,16 @@
                 "Enumerates classic protection and paginated active branch rules; every mode binds pinned required contexts to the exact-head check-run producer App",
                 "PR mode proves the candidate contains the exact current target and requires a nonempty strict required-status-check policy",
                 "PR mode never gates on current-target CI health and rejects target advance before merge",
-                "Requires an unchanged terminal reread; a checks-bearing terminal set confirms it on a shortened delay (15s default, tunable, at most one shortened reread per terminal episode with churn falling back to the poll cadence), and pending and failed observations exit 1 with pending including exact resume arguments"
+                "Requires an unchanged terminal reread; a checks-bearing terminal set confirms it on a shortened delay (15s default, tunable, at most one shortened reread per terminal episode with churn falling back to the poll cadence), and pending and failed observations exit 1 with pending including exact resume arguments",
+                "--workflow (repeatable, exact GitHub Actions workflow name; workflows sharing a name are all selected) and --check (repeatable, exact name, or a glob where * matches any run of characters including / and everything else is literal -- not path.Match, no ?/[...]/escapes/regex) narrow the wait to a subset of the head's checks; required-check completeness is then evaluated only over the required checks the filter selects, and the JSON result and resume arguments carry the filter (sneat-dev/wb#627)",
+                "An exact --check waits only for that one job -- a still-running sibling job in the same suite, or the whole Actions run stuck on an environment approval, never holds up the wait once the selected job itself is terminal; with several exact patterns every one must match before the wait can pass (sneat-dev/wb#627 B1-R)",
+                "A --check glob or --workflow instead keeps its owning Actions run open while non-terminal, since either could still match a job -- for example one gated by needs: -- that has not registered yet; --workflow always means the whole run",
+                "With several --workflow names, every one must have produced an observed check before the wait can pass, the same completeness rule exact --check patterns already had (sneat-dev/wb#627 M1)",
+                "While --check is active, a still-registering Actions run with no job of its own yet is kept open regardless of ownership, but only among the workflows an active --workflow filter itself allows -- a job under an excluded workflow can never be selected, so its jobless run is dropped rather than held open (sneat-dev/wb#627 M2, minor 1)",
+                "A selected --check or --workflow on a job GitHub reports skipped is pending, not a pass, while the owning Actions run has not itself concluded (the common shape: an earlier job fails and a needs:-gated downstream job reads skipped well before a slow sibling job in the same run finishes) (sneat-dev/wb#627 M3, B1 round 4)",
+                "Once the owning run concludes, a skip is reported failed if the run concluded failure or was cancelled -- including a skip caused by an unrelated sibling job's failure in the same run, not only the selection's own needs: dependency, since WB cannot tell the two apart without evaluating that graph (sneat-dev/wb#627 M3, minor 4)",
+                "A selection where every check is skipping and the owning run has concluded is also reported failed even when the run's own conclusion was not itself a failure -- the common shape of a workflow_run Release job gated on the prior run's success after that run failed (sneat-dev/wb#627 minor 5)",
+                "A filter that selects nothing keeps polling at the normal cadence until a match registers or the slice ends, pending with \"no check matching the filter has registered yet\" -- never a vacuous pass and never a claim the filter can never match"
               ]
             }
           ],
@@ -1024,7 +1035,23 @@
                 "merge-queue PRs fail closed",
                 "required-check policy",
                 "terminal reread",
-                "future optional workflow"
+                "future optional workflow",
+                "narrow the wait to a subset",
+                "never a vacuous pass",
+                "both selected",
+                "including \"/\"",
+                "waits only for that one job",
+                "environment approval",
+                "owning Actions run",
+                "every exact",
+                "another named workflow",
+                "still-registering run",
+                "not automatically",
+                "excluded workflow is dropped",
+                "not passed",
+                "a selection where every check is",
+                "no check matching the filter has registered yet",
+                "Never pass these flags"
               ]
             }
           ],
@@ -1037,7 +1064,8 @@
               "path": "ai/skills/wb-merge/SKILL.md",
               "marker": "# WB merge",
               "examples": [
-                "wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json"
+                "wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json",
+                "wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check \"release-*\" --json"
               ]
             }
           ],
@@ -1046,6 +1074,116 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckGlobFilterSelectsMatchingChecks",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitFilterMatchingNothingDoesNotPass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitFilterFailureInsideSubsetFails",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitFilterResumeArgsCarryFiltersSafelyQuoted",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitBothSpellingsAcceptFilterFlags",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitAllExactCheckPatternsMustMatchBeforePass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckGlobCrossesSlashes",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckExactNameWithBracketIsLiteral",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitAllWorkflowNamesMustMatchBeforePass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitWorkflowWhollySkippedRunFailsNotPasses",
+              "kind": "integration"
+            },
             {
               "path": "cmd/wb/ci_wait_test.go",
               "name": "TestCIWaitResumesForegroundSlicesUntilExactHeadPasses",
@@ -11826,6 +11964,7 @@
             {
               "path": "wb wait checks",
               "flags": [
+                "--check",
                 "--format",
                 "--head",
                 "--interval",
@@ -11833,11 +11972,12 @@
                 "--pr",
                 "--repo",
                 "--slice",
-                "--target"
+                "--target",
+                "--workflow"
               ],
               "modes": [
                 "Runs the identical implementation as `wb ci wait`, which remains available",
-                "Accepts the same flags and produces the same result and exit codes as that command"
+                "Accepts the same flags, including --workflow/--check (sneat-dev/wb#627), and produces the same result and exit codes as that command"
               ]
             }
           ],
@@ -11851,7 +11991,8 @@
               "contains": [
                 "never ten",
                 "detached watcher",
-                "terminal reread"
+                "terminal reread",
+                "narrow the wait to a subset"
               ]
             }
           ],
@@ -11864,7 +12005,8 @@
               "path": "ai/skills/wb-merge/SKILL.md",
               "marker": "# WB merge",
               "examples": [
-                "wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json"
+                "wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json",
+                "wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check \"release-*\" --json"
               ]
             }
           ],
@@ -11881,6 +12023,11 @@
             {
               "path": "cmd/wb/wait_verb_test.go",
               "name": "TestWaitVerbListsEveryKindItCanWaitFor",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitBothSpellingsAcceptFilterFlags",
               "kind": "integration"
             }
           ],

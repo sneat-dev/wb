@@ -93,6 +93,36 @@ new work so the next reader finds the rest of the family.
 Note which is which: `wb wait checks` is the authoritative exact-head receipt
 used as merge evidence. `wb wait pr` reports and is **not** merge evidence.
 
+To wait for one workflow or job (a release, a deploy, a single job) instead of
+every check on the head, add `--workflow <name>` or `--check <pattern>`
+(repeatable, exact name, or a glob where `*` matches any run of
+characters — including `/` — and everything else is literal) to
+`wb wait checks --repo … --head …`:
+
+```sh
+wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json
+wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json
+```
+
+An exact `--check` waits only for that one job (every exact pattern given
+must match before the wait can pass, and so must every `--workflow` name —
+and when both flags combine, each named workflow needs a job matching the
+`--check` patterns too); a `--check` glob and `--workflow` each wait for
+their owning Actions run to finish, since either could still match a job —
+for example one gated by `needs:` — that has not registered yet. While
+`--check` is active, any other still-registering run on the head with no job
+yet is also held open, but only among the workflows an active `--workflow`
+filter itself allows. A selected job GitHub reports `skipped` is pending
+while its owning run has not yet concluded, fails once that run concludes
+failure (including a skip caused by an unrelated sibling job's failure in
+the same run — this fails closed on purpose), and a selection that is
+*entirely* `skipping` fails even once the run concludes non-failure (a
+`workflow_run` job gated on the prior run's success, after that run failed).
+Never hand-roll a `gh run list` / `gh api` polling loop to watch one workflow
+or job. See `references/ci-polling.md` for the full filter contract and why
+a filter matching nothing is never a vacuous pass; never pass
+`--workflow`/`--check` to `wb pr land` or a worktree merge.
+
 ## Fast path
 
 Land with one call:
