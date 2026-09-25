@@ -110,6 +110,38 @@ func assertPR4PublishedMode0600(t *testing.T, path string) {
 	}
 }
 
+// assertPR4PublishesAt0600DetectsAMissingChmod is review-763's fix for
+// task-9 PR-4's 0600 happy-path tests: an Injector.Hook fires immediately
+// before the real ChmodFile syscall and pre-sets the not-yet-published
+// temp file (found by globbing dir for tempGlob) to 0644. Without this
+// preset, a mutant that deletes the ChmodFile call would go undetected --
+// os.CreateTemp already creates every one of these temp files at 0600,
+// the same as every site's final published mode, so the published file
+// would still read 0600 by pure coincidence and the plain assertion could
+// never tell the difference. Presetting a different mode first means the
+// final 0600 can only be true if the real chmod ran.
+func assertPR4PublishesAt0600DetectsAMissingChmod(t *testing.T, dir, tempGlob, path string, call func(inj *filewrite.Injector) error) {
+	t.Helper()
+	hookRan := false
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Hook: func() {
+		hookRan = true
+		matches, err := filepath.Glob(filepath.Join(dir, tempGlob))
+		if err != nil || len(matches) != 1 {
+			t.Fatalf("locate temporary file before chmod: matches=%v err=%v", matches, err)
+		}
+		if err := os.Chmod(matches[0], 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	if err := call(inj); err != nil {
+		t.Fatal(err)
+	}
+	if !hookRan {
+		t.Fatal("Hook did not run before the real chmod")
+	}
+	assertPR4PublishedMode0600(t, path)
+}
+
 // --- persistWorktreeMergeReceipt (worktree_merge.go) ---
 
 func TestPersistWorktreeMergeReceiptInjectedHonoursInjectedFailures(t *testing.T) {
@@ -125,11 +157,11 @@ func TestPersistWorktreeMergeReceiptInjectedHonoursInjectedFailures(t *testing.T
 
 func TestPersistWorktreeMergeReceiptPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "receipt.json")
-	if err := persistWorktreeMergeReceipt(WorktreeMergeReceipt{ReceiptPath: path}); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".merge-receipt-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistWorktreeMergeReceiptInjected(WorktreeMergeReceipt{ReceiptPath: path}, inj)
+	})
 }
 
 // --- extractWorktreeMergeArchive (worktree_merge.go) ---
@@ -179,11 +211,11 @@ func TestPersistPreparedWorktreeMergeRebatchInjectedHonoursInjectedFailures(t *t
 
 func TestPersistPreparedWorktreeMergeRebatchPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "rebatch.json")
-	if err := persistPreparedWorktreeMergeRebatchInjected(path, WorktreeMergePreparedRebatch{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rebatch.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".prepared-rebatch-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistPreparedWorktreeMergeRebatchInjected(path, WorktreeMergePreparedRebatch{}, inj)
+	})
 }
 
 // --- persistLandedFailureAcknowledgement (worktree_merge_ack.go) ---
@@ -201,11 +233,11 @@ func TestPersistLandedFailureAcknowledgementInjectedHonoursInjectedFailures(t *t
 
 func TestPersistLandedFailureAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "landed-failure-ack.json")
-	if err := persistLandedFailureAcknowledgementInjected(path, WorktreeMergeLandedFailureAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "landed-failure-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".landed-validation-failed-ack-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistLandedFailureAcknowledgementInjected(path, WorktreeMergeLandedFailureAcknowledgement{}, inj)
+	})
 }
 
 // --- persistValidationFailureSupersession (worktree_merge_ack.go) ---
@@ -223,11 +255,11 @@ func TestPersistValidationFailureSupersessionInjectedHonoursInjectedFailures(t *
 
 func TestPersistValidationFailureSupersessionPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "validation-failure-supersession.json")
-	if err := persistValidationFailureSupersessionInjected(path, WorktreeMergeValidationFailureSupersession{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "validation-failure-supersession.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".validation-failed-supersession-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistValidationFailureSupersessionInjected(path, WorktreeMergeValidationFailureSupersession{}, inj)
+	})
 }
 
 // --- persistRetiredPublicationAcknowledgement (worktree_merge_retired_publication.go) ---
@@ -245,11 +277,11 @@ func TestPersistRetiredPublicationAcknowledgementInjectedHonoursInjectedFailures
 
 func TestPersistRetiredPublicationAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "retired-publication-ack.json")
-	if err := persistRetiredPublicationAcknowledgementInjected(path, WorktreeMergeRetiredPublicationAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retired-publication-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".retired-publication-ack-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistRetiredPublicationAcknowledgementInjected(path, WorktreeMergeRetiredPublicationAcknowledgement{}, inj)
+	})
 }
 
 // --- persistStrandedLandingAcknowledgement (worktree_merge_stranded.go) ---
@@ -267,11 +299,11 @@ func TestPersistStrandedLandingAcknowledgementInjectedHonoursInjectedFailures(t 
 
 func TestPersistStrandedLandingAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "stranded-landing-ack.json")
-	if err := persistStrandedLandingAcknowledgementInjected(path, WorktreeMergeStrandedLandingAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stranded-landing-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".stranded-landing-ack-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistStrandedLandingAcknowledgementInjected(path, WorktreeMergeStrandedLandingAcknowledgement{}, inj)
+	})
 }
 
 // --- persistUnpublishedValidationFailureAcknowledgement (worktree_merge_unpublished_validation_failure.go) ---
@@ -289,11 +321,11 @@ func TestPersistUnpublishedValidationFailureAcknowledgementInjectedHonoursInject
 
 func TestPersistUnpublishedValidationFailureAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "unpublished-validation-failure-ack.json")
-	if err := persistUnpublishedValidationFailureAcknowledgementInjected(path, WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unpublished-validation-failure-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".unpublished-validation-failure-ack-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistUnpublishedValidationFailureAcknowledgementInjected(path, WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, inj)
+	})
 }
 
 // --- persistReceiptCollisionAcknowledgement (worktree_merge_ack.go) ---
@@ -311,11 +343,11 @@ func TestPersistReceiptCollisionAcknowledgementInjectedHonoursInjectedFailures(t
 
 func TestPersistReceiptCollisionAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "receipt-collision-ack.json")
-	if err := persistReceiptCollisionAcknowledgementInjected(path, WorktreeMergeReceiptCollisionAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt-collision-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".receipt-collision-ack-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistReceiptCollisionAcknowledgementInjected(path, WorktreeMergeReceiptCollisionAcknowledgement{}, inj)
+	})
 }
 
 // --- persistConflictCandidateAdvance (worktree_merge_ack.go) ---
@@ -333,11 +365,11 @@ func TestPersistConflictCandidateAdvanceInjectedHonoursInjectedFailures(t *testi
 
 func TestPersistConflictCandidateAdvancePublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "conflict-candidate-advance.json")
-	if err := persistConflictCandidateAdvanceInjected(path, WorktreeMergeConflictCandidateAdvance{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conflict-candidate-advance.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".conflict-candidate-advance-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistConflictCandidateAdvanceInjected(path, WorktreeMergeConflictCandidateAdvance{}, inj)
+	})
 }
 
 // --- persistLegacyValidationFailureIdentity (worktree_merge_ack.go) ---
@@ -355,11 +387,11 @@ func TestPersistLegacyValidationFailureIdentityInjectedHonoursInjectedFailures(t
 
 func TestPersistLegacyValidationFailureIdentityPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "legacy-validation-failure-identity.json")
-	if err := persistLegacyValidationFailureIdentityInjected(path, WorktreeMergeLegacyValidationFailureIdentity{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy-validation-failure-identity.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".legacy-validation-failed-identity-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistLegacyValidationFailureIdentityInjected(path, WorktreeMergeLegacyValidationFailureIdentity{}, inj)
+	})
 }
 
 // --- persistLegacyConflictIdentity (worktree_merge_ack.go) ---
@@ -377,11 +409,11 @@ func TestPersistLegacyConflictIdentityInjectedHonoursInjectedFailures(t *testing
 
 func TestPersistLegacyConflictIdentityPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "legacy-conflict-identity.json")
-	if err := persistLegacyConflictIdentityInjected(path, WorktreeMergeLegacyConflictIdentity{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy-conflict-identity.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".legacy-conflict-identity-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistLegacyConflictIdentityInjected(path, WorktreeMergeLegacyConflictIdentity{}, inj)
+	})
 }
 
 // --- persistMissingCleanupAcknowledgement (worktree_merge_ack.go) ---
@@ -399,11 +431,11 @@ func TestPersistMissingCleanupAcknowledgementInjectedHonoursInjectedFailures(t *
 
 func TestPersistMissingCleanupAcknowledgementPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "missing-cleanup-ack.json")
-	if err := persistMissingCleanupAcknowledgementInjected(path, WorktreeMergeMissingCleanupAcknowledgement{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing-cleanup-ack.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".missing-cleanup-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistMissingCleanupAcknowledgementInjected(path, WorktreeMergeMissingCleanupAcknowledgement{}, inj)
+	})
 }
 
 // --- persistSelfSupersessionCorrection (worktree_merge_ack.go) ---
@@ -421,11 +453,11 @@ func TestPersistSelfSupersessionCorrectionInjectedHonoursInjectedFailures(t *tes
 
 func TestPersistSelfSupersessionCorrectionPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "self-supersession-correction.json")
-	if err := persistSelfSupersessionCorrectionInjected(path, WorktreeMergeSelfSupersessionCorrection{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "self-supersession-correction.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".validation-failed-self-supersession-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistSelfSupersessionCorrectionInjected(path, WorktreeMergeSelfSupersessionCorrection{}, inj)
+	})
 }
 
 // --- persistPublishedCandidateAdoption (worktree_merge_adopt_published.go) ---
@@ -457,11 +489,11 @@ func TestPersistPublishedCandidateAdoptionInjectedHonoursRemainingInjectedFailur
 
 func TestPersistPublishedCandidateAdoptionPublishesAt0600(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "published-candidate-adoption.json")
-	if err := persistPublishedCandidateAdoptionInjected(path, WorktreeMergePublishedCandidateAdoption{}, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertPR4PublishedMode0600(t, path)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "published-candidate-adoption.json")
+	assertPR4PublishesAt0600DetectsAMissingChmod(t, dir, ".published-candidate-adoption-*.tmp", path, func(inj *filewrite.Injector) error {
+		return persistPublishedCandidateAdoptionInjected(path, WorktreeMergePublishedCandidateAdoption{}, inj)
+	})
 }
 
 // --- filewrite.LinkPath's real race, exercised via Injector.Hook rather
