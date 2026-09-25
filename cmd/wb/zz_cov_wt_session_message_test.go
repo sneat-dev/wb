@@ -451,3 +451,30 @@ func TestCwWtDefaultSessionReceiveMessageDependencies(t *testing.T) {
 		t.Fatalf("default receive dependencies error = %v", err)
 	}
 }
+
+// TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir proves
+// the default sessionDir dependency (session_message.go:190, which wires
+// sessionDirForRead(inv) into "wb session receive-message") is actually
+// invoked: the sibling test above stops at the earlier local-machine check,
+// so the sessionDir closure - and the real deps.receive call beyond it -
+// were never exercised with the real default dependencies.
+func TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "wb.yaml"), []byte("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: cwwt-machine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "projects")
+	t.Setenv(wbhome.EnvOverride, root)
+	_, _, err := cwWtRunCmd(t, root, "not a valid session message", func() *cobra.Command { return newSessionReceiveMessageCmd(&invocation{projectsRoot: root}) })
+	if err == nil {
+		t.Fatal("an invalid session message body must be refused")
+	}
+	if strings.Contains(err.Error(), "load validated local remote.machine") {
+		t.Fatalf("receive-message error = %v, want past the local-machine check", err)
+	}
+}
