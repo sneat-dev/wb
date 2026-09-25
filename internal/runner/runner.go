@@ -5,10 +5,25 @@
 // interface, never on os/exec directly, so a unit test substitutes
 // runnertest's scriptable fake instead of starting a real process.
 //
-// Runner has four operations, exactly as the plan defines them:
+// Runner has four operations, exactly as the plan defines them, plus two
+// gaps the plan's own text names and invites filling when a real site needs
+// them (see task-8's "If the runner cannot express something a site needs"
+// note): RunWithInput and RunOpts.
 //
 //   - Run captures stdout, stderr and the exit status -- most git and gh
 //     calls.
+//   - RunWithInput is Run with the child's stdin supplied by the caller,
+//     for the rare site that must pass a request body a remote or local
+//     child reads from stdin instead of argv (added for remotessh's SSH
+//     boundary).
+//   - RunOpts is Run with a RunOptions value -- a per-call environment
+//     and/or a WaitDelay -- for the several sites that build a filtered or
+//     augmented child environment (internal/console.Env()/CommandEnv(), a
+//     GOWORK=off override, an extra credential) or that must bound how
+//     long a child's inherited pipes are allowed to stay open after the
+//     child itself has exited (os/exec.Cmd.WaitDelay). RunOptions carries
+//     an optional Stdin too, so a caller needing both input and a custom
+//     environment does not have to choose between RunWithInput and RunOpts.
 //   - Start returns a Handle with Wait and Signal, for a long-running child
 //     wb supervises.
 //   - Detach starts a process that outlives wb -- daemon launch,
@@ -27,6 +42,7 @@ package runner
 import (
 	"context"
 	"os"
+	"time"
 )
 
 // Result is one Run or Start/Wait call's captured output.
@@ -34,6 +50,26 @@ type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+}
+
+// RunOptions customizes a RunOpts call beyond dir/argv.
+type RunOptions struct {
+	// Env overrides the child's environment. Nil inherits the calling
+	// process's own environment, matching os/exec.Cmd's own default when
+	// Env is left nil -- the same default Run and RunWithInput use.
+	Env []string
+	// Stdin is written to the child's stdin before its output is read, like
+	// RunWithInput's input. Nil/empty gives the child no stdin (the same as
+	// Run).
+	Stdin []byte
+	// WaitDelay bounds how long RunOpts waits for the child's I/O pipes to
+	// drain after the process itself has exited (os/exec.Cmd.WaitDelay).
+	// Zero uses the underlying implementation's own default -- Real inherits
+	// internal/process's, not zero/unbounded -- so a caller that genuinely
+	// needs a specific bound (a package-manager launcher that hands off to a
+	// grandchild and exits early) sets one explicitly rather than relying on
+	// whatever internal/process happens to default to today.
+	WaitDelay time.Duration
 }
 
 // Handle is a process started by Start: callers wait for it or signal it
@@ -54,6 +90,13 @@ type Runner interface {
 	// Run starts name with args in dir, waits for it to exit, and returns
 	// its captured stdout, stderr and exit status.
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
+	// RunWithInput is Run with input written to the child's stdin before its
+	// output is read. See the package doc's note on why this exists
+	// alongside Run rather than folding input into it.
+	RunWithInput(ctx context.Context, dir string, input []byte, name string, args ...string) (Result, error)
+	// RunOpts is Run with a RunOptions value: a per-call environment,
+	// stdin, and/or WaitDelay. See the package doc's note on RunOpts.
+	RunOpts(ctx context.Context, dir string, opts RunOptions, name string, args ...string) (Result, error)
 	// Start begins name with args in dir and returns a Handle without
 	// waiting for it to exit.
 	Start(ctx context.Context, dir, name string, args ...string) (Handle, error)
