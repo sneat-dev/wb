@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -855,6 +856,16 @@ func readRetireReport(path string) (RetireResult, error) {
 }
 
 func writeRetireReport(result RetireResult) error {
+	return writeRetireReportInjected(result, nil)
+}
+
+// writeRetireReportInjected is writeRetireReport's test seam (task-9
+// PR-3): every production call site reaches it only through
+// writeRetireReport, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/chmod/write/sync/close/rename failure branch
+// deterministically.
+func writeRetireReportInjected(result RetireResult, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(result.ReportPath), 0o700); err != nil {
 		return err
 	}
@@ -862,27 +873,28 @@ func writeRetireReport(result RetireResult) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(result.ReportPath), ".retire-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(result.ReportPath), ".retire-*.tmp", inj)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(temporary.Name()) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	temporaryName := temporary.Name()
+	defer func() { _ = os.Remove(temporaryName) }()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(append(body, '\n')); err != nil {
+	if err := filewrite.Write(temporary, append(body, '\n'), temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporary.Name(), result.ReportPath)
+	return filewrite.Rename(temporaryName, result.ReportPath, inj)
 }
 
 func retirePublishSource(ctx context.Context, result *RetireResult) error {
@@ -1019,6 +1031,18 @@ func retireRemoveLocal(ctx context.Context, task *cleanupTaskHandle, entry ListR
 // retireCaptureFile opens every parent without following symlinks. A journal
 // symlink is refused, never copied by following its target.
 func retireCaptureFile(source, destination string) (string, error) {
+	return retireCaptureFileInjected(source, destination, nil)
+}
+
+// retireCaptureFileInjected is retireCaptureFile's test seam (task-9
+// PR-3): every production call site reaches it only through
+// retireCaptureFile, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create or close failure branch deterministically.
+// The streaming io.Copy through a hash is left bare -- no filewrite
+// primitive fits a multi-writer copy -- and the original call site never
+// called Sync, so no Sync is introduced here either.
+func retireCaptureFileInjected(source, destination string, inj *filewrite.Injector) (string, error) {
 	parent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(source), false)
 	if err != nil {
 		return "", err
@@ -1040,13 +1064,13 @@ func retireCaptureFile(source, destination string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return "", err
 	}
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	output, err := filewrite.CreateExclusivePath(destination, 0o600, inj)
 	if err != nil {
 		return "", err
 	}
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
-	closeErr := output.Close()
+	closeErr := filewrite.Close(output, destination, inj)
 	if copyErr != nil {
 		return "", copyErr
 	}

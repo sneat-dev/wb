@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -338,6 +339,17 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 }
 
 func writeRetiredStageReceipt(path string, outcome RetiredStageRecoveryOutcome) error {
+	return writeRetiredStageReceiptInjected(path, outcome, nil)
+}
+
+// writeRetiredStageReceiptInjected is writeRetiredStageReceipt's test seam
+// (task-9 PR-3): every production call site reaches it only through
+// writeRetiredStageReceipt, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a write or rename failure branch deterministically.
+// The original call site never called Sync -- WriteFile alone -- so this
+// preserves that.
+func writeRetiredStageReceiptInjected(path string, outcome RetiredStageRecoveryOutcome, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create private stage recovery receipt directory: %w", err)
 	}
@@ -347,10 +359,10 @@ func writeRetiredStageReceipt(path string, outcome RetiredStageRecoveryOutcome) 
 	}
 	contents = append(contents, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, contents, 0o600); err != nil {
+	if err := filewrite.WriteFile(tmp, contents, 0o600, inj); err != nil {
 		return fmt.Errorf("write private stage recovery receipt: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := filewrite.Rename(tmp, path, inj); err != nil {
 		return fmt.Errorf("publish private stage recovery receipt: %w", err)
 	}
 	return nil
