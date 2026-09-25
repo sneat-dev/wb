@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // testExecutable is a real, absolute, executable regular file, which is what
@@ -77,11 +80,14 @@ func TestResolveRefusesAnUnusableSSHExecutable(t *testing.T) {
 
 func TestExecRunnerCapturesOutputAndErrors(t *testing.T) {
 	t.Parallel()
-	runner := ExecRunner{}
+	fake := runnertest.New(t)
+	fake.Expect(func(c runnertest.Call) bool {
+		return c.Name == "/bin/sh" && string(c.Input) == "payload"
+	}, runner.Result{Stdout: "payload", Stderr: "boom\n", ExitCode: 3}, errors.New("exit status 3"))
+	execRunner := ExecRunner{Runner: fake}
 	stdout := NewLimitedBuffer(1024)
 	stderr := NewLimitedBuffer(1024)
-	// A portable command that echoes stdin and exits non-zero.
-	if err := runner.Run(context.Background(), "/bin/sh", []string{"-c", "cat; echo boom >&2; exit 3"}, []byte("payload"), stdout, stderr); err == nil {
+	if err := execRunner.Run(context.Background(), "/bin/sh", []string{"-c", "cat; echo boom >&2; exit 3"}, []byte("payload"), stdout, stderr); err == nil {
 		t.Fatal("a non-zero exit must be reported")
 	}
 	if string(stdout.Bytes()) != "payload" {
@@ -91,6 +97,59 @@ func TestExecRunnerCapturesOutputAndErrors(t *testing.T) {
 		t.Fatalf("stderr was not captured: %q", stderr.Bytes())
 	}
 }
+
+// TestExecRunnerDefaultsToProductionRunner proves ExecRunner's zero value
+// (as internal/agents wires it: remotessh.ExecRunner{}) resolves a nil
+// Runner to the production runner.Runner rather than doing nothing. Under
+// `go test`, runner.Real refuses to start a real process (task-24's guard),
+// so this observes the guard error instead of shelling out to ssh.
+func TestExecRunnerDefaultsToProductionRunner(t *testing.T) {
+	t.Parallel()
+	execRunner := ExecRunner{}
+	stdout := NewLimitedBuffer(1024)
+	stderr := NewLimitedBuffer(1024)
+	err := execRunner.Run(context.Background(), "ssh", []string{"host"}, nil, stdout, stderr)
+	if !errors.Is(err, runner.ErrRealProcessBlocked) {
+		t.Fatalf("ExecRunner{} with no injected runner = %v, want it to reach the production runner.Runner", err)
+	}
+}
+
+// TestExecRunnerSurfacesAWriteFailureWhenTheCommandItselfSucceeded proves
+// the rare case where copying captured output into the caller's writer
+// fails: the writer's own error must not be swallowed just because the
+// child exited zero.
+func TestExecRunnerSurfacesAWriteFailureWhenTheCommandItselfSucceeded(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ssh", "host"}, runner.Result{Stdout: "ok"}, nil)
+	execRunner := ExecRunner{Runner: fake}
+	failing := failingWriter{err: errors.New("disk full")}
+	err := execRunner.Run(context.Background(), "ssh", []string{"host"}, nil, failing, NewLimitedBuffer(1024))
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Run() err = %v, want the writer's own failure", err)
+	}
+}
+
+// TestExecRunnerSurfacesAStderrWriteFailure covers the second, independent
+// write-error branch: a stdout writer that works fine must not hide a
+// stderr writer's own failure.
+func TestExecRunnerSurfacesAStderrWriteFailure(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"ssh", "host"}, runner.Result{Stderr: "warn"}, nil)
+	execRunner := ExecRunner{Runner: fake}
+	failing := failingWriter{err: errors.New("pipe closed")}
+	err := execRunner.Run(context.Background(), "ssh", []string{"host"}, nil, NewLimitedBuffer(1024), failing)
+	if err == nil || !strings.Contains(err.Error(), "pipe closed") {
+		t.Fatalf("Run() err = %v, want the stderr writer's own failure", err)
+	}
+}
+
+// failingWriter always reports err, so a test can exercise the write-error
+// branch no real caller's LimitedBuffer ever reaches.
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestLimitedBufferBoundsAndReportsOverflow(t *testing.T) {
 	t.Parallel()

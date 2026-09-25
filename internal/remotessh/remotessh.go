@@ -16,10 +16,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	procrunner "github.com/sneat-dev/wb/internal/runner"
 )
 
 const (
@@ -82,16 +83,40 @@ type Runner interface {
 }
 
 // ExecRunner is the production runner.
-type ExecRunner struct{}
+type ExecRunner struct {
+	// Runner is task-8's process seam (internal/runner.Runner), which needs
+	// its RunWithInput operation: OpenSSH's request travels over stdin (see
+	// the package doc), something none of Runner's other four operations
+	// could carry. Nil resolves to the production runner.Runner
+	// (resolveRunner); a unit test injects runnertest.Fake.
+	Runner procrunner.Runner
+}
 
 // Run executes the command with the caller's context, so a caller-supplied
 // deadline reaches the SSH process itself and not just its output readers.
-func (ExecRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
-	command := exec.CommandContext(ctx, executable, args...)
-	command.Stdin = bytes.NewReader(stdin)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	return command.Run()
+// stdout/stderr are always internal/agents.remotessh.LimitedBuffer in this
+// repository, whose Write never fails and whose truncation is
+// order-independent, so capturing the child's full output through
+// RunWithInput and writing it to the caller's writers in one shot each is
+// behaviorally identical to exec.Cmd streaming into them directly.
+func (e ExecRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
+	result, err := resolveRunner(e.Runner).RunWithInput(ctx, "", stdin, executable, args...)
+	if _, writeErr := io.WriteString(stdout, result.Stdout); writeErr != nil && err == nil {
+		err = writeErr
+	}
+	if _, writeErr := io.WriteString(stderr, result.Stderr); writeErr != nil && err == nil {
+		err = writeErr
+	}
+	return err
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r procrunner.Runner) procrunner.Runner {
+	if r != nil {
+		return r
+	}
+	return procrunner.New()
 }
 
 // LimitedBuffer accumulates output up to a byte limit and records whether the
