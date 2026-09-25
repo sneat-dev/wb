@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorktreeRescueCmd() *cobra.Command {
+func newWorktreeRescueCmd(inv *invocation) *cobra.Command {
 	var apply, restore, push, allowUnpushed, fleet bool
 	var branch, remote, format string
 	command := &cobra.Command{
@@ -61,7 +61,7 @@ applies anything.`,
 				if apply || restore || push {
 					return fmt.Errorf("--fleet only reports; run rescue against one clone to apply anything")
 				}
-				return runFleetRescueReport(cmd, format)
+				return runFleetRescueReport(inv, cmd, format)
 			}
 			if restore && !apply {
 				return fmt.Errorf("--restore requires --apply: the content must be captured before the clone is cleaned")
@@ -109,7 +109,7 @@ applies anything.`,
 // It is the detection half of the brief: the guard stops most writes, and this
 // finds whatever still got through — including everything already sitting in a
 // clone before the guard existed.
-func runFleetRescueReport(cmd *cobra.Command, format string) error {
+func runFleetRescueReport(inv *invocation, cmd *cobra.Command, format string) error {
 	repositories, err := discover.ScanLocal(projectsRoot)
 	if err != nil {
 		return fmt.Errorf("scan local repositories: %w", err)
@@ -117,7 +117,7 @@ func runFleetRescueReport(cmd *cobra.Command, format string) error {
 	options := canonicalrescue.Options{ProjectsRoot: projectsRoot}
 	var dirty []canonicalrescue.Report
 	for _, repository := range repositories {
-		if filterFlag != "" && !strings.Contains(repository.Slug(), filterFlag) {
+		if inv.filterFlag != "" && !strings.Contains(repository.Slug(), inv.filterFlag) {
 			continue
 		}
 		// The clone's real path, as discovery found it: a host-level clone

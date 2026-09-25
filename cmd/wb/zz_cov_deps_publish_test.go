@@ -370,13 +370,27 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 
 // TestPreflightNpmPublishDelegatesToRealDependencyDiscovery proves the
 // production preflightNpmPublish wrapper wires the real dependencyRepositories
-// discoverer into preflightNpmPublishWithDiscovery, not only a test fake: the
-// missing --fleet requirement it surfaces is the same validation
-// preflightNpmPublishWithDiscovery itself performs before ever calling discover.
+// discoverer into preflightNpmPublishWithDiscovery, not only a test fake: it
+// drives an actual --fleet discovery over an empty local projects root and a
+// faked gh with no remote repositories, so a discoverer swapped for nil would
+// panic on the real call instead of this test passing by never reaching it.
 func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
-	if _, err := preflightNpmPublish(&invocation{}, npmPublishOptions{}); err == nil ||
-		!strings.Contains(err.Error(), "deps publish npm requires --fleet") {
-		t.Fatalf("err = %v, want the --fleet requirement", err)
+	cwCovFakeGH(t, "cwcov-npm-user", nil, `[]`)
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	previousRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousRoot })
+
+	options := cwDepsPublishOptionsFixture()
+	options.fleet = true
+	options.maxWaves = 1
+	// dependencyRepositories itself refuses an empty fleet selection, so
+	// reaching that exact refusal (rather than a nil-pointer panic, or the
+	// test's own fake ever answering) proves preflightNpmPublish handed the
+	// real discoverer to preflightNpmPublishWithDiscovery.
+	if _, err := preflightNpmPublish(&invocation{}, options); err == nil ||
+		!strings.Contains(err.Error(), "no repositories match the selected fleet filters") {
+		t.Fatalf("err = %v, want the real discoverer's empty-fleet refusal", err)
 	}
 }
 

@@ -238,7 +238,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 			if options.apply && len(options.owners) == 0 && len(options.repositories) == 0 && !options.includeUser {
 				return usageError("--apply requires explicit --org, --repo, or --user scope")
 			}
-			report, err := runMergePolicy(command.Context(), options, command.ErrOrStderr())
+			report, err := runMergePolicy(command.Context(), inv, options, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -266,7 +266,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 	return command
 }
 
-func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io.Writer) (mergePolicyReport, error) {
+func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOptions, progress io.Writer) (mergePolicyReport, error) {
 	var inspected, total atomic.Int64
 	resumedActions := map[string][]string{}
 	heartbeatDone := make(chan struct{})
@@ -296,7 +296,7 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 			resumedActions[repo.Repository] = append([]string(nil), repo.AppliedActions...)
 		}
 	}
-	repos, err := mergePolicyDiscover(projectsRoot, filterFlag, options.owners, options.repositories, options.includeUser)
+	repos, err := mergePolicyDiscover(projectsRoot, inv.filterFlag, options.owners, options.repositories, options.includeUser)
 	if err != nil {
 		return mergePolicyReport{}, err
 	}

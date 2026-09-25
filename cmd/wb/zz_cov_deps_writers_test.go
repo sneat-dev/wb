@@ -304,10 +304,7 @@ func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
 		t.Fatalf("unmatched single repository = %v", err)
 	}
 	// --filter is applied to the identity too.
-	previousFilter := filterFlag
-	filterFlag = "nothing-matches"
-	_, err = dependencyRepositories(&invocation{}, []string{"go", "set", app}, depsSetOptions{parallel: 1})
-	filterFlag = previousFilter
+	_, err = dependencyRepositories(&invocation{filterFlag: "nothing-matches"}, []string{"go", "set", app}, depsSetOptions{parallel: 1})
 	if err == nil || !strings.Contains(err.Error(), "does not match --filter") {
 		t.Fatalf("filtered single repository = %v", err)
 	}

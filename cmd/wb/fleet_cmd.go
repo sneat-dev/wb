@@ -20,7 +20,7 @@ import (
 )
 
 func newFleetCmd(inv *invocation) *cobra.Command {
-	overview := newFleetOverviewOptions()
+	overview := newFleetOverviewOptions(inv)
 	command := &cobra.Command{
 		Use:   "fleet",
 		Short: "Inspect local fleet inventory, attention, layout, and worktree debt",
@@ -50,7 +50,7 @@ worklist and wb sync --dry-run for a full sync plan.`,
 	}
 	overview.bind(overviewCmd)
 	command.AddCommand(overviewCmd)
-	command.AddCommand(newFleetStatsCmd())
+	command.AddCommand(newFleetStatsCmd(inv))
 	command.AddCommand(newFleetStatusCmd(inv))
 	command.AddCommand(newFleetPRsCmd(inv))
 	command.AddCommand(newFleetMergePolicyCmd(inv))
@@ -64,14 +64,15 @@ type fleetDepthOptions struct {
 }
 
 type fleetOverviewOptions struct {
+	inv     *invocation
 	status  qualityOptions
 	all     bool
 	details bool
 	depth   fleetDepthOptions
 }
 
-func newFleetOverviewOptions() *fleetOverviewOptions {
-	return &fleetOverviewOptions{status: qualityOptions{parallel: 4, fleet: true}}
+func newFleetOverviewOptions(inv *invocation) *fleetOverviewOptions {
+	return &fleetOverviewOptions{inv: inv, status: qualityOptions{parallel: 4, fleet: true}}
 }
 
 func (options *fleetOverviewOptions) bind(command *cobra.Command) {
@@ -83,7 +84,7 @@ func (options *fleetOverviewOptions) bind(command *cobra.Command) {
 }
 
 func (options *fleetOverviewOptions) run(cmd *cobra.Command, args []string) error {
-	report, err := collectFleetOverview(projectsRoot, filterFlag, options.status, options.all, options.depth)
+	report, err := collectFleetOverview(projectsRoot, options.inv.filterFlag, options.status, options.all, options.depth)
 	if err != nil {
 		return err
 	}
@@ -99,7 +100,7 @@ func (options *fleetOverviewOptions) run(cmd *cobra.Command, args []string) erro
 	return nil
 }
 
-func newFleetStatsCmd() *cobra.Command {
+func newFleetStatsCmd(inv *invocation) *cobra.Command {
 	options := qualityOptions{parallel: 4, fleet: true}
 	var depth fleetDepthOptions
 	command := &cobra.Command{
@@ -113,7 +114,7 @@ attention detail, wb layout audit for placement findings, and
 wb worktree orphans for linked-worktree debt outside the managed hierarchy.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := collectFleetStats(projectsRoot, filterFlag, options, depth)
+			report, err := collectFleetStats(projectsRoot, inv.filterFlag, options, depth)
 			if err != nil {
 				return err
 			}
@@ -166,7 +167,7 @@ disables it.`,
 				all:       all,
 				details:   details,
 				options:   options,
-				filter:    filterFlag,
+				filter:    inv.filterFlag,
 				projects:  projectsRoot,
 				titleKind: statusTitleFleet,
 				progress:  cmd.ErrOrStderr(),

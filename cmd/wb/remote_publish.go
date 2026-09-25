@@ -24,7 +24,7 @@ task worktrees, and publishes one snapshot keyed <login>/<machine>.
 --dry-run prints the snapshot and writes nothing, locally or remotely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemotePublishWithProgress(defaultRemoteDeps(), projectsRoot, filterFlag, parallel, dryRun, jsonOut, os.Stdout, cmd.ErrOrStderr(), inv)
+			return runRemotePublishWithProgress(defaultRemoteDeps(), projectsRoot, inv.filterFlag, parallel, dryRun, jsonOut, os.Stdout, cmd.ErrOrStderr(), inv)
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the snapshot; publish nothing")
@@ -39,10 +39,6 @@ type remotePublishReport struct {
 	Attention           int    `json:"attention"`
 	Worktrees           int    `json:"worktrees"`
 	Location            string `json:"location,omitempty"`
-}
-
-func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
-	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil, &invocation{})
 }
 
 func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out, progressOut io.Writer, inv *invocation) error {

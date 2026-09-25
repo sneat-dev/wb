@@ -14,7 +14,7 @@ import (
 )
 
 func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
-	command := newBranchCleanupCmd()
+	command := newBranchCleanupCmd(&invocation{})
 	apply := command.Flags().Lookup("apply")
 	if apply == nil || apply.DefValue != "false" {
 		t.Fatalf("--apply default = %#v, want false", apply)
@@ -40,7 +40,7 @@ func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
 }
 
 func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
-	command := newBranchListCmd()
+	command := newBranchListCmd(&invocation{})
 	scope := command.Flags().Lookup("scope")
 	if scope == nil || scope.DefValue != "local" {
 		t.Fatalf("--scope default = %#v, want local", scope)
@@ -59,7 +59,7 @@ func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
 }
 
 func TestBranchListSupportsRetiredAndOrganizationSelectors(t *testing.T) {
-	command := newBranchListCmd()
+	command := newBranchListCmd(&invocation{})
 	if command.Flags().Lookup("org") == nil || command.Flags().Lookup("include-retired") == nil {
 		t.Fatal("branch list is missing organization or retired selector")
 	}
@@ -150,7 +150,7 @@ func TestBranchArchiveTargetYAMLSemanticallyMatchesJSON(t *testing.T) {
 }
 
 func TestBranchCountUsesTheSharedInventorySelectors(t *testing.T) {
-	command := newBranchCountCmd()
+	command := newBranchCountCmd(&invocation{})
 	for _, name := range []string{"org", "repo", "scope", "only", "name", "older-than", "format"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Fatalf("count missing --%s", name)
@@ -244,7 +244,7 @@ func TestBranchOutcomeAlwaysSerializesZeroRetiredBranchNames(t *testing.T) {
 }
 
 func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
-	list := newBranchListCmd()
+	list := newBranchListCmd(&invocation{})
 	for _, wanted := range []string{
 		"contained", "absorbed", "unique", "protected", "in-use", "unreadable",
 		"never eligible for --apply", "read-only in every configuration", "[n/N] repository",
@@ -254,7 +254,7 @@ func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 			t.Errorf("branch list help does not mention %q", wanted)
 		}
 	}
-	cleanup := newBranchCleanupCmd()
+	cleanup := newBranchCleanupCmd(&invocation{})
 	for _, wanted := range []string{
 		"dry-run plan", "absorbed is never eligible", "compare-and-delete",
 		"force-with-lease", "pull-request evidence", "never removes, moves, or modifies any working tree",
@@ -330,6 +330,22 @@ func TestBranchListEmptyProjectsRootReportsNoBranches(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "no branches matched") {
 		t.Fatalf("stdout = %q, want \"no branches matched\"", stdout.String())
+	}
+}
+
+// TestBranchCountEmptyProjectsRootReportsZeroTotals drives "wb branch count"
+// through the real CLI dispatch (not just a structural flag check), so the
+// RunE closure that reads inv.filterFlag before calling worktrees.BranchList
+// actually executes.
+func TestBranchCountEmptyProjectsRootReportsZeroTotals(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"branch", "count", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stderr=%s", args, code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "STATUS       REFS") {
+		t.Fatalf("stdout = %q, want the count table header", stdout.String())
 	}
 }
 

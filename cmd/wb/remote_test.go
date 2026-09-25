@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,14 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/spf13/cobra"
 )
+
+// runRemotePublish is a test-only convenience wrapper around
+// runRemotePublishWithProgress: no production code calls it, and it exists so
+// tests exercising remote publish do not have to invent a nil progress
+// stream and a throwaway *invocation at every call site.
+func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
+	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil, &invocation{})
+}
 
 func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
 	provider, err := openRemote(remotestate.Config{
