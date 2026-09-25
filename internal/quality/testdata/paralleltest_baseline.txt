@@ -1072,6 +1072,7 @@ internal/orchestrate::TestAcquireOperationLockRefusesLiveLegacyOwner	calls t.Set
 internal/orchestrate::TestAcquireOperationLockRefusesLiveOwner	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestAcquireOperationLockResumesExactLegacyRemnantOnlyWithResume	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestActiveLaneReceiptSkipsValidPreparedRebatchSidecar	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestActiveMergeLaneClaimIgnoresACompletedReceipt	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestActiveMergeLaneClaimReportsSourceBranchOfAnActiveReceipt	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
