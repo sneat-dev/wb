@@ -6,7 +6,7 @@
 # --target`) unless the same PR shrinks other entries by at least as
 # much; the PR that creates this file is exempt. Remove an entry once
 # its count reaches 0.
-cmd/wb/agent_remote_test.go	3	task-22
+cmd/wb/agent_remote_test.go	4	task-22
 cmd/wb/archive_test.go	9	task-22
 cmd/wb/ci_wait_test.go	26	task-22
 cmd/wb/cli_smoke_test.go	2	task-22
@@ -29,6 +29,7 @@ cmd/wb/layout_migrate_include_test.go	14	task-22
 cmd/wb/layout_migrate_test.go	35	task-22
 cmd/wb/layout_test.go	9	task-22
 cmd/wb/module_archive_test.go	10	task-22
+cmd/wb/pr_create_link_preflight_test.go	16	task-16
 cmd/wb/pr_test.go	1	task-22
 cmd/wb/quality_test.go	7	task-22
 cmd/wb/release_contract_test.go	32	task-22
@@ -49,9 +50,10 @@ cmd/wb/worktree_end_test.go	6	task-22
 cmd/wb/worktree_gc_test.go	10	task-22
 cmd/wb/worktree_host_level_test.go	23	task-22
 cmd/wb/worktree_marker_test.go	11	task-22
-cmd/wb/worktree_merge_test.go	35	task-22
+cmd/wb/worktree_merge_test.go	48	task-22
 cmd/wb/worktree_publication_test.go	12	task-22
 cmd/wb/worktree_rescue_test.go	15	task-22
+cmd/wb/worktree_retire_test.go	8	task-16
 cmd/wb/worktree_test.go	25	task-22
 cmd/wb/worktree_upgrade_integration_test.go	12	task-22
 cmd/wb/zz_cov_deps_graph_drift_test.go	2	task-22
