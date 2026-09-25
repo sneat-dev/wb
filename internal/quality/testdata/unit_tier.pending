@@ -45,7 +45,7 @@ cmd/wb/session_park_journey_test.go	17	task-23
 cmd/wb/session_park_test.go	2	task-22
 cmd/wb/status_test.go	3	task-22
 cmd/wb/wait_test.go	4	task-22
-cmd/wb/worktree_end_test.go	6	task-22
+cmd/wb/worktree_end_test.go	7	task-22
 cmd/wb/worktree_gc_test.go	10	task-22
 cmd/wb/worktree_host_level_test.go	23	task-22
 cmd/wb/worktree_marker_test.go	11	task-22
@@ -67,10 +67,11 @@ cmd/wb/zz_cov_layout_gc_test.go	11	task-22
 cmd/wb/zz_cov_quality_test.go	5	task-22
 cmd/wb/zz_cov_status_pr_branch_test.go	2	task-22
 cmd/wb/zz_cov_stream_migrate_test.go	6	task-22
+cmd/wb/zz_cov_wt_end_retire_test.go	1	task-22
 cmd/wb/zz_cov_wt_end_test.go	2	task-22
 cmd/wb/zz_cov_wt_guard_test.go	3	task-22
 cmd/wb/zz_cov_wt_helpers_test.go	5	task-22
-cmd/wb/zz_cov_wt_marker_test.go	2	task-22
+cmd/wb/zz_cov_wt_marker_test.go	4	task-22
 cmd/wb/zz_cov_wt_merge_test.go	25	task-22
 internal/agentguard/agentguard_test.go	11	task-15
 internal/agentguard/autotags_test.go	1	task-15

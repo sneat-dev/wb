@@ -13,8 +13,6 @@ cmd/wb/daemon_process_darwin.go	1	task-16
 cmd/wb/daemon_process_unix.go	1	task-16
 cmd/wb/daemon_process_windows.go	1	task-16
 cmd/wb/fleet_default_branch.go	6	task-22
-cmd/wb/worktree_end.go	4	task-16
-cmd/wb/worktree_marker.go	1	task-16
 internal/agents/changes.go	4	task-15
 internal/agents/owner.go	1	task-15
 internal/archiveprune/archiveprune.go	5	task-15
