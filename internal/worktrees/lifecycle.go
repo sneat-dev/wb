@@ -1097,36 +1097,58 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 // descends below a Git root, which prevents ordinary repository directories
 // such as .claude, .github, source, and generated trees from being re-read as
 // task-level repositories.
-func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
+// listInventoryOp carries one ListWithDiagnostics call's normalized options
+// and context, and the outcome its steps append to in sequence: the shared
+// (registered) worktree layouts, the local (unregistered) layouts walked in
+// parallel, and finally the claimed-registry worktrees merged in and sorted.
+type listInventoryOp struct {
+	ctx          context.Context
+	options      ListOptions
+	tasks        []string
+	projectsRoot string
+	base         string
+	filter       string
+	resolution   wbhome.Resolution
+	outcome      ListOutcome
+	reporter     *listProgressReporter
+	policy       inspectPolicy
+}
+
+// newListInventoryOp validates and normalizes ListWithDiagnostics' options,
+// resolves the WB home, and prepares the shared inspection policy and
+// progress reporter every walk below uses.
+func newListInventoryOp(ctx context.Context, options ListOptions) (*listInventoryOp, error) {
+	lw := &listInventoryOp{ctx: ctx, options: options}
+	var err error
 	// Listing is read-only, so repeated Git queries within this one command
 	// may share their answers. See gitQueryMemo for the measured cost.
-	ctx = withGitQueryMemo(ctx)
-	options.OwnerState = strings.TrimSpace(options.OwnerState)
-	if options.OwnerState != "" && options.OwnerState != "active" && options.OwnerState != "orphaned" {
-		return ListOutcome{}, fmt.Errorf("unsupported owner state %q; use active or orphaned", options.OwnerState)
+	lw.ctx = withGitQueryMemo(lw.ctx)
+	lw.options.OwnerState = strings.TrimSpace(lw.options.OwnerState)
+	if lw.options.OwnerState != "" && lw.options.OwnerState != "active" && lw.options.OwnerState != "orphaned" {
+		return nil, fmt.Errorf("unsupported owner state %q; use active or orphaned", lw.options.OwnerState)
 	}
-	tasks, err := normalizeTaskSelection(options.Task, options.Tasks)
+	lw.tasks, err = normalizeTaskSelection(lw.options.Task, lw.options.Tasks)
 	if err != nil {
-		return ListOutcome{}, err
+		return nil, err
 	}
 	// normalizeListOptions owns the common path/base/filter validation. Task
 	// selection is normalized above because it may now contain several exact
 	// names rather than one string.
-	options.Task = ""
-	projectsRoot, _, base, filter, err := normalizeListOptions(options)
+	lw.options.Task = ""
+	lw.projectsRoot, _, lw.base, lw.filter, err = normalizeListOptions(lw.options)
 	if err != nil {
-		return ListOutcome{}, err
+		return nil, err
 	}
-	resolution, err := wbhome.Resolve(projectsRoot)
+	lw.resolution, err = wbhome.Resolve(lw.projectsRoot)
 	if err != nil {
-		return ListOutcome{}, err
+		return nil, err
 	}
-	ctx = withProjectsRoot(ctx, resolution.Root)
-	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
+	lw.ctx = withProjectsRoot(lw.ctx, lw.resolution.Root)
+	lw.resolution.Read, err = appendConfiguredSharedWorktreesLayout(lw.resolution.Read)
 	if err != nil {
-		return ListOutcome{}, err
+		return nil, err
 	}
-	outcome := ListOutcome{SchemaVersion: 1}
+	lw.outcome = ListOutcome{SchemaVersion: 1}
 	// One inventory walk asks the same question once per worktree, and a fleet
 	// keeps many worktrees per repository — 262 worktrees across 71 repositories
 	// on the fleet this was measured against, so 73% of the fetches re-learned a
@@ -1135,40 +1157,54 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	// whichever SHA happened to be current when its own fetch ran, and the
 	// pre-deletion recheck in preflightCleanupRepository still runs on the
 	// caller's own context, so it stays a genuinely fresh fetch.
-	ctx = withTargetHeadCache(ctx)
-	if options.Workers < 1 {
-		options.Workers = DefaultInspectWorkers
+	lw.ctx = withTargetHeadCache(lw.ctx)
+	if lw.options.Workers < 1 {
+		lw.options.Workers = DefaultInspectWorkers
 	}
-	reporter := &listProgressReporter{report: options.Progress}
-	policy := inspectPolicy{
-		includeDetached:    options.IncludeDetached,
-		ttl:                options.TTL,
-		residueEvidence:    options.ResidueEvidence,
-		residueDepth:       options.ResidueDepth,
-		activity:           options.Activity,
-		now:                options.Now,
-		mergeReceiptProofs: options.MergeReceiptProofs,
+	lw.reporter = &listProgressReporter{report: lw.options.Progress}
+	lw.policy = inspectPolicy{
+		includeDetached:    lw.options.IncludeDetached,
+		ttl:                lw.options.TTL,
+		residueEvidence:    lw.options.ResidueEvidence,
+		residueDepth:       lw.options.ResidueDepth,
+		activity:           lw.options.Activity,
+		now:                lw.options.Now,
+		mergeReceiptProofs: lw.options.MergeReceiptProofs,
 	}
-	for _, layout := range resolution.Read {
+	return lw, nil
+}
+
+// walkSharedLayouts inspects every registered (shared) worktrees root and
+// appends its results, diagnostics, artifacts and purged records.
+func (lw *listInventoryOp) walkSharedLayouts() error {
+	for _, layout := range lw.resolution.Read {
 		results, diagnostics, artifacts, purged, listErr := listLayout(
-			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter, policy,
+			lw.ctx, lw.projectsRoot, lw.resolution.Write.Home, layout, taskSelectionSet(lw.tasks), lw.base, lw.filter, lw.options.AbsorbedBy, lw.options.GitHub, lw.options.Workers, lw.reporter, lw.policy,
 		)
 		if listErr != nil {
-			return ListOutcome{}, listErr
+			return listErr
 		}
-		outcome.Results = append(outcome.Results, results...)
-		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
-		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
-		outcome.Purged = append(outcome.Purged, purged...)
+		lw.outcome.Results = append(lw.outcome.Results, results...)
+		lw.outcome.Diagnostics = append(lw.outcome.Diagnostics, diagnostics...)
+		lw.outcome.Artifacts = append(lw.outcome.Artifacts, artifacts...)
+		lw.outcome.Purged = append(lw.outcome.Purged, purged...)
 	}
+	return nil
+}
+
+// walkLocalLayouts discovers repository-local (unregistered) worktree roots
+// and walks them concurrently, bounded by the configured worker count, since
+// each root belongs to a different canonical clone and can fetch
+// independently.
+func (lw *listInventoryOp) walkLocalLayouts() error {
 	var localLayouts []wbhome.Layout
 	var localDiscoveryDiagnostics []ListDiagnostic
-	if len(tasks) > 0 {
-		localLayouts, localDiscoveryDiagnostics = discoverTaskScopedLocalWorktreeLayouts(projectsRoot, taskSelectionSet(tasks))
+	if len(lw.tasks) > 0 {
+		localLayouts, localDiscoveryDiagnostics = discoverTaskScopedLocalWorktreeLayouts(lw.projectsRoot, taskSelectionSet(lw.tasks))
 	} else {
-		localLayouts, localDiscoveryDiagnostics = discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot, filter)
+		localLayouts, localDiscoveryDiagnostics = discoverCanonicalLocalWorktreeLayouts(lw.ctx, lw.projectsRoot, lw.filter)
 	}
-	outcome.Diagnostics = append(outcome.Diagnostics, localDiscoveryDiagnostics...)
+	lw.outcome.Diagnostics = append(lw.outcome.Diagnostics, localDiscoveryDiagnostics...)
 	// A repository-local root contains candidates for only one canonical clone.
 	// Walking roots serially would therefore serialize every exact-target fetch
 	// across repositories, even when the caller requested parallel inspection.
@@ -1182,7 +1218,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		err         error
 	}
 	if len(localLayouts) > 0 {
-		workers := options.Workers
+		workers := lw.options.Workers
 		if workers > len(localLayouts) {
 			workers = len(localLayouts)
 		}
@@ -1195,7 +1231,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 				defer localWalkers.Done()
 				for layout := range jobs {
 					results, diagnostics, artifacts, listErr := listCanonicalLocalLayout(
-						ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, 1, reporter, policy,
+						lw.ctx, lw.projectsRoot, lw.resolution.Write.Home, layout, taskSelectionSet(lw.tasks), lw.base, lw.filter, lw.options.AbsorbedBy, lw.options.GitHub, 1, lw.reporter, lw.policy,
 					)
 					inspected <- localLayoutOutcome{results: results, diagnostics: diagnostics, artifacts: artifacts, err: listErr}
 				}
@@ -1211,64 +1247,85 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		}()
 		for inspectedLayout := range inspected {
 			if inspectedLayout.err != nil {
-				return ListOutcome{}, inspectedLayout.err
+				return inspectedLayout.err
 			}
-			outcome.Results = append(outcome.Results, inspectedLayout.results...)
-			outcome.Diagnostics = append(outcome.Diagnostics, inspectedLayout.diagnostics...)
-			outcome.Artifacts = append(outcome.Artifacts, inspectedLayout.artifacts...)
+			lw.outcome.Results = append(lw.outcome.Results, inspectedLayout.results...)
+			lw.outcome.Diagnostics = append(lw.outcome.Diagnostics, inspectedLayout.diagnostics...)
+			lw.outcome.Artifacts = append(lw.outcome.Artifacts, inspectedLayout.artifacts...)
 		}
 	}
+	return nil
+}
+
+// mergeClaimedAndSort folds in worktrees discovered only through an active
+// private Work Log claim, applies the owner-state and finalized filters, and
+// sorts every collection into deterministic order.
+func (lw *listInventoryOp) mergeClaimedAndSort() {
 	// A user-scoped shared root is a placement preference, not an ownership
 	// boundary. Once it changes, an existing managed checkout must remain
 	// discoverable from Git's registry and its own active private claim. The
 	// claim corroborates both the exact path and task identity; a merely
 	// similarly-shaped external worktree remains external.
-	known := make(map[string]bool, len(outcome.Results))
-	for _, result := range outcome.Results {
+	known := make(map[string]bool, len(lw.outcome.Results))
+	for _, result := range lw.outcome.Results {
 		known[filepath.Clean(result.WorktreeDir)] = true
 	}
 	claimed, claimDiagnostics := listClaimedRegistryWorktrees(
-		ctx, projectsRoot, resolution.Write.Home, known, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter, policy,
+		lw.ctx, lw.projectsRoot, lw.resolution.Write.Home, known, taskSelectionSet(lw.tasks), lw.base, lw.filter, lw.options.AbsorbedBy, lw.options.GitHub, lw.options.Workers, lw.reporter, lw.policy,
 	)
-	outcome.Results = append(outcome.Results, claimed...)
-	outcome.Diagnostics = append(outcome.Diagnostics, claimDiagnostics...)
-	if options.OwnerState != "" {
-		filtered := outcome.Results[:0]
-		for _, result := range outcome.Results {
-			if result.OwnerState == options.OwnerState {
+	lw.outcome.Results = append(lw.outcome.Results, claimed...)
+	lw.outcome.Diagnostics = append(lw.outcome.Diagnostics, claimDiagnostics...)
+	if lw.options.OwnerState != "" {
+		filtered := lw.outcome.Results[:0]
+		for _, result := range lw.outcome.Results {
+			if result.OwnerState == lw.options.OwnerState {
 				filtered = append(filtered, result)
 			}
 		}
-		outcome.Results = filtered
+		lw.outcome.Results = filtered
 	}
-	if options.Finalized != nil {
-		want := *options.Finalized
-		filtered := outcome.Results[:0]
-		for _, result := range outcome.Results {
+	if lw.options.Finalized != nil {
+		want := *lw.options.Finalized
+		filtered := lw.outcome.Results[:0]
+		for _, result := range lw.outcome.Results {
 			if (result.TerminalResult != "") == want {
 				filtered = append(filtered, result)
 			}
 		}
-		outcome.Results = filtered
+		lw.outcome.Results = filtered
 	}
-	sort.Slice(outcome.Results, func(i, j int) bool {
-		if outcome.Results[i].Task == outcome.Results[j].Task {
-			if outcome.Results[i].Repository == outcome.Results[j].Repository {
-				return outcome.Results[i].WorktreeDir < outcome.Results[j].WorktreeDir
+	sort.Slice(lw.outcome.Results, func(i, j int) bool {
+		if lw.outcome.Results[i].Task == lw.outcome.Results[j].Task {
+			if lw.outcome.Results[i].Repository == lw.outcome.Results[j].Repository {
+				return lw.outcome.Results[i].WorktreeDir < lw.outcome.Results[j].WorktreeDir
 			}
-			return outcome.Results[i].Repository < outcome.Results[j].Repository
+			return lw.outcome.Results[i].Repository < lw.outcome.Results[j].Repository
 		}
-		return outcome.Results[i].Task < outcome.Results[j].Task
+		return lw.outcome.Results[i].Task < lw.outcome.Results[j].Task
 	})
-	sort.Slice(outcome.Diagnostics, func(i, j int) bool {
-		if outcome.Diagnostics[i].Task == outcome.Diagnostics[j].Task {
-			return outcome.Diagnostics[i].Path < outcome.Diagnostics[j].Path
+	sort.Slice(lw.outcome.Diagnostics, func(i, j int) bool {
+		if lw.outcome.Diagnostics[i].Task == lw.outcome.Diagnostics[j].Task {
+			return lw.outcome.Diagnostics[i].Path < lw.outcome.Diagnostics[j].Path
 		}
-		return outcome.Diagnostics[i].Task < outcome.Diagnostics[j].Task
+		return lw.outcome.Diagnostics[i].Task < lw.outcome.Diagnostics[j].Task
 	})
-	sort.Slice(outcome.Artifacts, func(i, j int) bool { return outcome.Artifacts[i].Path < outcome.Artifacts[j].Path })
-	sort.Slice(outcome.Purged, func(i, j int) bool { return outcome.Purged[i].Path < outcome.Purged[j].Path })
-	return outcome, nil
+	sort.Slice(lw.outcome.Artifacts, func(i, j int) bool { return lw.outcome.Artifacts[i].Path < lw.outcome.Artifacts[j].Path })
+	sort.Slice(lw.outcome.Purged, func(i, j int) bool { return lw.outcome.Purged[i].Path < lw.outcome.Purged[j].Path })
+}
+
+func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
+	lw, err := newListInventoryOp(ctx, options)
+	if err != nil {
+		return ListOutcome{}, err
+	}
+	if err := lw.walkSharedLayouts(); err != nil {
+		return ListOutcome{}, err
+	}
+	if err := lw.walkLocalLayouts(); err != nil {
+		return ListOutcome{}, err
+	}
+	lw.mergeClaimedAndSort()
+	return lw.outcome, nil
 }
 
 // discoverCanonicalLocalWorktreeLayouts finds only `<owner>/<repository>`
