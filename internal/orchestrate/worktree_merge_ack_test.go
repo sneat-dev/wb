@@ -1945,9 +1945,15 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 	}
 	competingBytes = append(competingBytes, '\n')
 	// A genuine concurrent writer wins the race by publishing the
-	// competing correction before this call's own filewrite.LinkPath
-	// attempt, so os.Link itself returns a real os.ErrExist -- no
-	// injected mock is needed to reach this branch.
+	// competing correction before this call runs at all, so
+	// CorrectValidationFailedSelfSupersession's own pre-publish read finds
+	// existing, mismatched evidence and refuses -- no injected mock is
+	// needed to reach a refusal. (This is the same "binds different
+	// immutable evidence" refusal AcknowledgeWorktreeMergeReceiptCollision
+	// takes above; persistSelfSupersessionCorrectionInjected's own
+	// EEXIST-after-LinkPath race, reached only when the competing write
+	// lands after this pre-check, is covered directly by a
+	// filewrite.Injector Hook in the task-9 PR-4 fault-injection tests.)
 	competingPath := selfSupersessionCorrectionPath(receipt.ReceiptPath)
 	if err := os.MkdirAll(filepath.Dir(competingPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -1955,7 +1961,7 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 	if err := os.WriteFile(competingPath, competingBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), options); err == nil || !strings.Contains(err.Error(), "concurrent self-supersession correction") {
+	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), options); err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
 		t.Fatalf("concurrent correction error = %v", err)
 	}
 	current, err := os.ReadFile(selfSupersessionCorrectionPath(receipt.ReceiptPath))
