@@ -279,7 +279,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 			if options.migratePagesSource && options.temporarilyUnarchive {
 				return usageError("--migrate-pages-source does not support archived repositories; complete the separately reviewed archive transition first")
 			}
-			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
+			report, err := runDefaultBranch(cmd.Context(), inv, options, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -315,7 +315,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	return command
 }
 
-func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
+func runDefaultBranch(ctx context.Context, inv *invocation, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
 	if options.restoreArchiveFrom != "" {
 		return runDefaultBranchArchiveRestore(ctx, options, progress)
 	}
@@ -327,11 +327,11 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
-	repos, discoveryFailures, err := discoverDefaultBranchFleet(filterFlag, options.owners, options.repositories, options.includeUser, options.allOrgs)
+	repos, discoveryFailures, err := discoverDefaultBranchFleet(inv.filterFlag, options.owners, options.repositories, options.includeUser, options.allOrgs)
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
-	locals, err := defaultBranchLocalClones(filterFlag)
+	locals, err := defaultBranchLocalClones(inv.filterFlag)
 	if err != nil {
 		return defaultBranchReport{}, err
 	}

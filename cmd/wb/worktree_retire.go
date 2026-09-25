@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorktreeRetireCmd() *cobra.Command {
+func newWorktreeRetireCmd(inv *invocation) *cobra.Command {
 	var apply, jsonShortcut bool
 	var format, message, preserve string
 	command := &cobra.Command{
@@ -46,7 +46,7 @@ planning, again under the task lock, and before deleting the original ref.`,
 			}
 			defer release()
 			result, err := worktrees.Retire(command.Context(), worktrees.RetireOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Repository: filterFlag,
+				ProjectsRoot: projectsRoot, Task: args[0], Repository: inv.filterFlag,
 				Message: message, Preserve: preserve, Apply: apply,
 				RemoteOwnership: func(ctx context.Context, task string) error {
 					return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), projectsRoot, task)

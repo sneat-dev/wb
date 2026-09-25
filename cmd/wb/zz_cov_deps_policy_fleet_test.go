@@ -67,9 +67,9 @@ func cwCovWriteFile(t *testing.T, path, body string) {
 func cwCovRunDepsPolicy(t *testing.T, projects string, args ...string) (string, error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot, previousFilter := projectsRoot, filterFlag
-	projectsRoot, filterFlag = projects, ""
-	t.Cleanup(func() { projectsRoot, filterFlag = previousRoot, previousFilter })
+	previousRoot := projectsRoot
+	projectsRoot = projects
+	t.Cleanup(func() { projectsRoot = previousRoot })
 	command := newDepsPolicyCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SilenceErrors = true

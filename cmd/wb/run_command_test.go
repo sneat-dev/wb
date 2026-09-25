@@ -18,7 +18,10 @@ import (
 
 // TestRunListCommandDispatchesToRunRunInProcess proves that "wb run --list"
 // (recipe mode, no command after "--") reaches runRun through the real
-// command tree, threading the invocation's extraOrgs into it.
+// command tree. --list returns before runRun ever reads extraOrgs, so this
+// does not exercise that threading; see
+// TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess below for
+// that.
 func TestRunListCommandDispatchesToRunRunInProcess(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
@@ -35,6 +38,46 @@ func TestRunListCommandDispatchesToRunRunInProcess(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "refresh-ci") {
 		t.Fatalf("wb run --list output = %q, want the configured recipe name", stdout)
+	}
+}
+
+// TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess proves that
+// running a named recipe (not --list) reaches runRun's fleet discovery with
+// the real invocation's extraOrgs, not a hardcoded empty one: a fake gh
+// records every argv it is called with, and the distinguishing org set only
+// on inv.extraOrgs appears in that log only if runRun actually received it.
+func TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "gh-calls.log")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> " + logPath + "\n" +
+		`if [ "$1" = "api" ] && [ "$2" = "user" ]; then printf 'HTTP/2 200 OK\n\n{"login":"cwcov-user"}\n'; exit 0; fi` + "\n" +
+		`if [ "$1" = "api" ] && [ "$2" = "user/orgs" ]; then printf 'HTTP/2 200 OK\n\n[]\n'; exit 0; fi` + "\n" +
+		`if [ "$1" = "repo" ] && [ "$2" = "list" ]; then printf '[]\n'; exit 0; fi` + "\n" +
+		`printf '{"total_count":0,"items":[]}\n'` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_HOME", t.TempDir())
+
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv := &invocation{extraOrgs: []string{"target-org-9f3"}}
+	if _, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRunCmd(inv) },
+		"refresh-ci", "--config", configPath); err != nil {
+		t.Fatalf("wb run refresh-ci: %v", err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read gh call log: %v", err)
+	}
+	if !strings.Contains(string(log), "target-org-9f3") {
+		t.Fatalf("gh calls = %q, want a repo list call naming the invocation's extraOrgs", log)
 	}
 }
 

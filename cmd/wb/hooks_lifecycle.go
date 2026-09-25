@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newHooksLifecycleCmd() *cobra.Command {
+func newHooksLifecycleCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "lifecycle",
 		Short: "Inspect and operate trusted repository-update executors",
@@ -26,7 +26,7 @@ func newHooksLifecycleCmd() *cobra.Command {
 		newHooksLifecycleResumeCmd(),
 		newHooksLifecycleRetryCmd(),
 		newHooksLifecycleGCCmd(),
-		newHooksLifecycleBackfillCmd(),
+		newHooksLifecycleBackfillCmd(inv),
 		newHooksLifecycleRunPendingCmd(),
 	)
 	return command
@@ -219,7 +219,7 @@ type lifecycleBackfillPlan struct {
 	Enqueue    lifecyclehooks.Report    `json:"enqueue"`
 }
 
-func newHooksLifecycleBackfillCmd() *cobra.Command {
+func newHooksLifecycleBackfillCmd(inv *invocation) *cobra.Command {
 	var apply bool
 	var jsonOut bool
 	command := &cobra.Command{
@@ -232,7 +232,7 @@ whether the external tool initializes missing per-repository state.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			dispatcher := lifecyclehooks.DefaultDispatcher()
-			plan, err := planLifecycleBackfill(command.Context(), projectsRoot, filterFlag, dispatcher, apply)
+			plan, err := planLifecycleBackfill(command.Context(), projectsRoot, inv.filterFlag, dispatcher, apply)
 			if err != nil {
 				return err
 			}
