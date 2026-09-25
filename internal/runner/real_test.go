@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -79,6 +80,54 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0 for a start failure (never reached a process exit)", result.ExitCode)
+	}
+}
+
+// TestRunnerHelperProcessEchoesStdin is the child half of
+// TestRealRunWithInputWritesToTheChildsStdin: it copies its stdin to
+// stdout, so the parent can assert the exact bytes RunWithInput wrote
+// reached the child.
+func TestRunnerHelperProcessEchoesStdin(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("WB_RUNNER_ECHO_STDIN") != "1" {
+		return
+	}
+	if _, err := io.Copy(os.Stdout, os.Stdin); err != nil { //nolint:forbidigo // helper-process fixture
+		os.Exit(9)
+	}
+	os.Exit(0)
+}
+
+func TestRealRunWithInputWritesToTheChildsStdin(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_ECHO_STDIN", "1")
+
+	result, err := runner.New().RunWithInput(context.Background(), t.TempDir(), []byte("hello-stdin"), os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesStdin$")
+	if err != nil {
+		t.Fatalf("RunWithInput: %v", err)
+	}
+	if result.Stdout != "hello-stdin" {
+		t.Fatalf("result.Stdout = %q, want the echoed stdin %q", result.Stdout, "hello-stdin")
+	}
+}
+
+func TestRealRunWithInputReportsNonZeroExitStatus(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_EXIT", "7")
+
+	result, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...)
+	if err == nil {
+		t.Fatal("want an error for a non-zero exit")
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", result.ExitCode)
+	}
+}
+
+func TestRealRunWithInputBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	if _, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunWithInput() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 

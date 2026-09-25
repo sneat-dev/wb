@@ -41,13 +41,15 @@ func AllowRealProcess(t testing.TB) {
 	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "1")
 }
 
-// Call records one Run/Start/Detach/Interactive invocation the Fake
-// received.
+// Call records one Run/RunWithInput/Start/Detach/Interactive invocation the
+// Fake received.
 type Call struct {
-	Op   string // "Run", "Start", "Detach" or "Interactive"
+	Op   string // "Run", "RunWithInput", "Start", "Detach" or "Interactive"
 	Dir  string
 	Name string
 	Args []string
+	// Input is the stdin RunWithInput was given. Empty for every other Op.
+	Input []byte
 }
 
 // Argv is Name followed by Args, the shape Expect's matcher predicates
@@ -174,6 +176,13 @@ func (f *Fake) answer(call Call) (runner.Result, error) {
 // Run implements runner.Runner.
 func (f *Fake) Run(_ context.Context, dir, name string, args ...string) (runner.Result, error) {
 	return f.answer(Call{Op: "Run", Dir: dir, Name: name, Args: args})
+}
+
+// RunWithInput implements runner.Runner. The input the caller passed is
+// recorded on Call.Input, so a test can assert on it via Calls/ExpectArgv's
+// match function alongside the argv.
+func (f *Fake) RunWithInput(_ context.Context, dir string, input []byte, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "RunWithInput", Dir: dir, Name: name, Args: args, Input: input})
 }
 
 // Start implements runner.Runner. The returned Handle's Wait replays the

@@ -43,6 +43,24 @@ func TestFakeRunReturnsTheScriptedError(t *testing.T) {
 	}
 }
 
+func TestFakeRunWithInputRecordsInputAndReturnsTheScriptedResult(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"ssh", "host"}, runner.Result{Stdout: "remote-out"}, nil)
+
+	result, err := fake.RunWithInput(context.Background(), "/repo", []byte("request-body"), "ssh", "host")
+	if err != nil {
+		t.Fatalf("RunWithInput: %v", err)
+	}
+	if result.Stdout != "remote-out" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunWithInput" || string(calls[0].Input) != "request-body" {
+		t.Fatalf("Calls() = %+v, want one RunWithInput call carrying the input", calls)
+	}
+}
+
 func TestFakeExpectMatchesByPredicateNotJustExactArgv(t *testing.T) {
 	t.Parallel()
 	fake := New(t)
