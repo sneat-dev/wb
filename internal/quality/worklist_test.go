@@ -375,3 +375,141 @@ func TestPackWorklistUnitsWithNoBlocksReturnsNoUnits(t *testing.T) {
 		t.Fatalf("units = %#v, want none", units)
 	}
 }
+
+// worklistBlock builds a synthetic WorklistBlock for packWorklistUnits
+// fixtures below, which exercise the packer directly and so never touch
+// source files or go/ast (function attribution is already covered by the
+// BuildWorklist-level tests above).
+func worklistBlock(file, function string, statements int) WorklistBlock {
+	return WorklistBlock{File: file, StartLine: 1, EndLine: 1, Statements: statements, Function: function}
+}
+
+// TestPackWorklistUnitsNeverSplitsSeveralSmallFilesThatFitTogether pins the
+// packer's ordinary case: several files that each fit comfortably inside one
+// unit, and whose combined total also fits, land in a single shared unit
+// with no splitting.
+func TestPackWorklistUnitsNeverSplitsSeveralSmallFilesThatFitTogether(t *testing.T) {
+	t.Parallel()
+	blocks := []WorklistBlock{
+		worklistBlock("a.go", "A", 50),
+		worklistBlock("b.go", "B", 50),
+		worklistBlock("c.go", "C", 50),
+	}
+	units := packWorklistUnits(blocks, 300)
+	if len(units) != 1 {
+		t.Fatalf("units = %#v, want 1 (all three files fit together)", units)
+	}
+	if units[0].Statements != 150 {
+		t.Fatalf("units[0].Statements = %d, want 150", units[0].Statements)
+	}
+	if len(units[0].SharesFileWith) != 0 {
+		t.Fatalf("units[0].SharesFileWith = %#v, want none (only one unit exists)", units[0].SharesFileWith)
+	}
+}
+
+// TestPackWorklistUnitsStartsFreshRatherThanStraddleASmallFileAcrossUnits is
+// the review's B1 repro: a file that would fit whole in a unit of its own
+// must never be split just because it partially fits in whatever room is
+// left in the current unit. Files A (280) and C (280) each nearly fill a
+// 300-statement unit; file B (40, in two functions) is small enough to fit
+// in one unit on its own, but 280+40 > 300, so B must start a fresh unit
+// rather than have its two functions split across A's unit and C's unit.
+func TestPackWorklistUnitsStartsFreshRatherThanStraddleASmallFileAcrossUnits(t *testing.T) {
+	t.Parallel()
+	blocks := []WorklistBlock{
+		worklistBlock("a.go", "A", 280),
+		worklistBlock("b.go", "B1", 20),
+		worklistBlock("b.go", "B2", 20),
+		worklistBlock("c.go", "C", 280),
+	}
+	units := packWorklistUnits(blocks, 300)
+	if len(units) != 3 {
+		t.Fatalf("units = %#v, want 3 (A alone, B alone, C alone)", units)
+	}
+	wantFiles := [][]string{{"a.go"}, {"b.go"}, {"c.go"}}
+	for i, want := range wantFiles {
+		if !reflect.DeepEqual(units[i].Files, want) {
+			t.Fatalf("units[%d].Files = %#v, want %#v", i, units[i].Files, want)
+		}
+	}
+	if units[1].Statements != 40 {
+		t.Fatalf("units[1].Statements = %d, want 40 (B's two functions merged into one unit, not split)", units[1].Statements)
+	}
+	// No file appears in more than one unit, so nothing shares.
+	for i, unit := range units {
+		if len(unit.SharesFileWith) != 0 {
+			t.Fatalf("units[%d].SharesFileWith = %#v, want none: file boundaries must not force sharing here", i, unit.SharesFileWith)
+		}
+	}
+}
+
+// TestPackWorklistUnitsGivesAnOversizedFileItsOwnDedicatedUnitRun covers a
+// file whose total exceeds unitSize: it cannot avoid splitting, but its
+// split must be confined to a run of units dedicated to that file alone —
+// never blended with a neighboring file's functions, before or after.
+func TestPackWorklistUnitsGivesAnOversizedFileItsOwnDedicatedUnitRun(t *testing.T) {
+	t.Parallel()
+	blocks := []WorklistBlock{
+		worklistBlock("small.go", "Small", 50),
+		worklistBlock("big.go", "Big1", 150),
+		worklistBlock("big.go", "Big2", 150),
+		worklistBlock("big.go", "Big3", 150),
+		worklistBlock("after.go", "After", 50),
+	}
+	units := packWorklistUnits(blocks, 300)
+	// small.go (50) starts its own unit since 50+450 > 300 for big.go, so it
+	// cannot share with big.go's first unit's remaining room without risking
+	// a split later; big.go (450 statements) needs ceil(450/300) = 2 units of
+	// its own; after.go (50) starts fresh rather than land in big.go's
+	// trailing partial unit.
+	if len(units) != 4 {
+		t.Fatalf("units = %#v, want 4 (small, big x2, after)", units)
+	}
+	if !reflect.DeepEqual(units[0].Files, []string{"small.go"}) {
+		t.Fatalf("units[0].Files = %#v, want [small.go]", units[0].Files)
+	}
+	if !reflect.DeepEqual(units[1].Files, []string{"big.go"}) || !reflect.DeepEqual(units[2].Files, []string{"big.go"}) {
+		t.Fatalf("units[1,2].Files = %#v, %#v, want both [big.go]", units[1].Files, units[2].Files)
+	}
+	if !reflect.DeepEqual(units[3].Files, []string{"after.go"}) {
+		t.Fatalf("units[3].Files = %#v, want [after.go]", units[3].Files)
+	}
+	// Only big.go's own two dedicated units share with each other.
+	if !reflect.DeepEqual(units[1].SharesFileWith, []int{2}) {
+		t.Fatalf("units[1].SharesFileWith = %#v, want [2]", units[1].SharesFileWith)
+	}
+	if !reflect.DeepEqual(units[2].SharesFileWith, []int{1}) {
+		t.Fatalf("units[2].SharesFileWith = %#v, want [1]", units[2].SharesFileWith)
+	}
+	if len(units[0].SharesFileWith) != 0 || len(units[3].SharesFileWith) != 0 {
+		t.Fatalf("units[0,3].SharesFileWith = %#v, %#v, want none", units[0].SharesFileWith, units[3].SharesFileWith)
+	}
+}
+
+// TestPackWorklistUnitsPlacesAFunctionLargerThanUnitSizeAloneInItsOwnUnit
+// covers the extreme case of a single function whose statement count alone
+// exceeds unitSize: a function's blocks are never split across units (an
+// invariant TestBuildWorklistMergesEveryBlockOfTheSameFunctionIntoOneGroup
+// already pins), so that one unit must simply exceed unitSize rather than
+// break the function apart, and neighboring files must not be folded into
+// that oversized unit.
+func TestPackWorklistUnitsPlacesAFunctionLargerThanUnitSizeAloneInItsOwnUnit(t *testing.T) {
+	t.Parallel()
+	blocks := []WorklistBlock{
+		worklistBlock("before.go", "Before", 50),
+		worklistBlock("huge.go", "Huge", 400),
+		worklistBlock("after.go", "After", 50),
+	}
+	units := packWorklistUnits(blocks, 300)
+	if len(units) != 3 {
+		t.Fatalf("units = %#v, want 3 (before, huge alone, after)", units)
+	}
+	if units[1].Statements != 400 || !reflect.DeepEqual(units[1].Files, []string{"huge.go"}) {
+		t.Fatalf("units[1] = %#v, want huge.go alone with 400 statements", units[1])
+	}
+	for i, unit := range units {
+		if len(unit.SharesFileWith) != 0 {
+			t.Fatalf("units[%d].SharesFileWith = %#v, want none", i, unit.SharesFileWith)
+		}
+	}
+}

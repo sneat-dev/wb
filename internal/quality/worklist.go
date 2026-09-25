@@ -137,13 +137,37 @@ type funcGroup struct {
 	blocks     []WorklistBlock
 }
 
+// fileGroup accumulates every funcGroup for one file, in file order, so
+// packWorklistUnits can decide up front whether the whole file fits in a
+// single unit before it places any of the file's functions.
+type fileGroup struct {
+	file       string
+	statements int
+	groups     []funcGroup
+}
+
 // packWorklistUnits groups sorted, function-attributed blocks into
 // funcGroups (blocks are contiguous per function: Go forbids nested
 // top-level func declarations, so a single function's blocks can never be
 // separated by another function's blocks once sorted by file then line),
-// then greedily bins whole funcGroups into units of about unitSize
-// statements, and finally marks every unit that shares a file with another
-// unit.
+// then those funcGroups into fileGroups (contiguous for the same reason: the
+// input is sorted by file, so every group for one file is one run), then
+// packs whole fileGroups into units of about unitSize statements:
+//
+//   - A file whose total fits within unitSize is never split. If it does not
+//     fit in whatever room is left in the current unit, the current unit is
+//     flushed (even under capacity) and the file starts fresh in a new unit,
+//     where its own total guarantees it fits.
+//   - A file whose total exceeds unitSize cannot avoid splitting. Any
+//     current unit is flushed first, the file's functions are greedily
+//     packed alone into a dedicated run of units (whole-function greedy, as
+//     for any file), and that run is flushed before the next file starts —
+//     its trailing partial unit is never blended with a neighboring file.
+//
+// This confines SharesFileWith to units that share a genuinely oversized
+// file, per task-25 Verifies 2 ("each unit takes whole functions and, where
+// it can, whole files"). Finally, every unit that shares a file with another
+// unit is marked.
 func packWorklistUnits(sortedBlocks []WorklistBlock, unitSize int) []WorklistUnit {
 	var groups []funcGroup
 	for _, block := range sortedBlocks {
@@ -153,6 +177,16 @@ func packWorklistUnits(sortedBlocks []WorklistBlock, unitSize int) []WorklistUni
 			continue
 		}
 		groups = append(groups, funcGroup{file: block.File, function: block.Function, statements: block.Statements, blocks: []WorklistBlock{block}})
+	}
+
+	var fileGroups []fileGroup
+	for _, group := range groups {
+		if n := len(fileGroups); n > 0 && fileGroups[n-1].file == group.file {
+			fileGroups[n-1].statements += group.statements
+			fileGroups[n-1].groups = append(fileGroups[n-1].groups, group)
+			continue
+		}
+		fileGroups = append(fileGroups, fileGroup{file: group.file, statements: group.statements, groups: []funcGroup{group}})
 	}
 
 	var units []WorklistUnit
@@ -173,12 +207,35 @@ func packWorklistUnits(sortedBlocks []WorklistBlock, unitSize int) []WorklistUni
 		units = append(units, current)
 		current = WorklistUnit{}
 	}
-	for _, group := range groups {
-		if current.Statements > 0 && current.Statements+group.statements > unitSize {
-			flush()
-		}
+	addGroup := func(group funcGroup) {
 		current.Blocks = append(current.Blocks, group.blocks...)
 		current.Statements += group.statements
+	}
+
+	for _, file := range fileGroups {
+		if file.statements <= unitSize {
+			// The whole file fits in one unit: never split it. Start it
+			// fresh rather than let it spill into a second unit.
+			if current.Statements > 0 && current.Statements+file.statements > unitSize {
+				flush()
+			}
+			for _, group := range file.groups {
+				addGroup(group)
+			}
+			continue
+		}
+		// The file itself exceeds unitSize: it must split, but only across
+		// units dedicated to it. Flush whatever came before, greedily pack
+		// this file's functions alone, then flush again so the next file
+		// always starts fresh.
+		flush()
+		for _, group := range file.groups {
+			if current.Statements > 0 && current.Statements+group.statements > unitSize {
+				flush()
+			}
+			addGroup(group)
+		}
+		flush()
 	}
 	flush()
 
