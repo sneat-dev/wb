@@ -102,6 +102,14 @@ func (ioDiscard) Write(payload []byte) (int, error) { return len(payload), nil }
 // write, sync, close, or the pre-existing-file chmod failure
 // deterministically needs the injector.
 
+func TestWritePrivateCredentialInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credential")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if _, err := writePrivateCredentialInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writePrivateCredentialInjected error = %v", err)
+	}
+}
+
 func TestWritePrivateCredentialInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credential")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}

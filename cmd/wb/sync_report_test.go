@@ -272,6 +272,14 @@ func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
 // path is already covered above, but reaching a create, write, close,
 // chmod, or rename failure deterministically needs the injector.
 
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}

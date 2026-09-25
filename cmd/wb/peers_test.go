@@ -551,6 +551,14 @@ func TestPeersBlockActsLocallyOnTheUpstream(t *testing.T) {
 // elsewhere, but reaching a create, chmod, write, sync, close, or rename
 // failure deterministically needs the injector.
 
+func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peer-upstream.json")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("savePeerUpstreamStateInjected error = %v", err)
+	}
+}
+
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}

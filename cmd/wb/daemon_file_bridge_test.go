@@ -731,6 +731,21 @@ func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
 // failure deterministically needs the injector, since none of those
 // syscalls can be made to fail by shaping ordinary filesystem state.
 
+func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if _, err := daemonFileBridgeKeyInjected(root, true, inj); err == nil || !strings.Contains(err.Error(), "create daemon file bridge key") {
+		t.Fatalf("daemonFileBridgeKeyInjected error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("key file not cleaned up after injected create failure: %v", err)
+	}
+}
+
 func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	root := daemonTestRoot(t)
 	path, err := daemonFileBridgeKeyPath(root)

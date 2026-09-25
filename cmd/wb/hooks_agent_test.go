@@ -524,6 +524,14 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 // path is already covered above, but reaching a create, write, close,
 // chmod, or rename failure deterministically needs the injector.
 
+func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
+	}
+}
+
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}

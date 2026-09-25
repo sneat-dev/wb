@@ -899,6 +899,15 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 // path is already covered above, but reaching a create, chmod, write,
 // sync, close, or rename failure deterministically needs the injector.
 
+func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	root := daemonTestRoot(t)
+	controller := newDaemonController(daemonTestDependencies(t, root), root)
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := controller.writeLifecycleOwnerPIDInjected(800, inj); err == nil || !strings.Contains(err.Error(), "create daemon lifecycle owner") {
+		t.Fatalf("writeLifecycleOwnerPIDInjected error = %v", err)
+	}
+}
+
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
 	root := daemonTestRoot(t)
 	controller := newDaemonController(daemonTestDependencies(t, root), root)
