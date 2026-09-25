@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestRepoTransferCleanupRequiresAReceiptFlag(t *testing.T) {
+func TestRepoTransferCleanupRequiresReceiptAsUsage(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newRepoTransferCleanupCmd(&invocation{projectsRoot: root}) }); err == nil || !strings.Contains(err.Error(), "--receipt is required") {
 		t.Fatalf("wb repo transfer cleanup without --receipt = %v, want a usage refusal", err)
