@@ -408,8 +408,8 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		withFailure   bool
@@ -599,8 +599,8 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestAbandonmentPublicationCrashReplaysExactlyOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
 	if err != nil {

@@ -150,11 +150,11 @@ func TestSlCovInspectPreparedRejectsCorruptPlan(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // kept serial: this test's subtests each acquire/Close an exec fence and then rely on startWithDependencies observing accurate fence liveness; running them (or a sibling top-level test) concurrently races any subtest's fork() (which duplicates the fd into the forked child until its own exec), making a fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	//nolint:paralleltest // kept serial: see the parent test's reason
 	t.Run("unbound abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6302)
 		attempt, err := latestAttempt(fixture.state)
@@ -176,8 +176,8 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 			t.Fatal("start accepted an abandonment that does not bind its plan")
 		}
 	})
-	//nolint:paralleltest // kept serial: see the parent test's reason
 	t.Run("unreadable exec fence on pre-release attempt", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		if _, err := attempt.saveReady(fixture.plan, fixture.planDigest(t), slCovReadyRecord(fixture.plan, 6304, fixture.deps.now())); err != nil {
@@ -188,8 +188,8 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 			t.Fatal("start accepted a non-private pre-release exec fence")
 		}
 	})
-	//nolint:paralleltest // kept serial: see the parent test's reason
 	t.Run("sealed abandonment verify pinned failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(6305)
@@ -204,8 +204,8 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 			t.Fatalf("sealed abandonment verify pinned failure = %v", err)
 		}
 	})
-	//nolint:paralleltest // kept serial: see the parent test's reason
 	t.Run("sealed abandonment publication failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt := fixture.claimed(t)
 		fence, err := attempt.acquireExecFence(6306)
@@ -222,8 +222,8 @@ func TestSlCovStartSurfacesUnboundAbandonmentAndPreReleaseEvidence(t *testing.T)
 	})
 }
 
-//nolint:paralleltest // kept serial: this test's exec-fence acquire/Close/held sequence races any sibling parallel test's fork() (which duplicates this fd into the forked child until its own exec), making the fence appear falsely held after Close (task-21, #739; proven test-only -- see acquireExecFence's doc comment in state.go for why production cannot hit this); serial removes every such sibling from the race window
 func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	type handles struct{ fence *execFence }
 	setup := func(t *testing.T) (*launcherRetryFixture, *handles) {
@@ -304,7 +304,16 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 			attemptID := attempt.id
 			_ = attempt.Close()
 			_ = state.Close()
+			// Wait for the goroutine to finish marking the launch directory
+			// read-only (which itself registers slCovReadOnly's restoring
+			// t.Cleanup) before returning: slCovReadOnly chmods before it
+			// registers that cleanup, so returning first can race the test
+			// function's own return and leak a permanently read-only
+			// directory for a later t.TempDir() cleanup to trip over
+			// ("permission denied"; task-21, #740 review).
+			readOnly := make(chan struct{})
 			go func(attemptID string) {
+				defer close(readOnly)
 				releasePath := filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), "release.json")
 				for {
 					if _, err := os.Stat(releasePath); err == nil {
@@ -315,6 +324,7 @@ func TestSlCovStartFreshLaunchFailurePaths(t *testing.T) {
 					time.Sleep(time.Millisecond)
 				}
 			}(attemptID)
+			<-readOnly
 			return "worklog", nil
 		}
 		if _, err := startWithDependencies(ctx, fx.options(before), fx.deps); err == nil || !strings.Contains(err.Error(), "permission denied") {

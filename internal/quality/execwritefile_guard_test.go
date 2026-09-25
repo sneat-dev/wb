@@ -59,10 +59,12 @@ func TestWritesAFakeExecutable(t *testing.T) {
 }
 
 // TestScanExecWriteFileCallSitesIgnoresNonExecutableModes proves the
-// scanner does not flag ordinary data-file writes (0o600/0o644), a dynamic
-// mode expression it cannot classify, a WriteFile call whose receiver
-// package is not literally os, or a literal mode too large for int64 (so
-// strconv.ParseInt itself fails).
+// scanner does not flag ordinary data-file writes (0o600/0o644), a mode
+// expression it genuinely cannot trace to a literal (a struct field, or a
+// literal too large for int64 so strconv.ParseInt itself fails), a
+// WriteFile call whose receiver package is not literally os, or an
+// unrelated three-argument call to a same-named function that never
+// forwards into a raw write.
 func TestScanExecWriteFileCallSitesIgnoresNonExecutableModes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -80,11 +82,13 @@ func (notOS) WriteFile(string, []byte, int) error { return nil }
 
 func threeArgs(a, b, c int) int { return a + b + c }
 
+type modeHolder struct{ mode os.FileMode }
+
 func TestWritesOrdinaryDataFiles(t *testing.T) {
 	_ = os.WriteFile("data.json", []byte("{}"), 0o600)
 	_ = os.WriteFile("wide.txt", []byte("x"), 0o644)
-	mode := os.FileMode(0o755)
-	_ = os.WriteFile("dynamic", []byte("x"), mode)
+	holder := modeHolder{mode: 0o755}
+	_ = os.WriteFile("dynamic", []byte("x"), holder.mode)
 	var other notOS
 	_ = other.WriteFile("script", []byte("#!/bin/sh\n"), 0o755)
 	_ = os.WriteFile("overflow", []byte("x"), 99999999999999999999999999)
@@ -108,6 +112,73 @@ func TestWritesAFakeExecutableUnderAHiddenDir(t *testing.T) {
 	}
 	if len(violations) != 0 {
 		t.Fatalf("violations = %#v, want none", violations)
+	}
+}
+
+// TestScanExecWriteFileCallSitesFindsEveryWidenedShape pins the scanner's
+// widened detections (task-21/#739 follow-up): a mode traced through a
+// local variable, an os.FileMode(literal) conversion, a write followed by a
+// same-path os.Chmod/os.Fchmod to an executable mode, a direct os.OpenFile
+// with an executable literal, ioutil.WriteFile, and a helper function that
+// forwards its own parameter straight into a raw write -- flagged at the
+// call site that supplies the executable literal, not at the helper's own
+// definition.
+func TestScanExecWriteFileCallSitesFindsEveryWidenedShape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeQualityFile(t, filepath.Join(dir, "go.mod"), "module example.test/execwritefile\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(dir, "fixture_test.go"), `package fixture
+
+import (
+	"io/ioutil"
+	"os"
+	"testing"
+)
+
+func TestTracedLocalVariableMode(t *testing.T) {
+	mode := 0o755
+	_ = os.WriteFile("traced", []byte("#!/bin/sh\n"), os.FileMode(mode))
+}
+
+func TestFileModeConversionLiteral(t *testing.T) {
+	_ = os.WriteFile("converted", []byte("#!/bin/sh\n"), os.FileMode(0o755))
+}
+
+func TestWriteThenChmodToExecutable(t *testing.T) {
+	path := "chmodded"
+	_ = os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644)
+	_ = os.Chmod(path, 0o755)
+}
+
+func TestWriteThenFchmodToExecutable(t *testing.T) {
+	path := "fchmodded"
+	file, _ := os.Open(path)
+	_ = os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644)
+	_ = os.Fchmod(int(file.Fd()), 0o755)
+}
+
+func TestOpenFileWithExecutableLiteral(t *testing.T) {
+	_, _ = os.OpenFile("opened", os.O_CREATE|os.O_WRONLY, 0o755)
+}
+
+func TestIoutilWriteFileWithExecutableLiteral(t *testing.T) {
+	_ = ioutil.WriteFile("legacy", []byte("#!/bin/sh\n"), 0o755)
+}
+
+func hkFixtureWriteFile(t *testing.T, path string, content []byte, mode os.FileMode) {
+	_ = os.WriteFile(path, content, mode)
+}
+
+func TestForwarderCallSiteWithExecutableLiteral(t *testing.T) {
+	hkFixtureWriteFile(t, "forwarded", []byte("#!/bin/sh\n"), 0o755)
+}
+`)
+	violations, err := ScanExecWriteFileCallSites(dir)
+	if err != nil {
+		t.Fatalf("ScanExecWriteFileCallSites: %v", err)
+	}
+	if len(violations) != 7 {
+		t.Fatalf("violations = %#v, want exactly 7 (one per widened shape)", violations)
 	}
 }
 

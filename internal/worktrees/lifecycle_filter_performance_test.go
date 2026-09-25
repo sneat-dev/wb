@@ -3,13 +3,13 @@ package worktrees
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -170,24 +170,17 @@ func copyTestBinary(t *testing.T, target string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := os.Open(source)
+	content, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := input.Close(); err != nil {
-			t.Errorf("close source test binary: %v", err)
-		}
-	}()
-	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		t.Fatal(err)
-	}
-	if err := output.Close(); err != nil {
+	// testenv.WriteExecutableFile (not os.OpenFile+io.Copy) is required here:
+	// opening target directly for write leaves a writable fd on its inode
+	// while another goroutine's fork elsewhere in this parallel test binary
+	// may inherit it before its own exec, racing "text file busy"
+	// (golang/go#22315; task-21, #739) -- and target is itself about to be
+	// exec'd as a fake git helper by this same test.
+	if err := testenv.WriteExecutableFile(target, content, 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

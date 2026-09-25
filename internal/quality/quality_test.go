@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestCoverAggregatesGoStatements(t *testing.T) {
@@ -69,10 +71,7 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var progress []Progress
@@ -114,10 +113,7 @@ func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := VerifyWithOptions(context.Background(), "example/lint", repository, []Check{CheckLint}, RunOptions{
@@ -148,14 +144,8 @@ func TestVerifyRunsNxTargetsWhenRootScriptsAreAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeQualityFile(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "node"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	writeQualityExecutableFile(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/nx", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -201,7 +191,7 @@ func TestVerifyPreparesEveryIndependentNodeScopeBeforeScripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), `#!/bin/sh
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), `#!/bin/sh
 scope=$(pwd)
 case "$1" in
   install)
@@ -219,9 +209,6 @@ case "$1" in
   *) echo "unexpected pnpm command: $*" >&2; exit 1 ;;
 esac
 `)
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/node-scopes", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -260,10 +247,7 @@ func TestVerifyUsesGoWorkspaceModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "go-commands.log")
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s %s\\n' \"$(pwd)\" \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s %s\\n' \"$(pwd)\" \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/go-workspace", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -297,10 +281,7 @@ func TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/standalone", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -380,10 +361,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 		log := filepath.Join(repository, "commands.log")
-		writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-		if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		writeQualityExecutableFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 		report := Verify(context.Background(), "example/spec", repository, []Check{CheckSpec})
@@ -797,10 +775,7 @@ func stubSpecscoreBinary(t *testing.T, repository string) string {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return log
 }
@@ -972,18 +947,12 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "attempts")
 	retryTool := filepath.Join(dir, "retry-tool")
-	writeQualityFile(t, retryTool, "#!/bin/sh\ncount=0\nif [ -f \""+countPath+"\" ]; then count=$(cat \""+countPath+"\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \""+countPath+"\"\nif [ \"$count\" -lt 2 ]; then exit 1; fi\n")
-	if err := os.Chmod(retryTool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, retryTool, "#!/bin/sh\ncount=0\nif [ -f \""+countPath+"\" ]; then count=$(cat \""+countPath+"\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \""+countPath+"\"\nif [ \"$count\" -lt 2 ]; then exit 1; fi\n")
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Retry: 1}, dir, retryTool); err != nil || attempts != 2 {
 		t.Fatalf("retry result = err %v, attempts %d", err, attempts)
 	}
 	timeoutTool := filepath.Join(dir, "timeout-tool")
-	writeQualityFile(t, timeoutTool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(timeoutTool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, timeoutTool, "#!/bin/sh\nsleep 1\n")
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
 	}
@@ -1006,10 +975,7 @@ func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
 	}
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "slow-check")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(tool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, tool, "#!/bin/sh\nsleep 1\n")
 	entry := runVerification(context.Background(), RunOptions{Timeout: time.Second, Retry: 1, CheckTimeout: 10 * time.Millisecond}, "test", ".", CheckTest, dir, tool)
 	if entry.Status != StatusFailed || entry.Attempts != 1 || !strings.Contains(entry.Detail, "check timed out after 10ms") {
 		t.Fatalf("check deadline result = %+v", entry)
@@ -1023,10 +989,7 @@ func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
 	}
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "slow-check")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(tool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, tool, "#!/bin/sh\nsleep 1\n")
 	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	t.Cleanup(func() { cancel() })
 	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
@@ -1053,10 +1016,7 @@ func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
 			dir := t.TempDir()
 			pidsPath := filepath.Join(dir, "pids")
 			tool := filepath.Join(dir, "forking-cancellation-tool")
-			writeQualityFile(t, tool, "#!/bin/sh\n"+test.startupDelay+"sleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
-			if err := os.Chmod(tool, 0o755); err != nil {
-				t.Fatal(err)
-			}
+			writeQualityExecutableFile(t, tool, "#!/bin/sh\n"+test.startupDelay+"sleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
 
 			type result struct {
 				output   string
@@ -1221,6 +1181,23 @@ func writeQualityFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeQualityExecutableFile writes an executable fake tool at path. It uses
+// testenv.WriteExecutableFile (a temp-file write-then-rename under a
+// process-wide fork guard) rather than writeQualityFile followed by
+// os.Chmod: opening a writable fd directly at the final path -- regardless
+// of its initial mode -- leaves a window a concurrent fork elsewhere in this
+// parallel test binary can inherit before its own exec, racing "text file
+// busy" (golang/go#22315; task-21, #739).
+func writeQualityExecutableFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testenv.WriteExecutableFile(path, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
