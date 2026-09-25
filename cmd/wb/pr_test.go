@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,11 +41,23 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 }
 
 func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
+	// Hide gh without hiding git: the preflight itself shells out to git
+	// (branch-name validation) before the landing ever calls gh, so a PATH
+	// wiped down to an empty directory defeats the preflight too and this
+	// test would never reach GitHub in the first place. Restrict PATH to
+	// just git's own directory instead.
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found on PATH: %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(gitPath))
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
-	command := newPRLandCmd(&invocation{})
+	command := newPRLandCmd(&invocation{projectsRoot: projectsRoot})
 	var stderr bytes.Buffer
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"acme/app#7", "--non-interactive"})
@@ -53,9 +66,8 @@ func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 	}
 	output := stderr.String()
 	if !strings.Contains(output, "pr land: local link preflight: acme/app: started") ||
-		(!strings.Contains(output, ": completed") &&
-			!strings.Contains(output, "pr land: local link preflight: failed")) {
-		t.Fatalf("local-link preflight was silent before GitHub:\n%s", output)
+		!strings.Contains(output, "pr land: local link preflight: acme/app: completed") {
+		t.Fatalf("local-link preflight did not complete before GitHub:\n%s", output)
 	}
 }
 
