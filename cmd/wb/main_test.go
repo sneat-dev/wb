@@ -225,8 +225,10 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 
 // TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories drives "wb ci
 // audit --fleet" through the real CLI dispatch (not just a structural flag
-// check), so the RunE closure that reads inv.filterFlag before calling
-// runCIAudit actually executes.
+// check), so the RunE closure that reads inv.projectsRoot before calling
+// runCIAudit actually executes. An empty projects root has no repositories
+// to filter either way, so this does not prove inv.filterFlag's value
+// reaches runCIAudit; it only proves the dispatch path runs.
 func TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

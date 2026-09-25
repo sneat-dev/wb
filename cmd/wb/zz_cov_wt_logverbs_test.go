@@ -69,7 +69,7 @@ func TestCwWtWorkLogVerbCommandsInProcess(t *testing.T) {
 		},
 	}
 	for _, step := range steps {
-		stdout, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, step.args...)
+		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, step.args...)
 		if step.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), step.wantErr) {
 				t.Errorf("%s: error = %v, want %q", step.name, err, step.wantErr)
@@ -92,7 +92,7 @@ func TestCwWtWorkLogFinalizeReportHandling(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
 
 	// --report together with --report-stdin is a usage error.
-	_, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "finalize", worktree,
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "finalize", worktree,
 		"--mode", "manual", "--initiator", "cwWt", "--report", "x", "--report-stdin")
 	if err == nil || !strings.Contains(err.Error(), "at most one of --report or --report-stdin") {
 		t.Fatalf("finalize with both report sources = %v", err)
@@ -103,14 +103,14 @@ func TestCwWtWorkLogFinalizeReportHandling(t *testing.T) {
 	if err := os.WriteFile(big, []byte(strings.Repeat("x", (1<<20)+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "finalize", worktree,
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "finalize", worktree,
 		"--mode", "manual", "--initiator", "cwWt", "--report", big)
 	if err == nil || !strings.Contains(err.Error(), "finalize report exceeds") {
 		t.Fatalf("oversized finalize report = %v", err)
 	}
 
 	// A missing report file is reported.
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "finalize", worktree,
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "finalize", worktree,
 		"--mode", "manual", "--initiator", "cwWt", "--report", filepath.Join(t.TempDir(), "missing.md"))
 	if err == nil || !strings.Contains(err.Error(), "read report file") {
 		t.Fatalf("missing finalize report = %v", err)
@@ -123,7 +123,7 @@ func TestCwWtWorkLogFinalizeReportHandling(t *testing.T) {
 	}
 
 	// A report on stdin is accepted and recorded.
-	stdout, _, err := cwWtRunCmd(t, projects, "# completion report\n", newWorktreeWorkLogCmd,
+	stdout, _, err := cwWtRunCmd(t, projects, "# completion report\n", func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) },
 		"finalize", worktree, "--mode", "manual", "--initiator", "cwWt", "--result", "success", "--message", "done", "--report-stdin", "--apply")
 	if err != nil {
 		t.Fatalf("finalize --report-stdin: %v", err)
@@ -133,7 +133,7 @@ func TestCwWtWorkLogFinalizeReportHandling(t *testing.T) {
 	}
 
 	// finalize --apply seals the claim; a second finalize reports the sealed state.
-	if _, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "finalize", worktree,
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "finalize", worktree,
 		"--mode", "manual", "--initiator", "cwWt", "--result", "failure", "--message", "second"); err == nil {
 		t.Log("second finalize was accepted (idempotent terminal)")
 	}
@@ -143,28 +143,28 @@ func TestCwWtWorkLogAdmissionAndModeErrors(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
 
 	// agent mode without a live registered session is refused before any write.
-	_, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "steer", worktree, "--mode", "agent", "--prompt", "x")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "agent", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "live registered session") {
 		t.Fatalf("log steer --mode agent = %v", err)
 	}
 	// manual mode without an initiator is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "steer", worktree, "--mode", "manual", "--prompt", "x")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "manual", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "--initiator") {
 		t.Fatalf("log steer --mode manual without initiator = %v", err)
 	}
 	// An unknown mode is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "steer", worktree, "--mode", "yolo", "--prompt", "x")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "yolo", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "unsupported execution mode") {
 		t.Fatalf("log steer --mode yolo = %v", err)
 	}
 	// A bad output format is refused first.
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "show", worktree, "--format", "yaml")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", worktree, "--format", "yaml")
 	if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 		t.Fatalf("log show --format yaml = %v", err)
 	}
 
 	// steer with neither source is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeWorkLogCmd, "steer", worktree, "--mode", "manual", "--initiator", "cwWt")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "manual", "--initiator", "cwWt")
 	if err == nil || !strings.Contains(err.Error(), "exactly one of --prompt or --prompt-file") {
 		t.Fatalf("log steer without a source = %v", err)
 	}
@@ -172,7 +172,7 @@ func TestCwWtWorkLogAdmissionAndModeErrors(t *testing.T) {
 
 func TestCwWtWorktreeSetRecordsHumanInstruction(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, newWorktreeSetCmd, worktree, "--prompt", "human instruction",
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSetCmd(&invocation{}) }, worktree, "--prompt", "human instruction",
 		"--agent-runtime", "codex", "--model", "unknown", "--cli", "cli-1", "--provider", "prov-1")
 	if err != nil {
 		t.Fatalf("worktree set: %v", err)
@@ -184,21 +184,21 @@ func TestCwWtWorktreeSetRecordsHumanInstruction(t *testing.T) {
 
 func TestCwWtWorktreeInfoCommand(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, newWorktreeInfoCmd, worktree)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeInfoCmd(&invocation{}) }, worktree)
 	if err != nil {
 		t.Fatalf("worktree info: %v", err)
 	}
 	if !strings.Contains(stdout, "# WB worktree info") {
 		t.Fatalf("worktree info stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeInfoCmd, worktree, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeInfoCmd(&invocation{}) }, worktree, "--format", "json")
 	if err != nil {
 		t.Fatalf("worktree info json: %v", err)
 	}
 	if !strings.Contains(stdout, `"manifest"`) {
 		t.Fatalf("worktree info json = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeInfoCmd, worktree, "--format", "yaml"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeInfoCmd(&invocation{}) }, worktree, "--format", "yaml"); err == nil {
 		t.Fatal("worktree info --format yaml must fail")
 	}
 }
@@ -308,7 +308,7 @@ func TestCwWtWorktreeLogCheckpointFlagPresence(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
 	// Passing only some of the optional numeric flags exercises the PreRun
 	// Changed() detection on both sides.
-	stdout, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "checkpoint", worktree,
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "checkpoint", worktree,
 		"--mode", "manual", "--initiator", "cwWt", "--skip-remote", "--input-tokens", "0", "--usage-discriminator", "estimated")
 	if err != nil {
 		t.Fatalf("checkpoint with only --input-tokens: %v", err)

@@ -24,9 +24,7 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
 	env := map[string]string{"INVOCATION_ID": "abc123", "SYSTEMD_EXEC_PID": "4242"}
@@ -45,7 +43,9 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -80,9 +80,7 @@ func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
 	deps.observedCgroupUnit = func(pid int) (string, bool) {
@@ -105,7 +103,9 @@ func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -198,9 +198,7 @@ func TestServeDashboardTreatsInheritedInvocationIDAsUnsupervised(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
 	// INVOCATION_ID present, but no SYSTEMD_EXEC_PID: exactly the inherited
@@ -223,7 +221,9 @@ func TestServeDashboardTreatsInheritedInvocationIDAsUnsupervised(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -255,9 +255,7 @@ func TestServeDashboardRecordsLaunchdSupervisor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
 	env := map[string]string{"XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}
@@ -275,7 +273,9 @@ func TestServeDashboardRecordsLaunchdSupervisor(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -1699,10 +1699,8 @@ func TestDaemonStopHintNamesTheRealRemedyOnlyForAForeignLaunchdLabel(t *testing.
 			deps.alive = func(pid int) bool { return pid == 901 && alive }
 			deps.stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
 
-			previousRoot := projectsRoot
-			projectsRoot = root
-			t.Cleanup(func() { projectsRoot = previousRoot })
-			command := newDaemonStopCmd(deps)
+			projectsRoot := root
+			command := newDaemonStopCmd(&invocation{projectsRoot: projectsRoot}, deps)
 			var stdout, stderr bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
@@ -1736,10 +1734,8 @@ func TestDaemonStopHintNamesTheSystemdRemedyUnconditionally(t *testing.T) {
 	deps.alive = func(pid int) bool { return pid == 901 && alive }
 	deps.stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
 
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
-	command := newDaemonStopCmd(deps)
+	projectsRoot := root
+	command := newDaemonStopCmd(&invocation{projectsRoot: projectsRoot}, deps)
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)

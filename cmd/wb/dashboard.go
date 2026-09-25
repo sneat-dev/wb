@@ -64,7 +64,7 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 			target, scope := hostedDashboardURL, "hosted"
 			if local {
 				var warning string
-				target, warning, err = deps.localURL(command.Context(), projectsRoot)
+				target, warning, err = deps.localURL(command.Context(), inv.projectsRoot)
 				if err != nil {
 					return err
 				}

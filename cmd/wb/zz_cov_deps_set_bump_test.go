@@ -53,7 +53,7 @@ func TestCwDepsSetCommandInProcessDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := string(beforeRaw)
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--dry-run", "--format", "json", "--parallel", "1")
 	if err != nil {
 		t.Fatalf("deps set --dry-run: %v\n%s", err, stdout)
@@ -90,46 +90,46 @@ func TestCwDepsSetCommandInProcessDryRun(t *testing.T) {
 	}
 	// The report directory receives the persisted plan.
 	reportDir := filepath.Join(t.TempDir(), "reports")
-	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--dry-run", "--report-dir", reportDir); err != nil {
 		t.Fatalf("deps set with report dir: %v\n%s", err, stdout)
 	}
 	// A non-fleet target that does not match the filters is refused.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--dry-run", "--match", "other/*"); err == nil ||
 		!strings.Contains(err.Error(), "does not match selected filters") {
 		t.Fatalf("filtered target = %v", err)
 	}
 	// --layer without --dependency-order is a usage error.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--layer", "1"); err == nil ||
 		!strings.Contains(err.Error(), "--layer requires --dependency-order") {
 		t.Fatalf("--layer alone = %v", err)
 	}
 	// --dependency-order is go-only.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"npm", "@acme/lib@1.2.4", app, "--dependency-order"); err == nil ||
 		!strings.Contains(err.Error(), "supported only for the go ecosystem") {
 		t.Fatalf("npm --dependency-order = %v", err)
 	}
 	// --propagate requires --fleet.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--propagate"); err == nil ||
 		!strings.Contains(err.Error(), "--propagate requires --fleet") {
 		t.Fatalf("--propagate without --fleet = %v", err)
 	}
 	// A repository path cannot be combined with --fleet.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("path with --fleet = %v", err)
 	}
 	// A malformed target is refused.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) }, "go", "not-a-target", app, "--dry-run"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) }, "go", "not-a-target", app, "--dry-run"); err == nil {
 		t.Fatal("a malformed target must be refused")
 	}
 	// An unknown output format is refused.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", app, "--dry-run", "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), "unknown --format") {
 		t.Fatalf("unknown format = %v", err)
@@ -139,7 +139,7 @@ func TestCwDepsSetCommandInProcessDryRun(t *testing.T) {
 func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 	root := cwDepsSetFixture(t)
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) },
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) },
 		"go", "--fleet", "--changed", "github.com/acme/library@v1.2.4", "--dry-run", "--format", "json", "--parallel", "1")
 	if err != nil {
 		t.Fatalf("deps bump --dry-run: %v\n%s", err, stdout)
@@ -156,30 +156,30 @@ func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 		t.Fatalf("bump report = %+v", report)
 	}
 	// The seed events are required.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) }, "go", "--fleet", "--dry-run"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) }, "go", "--fleet", "--dry-run"); err == nil ||
 		!strings.Contains(err.Error(), "at least one --changed") {
 		t.Fatalf("missing seed events = %v", err)
 	}
 	// deps bump requires --fleet.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) },
 		"go", "--changed", "github.com/acme/library@v1.2.4", "--dry-run"); err == nil ||
 		!strings.Contains(err.Error(), "deps bump requires --fleet") {
 		t.Fatalf("without --fleet = %v", err)
 	}
 	// Only the go and npm ecosystems are supported.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) },
 		"cargo", "--fleet", "--changed", "x@1.0.0", "--dry-run"); err == nil ||
 		!strings.Contains(err.Error(), "only the go and npm ecosystems") {
 		t.Fatalf("unsupported ecosystem = %v", err)
 	}
 	// --scope without --latest is refused rather than silently ignored.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) },
 		"go", "--fleet", "--changed", "github.com/acme/library@v1.2.4", "--dry-run", "--scope", "github.com/acme/*"); err == nil ||
 		!strings.Contains(err.Error(), "--scope selects which published modules --latest derives") {
 		t.Fatalf("--scope without --latest = %v", err)
 	}
 	// --latest without a usable --scope is refused.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{}) },
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsBumpCmd(&invocation{projectsRoot: root}) },
 		"go", "--fleet", "--dry-run", "--latest"); err == nil ||
 		!strings.Contains(err.Error(), "--latest derives release events for the modules --scope selects") {
 		t.Fatalf("--latest without --scope = %v", err)
@@ -193,7 +193,7 @@ func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 func TestCwDepsSetPropagateFleetDelegatesToDepsBump(t *testing.T) {
 	root := cwDepsSetFixture(t)
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{projectsRoot: root}) },
 		"go", "github.com/acme/library@v1.2.4", "--fleet", "--propagate", "--dry-run", "--format", "json", "--parallel", "1")
 	if err != nil {
 		t.Fatalf("deps set --propagate --fleet: %v\n%s", err, stdout)

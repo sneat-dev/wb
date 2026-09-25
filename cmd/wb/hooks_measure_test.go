@@ -93,9 +93,7 @@ func TestHookReportsDoNotCreateRuntimeState(t *testing.T) {
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
 
 	for _, name := range []string{"metrics", "measure"} {
 		t.Run(name, func(t *testing.T) {

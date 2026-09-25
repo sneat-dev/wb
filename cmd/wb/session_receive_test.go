@@ -28,7 +28,7 @@ func TestSessionReceiveCommandUsesConfiguredMachineAndExactStdinBytes(t *testing
 			}, nil
 		},
 	}
-	command := newSessionReceiveCmdWithDeps(deps)
+	command := newSessionReceiveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--format", "json"})
 	command.SetIn(bytes.NewReader(raw))
 	var output bytes.Buffer
@@ -67,7 +67,7 @@ func TestSessionReceiveCommandBoundsInputBeforeTargetExecution(t *testing.T) {
 					return sessionreceive.Result{}, errors.New("must not run")
 				},
 			}
-			command := newSessionReceiveCmdWithDeps(deps)
+			command := newSessionReceiveCmdWithDeps(&invocation{}, deps)
 			command.SetIn(bytes.NewReader(test.input))
 			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)
@@ -99,7 +99,7 @@ func TestSessionReceiveCommandDistinguishesFreshAndReplayedReceipts(t *testing.T
 			return result, nil
 		},
 	}
-	command := newSessionReceiveCmdWithDeps(deps)
+	command := newSessionReceiveCmdWithDeps(&invocation{}, deps)
 	command.SetIn(strings.NewReader("request"))
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -111,7 +111,7 @@ func TestSessionReceiveCommandDistinguishesFreshAndReplayedReceipts(t *testing.T
 	}
 
 	fresh = false
-	command = newSessionReceiveCmdWithDeps(deps)
+	command = newSessionReceiveCmdWithDeps(&invocation{}, deps)
 	command.SetIn(strings.NewReader("request"))
 	output.Reset()
 	command.SetOut(&output)

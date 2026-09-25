@@ -12,7 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
-func newRemoteReleaseCmd() *cobra.Command {
+func newRemoteReleaseCmd(inv *invocation) *cobra.Command {
 	var force, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "release <task>",
@@ -22,7 +22,7 @@ no claim is a no-op, not an error. --force removes another holder's claim
 too.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRemoteRelease(defaultRemoteDeps(), projectsRoot, args[0], force, jsonOut, os.Stdout)
+			return runRemoteRelease(defaultRemoteDeps(), inv.projectsRoot, args[0], force, jsonOut, os.Stdout)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "release the claim even if another login/machine holds it")

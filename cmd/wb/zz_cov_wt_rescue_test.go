@@ -203,11 +203,8 @@ func TestCwWtRenderRescueReportTruncationAndFailures(t *testing.T) {
 }
 
 func TestCwWtRunFleetRescueReportFailurePropagation(t *testing.T) {
-	projects, _ := cwWtDirtyCanonicalClone(t)
+	_, _ = cwWtDirtyCanonicalClone(t)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := newWorktreeRescueCmd(&invocation{})
 	command.SetContext(context.Background())

@@ -72,7 +72,7 @@ func TestBranchListSupportsRetiredAndOrganizationSelectors(t *testing.T) {
 }
 
 func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
-	command := newBranchQuarantineCmd()
+	command := newBranchQuarantineCmd(&invocation{})
 	if flag := command.Flags().Lookup("apply"); flag == nil || flag.DefValue != "false" {
 		t.Fatal("quarantine must default to dry-run")
 	}
@@ -335,8 +335,10 @@ func TestBranchListEmptyProjectsRootReportsNoBranches(t *testing.T) {
 
 // TestBranchCountEmptyProjectsRootReportsZeroTotals drives "wb branch count"
 // through the real CLI dispatch (not just a structural flag check), so the
-// RunE closure that reads inv.filterFlag before calling worktrees.BranchList
-// actually executes.
+// RunE closure that reads inv.projectsRoot before calling
+// worktrees.BranchList actually executes. An empty projects root has no
+// repositories to filter either way, so this does not prove inv.filterFlag's
+// value reaches BranchList; it only proves the dispatch path runs.
 func TestBranchCountEmptyProjectsRootReportsZeroTotals(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

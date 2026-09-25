@@ -80,7 +80,7 @@ func TestCwCovPrintStreamSyncRendersEveryRowShape(t *testing.T) {
 		},
 	}
 
-	command := newStreamSyncCmd()
+	command := newStreamSyncCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	// The rich result carries a conflicting agent rebase, so reporting it is a
@@ -137,7 +137,7 @@ func TestCwCovPrintStreamSyncRendersEveryRowShape(t *testing.T) {
 }
 
 func TestCwCovPrintBatchRendersCulpritAndScanLimit(t *testing.T) {
-	command := newStreamSyncCmd()
+	command := newStreamSyncCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	batch := streamsync.BatchResult{
@@ -269,19 +269,19 @@ func TestCwCovStreamSyncCommandUsageRefusals(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, newStreamSyncCmd, "cw-cov", "--library", "no-version")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "cw-cov", "--library", "no-version")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("bad --library exit = %d\n%s", code, stdout)
 	}
 	if !strings.Contains(err.Error(), "must be <name>@<version>") {
 		t.Errorf("bad --library error = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newStreamSyncCmd, "cw-cov", "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "cw-cov", "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("bad --format error = %v", err)
 	}
 	// A stream that does not exist is an error, never a silent no-op.
-	if _, _, err := cwCovExec(t, root, newStreamSyncCmd, "absent-stream"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(&invocation{}) }, "absent-stream"); err == nil {
 		t.Fatal("syncing an unknown stream must fail")
 	}
 }
@@ -707,10 +707,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 	// sessionDir and the prune command must resolve the same state home, which
 	// now derives from the projects root, so both are given the same root.
 	root := t.TempDir()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	dir, err := sessionDir()
+	dir, err := sessionDir(&invocation{projectsRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +720,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, root, newSessionPruneCmd)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newSessionPruneCmd(&invocation{projectsRoot: root}) })
 	if err != nil {
 		t.Fatalf("session prune: %v", err)
 	}
@@ -739,7 +736,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 	}
 
 	// A second prune is a no-op.
-	stdout, _, err = cwCovExec(t, root, newSessionPruneCmd)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newSessionPruneCmd(&invocation{projectsRoot: root}) })
 	if err != nil {
 		t.Fatal(err)
 	}

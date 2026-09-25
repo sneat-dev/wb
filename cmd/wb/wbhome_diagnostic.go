@@ -37,11 +37,11 @@ func hookExecutionCommand(commandID string) bool {
 // see hookExecutionCommand — and every human- or agent-invoked command,
 // including the hook-management verbs that can actually remove a stale pin,
 // still reports the ignored value.
-func warnIgnoredWBHome(cmd *cobra.Command) {
+func warnIgnoredWBHome(inv *invocation, cmd *cobra.Command) {
 	if hookExecutionCommand(persistentCommandID(cmd)) {
 		return
 	}
-	diagnostic, err := wbhome.IgnoredHomeEnvDiagnostic(projectsRoot)
+	diagnostic, err := wbhome.IgnoredHomeEnvDiagnostic(inv.projectsRoot)
 	if err != nil || diagnostic == "" {
 		return
 	}

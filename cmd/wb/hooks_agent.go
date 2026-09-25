@@ -20,12 +20,12 @@ import (
 // that would have produced it. The agent layer is the one that matters for a
 // canonical clone, because a clone can be ruined without ever reaching a
 // commit.
-func newHooksAgentCmd() *cobra.Command {
+func newHooksAgentCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "agent",
 		Short: "Hooks an AI coding agent runs around its own tool calls",
 	}
-	command.AddCommand(newHooksAgentPreToolUseCmd())
+	command.AddCommand(newHooksAgentPreToolUseCmd(inv))
 	command.AddCommand(newHooksAgentInstallCmd())
 	return command
 }
@@ -92,7 +92,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func newHooksAgentPreToolUseCmd() *cobra.Command {
+func newHooksAgentPreToolUseCmd(inv *invocation) *cobra.Command {
 	var inputPath string
 	command := &cobra.Command{
 		Use:   "pre-tool-use",
@@ -290,7 +290,7 @@ Install it with 'wb hooks agent install'.`,
 				reader = file
 			}
 			call := agentguard.DecodeToolCall(reader)
-			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot, WBExecutable: resolveWBExecutableForHook(hookExecutable())})
+			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: inv.projectsRoot, WBExecutable: resolveWBExecutableForHook(hookExecutable())})
 			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision, call.ToolInput); err != nil {
 				return nil
 			}

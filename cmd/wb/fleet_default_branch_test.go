@@ -253,11 +253,11 @@ func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t
 }
 
 func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
 	})
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 		source = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,11 +354,11 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 		"foreign source":   {"legacy", "/", "release"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+			originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
 			t.Cleanup(func() {
-				defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+				defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
 			})
-			projectsRoot = t.TempDir()
+			projectsRoot := t.TempDir()
 			config := filepath.Join(t.TempDir(), "wb.yaml")
 			if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -381,7 +381,7 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 				mutated = true
 				return githubobserver.CommandResponse{}
 			}
-			report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+			report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -464,11 +464,11 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 }
 
 func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
 	})
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -504,7 +504,7 @@ func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) 
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1723,10 +1723,8 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 }
 
 func TestDefaultBranchReportPathAndValidationGuardrails(t *testing.T) {
-	originalProjects := projectsRoot
-	t.Cleanup(func() { projectsRoot = originalProjects })
-	projectsRoot = t.TempDir()
-	path, err := defaultBranchReportPath("")
+	projectsRoot := t.TempDir()
+	path, err := defaultBranchReportPath(&invocation{projectsRoot: projectsRoot}, "")
 	if err != nil || !strings.Contains(path, "reports/default-branch/default-branch-") {
 		t.Fatalf("default report path = %q err=%v", path, err)
 	}
@@ -1786,8 +1784,6 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 }
 
 func TestFleetDefaultBranchRejectsUnsafeFlagCombinations(t *testing.T) {
-	originalProjects := projectsRoot
-	t.Cleanup(func() { projectsRoot = originalProjects })
 	for name, args := range map[string][]string{
 		"missing apply scope":          {"fleet", "default-branch", "--apply"},
 		"repo and org":                 {"fleet", "default-branch", "--repo", "acme/app", "--org", "acme"},
@@ -1810,7 +1806,7 @@ func TestFleetDefaultBranchRejectsUnsafeFlagCombinations(t *testing.T) {
 }
 
 func TestDefaultBranchReportPersistsAndPrintsCloneFindings(t *testing.T) {
-	path, err := defaultBranchReportPath(t.TempDir())
+	path, err := defaultBranchReportPath(&invocation{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1981,11 +1977,11 @@ func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
 }
 
 func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalProjects, originalWait := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot, defaultBranchRenameWait
+	originalRead, originalExecute, originalConfig, originalWait := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchRenameWait
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot, defaultBranchRenameWait = originalRead, originalExecute, originalConfig, originalProjects, originalWait
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchRenameWait = originalRead, originalExecute, originalConfig, originalWait
 	})
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -2040,7 +2036,7 @@ func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
 			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + joined)}
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, rewriteWorkflowTriggers: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, rewriteWorkflowTriggers: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2227,9 +2223,9 @@ func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T)
 }
 
 func TestFleetDefaultBranchRootFilterRestrictsExactRepositoryScope(t *testing.T) {
-	originalProjects, originalConfig := projectsRoot, defaultBranchConfigPath
+	originalConfig := defaultBranchConfigPath
 	t.Cleanup(func() {
-		projectsRoot, defaultBranchConfigPath = originalProjects, originalConfig
+		defaultBranchConfigPath = originalConfig
 	})
 	testProjectsRoot := t.TempDir()
 	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
@@ -2759,11 +2755,11 @@ func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *t
 }
 
 func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
 	})
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -2804,7 +2800,7 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 		}
 		return githubobserver.CommandResponse{}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, temporarilyUnarchive: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, temporarilyUnarchive: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3209,12 +3205,12 @@ func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *te
 }
 
 func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot
+	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach
 	})
 	sha := "0123456789abcdef0123456789abcdef01234567"
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	clone := filepath.Join(projectsRoot, "acme", "app")
 	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -3277,7 +3273,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3302,7 +3298,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 				t.Fatal(err)
 			}
 			calls, mutations = nil, 0
-			blocked, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: candidatePath, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			blocked, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: candidatePath, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3392,11 +3388,11 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 }
 
 func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
 	})
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -3447,7 +3443,7 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 				t.Fatal(err)
 			}
 			mutations = 0
-			report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3459,13 +3455,13 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 }
 
 func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot
+	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, projectsRoot = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach
 	})
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	clone := filepath.Join(projectsRoot, "acme", "app")
 	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -3519,7 +3515,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: priorPath, reconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
+	report, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: priorPath, reconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3551,7 +3547,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 	}
 	remoteHead = "0123456789abcdef0123456789abcdef01234567"
 	calls = nil
-	recovered, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: legacyPath, reconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
+	recovered, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: legacyPath, reconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3572,7 +3568,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 		return githubobserver.CommandResponse{Err: errors.New("unexpected remote mutation")}
 	}
 	calls = nil
-	secondHop, err := runDefaultBranch(context.Background(), &invocation{}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: secondPath, reconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
+	secondHop, err := runDefaultBranch(context.Background(), &invocation{projectsRoot: projectsRoot}, defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: secondPath, reconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3582,9 +3578,9 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 }
 
 func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testing.T) {
-	originalGit, originalProjects := defaultBranchGit, projectsRoot
-	t.Cleanup(func() { defaultBranchGit, projectsRoot = originalGit, originalProjects })
-	projectsRoot = t.TempDir()
+	originalGit := defaultBranchGit
+	t.Cleanup(func() { defaultBranchGit = originalGit })
+	projectsRoot := t.TempDir()
 	githubClone := filepath.Join(projectsRoot, "acme", "app")
 	legacyMirror := filepath.Join(projectsRoot, "other", "app")
 	gitlabClone := filepath.Join(projectsRoot, "gitlab.com", "acme", "app")
@@ -3612,7 +3608,7 @@ func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testi
 			return "", errors.New("cross-forge clone should not be queried")
 		}
 	}
-	clones, err := defaultBranchLocalClones("")
+	clones, err := defaultBranchLocalClones(&invocation{projectsRoot: projectsRoot}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3628,17 +3624,16 @@ func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testi
 }
 
 func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedOrigin(t *testing.T) {
-	originalGit, originalProjects := defaultBranchGit, projectsRoot
-	t.Cleanup(func() { defaultBranchGit, projectsRoot = originalGit, originalProjects })
-	projectsRoot = ""
-	if clones, err := defaultBranchLocalClones(""); err != nil || len(clones.Eligible) != 0 || len(clones.Blocked) != 0 {
+	originalGit := defaultBranchGit
+	t.Cleanup(func() { defaultBranchGit = originalGit })
+	if clones, err := defaultBranchLocalClones(&invocation{}, ""); err != nil || len(clones.Eligible) != 0 || len(clones.Blocked) != 0 {
 		t.Fatalf("empty projects root = %#v err=%v", clones, err)
 	}
-	projectsRoot = filepath.Join(t.TempDir(), "missing")
-	if _, err := defaultBranchLocalClones(""); err == nil || !strings.Contains(err.Error(), "scan local canonical clones") {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	if _, err := defaultBranchLocalClones(&invocation{projectsRoot: missingRoot}, ""); err == nil || !strings.Contains(err.Error(), "scan local canonical clones") {
 		t.Fatalf("unavailable projects root was accepted: %v", err)
 	}
-	projectsRoot = t.TempDir()
+	projectsRoot := t.TempDir()
 	malformed := filepath.Join(projectsRoot, "github.com", "acme", "app")
 	if err := os.MkdirAll(filepath.Join(malformed, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -3649,7 +3644,7 @@ func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedO
 		}
 		return "https://github.com/acme/too/many/segments", nil
 	}
-	clones, err := defaultBranchLocalClones("")
+	clones, err := defaultBranchLocalClones(&invocation{projectsRoot: projectsRoot}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

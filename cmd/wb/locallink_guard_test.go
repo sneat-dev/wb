@@ -12,9 +12,7 @@ import (
 
 func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
-	previousProjectsRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
 
 	store, err := streams.Open(projectsRoot)
 	if err != nil {
@@ -23,7 +21,7 @@ func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 	if err := store.EventLog(".fleet").Append(streams.Event{Verb: "pr land", Outcome: "findings"}); err != nil {
 		t.Fatalf("append fleet landing event: %v", err)
 	}
-	if err := refuseLinkedRepositoryWorktrees("acme/app"); err != nil {
+	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/app"); err != nil {
 		t.Fatalf("fleet metadata blocked the landing guard: %v", err)
 	}
 }
@@ -35,9 +33,7 @@ func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 // member: joining as a linked consumer instead of a member must not be a way
 // to dodge the landing guard.
 func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	home := filepath.Join(projectsRoot, ".wb")
 
@@ -54,10 +50,10 @@ func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := refuseLinkedRepositoryWorktrees("acme/unrelated"); err != nil {
+	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/unrelated"); err != nil {
 		t.Fatalf("unrelated repository blocked landing: %v", err)
 	}
-	if err := refuseLinkedRepositoryWorktrees("acme/linked"); err == nil {
+	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/linked"); err == nil {
 		t.Fatal("a repository admitted only as a linked consumer with a live link did not fail closed")
 	}
 }

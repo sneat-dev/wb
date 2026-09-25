@@ -128,7 +128,7 @@ func TestAgentRemoteEntryPointRefusesAMalformedRequest(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := RunAgentRemote(strings.NewReader(payload), &stdout, &stderr)
+			code := RunAgentRemote(&invocation{}, strings.NewReader(payload), &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("exit = %d; a refusal must still be a well-formed answer", code)
 			}
@@ -312,7 +312,7 @@ func runAgentRemote(t *testing.T, request agents.RemoteRequest) (int, string, st
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := RunAgentRemote(bytes.NewReader(payload), &stdout, &stderr)
+	code := RunAgentRemote(&invocation{}, bytes.NewReader(payload), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -349,7 +349,7 @@ func readRemoteRequestForTest(t *testing.T, path string) agents.RemoteRequest {
 
 func agentHomeForTest(t *testing.T) string {
 	t.Helper()
-	home, err := agentHomeForWrite()
+	home, err := agentHomeForWrite(&invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}

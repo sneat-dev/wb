@@ -89,7 +89,7 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 		},
 	}
 
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{
 		"--to", "hetzner-vm1", "--via", "ssh", "--config", "/tmp/wb.yaml",
 		"--handover-file", "-", "--summary", "source summary",
@@ -102,7 +102,7 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("session move: %v", err)
 	}
-	if captured.ProjectsRoot != projectsRoot || captured.Worktree != "/repo/worktree" || captured.SourceSession.WBSessionID != "wbs-source" ||
+	if captured.ProjectsRoot != "" || captured.Worktree != "/repo/worktree" || captured.SourceSession.WBSessionID != "wbs-source" ||
 		captured.TargetMachine != "hetzner-vm1" || captured.RequestedHarness != "claude-code" ||
 		captured.Handover.Summary != "source summary" || captured.Handover.ValidationEvidence != "go test ./..." ||
 		captured.Handover.RemainingWork != "receive on target" || string(captured.Handover.Body) != "agent-authored continuation\n" {
@@ -178,7 +178,7 @@ func TestSessionMoveSameMachineUsesLoopbackCourier(t *testing.T) {
 		},
 	}
 
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{
 		"--handover-file", "-", "--harness", "claude", "--model", "opus", "--format", "json",
 	})
@@ -264,7 +264,7 @@ func TestSessionMoveCommandUsesSynchestraWithSameReceiptAndLineageContract(t *te
 			return completedMoveTestAcknowledgement(t, options), nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{
 		"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-", "--format", "json",
 	})
@@ -320,7 +320,7 @@ func TestSessionMoveCommandPreflightsSynchestraBeforeCheckpoint(t *testing.T) {
 			return worktrees.SessionCheckpointResult{}, errors.New("must not checkpoint")
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue on the runner\n"))
 	if err := command.Execute(); !errors.Is(err, preflightErr) {
@@ -371,7 +371,7 @@ func TestSessionMoveCommandRefusesMissingSessionAndEmptyHandoverBeforeCheckpoint
 					return worktrees.SessionCheckpointResult{}, errors.New("must not run")
 				},
 			}
-			command := newSessionMoveCmdWithDeps(deps)
+			command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 			command.SetArgs([]string{"--to", "target", "--handover-file", "-"})
 			command.SetIn(strings.NewReader(test.handover))
 			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -430,7 +430,7 @@ func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 			return completedMoveTestAcknowledgement(t, options), nil
 		},
 	}
-	first := newSessionMoveCmdWithDeps(deps)
+	first := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	first.SetArgs([]string{"--to", "hetzner-vm1", "--via", "ssh", "--handover-file", "-"})
 	first.SetIn(strings.NewReader("continue"))
 	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "--resume handoff-resume") {
@@ -442,7 +442,7 @@ func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 	deps.loadConfig = func(string) (sessionmove.Config, error) {
 		return sessionmove.Config{}, errors.New("changed config must be ignored")
 	}
-	second := newSessionMoveCmdWithDeps(deps)
+	second := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	second.SetArgs([]string{"--resume", request.HandoffID, "--via", "ssh", "--format", "json"})
 	var output bytes.Buffer
 	second.SetOut(&output)
@@ -506,7 +506,7 @@ func TestSessionMoveResumeRepairsDurableReceiptWithoutRedelivery(t *testing.T) {
 			return completedMoveTestAcknowledgement(t, options), nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--resume", request.HandoffID, "--format", "json"})
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -545,7 +545,7 @@ func TestSessionMoveRejectsUnsupportedHarnessBeforeCheckpoint(t *testing.T) {
 			return worktrees.SessionCheckpointResult{}, nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "target", "--harness", "shell", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue"))
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unsupported") {
@@ -593,7 +593,7 @@ func TestSessionMoveReportsExactResumeAfterRoutePersistenceFailure(t *testing.T)
 			}), nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue"))
 	err := command.Execute()
@@ -631,7 +631,7 @@ func TestSessionMoveReportsExactResumeAfterDurableCheckpointEvidenceFailure(t *t
 			}), nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue"))
 	err := command.Execute()
@@ -680,7 +680,7 @@ func TestSessionMoveRefusesCourierSuccessWithoutCompletionReceipt(t *testing.T) 
 			}), nil
 		},
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue"))
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "no durable completion receipt") ||
@@ -837,7 +837,7 @@ func TestSessionMoveRefusesHandoverContainingNamedSecretPattern(t *testing.T) {
 		checkpointCalled = true
 		return worktrees.SessionCheckpointResult{}, nil
 	})
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID() + "\n"))
 	var stderr bytes.Buffer
@@ -895,7 +895,7 @@ func TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) 
 		return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
 	})
 	deps.store = func(string) (sessionmove.Store, error) { return store, nil }
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-", "--override-secret", overrideKey})
 	command.SetIn(strings.NewReader(secretLine))
 	var stderr bytes.Buffer

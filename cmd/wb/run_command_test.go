@@ -163,9 +163,6 @@ func TestRunIdempotencyKeyRequiresAsyncCommandMode(t *testing.T) {
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	t.Chdir(root)
 
 	deps := daemonTestDependencies(t, root)
@@ -173,7 +170,7 @@ func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}
-	command := newDaemonOperationSubmitCmd(deps)
+	command := newDaemonOperationSubmitCmd(&invocation{}, deps)
 	command.SetArgs([]string{"--", "/bin/echo", "hello"})
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)

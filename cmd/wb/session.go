@@ -11,7 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func newSessionCmd() *cobra.Command {
+func newSessionCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "session",
 		Short: "Record and inspect the agent sessions running on this machine",
@@ -26,25 +26,25 @@ A record is a claim, not an observation: WB stores what it was told, adds only
 what it can see for itself (its own version and binary path), and evaluates
 liveness from the declared PID when the record is read.`,
 	}
-	command.AddCommand(newSessionRegisterCmd())
-	command.AddCommand(newSessionListCmd())
-	command.AddCommand(newSessionPruneCmd())
-	command.AddCommand(newSessionMoveCmd())
-	command.AddCommand(newSessionParkCmd())
-	command.AddCommand(newSessionResumeCmd())
-	command.AddCommand(newSessionReceiveCmd())
-	command.AddCommand(newSessionReceiveParkCmd())
-	command.AddCommand(newSessionSendCmd())
-	command.AddCommand(newSessionRequestHandoffCmd())
-	command.AddCommand(newSessionReceiveMessageCmd())
+	command.AddCommand(newSessionRegisterCmd(inv))
+	command.AddCommand(newSessionListCmd(inv))
+	command.AddCommand(newSessionPruneCmd(inv))
+	command.AddCommand(newSessionMoveCmd(inv))
+	command.AddCommand(newSessionParkCmd(inv))
+	command.AddCommand(newSessionResumeCmd(inv))
+	command.AddCommand(newSessionReceiveCmd(inv))
+	command.AddCommand(newSessionReceiveParkCmd(inv))
+	command.AddCommand(newSessionSendCmd(inv))
+	command.AddCommand(newSessionRequestHandoffCmd(inv))
+	command.AddCommand(newSessionReceiveMessageCmd(inv))
 	return command
 }
 
 // sessionDir resolves where session records live, creating WB's home if it is
 // not there yet so registering works on a fresh machine. Only the registering
 // commands use it.
-func sessionDir() (string, error) {
-	home, err := wbhome.EnsureRoot(projectsRoot)
+func sessionDir(inv *invocation) (string, error) {
+	home, err := wbhome.EnsureRoot(inv.projectsRoot)
 	if err != nil {
 		return "", err
 	}
@@ -55,8 +55,8 @@ func sessionDir() (string, error) {
 // Attribution happens on the write path of unrelated commands, and a command
 // that merely records who is working must not bring WB's home into existence
 // as a side effect.
-func sessionDirForRead() (string, error) {
-	home, err := wbhome.Root(projectsRoot)
+func sessionDirForRead(inv *invocation) (string, error) {
+	home, err := wbhome.Root(inv.projectsRoot)
 	if err != nil {
 		return "", err
 	}
@@ -67,9 +67,9 @@ func sessionDirForRead() (string, error) {
 // registered session when the environment carries no declaration. Resolution
 // walks this process's ancestors and matches only PIDs that registered
 // themselves, so it confirms a declaration rather than guessing an owner.
-func installSessionResolver() {
+func installSessionResolver(inv *invocation) {
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) {
-		directory, err := sessionDirForRead()
+		directory, err := sessionDirForRead(inv)
 		if err != nil {
 			return worktrees.AgentIdentity{}, false
 		}

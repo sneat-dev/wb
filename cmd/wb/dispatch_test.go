@@ -38,7 +38,7 @@ func stubProcessHandlers(calls *[]string) processHandlers {
 			*calls = append(*calls, "ownerCLI:"+strings.Join(args, " "))
 			return routedOwnerCLI
 		},
-		agentRemote: func(_ io.Reader, _, _ io.Writer) int {
+		agentRemote: func(_ *invocation, _ io.Reader, _, _ io.Writer) int {
 			*calls = append(*calls, "agentRemote")
 			return routedAgentRemote
 		},

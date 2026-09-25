@@ -69,9 +69,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg-config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "xdg-state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "xdg-cache"))
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	remote := newFakeGitHubRemote(t)
 	canonical := remote.clone(t, filepath.Join(root, e2eRepository))
@@ -105,7 +103,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	command.SetErr(console)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

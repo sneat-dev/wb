@@ -41,12 +41,10 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 
 func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	previousProjectsRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	var stderr bytes.Buffer
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"acme/app#7", "--non-interactive"})
@@ -62,7 +60,7 @@ func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 }
 
 func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	if got := command.Flags().Lookup("timeout").DefValue; got != defaultCIWaitSlice.String() {
 		t.Fatalf("--timeout default = %s, want %s", got, defaultCIWaitSlice)
 	}
@@ -75,7 +73,7 @@ func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
 }
 
 func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	if got := command.Flags().Lookup("merge-method").DefValue; got != "merge" {
 		t.Fatalf("--merge-method default = %q, want merge", got)
 	}
@@ -111,7 +109,7 @@ func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
 			name = "default"
 		}
 		t.Run(name, func(t *testing.T) {
-			command := newPRLandCmd()
+			command := newPRLandCmd(&invocation{})
 			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
 				t.Fatal(err)
 			}
@@ -141,13 +139,10 @@ func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 // local-link guard can make its real decision.
 func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
 	root := t.TempDir()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	t.Setenv("WB_PROJECTS_ROOT", root)
 	home := filepath.Join(root, ".wb")
 
-	log, streamName := landingEventLog("acme/app")
+	log, streamName := landingEventLog(&invocation{projectsRoot: root}, "acme/app")
 	if streamName != "" {
 		t.Fatalf("stream name = %q, want an outside-stream landing", streamName)
 	}
@@ -158,7 +153,7 @@ func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.
 		t.Fatalf("fleet event log was not appended: %v", err)
 	}
 
-	if err := refuseLinkedRepositoryWorktrees("acme/app"); err != nil {
+	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: root}, "acme/app"); err != nil {
 		t.Fatalf("next landing guard rejected only the fleet event log: %v", err)
 	}
 }

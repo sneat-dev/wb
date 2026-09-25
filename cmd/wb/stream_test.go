@@ -117,7 +117,7 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 // buried persistence field. Status must fail with findings and print the WB
 // verb that safely retries publication.
 func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
-	command := newStreamStatusCmd()
+	command := newStreamStatusCmd(&invocation{})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
@@ -147,7 +147,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("status output = %q, want timestamped historical summary without a live-looking transcript", output)
 	}
 
-	jsonCommand := newStreamStatusCmd()
+	jsonCommand := newStreamStatusCmd(&invocation{})
 	var jsonOut bytes.Buffer
 	jsonCommand.SetOut(&jsonOut)
 	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
@@ -176,7 +176,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("JSON member status = %#v, want separate current and timestamped historical findings", jsonMember)
 	}
 
-	blockedCommand := newStreamStatusCmd()
+	blockedCommand := newStreamStatusCmd(&invocation{})
 	var blockedOut bytes.Buffer
 	blockedCommand.SetOut(&blockedOut)
 	status.Members[0].PullRequestRecovery = ""
@@ -188,7 +188,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
 	}
 
-	unrecordedCommand := newStreamStatusCmd()
+	unrecordedCommand := newStreamStatusCmd(&invocation{})
 	var unrecordedOut bytes.Buffer
 	unrecordedCommand.SetOut(&unrecordedOut)
 	status.Members[0].PullRequest = 242

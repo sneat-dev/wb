@@ -27,7 +27,7 @@ func newBranchCmd(inv *invocation) *cobra.Command {
 	command.AddCommand(newBranchListCmd(inv))
 	command.AddCommand(newBranchCountCmd(inv))
 	command.AddCommand(newBranchCleanupCmd(inv))
-	command.AddCommand(newBranchQuarantineCmd())
+	command.AddCommand(newBranchQuarantineCmd(inv))
 	command.AddCommand(newBranchArchiveTargetCmd())
 	return command
 }
@@ -40,7 +40,7 @@ func newBranchCountCmd(inv *invocation) *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
 				return err
 			}
-			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, OlderThan: olderThan, Filter: inv.filterFlag, Repository: repository, Org: org, Name: name, Progress: command.ErrOrStderr()})
+			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{ProjectsRoot: inv.projectsRoot, Base: base, Scope: scope, Only: only, OlderThan: olderThan, Filter: inv.filterFlag, Repository: repository, Org: org, Name: name, Progress: command.ErrOrStderr()})
 			if err != nil {
 				return err
 			}
@@ -77,13 +77,13 @@ func newBranchCountCmd(inv *invocation) *cobra.Command {
 	return command
 }
 
-func newBranchQuarantineCmd() *cobra.Command {
+func newBranchQuarantineCmd(inv *invocation) *cobra.Command {
 	var repository, branch, sha, reason, manifest, reportDir string
 	var apply bool
 	command := &cobra.Command{Use: "quarantine", Short: "Plan or locally quarantine exact old branches under retired/*", Args: cobra.NoArgs,
 		Long: "Quarantine is dry-run by default. --apply atomically creates retired/<date>-<flat-source>-<short-sha> and compare-and-deletes the exact local source SHA, recording every row in a durable report. Remote quarantine is intentionally refused until WB has equivalent peer evidence and a leased remote rename.",
 		RunE: func(command *cobra.Command, args []string) error {
-			outcome, err := worktrees.BranchQuarantine(command.Context(), worktrees.BranchQuarantineOptions{ProjectsRoot: projectsRoot, Repository: repository, Branch: branch, SHA: sha, Reason: reason, Manifest: manifest, Apply: apply, ReportDir: reportDir})
+			outcome, err := worktrees.BranchQuarantine(command.Context(), worktrees.BranchQuarantineOptions{ProjectsRoot: inv.projectsRoot, Repository: repository, Branch: branch, SHA: sha, Reason: reason, Manifest: manifest, Apply: apply, ReportDir: reportDir})
 			if err != nil {
 				return err
 			}
@@ -178,7 +178,7 @@ reserved for the report.`,
 			}
 			progress := command.ErrOrStderr()
 			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{
-				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, Org: org,
+				ProjectsRoot: inv.projectsRoot, Base: base, Scope: scope, Only: only, Org: org,
 				OlderThan: olderThan, Filter: inv.filterFlag, Progress: progress,
 				Repository: repository, Branch: branch, Name: name,
 				IncludeRetired: includeRetired, WithPRs: withPRs,
@@ -301,7 +301,7 @@ in-use and therefore never a candidate.`,
 				Receipts:     receipts,
 				AbsorbedBy:   absorbedBy,
 				SupersededBy: supersededBy,
-				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Apply: apply,
+				ProjectsRoot: inv.projectsRoot, Base: base, Scope: scope, Apply: apply,
 				OlderThan: olderThan, ReportDir: reportDir, Filter: inv.filterFlag, Progress: progress,
 				Repository: repository, Branch: branch,
 				PeerEvidence: peerEvidence, RequireHosts: requireHosts,

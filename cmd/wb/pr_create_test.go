@@ -8,7 +8,7 @@ import (
 )
 
 func TestPRCreateRejectsBodyAndBodyFileTogether(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--body", "x", "--body-file", "x.md"})
 	err := command.Execute()
@@ -22,7 +22,7 @@ func TestPRCreateRejectsBodyAndBodyFileTogether(t *testing.T) {
 }
 
 func TestPRCreateRejectsDraftWithAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--draft", "--auto-merge"})
 	err := command.Execute()
@@ -36,7 +36,7 @@ func TestPRCreateRejectsDraftWithAutoMerge(t *testing.T) {
 }
 
 func TestPRCreateRejectsApprovedByWithoutAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--approved-by", "review.md"})
 	err := command.Execute()
@@ -54,7 +54,7 @@ func TestPRCreateRejectsApprovedByWithoutAutoMerge(t *testing.T) {
 // comment, so accepting either flag without --land would silently ignore
 // it rather than refuse.
 func TestPRCreateRejectsReviewCommentWithoutLand(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--auto-merge", "--approved-by", "opus@codex@run-1", "--review-comment", "looks good"})
 	err := command.Execute()
@@ -68,7 +68,7 @@ func TestPRCreateRejectsReviewCommentWithoutLand(t *testing.T) {
 }
 
 func TestPRCreateRejectsAllowUnfencedWithoutAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--allow-unfenced"})
 	err := command.Execute()
@@ -100,7 +100,7 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--allow-unfenced"})
 	err = command.Execute()
@@ -111,7 +111,7 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 }
 
 func TestPRCreateRejectsAddWithCommitAll(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--add", "x.go", "--commit-all", "-m", "feat: x"})
 	err := command.Execute()
@@ -125,7 +125,7 @@ func TestPRCreateRejectsAddWithCommitAll(t *testing.T) {
 }
 
 func TestPRCreateHelpStatesItsContract(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	var output strings.Builder
 	command.SetOut(&output)
 	if err := command.Help(); err != nil {

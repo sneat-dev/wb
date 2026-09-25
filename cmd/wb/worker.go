@@ -38,13 +38,13 @@ type workerConnectResult struct {
 	HeartbeatMilliseconds uint32   `json:"heartbeat_milliseconds"`
 }
 
-func newWorkerCmd(deps daemonDependencies) *cobra.Command {
+func newWorkerCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	command := &cobra.Command{Use: "worker", Short: "Run sandbox-inherited workers for durable daemon jobs"}
-	command.AddCommand(newWorkerConnectCmd(deps))
+	command.AddCommand(newWorkerConnectCmd(inv, deps))
 	return command
 }
 
-func newWorkerConnectCmd(deps daemonDependencies) *cobra.Command {
+func newWorkerConnectCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var workerID, format string
 	var roots []string
 	var cpuCapacity uint32
@@ -78,7 +78,7 @@ more canonical roots.`,
 			if cpuCapacity == 0 {
 				cpuCapacity = uint32(runqueue.Budget())
 			}
-			return connectWorker(command, deps, workerID, permitted, cpuCapacity, selected)
+			return connectWorker(inv, command, deps, workerID, permitted, cpuCapacity, selected)
 		},
 	}
 	command.Flags().StringVar(&workerID, "id", "", "stable worker ID (required; reuse it after reconnect)")
@@ -89,15 +89,15 @@ more canonical roots.`,
 	return command
 }
 
-func connectWorker(command *cobra.Command, deps daemonDependencies, workerID string, roots []string, cpuCapacity uint32, format string) error {
+func connectWorker(inv *invocation, command *cobra.Command, deps daemonDependencies, workerID string, roots []string, cpuCapacity uint32, format string) error {
 	first := true
 	for {
 		if err := command.Context().Err(); err != nil {
 			return nil
 		}
-		client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
+		client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
 		if err == nil {
-			err = runWorkerConnection(command, client, workerID, roots, cpuCapacity, format, first)
+			err = runWorkerConnection(inv, command, client, workerID, roots, cpuCapacity, format, first)
 			first = false
 		}
 		if command.Context().Err() != nil {
@@ -112,7 +112,7 @@ func connectWorker(command *cobra.Command, deps daemonDependencies, workerID str
 	}
 }
 
-func runWorkerConnection(command *cobra.Command, client daemonv1connect.DaemonServiceClient, workerID string, roots []string, cpuCapacity uint32, format string, announce bool) error {
+func runWorkerConnection(inv *invocation, command *cobra.Command, client daemonv1connect.DaemonServiceClient, workerID string, roots []string, cpuCapacity uint32, format string, announce bool) error {
 	version := collectVersion()
 	build := version.Version
 	if version.Revision != "" {
@@ -162,7 +162,7 @@ func runWorkerConnection(command *cobra.Command, client daemonv1connect.DaemonSe
 			_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: worker %s heartbeat: waiting\n", workerID)
 			continue
 		}
-		if err := executeWorkerAssignment(command, client, registration, roots, assignment); err != nil {
+		if err := executeWorkerAssignment(inv, command, client, registration, roots, assignment); err != nil {
 			return err
 		}
 	}
@@ -176,7 +176,7 @@ func disconnectWorker(client daemonv1connect.DaemonServiceClient, registration *
 	}))
 }
 
-func executeWorkerAssignment(command *cobra.Command, client daemonv1connect.DaemonServiceClient, registration *daemonv1.WorkerRegistration, roots []string, assignment *daemonv1.WorkerAssignment) error {
+func executeWorkerAssignment(inv *invocation, command *cobra.Command, client daemonv1connect.DaemonServiceClient, registration *daemonv1.WorkerRegistration, roots []string, assignment *daemonv1.WorkerAssignment) error {
 	if assignment.WorkerId != registration.WorkerId || assignment.WorkerGeneration != registration.WorkerGeneration || assignment.SchedulerGeneration != registration.SchedulerGeneration {
 		return errors.New("daemon returned an assignment for a different worker or scheduler generation")
 	}
@@ -212,9 +212,9 @@ func executeWorkerAssignment(command *cobra.Command, client daemonv1connect.Daem
 	var admission runqueue.Admission
 	var err error
 	if explicit := int(assignment.CpuUnits); explicit != 0 {
-		admission, err = runqueue.AdmitExplicit(ctx, projectsRoot, explicit, self)
+		admission, err = runqueue.AdmitExplicit(ctx, inv.projectsRoot, explicit, self)
 	} else {
-		admission, err = runqueue.Admit(ctx, projectsRoot, assignment.Argv, self, nil)
+		admission, err = runqueue.Admit(ctx, inv.projectsRoot, assignment.Argv, self, nil)
 	}
 	units := admission.Units
 	if err == nil {

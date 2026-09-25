@@ -17,7 +17,7 @@ type diskOptions struct {
 	minimum   float64
 }
 
-func newDiskCmd() *cobra.Command {
+func newDiskCmd(inv *invocation) *cobra.Command {
 	options := diskOptions{format: "text"}
 	command := &cobra.Command{
 		Use:   "disk",
@@ -64,7 +64,7 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 			}
 
 			report, err := disk.Collect(cmd.Context(), disk.Options{
-				ProjectsRoot:          projectsRoot,
+				ProjectsRoot:          inv.projectsRoot,
 				SkipSizes:             options.skipSizes,
 				MinimumAvailableRatio: options.minimum,
 			})

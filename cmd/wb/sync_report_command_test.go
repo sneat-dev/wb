@@ -64,9 +64,6 @@ func TestSyncReportValidateLoadsAndValidatesTheWholeBatch(t *testing.T) {
 
 func TestSyncReportPublishReturnsImmutableViewerURL(t *testing.T) {
 	directory := writeSyncReportCommandFixture(t)
-	oldRoot := projectsRoot
-	projectsRoot = "/fleet"
-	t.Cleanup(func() { projectsRoot = oldRoot })
 	deps := syncReportCommandDeps{
 		validate: func(context.Context, syncreport.Report) error { return nil },
 		publish: func(_ context.Context, repository, root string, report syncreport.Report) (gitrepo.SyncReportPublishResult, error) {
@@ -76,7 +73,7 @@ func TestSyncReportPublishReturnsImmutableViewerURL(t *testing.T) {
 			return gitrepo.SyncReportPublishResult{CommitSHA: strings.Repeat("a", 40), Paths: []string{"sync-reports/$records/x.md"}}, nil
 		},
 	}
-	command := newSyncReportPublishCmd(deps)
+	command := newSyncReportPublishCmd(&invocation{projectsRoot: "/fleet"}, deps)
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{directory, "--repo", "alice/workbench", "--format", "json"})

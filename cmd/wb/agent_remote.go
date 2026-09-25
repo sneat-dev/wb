@@ -17,8 +17,8 @@ import (
 // agentDispatchDeps builds the dispatch seams shared by the local command and
 // the private remote entry point, so a remote dispatch performs exactly the
 // same work a local one does.
-func agentDispatchDeps(markerStderr io.Writer, base string) (agents.Store, agents.DispatchDeps, error) {
-	home, err := agentHomeForWrite()
+func agentDispatchDeps(inv *invocation, markerStderr io.Writer, base string) (agents.Store, agents.DispatchDeps, error) {
+	home, err := agentHomeForWrite(inv)
 	if err != nil {
 		return agents.Store{}, agents.DispatchDeps{}, err
 	}
@@ -28,11 +28,11 @@ func agentDispatchDeps(markerStderr io.Writer, base string) (agents.Store, agent
 	return store, agents.DispatchDeps{
 		ConfigPath:   agentConfigPath(),
 		LoadConfig:   loadAgentConfig,
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: inv.projectsRoot,
 		Home:         home,
-		BeforeCreate: refreshManagedHooksBeforeWorktreeCreate,
+		BeforeCreate: func(repositories []string) error { return refreshManagedHooksBeforeWorktreeCreate(inv, repositories) },
 		AfterCreate: func(repositories []string, results []worktrees.CreateResult) {
-			markCreatedCheckouts(marker, base, results)
+			markCreatedCheckouts(inv, marker, base, results)
 		},
 		SpawnOwner: func(agentID string) (int, error) {
 			return agents.SpawnOwner(store.Dir(agentID), os.Executable)
@@ -51,16 +51,16 @@ func agentDispatchDeps(markerStderr io.Writer, base string) (agents.Store, agent
 // state a local caller could not. Every outcome — including a refusal — is
 // reported inside the response document, so the caller can tell "the remote
 // said no" apart from "the remote never answered".
-func RunAgentRemote(stdin io.Reader, stdout, stderr io.Writer) int {
+func RunAgentRemote(inv *invocation, stdin io.Reader, stdout, stderr io.Writer) int {
 	// main handles this before cobra, so the persistent-flag defaults have not
 	// run; establish the one global the worktree side effects read.
-	if projectsRoot == "" {
-		projectsRoot = defaultProjectsRoot()
+	if inv.projectsRoot == "" {
+		inv.projectsRoot = defaultProjectsRoot()
 	}
 	request, err := decodeRemoteRequest(stdin)
 	response := agents.RemoteResponse{SchemaVersion: 1, Operation: request.Operation}
 	if err == nil {
-		err = handleRemoteOperation(context.Background(), request, &response)
+		err = handleRemoteOperation(inv, context.Background(), request, &response)
 	}
 	if err != nil {
 		response.Failure = err.Error()
@@ -89,10 +89,10 @@ func decodeRemoteRequest(stdin io.Reader) (agents.RemoteRequest, error) {
 	return request, nil
 }
 
-func handleRemoteOperation(ctx context.Context, request agents.RemoteRequest, response *agents.RemoteResponse) error {
+func handleRemoteOperation(inv *invocation, ctx context.Context, request agents.RemoteRequest, response *agents.RemoteResponse) error {
 	switch request.Operation {
 	case agents.RemoteDispatch:
-		store, deps, err := agentDispatchDeps(os.Stderr, request.Base)
+		store, deps, err := agentDispatchDeps(inv, os.Stderr, request.Base)
 		if err != nil {
 			return err
 		}
@@ -109,14 +109,14 @@ func handleRemoteOperation(ctx context.Context, request agents.RemoteRequest, re
 		response.Result = &result
 		return nil
 	case agents.RemoteStatus:
-		_, _, result, err := loadAgentResult(request.AgentID)
+		_, _, result, err := loadAgentResult(inv, request.AgentID)
 		if err != nil {
 			return err
 		}
 		response.Result = &result
 		return nil
 	case agents.RemoteAwait:
-		store, err := agentStoreForRead()
+		store, err := agentStoreForRead(inv)
 		if err != nil {
 			return err
 		}
@@ -131,7 +131,7 @@ func handleRemoteOperation(ctx context.Context, request agents.RemoteRequest, re
 		response.Result = &result
 		return nil
 	case agents.RemoteList:
-		store, err := agentStoreForRead()
+		store, err := agentStoreForRead(inv)
 		if err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func handleRemoteOperation(ctx context.Context, request agents.RemoteRequest, re
 		response.Results = results
 		return nil
 	case agents.RemoteLogs:
-		_, record, _, err := loadAgentResult(request.AgentID)
+		_, record, _, err := loadAgentResult(inv, request.AgentID)
 		if err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ func handleRemoteOperation(ctx context.Context, request agents.RemoteRequest, re
 		response.Logs = logs
 		return nil
 	case agents.RemoteStop:
-		store, err := agentStoreForRead()
+		store, err := agentStoreForRead(inv)
 		if err != nil {
 			return err
 		}

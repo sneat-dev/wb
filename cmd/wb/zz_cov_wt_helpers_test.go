@@ -33,14 +33,10 @@ func (writer *cwWtFailWriter) Write(payload []byte) (int, error) {
 }
 
 // cwWtExecOut is cwCovExec with caller-supplied output streams, so a test can
-// inject a writer that fails. It points the shared projectsRoot global at the
-// fixture for the duration of the call.
+// inject a writer that fails.
 func cwWtExecOut(t *testing.T, projects string, build func() *cobra.Command, stdout, stderr io.Writer, args ...string) error {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := build()
 	command.SilenceUsage = true
@@ -56,9 +52,6 @@ func cwWtExecOut(t *testing.T, projects string, build func() *cobra.Command, std
 func cwWtRunCmd(t *testing.T, projects, stdin string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := build()
 	command.SilenceUsage = true

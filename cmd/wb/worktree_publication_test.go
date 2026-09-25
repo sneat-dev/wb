@@ -27,12 +27,8 @@ func TestWorktreeGuardPublishedExitsWithFindingsAndNamesTheRemedy(t *testing.T) 
 	publicationGit(t, worktree, "add", "unpushed.txt")
 	publicationGit(t, worktree, "commit", "-m", "work that must not be lost")
 
-	previous := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previous })
-
 	var stdout, stderr bytes.Buffer
-	command := newWorktreeGuardCmd()
+	command := newWorktreeGuardCmd(&invocation{projectsRoot: root})
 	command.SetArgs([]string{worktree, "--published"})
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
@@ -55,12 +51,8 @@ func TestWorktreeGuardPublishedConfirmsAPushedWorktree(t *testing.T) {
 	worktree, root := newPublicationWorktree(t, "guard-published-ok")
 	publicationGit(t, worktree, "push", "-u", "origin", "guard-published-ok")
 
-	previous := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previous })
-
 	var stdout, stderr bytes.Buffer
-	command := newWorktreeGuardCmd()
+	command := newWorktreeGuardCmd(&invocation{projectsRoot: root})
 	command.SetArgs([]string{worktree, "--published"})
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)

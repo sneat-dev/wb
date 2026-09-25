@@ -28,9 +28,6 @@ import (
 func cwCovExec(t *testing.T, projects string, build func() *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := build()
 	command.SilenceUsage = true
@@ -102,7 +99,7 @@ func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 	cwCovCloneWithOrigin(t, seeds, "app", filepath.Join(root, "acme", "app"))
 	cwCovCloneWithOrigin(t, seeds, "stray", filepath.Join(root, "stray"))
 
-	stdout, _, err := cwCovExec(t, root, newLayoutAuditCmd, "--format", "json")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newLayoutAuditCmd(&invocation{projectsRoot: root}) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("layout audit exit = %d, want findings for the top-level clone\n%s", code, stdout)
 	}
@@ -122,7 +119,7 @@ func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 
 	// --report-dir writes all three renderings.
 	reportDir := filepath.Join(t.TempDir(), "reports")
-	if _, _, err := cwCovExec(t, root, newLayoutAuditCmd, "--format", "markdown", "--report-dir", reportDir); exitCodeOf(t, err) != exitFindings {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newLayoutAuditCmd(&invocation{projectsRoot: root}) }, "--format", "markdown", "--report-dir", reportDir); exitCodeOf(t, err) != exitFindings {
 		t.Fatalf("layout audit --report-dir exit = %v", err)
 	}
 	for _, name := range []string{"layout-audit.md", "layout-audit.yaml", "layout-audit.json"} {
@@ -132,14 +129,14 @@ func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 	}
 
 	// Clean plans the stray clone, then --apply removes it.
-	stdout, _, err = cwCovExec(t, root, newLayoutCleanCmd, "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newLayoutCleanCmd(&invocation{projectsRoot: root}) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("layout clean dry-run exit = %d\n%s", code, stdout)
 	}
 	if _, err := os.Stat(filepath.Join(root, "stray")); err != nil {
 		t.Fatal("dry-run removed the stray clone")
 	}
-	stdout, _, err = cwCovExec(t, root, newLayoutCleanCmd, "--apply", "--allow-missing-canonical", "--format", "markdown", "--report-dir", filepath.Join(t.TempDir(), "clean-reports"))
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newLayoutCleanCmd(&invocation{projectsRoot: root}) }, "--apply", "--allow-missing-canonical", "--format", "markdown", "--report-dir", filepath.Join(t.TempDir(), "clean-reports"))
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("layout clean --apply exit = %d\n%s", code, stdout)
 	}
@@ -151,13 +148,13 @@ func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 	}
 
 	// Unknown format is an error, not a silent default.
-	if _, _, err := cwCovExec(t, root, newLayoutAuditCmd, "--format", "toml"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newLayoutAuditCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil {
 		t.Fatal("layout audit accepted an unknown --format")
 	}
 }
 
 func TestCwCovWriteLayoutOutputAndReports(t *testing.T) {
-	command := newLayoutAuditCmd()
+	command := newLayoutAuditCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	if err := writeLayoutOutput(command, "markdown", "# report\n", map[string]int{"x": 1}); err != nil {
@@ -319,7 +316,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", t.TempDir())
 	root := t.TempDir()
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--skip-sizes")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--skip-sizes")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc exit = %d\n%s", code, stdout)
 	}
@@ -327,7 +324,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 		t.Errorf("empty gc output = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--skip-sizes", "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--skip-sizes", "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc --format json exit = %d", code)
 	}
@@ -342,10 +339,10 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	}
 
 	// The two refusals the command makes before doing any work.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("negative --session-freshness exit = %v, want usage", err)
 	}
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("unknown --format error = %v, want a named format refusal", err)
 	}

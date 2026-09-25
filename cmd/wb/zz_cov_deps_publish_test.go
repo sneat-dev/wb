@@ -181,16 +181,13 @@ func TestCwDepsAttachNpmPropagationOnlyWhenThereIsOne(t *testing.T) {
 
 func TestCwDepsNpmPublicationReportPaths(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
-	requested, err := npmPublicationReportDir(nil, "/tmp/explicit")
+	requested, err := npmPublicationReportDir(&invocation{}, nil, "/tmp/explicit")
 	if err != nil || requested != "/tmp/explicit" {
 		t.Fatalf("requested report dir = %q, %v", requested, err)
 	}
 	releases := []npmrelease.Release{cwDepsReleaseFixture()}
-	derived, err := npmPublicationReportDir(releases, "")
+	derived, err := npmPublicationReportDir(&invocation{}, releases, "")
 	if err != nil {
 		t.Fatalf("derived report dir: %v", err)
 	}
@@ -315,9 +312,6 @@ func TestCwDepsValidateNpmPublishFormatAndSelection(t *testing.T) {
 
 func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	base := cwDepsPublishOptionsFixture()
 	base.fleet = true
@@ -373,13 +367,12 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 // discoverer into preflightNpmPublishWithDiscovery, not only a test fake: it
 // drives an actual --fleet discovery over an empty local projects root and a
 // faked gh with no remote repositories, so a discoverer swapped for nil would
-// panic on the real call instead of this test passing by never reaching it.
+// surface preflightNpmPublishWithDiscovery's own guarded "fleet discovery is
+// unavailable" refusal (see the nil-discoverer case above) instead of this
+// test passing by never reaching the real discoverer at all.
 func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
 	cwCovFakeGH(t, "cwcov-npm-user", nil, `[]`)
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	options := cwDepsPublishOptionsFixture()
 	options.fleet = true
@@ -396,15 +389,13 @@ func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
 
 func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := t.TempDir()
 
 	options := cwDepsPublishOptionsFixture()
 	options.fleet = true
 	options.maxWaves = 1
 	var seenArgs []string
-	prepared, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(_ *invocation, args []string, _ depsSetOptions) ([]deps.Repository, error) {
+	prepared, err := preflightNpmPublishWithDiscovery(&invocation{projectsRoot: projectsRoot}, options, func(_ *invocation, args []string, _ depsSetOptions) ([]deps.Repository, error) {
 		seenArgs = args
 		return []deps.Repository{{Slug: "acme/consumer", Path: filepath.Join(projectsRoot, "acme", "consumer")}}, nil
 	})
@@ -440,9 +431,6 @@ func cwDepsWorkflowRunFixture(id, status, conclusion string, headSHA string, cre
 func TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	const headSHA = "0123456789abcdef0123456789abcdef01234567"
 	created := time.Now().UTC().Truncate(time.Second)
@@ -545,9 +533,6 @@ func TestCwDepsWriteNpmPublishOutputFormats(t *testing.T) {
 func TestCwDepsRunPreparedNpmPublishPlan(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	options := cwDepsPublishOptionsFixture()
 	options.fleet = true
@@ -581,9 +566,6 @@ func TestCwDepsRunPreparedNpmPublishPlan(t *testing.T) {
 func TestCwDepsRunPreparedNpmPublishRefusesExistingReportWithoutResume(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	reportDir := filepath.Join(home, "reports", "cw-npm-apply")
 	if err := npmrelease.WriteReport(reportDir, npmrelease.Report{
@@ -613,9 +595,6 @@ func TestCwDepsRunPreparedNpmPublishRefusesExistingReportWithoutResume(t *testin
 func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	options := cwDepsPublishOptionsFixture()
 	options.fleet = true
@@ -657,11 +636,8 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 }
 
 func TestCwDepsAcquireNpmPublicationLocksAndRelease(t *testing.T) {
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
-	locks, err := acquireNpmPublicationLocks("deps-npm-publish-cwfixture", []npmrelease.Release{cwDepsReleaseFixture()}, false)
+	locks, err := acquireNpmPublicationLocks(&invocation{}, "deps-npm-publish-cwfixture", []npmrelease.Release{cwDepsReleaseFixture()}, false)
 	if err != nil {
 		t.Fatalf("acquire locks: %v", err)
 	}

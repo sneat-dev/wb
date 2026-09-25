@@ -22,7 +22,7 @@ import (
 // they stay hermetic without building a real worktree tree.
 var sessionWorktreeLister = worktrees.List
 
-func newSessionListCmd() *cobra.Command {
+func newSessionListCmd(inv *invocation) *cobra.Command {
 	var format string
 	var onlyLive bool
 	command := &cobra.Command{
@@ -45,11 +45,11 @@ not wb_session_id, to wb session resume.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			directory, err := sessionDirForRead()
+			directory, err := sessionDirForRead(inv)
 			if err != nil {
 				return err
 			}
-			return runSessionList(directory, projectsRoot, onlyLive, format == "json", command.OutOrStdout(), command.ErrOrStderr())
+			return runSessionList(directory, inv.projectsRoot, onlyLive, format == "json", command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

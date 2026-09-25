@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newRemoteMachinesCmd() *cobra.Command {
+func newRemoteMachinesCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var stale time.Duration
 	cmd := &cobra.Command{
@@ -18,7 +18,7 @@ func newRemoteMachinesCmd() *cobra.Command {
 		Short: "List every machine in the remote store with its publish age",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemoteMachines(defaultRemoteDeps(), projectsRoot, stale, jsonOut, os.Stdout)
+			return runRemoteMachines(defaultRemoteDeps(), inv.projectsRoot, stale, jsonOut, os.Stdout)
 		},
 	}
 	addJSONFormatFlags(cmd, &jsonOut)

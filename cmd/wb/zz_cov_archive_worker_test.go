@@ -34,7 +34,7 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	installArchivedFakeGh(t)
 	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) })
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) })
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("dry-run exit = %d\n%s", code, stdout)
 	}
@@ -53,7 +53,7 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	}
 
 	// JSON and YAML carry the same outcome machine-readably.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("json exit = %d", code)
 	}
@@ -64,19 +64,19 @@ func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
 	if len(outcome.Results) != 2 || outcome.Apply {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "yaml")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "yaml")
 	if code := exitCodeOf(t, err); code != exitOK || !strings.Contains(stdout, "results:") {
 		t.Fatalf("yaml exit = %d\n%s", code, stdout)
 	}
 
 	// An unknown format is refused before anything is inspected.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("unknown format error = %v", err)
 	}
 
 	// --apply deletes the eligible clone and preserves the refused one.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{}) }, "--apply")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--apply")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("apply exit = %d\n%s", code, stdout)
 	}
@@ -217,7 +217,7 @@ func TestCwCovWorkerTailBufferKeepsTheTailBounded(t *testing.T) {
 
 func TestCwCovWorkerConnectCommandValidation(t *testing.T) {
 	root := t.TempDir()
-	build := func() *cobra.Command { return newWorkerConnectCmd(defaultDaemonDependencies()) }
+	build := func() *cobra.Command { return newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies()) }
 	cases := map[string][]string{
 		"missing id":      {"--root", root},
 		"relative root":   {"--id", "cw-worker", "--root", "relative"},
@@ -238,12 +238,12 @@ func TestCwCovWorkerConnectCommandValidation(t *testing.T) {
 }
 
 func TestCwCovWorkerCmdSurface(t *testing.T) {
-	command := newWorkerCmd(defaultDaemonDependencies())
+	command := newWorkerCmd(&invocation{}, defaultDaemonDependencies())
 	sub, _, err := command.Find([]string{"connect"})
 	if err != nil || sub == command {
 		t.Fatalf("worker connect subcommand is missing: %v", err)
 	}
-	connect := newWorkerConnectCmd(defaultDaemonDependencies())
+	connect := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
 	for _, name := range []string{"id", "root", "cpu-capacity", "format", "json"} {
 		if connect.Flags().Lookup(name) == nil {
 			t.Errorf("worker connect is missing --%s", name)
@@ -297,11 +297,11 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work, Argv: []string{"go", "version"},
 	}
-	command := newWorkerConnectCmd(defaultDaemonDependencies())
+	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	if err := executeWorkerAssignment(command, client, registration, []string{root}, mismatched); err == nil ||
+	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, mismatched); err == nil ||
 		!strings.Contains(err.Error(), "different worker") {
 		t.Fatalf("mismatched generation error = %v", err)
 	}
@@ -311,17 +311,13 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work,
 	}
-	if err := executeWorkerAssignment(command, client, registration, []string{root}, empty); err == nil ||
+	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, empty); err == nil ||
 		!strings.Contains(err.Error(), "without a command") {
 		t.Fatalf("empty argv error = %v", err)
 	}
 
-	previousRoot := projectsRoot
-	projectsRoot = root
-	defer func() { projectsRoot = previousRoot }()
-
 	assignment := leased.Msg.Assignment
-	err = executeWorkerAssignment(command, client, registration, []string{root}, assignment)
+	err = executeWorkerAssignment(&invocation{}, command, client, registration, []string{root}, assignment)
 	if err != nil {
 		t.Fatalf("executeWorkerAssignment: %v", err)
 	}

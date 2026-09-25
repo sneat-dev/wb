@@ -378,29 +378,26 @@ func TestCwDepsStreamWorkLogRefusals(t *testing.T) {
 	command := cwDepsNewOutCommand(&bytes.Buffer{})
 	home := t.TempDir()
 	t.Setenv("WB_HOME", home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	// An unsupported mode is named rather than defaulted.
-	if _, _, err := streamWorkLog(command, "cw", workLogFlags{mode: "telepathy"}); err == nil ||
+	if _, _, err := streamWorkLog(&invocation{}, command, "cw", workLogFlags{mode: "telepathy"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported execution mode") {
 		t.Fatalf("unsupported mode = %v", err)
 	}
 	// Manual mode requires an initiator so a non-agent mutation is auditable.
-	if _, _, err := streamWorkLog(command, "cw", workLogFlags{mode: "manual"}); err == nil ||
+	if _, _, err := streamWorkLog(&invocation{}, command, "cw", workLogFlags{mode: "manual"}); err == nil ||
 		!strings.Contains(err.Error(), "requires --initiator") {
 		t.Fatalf("manual without initiator = %v", err)
 	}
 	// Agent mode requires a live registered session.
-	if _, _, err := streamWorkLog(command, "cw", workLogFlags{mode: "agent", agentID: "agent-1"}); err == nil ||
+	if _, _, err := streamWorkLog(&invocation{}, command, "cw", workLogFlags{mode: "agent", agentID: "agent-1"}); err == nil ||
 		!strings.Contains(err.Error(), "agent-mode stream creation requires a live registered session") {
 		t.Fatalf("agent mode without a session = %v", err)
 	}
 	// Reading the prompt from stdin still enforces the Work Log requirements.
 	stdinCommand := cwDepsNewOutCommand(&bytes.Buffer{})
 	stdinCommand.SetIn(strings.NewReader("the exact task request\n"))
-	prepared, agentMode, err := streamWorkLog(stdinCommand, "cw", workLogFlags{
+	prepared, agentMode, err := streamWorkLog(&invocation{}, stdinCommand, "cw", workLogFlags{
 		mode: "manual", initiator: "me@example.com", model: "unknown", originalPrompt: "-",
 	})
 	if err != nil {
@@ -413,7 +410,7 @@ func TestCwDepsStreamWorkLogRefusals(t *testing.T) {
 		t.Error("the archived prompt is empty")
 	}
 	// A handover with no prompt at all is refused: the archive is mandatory.
-	if _, _, err := streamWorkLog(command, "cw", workLogFlags{mode: "manual", initiator: "me@example.com", model: "unknown"}); err == nil ||
+	if _, _, err := streamWorkLog(&invocation{}, command, "cw", workLogFlags{mode: "manual", initiator: "me@example.com", model: "unknown"}); err == nil ||
 		!strings.Contains(err.Error(), "prompt") {
 		t.Fatalf("a stream Work Log without an archived prompt must be refused: %v", err)
 	}
@@ -429,17 +426,17 @@ func TestCwDepsStreamCommandRefusalsInProcess(t *testing.T) {
 		args  []string
 		want  string
 	}{
-		"start needs two arguments": {newStreamStartCmd, []string{"only-one"}, "requires at least 2 arg"},
-		"start rejects a bad name":  {newStreamStartCmd, []string{"bad/name", "acme/app"}, "stream name"},
-		"join rejects a bad name":   {newStreamJoinCmd, []string{"bad/name", "acme/app"}, "stream name"},
-		"join rejects a bad role": {newStreamJoinCmd, []string{"cw-stream", "acme/app", "--role", "nonsense"},
+		"start needs two arguments": {func() *cobra.Command { return newStreamStartCmd(&invocation{}) }, []string{"only-one"}, "requires at least 2 arg"},
+		"start rejects a bad name":  {func() *cobra.Command { return newStreamStartCmd(&invocation{}) }, []string{"bad/name", "acme/app"}, "stream name"},
+		"join rejects a bad name":   {func() *cobra.Command { return newStreamJoinCmd(&invocation{}) }, []string{"bad/name", "acme/app"}, "stream name"},
+		"join rejects a bad role": {func() *cobra.Command { return newStreamJoinCmd(&invocation{}) }, []string{"cw-stream", "acme/app", "--role", "nonsense"},
 			"unsupported role"},
-		"join needs a work log prompt": {newStreamJoinCmd, []string{"cw-stream", "acme/app"}, "--model is required"},
-		"join refuses an unknown format": {newStreamJoinCmd, []string{"cw-stream", "acme/app", "--format", "toml"},
+		"join needs a work log prompt": {func() *cobra.Command { return newStreamJoinCmd(&invocation{}) }, []string{"cw-stream", "acme/app"}, "--model is required"},
+		"join refuses an unknown format": {func() *cobra.Command { return newStreamJoinCmd(&invocation{}) }, []string{"cw-stream", "acme/app", "--format", "toml"},
 			"unsupported format"},
-		"status refuses an unknown format": {newStreamStatusCmd, []string{"--format", "toml"}, "unsupported format"},
-		"status reports an unknown stream": {newStreamStatusCmd, []string{"cw-absent"}, ""},
-		"delete reports an unknown stream": {newStreamDeleteCmd, []string{"cw-absent"}, ""},
+		"status refuses an unknown format": {func() *cobra.Command { return newStreamStatusCmd(&invocation{}) }, []string{"--format", "toml"}, "unsupported format"},
+		"status reports an unknown stream": {func() *cobra.Command { return newStreamStatusCmd(&invocation{}) }, []string{"cw-absent"}, ""},
+		"delete reports an unknown stream": {func() *cobra.Command { return newStreamDeleteCmd(&invocation{}) }, []string{"cw-absent"}, ""},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -454,7 +451,7 @@ func TestCwDepsStreamCommandRefusalsInProcess(t *testing.T) {
 	}
 	// With no name and an empty store, status lists nothing rather than
 	// failing.
-	stdout, _, err := cwCovExec(t, root, newStreamStatusCmd)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamStatusCmd(&invocation{}) })
 	if err != nil || !strings.Contains(stdout, "no streams") {
 		t.Fatalf("empty status = %v\n%s", err, stdout)
 	}

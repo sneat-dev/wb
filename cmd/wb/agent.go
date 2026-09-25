@@ -16,7 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func newAgentCmd() *cobra.Command {
+func newAgentCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "agent",
 		Short: "Dispatch a bounded coding task to a configured agent harness in an isolated worktree",
@@ -52,12 +52,12 @@ existing session_move.targets map; the request travels on standard input rather
 than in the remote command line; and a remote run's record and worktree stay on
 the machine that owns them.`,
 	}
-	command.AddCommand(newAgentDispatchCmd())
-	command.AddCommand(newAgentStatusCmd())
-	command.AddCommand(newAgentAwaitCmd())
-	command.AddCommand(newAgentListCmd())
-	command.AddCommand(newAgentLogsCmd())
-	command.AddCommand(newAgentStopCmd())
+	command.AddCommand(newAgentDispatchCmd(inv))
+	command.AddCommand(newAgentStatusCmd(inv))
+	command.AddCommand(newAgentAwaitCmd(inv))
+	command.AddCommand(newAgentListCmd(inv))
+	command.AddCommand(newAgentLogsCmd(inv))
+	command.AddCommand(newAgentStopCmd(inv))
 	return command
 }
 
@@ -73,23 +73,23 @@ func loadAgentConfig() (agents.Config, error) {
 	return config, nil
 }
 
-func agentStoreForRead() (agents.Store, error) {
-	home, err := wbhome.Root(projectsRoot)
+func agentStoreForRead(inv *invocation) (agents.Store, error) {
+	home, err := wbhome.Root(inv.projectsRoot)
 	if err != nil {
 		return agents.Store{}, err
 	}
 	return agents.NewStore(home), nil
 }
 
-func agentHomeForWrite() (string, error) {
-	return wbhome.EnsureRoot(projectsRoot)
+func agentHomeForWrite(inv *invocation) (string, error) {
+	return wbhome.EnsureRoot(inv.projectsRoot)
 }
 
 // loadAgentResult reads one run and renders it, mapping a lookup miss onto the
 // findings exit code: the invocation was accepted and then found nothing,
 // which is not the same as a mistyped command.
-func loadAgentResult(agentID string) (agents.Store, agents.Record, agents.Result, error) {
-	store, err := agentStoreForRead()
+func loadAgentResult(inv *invocation, agentID string) (agents.Store, agents.Record, agents.Result, error) {
+	store, err := agentStoreForRead(inv)
 	if err != nil {
 		return agents.Store{}, agents.Record{}, agents.Result{}, err
 	}
@@ -183,7 +183,7 @@ func agentLookupError(err error) error {
 
 // ------------------------------------------------------------------ dispatch
 
-func newAgentDispatchCmd() *cobra.Command {
+func newAgentDispatchCmd(inv *invocation) *cobra.Command {
 	var newWorktree, useWorktree, profile, task, taskFile, repository, branch, base, to string
 	var jsonOut bool
 	var timeout time.Duration
@@ -248,7 +248,7 @@ wb agent dispatch --to hetzner-vm1 \
 				return renderAgentResult(command, jsonOut, result)
 			}
 
-			store, deps, err := agentDispatchDeps(command.ErrOrStderr(), base)
+			store, deps, err := agentDispatchDeps(inv, command.ErrOrStderr(), base)
 			if err != nil {
 				return err
 			}
@@ -343,7 +343,7 @@ func renderAgentResult(command *cobra.Command, jsonOut bool, result agents.Resul
 
 // -------------------------------------------------------------------- status
 
-func newAgentStatusCmd() *cobra.Command {
+func newAgentStatusCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var to string
 	command := &cobra.Command{
@@ -376,7 +376,7 @@ WB asks that machine, because its record is the only copy of the truth.`,
 				}
 				return renderResult(command, jsonOut, remoteResult(target, response))
 			}
-			_, _, result, err := loadAgentResult(agentID)
+			_, _, result, err := loadAgentResult(inv, agentID)
 			if err != nil {
 				return agentLookupError(err)
 			}
@@ -452,7 +452,7 @@ func aliveWord(alive bool) string {
 
 // --------------------------------------------------------------------- await
 
-func newAgentAwaitCmd() *cobra.Command {
+func newAgentAwaitCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var waitTimeout time.Duration
 	var to string
@@ -491,7 +491,7 @@ connection rather than one call per interval.`,
 				return finishAgentAwait(command, jsonOut, remoteResult(target, response))
 			}
 
-			store, err := agentStoreForRead()
+			store, err := agentStoreForRead(inv)
 			if err != nil {
 				return err
 			}
@@ -585,7 +585,7 @@ func indentContinuation(value string) string {
 
 // ---------------------------------------------------------------------- list
 
-func newAgentListCmd() *cobra.Command {
+func newAgentListCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var to string
 	command := &cobra.Command{
@@ -619,7 +619,7 @@ remote run, because the remote record is the only copy that cannot go stale.`,
 				return printAgentList(command.OutOrStdout(), results)
 			}
 
-			store, err := agentStoreForRead()
+			store, err := agentStoreForRead(inv)
 			if err != nil {
 				return err
 			}
@@ -661,7 +661,7 @@ func printAgentList(writer io.Writer, results []agents.Result) error {
 
 // ---------------------------------------------------------------------- logs
 
-func newAgentLogsCmd() *cobra.Command {
+func newAgentLogsCmd(inv *invocation) *cobra.Command {
 	var tail int
 	var raw bool
 	var to string
@@ -692,7 +692,7 @@ rather than truncated: read it on that machine with ssh and ` + "`--raw`" + `.`,
 				_, err = fmt.Fprintln(command.OutOrStdout(), response.Logs)
 				return err
 			}
-			_, record, _, err := loadAgentResult(agentID)
+			_, record, _, err := loadAgentResult(inv, agentID)
 			if err != nil {
 				return agentLookupError(err)
 			}
@@ -751,7 +751,7 @@ func recordFileExists(path string) bool {
 
 // ---------------------------------------------------------------------- stop
 
-func newAgentStopCmd() *cobra.Command {
+func newAgentStopCmd(inv *invocation) *cobra.Command {
 	var to string
 	command := &cobra.Command{
 		Use:   "stop <agent-id>",
@@ -785,7 +785,7 @@ worker can signal it.`,
 					target.Machine, response.Result.AgentID, response.Result.WorkerPID)
 				return err
 			}
-			store, err := agentStoreForRead()
+			store, err := agentStoreForRead(inv)
 			if err != nil {
 				return err
 			}

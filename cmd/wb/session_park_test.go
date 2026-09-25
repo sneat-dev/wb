@@ -77,12 +77,10 @@ func TestSessionParkPublicOutputDoesNotContainContinuation(t *testing.T) {
 }
 
 func TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
-	dir, err := sessionDir()
+	dir, err := sessionDir(&invocation{projectsRoot: projectsRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +106,7 @@ func TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces(t *t
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
 	arguments := []string{"--context-file", contextPath, "--format", "json"}
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{projectsRoot: projectsRoot})
 	command.SetArgs(arguments)
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -169,12 +167,10 @@ func TestSessionParkCrashRetryRefusesChangedImmutableInputsBeforeLifecycleMarkin
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			previousProjectsRoot := projectsRoot
-			projectsRoot = t.TempDir()
-			t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+			projectsRoot := t.TempDir()
 			home := filepath.Join(projectsRoot, ".wb")
 			t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
-			dir, err := sessionDir()
+			dir, err := sessionDir(&invocation{projectsRoot: projectsRoot})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,7 +198,7 @@ func TestSessionParkCrashRetryRefusesChangedImmutableInputsBeforeLifecycleMarkin
 			if err := os.WriteFile(contextPath, []byte(test.currentContinuation+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			command := newSessionParkCmd()
+			command := newSessionParkCmd(&invocation{projectsRoot: projectsRoot})
 			command.SetArgs([]string{"--context-file", contextPath})
 			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "conflicts with the current source, continuation, or member evidence") {
 				t.Fatalf("retry error = %v, want immutable-input conflict", err)
@@ -223,7 +219,7 @@ func TestSessionParkCrashRetryRefusesChangedImmutableInputsBeforeLifecycleMarkin
 
 func TestSessionParkRejectsContentBearingContinuationFlags(t *testing.T) {
 	for _, flag := range []string{"--summary", "--validation", "--remaining"} {
-		command := newSessionParkCmd()
+		command := newSessionParkCmd(&invocation{})
 		command.SetArgs([]string{flag, "private value"})
 		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 			t.Fatalf("flag %s error = %v, want unknown flag", flag, err)
@@ -232,9 +228,7 @@ func TestSessionParkRejectsContentBearingContinuationFlags(t *testing.T) {
 }
 
 func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	parkedID := "park-local-zero"
@@ -305,7 +299,7 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 	}
 	run := func() sessionResumeOutput {
 		stdout := new(bytes.Buffer)
-		command := newSessionResumeCmdWithDependencies(deps)
+		command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 		command.SetArgs([]string{parkedID, "--format", "json"})
 		command.SetOut(stdout)
 		if err := command.Execute(); err != nil {
@@ -329,9 +323,7 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) {
 	for _, crashPoint := range []string{"before release", "after release before source finalize"} {
 		t.Run(crashPoint, func(t *testing.T) {
-			previousProjectsRoot := projectsRoot
-			projectsRoot = t.TempDir()
-			t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+			projectsRoot := t.TempDir()
 			home := filepath.Join(projectsRoot, ".wb")
 			t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 			parkedID := "park-local-interruption"
@@ -393,7 +385,7 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 				return source, nil
 			}
 			run := func() error {
-				command := newSessionResumeCmdWithDependencies(deps)
+				command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 				command.SetArgs([]string{parkedID, "--format", "json"})
 				command.SetOut(new(bytes.Buffer))
 				return command.Execute()
@@ -425,9 +417,6 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 
 func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
-	previousProjectsRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	source := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-refusal-source", Machine: "source",
 		Runtime: "codex", Model: "test", StartedAt: time.Now().UTC().Add(-time.Minute)}
 	t.Setenv(worktrees.EnvAgentPID, fmt.Sprint(source.PID))
@@ -496,7 +485,7 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 		t.Fatal("registry projection reached after actual custody refusal")
 		return session.Record{}, nil
 	}
-	command := newSessionResumeCmdWithDependencies(deps)
+	command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 	command.SetArgs([]string{parkedID})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "newer session custody") {
@@ -526,9 +515,7 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 }
 
 func TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	parkedID := "park-local-preflight"
@@ -545,7 +532,7 @@ func TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody(t *testing.T) 
 		t.Fatal("custody reached after preflight failure")
 		return nil
 	}
-	command := newSessionResumeCmdWithDependencies(deps)
+	command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 	command.SetArgs([]string{parkedID})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); !errors.Is(err, want) {
@@ -594,7 +581,7 @@ func assertRemoteResumeReachesTransport(t *testing.T, fixture remoteResumeTestFi
 		deliveries++
 		return sessionparkcourier.Result{}, transportReached
 	}
-	command := newSessionResumeCmdWithDependencies(deps)
+	command := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 	command.SetArgs([]string{fixture.parkedID, "--to", "target", "--via", "ssh", "--config", fixture.config})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); !errors.Is(err, transportReached) {
@@ -645,14 +632,14 @@ func TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint(t *testing.T) {
 		delivered = append(delivered, config)
 		return sessionparkcourier.Result{}, transportReached
 	}
-	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", fixture.config, time.Unix(100, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
+	if _, err := resumeParkedRemote(&invocation{}, context.Background(), deps, store, lock, state, "target", "ssh", fixture.config, time.Unix(100, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
 		t.Fatalf("first delivery error = %v", err)
 	}
 	state, err = store.LoadUnderLock(lock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", "", time.Unix(200, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
+	if _, err := resumeParkedRemote(&invocation{}, context.Background(), deps, store, lock, state, "target", "ssh", "", time.Unix(200, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
 		t.Fatalf("retained-route replay error = %v", err)
 	}
 	if len(delivered) != 2 || delivered[0].Host != "target" || delivered[1] != delivered[0] {
@@ -662,7 +649,7 @@ func TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint(t *testing.T) {
 	if err := os.WriteFile(driftConfig, []byte("session_move:\n  targets:\n    target:\n      default_courier: ssh\n      ssh:\n        host: changed.example\n        user: other\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", driftConfig, time.Unix(300, 0), io.Discard, t.TempDir())
+	_, err = resumeParkedRemote(&invocation{}, context.Background(), deps, store, lock, state, "target", "ssh", driftConfig, time.Unix(300, 0), io.Discard, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "differs from the retained route") {
 		t.Fatalf("explicit endpoint drift error = %v", err)
 	}
@@ -691,7 +678,7 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 		}
 		return session.Record{}, nil
 	}
-	first := newSessionResumeCmdWithDependencies(deps)
+	first := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 	first.SetArgs([]string{fixture.parkedID, "--to", "target", "--via", "ssh", "--config", fixture.config, "--format", "json"})
 	first.SetOut(new(bytes.Buffer))
 	if err := first.Execute(); !errors.Is(err, projectionCrash) {
@@ -703,7 +690,7 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 		t.Fatalf("interrupted state=%#v err=%v", interrupted, err)
 	}
 	stdout := new(bytes.Buffer)
-	retry := newSessionResumeCmdWithDependencies(deps)
+	retry := newSessionResumeCmdWithDependencies(&invocation{}, deps)
 	retry.SetArgs([]string{fixture.parkedID, "--to", "target", "--via", "ssh", "--config", fixture.config, "--format", "json"})
 	retry.SetOut(stdout)
 	if err := retry.Execute(); err != nil {
@@ -755,9 +742,7 @@ type remoteResumeTestFixture struct {
 
 func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) remoteResumeTestFixture {
 	t.Helper()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	custodyRoot := filepath.Join(projectsRoot, "custody")
@@ -781,7 +766,7 @@ func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) remoteR
 	if _, err := store.Create(bundle); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := sessionDir()
+	dir, err := sessionDir(&invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,12 +822,10 @@ func cleanParkedWorktree(path, branch string) sessionpark.Worktree {
 // WB home so the park command reaches its continuation handling.
 func registerParkChecklistSession(t *testing.T, wbSessionID string) string {
 	t.Helper()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
-	dir, err := sessionDir()
+	dir, err := sessionDir(&invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,9 +843,7 @@ func registerParkChecklistSession(t *testing.T, wbSessionID string) string {
 // has registered at all, and no ambient WB_AGENT_* declaration to fall back on.
 func unregisteredParkFixture(t *testing.T) (string, string) {
 	t.Helper()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	projectsRoot := t.TempDir()
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	t.Setenv("WB_AGENT_PID", "")
@@ -886,7 +867,7 @@ func unregisteredParkFixture(t *testing.T) (string, string) {
 func TestSessionParkRegistersAnUnregisteredSessionBeforeParking(t *testing.T) {
 	home, contextPath := unregisteredParkFixture(t)
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -940,7 +921,7 @@ func TestSessionParkRegistersAnUnregisteredSessionBeforeParking(t *testing.T) {
 func TestSessionParkTextOutputNamesAParkTimeRegistration(t *testing.T) {
 	_, contextPath := unregisteredParkFixture(t)
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -961,7 +942,7 @@ func TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering(t *testing.T)
 	if err := os.WriteFile(contextPath, []byte("explicitly targeted continuation\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-never-registered"})
 	command.SetOut(new(bytes.Buffer))
 	command.SetErr(new(bytes.Buffer))
@@ -970,7 +951,7 @@ func TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering(t *testing.T)
 	}
 
 	stdout := new(bytes.Buffer)
-	command = newSessionParkCmd()
+	command = newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-explicit-park-target", "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(new(bytes.Buffer))
@@ -996,7 +977,7 @@ func TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout(t *tes
 		t.Fatal(err)
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -1030,7 +1011,7 @@ func TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout(t *tes
 func TestSessionParkMissingContextFilePromptsJudgmentChecklist(t *testing.T) {
 	registerParkChecklistSession(t, "wbs-checklist-missing-context")
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -1062,7 +1043,7 @@ func TestSessionParkRefusesContinuationContainingNamedSecretPattern(t *testing.T
 		t.Fatal(err)
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -1107,7 +1088,7 @@ func TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) 
 		t.Fatal(err)
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd()
+	command := newSessionParkCmd(&invocation{})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json", "--override-secret", overrideKey})
 	command.SetOut(stdout)
 	command.SetErr(stderr)

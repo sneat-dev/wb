@@ -26,14 +26,23 @@ func (provider *retireStatusProvider) Status(context.Context) (remotestate.Statu
 
 // TestWorktreeRetireDryRunOnEmptyProjectsRootReportsNoMatch drives "wb
 // worktree retire" through the real CLI dispatch (not just a structural flag
-// check), so the RunE closure that reads inv.filterFlag into
-// worktrees.RetireOptions.Repository actually executes.
+// check), so the RunE closure that reads inv.projectsRoot into
+// worktrees.RetireOptions.ProjectsRoot actually executes and reaches
+// worktrees.Retire's own repository-count refusal. An empty projects root
+// has no managed repository for any task, with or without --filter, so this
+// does not exercise inv.filterFlag specifically; it asserts the exact
+// refusal text rather than any non-zero exit, so a caller who breaks that
+// message (or starts matching a phantom repository) fails here.
 func TestWorktreeRetireDryRunOnEmptyProjectsRootReportsNoMatch(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	args := []string{"worktree", "retire", "no-such-task", "--projects-root", root}
 	if code := run(args, &stdout, &stderr); code == 0 {
 		t.Fatalf("run(%q) exit = 0, want a failure for a task that has no worktree, stdout=%s", args, stdout.String())
+	}
+	const want = "error: retirement requires exactly one managed repository; found 0\n"
+	if stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
 	}
 }
 

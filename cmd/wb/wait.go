@@ -142,9 +142,9 @@ These commands report. They never merge, publish, or change a target. Use
 	}
 	command.AddCommand(newWaitPRCmd(inv))
 	command.AddCommand(newWaitChecksCmd(inv))
-	command.AddCommand(newWaitAgentCmd())
-	command.AddCommand(newWaitOperationCmd())
-	command.AddCommand(newWaitListCmd())
+	command.AddCommand(newWaitAgentCmd(inv))
+	command.AddCommand(newWaitOperationCmd(inv))
+	command.AddCommand(newWaitListCmd(inv))
 	return command
 }
 
@@ -213,7 +213,7 @@ wb wait pr sneat-dev/wb#581 --slice 8m --json`,
 			// A delegated wait that nobody can see is the same as no wait: the
 			// session goes quiet and looks stopped. Record it before waiting,
 			// and clear it however this call ends.
-			release := registerWait("pr", targets, string(condition), slice)
+			release := registerWait(inv, "pr", targets, string(condition), slice)
 			defer release()
 			interactive := console.Interactive(command.ErrOrStderr(), inv.nonInteractive)
 			progress := newLiveProgress(progressOutput(command.ErrOrStderr(), interactive), true)
@@ -638,8 +638,8 @@ func printWaitOutput(command *cobra.Command, output waitOutput) error {
 // registerWait records an outstanding wait and returns its release. Every
 // failure here is non-fatal by design: losing visibility of a wait must never
 // stop the wait, which is the thing the caller actually asked for.
-func registerWait(kind string, targets []waitReference, until string, slice time.Duration) func() {
-	home, err := wbhome.EnsureRoot(projectsRoot)
+func registerWait(inv *invocation, kind string, targets []waitReference, until string, slice time.Duration) func() {
+	home, err := wbhome.EnsureRoot(inv.projectsRoot)
 	if err != nil {
 		return func() {}
 	}
@@ -667,7 +667,7 @@ func registerWait(kind string, targets []waitReference, until string, slice time
 	return release
 }
 
-func newWaitListCmd() *cobra.Command {
+func newWaitListCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var prune bool
 	command := &cobra.Command{
@@ -686,7 +686,7 @@ pass --prune to remove stale records.`,
 wb wait list --json`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			home, err := wbhome.EnsureRoot(projectsRoot)
+			home, err := wbhome.EnsureRoot(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -756,8 +756,8 @@ func newWaitChecksCmd(inv *invocation) *cobra.Command {
 
 // newWaitAgentCmd is `wb agent await` under the verb. `await` is kept as an
 // alias here because that is the spelling agents already know.
-func newWaitAgentCmd() *cobra.Command {
-	command := newAgentAwaitCmd()
+func newWaitAgentCmd(inv *invocation) *cobra.Command {
+	command := newAgentAwaitCmd(inv)
 	command.Use = strings.Replace(command.Use, "await ", "agent ", 1)
 	command.Short = "Block until a dispatched agent run is terminal (was: wb agent await)"
 	command.Aliases = append(command.Aliases, "await")
@@ -765,8 +765,8 @@ func newWaitAgentCmd() *cobra.Command {
 }
 
 // newWaitOperationCmd is `wb daemon operation wait` under the verb.
-func newWaitOperationCmd() *cobra.Command {
-	command := newDaemonOperationWaitCmd(defaultDaemonDependencies())
+func newWaitOperationCmd(inv *invocation) *cobra.Command {
+	command := newDaemonOperationWaitCmd(inv, defaultDaemonDependencies())
 	command.Use = strings.Replace(command.Use, "wait ", "operation ", 1)
 	command.Short = "Wait for a durable operation to reach a terminal state (was: wb daemon operation wait)"
 	return command

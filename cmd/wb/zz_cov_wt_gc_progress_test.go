@@ -181,7 +181,7 @@ func TestCwWtPrintWorktreeGCPropagatesWriteFailures(t *testing.T) {
 
 func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 	projects := t.TempDir()
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--session-freshness", "-1s")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--session-freshness", "-1s")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("negative session freshness exit = %d (%v)", code, err)
 	}
@@ -189,12 +189,12 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("negative session freshness error = %v", err)
 	}
 
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--format", "bogus")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "format") {
 		t.Fatalf("bogus format error = %v", err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) })
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("gc on an empty root: %v (stderr=%s)", err, stderr)
 	}
@@ -202,7 +202,7 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("gc on empty root stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("gc json on an empty root: %v", err)
 	}

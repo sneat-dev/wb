@@ -29,9 +29,6 @@ func cwWtDaemonOpFixture(t *testing.T) (root string, deps daemonDependencies) {
 	root = cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
 	t.Setenv("WB_CWWT_DAEMON_HELPER", "1")
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	deps = daemonTestDependencies(t, root)
 	originalStart := deps.start
@@ -94,10 +91,10 @@ func TestCwWtDaemonOperationHelperProcess(t *testing.T) {
 }
 
 func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
-	_, deps := cwWtDaemonOpFixture(t)
+	root, deps := cwWtDaemonOpFixture(t)
 
 	var submitOutput bytes.Buffer
-	submit := newDaemonOperationSubmitCmd(deps)
+	submit := newDaemonOperationSubmitCmd(&invocation{projectsRoot: root}, deps)
 	submit.SilenceUsage, submit.SilenceErrors = true, true
 	submit.SetOut(&submitOutput)
 	submit.SetErr(&bytes.Buffer{})
@@ -114,7 +111,7 @@ func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
 	}
 
 	var getOutput bytes.Buffer
-	get := newDaemonOperationGetCmd(deps)
+	get := newDaemonOperationGetCmd(&invocation{projectsRoot: root}, deps)
 	get.SilenceUsage, get.SilenceErrors = true, true
 	get.SetOut(&getOutput)
 	get.SetErr(&bytes.Buffer{})
@@ -132,7 +129,7 @@ func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
 
 	// Text rendering of the same receipt.
 	getOutput.Reset()
-	getText := newDaemonOperationGetCmd(deps)
+	getText := newDaemonOperationGetCmd(&invocation{projectsRoot: root}, deps)
 	getText.SilenceUsage, getText.SilenceErrors = true, true
 	getText.SetOut(&getOutput)
 	getText.SetErr(&bytes.Buffer{})
@@ -147,7 +144,7 @@ func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
 	// Wait for the terminal receipt, writing progress to a file.
 	progressFile := filepath.Join(t.TempDir(), "progress.log")
 	var waitOutput bytes.Buffer
-	wait := newDaemonOperationWaitCmd(deps)
+	wait := newDaemonOperationWaitCmd(&invocation{projectsRoot: root}, deps)
 	wait.SilenceUsage, wait.SilenceErrors = true, true
 	wait.SetOut(&waitOutput)
 	wait.SetErr(&bytes.Buffer{})
@@ -171,7 +168,7 @@ func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
 
 	// --after-cursor waits for a receipt newer than the given cursor.
 	var cursorOutput bytes.Buffer
-	cursorWait := newDaemonOperationWaitCmd(deps)
+	cursorWait := newDaemonOperationWaitCmd(&invocation{projectsRoot: root}, deps)
 	cursorWait.SilenceUsage, cursorWait.SilenceErrors = true, true
 	cursorWait.SetOut(&cursorOutput)
 	cursorWait.SetErr(&bytes.Buffer{})
@@ -182,7 +179,7 @@ func TestCwWtDaemonOperationSubmitGetWaitCancel(t *testing.T) {
 
 	// Cancel is a valid request for a terminal operation too.
 	var cancelOutput bytes.Buffer
-	cancel := newDaemonOperationCancelCmd(deps)
+	cancel := newDaemonOperationCancelCmd(&invocation{projectsRoot: root}, deps)
 	cancel.SilenceUsage, cancel.SilenceErrors = true, true
 	cancel.SetOut(&cancelOutput)
 	cancel.SetErr(&bytes.Buffer{})
@@ -199,10 +196,10 @@ func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
 	_, deps := cwWtDaemonOpFixture(t)
 
 	builders := map[string]func() *cobra.Command{
-		"submit": func() *cobra.Command { return newDaemonOperationSubmitCmd(deps) },
-		"get":    func() *cobra.Command { return newDaemonOperationGetCmd(deps) },
-		"wait":   func() *cobra.Command { return newDaemonOperationWaitCmd(deps) },
-		"cancel": func() *cobra.Command { return newDaemonOperationCancelCmd(deps) },
+		"submit": func() *cobra.Command { return newDaemonOperationSubmitCmd(&invocation{}, deps) },
+		"get":    func() *cobra.Command { return newDaemonOperationGetCmd(&invocation{}, deps) },
+		"wait":   func() *cobra.Command { return newDaemonOperationWaitCmd(&invocation{}, deps) },
+		"cancel": func() *cobra.Command { return newDaemonOperationCancelCmd(&invocation{}, deps) },
 	}
 	arguments := map[string][]string{
 		"submit": {"--", "true"},
@@ -233,7 +230,7 @@ func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
 	}
 
 	// Submit without a command after -- is a usage error.
-	submit := newDaemonOperationSubmitCmd(deps)
+	submit := newDaemonOperationSubmitCmd(&invocation{}, deps)
 	submit.SilenceUsage, submit.SilenceErrors = true, true
 	submit.SetOut(&bytes.Buffer{})
 	submit.SetErr(&bytes.Buffer{})
@@ -241,7 +238,7 @@ func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
 	if err := submit.Execute(); err == nil || !strings.Contains(err.Error(), "command is required after --") {
 		t.Fatalf("submit without a command = %v", err)
 	}
-	submitNoDash := newDaemonOperationSubmitCmd(deps)
+	submitNoDash := newDaemonOperationSubmitCmd(&invocation{}, deps)
 	submitNoDash.SilenceUsage, submitNoDash.SilenceErrors = true, true
 	submitNoDash.SetOut(&bytes.Buffer{})
 	submitNoDash.SetErr(&bytes.Buffer{})
@@ -253,7 +250,7 @@ func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
 	// A denied raw-execution policy refuses before any RPC.
 	denied := deps
 	denied.rawPolicy = func(string) (bool, string, error) { return false, "/tmp/policy.json", nil }
-	deniedSubmit := newDaemonOperationSubmitCmd(denied)
+	deniedSubmit := newDaemonOperationSubmitCmd(&invocation{}, denied)
 	deniedSubmit.SilenceUsage, deniedSubmit.SilenceErrors = true, true
 	deniedSubmit.SetOut(&bytes.Buffer{})
 	deniedSubmit.SetErr(&bytes.Buffer{})
@@ -341,13 +338,13 @@ func TestCwWtRequireDaemonRawExecutionPolicy(t *testing.T) {
 }
 
 func TestCwWtSubmitWorkerOperationInProcess(t *testing.T) {
-	_, deps := cwWtDaemonOpFixture(t)
+	root, deps := cwWtDaemonOpFixture(t)
 	var out, errOut bytes.Buffer
 	command := &cobra.Command{}
 	command.SetContext(context.Background())
 	command.SetOut(&out)
 	command.SetErr(&errOut)
-	if err := submitWorkerOperation(command, deps, "worker-cwwt", "cwWt-key", cwWtDaemonOpHelperArgv()); err != nil {
+	if err := submitWorkerOperation(&invocation{projectsRoot: root}, command, deps, "worker-cwwt", "cwWt-key", cwWtDaemonOpHelperArgv()); err != nil {
 		t.Fatalf("submitWorkerOperation: %v (stderr=%s)", err, errOut.String())
 	}
 	var result daemonOperationResult

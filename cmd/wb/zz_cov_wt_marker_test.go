@@ -20,7 +20,7 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 	clone := filepath.Join(projects, "acme", "app")
 	cwCovCloneWithOrigin(t, seeds, "app", clone)
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, clone)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, clone)
 	if err != nil {
 		t.Fatalf("marker: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 	}
 
 	// A second run changes nothing.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, clone)
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, clone)
 	if err != nil {
 		t.Fatalf("second marker: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 	// A dry run over a fresh clone says what it would change.
 	clone2 := filepath.Join(projects, "acme", "app2")
 	cwCovCloneWithOrigin(t, seeds, "app2", clone2)
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, clone2, "--dry-run")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, clone2, "--dry-run")
 	if err != nil {
 		t.Fatalf("marker --dry-run: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 	}
 
 	// JSON emits the outcome rows.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, clone, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, clone, "--format", "json")
 	if err != nil {
 		t.Fatalf("marker json: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 	linked := filepath.Join(projects, "linked-checkout")
 	runGit(t, clone, "worktree", "add", "-b", "linked-branch", linked)
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, "--fleet")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet")
 	if err != nil {
 		t.Fatalf("marker --fleet: %v", err)
 	}
@@ -85,12 +85,12 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 	}
 
 	// --fleet with a named checkout is refused.
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, "--fleet", clone); err == nil || !strings.Contains(err.Error(), "do not also name one") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet", clone); err == nil || !strings.Contains(err.Error(), "do not also name one") {
 		t.Fatalf("--fleet with an argument = %v", err)
 	}
 
 	// A --filter that matches nothing still completes.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, "--fleet", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet", "--format", "json")
 	if err != nil {
 		t.Fatalf("fleet marker json: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 	}
 
 	// A path that is not a checkout is a recorded failure, not a crash.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) }, filepath.Join(t.TempDir(), "not-a-repo"))
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, filepath.Join(t.TempDir(), "not-a-repo"))
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("marker on a non-checkout exit = %d (%v)", code, err)
 	}
@@ -116,30 +116,27 @@ func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
 	linked := filepath.Join(projects, "linked")
 	runGit(t, clone, "worktree", "add", "-b", "b", linked)
 
-	checkouts, err := markerCheckouts(&invocation{}, t.Context(), false, []string{"/one"})
+	checkouts, err := markerCheckouts(t.Context(), &invocation{projectsRoot: projects}, false, []string{"/one"})
 	if err != nil || len(checkouts) != 1 || checkouts[0] != "/one" {
 		t.Fatalf("single checkout = (%v, %v)", checkouts, err)
 	}
-	checkouts, err = markerCheckouts(&invocation{}, t.Context(), false, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects}, false, nil)
 	if err != nil || len(checkouts) != 1 || checkouts[0] != "." {
 		t.Fatalf("default checkout = (%v, %v)", checkouts, err)
 	}
 
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
-	checkouts, err = markerCheckouts(&invocation{}, t.Context(), true, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects}, true, nil)
 	if err != nil {
 		t.Fatalf("fleet checkouts: %v", err)
 	}
 	if len(checkouts) != 2 {
 		t.Fatalf("fleet checkouts = %v", checkouts)
 	}
-	checkouts, err = markerCheckouts(&invocation{filterFlag: "nothing-matches"}, t.Context(), true, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{filterFlag: "nothing-matches"}, true, nil)
 	if err != nil || len(checkouts) != 0 {
 		t.Fatalf("filtered fleet checkouts = (%v, %v)", checkouts, err)
 	}
-	checkouts, err = markerCheckouts(&invocation{filterFlag: "acme/app"}, t.Context(), true, nil)
+	checkouts, err = markerCheckouts(t.Context(), &invocation{filterFlag: "acme/app"}, true, nil)
 	if err != nil || len(checkouts) != 2 {
 		t.Fatalf("matching fleet checkouts = (%v, %v)", checkouts, err)
 	}
@@ -313,10 +310,6 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 	clone := filepath.Join(projects, "acme", "app")
 	cwCovCloneWithOrigin(t, seeds, "app", clone)
 
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
-
 	var errOut strings.Builder
 	command := &cobra.Command{}
 	command.SetOut(&strings.Builder{})
@@ -324,7 +317,7 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 
 	// markCreatedCheckouts marks both the worktree and its canonical clone,
 	// and warns for a path it cannot describe.
-	markCreatedCheckouts(command, "main", []worktrees.CreateResult{
+	markCreatedCheckouts(&invocation{projectsRoot: projects}, command, "main", []worktrees.CreateResult{
 		{Repository: "acme/app", WorktreeDir: clone, Base: "main"},
 		{Repository: "acme/app", WorktreeDir: filepath.Join(t.TempDir(), "missing")},
 	})
@@ -338,7 +331,7 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 	// A repository slug with no owner is skipped for the canonical path but
 	// the worktree itself is still marked.
 	errOut.Reset()
-	markCreatedCheckouts(command, "main", []worktrees.CreateResult{{Repository: "app", WorktreeDir: clone}})
+	markCreatedCheckouts(&invocation{projectsRoot: projects}, command, "main", []worktrees.CreateResult{{Repository: "app", WorktreeDir: clone}})
 	if errOut.Len() != 0 {
 		t.Fatalf("markCreatedCheckouts errOut = %q", errOut.String())
 	}
@@ -358,7 +351,7 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 
 	// markRenamedCheckouts skips unapplied results and warns on failure.
 	errOut.Reset()
-	markRenamedCheckouts(command, "main", []worktrees.RenameResult{
+	markRenamedCheckouts(&invocation{projectsRoot: projects}, command, "main", []worktrees.RenameResult{
 		{Applied: false, NewWorktreeDir: filepath.Join(t.TempDir(), "missing")},
 		{Applied: true, NewWorktreeDir: ""},
 		{Applied: true, NewWorktreeDir: filepath.Join(t.TempDir(), "missing")},
@@ -369,7 +362,7 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 
 	// markRelocatedCheckouts skips unapplied results and warns on failure.
 	errOut.Reset()
-	markRelocatedCheckouts(command, []worktrees.RelocateResult{
+	markRelocatedCheckouts(&invocation{projectsRoot: projects}, command, []worktrees.RelocateResult{
 		{Applied: false, Destination: filepath.Join(t.TempDir(), "missing")},
 		{Applied: true, Destination: filepath.Join(t.TempDir(), "missing")},
 	})

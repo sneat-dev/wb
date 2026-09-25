@@ -236,9 +236,7 @@ func TestDepsPublishRejectsUnalignedReleaseTuplesBeforeFleetDiscovery(t *testing
 }
 
 func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	options := validNpmPublishOptions()
@@ -251,7 +249,7 @@ func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
 	var output bytes.Buffer
 	command := newRootCmd()
 	command.SetOut(&output)
-	if err := runPreparedNpmPublish(command, options, prepared, &invocation{}); err != nil {
+	if err := runPreparedNpmPublish(command, options, prepared, &invocation{projectsRoot: projectsRoot}); err != nil {
 		t.Fatalf("default plan shared bump error = %v", err)
 	}
 	if persisted, err := deps.LoadBumpReport(npmPublicationPlanReportDir(reportDir)); err != nil || persisted.Status != "completed" || !persisted.RegistryLookupsSkipped {
@@ -263,9 +261,7 @@ func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
 }
 
 func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	first := npmPublicationTestRepository(t, projectsRoot, "acme", "one", "@acme/duplicate")
@@ -280,7 +276,7 @@ func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
 	command := newRootCmd()
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
-	err = runPreparedNpmPublish(command, options, prepared, &invocation{})
+	err = runPreparedNpmPublish(command, options, prepared, &invocation{projectsRoot: projectsRoot})
 	if err == nil || !strings.Contains(err.Error(), "npm package @acme/duplicate is declared by") {
 		t.Fatalf("duplicate fleet plan error = %v", err)
 	}
@@ -290,9 +286,6 @@ func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
 }
 
 func TestNpmPublishPreflightRejectsInvalidOptionsBeforeFleetDiscovery(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
 	tests := []struct {
 		name    string
 		change  func(*npmPublishOptions)
@@ -343,9 +336,6 @@ func TestNpmPublishPreflightRejectsInvalidOptionsBeforeFleetDiscovery(t *testing
 }
 
 func TestNpmPublishFreshReportRequiresResumeBeforeFleetDiscovery(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
 	options := validNpmPublishOptions()
 	options.apply = true
 	options.reportDir = t.TempDir()
@@ -374,9 +364,6 @@ func TestNpmPublishFreshReportRequiresResumeBeforeFleetDiscovery(t *testing.T) {
 }
 
 func TestNpmPublishJSONOnlyReportBlocksFreshApplyBeforeFleetDiscovery(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
 	options := validNpmPublishOptions()
 	options.apply = true
 	options.reportDir = t.TempDir()
@@ -417,19 +404,17 @@ func TestNpmPublishJSONOnlyReportBlocksFreshApplyBeforeFleetDiscovery(t *testing
 }
 
 func TestNpmPublishRealAcceptanceCampaignPlansAsOneOperation(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	var prepared npmPublishPrepared
 	runCalls := 0
 	var output bytes.Buffer
-	command := newNpmPublishCmdWithRun(&invocation{}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
+	command := newNpmPublishCmdWithRun(&invocation{projectsRoot: projectsRoot}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
 		runCalls++
 		return runNpmPublishWithPreflight(command, options, func(_ *invocation, options npmPublishOptions) (npmPublishPrepared, error) {
 			var err error
-			prepared, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
+			prepared, err = preflightNpmPublishWithDiscovery(&invocation{projectsRoot: projectsRoot}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				return nil, nil
 			})
 			return prepared, err
@@ -457,9 +442,6 @@ func TestNpmPublishRealAcceptanceCampaignPlansAsOneOperation(t *testing.T) {
 }
 
 func TestNpmPublishCommandRejectsSeparatedDuplicateTuplesBeforeFleetDiscoveryOrWorkflowDispatch(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
 	reportDir := filepath.Join(t.TempDir(), "report")
 	fleetDiscoveryCalls := 0
 	commandRuns := 0
@@ -493,9 +475,7 @@ func TestNpmPublishCommandRejectsSeparatedDuplicateTuplesBeforeFleetDiscoveryOrW
 }
 
 func TestRunNpmPublishPlanRefusesActiveOperationLock(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	options := validNpmPublishOptions()
 	options.reportDir = t.TempDir()
@@ -521,9 +501,7 @@ func TestRunNpmPublishPlanRefusesActiveOperationLock(t *testing.T) {
 }
 
 func TestRunNpmPublishApplyRefusesActiveOperationLockBeforeFleetDiscovery(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	options := validNpmPublishOptions()
 	options.apply = true
@@ -564,9 +542,7 @@ func TestRunNpmPublishApplyRefusesActiveOperationLockBeforeFleetDiscovery(t *tes
 }
 
 func TestNpmPublicationClaimLocksRejectOverlappingSubsetAndSupersetCampaigns(t *testing.T) {
-	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	defer func() { projectsRoot = previousProjectsRoot }()
+	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
 	assetus := validNpmPublishOptions()
@@ -579,7 +555,7 @@ func TestNpmPublicationClaimLocksRejectOverlappingSubsetAndSupersetCampaigns(t *
 		t.Fatal(err)
 	}
 	assetusOperation := npmrelease.OperationIDFor(assetusReleases)
-	assetusLocks, err := acquireNpmPublicationLocks(assetusOperation, assetusReleases, false)
+	assetusLocks, err := acquireNpmPublicationLocks(&invocation{}, assetusOperation, assetusReleases, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +570,7 @@ func TestNpmPublicationClaimLocksRejectOverlappingSubsetAndSupersetCampaigns(t *
 	if supersetOperation == assetusOperation {
 		t.Fatalf("subset and superset unexpectedly share campaign operation %q", assetusOperation)
 	}
-	if _, err := acquireNpmPublicationLocks(supersetOperation, supersetReleases, false); err == nil || !strings.Contains(err.Error(), "already active") {
+	if _, err := acquireNpmPublicationLocks(&invocation{}, supersetOperation, supersetReleases, false); err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("overlapping publication claim acquisition error = %v, want active Assetus claim refusal", err)
 	}
 }
