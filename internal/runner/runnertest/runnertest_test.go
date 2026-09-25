@@ -1,6 +1,7 @@
 package runnertest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -210,6 +211,32 @@ func TestFakeInteractiveReturnsTheScriptedError(t *testing.T) {
 	err := fake.Interactive(context.Background(), "/repo", "vim")
 	if err != wantErr {
 		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeStreamRecordsOptsAndReturnsTheScriptedResult(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.ExpectArgv([]string{"/bin/sh", "hook.sh"}, runner.Result{ExitCode: 3}, os.ErrPermission)
+
+	var stdin, stdout, stderr bytes.Buffer
+	opts := runner.StreamOptions{Env: []string{"WB_HOOK=pre-commit"}, Stdin: &stdin, Stdout: &stdout, Stderr: &stderr}
+	result, err := fake.Stream(context.Background(), "/repo", opts, "/bin/sh", "hook.sh")
+	if err != os.ErrPermission {
+		t.Fatalf("err = %v, want %v", err, os.ErrPermission)
+	}
+	if result.ExitCode != 3 {
+		t.Fatalf("result = %+v, want ExitCode 3", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "Stream" {
+		t.Fatalf("Calls() = %+v, want one Stream call", calls)
+	}
+	if len(calls[0].StreamOpts.Env) != 1 || calls[0].StreamOpts.Env[0] != "WB_HOOK=pre-commit" {
+		t.Fatalf("Calls()[0].StreamOpts = %+v, want it to carry Env", calls[0].StreamOpts)
+	}
+	if calls[0].StreamOpts.Stdin != &stdin || calls[0].StreamOpts.Stdout != &stdout || calls[0].StreamOpts.Stderr != &stderr {
+		t.Fatalf("Calls()[0].StreamOpts did not carry the caller's stdio streams")
 	}
 }
 

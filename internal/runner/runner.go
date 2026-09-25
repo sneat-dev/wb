@@ -41,6 +41,7 @@ package runner
 
 import (
 	"context"
+	"io"
 	"os"
 	"time"
 )
@@ -70,6 +71,30 @@ type RunOptions struct {
 	// grandchild and exits early) sets one explicitly rather than relying on
 	// whatever internal/process happens to default to today.
 	WaitDelay time.Duration
+}
+
+// StreamOptions customizes a Stream call: a per-call environment and/or
+// explicit stdio streams, for a caller that must pass a restricted or
+// augmented environment through to a child whose stdio is not captured but
+// streamed directly to/from the caller's own (possibly non-os.Std{in,out,err})
+// readers and writers -- added for internal/hooks' template runner, which
+// both sanitizes the child's environment (stripping WB_AGENT_* and
+// git-generated GIT_* variables) and must honor a caller-supplied
+// Stdin/Stdout/Stderr (a hook harness under test, or cobra's
+// InOrStdin/OutOrStdout/ErrOrStderr) rather than the process's own. Unlike
+// Interactive, Stream never adjusts the child's foreground terminal process
+// group.
+type StreamOptions struct {
+	// Env overrides the child's environment, exactly like RunOptions.Env.
+	// Nil inherits the calling process's own environment.
+	Env []string
+	// Stdin, Stdout and Stderr are the child's stdio streams. A nil field
+	// falls back to the calling process's own os.Stdin/os.Stdout/os.Stderr,
+	// matching Interactive's behavior for a caller that only needs to
+	// override some of the three.
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // Handle is a process started by Start: callers wait for it or signal it
@@ -106,4 +131,10 @@ type Runner interface {
 	// Interactive starts name with args in dir with stdio passed through to
 	// the caller's own, and waits for it to exit.
 	Interactive(ctx context.Context, dir, name string, args ...string) error
+	// Stream starts name with args in dir, streaming opts.Stdin/Stdout/Stderr
+	// directly rather than capturing them, with opts.Env as its environment,
+	// and waits for it to exit. The returned Result's ExitCode reflects the
+	// exit status exactly like Run/RunOpts; Stdout/Stderr are always empty
+	// since output was streamed rather than captured. See StreamOptions.
+	Stream(ctx context.Context, dir string, opts StreamOptions, name string, args ...string) (Result, error)
 }

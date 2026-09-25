@@ -117,6 +117,34 @@ func (Real) Interactive(ctx context.Context, dir, name string, args ...string) e
 	return command.Run()
 }
 
+// Stream starts name with args in dir, streaming opts.Stdin/Stdout/Stderr
+// directly rather than capturing them, with opts.Env as its environment, and
+// waits for it to exit. See StreamOptions.
+func (Real) Stream(ctx context.Context, dir string, opts StreamOptions, name string, args ...string) (Result, error) {
+	if err := guardRealProcess(); err != nil {
+		return Result{}, err
+	}
+	command := process.CommandContext(ctx, name, args...)
+	command.Dir = dir
+	if opts.Env != nil {
+		command.Env = opts.Env
+	}
+	command.Stdin = opts.Stdin
+	if command.Stdin == nil {
+		command.Stdin = os.Stdin
+	}
+	command.Stdout = opts.Stdout
+	if command.Stdout == nil {
+		command.Stdout = os.Stdout
+	}
+	command.Stderr = opts.Stderr
+	if command.Stderr == nil {
+		command.Stderr = os.Stderr
+	}
+	runErr := command.Run()
+	return Result{ExitCode: exitCodeOf(runErr)}, runErr
+}
+
 // realHandle is Real's Handle: a started *exec.Cmd whose output accumulates
 // in buffers Wait reads back.
 type realHandle struct {

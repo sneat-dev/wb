@@ -41,10 +41,10 @@ func AllowRealProcess(t testing.TB) {
 	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "1")
 }
 
-// Call records one Run/RunWithInput/RunOpts/Start/Detach/Interactive
+// Call records one Run/RunWithInput/RunOpts/Start/Detach/Interactive/Stream
 // invocation the Fake received.
 type Call struct {
-	Op   string // "Run", "RunWithInput", "RunOpts", "Start", "Detach" or "Interactive"
+	Op   string // "Run", "RunWithInput", "RunOpts", "Start", "Detach", "Interactive" or "Stream"
 	Dir  string
 	Name string
 	Args []string
@@ -54,6 +54,9 @@ type Call struct {
 	// Opts is the RunOptions a RunOpts call was given. Zero value for every
 	// other Op.
 	Opts runner.RunOptions
+	// StreamOpts is the StreamOptions a Stream call was given. Zero value
+	// for every other Op.
+	StreamOpts runner.StreamOptions
 }
 
 // Argv is Name followed by Args, the shape Expect's matcher predicates
@@ -216,6 +219,13 @@ func (f *Fake) Detach(dir, name string, args ...string) (int, error) {
 func (f *Fake) Interactive(_ context.Context, dir, name string, args ...string) error {
 	_, err := f.answer(Call{Op: "Interactive", Dir: dir, Name: name, Args: args})
 	return err
+}
+
+// Stream implements runner.Runner. opts is recorded on Call.StreamOpts, so a
+// test can assert on the environment/stdio a call was given without the Fake
+// itself reading from or writing to them.
+func (f *Fake) Stream(_ context.Context, dir string, opts runner.StreamOptions, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "Stream", Dir: dir, Name: name, Args: args, StreamOpts: opts})
 }
 
 // fakeHandle is Start's returned Handle: it replays the script's result once

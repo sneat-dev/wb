@@ -1,11 +1,13 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,6 +299,79 @@ func TestRealStartBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testin
 func TestRealDetachBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
 	if _, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("Detach() err = %v, want runner.ErrRealProcessBlocked", err)
+	}
+}
+
+func TestRealStreamRunsToCompletionAndStreamsStdoutAndStderr(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_STDOUT", "stream-stdout")
+	t.Setenv("WB_RUNNER_STDERR", "stream-stderr")
+	t.Setenv("WB_RUNNER_EXIT", "0")
+
+	var stdout, stderr bytes.Buffer
+	opts := runner.StreamOptions{Stdout: &stdout, Stderr: &stderr}
+	result, err := runner.New().Stream(context.Background(), t.TempDir(), opts, os.Args[0], helperArgs()...)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("result = %+v, want ExitCode 0", result)
+	}
+	if stdout.String() != "stream-stdout" || stderr.String() != "stream-stderr" {
+		t.Fatalf("stdout=%q stderr=%q, want the child's streamed output written directly to opts.Stdout/Stderr", stdout.String(), stderr.String())
+	}
+}
+
+func TestRealStreamCapturesNonZeroExitStatusInResult(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_EXIT", "5")
+
+	result, err := runner.New().Stream(context.Background(), t.TempDir(), runner.StreamOptions{}, os.Args[0], helperArgs()...)
+	if err == nil {
+		t.Fatal("want an error for a non-zero exit")
+	}
+	if result.ExitCode != 5 {
+		t.Fatalf("ExitCode = %d, want 5", result.ExitCode)
+	}
+}
+
+func TestRealStreamAppliesACustomEnvironment(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+
+	var stdout bytes.Buffer
+	opts := runner.StreamOptions{
+		Env:    append(os.Environ(), "WB_RUNNER_ECHO_ENV=1", "WB_RUNNER_PROBE=from-stream"),
+		Stdout: &stdout,
+	}
+	_, err := runner.New().Stream(context.Background(), t.TempDir(), opts, os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesAnEnvironmentVariable$")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if stdout.String() != "from-stream" {
+		t.Fatalf("stdout = %q, want the Stream-supplied WB_RUNNER_PROBE", stdout.String())
+	}
+}
+
+func TestRealStreamReadsFromTheGivenStdin(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_ECHO_STDIN", "1")
+
+	var stdout bytes.Buffer
+	opts := runner.StreamOptions{Stdin: strings.NewReader("hello-stream-stdin"), Stdout: &stdout}
+	_, err := runner.New().Stream(context.Background(), t.TempDir(), opts, os.Args[0], "-test.run=^TestRunnerHelperProcessEchoesStdin$")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if stdout.String() != "hello-stream-stdin" {
+		t.Fatalf("stdout = %q, want the echoed stdin", stdout.String())
+	}
+}
+
+func TestRealStreamBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	if _, err := runner.New().Stream(context.Background(), t.TempDir(), runner.StreamOptions{}, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("Stream() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
