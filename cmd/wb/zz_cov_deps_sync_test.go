@@ -371,6 +371,23 @@ func TestCwDepsRunSyncWithoutRepositoriesSaysSo(t *testing.T) {
 	}
 }
 
+// TestCwDepsSyncCommandDispatchesToRunSyncInProcess proves that "wb sync"
+// reaches requestedSyncOwners and runSync through the real command tree,
+// threading its invocation through both, not just through direct unit calls.
+func TestCwDepsSyncCommandDispatchesToRunSyncInProcess(t *testing.T) {
+	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSyncCmd(&invocation{nonInteractive: true}) },
+		"--dry-run")
+	if err != nil {
+		t.Fatalf("wb sync --dry-run: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout, "no repos found") {
+		t.Errorf("empty fleet report = %q", stdout)
+	}
+}
+
 // TestCwDepsRunSyncRefusesBrokenAuthentication proves an authentication
 // failure is a finding, not a silently unmanaged-but-successful sync.
 func TestCwDepsRunSyncRefusesBrokenAuthentication(t *testing.T) {

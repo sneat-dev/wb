@@ -18,7 +18,11 @@ import (
 func TestStatusCommandReportsTheFleetWorklistInProcess(t *testing.T) {
 	root := t.TempDir()
 	cwCovCloneWithOrigin(t, t.TempDir(), "app", filepath.Join(root, "acme", "app"))
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStatusCmd(&invocation{}) }, "--format", "json", "--all")
+	var stdout string
+	var err error
+	stdout = cwCovCaptureStdout(t, func() {
+		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newStatusCmd(&invocation{}) }, "--format", "json", "--all")
+	})
 	if err != nil {
 		t.Fatalf("wb status: %v\n%s", err, stdout)
 	}

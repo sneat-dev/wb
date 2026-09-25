@@ -673,11 +673,12 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 // TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress proves that
 // "wb remote publish" wires its production defaultRemoteDeps() and inv through
 // to runRemotePublishWithProgress via the real command tree, not just through
-// direct unit calls to that function: with no wb.yaml configured in this
-// isolated WB_HOME, it surfaces the same named usage error that
+// direct unit calls to that function: with no wb.yaml configured under an
+// isolated XDG_CONFIG_HOME, it surfaces the same named usage error that
 // TestRemotePublishUnconfiguredIsUsageError proves for the direct call.
 func TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, _, err := cwCovExec(t, root, func() *cobra.Command { return newRemotePublishCmd(&invocation{}) }, "--dry-run")
 	var exit *exitError
 	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
