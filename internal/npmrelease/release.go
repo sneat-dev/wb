@@ -24,6 +24,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/semver"
@@ -1069,7 +1070,16 @@ func WriteReport(directory string, report Report) error {
 }
 
 func writeAtomic(filename string, contents []byte, mode os.FileMode) error {
-	temporary, err := os.CreateTemp(filepath.Dir(filename), ".npm-publish-*")
+	return writeAtomicInjected(filename, contents, mode, nil)
+}
+
+// writeAtomicInjected is writeAtomic's test seam (task-9 PR-8): every
+// production call site reaches it only through writeAtomic, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/write/chmod/close/rename
+// failure branches deterministically.
+func writeAtomicInjected(filename string, contents []byte, mode os.FileMode, inj *filewrite.Injector) error {
+	temporary, err := filewrite.CreateTemp(filepath.Dir(filename), ".npm-publish-*", inj)
 	if err != nil {
 		return err
 	}
@@ -1080,18 +1090,18 @@ func writeAtomic(filename string, contents []byte, mode os.FileMode) error {
 			_ = os.Remove(temporaryName)
 		}
 	}()
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, contents, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Chmod(mode.Perm()); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, mode.Perm(), temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryName, filename); err != nil {
+	if err := filewrite.Rename(temporaryName, filename, inj); err != nil {
 		return err
 	}
 	remove = false

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -327,6 +328,15 @@ func (store *Store) Update(name string, mutate func(*Stream) error) (Stream, err
 }
 
 func (store *Store) writeAtomically(name string, stream Stream) error {
+	return store.writeAtomicallyInjected(name, stream, nil)
+}
+
+// writeAtomicallyInjected is writeAtomically's test seam (task-9 PR-8): every
+// production call site reaches it only through writeAtomically, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename failure branches deterministically.
+func (store *Store) writeAtomicallyInjected(name string, stream Stream, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(stream, "", "  ")
 	if err != nil {
 		return err
@@ -335,28 +345,28 @@ func (store *Store) writeAtomically(name string, stream Stream) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create stream directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(directory, "stream-*.json")
+	temporary, err := filewrite.CreateTemp(directory, "stream-*.json", inj)
 	if err != nil {
 		return fmt.Errorf("stage stream state: %w", err)
 	}
 	staged := temporary.Name()
 	defer func() { _ = os.Remove(staged) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("protect stream state: %w", err)
 	}
-	if _, err := temporary.Write(append(contents, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(contents, '\n'), staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("write stream state: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("flush stream state: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, staged, inj); err != nil {
 		return fmt.Errorf("close stream state: %w", err)
 	}
-	if err := os.Rename(staged, store.statePath(name)); err != nil {
+	if err := filewrite.Rename(staged, store.statePath(name), inj); err != nil {
 		return fmt.Errorf("publish stream state: %w", err)
 	}
 	return nil

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -461,34 +462,44 @@ func writeArchiveCleanReceipt(projectsRoot string, receipt archiveCleanReceipt) 
 }
 
 func overwriteArchiveCleanReceipt(path string, receipt archiveCleanReceipt) error {
+	return overwriteArchiveCleanReceiptInjected(path, receipt, nil)
+}
+
+// overwriteArchiveCleanReceiptInjected is overwriteArchiveCleanReceipt's
+// test seam (task-9 PR-8): every production call site reaches it only
+// through overwriteArchiveCleanReceipt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test
+// passes its own Injector to reach the create/chmod/write/sync/close/
+// rename/dir-sync failure branches deterministically.
+func overwriteArchiveCleanReceiptInjected(path string, receipt archiveCleanReceipt, inj *filewrite.Injector) error {
 	raw, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode archive-clean receipt: %w", err)
 	}
 	raw = append(raw, '\n')
 	directory := filepath.Dir(path)
-	temp, err := os.CreateTemp(directory, ".archive-clean-receipt-*")
+	temp, err := filewrite.CreateTemp(directory, ".archive-clean-receipt-*", inj)
 	if err != nil {
 		return fmt.Errorf("create archive-clean receipt: %w", err)
 	}
 	tempName := temp.Name()
 	defer func() { _ = os.Remove(tempName) }()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
+	if err := filewrite.ChmodFile(temp, 0o600, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("protect archive-clean receipt: %w", err)
 	}
-	if _, err := temp.Write(raw); err != nil {
-		_ = temp.Close()
+	if err := filewrite.Write(temp, raw, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("write archive-clean receipt: %w", err)
 	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
+	if err := filewrite.Sync(temp, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("sync archive-clean receipt: %w", err)
 	}
-	if err := temp.Close(); err != nil {
+	if err := filewrite.Close(temp, tempName, inj); err != nil {
 		return fmt.Errorf("close archive-clean receipt: %w", err)
 	}
-	if err := os.Rename(tempName, path); err != nil {
+	if err := filewrite.Rename(tempName, path, inj); err != nil {
 		return fmt.Errorf("publish archive-clean receipt: %w", err)
 	}
 	dir, err := os.Open(directory)
@@ -496,7 +507,7 @@ func overwriteArchiveCleanReceipt(path string, receipt archiveCleanReceipt) erro
 		return fmt.Errorf("open archive-clean receipt directory: %w", err)
 	}
 	defer func() { _ = dir.Close() }()
-	if err := dir.Sync(); err != nil {
+	if err := filewrite.SyncDir(dir, inj); err != nil {
 		return fmt.Errorf("sync archive-clean receipt directory: %w", err)
 	}
 	return nil

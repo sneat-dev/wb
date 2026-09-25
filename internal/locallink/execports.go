@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const defaultCommandTimeout = 30 * time.Minute
@@ -100,6 +101,15 @@ func (git ExecGit) TrackedChanges(ctx context.Context, dir string) ([]string, er
 // a tracked `.gitignore`: that would be a tracked change, which a local link
 // must never make.
 func (git ExecGit) ExcludePath(ctx context.Context, dir, pattern string) error {
+	return git.excludePathInjected(ctx, dir, pattern, nil)
+}
+
+// excludePathInjected is ExcludePath's test seam (task-9 PR-8): every
+// production call site reaches it only through ExcludePath, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the open/write failure branches
+// deterministically.
+func (git ExecGit) excludePathInjected(ctx context.Context, dir, pattern string, inj *filewrite.Injector) error {
 	path, err := git.excludeFile(ctx, dir)
 	if err != nil {
 		return err
@@ -116,16 +126,16 @@ func (git ExecGit) ExcludePath(ctx context.Context, dir, pattern string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := filewrite.OpenAppend(path, 0o644, inj)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() { _ = filewrite.Close(file, path, inj) }()
 	line := pattern + "\n"
 	if len(existing) > 0 && strings.TrimSpace(existing[len(existing)-1]) != "" {
 		line = pattern + "\n"
 	}
-	if _, err := file.WriteString(line); err != nil {
+	if err := filewrite.Write(file, []byte(line), path, inj); err != nil {
 		return fmt.Errorf("append %q to %s: %w", pattern, path, err)
 	}
 	return nil
@@ -377,6 +387,65 @@ func linkAppliedMarkerPath(consumerDir, packageName string) string {
 // left the consumer with no package at all until someone re-installed. npm's
 // flat layout leaves a real directory, which is moved aside.
 func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, returnedErr error) {
+	return node.linkInjected(ctx, consumerDir, packageName, dist, nil)
+}
+
+// writeLinkPendingMarker is Link's pending-link-marker write, extracted
+// (task-9 PR-8) so it and writeLinkSymlinkBackup -- Link's other, separately
+// error-wrapped write-once sequence -- each get their own filewrite-routed
+// helper rather than one shared helper that would blur their distinct error
+// text and distinct cleanup-on-failure logic (the marker write also removes
+// the claimed stage directory; the backup write does not, since it runs
+// after stage is already populated and kept). Every production call site
+// reaches it only through Link, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged.
+func writeLinkPendingMarker(packageName, marker, stage string, inj *filewrite.Injector) error {
+	markerFile, err := filewrite.CreateExclusivePath(marker, 0o644, inj)
+	if err != nil {
+		if cleanupErr := os.Remove(stage); cleanupErr != nil {
+			return fmt.Errorf("record the pending link for %s: %w; preserve unclaimed stage %s: %v", packageName, err, stage, cleanupErr)
+		}
+		return fmt.Errorf("record the pending link for %s (run --undo if a prior attempt was interrupted): %w", packageName, err)
+	}
+	if err := filewrite.Write(markerFile, []byte(stage+"\n"), marker, inj); err != nil {
+		_ = filewrite.Close(markerFile, marker, inj)
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return fmt.Errorf("record the staged link path for %s: %w", packageName, err)
+	}
+	if err := filewrite.Close(markerFile, marker, inj); err != nil {
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return fmt.Errorf("close the pending link marker for %s: %w", packageName, err)
+	}
+	return nil
+}
+
+// writeLinkSymlinkBackup is Link's existing-symlink-target backup write,
+// extracted (task-9 PR-8) for the same reason as writeLinkPendingMarker.
+func writeLinkSymlinkBackup(packageName, symlinkBackup, existing string, inj *filewrite.Injector) error {
+	backupFile, err := filewrite.CreateExclusivePath(symlinkBackup, 0o644, inj)
+	if err != nil {
+		return fmt.Errorf("claim the link recovery record %s without replacing existing data: %w", symlinkBackup, err)
+	}
+	if err := filewrite.Write(backupFile, []byte(existing), symlinkBackup, inj); err != nil {
+		_ = filewrite.Close(backupFile, symlinkBackup, inj)
+		_ = os.Remove(symlinkBackup)
+		return fmt.Errorf("record the existing link target of %s: %w", packageName, err)
+	}
+	if err := filewrite.Close(backupFile, symlinkBackup, inj); err != nil {
+		_ = os.Remove(symlinkBackup)
+		return fmt.Errorf("close the existing link target record of %s: %w", packageName, err)
+	}
+	return nil
+}
+
+// linkInjected is Link's test seam (task-9 PR-8): every production call
+// site reaches it only through Link, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach writeLinkPendingMarker's and
+// writeLinkSymlinkBackup's failure branches deterministically.
+func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector) (result NodeLinkResult, returnedErr error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return result, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
@@ -408,23 +477,8 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 	if err := os.Mkdir(stage, 0o755); err != nil {
 		return result, fmt.Errorf("claim the staged package path %s without replacing existing data: %w", stage, err)
 	}
-	markerFile, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if cleanupErr := os.Remove(stage); cleanupErr != nil {
-			return result, fmt.Errorf("record the pending link for %s: %w; preserve unclaimed stage %s: %v", packageName, err, stage, cleanupErr)
-		}
-		return result, fmt.Errorf("record the pending link for %s (run --undo if a prior attempt was interrupted): %w", packageName, err)
-	}
-	if _, err := markerFile.WriteString(stage + "\n"); err != nil {
-		_ = markerFile.Close()
-		_ = os.Remove(marker)
-		_ = os.Remove(stage)
-		return result, fmt.Errorf("record the staged link path for %s: %w", packageName, err)
-	}
-	if err := markerFile.Close(); err != nil {
-		_ = os.Remove(marker)
-		_ = os.Remove(stage)
-		return result, fmt.Errorf("close the pending link marker for %s: %w", packageName, err)
+	if err := writeLinkPendingMarker(packageName, marker, stage, inj); err != nil {
+		return result, err
 	}
 	defer func() {
 		if returnedErr == nil {
@@ -434,7 +488,7 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 			returnedErr = fmt.Errorf("%w; restore the published package after the failed link: %v", returnedErr, cleanupErr)
 		}
 	}()
-	if err := copyBuiltPackageContents(dist, stage); err != nil {
+	if err := copyBuiltPackageContentsInjected(dist, stage, inj); err != nil {
 		return result, fmt.Errorf("stage %s in the consumer's installed peer context: %w", packageName, err)
 	}
 	info, err = os.Lstat(target)
@@ -446,18 +500,8 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 		if readErr != nil {
 			return result, fmt.Errorf("read the existing link at %s: %w", target, readErr)
 		}
-		backupFile, err := os.OpenFile(symlinkBackup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			return result, fmt.Errorf("claim the link recovery record %s without replacing existing data: %w", symlinkBackup, err)
-		}
-		if _, err := backupFile.WriteString(existing); err != nil {
-			_ = backupFile.Close()
-			_ = os.Remove(symlinkBackup)
-			return result, fmt.Errorf("record the existing link target of %s: %w", packageName, err)
-		}
-		if err := backupFile.Close(); err != nil {
-			_ = os.Remove(symlinkBackup)
-			return result, fmt.Errorf("close the existing link target record of %s: %w", packageName, err)
+		if err := writeLinkSymlinkBackup(packageName, symlinkBackup, existing, inj); err != nil {
+			return result, err
 		}
 		if err := os.Remove(target); err != nil {
 			return result, fmt.Errorf("replace the existing link at %s: %w", target, err)
@@ -536,6 +580,18 @@ func validateBuiltPackageSource(source string) error {
 }
 
 func copyBuiltPackageContents(source, destination string) error {
+	return copyBuiltPackageContentsInjected(source, destination, nil)
+}
+
+// copyBuiltPackageContentsInjected is copyBuiltPackageContents's test seam
+// (task-9 PR-8): every production call site reaches it only through
+// copyBuiltPackageContents, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged. A test passes its own Injector to
+// reach the create/write/close failure branches deterministically. The
+// copy itself goes through io.Copy into a filewrite.Writer wrapping output,
+// which restores io.Copy's copy_file_range/splice/sendfile fast path
+// because input is a real *os.File (review-t9-pr6 N3).
+func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite.Injector) error {
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -565,13 +621,13 @@ func copyBuiltPackageContents(source, destination string) error {
 		if err != nil {
 			return err
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		output, err := filewrite.CreateExclusivePath(target, info.Mode().Perm(), inj)
 		if err != nil {
 			_ = input.Close()
 			return err
 		}
-		_, copyErr := io.Copy(output, input)
-		closeErr := output.Close()
+		_, copyErr := io.Copy(filewrite.Writer(output, target, inj), input)
+		closeErr := filewrite.Close(output, target, inj)
 		_ = input.Close()
 		if copyErr != nil {
 			return copyErr

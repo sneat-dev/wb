@@ -312,9 +312,29 @@ func (w *writer) Write(p []byte) (int, error) {
 // caller already made, and passes the same error up unwrapped: a
 // bufio.Writer or io.Copy already writes and errors byte-identically
 // whether its io.Writer happens to be *os.File directly or this thin
-// wrapper around it.
+// wrapper around it -- including an io.Copy whose *source* is itself an
+// *os.File or a socket (task-9 PR-6 review note N3): the returned value
+// also implements io.ReaderFrom (see ReadFrom below), so io.Copy still
+// takes its copy_file_range/splice/sendfile fast path exactly as it would
+// writing to file directly.
 func Writer(file *os.File, name string, inj *Injector) io.Writer {
 	return &writer{file: file, name: name, inj: inj}
+}
+
+// ReadFrom implements io.ReaderFrom, restoring io.Copy's
+// copy_file_range/splice/sendfile fast path for a call site whose source
+// is itself an *os.File or a socket (review-t9-pr6 N3): io.Copy only takes
+// that fast path when its destination implements io.ReaderFrom, and *os.File
+// itself does (see os.File's own ReadFrom, added for exactly this reason).
+// This runs the same injection check as Write above once, then delegates
+// to file.ReadFrom(r) and returns its real (n, err) unchanged -- with a nil
+// Injector this is byte-identical to io.Copy writing to file directly,
+// including which fast path the runtime picks.
+func (w *writer) ReadFrom(r io.Reader) (int64, error) {
+	if err := w.inj.run(StepWrite, w.name); err != nil {
+		return 0, err
+	}
+	return w.file.ReadFrom(r)
 }
 
 // Sync fsyncs a regular file via file.Sync(). Every inline call site this
@@ -574,6 +594,18 @@ func CreateOrTruncatePath(path string, mode os.FileMode, inj *Injector) (*os.Fil
 		return nil, err
 	}
 	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+}
+
+// OpenAppend opens path for appending, creating it with mode if it does
+// not exist: O_APPEND|O_CREATE|O_WRONLY -- the shape a task-9 PR-8 call
+// site uses for a small, not-durability-critical sidecar file (a git
+// exclude file, not an append-only durable log) that is opened, appended
+// to once, and closed, with no separate publish/rename step at all.
+func OpenAppend(path string, mode os.FileMode, inj *Injector) (*os.File, error) {
+	if err := inj.run(StepOpenOrCreate, path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, mode)
 }
 
 // WriteFile writes data to path in one call (os.WriteFile: open-create-

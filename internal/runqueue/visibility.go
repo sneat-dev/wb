@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // This file makes the CPU lease queue inspectable: who is waiting, in what
@@ -263,26 +265,35 @@ func Register(projectsRoot string, self Participant) *Ticket {
 // TestAdmitHeavySimultaneousArrivalsRespectTheCap's three-way case
 // occasionally admitting 9+12+6 instead of 9+9+9).
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFileInjected(path, data, perm, nil)
+}
+
+// atomicWriteFileInjected is atomicWriteFile's test seam (task-9 PR-8): every
+// production call site reaches it only through atomicWriteFile, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/write/close/chmod/rename
+// failure branches deterministically.
+func atomicWriteFileInjected(path string, data []byte, perm os.FileMode, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".tmp-*")
+	temporary, err := filewrite.CreateTemp(directory, ".tmp-*", inj)
 	if err != nil {
 		return err
 	}
 	tempPath := temporary.Name()
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, data, tempPath, inj); err != nil {
+		_ = filewrite.Close(temporary, tempPath, inj)
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, tempPath, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := os.Chmod(tempPath, perm); err != nil {
+	if err := filewrite.ChmodPath(tempPath, perm, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := filewrite.Rename(tempPath, path, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}

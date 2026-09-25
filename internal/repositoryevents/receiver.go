@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 type Source interface {
@@ -181,6 +182,15 @@ func (store CursorStore) Save(cursor string) error {
 }
 
 func (store CursorStore) saveState(state cursorState) error {
+	return store.saveStateInjected(state, nil)
+}
+
+// saveStateInjected is saveState's test seam (task-9 PR-8): every
+// production call site reaches it only through saveState, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename/dir-sync failure branches deterministically.
+func (store CursorStore) saveStateInjected(state cursorState, inj *filewrite.Injector) error {
 	state.Version = repositoryevent.ContractVersion
 	cursor := state.Cursor
 	if err := repositoryevent.ValidateCursor(cursor, true); err != nil {
@@ -200,31 +210,36 @@ func (store CursorStore) saveState(state cursorState) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(store.Path), ".cursor-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(store.Path), ".cursor-*", inj)
 	if err != nil {
 		return err
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(raw, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(raw, '\n'), name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(name, store.Path); err != nil {
+	if err := filewrite.Rename(name, store.Path, inj); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(store.Path))
+	directory, err := os.Open(filepath.Dir(store.Path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	return filewrite.SyncDir(directory, inj)
 }
 
 func syncDirectory(path string) error {
