@@ -158,6 +158,7 @@ func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testi
 }
 
 func TestRPCovResolveHeadThroughTheSharedObserver(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	fake := rpCovInstallFakeCommands(t)
 	receipt := Receipt{Release: testRelease()}
 
@@ -204,6 +205,7 @@ func TestRPCovResolveHeadRejectsAnInvalidExternalSHAResponse(t *testing.T) {
 }
 
 func TestRPCovListExactWorkflowRunsThroughTheSharedObserver(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	fake := rpCovInstallFakeCommands(t)
 	receipt := Receipt{Release: testRelease(), HeadSHA: releaseHead}
 	run := workflowRunFixture("123", "completed", "success", time.Now().UTC())
@@ -233,6 +235,7 @@ func TestRPCovListExactWorkflowRunsThroughTheSharedObserver(t *testing.T) {
 }
 
 func TestRPCovWaitRunThroughTheSharedObserver(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	fake := rpCovInstallFakeCommands(t)
 	run := workflowRunFixture("123", "completed", "success", time.Now().UTC())
 	fake.write("run-view.json", run)
