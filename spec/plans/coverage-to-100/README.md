@@ -100,7 +100,7 @@ The sequence follows from that ranking. Task 1 is the start gate. The CI-policy 
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
 - Task-9 starts as soon as task-4 lands, ahead of tasks 5–7 (decision 16).
 - W1 (task-14) already started early for five packages (decision 14); its lanes finished with #719/#720, so task-14 has no running lane until a wave slot frees.
-- As of #646 landing (2026-09-24), the 3 Go lanes are task-5, task-6 and task-9. The #731 race-workflow lane (task-21) edits CI YAML and waits on CI; it runs no local Go tests.
+- As of 2026-09-25, after task-6 landed, the 3 Go lanes are task-5, task-9 and a task-21 flaky-test lane (#739, #741).
 - The original text follows for its reasoning.
 
 *Original:* The founder's standing VM cap applies to every task in this plan, not only the waves: at most 3 concurrent lanes, at most 2 of them Go lanes (`VM resource limits` memory). A concrete scheduling risk: once task-4 (#646) lands, task-5 (cmd/wb context refactor) and task-6 (run-queue seam + #582 fix) both become ready at once — that is already 2 Go lanes, so nothing else Go-lane-sized should start until one of them frees a lane. Once task-7 (hermetic tests) then lands, tasks 8, 9, 10 (three more Go refactor lanes), task-13 (failing-writer helper + cross-package diagnostic), and wave W1 (task-14, long-tail A) all become ready at once — more than 2 Go lanes' worth of ready work. Wave W2 (task-15, long-tail B) is not among them: it depends on task-11 for its one seam-needing package (`internal/hooks`), so it is not ready until task-11 lands. Schedule Go lanes in this order to respect the cap: land task-5 and task-6 together first (2 Go lanes); once task-7 lands, land task-8 (git/exec runner) and task-9 (file-write primitive) together next (2 Go lanes), then task-10 (clock/sleep seam) or task-13 (failing-writer + diagnostic) once one of those frees a lane, then start wave W1 (task-14) opportunistically in whatever Go lane is free — it needs no refactor seam. Wave W2 (task-15) becomes startable once task-11 lands. Do not start task-11, task-12 or task-19 until their own `Depends-On` tasks are landed, even if a lane is idle.
@@ -193,8 +193,9 @@ Move `cmd/wb`'s global state into a per-invocation context with injected env and
 
 **Id:** task-6
 **Depends-On:** task-4
-**Status:** in_progress
-**Note:** Lane dispatched 2026-09-24 after #646 landed
+**Status:** complete
+**Note:** Landed #736 (a077486, test run-queue seam; the wb run -- self-deadlock is gone) and #735 (bc63f44, #582 truncation keeps FAIL/panic evidence; closes #582)
+**Evidence:** https://github.com/sneat-dev/wb/pull/735
 **Verifies:** a regression test proves `wb run --` no longer deadlocks its own tests (tests get their own run queue, separate from the machine-wide CPU admission queue `wb run` itself uses); a regression test for #582 shows a `FAIL`/`panic:` block surviving output truncation that a head+tail-only truncation would have dropped.
 
 This is production code, not test-only, so it is its own refactor task per founder decision 3 (test lanes change production code only through already-landed seams) — it does not belong in task-7, which stays test-only. Two independent fixes:
@@ -368,13 +369,18 @@ Once every package is at 100%, replace the per-change ratchet and its 87 backsto
 **Verifies:** eight identical full-suite coverage runs on one main commit show 0 statements whose coverage differs between runs (`_research/flaky_analyze.py`), and issues #504, #505 and #539 are closed with linked fix commits.
 
 Founder decision 13. The ratchet (task-3) turns coverage that varies between identical runs into random PR failures, so every such statement is made deterministic at source, never exempted. Inventory ([`_research/flaky-coverage-2026-09-24.txt`](_research/flaky-coverage-2026-09-24.txt)): eight parallel `nightly-coverage.yml` runs dispatched on main 825693b (one throwaway branch per run, since the workflow's concurrency group is per ref; the branches are deleted afterwards), with each run's `profile.cov` compared by `_research/flaky_analyze.py`, found 21 blocks / 22 statements in 7 packages, and no failing tests: `internal/orchestrate/ciwait.go` (9), `internal/runqueue/heavy.go` (4), `cmd/wb/daemon.go` (3), `internal/worktrees/worklog.go` (3), `hub/peer_admin.go:173`, `internal/sessionmove/store.go:829`, `internal/sessionpark/target_store.go:558`. Landed so far (2026-09-24):
-- Race and flaky-line fixes: #699 (`serveDashboard` shutdown race), #700 (state-lock clock seam), #702 (`ciwait.go`), #703 (closes #504), #705 (`runqueue/heavy.go`), #710 (closes #539), #712 (worklog race hooks; it also carried #714's hook seams, so #714 was closed rather than merged), #726 (a deterministic test for `cmd/wb/daemon_file_bridge.go:307`), #713 (`hub`), #715 (sessionmove/sessionpark race hooks), #646 (a deterministic test for `internal/runqueue/visibility.go:232`).
+- Race and flaky-line fixes: #699 (`serveDashboard` shutdown race), #700 (state-lock clock seam), #702 (`ciwait.go`), #703 (closes #504), #705 (`runqueue/heavy.go`), #710 (closes #539), #712 (worklog race hooks; it also carried #714's hook seams, so #714 was closed rather than merged), #726 (a deterministic test for `cmd/wb/daemon_file_bridge.go:307`), #713 (`hub`), #715 (sessionmove/sessionpark race hooks), #646 (a deterministic test for `internal/runqueue/visibility.go:232`), #736 (a deterministic test for `cmd/wb/wait.go:387`).
 - The systemic git auto-maintenance TempDir fix. Detached `gc --auto`/`maintenance run --auto` wrote into `.git/objects` after test cleanup had started. #711 fixed `cmd/wb/remote_test.go` with local helpers, #717 added the shared `internal/testenv` helpers, #724, #727 and #730 switch every git-creating test package over to them.
 - #718 (go-ci summary expected coverage to be skipped on reused pushes, which turned main red).
+- #731 (closes #728): race.yml sharded into orchestrate, worktrees and the rest, with one shared shard script and a guard that fails on gaps or overlaps; the `prinventory` fake race is fixed.
 
 Still open:
 - #505's `cmd/wb` half.
-- #728: the full race workflow is red on main, from a data race in a `prinventory` test fake and `orchestrate` exceeding 40m under `-race`. #731 (in review) shards it and fixes the fake.
+- #739: flaky `internal/sessionlaunch` tests (ETXTBSY on fake executables; an exec-fence liveness race). #740 is in review.
+- #741: an `internal/sessionmove` test asserts on a closed raw fd number that another parallel test can reuse.
+- #742: a main-push coverage step timed out after 35m, probably a hung test whose package the old truncation hid.
+- `internal/orchestrate/worktree_merge.go:4550`: coverage varies between runs.
+- #745: the go-ci PR race job covers only five packages, so races in other packages reach main.
 - #733: parallel `cmd/wb` tests race on the five package-level invocation globals in `cmd/wb/main.go`, so the race workflow's `cmd/wb` run can stay red (the race is scheduling-dependent) until task-5 removes them.
 - A final eight-run re-probe.
 
