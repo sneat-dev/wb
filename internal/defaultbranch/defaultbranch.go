@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -147,90 +146,21 @@ type defaultBranchRef struct {
 	} `json:"commit"`
 }
 
-var (
-	defaultBranchAuthUser   = discover.AuthUser
-	defaultBranchMemberOrgs = discover.MemberOrgs
-	defaultBranchListRemote = discover.ListRemote
-	defaultBranchRead       = func(ctx context.Context, endpoint string) ([]byte, error) {
-		return githubobserver.Read(ctx, "", "api", endpoint)
-	}
-	defaultBranchExecute = func(ctx context.Context, args ...string) githubobserver.CommandResponse {
-		return githubobserver.Execute(ctx, "", args...)
-	}
-	defaultBranchRenameWait = func(ctx context.Context, duration time.Duration) error {
-		timer := time.NewTimer(duration)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return nil
-		}
-	}
-	defaultBranchRenameNow = time.Now
-	ConfigPath             = wbconfig.DefaultPath
-	defaultBranchGit       = func(ctx context.Context, dir string, args ...string) (string, error) {
-		command := exec.CommandContext(ctx, "git", args...)
-		command.Dir = dir
-		output, err := command.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-		}
-		return strings.TrimSpace(string(output)), nil
-	}
-	defaultBranchIsAncestor = func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
-		command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, descendant)
-		command.Dir = dir
-		output, err := command.CombinedOutput()
-		if err == nil {
-			return true, nil
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w: %s", ancestor, descendant, err, strings.TrimSpace(string(output)))
-	}
-	defaultBranchAtomicRenameRefs = func(ctx context.Context, dir, source, destination, expected string) error {
-		checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", expected)
-		checkout.Dir = dir
-		if output, err := checkout.CombinedOutput(); err != nil {
-			return fmt.Errorf("detach HEAD at verified %s: %w: %s", source, err, strings.TrimSpace(string(output)))
-		}
-		transaction := exec.CommandContext(ctx, "git", "update-ref", "--stdin")
-		transaction.Dir = dir
-		transaction.Stdin = strings.NewReader("start\ncreate refs/heads/" + destination + " " + expected + "\ndelete refs/heads/" + source + " " + expected + "\nprepare\ncommit\n")
-		if output, err := transaction.CombinedOutput(); err != nil {
-			return fmt.Errorf("atomically rename local %s to %s at %s: %w: %s", source, destination, expected, err, strings.TrimSpace(string(output)))
-		}
-		return nil
-	}
-	defaultBranchAttachHead = func(ctx context.Context, dir, destination string) error {
-		attach := exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD", "refs/heads/"+destination)
-		attach.Dir = dir
-		if output, err := attach.CombinedOutput(); err != nil {
-			return fmt.Errorf("attach HEAD to renamed local %s: %w: %s", destination, err, strings.TrimSpace(string(output)))
-		}
-		return nil
-	}
-	defaultBranchRefExists = func(ctx context.Context, dir, ref string) (bool, error) {
-		command := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
-		command.Dir = dir
-		output, err := command.CombinedOutput()
-		if err == nil {
-			return true, nil
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("git rev-parse --verify %s: %w: %s", ref, err, strings.TrimSpace(string(output)))
-	}
-)
+// ConfigPath locates wb.yaml. A test overrides it to point at a fixture.
+var ConfigPath = wbconfig.DefaultPath
 
+// Run audits or applies the fleet's default branch using production
+// ports: real git over internal/gitcli and internal/runner, real gh
+// through internal/githubobserver, real fleet discovery, and a real
+// clock. A unit test builds an *Engine directly from fakes_test.go's
+// fakes instead of calling Run.
 func Run(ctx context.Context, projectsRoot, filter string, options Options, progress io.Writer) (Report, error) {
+	return newDefaultBranchEngine().run(ctx, projectsRoot, filter, options, progress)
+}
+
+func (e *Engine) run(ctx context.Context, projectsRoot, filter string, options Options, progress io.Writer) (Report, error) {
 	if options.RestoreArchiveFrom != "" {
-		return runDefaultBranchArchiveRestore(projectsRoot, ctx, options, progress)
+		return e.runDefaultBranchArchiveRestore(projectsRoot, ctx, options, progress)
 	}
 	config, err := loadDefaultBranchConfig(ConfigPath())
 	if err != nil {
@@ -240,11 +170,11 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 	if err != nil {
 		return Report{}, err
 	}
-	repos, discoveryFailures, err := discoverDefaultBranchFleet(filter, options.Owners, options.Repositories, options.IncludeUser, options.AllOrgs)
+	repos, discoveryFailures, err := e.discoverDefaultBranchFleet(filter, options.Owners, options.Repositories, options.IncludeUser, options.AllOrgs)
 	if err != nil {
 		return Report{}, err
 	}
-	locals, err := defaultBranchLocalClones(projectsRoot, filter)
+	locals, err := e.defaultBranchLocalClones(projectsRoot, filter)
 	if err != nil {
 		return Report{}, err
 	}
@@ -262,7 +192,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 			defer wg.Done()
 			for i := range jobs {
 				desired := effectiveDefaultBranch(options.Branch, config, repos[i].Org)
-				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithOptions(ctx, repos[i], desired, options.TemporarilyUnarchive, options.MigratePagesSource, options.RewriteWorkflowTriggers)
+				report.Repositories[len(discoveryFailures)+i] = e.inspectDefaultBranchWithOptions(ctx, repos[i], desired, options.TemporarilyUnarchive, options.MigratePagesSource, options.RewriteWorkflowTriggers)
 			}
 		}()
 	}
@@ -289,7 +219,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 					report.Repositories[i].Disposition = "blocked"
 					report.Repositories[i].Error = "--reconcile-from is remote read-only, but the refreshed remote rename is not compliant; WB will not resend the mutation"
 				} else if report.Repositories[i].Archive != nil && report.Repositories[i].Archive.OriginalArchived {
-					report.Repositories[i] = applyArchivedDefaultBranch(ctx, report.Repositories[i], func(updated Repository) error {
+					report.Repositories[i] = e.applyArchivedDefaultBranch(ctx, report.Repositories[i], func(updated Repository) error {
 						report.Repositories[i] = updated
 						summarizeDefaultBranch(&report)
 						return persistDefaultBranchReport(report)
@@ -302,7 +232,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 						sourceDefault, sourceHead = report.Repositories[i].ObservedDefault, report.Repositories[i].OldHead
 					}
 				} else if defaultBranchPagesOnlyRepair(report.Repositories[i]) {
-					report.Repositories[i] = applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
+					report.Repositories[i] = e.applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
 						report.Repositories[i] = updated
 						summarizeDefaultBranch(&report)
 						return persistDefaultBranchReport(report)
@@ -323,13 +253,13 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 						return report, err
 					}
 				} else if len(report.Repositories[i].WorkflowFiles) > 0 {
-					report.Repositories[i] = applyDefaultBranchWorkflowTriggers(ctx, report.Repositories[i], func(updated Repository) error {
+					report.Repositories[i] = e.applyDefaultBranchWorkflowTriggers(ctx, report.Repositories[i], func(updated Repository) error {
 						report.Repositories[i] = updated
 						summarizeDefaultBranch(&report)
 						return persistDefaultBranchReport(report)
 					})
 					if report.Repositories[i].Disposition == "drift" {
-						report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
+						report.Repositories[i] = e.applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
 							report.Repositories[i] = updated
 							summarizeDefaultBranch(&report)
 							return persistDefaultBranchReport(report)
@@ -340,7 +270,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 						return report, err
 					}
 				} else {
-					report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
+					report.Repositories[i] = e.applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
 						report.Repositories[i] = updated
 						summarizeDefaultBranch(&report)
 						return persistDefaultBranchReport(report)
@@ -350,7 +280,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 						return report, err
 					}
 					if report.Repositories[i].Disposition == "compliant" && report.Repositories[i].PagesBefore != nil {
-						report.Repositories[i] = applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
+						report.Repositories[i] = e.applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated Repository) error {
 							report.Repositories[i] = updated
 							summarizeDefaultBranch(&report)
 							return persistDefaultBranchReport(report)
@@ -372,9 +302,9 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 			if sourceDefault == "" && report.Repositories[i].Disposition == "compliant" && prior != nil {
 				sourceDefault, sourceHead, resumeReason = defaultBranchResumeSource(prior, report.Repositories[i])
 				if sourceDefault == "" {
-					legacySource, legacyHead, legacyReason := defaultBranchPagesAutomaticResume(ctx, prior, report.Repositories[i])
+					legacySource, legacyHead, legacyReason := e.defaultBranchPagesAutomaticResume(ctx, prior, report.Repositories[i])
 					if legacySource == "" {
-						legacySource, legacyHead, legacyReason = defaultBranchLegacyRenameResume(ctx, prior, report.Repositories[i])
+						legacySource, legacyHead, legacyReason = e.defaultBranchLegacyRenameResume(ctx, prior, report.Repositories[i])
 					}
 					if legacySource != "" {
 						sourceDefault, sourceHead, resumeReason = legacySource, legacyHead, legacyReason
@@ -385,7 +315,7 @@ func Run(ctx context.Context, projectsRoot, filter string, options Options, prog
 				}
 			}
 			if sourceDefault != "" {
-				reconcileDefaultBranchCanonicals(ctx, &report.Repositories[i], locals.Eligible[strings.ToLower(report.Repositories[i].Repository)], sourceDefault, sourceHead, func() error {
+				e.reconcileDefaultBranchCanonicals(ctx, &report.Repositories[i], locals.Eligible[strings.ToLower(report.Repositories[i].Repository)], sourceDefault, sourceHead, func() error {
 					summarizeDefaultBranch(&report)
 					return persistDefaultBranchReport(report)
 				})
@@ -450,7 +380,7 @@ func readDefaultBranchReport(path, expectedDigest string) (*Report, error) {
 // runDefaultBranchArchiveRestore is deliberately separate from normal apply:
 // it has one repository, reads one caller-bound receipt, and can only restore
 // the archived bit.  It never discovers a fleet or scans/reconciles a clone.
-func runDefaultBranchArchiveRestore(projectsRoot string, ctx context.Context, options Options, progress io.Writer) (Report, error) {
+func (e *Engine) runDefaultBranchArchiveRestore(projectsRoot string, ctx context.Context, options Options, progress io.Writer) (Report, error) {
 	prior, err := readDefaultBranchArchiveRestoreReport(options.RestoreArchiveFrom, options.RestoreArchiveSHA256)
 	if err != nil {
 		return Report{}, err
@@ -478,11 +408,11 @@ func runDefaultBranchArchiveRestore(projectsRoot string, ctx context.Context, op
 		return report, err
 	}
 
-	metadata, err := readDefaultBranchMetadata(ctx, repository.Repository)
+	metadata, err := e.readDefaultBranchMetadata(ctx, repository.Repository)
 	if err != nil {
 		return failDefaultBranchArchiveRestore(&report, repository, "read restore target: "+err.Error())
 	}
-	if err := validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition); err != nil {
+	if err := e.validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition); err != nil {
 		return failDefaultBranchArchiveRestore(&report, repository, err.Error())
 	}
 	if metadata.Archived {
@@ -505,11 +435,11 @@ func runDefaultBranchArchiveRestore(projectsRoot string, ctx context.Context, op
 	if err := checkpoint(repository); err != nil {
 		return report, err
 	}
-	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repository.Repository, "-f", "archived=true")
+	response := e.GitHub.Execute(ctx, "api", "--method", "PATCH", "repos/"+repository.Repository, "-f", "archived=true")
 	repository.Archive.RestoreAccepted = response.Err == nil
-	metadata, err = readDefaultBranchMetadata(ctx, repository.Repository)
+	metadata, err = e.readDefaultBranchMetadata(ctx, repository.Repository)
 	if err == nil {
-		err = validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition)
+		err = e.validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition)
 	}
 	// A transport error is ambiguous. A fresh exact proof of the archived
 	// state is enough to record success; sending the PATCH again would weaken
@@ -597,11 +527,11 @@ func defaultBranchArchiveRestoreTarget(report Report, slug string) (Repository, 
 	return Repository{}, nil, errors.New("--restore-archive-from has no archived transition for the selected --repo")
 }
 
-func validateDefaultBranchArchiveRestoreTarget(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *Archive) error {
+func (e *Engine) validateDefaultBranchArchiveRestoreTarget(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *Archive) error {
 	if metadata.ID != transition.RepositoryID {
 		return errors.New("restore target repository ID differs from the receipt")
 	}
-	head, err := readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
+	head, err := e.readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
 	if err != nil {
 		return fmt.Errorf("read restore target default head: %w", err)
 	}
@@ -642,7 +572,7 @@ const (
 // after GitHub accepted a rename but had not yet made it visible to the
 // immediate post-read. The caller has already bound prior to exact report
 // bytes through --reconcile-sha256.
-func defaultBranchLegacyRenameResume(ctx context.Context, prior *Report, current Repository) (string, string, string) {
+func (e *Engine) defaultBranchLegacyRenameResume(ctx context.Context, prior *Report, current Repository) (string, string, string) {
 	if prior == nil || prior.SchemaVersion != 1 || prior.Mode != "apply" || current.Disposition != "compliant" || current.ObservedDefault != current.Desired || current.OldHead == "" {
 		return "", "", "--reconcile-from does not contain a verified successful migration record for this repository"
 	}
@@ -653,7 +583,7 @@ func defaultBranchLegacyRenameResume(ctx context.Context, prior *Report, current
 		if !defaultBranchLegacyRenamePendingRecord(previous) || previous.Desired != current.Desired || previous.OldHead != current.OldHead {
 			return "", "", "--reconcile-from does not contain the exact failed post-rename proof record for this repository"
 		}
-		_, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/git/ref/heads/"+url.PathEscape(previous.ObservedDefault))
+		_, err := e.GitHub.Read(ctx, "repos/"+current.Repository+"/git/ref/heads/"+url.PathEscape(previous.ObservedDefault))
 		if err == nil {
 			return "", "", "--reconcile-from old source ref still exists; do not infer a completed rename"
 		}
@@ -665,7 +595,7 @@ func defaultBranchLegacyRenameResume(ctx context.Context, prior *Report, current
 	return "", "", "--reconcile-from has no applied migration record for this repository"
 }
 
-func defaultBranchPagesAutomaticResume(ctx context.Context, prior *Report, current Repository) (string, string, string) {
+func (e *Engine) defaultBranchPagesAutomaticResume(ctx context.Context, prior *Report, current Repository) (string, string, string) {
 	if prior == nil || prior.SchemaVersion != 1 || prior.Mode != "apply" || current.Disposition != "compliant" || current.Desired != "main" || current.ObservedDefault != current.Desired {
 		return "", "", "--reconcile-from does not contain a verified automatic Pages transition record"
 	}
@@ -677,14 +607,14 @@ func defaultBranchPagesAutomaticResume(ctx context.Context, prior *Report, curre
 		if previous.Disposition != "error" || previous.Error != "Pages source changed after planning; WB will not overwrite it" || !previous.RenameAccepted || previous.TargetExists || previous.VerifiedDefault != current.Desired || previous.NewHead != previous.OldHead || !validDefaultBranchCommit(previous.OldHead) || previous.OldHead != current.OldHead || previous.ObservedDefault != "master" || previous.Desired != current.Desired || previous.RepositoryID == 0 || previous.RepositoryID != current.RepositoryID || p == nil || p.BuildType != "legacy" || p.Branch != "master" || !validDefaultBranchPagesPath(p.Path) || previous.PagesPhase != "prepared" || previous.PagesAccepted || previous.PagesAfter != nil || !slicesEqual(previous.Actions, []string{"renamed master to " + current.Desired, "verified default branch and head"}) {
 			return "", "", "--reconcile-from does not contain the exact automatic Pages transition record"
 		}
-		_, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/git/ref/heads/master")
+		_, err := e.GitHub.Read(ctx, "repos/"+current.Repository+"/git/ref/heads/master")
 		if err == nil {
 			return "", "", "--reconcile-from old source ref still exists; do not infer a completed rename"
 		}
 		if !isDefaultBranchNotFound(err) {
 			return "", "", "--reconcile-from could not prove the old source ref is absent: " + err.Error()
 		}
-		body, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/pages")
+		body, err := e.GitHub.Read(ctx, "repos/"+current.Repository+"/pages")
 		if err != nil {
 			return "", "", "--reconcile-from could not read Pages source: " + err.Error()
 		}
@@ -829,7 +759,7 @@ func attachDefaultBranchLocalBlockers(report *Report, blockers map[string][]Cano
 	}
 }
 
-func defaultBranchLocalClones(projectsRoot, filter string) (defaultBranchLocalCloneSet, error) {
+func (e *Engine) defaultBranchLocalClones(projectsRoot, filter string) (defaultBranchLocalCloneSet, error) {
 	result := defaultBranchLocalCloneSet{Eligible: map[string][]discover.Repo{}, Blocked: map[string][]Canonical{}}
 	if strings.TrimSpace(projectsRoot) == "" {
 		return result, nil
@@ -845,7 +775,7 @@ func defaultBranchLocalClones(projectsRoot, filter string) (defaultBranchLocalCl
 		if clone.Host != "" && !strings.EqualFold(clone.Host, "github.com") {
 			continue
 		}
-		origin, err := defaultBranchGit(context.Background(), clone.Path, "remote", "get-url", "origin")
+		origin, err := e.Git.Run(context.Background(), clone.Path, "remote", "get-url", "origin")
 		if err != nil {
 			if strings.EqualFold(clone.Host, "github.com") {
 				key := strings.ToLower(clone.Slug())
@@ -901,7 +831,7 @@ func effectiveDefaultBranch(explicit string, cfg defaultBranchConfig, org string
 	}
 	return strings.TrimSpace(cfg.Fleet.DefaultBranch)
 }
-func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUser, allOrgs bool) ([]discover.Repo, []Repository, error) {
+func (e *Engine) discoverDefaultBranchFleet(filter string, owners, exact []string, includeUser, allOrgs bool) ([]discover.Repo, []Repository, error) {
 	if len(exact) > 0 {
 		repos := make([]discover.Repo, 0, len(exact))
 		seen := map[string]bool{}
@@ -922,13 +852,13 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	selected := map[string]bool{}
 	if len(owners) == 0 && !includeUser {
 		if !allOrgs {
-			user, err := defaultBranchAuthUser()
+			user, err := e.Discovery.AuthUser()
 			if err != nil {
 				return nil, nil, err
 			}
 			selected[user] = true
 		}
-		orgs, err := defaultBranchMemberOrgs()
+		orgs, err := e.Discovery.MemberOrgs()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -937,7 +867,7 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 		}
 	}
 	if includeUser {
-		user, err := defaultBranchAuthUser()
+		user, err := e.Discovery.AuthUser()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -957,7 +887,7 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	var failures []Repository
 	seen := map[string]bool{}
 	for _, owner := range names {
-		listed, err := defaultBranchListRemote(owner)
+		listed, err := e.Discovery.ListRemote(owner)
 		if err != nil {
 			failures = append(failures, Repository{Repository: owner + "/*", Disposition: "error", Error: "list GitHub repositories: " + err.Error()})
 			continue
@@ -980,7 +910,7 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	sort.Slice(failures, func(i, j int) bool { return failures[i].Repository < failures[j].Repository })
 	return repos, failures, nil
 }
-func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool, rewriteWorkflowTriggers ...bool) Repository {
+func (e *Engine) inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool, rewriteWorkflowTriggers ...bool) Repository {
 	rewriteWorkflows := len(rewriteWorkflowTriggers) > 0 && rewriteWorkflowTriggers[0]
 	result := Repository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
@@ -988,7 +918,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 		result.Error = "invalid desired branch: set fleet.default_branch, fleet.organizations.<owner>.default_branch, or --branch to a Git ref name"
 		return result
 	}
-	body, err := defaultBranchRead(ctx, "repos/"+repo.Slug())
+	body, err := e.GitHub.Read(ctx, "repos/"+repo.Slug())
 	if err != nil {
 		result.Disposition = "error"
 		result.Error = err.Error()
@@ -1011,7 +941,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 		result.Error = "GitHub returned an invalid default branch ref"
 		return result
 	}
-	oldRef, err := readDefaultBranchRef(ctx, repo.Slug(), meta.DefaultBranch)
+	oldRef, err := e.readDefaultBranchRef(ctx, repo.Slug(), meta.DefaultBranch)
 	if err != nil {
 		if meta.Size == 0 && isDefaultBranchNotFound(err) {
 			result.Disposition = "blocked"
@@ -1026,7 +956,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 	if meta.DefaultBranch == desired {
 		result.NewHead = oldRef
 		if migratePagesSource {
-			inspectDefaultBranchPagesAtDesired(ctx, &result, meta)
+			e.inspectDefaultBranchPagesAtDesired(ctx, &result, meta)
 			return result
 		}
 		result.Disposition = "compliant"
@@ -1045,7 +975,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 		}
 		result.Archive = &Archive{RepositoryID: meta.ID, OriginalArchived: true, InitialDefault: meta.DefaultBranch, DesiredDefault: desired, InitialHead: oldRef, Phase: "prepared"}
 	}
-	newRef, err := readDefaultBranchRef(ctx, repo.Slug(), desired)
+	newRef, err := e.readDefaultBranchRef(ctx, repo.Slug(), desired)
 	if err == nil {
 		result.TargetExists = true
 		result.NewHead = newRef
@@ -1060,7 +990,7 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 		result.Error = err.Error()
 		return result
 	}
-	if err := defaultBranchSafetyWithOptions(ctx, &result, meta, meta.DefaultBranch, migratePagesSource, rewriteWorkflows); err != nil {
+	if err := e.defaultBranchSafetyWithOptions(ctx, &result, meta, meta.DefaultBranch, migratePagesSource, rewriteWorkflows); err != nil {
 		result.Disposition = "blocked"
 		result.Error = err.Error()
 		return result
@@ -1068,8 +998,8 @@ func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, de
 	result.Disposition = "drift"
 	return result
 }
-func readDefaultBranchRef(ctx context.Context, slug, branch string) (string, error) {
-	body, err := defaultBranchRead(ctx, "repos/"+slug+"/branches/"+url.PathEscape(branch))
+func (e *Engine) readDefaultBranchRef(ctx context.Context, slug, branch string) (string, error) {
+	body, err := e.GitHub.Read(ctx, "repos/"+slug+"/branches/"+url.PathEscape(branch))
 	if err != nil {
 		return "", err
 	}
@@ -1079,7 +1009,7 @@ func readDefaultBranchRef(ctx context.Context, slug, branch string) (string, err
 	}
 	return ref.Commit.SHA, nil
 }
-func defaultBranchSafetyWithOptions(ctx context.Context, result *Repository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool, rewriteWorkflowTriggers ...bool) error {
+func (e *Engine) defaultBranchSafetyWithOptions(ctx context.Context, result *Repository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool, rewriteWorkflowTriggers ...bool) error {
 	rewriteWorkflows := len(rewriteWorkflowTriggers) > 0 && rewriteWorkflowTriggers[0]
 	slug := result.Repository
 	headOwner := strings.Split(slug, "/")[0]
@@ -1092,7 +1022,7 @@ func defaultBranchSafetyWithOptions(ctx context.Context, result *Repository, met
 		result.Impacts = append(result.Impacts, "fork and parent outbound pull-request inventories checked")
 	}
 	for _, querySlug := range querySlugs {
-		pulls, err := defaultBranchRead(ctx, "repos/"+querySlug+"/pulls?state=open&head="+url.QueryEscape(headOwner+":"+old))
+		pulls, err := e.GitHub.Read(ctx, "repos/"+querySlug+"/pulls?state=open&head="+url.QueryEscape(headOwner+":"+old))
 		if err != nil {
 			return fmt.Errorf("list open source-default pull requests in %s: %w", querySlug, err)
 		}
@@ -1104,17 +1034,17 @@ func defaultBranchSafetyWithOptions(ctx context.Context, result *Repository, met
 			return fmt.Errorf("open pull request in %s uses %q as head; GitHub closes it when that branch is renamed", querySlug, old)
 		}
 	}
-	if err := inspectDefaultBranchWorkflows(ctx, result, old, result.Desired); err != nil {
+	if err := e.inspectDefaultBranchWorkflows(ctx, result, old, result.Desired); err != nil {
 		return err
 	}
 	if len(result.WorkflowFiles) > 0 && !rewriteWorkflows {
 		return fmt.Errorf("workflow trigger references %q; pass --rewrite-workflow-triggers only after reviewing the proposed byte-preserving replacements", old)
 	}
-	if err := inspectDefaultBranchPages(ctx, result, old, migratePagesSource); err != nil {
+	if err := e.inspectDefaultBranchPages(ctx, result, old, migratePagesSource); err != nil {
 		return err
 	}
 	for _, endpoint := range []string{"repos/" + slug + "/branches/" + url.PathEscape(old) + "/protection"} {
-		body, err := defaultBranchRead(ctx, endpoint)
+		body, err := e.GitHub.Read(ctx, endpoint)
 		if err == nil && len(strings.TrimSpace(string(body))) > 0 {
 			result.Impacts = append(result.Impacts, "inspect before apply: "+endpoint)
 			return fmt.Errorf("pages, classic protection, or effective rules require an explicit migration; WB will not weaken or assume renamed coverage")
@@ -1124,7 +1054,7 @@ func defaultBranchSafetyWithOptions(ctx context.Context, result *Repository, met
 		}
 	}
 	rulesEndpoint := "repos/" + slug + "/rules/branches/" + url.PathEscape(old) + "?per_page=100"
-	rules, err := defaultBranchRead(ctx, rulesEndpoint)
+	rules, err := e.GitHub.Read(ctx, rulesEndpoint)
 	if err != nil {
 		if !isDefaultBranchNotFound(err) {
 			return fmt.Errorf("inspect branch impact: %w", err)
@@ -1146,8 +1076,8 @@ func isDefaultBranchNotFound(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "404")
 }
 
-func inspectDefaultBranchPages(ctx context.Context, result *Repository, old string, migrate bool) error {
-	body, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/pages")
+func (e *Engine) inspectDefaultBranchPages(ctx context.Context, result *Repository, old string, migrate bool) error {
+	body, err := e.GitHub.Read(ctx, "repos/"+result.Repository+"/pages")
 	if isDefaultBranchNotFound(err) {
 		return nil
 	}
@@ -1169,8 +1099,8 @@ func inspectDefaultBranchPages(ctx context.Context, result *Repository, old stri
 	return nil
 }
 
-func inspectDefaultBranchPagesAtDesired(ctx context.Context, result *Repository, meta defaultBranchRepoMetadata) {
-	body, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/pages")
+func (e *Engine) inspectDefaultBranchPagesAtDesired(ctx context.Context, result *Repository, meta defaultBranchRepoMetadata) {
+	body, err := e.GitHub.Read(ctx, "repos/"+result.Repository+"/pages")
 	if isDefaultBranchNotFound(err) {
 		result.Disposition = "compliant"
 		return
@@ -1407,8 +1337,8 @@ func workflowPlainFlowBranchScalar(value string) bool {
 	return hasLetter
 }
 
-func inspectDefaultBranchWorkflows(ctx context.Context, result *Repository, old, desired string) error {
-	workflows, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/contents/.github/workflows?ref="+url.QueryEscape(old))
+func (e *Engine) inspectDefaultBranchWorkflows(ctx context.Context, result *Repository, old, desired string) error {
+	workflows, err := e.GitHub.Read(ctx, "repos/"+result.Repository+"/contents/.github/workflows?ref="+url.QueryEscape(old))
 	if isDefaultBranchNotFound(err) {
 		return nil
 	}
@@ -1427,7 +1357,7 @@ func inspectDefaultBranchWorkflows(ctx context.Context, result *Repository, old,
 		if entry.Type != "file" || (!strings.HasSuffix(entry.Path, ".yml") && !strings.HasSuffix(entry.Path, ".yaml")) {
 			continue
 		}
-		blob, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/git/blobs/"+entry.SHA)
+		blob, err := e.GitHub.Read(ctx, "repos/"+result.Repository+"/git/blobs/"+entry.SHA)
 		if err != nil {
 			return fmt.Errorf("read workflow %s: %w", entry.Path, err)
 		}
@@ -1457,8 +1387,8 @@ func inspectDefaultBranchWorkflows(ctx context.Context, result *Repository, old,
 	return nil
 }
 
-func verifyDefaultBranchWorkflowBytes(ctx context.Context, repository, branch, old string, planned []Workflow) error {
-	listingBody, err := defaultBranchRead(ctx, "repos/"+repository+"/contents/.github/workflows?ref="+url.QueryEscape(branch))
+func (e *Engine) verifyDefaultBranchWorkflowBytes(ctx context.Context, repository, branch, old string, planned []Workflow) error {
+	listingBody, err := e.GitHub.Read(ctx, "repos/"+repository+"/contents/.github/workflows?ref="+url.QueryEscape(branch))
 	if err != nil {
 		return fmt.Errorf("list workflows after commit: %w", err)
 	}
@@ -1481,7 +1411,7 @@ func verifyDefaultBranchWorkflowBytes(ctx context.Context, repository, branch, o
 		if sha == "" {
 			return fmt.Errorf("workflow %s is missing after commit", plannedFile.Path)
 		}
-		blob, err := defaultBranchRead(ctx, "repos/"+repository+"/git/blobs/"+sha)
+		blob, err := e.GitHub.Read(ctx, "repos/"+repository+"/git/blobs/"+sha)
 		if err != nil {
 			return fmt.Errorf("read workflow %s after commit: %w", plannedFile.Path, err)
 		}
@@ -1512,13 +1442,13 @@ const defaultBranchWorkflowMutation = `mutation($branch: CommittableBranch!, $ex
 // the branch rename. It rereads every planned blob and the source head before
 // submitting the mutation; a failed or ambiguous response is accepted only
 // after the exact new head and all replacement hashes are observed.
-func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
+func (e *Engine) applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
 	owner, name, ok := strings.Cut(repo.Repository, "/")
 	if !ok || owner == "" || name == "" {
 		repo.Disposition, repo.Error = "error", "invalid repository observation"
 		return repo
 	}
-	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, false, true)
+	fresh := e.inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, false, true)
 	if fresh.Disposition != "drift" || fresh.ObservedDefault != repo.ObservedDefault || fresh.OldHead != repo.OldHead || len(fresh.WorkflowFiles) != len(repo.WorkflowFiles) {
 		repo.Disposition, repo.Error = "blocked", "workflow source changed after planning; rerun the audit"
 		return repo
@@ -1540,7 +1470,7 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, ch
 	for _, file := range fresh.WorkflowFiles {
 		args = append(args, "-F", fmt.Sprintf("additions[][path]=%s", file.Path), "-F", fmt.Sprintf("additions[][contents]=%s", base64.StdEncoding.EncodeToString([]byte(file.rewritten))))
 	}
-	response := defaultBranchExecute(ctx, args...)
+	response := e.GitHub.Execute(ctx, args...)
 	var payload struct {
 		Data struct {
 			CreateCommitOnBranch struct {
@@ -1551,7 +1481,7 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, ch
 		} `json:"data"`
 	}
 	decodeErr := json.Unmarshal(response.Stdout, &payload)
-	newHead, readErr := readDefaultBranchRef(ctx, repo.Repository, repo.ObservedDefault)
+	newHead, readErr := e.readDefaultBranchRef(ctx, repo.Repository, repo.ObservedDefault)
 	if readErr != nil || !validDefaultBranchCommit(newHead) || newHead == repo.OldHead {
 		repo.Disposition, repo.Error = "error", "workflow commit response did not produce a verified new source head"
 		return repo
@@ -1560,11 +1490,11 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, ch
 		repo.Disposition, repo.Error = "error", "workflow commit response lacks the exact created commit OID"
 		return repo
 	}
-	if err := verifyDefaultBranchWorkflowBytes(ctx, repo.Repository, repo.ObservedDefault, repo.ObservedDefault, fresh.WorkflowFiles); err != nil {
+	if err := e.verifyDefaultBranchWorkflowBytes(ctx, repo.Repository, repo.ObservedDefault, repo.ObservedDefault, fresh.WorkflowFiles); err != nil {
 		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove every replacement: "+err.Error()
 		return repo
 	}
-	if err := verifyDefaultBranchWorkflowCommitParent(ctx, repo.Repository, newHead, repo.OldHead); err != nil {
+	if err := e.verifyDefaultBranchWorkflowCommitParent(ctx, repo.Repository, newHead, repo.OldHead); err != nil {
 		repo.Disposition, repo.Error = "error", "workflow commit post-read did not prove the expected parent: "+err.Error()
 		return repo
 	}
@@ -1578,8 +1508,8 @@ func applyDefaultBranchWorkflowTriggers(ctx context.Context, repo Repository, ch
 	return repo
 }
 
-func verifyDefaultBranchWorkflowCommitParent(ctx context.Context, repository, commit, expectedParent string) error {
-	body, err := defaultBranchRead(ctx, "repos/"+repository+"/commits/"+commit)
+func (e *Engine) verifyDefaultBranchWorkflowCommitParent(ctx context.Context, repository, commit, expectedParent string) error {
+	body, err := e.GitHub.Read(ctx, "repos/"+repository+"/commits/"+commit)
 	if err != nil {
 		return fmt.Errorf("read new commit: %w", err)
 	}
@@ -1597,20 +1527,20 @@ func verifyDefaultBranchWorkflowCommitParent(ctx context.Context, repository, co
 // applyArchivedDefaultBranch permits one guarded temporary unarchive. Every
 // path after GitHub accepts that mutation attempts to restore archival before
 // returning, including a failed report checkpoint.
-func applyArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
+func (e *Engine) applyArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
 	transition := repo.Archive
 	if transition == nil || !transition.OriginalArchived || transition.RepositoryID <= 0 || repo.RepositoryID != transition.RepositoryID {
 		repo.Disposition = "blocked"
 		repo.Error = "archived repository transition lacks a stable original archive proof"
 		return repo
 	}
-	metadata, err := readDefaultBranchMetadata(ctx, repo.Repository)
+	metadata, err := e.readDefaultBranchMetadata(ctx, repo.Repository)
 	if err != nil {
 		repo.Disposition = "error"
 		repo.Error = "refresh archived repository before temporary unarchive: " + err.Error()
 		return repo
 	}
-	if err := validatePlannedArchivedDefaultBranch(ctx, metadata, repo.Repository, transition); err != nil {
+	if err := e.validatePlannedArchivedDefaultBranch(ctx, metadata, repo.Repository, transition); err != nil {
 		repo.Disposition = "blocked"
 		repo.Error = "archived repository changed after planning: " + err.Error()
 		return repo
@@ -1621,52 +1551,52 @@ func applyArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint
 		repo.Error = "persist pending archive transition: " + err.Error()
 		return repo
 	}
-	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=false")
+	response := e.GitHub.Execute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=false")
 	transition.UnarchiveAccepted = response.Err == nil
 	transition.Phase = "unarchived"
 	if response.Err != nil {
 		repo.Disposition = "error"
 		repo.Error = "temporarily unarchive repository: " + githubCommandMessage(response)
-		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
 	if err := checkpoint(repo); err != nil {
 		repo.Disposition = "error"
 		repo.Error = "persist accepted unarchive response: " + err.Error()
-		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
 	owner, name, ok := strings.Cut(repo.Repository, "/")
 	if !ok {
 		repo.Disposition = "error"
 		repo.Error = "invalid repository observation"
-		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
 	// The initial inspection has already accepted only the narrow trigger
 	// grammar. Reinspect it after unarchiving, so a concurrent workflow change
 	// cannot be committed or renamed from a stale archive transition.
-	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil, len(repo.WorkflowFiles) > 0)
+	fresh := e.inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil, len(repo.WorkflowFiles) > 0)
 	if fresh.RepositoryID != transition.RepositoryID || fresh.Archived {
 		repo.Disposition = "error"
 		repo.Error = "temporary unarchive did not preserve the planned repository identity and active state"
-		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
 	fresh.Archive = transition
 	if fresh.Disposition != "drift" {
 		repo = fresh
-		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+		return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
 	if len(fresh.WorkflowFiles) > 0 {
-		repo = applyDefaultBranchWorkflowTriggers(ctx, fresh, func(updated Repository) error {
+		repo = e.applyDefaultBranchWorkflowTriggers(ctx, fresh, func(updated Repository) error {
 			updated.Archive = transition
 			repo = updated
 			return checkpoint(repo)
 		})
 		repo.Archive = transition
 		if repo.Disposition != "drift" {
-			return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+			return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 		}
 		fresh = repo
 	}
-	repo = applyDefaultBranchWithCheckpoint(ctx, fresh, func(updated Repository) error {
+	repo = e.applyDefaultBranchWithCheckpoint(ctx, fresh, func(updated Repository) error {
 		updated.Archive = transition
 		repo = updated
 		return checkpoint(repo)
@@ -1675,10 +1605,10 @@ func applyArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint
 	if repo.Disposition == "compliant" {
 		transition.FinalHead = repo.NewHead
 	}
-	return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	return e.restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 }
 
-func validatePlannedArchivedDefaultBranch(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *Archive) error {
+func (e *Engine) validatePlannedArchivedDefaultBranch(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *Archive) error {
 	if metadata.ID != transition.RepositoryID {
 		return errors.New("repository ID differs from the archived transition")
 	}
@@ -1688,7 +1618,7 @@ func validatePlannedArchivedDefaultBranch(ctx context.Context, metadata defaultB
 	if metadata.DefaultBranch != transition.InitialDefault {
 		return errors.New("default branch differs from the archived transition")
 	}
-	head, err := readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
+	head, err := e.readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
 	if err != nil {
 		return fmt.Errorf("read planned default head: %w", err)
 	}
@@ -1698,7 +1628,7 @@ func validatePlannedArchivedDefaultBranch(ctx context.Context, metadata defaultB
 	return nil
 }
 
-func restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
+func (e *Engine) restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
 	transition := repo.Archive
 	if transition == nil {
 		return repo
@@ -1711,7 +1641,7 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoi
 		repo.Disposition = "error"
 		repo.Error = transition.RestoreError
 	}
-	beforeRestore, beforeRestoreErr := readDefaultBranchMetadata(ctx, repo.Repository)
+	beforeRestore, beforeRestoreErr := e.readDefaultBranchMetadata(ctx, repo.Repository)
 	if beforeRestoreErr != nil || beforeRestore.ID != transition.RepositoryID {
 		transition.Phase, transition.RecoveryRequired = "failed", true
 		if beforeRestoreErr != nil {
@@ -1725,9 +1655,9 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoi
 		}
 		return repo
 	}
-	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=true")
+	response := e.GitHub.Execute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=true")
 	transition.RestoreAccepted = response.Err == nil
-	metadata, metadataErr := readDefaultBranchMetadata(ctx, repo.Repository)
+	metadata, metadataErr := e.readDefaultBranchMetadata(ctx, repo.Repository)
 	expectedDefault, expectedHead := transition.InitialDefault, transition.InitialHead
 	if transition.FinalHead != "" {
 		expectedDefault, expectedHead = repo.Desired, transition.FinalHead
@@ -1753,7 +1683,7 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoi
 		}
 		return repo
 	}
-	head, headErr := readDefaultBranchRef(ctx, repo.Repository, metadata.DefaultBranch)
+	head, headErr := e.readDefaultBranchRef(ctx, repo.Repository, metadata.DefaultBranch)
 	if headErr != nil || head != expectedHead {
 		transition.Phase, transition.RecoveryRequired = "failed", true
 		if headErr != nil {
@@ -1779,8 +1709,8 @@ func restoreArchivedDefaultBranch(ctx context.Context, repo Repository, checkpoi
 	return repo
 }
 
-func readDefaultBranchMetadata(ctx context.Context, repository string) (defaultBranchRepoMetadata, error) {
-	body, err := defaultBranchRead(ctx, "repos/"+repository)
+func (e *Engine) readDefaultBranchMetadata(ctx context.Context, repository string) (defaultBranchRepoMetadata, error) {
+	body, err := e.GitHub.Read(ctx, "repos/"+repository)
 	if err != nil {
 		return defaultBranchRepoMetadata{}, err
 	}
@@ -1794,14 +1724,14 @@ func readDefaultBranchMetadata(ctx context.Context, repository string) (defaultB
 	return metadata, nil
 }
 
-func applyDefaultBranchWithCheckpoint(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
+func (e *Engine) applyDefaultBranchWithCheckpoint(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
 	owner, name, ok := strings.Cut(repo.Repository, "/")
 	if !ok || owner == "" || name == "" {
 		repo.Disposition = "error"
 		repo.Error = "invalid repository observation"
 		return repo
 	}
-	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil)
+	fresh := e.inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil)
 	if fresh.Disposition != "drift" {
 		repo.Disposition = fresh.Disposition
 		repo.Error = fresh.Error
@@ -1825,7 +1755,7 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo Repository, chec
 			return repo
 		}
 	}
-	response := defaultBranchExecute(ctx, args...)
+	response := e.GitHub.Execute(ctx, args...)
 	if response.Err != nil {
 		repo.Disposition = "error"
 		repo.Error = githubCommandMessage(response)
@@ -1843,10 +1773,10 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo Repository, chec
 	}
 	var verified Repository
 	if repo.TargetExists {
-		verified = readDefaultBranchRenameVisibility(ctx, repo, defaultBranchRenameNow().Add(30*time.Second))
+		verified = e.readDefaultBranchRenameVisibility(ctx, repo, e.Clock.Now().Add(30*time.Second))
 	} else {
 		var waitErr error
-		verified, waitErr = waitForDefaultBranchRename(ctx, repo)
+		verified, waitErr = e.waitForDefaultBranchRename(ctx, repo)
 		if waitErr != nil {
 			repo.Disposition = "error"
 			repo.Error = "wait for renamed branch visibility: " + waitErr.Error()
@@ -1879,11 +1809,11 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo Repository, chec
 // after the default rename has been read back. Pages has no documented CAS
 // precondition, so the persisted pre-write observation and immediate exact
 // post-read are the recovery boundary.
-func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
+func (e *Engine) applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository, checkpoint func(Repository) error) Repository {
 	if repo.PagesBefore == nil {
 		return repo
 	}
-	fresh, err := readDefaultBranchMetadata(ctx, repo.Repository)
+	fresh, err := e.readDefaultBranchMetadata(ctx, repo.Repository)
 	if err != nil || fresh.DefaultBranch != repo.Desired {
 		repo.Disposition = "error"
 		if err != nil {
@@ -1893,7 +1823,7 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 		}
 		return repo
 	}
-	head, err := readDefaultBranchRef(ctx, repo.Repository, repo.Desired)
+	head, err := e.readDefaultBranchRef(ctx, repo.Repository, repo.Desired)
 	if err != nil || head != repo.OldHead {
 		repo.Disposition = "error"
 		if err != nil {
@@ -1903,7 +1833,7 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 		}
 		return repo
 	}
-	body, err := defaultBranchRead(ctx, "repos/"+repo.Repository+"/pages")
+	body, err := e.GitHub.Read(ctx, "repos/"+repo.Repository+"/pages")
 	if err != nil {
 		repo.Disposition, repo.Error = "error", "read Pages source before migration: "+err.Error()
 		return repo
@@ -1911,7 +1841,7 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 	before, err := decodeDefaultBranchPages(body)
 	automatic := err == nil && repo.PagesPhase != "unfinished" && repo.ObservedDefault == "master" && repo.PagesBefore.Branch == "master" && repo.Desired == "main" && repo.PagesBefore.BuildType == "legacy" && before.BuildType == "legacy" && validDefaultBranchPagesPath(before.Path) && before.Path == repo.PagesBefore.Path && before.Branch == repo.Desired
 	if automatic {
-		_, oldRefErr := defaultBranchRead(ctx, "repos/"+repo.Repository+"/git/ref/heads/master")
+		_, oldRefErr := e.GitHub.Read(ctx, "repos/"+repo.Repository+"/git/ref/heads/master")
 		if oldRefErr == nil {
 			repo.Disposition, repo.Error = "error", "old master ref still exists after Pages source transition"
 			return repo
@@ -1946,7 +1876,7 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 			return repo
 		}
 	}
-	response := defaultBranchExecute(ctx, "api", "--method", "PUT", "repos/"+repo.Repository+"/pages", "-f", "source[branch]="+repo.Desired, "-f", "source[path]="+before.Path)
+	response := e.GitHub.Execute(ctx, "api", "--method", "PUT", "repos/"+repo.Repository+"/pages", "-f", "source[branch]="+repo.Desired, "-f", "source[path]="+before.Path)
 	if response.Err != nil {
 		repo.Disposition, repo.Error = "error", "update Pages source: "+githubCommandMessage(response)
 		return repo
@@ -1958,7 +1888,7 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 			return repo
 		}
 	}
-	body, err = defaultBranchRead(ctx, "repos/"+repo.Repository+"/pages")
+	body, err = e.GitHub.Read(ctx, "repos/"+repo.Repository+"/pages")
 	if err != nil {
 		repo.Disposition, repo.Error = "error", "verify Pages source migration: "+err.Error()
 		return repo
@@ -1985,30 +1915,30 @@ func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo Repository,
 	return repo
 }
 
-func waitForDefaultBranchRename(ctx context.Context, planned Repository) (Repository, error) {
-	deadline := defaultBranchRenameNow().Add(30 * time.Second)
-	observed := readDefaultBranchRenameVisibility(ctx, planned, deadline)
+func (e *Engine) waitForDefaultBranchRename(ctx context.Context, planned Repository) (Repository, error) {
+	deadline := e.Clock.Now().Add(30 * time.Second)
+	observed := e.readDefaultBranchRenameVisibility(ctx, planned, deadline)
 	for defaultBranchRenameStillPending(planned, observed) {
-		remaining := deadline.Sub(defaultBranchRenameNow())
+		remaining := deadline.Sub(e.Clock.Now())
 		if remaining <= 0 {
 			break
 		}
 		if remaining > 250*time.Millisecond {
 			remaining = 250 * time.Millisecond
 		}
-		if err := defaultBranchRenameWait(ctx, remaining); err != nil {
+		if err := e.Clock.Wait(ctx, remaining); err != nil {
 			return observed, err
 		}
-		observed = readDefaultBranchRenameVisibility(ctx, planned, deadline)
+		observed = e.readDefaultBranchRenameVisibility(ctx, planned, deadline)
 	}
 	return observed, nil
 }
 
-func readDefaultBranchRenameVisibility(ctx context.Context, planned Repository, deadline time.Time) Repository {
+func (e *Engine) readDefaultBranchRenameVisibility(ctx context.Context, planned Repository, deadline time.Time) Repository {
 	readContext, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	observed := Repository{Repository: planned.Repository, Desired: planned.Desired}
-	body, err := defaultBranchRead(readContext, "repos/"+planned.Repository)
+	body, err := e.GitHub.Read(readContext, "repos/"+planned.Repository)
 	if err != nil {
 		observed.Disposition, observed.Error = "error", err.Error()
 		return observed
@@ -2023,7 +1953,7 @@ func readDefaultBranchRenameVisibility(ctx context.Context, planned Repository, 
 		observed.Disposition, observed.Error = "blocked", "repository default changed while waiting for rename visibility"
 		return observed
 	}
-	head, err := readDefaultBranchRef(readContext, planned.Repository, planned.Desired)
+	head, err := e.readDefaultBranchRef(readContext, planned.Repository, planned.Desired)
 	if err != nil {
 		if isDefaultBranchNotFound(err) {
 			observed.Disposition, observed.Error = "pending", "renamed target branch is not visible yet"
@@ -2059,43 +1989,43 @@ func defaultBranchRenameStillPending(planned, observed Repository) bool {
 // It deliberately leaves every other local state in place and records why a
 // clone was preserved. A report checkpoint happens immediately before and
 // after the one local branch mutation.
-func reconcileDefaultBranchCanonicals(ctx context.Context, repository *Repository, clones []discover.Repo, sourceDefault, sourceHead string, checkpoint func() error) {
+func (e *Engine) reconcileDefaultBranchCanonicals(ctx context.Context, repository *Repository, clones []discover.Repo, sourceDefault, sourceHead string, checkpoint func() error) {
 	for _, clone := range clones {
 		repository.CanonicalClones = append(repository.CanonicalClones, Canonical{Path: clone.Path, Disposition: "blocked"})
 		entry := &repository.CanonicalClones[len(repository.CanonicalClones)-1]
-		if err := reconcileDefaultBranchCanonical(ctx, repository, entry, sourceDefault, sourceHead, checkpoint); err != nil {
+		if err := e.reconcileDefaultBranchCanonical(ctx, repository, entry, sourceDefault, sourceHead, checkpoint); err != nil {
 			entry.Error = err.Error()
 		}
 	}
 }
 
-func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository, entry *Canonical, sourceDefault, sourceHead string, checkpoint func() error) error {
-	if _, err := defaultBranchGit(ctx, entry.Path, "fetch", "--prune", "origin"); err != nil {
+func (e *Engine) reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository, entry *Canonical, sourceDefault, sourceHead string, checkpoint func() error) error {
+	if _, err := e.Git.Run(ctx, entry.Path, "fetch", "--prune", "origin"); err != nil {
 		return fmt.Errorf("refresh origin before local reconciliation: %w", err)
 	}
-	if _, err := defaultBranchGit(ctx, entry.Path, "remote", "set-head", "origin", "--auto"); err != nil {
+	if _, err := e.Git.Run(ctx, entry.Path, "remote", "set-head", "origin", "--auto"); err != nil {
 		return fmt.Errorf("refresh origin/HEAD before local reconciliation: %w", err)
 	}
-	status, err := defaultBranchGit(ctx, entry.Path, "status", "--porcelain")
+	status, err := e.Git.Run(ctx, entry.Path, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("inspect local changes: %w", err)
 	}
 	if status != "" {
 		return errors.New("local changes present; preserve the canonical clone and reconcile it after committing or rescuing the work")
 	}
-	worktrees, err := defaultBranchGit(ctx, entry.Path, "worktree", "list", "--porcelain")
+	worktrees, err := e.Git.Run(ctx, entry.Path, "worktree", "list", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("inspect linked worktrees: %w", err)
 	}
 	if strings.Count(worktrees, "worktree ") != 1 {
 		return errors.New("linked worktree exists; preserve every branch until that worktree is retired or moved")
 	}
-	current, err := defaultBranchGit(ctx, entry.Path, "branch", "--show-current")
+	current, err := e.Git.Run(ctx, entry.Path, "branch", "--show-current")
 	if err != nil {
 		return fmt.Errorf("inspect checked-out branch: %w", err)
 	}
 	entry.ObservedBranch = current
-	remoteHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
+	remoteHead, err := e.Git.Run(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
 	if err != nil {
 		return fmt.Errorf("resolve refreshed origin/%s: %w", repository.Desired, err)
 	}
@@ -2104,14 +2034,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 		return fmt.Errorf("origin/%s is %s, not planned source %s; rerun the audit before local reconciliation", repository.Desired, remoteHead, sourceHead)
 	}
 	if current == repository.Desired {
-		localHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", repository.Desired)
+		localHead, err := e.Git.Run(ctx, entry.Path, "rev-parse", repository.Desired)
 		if err != nil {
 			return fmt.Errorf("resolve local %s: %w", repository.Desired, err)
 		}
 		if localHead != remoteHead {
 			return fmt.Errorf("local %s is %s while origin/%s is %s; run wb sync --filter %s then retry --reconcile-from", repository.Desired, localHead, repository.Desired, remoteHead, repository.Repository)
 		}
-		upstream, upstreamErr := defaultBranchGit(ctx, entry.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+		upstream, upstreamErr := e.Git.Run(ctx, entry.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 		if upstreamErr == nil && upstream == "origin/"+repository.Desired {
 			entry.Disposition = "compliant"
 			entry.Actions = []string{"local " + repository.Desired + " already reconciled"}
@@ -2121,7 +2051,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 		if err := checkpoint(); err != nil {
 			return fmt.Errorf("persist local tracking repair plan: %w", err)
 		}
-		if _, err := defaultBranchGit(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
+		if _, err := e.Git.Run(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
 			return fmt.Errorf("restore local tracking branch: %w", err)
 		}
 		entry.Disposition = "compliant"
@@ -2129,20 +2059,20 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 		return checkpoint()
 	}
 	if current == "" {
-		head, err := defaultBranchGit(ctx, entry.Path, "rev-parse", "HEAD")
+		head, err := e.Git.Run(ctx, entry.Path, "rev-parse", "HEAD")
 		if err != nil {
 			return fmt.Errorf("resolve detached HEAD: %w", err)
 		}
-		mainExists, err := defaultBranchRefExists(ctx, entry.Path, "refs/heads/"+repository.Desired)
+		mainExists, err := e.Git.RefExists(ctx, entry.Path, "refs/heads/"+repository.Desired)
 		if err != nil {
 			return fmt.Errorf("inspect detached local %s: %w", repository.Desired, err)
 		}
-		sourceExists, err := defaultBranchRefExists(ctx, entry.Path, "refs/heads/"+sourceDefault)
+		sourceExists, err := e.Git.RefExists(ctx, entry.Path, "refs/heads/"+sourceDefault)
 		if err != nil {
 			return fmt.Errorf("inspect detached old local %s: %w", sourceDefault, err)
 		}
 		if !mainExists && sourceExists {
-			sourceHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", sourceDefault)
+			sourceHead, err := e.Git.Run(ctx, entry.Path, "rev-parse", sourceDefault)
 			if err != nil {
 				return fmt.Errorf("resolve detached local %s: %w", sourceDefault, err)
 			}
@@ -2154,10 +2084,10 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 			if err := checkpoint(); err != nil {
 				return fmt.Errorf("persist detached atomic rename recovery plan: %w", err)
 			}
-			if err := defaultBranchAttachHead(ctx, entry.Path, sourceDefault); err != nil {
+			if err := e.Git.AttachHead(ctx, entry.Path, sourceDefault); err != nil {
 				return fmt.Errorf("reattach detached HEAD to local %s: %w", sourceDefault, err)
 			}
-			if err := verifyDefaultBranchAttachment(ctx, entry.Path, sourceDefault, repository.Desired, remoteHead); err != nil {
+			if err := e.verifyDefaultBranchAttachment(ctx, entry.Path, sourceDefault, repository.Desired, remoteHead); err != nil {
 				entry.Disposition = "blocked"
 				entry.Actions = append(entry.Actions, "attachment verification failed")
 				if checkpointErr := checkpoint(); checkpointErr != nil {
@@ -2171,7 +2101,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 			}
 			return nil
 		}
-		mainHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", repository.Desired)
+		mainHead, err := e.Git.Run(ctx, entry.Path, "rev-parse", repository.Desired)
 		if err != nil {
 			return fmt.Errorf("resolve detached local %s: %w", repository.Desired, err)
 		}
@@ -2183,10 +2113,10 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 		if err := checkpoint(); err != nil {
 			return fmt.Errorf("persist detached local reconciliation recovery plan: %w", err)
 		}
-		if err := defaultBranchAttachHead(ctx, entry.Path, repository.Desired); err != nil {
+		if err := e.Git.AttachHead(ctx, entry.Path, repository.Desired); err != nil {
 			return fmt.Errorf("attach detached HEAD to local %s: %w", repository.Desired, err)
 		}
-		if err := verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, remoteHead); err != nil {
+		if err := e.verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, remoteHead); err != nil {
 			entry.Disposition = "blocked"
 			entry.Actions = append(entry.Actions, "attachment verification failed")
 			if checkpointErr := checkpoint(); checkpointErr != nil {
@@ -2194,7 +2124,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 			}
 			return fmt.Errorf("verify recovered local %s attachment: %w", repository.Desired, err)
 		}
-		if _, err := defaultBranchGit(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
+		if _, err := e.Git.Run(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
 			return fmt.Errorf("set local tracking branch after detached recovery: %w", err)
 		}
 		entry.Disposition = "compliant"
@@ -2207,7 +2137,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 	if current != sourceDefault {
 		return fmt.Errorf("canonical checkout is on %q; only the old default %q may be renamed automatically", current, sourceDefault)
 	}
-	branches, err := defaultBranchGit(ctx, entry.Path, "for-each-ref", "--format=%(refname:strip=2)", "refs/heads")
+	branches, err := e.Git.Run(ctx, entry.Path, "for-each-ref", "--format=%(refname:strip=2)", "refs/heads")
 	if err != nil {
 		return fmt.Errorf("inspect local branch names: %w", err)
 	}
@@ -2216,17 +2146,17 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 			return fmt.Errorf("local destination branch %q already exists", repository.Desired)
 		}
 	}
-	localHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", sourceDefault)
+	localHead, err := e.Git.Run(ctx, entry.Path, "rev-parse", sourceDefault)
 	if err != nil {
 		return fmt.Errorf("resolve local %s: %w", sourceDefault, err)
 	}
 	if localHead != remoteHead {
-		ancestor, err := defaultBranchIsAncestor(ctx, entry.Path, sourceDefault, "origin/"+repository.Desired)
+		ancestor, err := e.Git.IsAncestor(ctx, entry.Path, sourceDefault, "origin/"+repository.Desired)
 		if err != nil {
 			return fmt.Errorf("classify local %s against origin/%s: %w", sourceDefault, repository.Desired, err)
 		}
 		if !ancestor {
-			unpublished, err := defaultBranchGit(ctx, entry.Path, "log", "origin/"+repository.Desired+".."+sourceDefault, "--not", "--remotes", "--format=%H")
+			unpublished, err := e.Git.Run(ctx, entry.Path, "log", "origin/"+repository.Desired+".."+sourceDefault, "--not", "--remotes", "--format=%H")
 			if err != nil {
 				return fmt.Errorf("inspect local %s unpublished commits: %w", sourceDefault, err)
 			}
@@ -2242,14 +2172,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 			return fmt.Errorf("persist local fast-forward plan: %w", err)
 		}
 		checkpointedHead := remoteHead
-		if _, err := defaultBranchGit(ctx, entry.Path, "merge", "--ff-only", "origin/"+repository.Desired); err != nil {
+		if _, err := e.Git.Run(ctx, entry.Path, "merge", "--ff-only", "origin/"+repository.Desired); err != nil {
 			return fmt.Errorf("fast-forward local %s to origin/%s: %w", sourceDefault, repository.Desired, err)
 		}
-		localHead, err = defaultBranchGit(ctx, entry.Path, "rev-parse", sourceDefault)
+		localHead, err = e.Git.Run(ctx, entry.Path, "rev-parse", sourceDefault)
 		if err != nil {
 			return fmt.Errorf("resolve local %s after fast-forward: %w", sourceDefault, err)
 		}
-		remoteHead, err = defaultBranchGit(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
+		remoteHead, err = e.Git.Run(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
 		if err != nil {
 			return fmt.Errorf("resolve origin/%s after fast-forward: %w", repository.Desired, err)
 		}
@@ -2272,11 +2202,11 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 		return fmt.Errorf("persist local-reconciliation plan: %w", err)
 	}
 	checkpointedHead := remoteHead
-	localHead, err = defaultBranchGit(ctx, entry.Path, "rev-parse", sourceDefault)
+	localHead, err = e.Git.Run(ctx, entry.Path, "rev-parse", sourceDefault)
 	if err != nil {
 		return fmt.Errorf("resolve local %s before rename: %w", sourceDefault, err)
 	}
-	remoteHead, err = defaultBranchGit(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
+	remoteHead, err = e.Git.Run(ctx, entry.Path, "rev-parse", "origin/"+repository.Desired)
 	if err != nil {
 		return fmt.Errorf("resolve origin/%s before rename: %w", repository.Desired, err)
 	}
@@ -2284,7 +2214,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 	if localHead != checkpointedHead || remoteHead != checkpointedHead {
 		return fmt.Errorf("local %s is %s while origin/%s is %s before rename checkpoint %s; preserve it for explicit recovery", sourceDefault, localHead, repository.Desired, remoteHead, checkpointedHead)
 	}
-	if err := defaultBranchAtomicRenameRefs(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
+	if err := e.Git.AtomicRenameRefs(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
 		return fmt.Errorf("rename local default branch: %w", err)
 	}
 	atomicAction := "renamed refs local " + sourceDefault + " to " + repository.Desired + "; HEAD detached; tracking incomplete"
@@ -2296,14 +2226,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 	if err := checkpoint(); err != nil {
 		return fmt.Errorf("persist atomic local rename receipt: %w", err)
 	}
-	if err := defaultBranchAttachHead(ctx, entry.Path, repository.Desired); err != nil {
+	if err := e.Git.AttachHead(ctx, entry.Path, repository.Desired); err != nil {
 		entry.Disposition = "error"
 		if checkpointErr := checkpoint(); checkpointErr != nil {
 			return fmt.Errorf("attach HEAD to local %s: %v; persist detached local rename receipt: %w", repository.Desired, err, checkpointErr)
 		}
 		return fmt.Errorf("attach HEAD to local %s: %w", repository.Desired, err)
 	}
-	if err := verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, checkpointedHead); err != nil {
+	if err := e.verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, checkpointedHead); err != nil {
 		entry.Disposition = "blocked"
 		entry.Actions = append(entry.Actions, "attachment verification failed")
 		if checkpointErr := checkpoint(); checkpointErr != nil {
@@ -2315,7 +2245,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 	if len(entry.Actions) > 0 && strings.HasPrefix(entry.Actions[0], "fast-forwarded local ") {
 		renamedActions = append([]string{entry.Actions[0]}, renamedActions...)
 	}
-	if _, err := defaultBranchGit(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
+	if _, err := e.Git.Run(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
 		entry.Disposition = "error"
 		entry.Actions = renamedActions
 		if checkpointErr := checkpoint(); checkpointErr != nil {
@@ -2331,20 +2261,20 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *Repository
 	return nil
 }
 
-func verifyDefaultBranchAttachment(ctx context.Context, path, branch, desired, expected string) error {
-	head, err := defaultBranchGit(ctx, path, "rev-parse", "HEAD")
+func (e *Engine) verifyDefaultBranchAttachment(ctx context.Context, path, branch, desired, expected string) error {
+	head, err := e.Git.Run(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve HEAD: %w", err)
 	}
-	branchHead, err := defaultBranchGit(ctx, path, "rev-parse", branch)
+	branchHead, err := e.Git.Run(ctx, path, "rev-parse", branch)
 	if err != nil {
 		return fmt.Errorf("resolve local %s: %w", branch, err)
 	}
-	remoteHead, err := defaultBranchGit(ctx, path, "rev-parse", "origin/"+desired)
+	remoteHead, err := e.Git.Run(ctx, path, "rev-parse", "origin/"+desired)
 	if err != nil {
 		return fmt.Errorf("resolve origin/%s: %w", desired, err)
 	}
-	status, err := defaultBranchGit(ctx, path, "status", "--porcelain")
+	status, err := e.Git.Run(ctx, path, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("inspect local changes: %w", err)
 	}

@@ -178,3 +178,159 @@ func TestContractGitcliFetchMatchesRealGitOnARejectedRemote(t *testing.T) {
 		t.Fatal("fake.Fetch succeeded where the real client failed")
 	}
 }
+
+// TestContractGitcliRunMatchesRealGit runs an arbitrary subcommand
+// (`remote get-url origin`) against a real repository and proves a fake
+// scripted with that same answer agrees.
+func TestContractGitcliRunMatchesRealGit(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+	remote := t.TempDir()
+	contractGit(t, remote, "init", "-q", "--bare")
+	contractGit(t, dir, "remote", "add", "origin", remote)
+
+	realOut, err := gitcli.New(runner.New()).Run(context.Background(), dir, "remote", "get-url", "origin")
+	if err != nil {
+		t.Fatalf("real Client.Run: %v", err)
+	}
+	if realOut != remote {
+		t.Fatalf("real Client.Run = %q, want %q", realOut, remote)
+	}
+
+	fake := &gitclitest.Fake{RunByDirAndArgv: map[string]gitclitest.Result{
+		dir + "\x00remote\x00get-url\x00origin": {Value: realOut},
+	}}
+	fakeOut, err := fake.Run(context.Background(), dir, "remote", "get-url", "origin")
+	if err != nil || fakeOut != realOut {
+		t.Fatalf("fake.Run = (%q, %v), want (%q, nil)", fakeOut, err, realOut)
+	}
+}
+
+// TestContractGitcliAtomicRenameRefsMatchesRealGit renames a real
+// repository's checked-out branch and proves a fake scripted with the same
+// (nil) outcome agrees.
+func TestContractGitcliAtomicRenameRefsMatchesRealGit(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+	contractGit(t, dir, "checkout", "-q", "main")
+	sha := contractGit(t, dir, "rev-parse", "main")
+
+	realErr := gitcli.New(runner.New()).AtomicRenameRefs(context.Background(), dir, "main", "trunk", sha)
+	if realErr != nil {
+		t.Fatalf("real Client.AtomicRenameRefs: %v", realErr)
+	}
+	// AtomicRenameRefs leaves HEAD detached at expected: it is the ref
+	// transaction only, and reattaching is a separate step (AttachHead)
+	// its caller runs after checkpointing, matching the original
+	// unported behaviour this method replaced.
+	if head := contractGit(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); head != "HEAD" {
+		t.Fatalf("abbrev-ref HEAD after rename = %q, want %q (still detached)", head, "HEAD")
+	}
+	if resolved := contractGit(t, dir, "rev-parse", "HEAD"); resolved != sha {
+		t.Fatalf("HEAD after rename = %q, want %q", resolved, sha)
+	}
+	if exists := contractGit(t, dir, "rev-parse", "--verify", "--quiet", "refs/heads/trunk"); exists != sha {
+		t.Fatalf("refs/heads/trunk = %q, want %q", exists, sha)
+	}
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", "refs/heads/main").CombinedOutput(); err == nil {
+		t.Fatalf("refs/heads/main still exists after rename: %s", out)
+	}
+
+	fake := &gitclitest.Fake{AtomicRenameRefsErrByCase: map[string]error{
+		dir + "\x00main\x00trunk\x00" + sha: nil,
+	}}
+	if fakeErr := fake.AtomicRenameRefs(context.Background(), dir, "main", "trunk", sha); fakeErr != nil {
+		t.Fatalf("fake.AtomicRenameRefs: %v", fakeErr)
+	}
+}
+
+// TestContractGitcliAtomicRenameRefsMatchesRealGitOnAStaleExpectedSHA is the
+// failure case: the expected SHA no longer matches the branch tip, so the
+// detach checkout itself fails against real git, and a fake scripted with
+// that same failure shape agrees.
+func TestContractGitcliAtomicRenameRefsMatchesRealGitOnAStaleExpectedSHA(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+	contractGit(t, dir, "checkout", "-q", "main")
+
+	realErr := gitcli.New(runner.New()).AtomicRenameRefs(context.Background(), dir, "main", "trunk", "0000000000000000000000000000000000000000")
+	if realErr == nil {
+		t.Fatal("real Client.AtomicRenameRefs succeeded against a SHA that does not exist")
+	}
+
+	fake := &gitclitest.Fake{AtomicRenameRefsErrByCase: map[string]error{
+		dir + "\x00main\x00trunk\x000000000000000000000000000000000000000000": realErr,
+	}}
+	if fakeErr := fake.AtomicRenameRefs(context.Background(), dir, "main", "trunk", "0000000000000000000000000000000000000000"); fakeErr == nil {
+		t.Fatal("fake.AtomicRenameRefs succeeded where the real client failed")
+	}
+}
+
+// TestContractGitcliAttachHeadMatchesRealGit points a real repository's
+// detached HEAD back at a local branch and proves a fake scripted with the
+// same outcome agrees.
+func TestContractGitcliAttachHeadMatchesRealGit(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+	contractGit(t, dir, "checkout", "-q", "--detach", "main")
+
+	realErr := gitcli.New(runner.New()).AttachHead(context.Background(), dir, "main")
+	if realErr != nil {
+		t.Fatalf("real Client.AttachHead: %v", realErr)
+	}
+	if branch := contractGit(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); branch != "main" {
+		t.Fatalf("HEAD after attach = %q, want %q", branch, "main")
+	}
+
+	fake := &gitclitest.Fake{AttachHeadErrByDirAndDestination: map[string]error{dir + "\x00main": nil}}
+	if fakeErr := fake.AttachHead(context.Background(), dir, "main"); fakeErr != nil {
+		t.Fatalf("fake.AttachHead: %v", fakeErr)
+	}
+}
+
+// TestContractGitcliRefExistsMatchesRealGitOnAYes proves RefExists returns
+// true for a real ref, and that a fake scripted the same way agrees.
+func TestContractGitcliRefExistsMatchesRealGitOnAYes(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+
+	realOK, err := gitcli.New(runner.New()).RefExists(context.Background(), dir, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("real Client.RefExists: %v", err)
+	}
+	if !realOK {
+		t.Fatal("real Client.RefExists = false, want true (refs/heads/main exists)")
+	}
+
+	fake := &gitclitest.Fake{RefExistsByDirAndRef: map[string]gitclitest.BoolResult{
+		dir + "\x00refs/heads/main": {Value: realOK},
+	}}
+	fakeOK, err := fake.RefExists(context.Background(), dir, "refs/heads/main")
+	if err != nil || fakeOK != realOK {
+		t.Fatalf("fake.RefExists = (%v, %v), want (%v, nil)", fakeOK, err, realOK)
+	}
+}
+
+// TestContractGitcliRefExistsMatchesRealGitOnANo is the failure case this
+// error kind's fake emulates: a ref that does not exist reports false with
+// no error, from both the real client and a fake scripted the same way.
+func TestContractGitcliRefExistsMatchesRealGitOnANo(t *testing.T) {
+	t.Parallel()
+	dir := contractRepo(t)
+
+	realOK, err := gitcli.New(runner.New()).RefExists(context.Background(), dir, "refs/heads/no-such-branch")
+	if err != nil {
+		t.Fatalf("real Client.RefExists: %v", err)
+	}
+	if realOK {
+		t.Fatal("real Client.RefExists = true, want false (refs/heads/no-such-branch does not exist)")
+	}
+
+	fake := &gitclitest.Fake{RefExistsByDirAndRef: map[string]gitclitest.BoolResult{
+		dir + "\x00refs/heads/no-such-branch": {Value: realOK},
+	}}
+	fakeOK, err := fake.RefExists(context.Background(), dir, "refs/heads/no-such-branch")
+	if err != nil || fakeOK != realOK {
+		t.Fatalf("fake.RefExists = (%v, %v), want (%v, nil)", fakeOK, err, realOK)
+	}
+}

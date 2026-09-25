@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -22,8 +23,12 @@ func TestRunnerHelperProcess(t *testing.T) {
 	if os.Getenv("WB_RUNNER_HELPER") != "1" {
 		return
 	}
-	fmt.Fprint(os.Stdout, os.Getenv("WB_RUNNER_STDOUT")) //nolint:forbidigo // helper-process fixture
-	fmt.Fprint(os.Stderr, os.Getenv("WB_RUNNER_STDERR")) //nolint:forbidigo // helper-process fixture
+	_, _ = fmt.Fprint(os.Stdout, os.Getenv("WB_RUNNER_STDOUT")) //nolint:forbidigo // helper-process fixture
+	_, _ = fmt.Fprint(os.Stderr, os.Getenv("WB_RUNNER_STDERR")) //nolint:forbidigo // helper-process fixture
+	if os.Getenv("WB_RUNNER_ECHO_STDIN") == "1" {
+		stdin, _ := io.ReadAll(os.Stdin)
+		_, _ = fmt.Fprint(os.Stdout, string(stdin)) //nolint:forbidigo // helper-process fixture
+	}
 	if os.Getenv("WB_RUNNER_SLEEP") == "1" {
 		time.Sleep(10 * time.Second)
 	}
@@ -75,6 +80,44 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0 for a start failure (never reached a process exit)", result.ExitCode)
+	}
+}
+
+//nolint:paralleltest // AllowRealProcess sets an env var via t.Setenv, which Go's testing package forbids combining with t.Parallel
+func TestRealRunStdinWritesStdinAndCapturesOutput(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_ECHO_STDIN", "1")
+	t.Setenv("WB_RUNNER_EXIT", "0")
+
+	result, err := runner.New().RunStdin(context.Background(), t.TempDir(), os.Args[0], "hello-stdin", helperArgs()...)
+	if err != nil {
+		t.Fatalf("RunStdin: %v", err)
+	}
+	if result.Stdout != "hello-stdin" {
+		t.Fatalf("result.Stdout = %q, want %q", result.Stdout, "hello-stdin")
+	}
+}
+
+//nolint:paralleltest // AllowRealProcess sets an env var via t.Setenv, which Go's testing package forbids combining with t.Parallel
+func TestRealRunStdinReportsNonZeroExitStatus(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_EXIT", "9")
+
+	result, err := runner.New().RunStdin(context.Background(), t.TempDir(), os.Args[0], "", helperArgs()...)
+	if err == nil {
+		t.Fatal("want an error for a non-zero exit")
+	}
+	if result.ExitCode != 9 {
+		t.Fatalf("ExitCode = %d, want 9", result.ExitCode)
+	}
+}
+
+func TestRealRunStdinBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Parallel()
+	if _, err := runner.New().RunStdin(context.Background(), t.TempDir(), os.Args[0], "x", helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("RunStdin() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 

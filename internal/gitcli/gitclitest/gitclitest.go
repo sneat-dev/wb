@@ -27,6 +27,16 @@ type Fake struct {
 	IsAncestorByCase map[string]BoolResult
 	// FetchErrByDirAndRemote maps "dir\x00remote" to Fetch's canned error.
 	FetchErrByDirAndRemote map[string]error
+	// RunByDirAndArgv maps "dir\x00arg1\x00arg2..." to Run's canned result.
+	RunByDirAndArgv map[string]Result
+	// AtomicRenameRefsErrByCase maps "dir\x00source\x00destination\x00expected"
+	// to AtomicRenameRefs's canned error.
+	AtomicRenameRefsErrByCase map[string]error
+	// AttachHeadErrByDirAndDestination maps "dir\x00destination" to
+	// AttachHead's canned error.
+	AttachHeadErrByDirAndDestination map[string]error
+	// RefExistsByDirAndRef maps "dir\x00ref" to RefExists's canned result.
+	RefExistsByDirAndRef map[string]BoolResult
 }
 
 var _ gitcli.Git = (*Fake)(nil)
@@ -85,4 +95,44 @@ func (f *Fake) Fetch(_ context.Context, dir, remote string) error {
 		panic("gitclitest.Fake: Fetch not scripted for dir " + dir + " remote " + remote)
 	}
 	return err
+}
+
+// Run implements gitcli.Git.
+func (f *Fake) Run(_ context.Context, dir string, args ...string) (string, error) {
+	k := key(append([]string{dir}, args...)...)
+	result, ok := f.RunByDirAndArgv[k]
+	if !ok {
+		panic("gitclitest.Fake: Run not scripted for " + k)
+	}
+	return result.Value, result.Err
+}
+
+// AtomicRenameRefs implements gitcli.Git.
+func (f *Fake) AtomicRenameRefs(_ context.Context, dir, source, destination, expected string) error {
+	k := key(dir, source, destination, expected)
+	err, ok := f.AtomicRenameRefsErrByCase[k]
+	if !ok {
+		panic("gitclitest.Fake: AtomicRenameRefs not scripted for " + k)
+	}
+	return err
+}
+
+// AttachHead implements gitcli.Git.
+func (f *Fake) AttachHead(_ context.Context, dir, destination string) error {
+	k := key(dir, destination)
+	err, ok := f.AttachHeadErrByDirAndDestination[k]
+	if !ok {
+		panic("gitclitest.Fake: AttachHead not scripted for " + k)
+	}
+	return err
+}
+
+// RefExists implements gitcli.Git.
+func (f *Fake) RefExists(_ context.Context, dir, ref string) (bool, error) {
+	k := key(dir, ref)
+	result, ok := f.RefExistsByDirAndRef[k]
+	if !ok {
+		panic("gitclitest.Fake: RefExists not scripted for " + k)
+	}
+	return result.Value, result.Err
 }

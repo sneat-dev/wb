@@ -54,6 +54,11 @@ type Runner interface {
 	// Run starts name with args in dir, waits for it to exit, and returns
 	// its captured stdout, stderr and exit status.
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
+	// RunStdin behaves like Run but writes stdin to the started process's
+	// standard input before waiting for it to exit. It exists for the
+	// handful of subcommands (`git update-ref --stdin` among them) that
+	// read a transaction script from stdin rather than argv.
+	RunStdin(ctx context.Context, dir, name, stdin string, args ...string) (Result, error)
 	// Start begins name with args in dir and returns a Handle without
 	// waiting for it to exit.
 	Start(ctx context.Context, dir, name string, args ...string) (Handle, error)

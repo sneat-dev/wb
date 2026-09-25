@@ -94,14 +94,18 @@ func (f *fakeGitHub) Execute(ctx context.Context, args ...string) githubobserver
 	return f.executeFunc(ctx, args...)
 }
 
-// fakeDiscovery answers the Discovery port from in-memory tables.
+// fakeDiscovery answers the Discovery port from in-memory tables, or from
+// listRemoteFunc when a test needs ListRemote's behaviour to vary by call
+// (an owner-keyed table cannot express, for example, "fail every call for
+// this owner" versus "fail only this many calls").
 type fakeDiscovery struct {
-	authUser      string
-	authUserErr   error
-	memberOrgs    []string
-	memberOrgsErr error
-	remoteRepos   map[string][]discover.Repo
-	remoteErr     map[string]error
+	authUser       string
+	authUserErr    error
+	memberOrgs     []string
+	memberOrgsErr  error
+	remoteRepos    map[string][]discover.Repo
+	remoteErr      map[string]error
+	listRemoteFunc func(owner string) ([]discover.Repo, error)
 }
 
 var _ Discovery = (*fakeDiscovery)(nil)
@@ -115,6 +119,9 @@ func (f *fakeDiscovery) MemberOrgs() ([]string, error) {
 }
 
 func (f *fakeDiscovery) ListRemote(owner string) ([]discover.Repo, error) {
+	if f.listRemoteFunc != nil {
+		return f.listRemoteFunc(owner)
+	}
 	if err := f.remoteErr[owner]; err != nil {
 		return nil, err
 	}
@@ -125,16 +132,29 @@ func (f *fakeDiscovery) ListRemote(owner string) ([]discover.Repo, error) {
 // fake's own notion of time instead of blocking, so a test that exercises a
 // bounded-wait loop runs at test speed and deterministically, per the
 // coverage-to-100 lane rules (the test picks paths, never a clock).
+// nowFunc and waitFunc, when set, override the deterministic default —
+// a test that must assert an exact call count or a specific injected
+// duration sequence scripts them directly instead.
 type fakeClock struct {
-	now    time.Time
-	waited []time.Duration
+	now      time.Time
+	waited   []time.Duration
+	nowFunc  func() time.Time
+	waitFunc func(ctx context.Context, d time.Duration) error
 }
 
 var _ Clock = (*fakeClock)(nil)
 
-func (f *fakeClock) Now() time.Time { return f.now }
+func (f *fakeClock) Now() time.Time {
+	if f.nowFunc != nil {
+		return f.nowFunc()
+	}
+	return f.now
+}
 
 func (f *fakeClock) Wait(ctx context.Context, d time.Duration) error {
+	if f.waitFunc != nil {
+		return f.waitFunc(ctx, d)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

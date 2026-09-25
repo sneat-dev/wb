@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,29 +16,11 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // errBoomForCmdWB mirrors cmd/wb/verify_receipt_test.go's package-wide
 // sentinel of the same name (this package needs its own copy).
 var errBoomForCmdWB = errors.New("boom")
-
-// scratchGit mirrors cmd/wb/repo_ignore_test.go's helper of the same name.
-// It delegates to defaultBranchGit (this package's own git helper, defined
-// in the non-test defaultbranch.go) instead of its own exec.Command, so the
-// unit-tier detector (internal/quality/unittier.go) attributes only the
-// name-based "scratchGit" git-helper-call matches to this file, not a fresh
-// exec-start match for a second literal exec.Command definition; the
-// caller sets the commit identity env vars once, via t.Setenv, since
-// defaultBranchGit's exec.CommandContext inherits the process environment.
-func scratchGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	out, err := defaultBranchGit(context.Background(), dir, args...)
-	if err != nil {
-		t.Fatalf("git %v: %v", args, err)
-	}
-	return out
-}
 
 type defaultBranchFailWriter struct {
 	writes int
@@ -57,15 +38,25 @@ func (writer *defaultBranchFailWriter) Write(value []byte) (int, error) {
 func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.T) {
 	for _, sourcePath := range []string{"/", "/docs"} {
 		t.Run("migrates "+sourcePath, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
-			defaultBranchPagesFixture(t, sourcePath, "legacy", "master", false, false)
-			planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
+			defaultBranchRead, defaultBranchExecute = defaultBranchPagesFixture(t, sourcePath, "legacy", "master", false, false)
+			planned := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
 			if planned.Disposition != "drift" || planned.PagesBefore == nil || planned.PagesBefore.Path != sourcePath {
 				t.Fatalf("plan = %#v", planned)
 			}
-			renamed := applyDefaultBranchWithCheckpoint(context.Background(), planned, func(Repository) error { return nil })
-			result := applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(Repository) error { return nil })
+			renamed := engine.applyDefaultBranchWithCheckpoint(context.Background(), planned, func(Repository) error { return nil })
+			result := engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(Repository) error { return nil })
 			if result.Disposition != "compliant" || !defaultBranchPagesTerminal(result) || result.PagesAfter.Path != sourcePath {
 				t.Fatalf("result = %#v", result)
 			}
@@ -77,14 +68,24 @@ func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.
 		"unknown path":   {"legacy", "master"},
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			path := "/"
 			if name == "unknown path" {
 				path = "/site"
 			}
-			defaultBranchPagesFixture(t, path, test.buildType, test.branch, false, false)
-			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			defaultBranchRead, defaultBranchExecute = defaultBranchPagesFixture(t, path, test.buildType, test.branch, false, false)
+			result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, "pages source") {
 				t.Fatalf("result = %#v", result)
 			}
@@ -98,12 +99,22 @@ func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismat
 		"post-write mismatch": {postWriteMismatch: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
-			defaultBranchPagesFixture(t, "/", "legacy", "master", test.changedBeforeWrite, test.postWriteMismatch)
-			planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
-			renamed := applyDefaultBranchWithCheckpoint(context.Background(), planned, func(Repository) error { return nil })
-			result := applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(Repository) error { return nil })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
+			defaultBranchRead, defaultBranchExecute = defaultBranchPagesFixture(t, "/", "legacy", "master", test.changedBeforeWrite, test.postWriteMismatch)
+			planned := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			renamed := engine.applyDefaultBranchWithCheckpoint(context.Background(), planned, func(Repository) error { return nil })
+			result := engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(Repository) error { return nil })
 			if result.Disposition != "error" || defaultBranchPagesTerminal(result) {
 				t.Fatalf("result = %#v", result)
 			}
@@ -112,8 +123,18 @@ func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismat
 }
 
 func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -134,7 +155,7 @@ func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
 		return githubobserver.CommandResponse{}
 	}
 	repo := Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "same", Disposition: "compliant", PagesBefore: &PagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "prepared"}
-	got := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
+	got := engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
 	if got.Disposition != "compliant" || got.PagesPhase != "verified" || got.PagesAfter == nil || mutated {
 		t.Fatalf("got=%#v mutated=%t", got, mutated)
 	}
@@ -152,21 +173,28 @@ func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	got = applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
+	got = engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
 	if got.Disposition != "error" || !strings.Contains(got.Error, "old master ref still exists") || got.PagesPhase == "verified" || mutated {
 		t.Fatalf("present old ref accepted: %#v mutated=%t", got, mutated)
 	}
 	repo.ObservedDefault = "release"
 	repo.PagesBefore.Branch = "release"
-	got = applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
+	got = engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, nil)
 	if got.Disposition != "error" || got.PagesPhase == "verified" || mutated {
 		t.Fatalf("foreign source accepted as automatic transition: %#v mutated=%t", got, mutated)
 	}
 }
 
 func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *testing.T) {
-	originalRead := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = originalRead })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	sha := "04188cc2ba6c039f3b6eb65b429c3b7e1810f2bd"
 	previous := Repository{
 		Repository: "RxStore/rxstore.github.io", RepositoryID: 209892346,
@@ -190,7 +218,7 @@ func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 2 {
+	if source, head, reason := engine.defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 2 {
 		t.Fatalf("automatic resume = %q %q %q reads=%d", source, head, reason, reads)
 	}
 	for name, mutate := range map[string]func(*Repository, *Repository){
@@ -214,7 +242,7 @@ func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *
 			mutate(&copyPrevious, &copyCurrent)
 			reads = 0
 			receipt := &Report{SchemaVersion: 1, Mode: "apply", Repositories: []Repository{copyPrevious}}
-			if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), receipt, copyCurrent); source != "" || head != "" || reason == "" || reads != 0 {
+			if source, head, reason := engine.defaultBranchPagesAutomaticResume(context.Background(), receipt, copyCurrent); source != "" || head != "" || reason == "" || reads != 0 {
 				t.Fatalf("forged automatic resume = %q %q %q reads=%d", source, head, reason, reads)
 			}
 		})
@@ -225,14 +253,21 @@ func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *
 		}
 		return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/docs"}}`), nil
 	}
-	if source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "Pages source") {
+	if source, head, reason := engine.defaultBranchPagesAutomaticResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "Pages source") {
 		t.Fatalf("changed Pages path accepted: %q %q %q", source, head, reason)
 	}
 }
 
 func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t *testing.T) {
-	originalRead := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = originalRead })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -245,17 +280,27 @@ func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+	result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
 	if result.Disposition != "drift" || result.PagesBefore == nil || result.PagesPhase != "unfinished" || !strings.Contains(result.Error, "unfinished") {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
 func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -288,7 +333,7 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 		source = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, MigratePagesSource: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, MigratePagesSource: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,10 +347,20 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 // operator can inspect exactly what apply would do before running it for
 // real; it must never invoke a mutation.
 func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -330,7 +385,7 @@ func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
 		return githubobserver.CommandResponse{Err: errors.New("dry run must never mutate")}
 	}
 	reportDir := t.TempDir()
-	report, err := Run(context.Background(), projectsRoot, "", Options{Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: reportDir}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: reportDir}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,8 +408,18 @@ func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
 }
 
 func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -369,15 +434,25 @@ func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
 		return githubobserver.CommandResponse{}
 	}
 	repo := Repository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "same", Disposition: "drift", PagesBefore: &PagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "unfinished"}
-	result := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
+	result := engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
 	if result.Disposition != "error" || mutated {
 		t.Fatalf("result=%#v mutated=%t", result, mutated)
 	}
 }
 
 func TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -394,7 +469,7 @@ func TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges(t *testing.T) {
 		return githubobserver.CommandResponse{}
 	}
 	repo := Repository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "planned", Disposition: "drift", PagesBefore: &PagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "unfinished"}
-	result := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
+	result := engine.applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(Repository) error { return nil })
 	if result.Disposition != "error" || !strings.Contains(result.Error, "head changed") || mutated {
 		t.Fatalf("result=%#v mutated=%t", result, mutated)
 	}
@@ -407,10 +482,20 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 		"foreign source":   {"legacy", "/", "release"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-			t.Cleanup(func() {
-				defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-			})
+			originalConfigPath := ConfigPath
+			t.Cleanup(func() { ConfigPath = originalConfigPath })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			projectsRoot := t.TempDir()
 			config := filepath.Join(t.TempDir(), "wb.yaml")
 			if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -434,7 +519,7 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 				mutated = true
 				return githubobserver.CommandResponse{}
 			}
-			report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, MigratePagesSource: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
+			report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, MigratePagesSource: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -445,10 +530,17 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 	}
 }
 
-func defaultBranchPagesFixture(t *testing.T, sourcePath, buildType, initialSource string, changedBeforeWrite, postWriteMismatch bool) {
+// defaultBranchPagesFixture returns the (Read, Execute) closure pair a
+// caller assigns to its own local defaultBranchRead/defaultBranchExecute
+// vars (already declared by its var (...) block above, and wired into its
+// engine's GitHub fake through the trampoline closures there).
+func defaultBranchPagesFixture(t *testing.T, sourcePath, buildType, initialSource string, changedBeforeWrite, postWriteMismatch bool) (
+	func(ctx context.Context, endpoint string) ([]byte, error),
+	func(ctx context.Context, args ...string) githubobserver.CommandResponse,
+) {
 	t.Helper()
 	observedDefault, source, reads, mutations := "master", initialSource, 0, 0
-	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+	read := func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
 			return []byte(`{"id":1,"default_branch":"` + observedDefault + `"}`), nil
@@ -470,7 +562,7 @@ func defaultBranchPagesFixture(t *testing.T, sourcePath, buildType, initialSourc
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+	execute := func(_ context.Context, args ...string) githubobserver.CommandResponse {
 		mutations++
 		got := strings.Join(args, " ")
 		if mutations == 1 && (got == "api --method POST repos/acme/app/branches/master/rename -f new_name=main" || got == "api --method PATCH repos/acme/app -f default_branch=main") {
@@ -485,11 +577,19 @@ func defaultBranchPagesFixture(t *testing.T, sourcePath, buildType, initialSourc
 		}
 		return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + got)}
 	}
+	return read, execute
 }
 
 func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
-	original := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = original })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/old":
@@ -506,21 +606,31 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	archived := inspectDefaultBranchWithOptions(context.Background(), repo("acme/old"), "main", false, false)
+	archived := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/old"), "main", false, false)
 	if archived.Disposition != "blocked" || !strings.Contains(archived.Error, "archived") {
 		t.Fatalf("archived = %#v", archived)
 	}
-	diverged := inspectDefaultBranchWithOptions(context.Background(), repo("acme/diverged"), "main", false, false)
+	diverged := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/diverged"), "main", false, false)
 	if diverged.Disposition != "blocked" || !strings.Contains(diverged.Error, "different SHA") {
 		t.Fatalf("diverged = %#v", diverged)
 	}
 }
 
 func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -557,7 +667,7 @@ func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) 
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,8 +700,18 @@ func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) 
 }
 
 func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	observedDefault := "master"
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -623,11 +743,11 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+	planned := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 	if planned.Disposition != "drift" || planned.OldHead != "source" {
 		t.Fatalf("plan = %#v", planned)
 	}
-	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
+	result := engine.applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || result.NewHead != "source" {
 		t.Fatalf("rename proof = %#v", result)
 	}
@@ -637,10 +757,19 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 }
 
 func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *testing.T) {
-	originalRead, originalExecute, originalWait := defaultBranchRead, defaultBranchExecute, defaultBranchRenameWait
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchRenameWait = originalRead, originalExecute, originalWait
-	})
+	var (
+		defaultBranchRead       func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute    func(ctx context.Context, args ...string) githubobserver.CommandResponse
+		defaultBranchRenameWait func(ctx context.Context, d time.Duration) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{waitFunc: func(ctx context.Context, d time.Duration) error { return defaultBranchRenameWait(ctx, d) }},
+	}
 	state, mutations, waits := 0, 0, 0
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -681,18 +810,25 @@ func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *tes
 		state = 2
 		return nil
 	}
-	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
-	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
+	planned := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+	result := engine.applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || mutations != 1 || waits != 1 {
 		t.Fatalf("delayed visibility result=%#v mutations=%d waits=%d", result, mutations, waits)
 	}
 }
 
 func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *testing.T) {
-	originalNow, originalWait, originalRead := defaultBranchRenameNow, defaultBranchRenameWait, defaultBranchRead
-	t.Cleanup(func() {
-		defaultBranchRenameNow, defaultBranchRenameWait, defaultBranchRead = originalNow, originalWait, originalRead
-	})
+	var (
+		defaultBranchRenameNow  func() time.Time
+		defaultBranchRenameWait func(ctx context.Context, d time.Duration) error
+		defaultBranchRead       func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{nowFunc: func() time.Time { return defaultBranchRenameNow() }, waitFunc: func(ctx context.Context, d time.Duration) error { return defaultBranchRenameWait(ctx, d) }},
+	}
 	clock := time.Now()
 	calls := 0
 	defaultBranchRenameNow = func() time.Time {
@@ -715,7 +851,7 @@ func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *t
 		}
 	}
 	planned := Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}
-	result, err := waitForDefaultBranchRename(context.Background(), planned)
+	result, err := engine.waitForDefaultBranchRename(context.Background(), planned)
 	if err != nil || result.Disposition != "drift" || result.ObservedDefault != "master" || result.OldHead != "source" || waits != 0 {
 		t.Fatalf("timeout result=%#v err=%v waits=%d", result, err, waits)
 	}
@@ -724,8 +860,18 @@ func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *t
 func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T) {
 	for name, failAfterResponse := range map[string]bool{"before response": false, "after response": true} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			mutated := false
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch endpoint {
@@ -757,7 +903,7 @@ func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T
 				mutated = true
 				return githubobserver.CommandResponse{}
 			}
-			result := applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}, func(repository Repository) error {
+			result := engine.applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}, func(repository Repository) error {
 				if repository.RenameAccepted == failAfterResponse {
 					return errors.New("receipt unavailable")
 				}
@@ -771,8 +917,15 @@ func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T
 }
 
 func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPending(t *testing.T) {
-	original := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = original })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	planned := Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}
 	for name, test := range map[string]struct {
 		metadata    string
@@ -808,7 +961,7 @@ func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPend
 					return nil, errors.New("unexpected endpoint " + endpoint)
 				}
 			}
-			if result := readDefaultBranchRenameVisibility(context.Background(), planned, time.Now().Add(time.Second)); result.Disposition != test.want {
+			if result := engine.readDefaultBranchRenameVisibility(context.Background(), planned, time.Now().Add(time.Second)); result.Disposition != test.want {
 				t.Fatalf("visibility = %#v", result)
 			}
 		})
@@ -816,8 +969,18 @@ func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPend
 }
 
 func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -843,7 +1006,7 @@ func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
 		mutated = true
 		return githubobserver.CommandResponse{}
 	}
-	result := applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
+	result := engine.applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 	if result.Disposition != "blocked" || !strings.Contains(result.Error, "changed after planning") || mutated {
 		t.Fatalf("fresh plan drift = %#v mutated=%t", result, mutated)
 	}
@@ -878,11 +1041,18 @@ func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			original := defaultBranchRead
-			t.Cleanup(func() { defaultBranchRead = original })
+			var (
+				defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+			)
+			engine := &Engine{
+				Git:       &fakeGit{},
+				GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return configure(endpoint) }
 			result := Repository{Repository: "acme/app"}
-			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil {
+			if err := engine.defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil {
 				t.Fatalf("unsafe %s was accepted", name)
 			}
 		})
@@ -897,8 +1067,15 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 		"effective rules":    "pages, classic protection",
 	} {
 		t.Run(mode, func(t *testing.T) {
-			original := defaultBranchRead
-			t.Cleanup(func() { defaultBranchRead = original })
+			var (
+				defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+			)
+			engine := &Engine{
+				Git:       &fakeGit{},
+				GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch endpoint {
 				case "repos/acme/app/pulls?state=open&head=acme%3Amaster":
@@ -931,7 +1108,7 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 				}
 			}
 			result := Repository{Repository: "acme/app"}
-			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil || !strings.Contains(err.Error(), want) {
+			if err := engine.defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("active dependency was accepted: %v", err)
 			}
 		})
@@ -964,8 +1141,15 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			original := defaultBranchRead
-			t.Cleanup(func() { defaultBranchRead = original })
+			var (
+				defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+			)
+			engine := &Engine{
+				Git:       &fakeGit{},
+				GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				if endpoint == "repos/acme/app" {
 					return []byte(test.metadata), nil
@@ -984,7 +1168,7 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 				}
 				return nil, errors.New("unexpected endpoint " + endpoint)
 			}
-			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+			result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unsafe repository state = %#v", result)
 			}
@@ -993,8 +1177,17 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 }
 
 func TestReconcileDefaultBranchCanonicalRefusesStaleRemoteHead(t *testing.T) {
-	original := defaultBranchGit
-	t.Cleanup(func() { defaultBranchGit = original })
+	var (
+		defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	var calls []string
 	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
 		call := strings.Join(args, " ")
@@ -1014,7 +1207,7 @@ func TestReconcileDefaultBranchCanonicalRefusesStaleRemoteHead(t *testing.T) {
 	}
 	repository := Repository{Repository: "acme/app", Desired: "main"}
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
-	if err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "planned", func() error { return nil }); err == nil || !strings.Contains(err.Error(), "not planned source") {
+	if err := engine.reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "planned", func() error { return nil }); err == nil || !strings.Contains(err.Error(), "not planned source") {
 		t.Fatalf("stale remote was accepted: %v", err)
 	}
 	if strings.Contains(strings.Join(calls, "\n"), "branch -m") {
@@ -1036,8 +1229,20 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
-			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			var (
+				defaultBranchGit        func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchIsAncestor func(ctx context.Context, dir, ancestor, descendant string) (bool, error)
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, isAncestorFunc: func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+					return defaultBranchIsAncestor(ctx, dir, ancestor, descendant)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
 			var calls []string
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
@@ -1063,7 +1268,7 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 			}
 			repository := Repository{Repository: "acme/app", Desired: "main"}
 			entry := Canonical{Path: "/canonical", Disposition: "blocked"}
-			err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error { return nil })
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error { return nil })
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("unsafe state result = %v", err)
 			}
@@ -1077,10 +1282,23 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *testing.T) {
 	for name, upstreamError := range map[string]bool{"rename and track": false, "tracking failure": true} {
 		t.Run(name, func(t *testing.T) {
-			originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-			t.Cleanup(func() {
-				defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalRename, originalAttach
-			})
+			var (
+				defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+				defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+					return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+				}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+					return defaultBranchAttachHead(ctx, dir, destination)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 			defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
@@ -1107,7 +1325,7 @@ func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *test
 			repository := Repository{Repository: "acme/app", Desired: "main"}
 			entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 			checkpoints := 0
-			err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error { checkpoints++; return nil })
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error { checkpoints++; return nil })
 			if upstreamError {
 				if err == nil || entry.Disposition != "error" || len(entry.Actions) != 1 || checkpoints != 3 {
 					t.Fatalf("partial reconciliation = %#v checkpoints=%d err=%v", entry, checkpoints, err)
@@ -1122,10 +1340,26 @@ func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *test
 }
 
 func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testing.T) {
-	originalGit, originalAncestor, originalRename, originalAttach := defaultBranchGit, defaultBranchIsAncestor, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-	t.Cleanup(func() {
-		defaultBranchGit, defaultBranchIsAncestor, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalAncestor, originalRename, originalAttach
-	})
+	var (
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchIsAncestor       func(ctx context.Context, dir, ancestor, descendant string) (bool, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, isAncestorFunc: func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+			return defaultBranchIsAncestor(ctx, dir, ancestor, descendant)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
 	localHead, remoteHead := "old", "new"
@@ -1165,7 +1399,7 @@ func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testi
 	repo := Repository{Repository: "acme/app", Desired: "main"}
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 	var receipts []Canonical
-	if err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error {
+	if err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error {
 		receipts = append(receipts, entry)
 		return nil
 	}); err != nil {
@@ -1188,8 +1422,20 @@ func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDiverg
 		"known divergence": "",
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
-			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			var (
+				defaultBranchGit        func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchIsAncestor func(ctx context.Context, dir, ancestor, descendant string) (bool, error)
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, isAncestorFunc: func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+					return defaultBranchIsAncestor(ctx, dir, ancestor, descendant)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			var calls []string
 			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
@@ -1216,7 +1462,7 @@ func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDiverg
 			}
 			repo := Repository{Repository: "acme/app", Desired: "main"}
 			entry := Canonical{Path: "/canonical", Disposition: "blocked"}
-			err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "remote", func() error { return nil })
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "remote", func() error { return nil })
 			if err == nil || !strings.Contains(err.Error(), map[bool]string{true: "has unpublished commits", false: "not contained"}[unpublished != ""]) {
 				t.Fatalf("err = %v", err)
 			}
@@ -1233,8 +1479,20 @@ func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *t
 		"unpublished query": {logErr: "log unavailable", want: "inspect local master unpublished"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
-			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			var (
+				defaultBranchGit        func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchIsAncestor func(ctx context.Context, dir, ancestor, descendant string) (bool, error)
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, isAncestorFunc: func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+					return defaultBranchIsAncestor(ctx, dir, ancestor, descendant)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) {
 				return false, errors.New(test.ancestryErr)
 			}
@@ -1262,7 +1520,7 @@ func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *t
 				defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
 			}
 			repo := Repository{Repository: "acme/app", Desired: "main"}
-			err := reconcileDefaultBranchCanonical(context.Background(), &repo, &Canonical{Path: "/canonical", Disposition: "blocked"}, "master", "remote", func() error { return nil })
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &Canonical{Path: "/canonical", Disposition: "blocked"}, "master", "remote", func() error { return nil })
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("err=%v", err)
 			}
@@ -1271,10 +1529,26 @@ func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *t
 }
 
 func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testing.T) {
-	originalGit, originalAncestor, originalRename, originalAttach := defaultBranchGit, defaultBranchIsAncestor, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-	t.Cleanup(func() {
-		defaultBranchGit, defaultBranchIsAncestor, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalAncestor, originalRename, originalAttach
-	})
+	var (
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchIsAncestor       func(ctx context.Context, dir, ancestor, descendant string) (bool, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, isAncestorFunc: func(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+			return defaultBranchIsAncestor(ctx, dir, ancestor, descendant)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	atomicRenameCalls := 0
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, source, destination, expected string) error {
 		atomicRenameCalls++
@@ -1308,17 +1582,31 @@ func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testin
 	}
 	repo := Repository{Repository: "acme/app", Desired: "main"}
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
-	err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error { return nil })
+	err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "expected new") || atomicRenameCalls != 1 {
 		t.Fatalf("moved refs were accepted: %v", err)
 	}
 }
 
 func TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename(t *testing.T) {
-	originalGit, originalRename, originalAttach, originalExists := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, defaultBranchRefExists
-	t.Cleanup(func() {
-		defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead, defaultBranchRefExists = originalGit, originalRename, originalAttach, originalExists
-	})
+	var (
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+		defaultBranchRefExists        func(ctx context.Context, dir, ref string) (bool, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}, refExistsFunc: func(ctx context.Context, dir, ref string) (bool, error) { return defaultBranchRefExists(ctx, dir, ref) }},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	current, sourceExists := "master", true
 	attachFails := true
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { current, sourceExists = "", false; return nil }
@@ -1352,13 +1640,13 @@ func TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename(t *testing.
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 	var receipts []Canonical
 	checkpoint := func() error { receipts = append(receipts, entry); return nil }
-	err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", checkpoint)
+	err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", checkpoint)
 	if err == nil || !strings.Contains(err.Error(), "attach HEAD") || len(receipts) < 2 || !strings.Contains(strings.Join(receipts[len(receipts)-1].Actions, " "), "HEAD detached") {
 		t.Fatalf("attach interruption = %v receipts=%#v", err, receipts)
 	}
 	attachFails = false
 	entry = Canonical{Path: "/canonical", Disposition: "blocked"}
-	if err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", checkpoint); err != nil || entry.Disposition != "compliant" || !strings.Contains(strings.Join(entry.Actions, " "), "recovered detached HEAD") {
+	if err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", checkpoint); err != nil || entry.Disposition != "compliant" || !strings.Contains(strings.Join(entry.Actions, " "), "recovered detached HEAD") {
 		t.Fatalf("detached retry = %#v err=%v", entry, err)
 	}
 }
@@ -1366,10 +1654,21 @@ func TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename(t *testing.
 func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *testing.T) {
 	for name, sourceHead := range map[string]string{"restore": "same", "moved source refuses": "moved"} {
 		t.Run(name, func(t *testing.T) {
-			originalGit, originalAttach, originalExists := defaultBranchGit, defaultBranchAttachHead, defaultBranchRefExists
-			t.Cleanup(func() {
-				defaultBranchGit, defaultBranchAttachHead, defaultBranchRefExists = originalGit, originalAttach, originalExists
-			})
+			var (
+				defaultBranchGit        func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchAttachHead func(ctx context.Context, dir, destination string) error
+				defaultBranchRefExists  func(ctx context.Context, dir, ref string) (bool, error)
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+					return defaultBranchAttachHead(ctx, dir, destination)
+				}, refExistsFunc: func(ctx context.Context, dir, ref string) (bool, error) { return defaultBranchRefExists(ctx, dir, ref) }},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			current, attached := "", false
 			defaultBranchAttachHead = func(_ context.Context, _, destination string) error {
 				attached = true
@@ -1396,7 +1695,7 @@ func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *te
 			repo := Repository{Repository: "acme/app", Desired: "main"}
 			entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 			checkpoints := 0
-			err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", func() error { checkpoints++; return nil })
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", func() error { checkpoints++; return nil })
 			if sourceHead == "same" {
 				if err != nil || !attached || current != "master" || checkpoints != 2 || !strings.Contains(strings.Join(entry.Actions, " "), "restored HEAD") {
 					t.Fatalf("restoration = %#v err=%v checkpoints=%d", entry, err, checkpoints)
@@ -1409,8 +1708,17 @@ func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *te
 }
 
 func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) {
-	original := defaultBranchGit
-	t.Cleanup(func() { defaultBranchGit = original })
+	var (
+		defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
 		case "rev-parse HEAD":
@@ -1423,10 +1731,10 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 			return "", errors.New("unexpected git")
 		}
 	}
-	if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
+	if err := engine.verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
 		t.Fatalf("moved attachment accepted: %v", err)
 	}
-	if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "master", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
+	if err := engine.verifyDefaultBranchAttachment(context.Background(), "/canonical", "master", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
 		t.Fatalf("moved master attachment accepted: %v", err)
 	}
 }
@@ -1434,8 +1742,17 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 func TestVerifyDefaultBranchAttachmentReportsReadFailures(t *testing.T) {
 	for _, failed := range []string{"rev-parse HEAD", "rev-parse main", "rev-parse origin/main", "status --porcelain"} {
 		t.Run(failed, func(t *testing.T) {
-			original := defaultBranchGit
-			t.Cleanup(func() { defaultBranchGit = original })
+			var (
+				defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
 				call := strings.Join(args, " ")
 				if call == failed {
@@ -1443,190 +1760,31 @@ func TestVerifyDefaultBranchAttachmentReportsReadFailures(t *testing.T) {
 				}
 				return "same", nil
 			}
-			if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "read failed") {
+			if err := engine.verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "read failed") {
 				t.Fatalf("%s was accepted: %v", failed, err)
 			}
 		})
 	}
 }
 
-func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
-	dir := t.TempDir()
-	run := func(args ...string) string {
-		command := exec.Command("git", args...)
-		command.Dir = dir
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, output)
-		}
-		return strings.TrimSpace(string(output))
-	}
-	run("init", "-q")
-	run("config", "user.email", "test@example.com")
-	run("config", "user.name", "test")
-	run("commit", "--allow-empty", "-qm", "initial")
-	run("branch", "-M", "master")
-	run("branch", "older")
-	run("commit", "--allow-empty", "-qm", "advance")
-	if ancestor, err := defaultBranchIsAncestor(context.Background(), dir, "older", "master"); err != nil || !ancestor {
-		t.Fatalf("older ancestry = %t err=%v", ancestor, err)
-	}
-	if ancestor, err := defaultBranchIsAncestor(context.Background(), dir, "master", "older"); err != nil || ancestor {
-		t.Fatalf("reverse ancestry = %t err=%v", ancestor, err)
-	}
-	sha := run("rev-parse", "master")
-	older := run("rev-parse", "older")
-	if err := defaultBranchAtomicRenameRefs(context.Background(), dir, "master", "main", older); err == nil {
-		t.Fatal("stale atomic rename was accepted")
-	}
-	if err := defaultBranchAttachHead(context.Background(), dir, "master"); err != nil {
-		t.Fatal(err)
-	}
-	run("update-ref", "refs/remotes/origin/main", sha)
-	if err := defaultBranchAtomicRenameRefs(context.Background(), dir, "master", "main", sha); err != nil {
-		t.Fatal(err)
-	}
-	if err := defaultBranchAttachHead(context.Background(), dir, "main"); err != nil {
-		t.Fatal(err)
-	}
-	master, err := defaultBranchRefExists(context.Background(), dir, "refs/heads/master")
-	if err != nil || master {
-		t.Fatalf("master exists=%t err=%v", master, err)
-	}
-	main, err := defaultBranchRefExists(context.Background(), dir, "refs/heads/main")
-	if err != nil || !main {
-		t.Fatalf("main exists=%t err=%v", main, err)
-	}
-	if err := verifyDefaultBranchAttachment(context.Background(), dir, "main", "main", sha); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "dirty"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyDefaultBranchAttachment(context.Background(), dir, "main", "main", sha); err == nil {
-		t.Fatal("dirty attachment was accepted")
-	}
-}
-
-func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing")
-	if _, err := defaultBranchIsAncestor(context.Background(), missing, "master", "main"); err == nil {
-		t.Fatal("ancestor check accepted missing repository")
-	}
-	if err := defaultBranchAtomicRenameRefs(context.Background(), missing, "master", "main", "0123456789012345678901234567890123456789"); err == nil {
-		t.Fatal("atomic rename accepted missing repository")
-	}
-	if err := defaultBranchAttachHead(context.Background(), missing, "main"); err == nil {
-		t.Fatal("attach accepted missing repository")
-	}
-	if _, err := defaultBranchRefExists(context.Background(), missing, "refs/heads/main"); err == nil {
-		t.Fatal("ref check accepted missing repository")
-	}
-	if err := verifyDefaultBranchAttachment(context.Background(), missing, "main", "main", "same"); err == nil {
-		t.Fatal("attachment verification accepted missing repository")
-	}
-}
-
-// TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames exercises
-// the complete successful local recovery against a real bare origin. The
-// canonical clone starts on master at an ancestor of origin/main, exactly the
-// state left by a previously renamed remote default branch.
-func TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames(t *testing.T) {
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
-	root := t.TempDir()
-	seed := filepath.Join(root, "seed")
-	origin := filepath.Join(root, "origin.git")
-	canonical := filepath.Join(root, "canonical")
-	for _, directory := range []string{seed, canonical} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	scratchGit(t, seed, "init", "-q", "-b", "master")
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("first\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	scratchGit(t, seed, "add", "README.md")
-	scratchGit(t, seed, "commit", "-qm", "base")
-	base := scratchGit(t, seed, "rev-parse", "HEAD")
-	testenv.InitBareRemoteForTest(t, origin)
-	scratchGit(t, seed, "remote", "add", "origin", origin)
-	scratchGit(t, seed, "push", "-q", "origin", "master:main")
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("first\nsecond\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	scratchGit(t, seed, "commit", "-am", "advance remote main")
-	scratchGit(t, seed, "push", "-q", "origin", "master:main")
-	remoteHead := scratchGit(t, origin, "rev-parse", "refs/heads/main")
-
-	scratchGit(t, root, "clone", "-q", origin, canonical)
-	scratchGit(t, canonical, "checkout", "-q", "-b", "master", base)
-	scratchGit(t, canonical, "branch", "-D", "main")
-
-	repository := Repository{Repository: "acme/app", Desired: "main"}
-	entry := Canonical{Path: canonical}
-	checkpoints := 0
-	if err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", remoteHead, func() error {
-		checkpoints++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if entry.Disposition != "compliant" {
-		t.Fatalf("disposition = %q, want compliant: %#v", entry.Disposition, entry)
-	}
-	if got, want := strings.Join(entry.Actions, " | "), "fast-forwarded local master to origin/main | renamed local master to main | set upstream to origin/main"; got != want {
-		t.Fatalf("actions = %q, want %q", got, want)
-	}
-	if checkpoints != 5 {
-		t.Fatalf("checkpoints = %d, want 5", checkpoints)
-	}
-	for _, ref := range []string{"HEAD", "main", "origin/main"} {
-		if got := scratchGit(t, canonical, "rev-parse", ref); got != remoteHead {
-			t.Fatalf("%s = %s, want %s", ref, got, remoteHead)
-		}
-	}
-	if got := scratchGit(t, canonical, "branch", "--show-current"); got != "main" {
-		t.Fatalf("current branch = %q, want main", got)
-	}
-	if got := scratchGit(t, canonical, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/main" {
-		t.Fatalf("upstream = %q, want origin/main", got)
-	}
-	if output, err := exec.Command("git", "-C", canonical, "show-ref", "--verify", "--quiet", "refs/heads/master").CombinedOutput(); err == nil {
-		t.Fatalf("local master remains after reconciliation: %s", output)
-	}
-	if got := scratchGit(t, origin, "rev-parse", "refs/heads/main"); got != remoteHead {
-		t.Fatalf("origin/main changed from %s to %s", remoteHead, got)
-	}
-	if output, err := exec.Command("git", "-C", origin, "show-ref", "--verify", "--quiet", "refs/heads/master").CombinedOutput(); err == nil {
-		t.Fatalf("origin master was created: %s", output)
-	}
-}
-
-func TestDefaultBranchGitRunsAndReportsFailures(t *testing.T) {
-	dir := t.TempDir()
-	command := exec.Command("git", "init", "-q")
-	command.Dir = dir
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	if _, err := defaultBranchGit(context.Background(), dir, "status", "--porcelain"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := defaultBranchGit(context.Background(), dir, "rev-parse", "--verify", "refs/heads/missing"); err == nil {
-		t.Fatal("missing ref was accepted")
-	}
-}
-
 func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *testing.T) {
-	originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-	t.Cleanup(func() {
-		defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalRename, originalAttach
-	})
+	var (
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	moved, upstream := false, false
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { moved = true; return nil }
@@ -1657,7 +1815,7 @@ func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *test
 	repo := Repository{Repository: "acme/app", Desired: "main"}
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 	var receipts []Canonical
-	err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", func() error { receipts = append(receipts, entry); return nil })
+	err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", func() error { receipts = append(receipts, entry); return nil })
 	if err == nil || entry.Disposition != "blocked" || upstream || !strings.Contains(strings.Join(entry.Actions, " "), "attachment verification failed") || !strings.Contains(strings.Join(receipts[len(receipts)-1].Actions, " "), "attachment verification failed") {
 		t.Fatalf("attach movement = %#v err=%v upstream=%t receipts=%#v", entry, err, upstream, receipts)
 	}
@@ -1683,10 +1841,23 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-			t.Cleanup(func() {
-				defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalRename, originalAttach
-			})
+			var (
+				defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+				defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+				defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+			)
+			engine := &Engine{
+				Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+					return defaultBranchGit(ctx, dir, args...)
+				}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+					return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+				}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+					return defaultBranchAttachHead(ctx, dir, destination)
+				}},
+				GitHub:    &fakeGitHub{},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 			defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
@@ -1712,7 +1883,7 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 			checkpoints := 0
 			repository := Repository{Repository: "acme/app", Desired: "main"}
 			entry := Canonical{Path: "/canonical", Disposition: "blocked"}
-			err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error {
+			err := engine.reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", "same", func() error {
 				checkpoints++
 				if checkpoints == test.failCheckpoint {
 					return errors.New("receipt unavailable")
@@ -1727,7 +1898,8 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 }
 
 func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T) {
-	if result := applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "not-a-slug"}, nil); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
+	if result := engine.applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "not-a-slug"}, nil); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
 		t.Fatalf("invalid repository = %#v", result)
 	}
 	for name, test := range map[string]struct {
@@ -1738,8 +1910,18 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 		"post proof differs": {mutate: func(observed *string) { *observed = "main" }, want: "branch head changed while waiting"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			observedDefault := "master"
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch endpoint {
@@ -1771,7 +1953,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 				test.mutate(&observedDefault)
 				return githubobserver.CommandResponse{}
 			}
-			result := applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
+			result := engine.applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unproven mutation = %#v", result)
 			}
@@ -1799,6 +1981,7 @@ func TestDefaultBranchReportPathAndValidationGuardrails(t *testing.T) {
 }
 
 func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
 	tests := []struct {
 		name string
 		want string
@@ -1826,16 +2009,23 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			original := defaultBranchRead
-			t.Cleanup(func() { defaultBranchRead = original })
+			var (
+				defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+			)
+			engine := &Engine{
+				Git:       &fakeGit{},
+				GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return test.read(endpoint) }
-			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+			result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("untrusted observation = %#v", result)
 			}
 		})
 	}
-	if result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "bad ref", false, false); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
+	if result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "bad ref", false, false); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
 		t.Fatalf("invalid desired branch = %#v", result)
 	}
 }
@@ -2033,8 +2223,18 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 }
 
 func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	old, next := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	workflow, rewritten := "on:\n  push:\n    branches:\n      - master\n", "on:\n  push:\n    branches:\n      - main\n"
 	head, committed, mutations := old, false, 0
@@ -2075,19 +2275,26 @@ func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testin
 		head, committed = next, true
 		return githubobserver.CommandResponse{Stdout: []byte("{\"data\":{\"createCommitOnBranch\":{\"commit\":{\"oid\":\"" + next + "\"}}}}")}
 	}
-	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
+	planned := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
 	if planned.Disposition != "drift" || len(planned.WorkflowFiles) != 1 {
 		t.Fatalf("planned=%#v", planned)
 	}
-	got := applyDefaultBranchWorkflowTriggers(context.Background(), planned, func(Repository) error { return nil })
+	got := engine.applyDefaultBranchWorkflowTriggers(context.Background(), planned, func(Repository) error { return nil })
 	if mutations != 1 || got.Disposition != "drift" || got.WorkflowPhase != "verified" || got.WorkflowCommit != next || got.OldHead != next {
 		t.Fatalf("got=%#v mutations=%d", got, mutations)
 	}
 }
 
 func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
-	originalRead := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = originalRead })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app":
@@ -2098,17 +2305,28 @@ func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	got := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
+	got := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false, true)
 	if got.Disposition != "compliant" || got.Error != "" {
 		t.Fatalf("already-main workflow rewrite = %#v", got)
 	}
 }
 
 func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalWait := defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchRenameWait
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchRenameWait = originalRead, originalExecute, originalConfig, originalWait
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead       func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute    func(ctx context.Context, args ...string) githubobserver.CommandResponse
+		defaultBranchRenameWait func(ctx context.Context, d time.Duration) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{waitFunc: func(ctx context.Context, d time.Duration) error { return defaultBranchRenameWait(ctx, d) }},
+	}
 	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -2164,7 +2382,7 @@ func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
 			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + joined)}
 		}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, RewriteWorkflowTriggers: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, RewriteWorkflowTriggers: true, Repositories: []string{"acme/app"}, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2174,8 +2392,15 @@ func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
 }
 
 func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T) {
-	original := defaultBranchListRemote
-	t.Cleanup(func() { defaultBranchListRemote = original })
+	var (
+		defaultBranchListRemote func(owner string) ([]discover.Repo, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{listRemoteFunc: func(owner string) ([]discover.Repo, error) { return defaultBranchListRemote(owner) }},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchListRemote = func(owner string) ([]discover.Repo, error) {
 		switch owner {
 		case "broken":
@@ -2186,7 +2411,7 @@ func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T
 			return nil, errors.New("unexpected owner")
 		}
 	}
-	repos, failures, err := discoverDefaultBranchFleet("selected", []string{"broken", "good"}, nil, false, false)
+	repos, failures, err := engine.discoverDefaultBranchFleet("selected", []string{"broken", "good"}, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2199,8 +2424,15 @@ func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T
 }
 
 func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *testing.T) {
-	original := defaultBranchListRemote
-	t.Cleanup(func() { defaultBranchListRemote = original })
+	var (
+		defaultBranchListRemote func(owner string) ([]discover.Repo, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{listRemoteFunc: func(owner string) ([]discover.Repo, error) { return defaultBranchListRemote(owner) }},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchListRemote = func(owner string) ([]discover.Repo, error) {
 		if owner != "large" {
 			return nil, errors.New("unexpected owner")
@@ -2211,7 +2443,7 @@ func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *test
 		}
 		return listed, nil
 	}
-	repos, failures, err := discoverDefaultBranchFleet("", []string{"large"}, nil, false, false)
+	repos, failures, err := engine.discoverDefaultBranchFleet("", []string{"large"}, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2221,8 +2453,15 @@ func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *test
 }
 
 func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
-	original := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = original })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/empty":
@@ -2253,15 +2492,15 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	empty := inspectDefaultBranchWithOptions(context.Background(), repo("acme/empty"), "main", false, false)
+	empty := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/empty"), "main", false, false)
 	if empty.Disposition != "blocked" || !strings.Contains(empty.Error, "empty repository") {
 		t.Fatalf("empty = %#v", empty)
 	}
-	noInitialCommit := inspectDefaultBranchWithOptions(context.Background(), repo("acme/no-initial-commit"), "main", false, false)
+	noInitialCommit := engine.inspectDefaultBranchWithOptions(context.Background(), repo("acme/no-initial-commit"), "main", false, false)
 	if noInitialCommit.Disposition != "blocked" || !strings.Contains(noInitialCommit.Error, "no initial commit") {
 		t.Fatalf("no initial commit = %#v", noInitialCommit)
 	}
-	fork := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
+	fork := engine.inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 	if fork.Disposition != "drift" || len(fork.Impacts) == 0 {
 		t.Fatalf("fork = %#v", fork)
 	}
@@ -2273,8 +2512,15 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 		"repos/upstream/app/pulls?state=open&head=fork%3Amaster",
 	} {
 		t.Run(blockedEndpoint, func(t *testing.T) {
-			original := defaultBranchRead
-			t.Cleanup(func() { defaultBranchRead = original })
+			var (
+				defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+			)
+			engine := &Engine{
+				Git:       &fakeGit{},
+				GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch endpoint {
 				case "repos/fork/app":
@@ -2292,7 +2538,7 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 					return nil, errors.New("unexpected endpoint " + endpoint)
 				}
 			}
-			result := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
+			result := engine.inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, "open pull request") {
 				t.Fatalf("result = %#v", result)
 			}
@@ -2301,8 +2547,17 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 }
 
 func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T) {
-	original := defaultBranchGit
-	t.Cleanup(func() { defaultBranchGit = original })
+	var (
+		defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	var calls []string
 	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
 		call := strings.Join(args, " ")
@@ -2327,7 +2582,7 @@ func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T)
 	repo := Repository{Repository: "acme/app", Desired: "main"}
 	entry := Canonical{Path: "/canonical", Disposition: "blocked"}
 	checkpoints := 0
-	if err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "abc", func() error { checkpoints++; return nil }); err != nil {
+	if err := engine.reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "abc", func() error { checkpoints++; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if entry.Disposition != "compliant" || len(entry.Actions) != 1 || checkpoints != 2 {
@@ -2384,8 +2639,18 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived := false
 	mutations := 0
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -2406,7 +2671,7 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 		archived = true
 		return githubobserver.CommandResponse{}
 	}
-	report, err := Run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2425,7 +2690,7 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	if _, err := Run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository ID") {
+	if _, err := engine.run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository ID") {
 		t.Fatalf("wrong ID restore err = %v", err)
 	}
 	if mutations != 0 {
@@ -2434,8 +2699,18 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	mutations := 0
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -2452,15 +2727,25 @@ func TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive(t *testing.T
 		return githubobserver.CommandResponse{}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if result.Disposition != "blocked" || !strings.Contains(result.Error, "repository ID") || mutations != 0 {
 		t.Fatalf("unsafe unarchive = %#v mutations=%d", result, mutations)
 	}
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived := true
 	mutations := []string{}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -2500,15 +2785,25 @@ func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
 		}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if !archived || len(mutations) != 3 || result.Archive.Phase != "restored" || result.Archive.RecoveryRequired || result.Disposition != "error" {
 		t.Fatalf("failed migration did not restore archive: %#v mutations=%v", result, mutations)
 	}
 }
 
 func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived, branch := true, "master"
 	old, child := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	head, workflowDone, renameFailed := old, false, false
@@ -2571,7 +2866,7 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 		return githubobserver.CommandResponse{}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: old, Disposition: "drift", WorkflowFiles: []Workflow{{Path: ".github/workflows/ci.yml"}}, Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: old, Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if !archived || branch != "main" || !workflowDone || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != child || len(mutations) != 4 {
 		t.Fatalf("archived workflow migration = %#v mutations=%v", result, mutations)
 	}
@@ -2581,15 +2876,25 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 	renameFailed, archived, branch = true, true, "master"
 	head, workflowDone, mutations = old, false, nil
 	repository.Archive = &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: old, Phase: "prepared"}
-	result = applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result = engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if !archived || !workflowDone || result.Archive.Phase != "restored" || result.Disposition != "error" || len(mutations) != 4 || !strings.Contains(mutations[3], "archived=true") {
 		t.Fatalf("failed post-workflow rename did not restore archive: %#v mutations=%v", result, mutations)
 	}
 }
 
 func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived, branch := true, "master"
 	mutations := []string{}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -2626,15 +2931,25 @@ func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
 		return githubobserver.CommandResponse{}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NewHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TargetExists: true, Disposition: "drift", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if !archived || branch != "main" || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || len(mutations) != 3 {
 		t.Fatalf("same-head archived migration = %#v mutations=%v", result, mutations)
 	}
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	mutations := []string{}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -2658,15 +2973,22 @@ func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
 		return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if result.Archive.Phase != "restored" || result.Archive.RecoveryRequired || result.Disposition != "error" || len(mutations) != 2 || !strings.Contains(mutations[1], "archived=true") {
 		t.Fatalf("unarchive failure restore = %#v mutations=%v", result, mutations)
 	}
 }
 
 func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
-	originalRead := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = originalRead })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	transition := &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	for name, test := range map[string]struct {
 		metadata defaultBranchRepoMetadata
@@ -2685,7 +3007,7 @@ func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
 				}
 				return []byte(`{"commit":{"sha":"` + test.head + `"}}`), nil
 			}
-			if err := validatePlannedArchivedDefaultBranch(context.Background(), test.metadata, "acme/app", transition); err == nil || !strings.Contains(err.Error(), test.want) {
+			if err := engine.validatePlannedArchivedDefaultBranch(context.Background(), test.metadata, "acme/app", transition); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("planned archive validation err = %v, want %q", err, test.want)
 			}
 		})
@@ -2693,20 +3015,31 @@ func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		return nil, errors.New("branch unavailable: " + endpoint)
 	}
-	if err := validatePlannedArchivedDefaultBranch(context.Background(), defaultBranchRepoMetadata{ID: 77, Archived: true, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "read planned") {
+	if err := engine.validatePlannedArchivedDefaultBranch(context.Background(), defaultBranchRepoMetadata{ID: 77, Archived: true, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "read planned") {
 		t.Fatalf("planned head read err = %v", err)
 	}
 }
 
 func TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint(t *testing.T) {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
 	base := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	if result := applyArchivedDefaultBranch(context.Background(), Repository{Repository: "acme/app"}, func(Repository) error { return nil }); result.Disposition != "blocked" || !strings.Contains(result.Error, "stable") {
+	if result := engine.applyArchivedDefaultBranch(context.Background(), Repository{Repository: "acme/app"}, func(Repository) error { return nil }); result.Disposition != "blocked" || !strings.Contains(result.Error, "stable") {
 		t.Fatalf("missing archive proof = %#v", result)
 	}
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine = &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, _ string) ([]byte, error) { return nil, errors.New("metadata unavailable") }
-	if result := applyArchivedDefaultBranch(context.Background(), base, func(Repository) error { return nil }); result.Disposition != "error" || !strings.Contains(result.Error, "refresh archived") {
+	if result := engine.applyArchivedDefaultBranch(context.Background(), base, func(Repository) error { return nil }); result.Disposition != "error" || !strings.Contains(result.Error, "refresh archived") {
 		t.Fatalf("metadata failure = %#v", result)
 	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -2724,14 +3057,24 @@ func TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint(t *testing.T) 
 		mutations++
 		return githubobserver.CommandResponse{}
 	}
-	if result := applyArchivedDefaultBranch(context.Background(), base, func(Repository) error { return errors.New("disk full") }); result.Disposition != "error" || !strings.Contains(result.Error, "persist pending") || mutations != 0 {
+	if result := engine.applyArchivedDefaultBranch(context.Background(), base, func(Repository) error { return errors.New("disk full") }); result.Disposition != "error" || !strings.Contains(result.Error, "persist pending") || mutations != 0 {
 		t.Fatalf("pre-mutation checkpoint failure = %#v mutations=%d", result, mutations)
 	}
 }
 
 func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, _ string) ([]byte, error) { return nil, errors.New("metadata unavailable") }
 	mutations, checkpoints := 0, []Repository{}
 	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
@@ -2739,7 +3082,7 @@ func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T
 		return githubobserver.CommandResponse{}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
-	result := restoreArchivedDefaultBranch(context.Background(), repository, func(updated Repository) error {
+	result := engine.restoreArchivedDefaultBranch(context.Background(), repository, func(updated Repository) error {
 		checkpoints = append(checkpoints, updated)
 		return nil
 	})
@@ -2749,8 +3092,18 @@ func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived := true
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -2774,7 +3127,7 @@ func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailu
 	}
 	checkpoints := 0
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error {
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error {
 		checkpoints++
 		if checkpoints == 2 {
 			return errors.New("receipt disk full")
@@ -2787,8 +3140,18 @@ func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailu
 }
 
 func TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived, reads, mutations := true, 0, 0
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -2814,15 +3177,25 @@ func TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange(t *testing
 		return githubobserver.CommandResponse{Err: errors.New("must not rearchive a changed repository")}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
-	result := applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result := engine.applyArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if mutations != 1 || result.Archive.Phase != "failed" || !result.Archive.RecoveryRequired || !strings.Contains(result.Error, "repository ID changed") {
 		t.Fatalf("post-unarchive identity change = %#v mutations=%d", result, mutations)
 	}
 }
 
 func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived := false
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
@@ -2840,7 +3213,7 @@ func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *t
 	}
 	checkpoints := 0
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "compliant", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
-	result := restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error {
+	result := engine.restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error {
 		checkpoints++
 		if checkpoints == 2 {
 			return errors.New("final receipt write failed")
@@ -2853,10 +3226,20 @@ func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *t
 }
 
 func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
@@ -2898,7 +3281,7 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 		}
 		return githubobserver.CommandResponse{}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, TemporarilyUnarchive: true, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, TemporarilyUnarchive: true, Parallel: 1, ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2913,7 +3296,8 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 }
 
 func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T) {
-	if _, err := Run(context.Background(), "", "", Options{RestoreArchiveFrom: "missing.json", RestoreArchiveSHA256: "bad"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
+	if _, err := engine.run(context.Background(), "", "", Options{RestoreArchiveFrom: "missing.json", RestoreArchiveSHA256: "bad"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
 		t.Fatalf("invalid digest err = %v", err)
 	}
 	prior := Report{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []Repository{{Repository: "acme/app", RepositoryID: 77, Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}
@@ -2925,19 +3309,20 @@ func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), "", "", Options{Repositories: []string{"acme/missing"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no archived") {
+	if _, err := engine.run(context.Background(), "", "", Options{Repositories: []string{"acme/missing"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no archived") {
 		t.Fatalf("wrong repository err = %v", err)
 	}
 	reportDir := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(reportDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), "", "", Options{Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: reportDir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := engine.run(context.Background(), "", "", Options{Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: reportDir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("unwritable report directory err = %v", err)
 	}
 }
 
 func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
 	missing := filepath.Join(t.TempDir(), "missing.json")
 	if _, err := readDefaultBranchArchiveRestoreReport(missing, strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "read") {
 		t.Fatalf("missing receipt err = %v", err)
@@ -2950,7 +3335,7 @@ func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
 		t.Fatalf("changed receipt err = %v", err)
 	}
 	transition := &Archive{RepositoryID: 77, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-	if err := validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 78, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "repository ID") {
+	if err := engine.validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 78, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "repository ID") {
 		t.Fatalf("wrong restore target ID err = %v", err)
 	}
 	report := Report{ReportPath: filepath.Join(t.TempDir(), "missing", "receipt.json"), Repositories: []Repository{{Repository: "acme/app", Archive: transition}}}
@@ -2958,14 +3343,24 @@ func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
 		t.Fatal("failed receipt persistence was accepted")
 	}
 	unchanged := Repository{Repository: "acme/app"}
-	if got := restoreArchivedDefaultBranch(context.Background(), unchanged, func(Repository) error { return errors.New("must not checkpoint") }); got.Repository != unchanged.Repository || got.Archive != nil || got.Disposition != unchanged.Disposition || got.Error != unchanged.Error {
+	if got := engine.restoreArchivedDefaultBranch(context.Background(), unchanged, func(Repository) error { return errors.New("must not checkpoint") }); got.Repository != unchanged.Repository || got.Archive != nil || got.Disposition != unchanged.Disposition || got.Error != unchanged.Error {
 		t.Fatalf("nil archive transition changed repository: %#v", got)
 	}
 }
 
 func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *testing.T) {
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	archived := false
 	mutations := 0
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -2987,7 +3382,7 @@ func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *te
 		return githubobserver.CommandResponse{}
 	}
 	repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "error", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
-	result := restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return errors.New("disk full") })
+	result := engine.restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return errors.New("disk full") })
 	if mutations != 1 || !archived || result.Archive.Phase != "restored" || result.Disposition != "error" || !strings.Contains(result.Error, "persist verified") {
 		t.Fatalf("checkpoint failure did not attempt durable restore: %#v mutations=%d", result, mutations)
 	}
@@ -2999,7 +3394,7 @@ func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *te
 		}
 		return nil, errors.New("unexpected endpoint " + endpoint)
 	}
-	result = restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
+	result = engine.restoreArchivedDefaultBranch(context.Background(), repository, func(Repository) error { return nil })
 	if mutations != 0 || result.Archive.Phase != "failed" || !strings.Contains(result.Error, "repository ID changed") {
 		t.Fatalf("changed restore identity sent a mutation: %#v mutations=%d", result, mutations)
 	}
@@ -3028,8 +3423,18 @@ func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			var (
+				defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+				defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+			)
+			engine := &Engine{
+				Git: &fakeGit{},
+				GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+					return defaultBranchExecute(ctx, args...)
+				}},
+				Discovery: &fakeDiscovery{},
+				Clock:     &fakeClock{},
+			}
 			repoReads, mutations := 0, 0
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 				if endpoint == "repos/acme/app" {
@@ -3046,7 +3451,7 @@ func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *
 			}
 			persisted := []Repository{}
 			repository := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "error", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
-			result := restoreArchivedDefaultBranch(context.Background(), repository, func(updated Repository) error {
+			result := engine.restoreArchivedDefaultBranch(context.Background(), repository, func(updated Repository) error {
 				persisted = append(persisted, updated)
 				return nil
 			})
@@ -3059,15 +3464,22 @@ func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *
 
 func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *testing.T) {
 	transition := &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FinalHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	originalRead := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = originalRead })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		if endpoint == "repos/acme/app/branches/master" {
 			return []byte(`{"commit":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`), nil
 		}
 		return nil, errors.New("unexpected endpoint " + endpoint)
 	}
-	if err := validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 77, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "pair") {
+	if err := engine.validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 77, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "pair") {
 		t.Fatalf("cross-paired restore state was accepted: %v", err)
 	}
 
@@ -3090,7 +3502,7 @@ func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *tes
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	report, err := Run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
 	if err == nil || report.Repositories[0].Archive.Phase != "failed" || !report.Repositories[0].Archive.RecoveryRequired {
 		t.Fatalf("unsafe restore refusal was not durably recorded: %#v err=%v", report, err)
 	}
@@ -3151,8 +3563,18 @@ func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
-	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	for name, archived := range map[string]bool{"already archived": true, "mutation failure": false} {
 		t.Run(name, func(t *testing.T) {
 			mutations := 0
@@ -3170,7 +3592,7 @@ func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure
 				mutations++
 				return githubobserver.CommandResponse{Err: errors.New("network dropped")}
 			}
-			report, runErr := Run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
+			report, runErr := engine.run(context.Background(), "", "", Options{Apply: true, Repositories: []string{"acme/app"}, RestoreArchiveFrom: path, RestoreArchiveSHA256: defaultBranchDigest(raw), ReportDir: t.TempDir()}, &bytes.Buffer{})
 			if archived {
 				if runErr != nil || mutations != 0 || report.Repositories[0].Archive.Phase != "restored" || report.Repositories[0].Disposition != "compliant" {
 					t.Fatalf("already archived report = %#v err=%v mutations=%d", report, runErr, mutations)
@@ -3303,10 +3725,29 @@ func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *te
 }
 
 func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead             func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute          func(ctx context.Context, args ...string) githubobserver.CommandResponse
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	projectsRoot := t.TempDir()
 	clone := filepath.Join(projectsRoot, "acme", "app")
@@ -3371,7 +3812,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: path, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: path, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3396,7 +3837,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 				t.Fatal(err)
 			}
 			calls, mutations = nil, 0
-			blocked, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: candidatePath, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			blocked, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: candidatePath, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3408,8 +3849,15 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 }
 
 func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testing.T) {
-	original := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = original })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	current := Repository{Repository: "acme/app", Disposition: "compliant", ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha}
 	prior := &Report{SchemaVersion: 1, Mode: "apply", Repositories: []Repository{{
@@ -3423,7 +3871,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 		}
 		return nil, errors.New("HTTP 404")
 	}
-	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 1 {
+	if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 1 {
 		t.Fatalf("legacy resume = %q %q %q reads=%d", source, head, reason, reads)
 	}
 	responsePending := *prior
@@ -3432,7 +3880,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 	responsePending.Repositories[0].Disposition = "error"
 	responsePending.Repositories[0].Error = "read renamed target branch: context deadline exceeded"
 	reads = 0
-	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &responsePending, current); source != "master" || head != sha || reason != "" || reads != 1 {
+	if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), &responsePending, current); source != "master" || head != sha || reason != "" || reads != 1 {
 		t.Fatalf("pending response resume = %q %q %q reads=%d", source, head, reason, reads)
 	}
 	for name, mutate := range map[string]func(*Report, *Repository){
@@ -3454,7 +3902,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 			candidateCurrent := current
 			mutate(&candidateReport, &candidateCurrent)
 			reads = 0
-			if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &candidateReport, candidateCurrent); source != "" || head != "" || reason == "" || reads != 0 {
+			if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), &candidateReport, candidateCurrent); source != "" || head != "" || reason == "" || reads != 0 {
 				t.Fatalf("forged legacy resume = %q %q %q reads=%d", source, head, reason, reads)
 			}
 		})
@@ -3465,7 +3913,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 		}
 		return []byte(`{"ref":"refs/heads/master"}`), nil
 	}
-	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "old source ref still exists") {
+	if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "old source ref still exists") {
 		t.Fatalf("present old ref was accepted: %q %q %q", source, head, reason)
 	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -3474,10 +3922,10 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 		}
 		return nil, errors.New("HTTP 503")
 	}
-	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "could not prove") {
+	if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "could not prove") {
 		t.Fatalf("unavailable old ref proof was accepted: %q %q %q", source, head, reason)
 	}
-	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &Report{SchemaVersion: 1, Mode: "apply"}, current); source != "" || head != "" || !strings.Contains(reason, "no applied") {
+	if source, head, reason := engine.defaultBranchLegacyRenameResume(context.Background(), &Report{SchemaVersion: 1, Mode: "apply"}, current); source != "" || head != "" || !strings.Contains(reason, "no applied") {
 		t.Fatalf("missing legacy receipt record was accepted: %q %q %q", source, head, reason)
 	}
 	if validDefaultBranchCommit(strings.Repeat("g", 40)) {
@@ -3486,10 +3934,20 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 }
 
 func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, ConfigPath
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath = originalRead, originalExecute, originalConfig
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead    func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute func(ctx context.Context, args ...string) githubobserver.CommandResponse
+	)
+	engine := &Engine{
+		Git: &fakeGit{},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	ConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
 	sha := "0123456789abcdef0123456789abcdef01234567"
@@ -3541,7 +3999,7 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 				t.Fatal(err)
 			}
 			mutations = 0
-			report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: path, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: path, ReconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3553,10 +4011,29 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 }
 
 func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
-	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
-	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, ConfigPath, defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach
-	})
+	originalConfigPath := ConfigPath
+	t.Cleanup(func() { ConfigPath = originalConfigPath })
+	var (
+		defaultBranchRead             func(ctx context.Context, endpoint string) ([]byte, error)
+		defaultBranchExecute          func(ctx context.Context, args ...string) githubobserver.CommandResponse
+		defaultBranchGit              func(ctx context.Context, dir string, args ...string) (string, error)
+		defaultBranchAtomicRenameRefs func(ctx context.Context, dir, source, destination, expected string) error
+		defaultBranchAttachHead       func(ctx context.Context, dir, destination string) error
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}, atomicRenameRefsFunc: func(ctx context.Context, dir, source, destination, expected string) error {
+			return defaultBranchAtomicRenameRefs(ctx, dir, source, destination, expected)
+		}, attachHeadFunc: func(ctx context.Context, dir, destination string) error {
+			return defaultBranchAttachHead(ctx, dir, destination)
+		}},
+		GitHub: &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }, executeFunc: func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+			return defaultBranchExecute(ctx, args...)
+		}},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
 	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { return nil }
 	projectsRoot := t.TempDir()
@@ -3613,7 +4090,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 			return "", errors.New("unexpected git " + call)
 		}
 	}
-	report, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: priorPath, ReconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
+	report, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: priorPath, ReconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3645,7 +4122,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 	}
 	remoteHead = "0123456789abcdef0123456789abcdef01234567"
 	calls = nil
-	recovered, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: legacyPath, ReconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
+	recovered, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: legacyPath, ReconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3666,7 +4143,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 		return githubobserver.CommandResponse{Err: errors.New("unexpected remote mutation")}
 	}
 	calls = nil
-	secondHop, err := Run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: secondPath, ReconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
+	secondHop, err := engine.run(context.Background(), projectsRoot, "", Options{Apply: true, Repositories: []string{"acme/app"}, Branch: "main", Parallel: 1, ReportDir: t.TempDir(), ReconcileFrom: secondPath, ReconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3676,8 +4153,17 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 }
 
 func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testing.T) {
-	originalGit := defaultBranchGit
-	t.Cleanup(func() { defaultBranchGit = originalGit })
+	var (
+		defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	projectsRoot := t.TempDir()
 	githubClone := filepath.Join(projectsRoot, "acme", "app")
 	legacyMirror := filepath.Join(projectsRoot, "other", "app")
@@ -3706,7 +4192,7 @@ func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testi
 			return "", errors.New("cross-forge clone should not be queried")
 		}
 	}
-	clones, err := defaultBranchLocalClones(projectsRoot, "")
+	clones, err := engine.defaultBranchLocalClones(projectsRoot, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3722,13 +4208,22 @@ func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testi
 }
 
 func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedOrigin(t *testing.T) {
-	originalGit := defaultBranchGit
-	t.Cleanup(func() { defaultBranchGit = originalGit })
-	if clones, err := defaultBranchLocalClones("", ""); err != nil || len(clones.Eligible) != 0 || len(clones.Blocked) != 0 {
+	var (
+		defaultBranchGit func(ctx context.Context, dir string, args ...string) (string, error)
+	)
+	engine := &Engine{
+		Git: &fakeGit{runFunc: func(ctx context.Context, dir string, args ...string) (string, error) {
+			return defaultBranchGit(ctx, dir, args...)
+		}},
+		GitHub:    &fakeGitHub{},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
+	if clones, err := engine.defaultBranchLocalClones("", ""); err != nil || len(clones.Eligible) != 0 || len(clones.Blocked) != 0 {
 		t.Fatalf("empty projects root = %#v err=%v", clones, err)
 	}
 	missingRoot := filepath.Join(t.TempDir(), "missing")
-	if _, err := defaultBranchLocalClones(missingRoot, ""); err == nil || !strings.Contains(err.Error(), "scan local canonical clones") {
+	if _, err := engine.defaultBranchLocalClones(missingRoot, ""); err == nil || !strings.Contains(err.Error(), "scan local canonical clones") {
 		t.Fatalf("unavailable projects root was accepted: %v", err)
 	}
 	projectsRoot := t.TempDir()
@@ -3742,7 +4237,7 @@ func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedO
 		}
 		return "https://github.com/acme/too/many/segments", nil
 	}
-	clones, err := defaultBranchLocalClones(projectsRoot, "")
+	clones, err := engine.defaultBranchLocalClones(projectsRoot, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3752,6 +4247,7 @@ func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedO
 }
 
 func TestDefaultBranchConfigAndExactScopeRejectMalformedInputs(t *testing.T) {
+	engine := &Engine{Git: &fakeGit{}, GitHub: &fakeGitHub{}, Discovery: &fakeDiscovery{}, Clock: &fakeClock{}}
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(path, []byte("fleet: ["), 0o600); err != nil {
 		t.Fatal(err)
@@ -3759,14 +4255,21 @@ func TestDefaultBranchConfigAndExactScopeRejectMalformedInputs(t *testing.T) {
 	if _, err := loadDefaultBranchConfig(path); err == nil || !strings.Contains(err.Error(), "parse WB config") {
 		t.Fatalf("malformed config was accepted: %v", err)
 	}
-	if _, _, err := discoverDefaultBranchFleet("", nil, []string{"acme/app/extra"}, false, false); err == nil || !strings.Contains(err.Error(), "invalid --repo") {
+	if _, _, err := engine.discoverDefaultBranchFleet("", nil, []string{"acme/app/extra"}, false, false); err == nil || !strings.Contains(err.Error(), "invalid --repo") {
 		t.Fatalf("malformed exact repository scope was accepted: %v", err)
 	}
 }
 
 func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
-	original := defaultBranchRead
-	t.Cleanup(func() { defaultBranchRead = original })
+	var (
+		defaultBranchRead func(ctx context.Context, endpoint string) ([]byte, error)
+	)
+	engine := &Engine{
+		Git:       &fakeGit{},
+		GitHub:    &fakeGitHub{readFunc: func(ctx context.Context, endpoint string) ([]byte, error) { return defaultBranchRead(ctx, endpoint) }},
+		Discovery: &fakeDiscovery{},
+		Clock:     &fakeClock{},
+	}
 	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		switch endpoint {
 		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
@@ -3781,7 +4284,7 @@ func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
 		}
 	}
 	result := Repository{Repository: "acme/app"}
-	if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err != nil {
+	if err := engine.defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err != nil {
 		t.Fatalf("whitespace empty rules array blocked migration: %v", err)
 	}
 }

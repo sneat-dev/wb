@@ -151,3 +151,138 @@ func TestClientFetchWrapsAFailureAsGitError(t *testing.T) {
 		t.Fatalf("err = %v, want a *GitError", err)
 	}
 }
+
+func TestClientRunTrimsAndReturnsStdout(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "status", "--porcelain"}, runner.Result{Stdout: "M file.go\n"}, nil)
+
+	out, err := New(fake).Run(context.Background(), "/repo", "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "M file.go" {
+		t.Fatalf("out = %q", out)
+	}
+}
+
+func TestClientRunWrapsAFailureAsGitError(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "status"}, runner.Result{Stderr: "not a git repository"}, errors.New("exit status 128"))
+
+	_, err := New(fake).Run(context.Background(), "/repo", "status")
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) {
+		t.Fatalf("err = %v, want a *GitError", err)
+	}
+}
+
+func TestClientAtomicRenameRefsSucceeds(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "checkout", "--detach", "sha"}, runner.Result{}, nil)
+	fake.Expect(func(c runnertest.Call) bool {
+		return c.Op == "RunStdin" && c.Name == "git" && c.Args[0] == "update-ref" && c.Args[1] == "--stdin" &&
+			c.Stdin == "start\ncreate refs/heads/main sha\ndelete refs/heads/master sha\nprepare\ncommit\n"
+	}, runner.Result{}, nil)
+
+	if err := New(fake).AtomicRenameRefs(context.Background(), "/repo", "master", "main", "sha"); err != nil {
+		t.Fatalf("AtomicRenameRefs: %v", err)
+	}
+}
+
+func TestClientAtomicRenameRefsReportsADetachFailureNamingSource(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "checkout", "--detach", "sha"}, runner.Result{Stderr: "unknown revision"}, errors.New("exit status 128"))
+
+	err := New(fake).AtomicRenameRefs(context.Background(), "/repo", "master", "main", "sha")
+	if err == nil {
+		t.Fatal("want an error for a failed detach")
+	}
+	if got, want := err.Error(), "detach HEAD at verified master: exit status 128: unknown revision"; got != want {
+		t.Fatalf("err = %q, want %q", got, want)
+	}
+}
+
+func TestClientAtomicRenameRefsReportsATransactionFailureNamingBothBranches(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "checkout", "--detach", "sha"}, runner.Result{}, nil)
+	fake.Expect(func(c runnertest.Call) bool { return c.Op == "RunStdin" }, runner.Result{Stderr: "stale ref"}, errors.New("exit status 1"))
+
+	err := New(fake).AtomicRenameRefs(context.Background(), "/repo", "master", "main", "sha")
+	if err == nil {
+		t.Fatal("want an error for a failed transaction")
+	}
+	if got, want := err.Error(), "atomically rename local master to main at sha: exit status 1: stale ref"; got != want {
+		t.Fatalf("err = %q, want %q", got, want)
+	}
+}
+
+func TestClientAttachHeadSucceeds(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "symbolic-ref", "HEAD", "refs/heads/main"}, runner.Result{}, nil)
+
+	if err := New(fake).AttachHead(context.Background(), "/repo", "main"); err != nil {
+		t.Fatalf("AttachHead: %v", err)
+	}
+}
+
+func TestClientAttachHeadReportsAFailureNamingDestination(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "symbolic-ref", "HEAD", "refs/heads/main"}, runner.Result{Stderr: "cannot lock ref"}, errors.New("exit status 1"))
+
+	err := New(fake).AttachHead(context.Background(), "/repo", "main")
+	if err == nil {
+		t.Fatal("want an error for a failed attach")
+	}
+	if got, want := err.Error(), "attach HEAD to renamed local main: exit status 1: cannot lock ref"; got != want {
+		t.Fatalf("err = %q, want %q", got, want)
+	}
+}
+
+func TestClientRefExistsReturnsTrueOnSuccess(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"}, runner.Result{}, nil)
+
+	ok, err := New(fake).RefExists(context.Background(), "/repo", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("RefExists: %v", err)
+	}
+	if !ok {
+		t.Fatal("want true")
+	}
+}
+
+func TestClientRefExistsReturnsFalseOnExitStatus1(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"}, runner.Result{ExitCode: 1}, errors.New("exit status 1"))
+
+	ok, err := New(fake).RefExists(context.Background(), "/repo", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("RefExists: %v", err)
+	}
+	if ok {
+		t.Fatal("want false")
+	}
+}
+
+func TestClientRefExistsReportsAnAmbiguousFailureOmittingQuietFromTheMessage(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"}, runner.Result{ExitCode: 128, Stderr: "not a git repository"}, errors.New("exit status 128"))
+
+	ok, err := New(fake).RefExists(context.Background(), "/repo", "refs/heads/main")
+	if ok {
+		t.Fatal("want false alongside the error")
+	}
+	if got, want := err.Error(), "git rev-parse --verify refs/heads/main: exit status 128: not a git repository"; got != want {
+		t.Fatalf("err = %q, want %q", got, want)
+	}
+}

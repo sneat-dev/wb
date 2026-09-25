@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/process"
 )
@@ -27,6 +28,23 @@ func (Real) Run(ctx context.Context, dir, name string, args ...string) (Result, 
 	}
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
+	return result, runErr
+}
+
+// RunStdin behaves like Run but writes stdin to the started process's
+// standard input before it is read.
+func (Real) RunStdin(ctx context.Context, dir, name, stdin string, args ...string) (Result, error) {
+	if err := guardRealProcess(); err != nil {
+		return Result{}, err
+	}
+	command := process.CommandContext(ctx, name, args...)
+	command.Dir = dir
+	command.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

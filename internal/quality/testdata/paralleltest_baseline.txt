@@ -260,10 +260,7 @@ internal/defaultbranch::TestArchiveRestoreReceiptFailureEdges	serial pending cas
 internal/defaultbranch::TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestDefaultBranchArchiveRestoreReceiptValidation	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/defaultbranch::TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestDefaultBranchConfigAndExactScopeRejectMalformedInputs	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/defaultbranch::TestDefaultBranchGitHelpersReportExecutionFailures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/defaultbranch::TestDefaultBranchGitRunsAndReportsFailures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord	kept serial because a nested subtest must stay serial: #1
 internal/defaultbranch::TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins	serial pending case-by-case review (sneat-dev/wb#623 baseline)
@@ -319,7 +316,6 @@ internal/defaultbranch::TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndRe
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates	kept serial because a nested subtest must stay serial: #1
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/defaultbranch::TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes	kept serial because a nested subtest must stay serial: #1
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename	serial pending case-by-case review (sneat-dev/wb#623 baseline)

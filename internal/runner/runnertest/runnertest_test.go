@@ -41,6 +41,26 @@ func TestFakeRunReturnsTheScriptedError(t *testing.T) {
 	}
 }
 
+func TestFakeRunStdinReturnsTheScriptedResultAndRecordsStdin(t *testing.T) {
+	t.Parallel()
+	fake := New(t)
+	fake.Expect(func(c Call) bool {
+		return c.Op == "RunStdin" && c.Name == "git" && c.Stdin == "start\ncommit\n"
+	}, runner.Result{Stdout: "done"}, nil)
+
+	result, err := fake.RunStdin(context.Background(), "/repo", "git", "start\ncommit\n", "update-ref", "--stdin")
+	if err != nil {
+		t.Fatalf("RunStdin: %v", err)
+	}
+	if result.Stdout != "done" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "RunStdin" || calls[0].Stdin != "start\ncommit\n" {
+		t.Fatalf("calls = %+v", calls)
+	}
+}
+
 func TestFakeExpectMatchesByPredicateNotJustExactArgv(t *testing.T) {
 	t.Parallel()
 	fake := New(t)
