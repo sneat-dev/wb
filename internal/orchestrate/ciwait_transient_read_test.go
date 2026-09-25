@@ -313,3 +313,46 @@ echo "unexpected gh args: $*" >&2; exit 30
 		t.Fatalf("tree = %q, want %q", tree, "treeshavalue")
 	}
 }
+
+// TestPullRequestCommitParentsSurfacesADecodeError covers
+// pullRequestCommitParents' own json.Unmarshal error return: a `gh api`
+// call that succeeds (exit 0) but returns a body GitHub's own commit schema
+// never produces is a decode failure, not an absent commit, so it must come
+// back as an error rather than an empty parent list.
+//
+//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
+func TestPullRequestCommitParentsSurfacesADecodeError(t *testing.T) {
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/commits/deadbeefcafe' ]; then
+  echo 'not valid json'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	_, err := pullRequestCommitParents(context.Background(), "acme/app", "deadbeefcafe")
+	if err == nil {
+		t.Fatal("err = nil, want a decode error for a body that is not valid JSON")
+	}
+	if !strings.Contains(err.Error(), "decode commit parents") {
+		t.Fatalf("err = %v, want it to name the decode failure", err)
+	}
+}
+
+// TestCommitTreeSHASurfacesADecodeError covers commitTreeSHA's own
+// json.Unmarshal error return, the same shape as the test above.
+//
+//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
+func TestCommitTreeSHASurfacesADecodeError(t *testing.T) {
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/git/commits/deadbeefcafe' ]; then
+  echo 'not valid json'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	_, err := commitTreeSHA(context.Background(), "acme/app", "deadbeefcafe")
+	if err == nil {
+		t.Fatal("err = nil, want a decode error for a body that is not valid JSON")
+	}
+	if !strings.Contains(err.Error(), "decode commit") {
+		t.Fatalf("err = %v, want it to name the decode failure", err)
+	}
+}

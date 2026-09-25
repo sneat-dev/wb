@@ -1272,3 +1272,80 @@ func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFet
 		t.Fatalf("CallCount() = %d, want 2: commitExistsLocally must be called once before the fetch and once after it", got)
 	}
 }
+
+// TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedUpdatedHeadUnitTier
+// covers pr_land_local_sync.go's fastForwardWorktreeToUpdatedHead: once the
+// real `git fetch` for branch succeeds, a fetched head that disagrees with
+// the caller's updatedHead must be reported rather than silently
+// fast-forwarded to the wrong commit. This, and the two tests below, regressed
+// to uncovered in the unit tier the same way as this file's proof-retry test
+// above: every one of this function's own unit tests moved to the e2e tier
+// when it started resolving its Git port through orchestrateGit
+// (pr_land_local_sync_test.go), even though the fetch/merge steps
+// (worktree_merge.go's mergeRevision, and the runCommand calls in
+// pr_land_local_sync.go itself) still need a real git repository, which
+// newLandFixture already provides.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedUpdatedHeadUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-mismatch", "go.mod")
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-mismatch"}},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-mismatch", "not-the-real-head")
+	if !strings.Contains(note, "does not match updated head") {
+		t.Fatalf("note = %q, want it to name the fetched/updated head mismatch", note)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier
+// covers the same function's diverged-local-commits note: the fetched head
+// matches updatedHead (so the mismatch branch above is bypassed), but the
+// injected Fake's MergeBaseIsAncestorStrict reports the ancestor check
+// failed, exactly as a real diverged local HEAD would.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-diverged", "go.mod")
+	wantErr := errors.New("boom: merge-base --is-ancestor failed")
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-diverged"}},
+		MergeBaseIsAncestorStrictErrByCase: map[string]error{
+			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-diverged": wantErr,
+		},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-diverged", fixture.headSHA)
+	if !strings.Contains(note, "diverged local commits") {
+		t.Fatalf("note = %q, want it to name diverged local commits", note)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier
+// covers the same function's fast-forward-failed note: the mismatch and
+// ancestor checks above are both bypassed (a matching updatedHead and a
+// Fake ancestor check that reports no divergence), but canonical's real
+// checked-out HEAD (still on main, per newLandFixture) carries a genuine
+// local-only commit the pushed feature branch never picked up, so the real
+// `git merge --ff-only` this function issues fails for real.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-fail", "go.mod")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "diverged.txt"), "local only\n")
+	runEngineGit(t, fixture.canonical, "add", "-A")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "local divergent commit")
+
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-fail"}},
+		MergeBaseIsAncestorStrictErrByCase: map[string]error{
+			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-fail": nil,
+		},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, fixture.canonical, "feature/ff-fail", fixture.headSHA)
+	if !strings.Contains(note, "fast-forward failed") {
+		t.Fatalf("note = %q, want it to name the fast-forward failure", note)
+	}
+}

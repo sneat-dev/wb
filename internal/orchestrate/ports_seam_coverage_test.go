@@ -195,6 +195,70 @@ func TestFastForwardWorktreeToUpdatedHeadNotesUncommittedChanges(t *testing.T) {
 	}
 }
 
+// TestSyncLocalWorktreeAfterUpdateBranchReturnsEmptyWhenTheCanonicalPathFails
+// covers syncLocalWorktreeAfterUpdateBranch's own early guard
+// (pr_land_local_sync.go): an unresolvable repository address must not be
+// reported as a landing obstacle -- neither this call's to make, the way
+// the function's own doc comment describes every failure downstream of it.
+func TestSyncLocalWorktreeAfterUpdateBranchReturnsEmptyWhenTheCanonicalPathFails(t *testing.T) {
+	t.Parallel()
+	note := syncLocalWorktreeAfterUpdateBranch(context.Background(), PullRequestLandOptions{
+		ProjectsRoot: t.TempDir(), Repository: "not-a-valid-repository-address",
+	}, "some-branch", "deadbeef")
+	if note != "" {
+		t.Fatalf("note = %q, want empty when the repository address cannot resolve to a canonical path", note)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadReturnsEmptyForABlankWorktree covers
+// fastForwardWorktreeToUpdatedHead's own blank-worktree guard
+// (pr_land_local_sync.go), the same regressed-by-an-e2e-tier-move shape as
+// the uncommitted-changes test above.
+func TestFastForwardWorktreeToUpdatedHeadReturnsEmptyForABlankWorktree(t *testing.T) {
+	t.Parallel()
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), &gitclitest.Fake{}, "   ", "branch", "head")
+	if note != "" {
+		t.Fatalf("note = %q, want empty for a blank worktree", note)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadPropagatesABranchShowCurrentError
+// covers the same function's BranchShowCurrent error-propagation branch,
+// reached through an injected gitclitest.Fake exactly like
+// TestFastForwardWorktreeToUpdatedHeadNotesUncommittedChanges above, but
+// directly rather than through syncLocalWorktreeAfterUpdateBranch's real
+// worktree lookup -- no real worktree registration is needed to prove this
+// one Git-port error return.
+func TestFastForwardWorktreeToUpdatedHeadPropagatesABranchShowCurrentError(t *testing.T) {
+	t.Parallel()
+	const worktree = "/fake/worktree"
+	wantErr := errors.New("boom: branch show-current failed")
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{worktree: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{worktree: {Err: wantErr}},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, worktree, "branch", "head")
+	if !strings.Contains(note, wantErr.Error()) {
+		t.Fatalf("note = %q, want it to contain %q", note, wantErr.Error())
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesHeadIsNotOnTheBranch covers the
+// same function's branch-mismatch note, the same shape as the two tests
+// above.
+func TestFastForwardWorktreeToUpdatedHeadNotesHeadIsNotOnTheBranch(t *testing.T) {
+	t.Parallel()
+	const worktree = "/fake/worktree"
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{worktree: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{worktree: {Value: "other-branch"}},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, worktree, "expected-branch", "head")
+	if !strings.Contains(note, "HEAD is not on expected-branch") {
+		t.Fatalf("note = %q, want it to name the branch mismatch", note)
+	}
+}
+
 // TestResolveReviewProofCheckoutFindsARegisteredWorktreeForTheHeadBranch
 // covers resolveReviewProofCheckout's registered-worktree branch
 // (pr_review_stale.go): also regressed to uncovered in the unit tier by an
