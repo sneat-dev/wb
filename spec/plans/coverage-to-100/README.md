@@ -93,11 +93,11 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 21. **Integration branch.** Asked whether the coverage programme's PRs should land in an integration branch, which then lands in main in batches, the founder answered "Yes, let's use integration branch". The coordinator had proposed this because `main` requires PR branches to be up to date. Every landing made each other open PR stale and cost it another ~17-minute CI run. The coordinator also named the costs: a large PR into main, and refactors that sit off main for up to a day.
     - The founder then asked: "We don't need pr to merge into integration branch, right? We can merge and test locally?" So lanes open no PRs. A lane branches from `cov/integration`, and before handing over it runs its own packages' tests and a coverage check on the VM.
     - An adversarial reviewer reads the lane branch's diff against `cov/integration` and records `Reviewed-Head`, just as for a PR.
-    - The coordinator merges an approved lane branch into `cov/integration` locally, with a merge commit, and pushes it. Every push to `cov/integration` runs the full go-ci suite on GitHub's runners. The coordinator pushes one lane per merge, so a red run points at that lane.
-    - A red `cov/integration` run is fixed forward before the next lane merges. Decision 13 still applies: no retries as flake fixes.
-    - The per-change ratchet runs only on pull requests. On this branch it therefore runs once per batch, on the PR from `cov/integration` into `main`.
+    - The founder added: "You can have a single PR on the integration branch into main and track it stays green. So we test feature branches locally and integration branch after merge and push in CI PR workflow". So one standing PR runs from `cov/integration` into `main`.
+    - The coordinator merges an approved lane branch into `cov/integration` locally, with a merge commit, and pushes it. Each push runs that PR's full go-ci workflow on GitHub's runners, per-change ratchet against main included. The coordinator pushes one lane per merge, so a red run points at that lane.
+    - The coordinator keeps the PR green. A red run is fixed forward before the next lane merges, and decision 13 still applies: no retries as flake fixes.
     - The coordinator merges `origin/main` into `cov/integration` at least daily.
-    - The coordinator also lands `cov/integration` in `main` through one PR, at least daily and at the end of each wave. That PR is a merge commit, reviewed adversarially as a whole, with the full CI and the ratchet against main.
+    - The PR lands through `wb pr land`, with a merge commit and an adversarial review of the whole batch, at least daily and at the end of each wave. A new standing PR then opens from `cov/integration`.
     - A task's plan status becomes complete only once its work is on `main`.
 
 *Plan choices, not founder instructions:*
