@@ -359,3 +359,29 @@ func TestCwWtSubmitWorkerOperationInProcess(t *testing.T) {
 	}
 	_ = time.Now()
 }
+
+// TestCwWtRunAsyncCLIWiresIntoSubmitWorkerOperation proves the RunE branch
+// that threads --async/--worker/--idempotency-key into submitWorkerOperation
+// (run.go:188) is reached from the real cobra command, not just
+// submitWorkerOperation called directly the way
+// TestCwWtSubmitWorkerOperationInProcess exercises it.
+func TestCwWtRunAsyncCLIWiresIntoSubmitWorkerOperation(t *testing.T) {
+	root, deps := cwWtDaemonOpFixture(t)
+	command := newRunCmdWithDaemonDependencies(&invocation{projectsRoot: root}, deps)
+	var out, errOut bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+	command.SetContext(context.Background())
+	args := append([]string{"--async", "--worker", "worker-cwwt-cli", "--idempotency-key", "cwWt-cli-key", "--"}, cwWtDaemonOpHelperArgv()...)
+	command.SetArgs(args)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("run --async: %v (stderr=%s)", err, errOut.String())
+	}
+	var result daemonOperationResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode async run receipt: %v\n%s", err, out.String())
+	}
+	if result.OperationID == "" || result.IdempotencyKey != "cwWt-cli-key" {
+		t.Fatalf("async run receipt = %#v", result)
+	}
+}
