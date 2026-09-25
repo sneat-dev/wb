@@ -60,33 +60,33 @@ func TestCwDepsSyncOwnersRestrictionAndDiscovery(t *testing.T) {
 }
 
 func TestCwDepsRequestedSyncOwnersReadsBothSpellings(t *testing.T) {
-	syncCommand := newSyncCmd()
+	inv := &invocation{}
+	syncCommand := newSyncCmd(inv)
 	// The command-local --org is the first source.
-	if got := requestedSyncOwners(syncCommand, []string{"local-org"}); len(got) != 1 || got[0] != "local-org" {
+	if got := requestedSyncOwners(inv, syncCommand, []string{"local-org"}); len(got) != 1 || got[0] != "local-org" {
 		t.Fatalf("command-local owners = %v", got)
 	}
 	// The root persistent --org appends the root's own selection, because
 	// Cobra advertises both spellings with identical semantics.
 	root := &cobra.Command{Use: "wb"}
 	root.PersistentFlags().StringArray("org", nil, "additional GitHub owner to query")
-	syncCommand = newSyncCmd()
+	syncCommand = newSyncCmd(inv)
 	root.AddCommand(syncCommand)
 	if err := root.PersistentFlags().Set("org", "root-org"); err != nil {
 		t.Fatal(err)
 	}
-	previous := extraOrgs
-	extraOrgs = []string{"root-org"}
-	t.Cleanup(func() { extraOrgs = previous })
-	got := requestedSyncOwners(syncCommand, []string{"local-org"})
+	inv.extraOrgs = []string{"root-org"}
+	got := requestedSyncOwners(inv, syncCommand, []string{"local-org"})
 	if len(got) != 2 || got[0] != "local-org" || got[1] != "root-org" {
 		t.Fatalf("root+local owners = %v", got)
 	}
 	// Without the root flag changed, the root list is not consulted.
+	plainInv := &invocation{}
 	plainRoot := &cobra.Command{Use: "wb"}
 	plainRoot.PersistentFlags().StringArray("org", nil, "additional GitHub owner to query")
-	plainSync := newSyncCmd()
+	plainSync := newSyncCmd(plainInv)
 	plainRoot.AddCommand(plainSync)
-	if got := requestedSyncOwners(plainSync, nil); len(got) != 0 {
+	if got := requestedSyncOwners(plainInv, plainSync, nil); len(got) != 0 {
 		t.Fatalf("unchanged root org leaked owners: %v", got)
 	}
 }
@@ -292,7 +292,7 @@ func TestCwDepsFinishSyncReportsIssuesAndPublishIntent(t *testing.T) {
 		{Repo: discover.Repo{Org: "acme", Name: "ok"}, Status: fleetsync.NoOp},
 		{Repo: discover.Repo{Org: "acme", Name: "bad"}, Status: fleetsync.Failed, Err: errors.New("pull refused")},
 	}
-	if code := finishSync(meta, results, false, true, remoteDeps{}, projects, "", 1, &out, &errOut); code != 1 {
+	if code := finishSync(&invocation{}, meta, results, false, true, remoteDeps{}, projects, "", 1, &out, &errOut); code != 1 {
 		t.Fatalf("finishSync with a failed repository = %d, want 1", code)
 	}
 
@@ -301,7 +301,7 @@ func TestCwDepsFinishSyncReportsIssuesAndPublishIntent(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	clean := []fleetsync.Result{{Repo: discover.Repo{Org: "acme", Name: "ok"}, Status: fleetsync.NoOp}}
-	if code := finishSync(meta, clean, true, true, remoteDeps{}, projects, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(&invocation{}, meta, clean, true, true, remoteDeps{}, projects, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("dry-run publish finishSync = %d, want 0\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "dry-run: skipping remote publish") {
@@ -338,12 +338,9 @@ func TestCwDepsRunSyncReportsFleetState(t *testing.T) {
 	cwCovFakeGH(t, "cwcov-user", []string{"acme"}, `[]`)
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousNonInteractive := nonInteractive
-	nonInteractive = true
-	t.Cleanup(func() { nonInteractive = previousNonInteractive })
 
 	var out, errOut bytes.Buffer
-	code := runSync(context.Background(), projects, "", []string{"cwcov-user", "acme"}, 2, true, false, false,
+	code := runSync(context.Background(), &invocation{nonInteractive: true}, projects, "", []string{"cwcov-user", "acme"}, 2, true, false, false,
 		remoteDeps{}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("dry-run sync exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
@@ -363,17 +360,31 @@ func TestCwDepsRunSyncWithoutRepositoriesSaysSo(t *testing.T) {
 	projects := t.TempDir()
 	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousNonInteractive := nonInteractive
-	nonInteractive = true
-	t.Cleanup(func() { nonInteractive = previousNonInteractive })
 
 	var out, errOut bytes.Buffer
-	if code := runSync(context.Background(), projects, "", []string{"cwcov-user"}, 1, true, false, false,
+	if code := runSync(context.Background(), &invocation{nonInteractive: true}, projects, "", []string{"cwcov-user"}, 1, true, false, false,
 		remoteDeps{}, &out, &errOut); code != 0 {
 		t.Fatalf("empty sync exit = %d\n%s", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "no repos found") {
 		t.Errorf("empty fleet report = %q", out.String())
+	}
+}
+
+// TestCwDepsSyncCommandDispatchesToRunSyncInProcess proves that "wb sync"
+// reaches requestedSyncOwners and runSync through the real command tree,
+// threading its invocation through both, not just through direct unit calls.
+func TestCwDepsSyncCommandDispatchesToRunSyncInProcess(t *testing.T) {
+	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSyncCmd(&invocation{nonInteractive: true}) },
+		"--dry-run")
+	if err != nil {
+		t.Fatalf("wb sync --dry-run: %v\n%s", err, stdout)
+	}
+	if !strings.Contains(stdout, "no repos found") {
+		t.Errorf("empty fleet report = %q", stdout)
 	}
 }
 
@@ -386,12 +397,9 @@ func TestCwDepsRunSyncRefusesBrokenAuthentication(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousNonInteractive := nonInteractive
-	nonInteractive = true
-	t.Cleanup(func() { nonInteractive = previousNonInteractive })
 
 	var out, errOut bytes.Buffer
-	code := runSync(context.Background(), t.TempDir(), "", nil, 1, true, false, false, remoteDeps{}, &out, &errOut)
+	code := runSync(context.Background(), &invocation{nonInteractive: true}, t.TempDir(), "", nil, 1, true, false, false, remoteDeps{}, &out, &errOut)
 	if code != exitFindings {
 		t.Fatalf("broken auth sync exit = %d, want findings\n%s", code, errOut.String())
 	}

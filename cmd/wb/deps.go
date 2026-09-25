@@ -58,21 +58,21 @@ type depsSetOptions struct {
 	campaign         *campaignProgress
 }
 
-func newDepsCmd() *cobra.Command {
+func newDepsCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "deps",
 		Aliases: []string{"dep"},
 		Short:   "Inspect and coordinate dependencies across repositories",
 	}
-	command.AddCommand(newDepsSetCmd())
-	command.AddCommand(newDepsBumpCmd())
-	command.AddCommand(newDepsPublishCmd())
-	command.AddCommand(newDepsGraphCmd())
-	command.AddCommand(newDepsDriftCmd())
+	command.AddCommand(newDepsSetCmd(inv))
+	command.AddCommand(newDepsBumpCmd(inv))
+	command.AddCommand(newDepsPublishCmd(inv))
+	command.AddCommand(newDepsGraphCmd(inv))
+	command.AddCommand(newDepsDriftCmd(inv))
 	command.AddCommand(newDepsPeersCmd())
 	command.AddCommand(newDepsPropagateCmd())
-	command.AddCommand(newDepsPolicyCmd())
-	command.AddCommand(newDepsGoDirectiveCmd())
+	command.AddCommand(newDepsPolicyCmd(inv))
+	command.AddCommand(newDepsGoDirectiveCmd(inv))
 	return command
 }
 
@@ -85,14 +85,14 @@ type depsGraphOptions struct {
 	dependencies                               []string
 }
 
-func newDepsGraphCmd() *cobra.Command {
+func newDepsGraphCmd(inv *invocation) *cobra.Command {
 	options := depsGraphOptions{}
 	command := &cobra.Command{
 		Use:   "graph [repository-path]",
 		Short: "Project dependency evidence as repository, dependency, and version graphs",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps graph")
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps graph")
 			if options.fleet && len(args) == 1 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
@@ -110,7 +110,7 @@ func newDepsGraphCmd() *cobra.Command {
 			if len(args) == 1 {
 				repositoryArgs = append(repositoryArgs, args[0])
 			}
-			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
+			repositories, err := dependencyRepositories(inv, repositoryArgs, depsSetOptions{
 				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
 				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
 				campaign: campaign,
@@ -185,7 +185,7 @@ type depsDriftOptions struct {
 	goPrivate                                []string
 }
 
-func newDepsDriftCmd() *cobra.Command {
+func newDepsDriftCmd(inv *invocation) *cobra.Command {
 	options := depsDriftOptions{}
 	command := &cobra.Command{
 		Use:   "drift [repository-path]",
@@ -222,7 +222,7 @@ non-zero when any repository provably lags a published latest version.
 Inspection errors always exit non-zero after the report.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps drift")
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps drift")
 			if options.fleet && len(args) == 1 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
@@ -239,7 +239,7 @@ Inspection errors always exit non-zero after the report.`,
 			if len(args) == 1 {
 				repositoryArgs = append(repositoryArgs, args[0])
 			}
-			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
+			repositories, err := dependencyRepositories(inv, repositoryArgs, depsSetOptions{
 				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
 				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
 				goPrivate: options.goPrivate, campaign: campaign,
@@ -426,7 +426,7 @@ func writeDepsPeersReport(command *cobra.Command, report deps.PeerReport, format
 	}
 }
 
-func newDepsSetCmd() *cobra.Command {
+func newDepsSetCmd(inv *invocation) *cobra.Command {
 	options := depsSetOptions{}
 	command := &cobra.Command{
 		Use:   "set <ecosystem> <dependency>@<version> [repository-path]",
@@ -460,9 +460,9 @@ func newDepsSetCmd() *cobra.Command {
 			if options.layers, err = deps.ParseLayerSelection(options.layer); err != nil {
 				return err
 			}
-			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps set")
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps set")
 			options.campaign = campaign
-			repositories, err := dependencyRepositories(args, options)
+			repositories, err := dependencyRepositories(inv, args, options)
 			if err != nil {
 				campaign.finish("failed")
 				return err
@@ -477,7 +477,7 @@ func newDepsSetCmd() *cobra.Command {
 					return fmt.Errorf("--propagate is supported only for the go ecosystem; it delegates to deps bump")
 				}
 				events := []deps.ReleaseEvent{{Dependency: target.Dependency, Version: target.Version, Source: "exact_set"}}
-				return runDepsBump(command, deps.EcosystemGo, events, repositories, options, lifecycle)
+				return runDepsBump(inv, command, deps.EcosystemGo, events, repositories, options, lifecycle)
 			}
 			report, runErr := deps.Run(commandExecutionContext(command), target, repositories, lifecycle)
 			if runErr != nil {
@@ -533,7 +533,7 @@ func newDepsSetCmd() *cobra.Command {
 	return command
 }
 
-func newDepsBumpCmd() *cobra.Command {
+func newDepsBumpCmd(inv *invocation) *cobra.Command {
 	options := depsSetOptions{}
 	var changed []string
 	command := &cobra.Command{
@@ -611,13 +611,13 @@ does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
 			if options.latest && len(deps.NormalizeScopes(options.scopes)) == 0 {
 				return fmt.Errorf("--latest derives release events for the modules --scope selects; pass at least one --scope glob, e.g. --scope '@sneat/*'")
 			}
-			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps bump")
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps bump")
 			options.campaign = campaign
 			// Repository selection comes first now: --latest derives its seed
 			// events from the modules the selected repositories actually
 			// declare, so there is nothing to derive from until the selection
 			// exists.
-			repositories, err := dependencyRepositories([]string{args[0], "events"}, options)
+			repositories, err := dependencyRepositories(inv, []string{args[0], "events"}, options)
 			if err != nil {
 				campaign.finish("failed")
 				return err
@@ -628,7 +628,7 @@ does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
 				campaign.finish("failed")
 				return err
 			}
-			return runDepsBump(command, ecosystem, events, repositories, options, lifecycle)
+			return runDepsBump(inv, command, ecosystem, events, repositories, options, lifecycle)
 		},
 	}
 	command.Flags().StringArrayVar(&changed, "changed", nil, "published module@version release event (repeatable)")
@@ -781,8 +781,8 @@ func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.Relea
 	return events, nil
 }
 
-func runDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
-	report, _, runErr := executeDepsBump(command, ecosystem, events, repositories, options, lifecycle)
+func runDepsBump(inv *invocation, command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
+	report, _, runErr := executeDepsBump(inv, command, ecosystem, events, repositories, options, lifecycle)
 	if options.campaign != nil {
 		if runErr != nil {
 			options.campaign.finish("failed")
@@ -803,18 +803,18 @@ func runDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps
 // report to stdout. Composite release commands use this seam to embed the
 // exact same BumpReport alongside provider publication receipts rather than
 // cloning or reimplementing wave orchestration.
-func executeDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) (deps.BumpReport, string, error) {
-	return executeDepsBumpWithRegistryPolicy(command, ecosystem, events, repositories, options, lifecycle, false)
+func executeDepsBump(inv *invocation, command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) (deps.BumpReport, string, error) {
+	return executeDepsBumpWithRegistryPolicy(inv, command, ecosystem, events, repositories, options, lifecycle, false)
 }
 
 // executeDepsBumpWithRegistryPolicy keeps composite commands on the existing
 // wave engine while allowing a publication plan to prove that it did not
 // consult an npm registry before a provider workflow has run.
-func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options, noRegistry bool) (deps.BumpReport, string, error) {
+func executeDepsBumpWithRegistryPolicy(inv *invocation, command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options, noRegistry bool) (deps.BumpReport, string, error) {
 	campaign := options.campaign
 	ownedCampaign := false
 	if campaign == nil {
-		campaign = newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps bump")
+		campaign = newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps bump")
 		ownedCampaign = true
 	}
 	lifecycle.Progress = campaign.reporter()
@@ -898,7 +898,7 @@ func commandExecutionContext(command *cobra.Command) context.Context {
 	return context.Background()
 }
 
-func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repository, error) {
+func dependencyRepositories(inv *invocation, args []string, options depsSetOptions) ([]deps.Repository, error) {
 	if options.parallel < 1 {
 		return nil, fmt.Errorf("parallelism must be at least 1")
 	}
@@ -944,7 +944,7 @@ func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repos
 		progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", Repository: slug, State: progress.Completed, Completed: 1, Total: 1})
 		return []deps.Repository{{Slug: slug, Path: absolute, CloneURL: cloneURL}}, nil
 	}
-	selected, err := fleet(projectsRoot, filterFlag, func() []string { return fleetOwners(extraOrgs) })
+	selected, err := fleet(projectsRoot, filterFlag, func() []string { return fleetOwners(inv.extraOrgs) })
 	if err != nil {
 		return nil, err
 	}

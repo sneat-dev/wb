@@ -10,11 +10,8 @@ import (
 )
 
 func TestDashboardOpensHostedURL(t *testing.T) {
-	previous := nonInteractive
-	nonInteractive = false
-	t.Cleanup(func() { nonInteractive = previous })
 	var opened string
-	command := newDashboardCmdWithDependencies(dashboardCommandDependencies{
+	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
 		open: func(target string) error { opened = target; return nil },
 		localURL: func(context.Context, string) (string, string, error) {
 			return "", "", errors.New("unexpected local lookup")
@@ -31,11 +28,8 @@ func TestDashboardOpensHostedURL(t *testing.T) {
 }
 
 func TestDashboardJSONDoesNotOpenBrowser(t *testing.T) {
-	previous := nonInteractive
-	nonInteractive = false
-	t.Cleanup(func() { nonInteractive = previous })
 	opened := false
-	command := newDashboardCmdWithDependencies(dashboardCommandDependencies{
+	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
 		open: func(string) error { opened = true; return nil },
 		localURL: func(context.Context, string) (string, string, error) {
 			return "", "", errors.New("unexpected local lookup")
@@ -57,11 +51,8 @@ func TestDashboardJSONDoesNotOpenBrowser(t *testing.T) {
 }
 
 func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
-	previous := nonInteractive
-	nonInteractive = false
-	t.Cleanup(func() { nonInteractive = previous })
 	var opened, root string
-	command := newDashboardCmdWithDependencies(dashboardCommandDependencies{
+	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
 		open: func(target string) error { opened = target; return nil },
 		localURL: func(_ context.Context, projectsRoot string) (string, string, error) {
 			root = projectsRoot
@@ -82,10 +73,7 @@ func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
 // different binary than this invocation's own (sneat-dev/wb#622 review
 // round 3, item M1).
 func TestDashboardLocalPrintsAProvenanceWarningToStderr(t *testing.T) {
-	previous := nonInteractive
-	nonInteractive = false
-	t.Cleanup(func() { nonInteractive = previous })
-	command := newDashboardCmdWithDependencies(dashboardCommandDependencies{
+	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
 		open: func(string) error { return nil },
 		localURL: func(context.Context, string) (string, string, error) {
 			return "http://127.0.0.1:9000/", "the running supervised daemon's executable does not match this invocation's own binary", nil

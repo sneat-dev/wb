@@ -115,7 +115,7 @@ func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
 }
 
 func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	olderThan := command.Flags().Lookup("older-than")
 	if olderThan == nil || olderThan.DefValue != (24*time.Hour).String() {
 		t.Fatalf("--older-than default = %#v, want %s", olderThan, 24*time.Hour)
@@ -145,7 +145,7 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 }
 
 func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	if err := command.Args(command, []string{"landed-app", "landed-lib"}); err != nil {
 		t.Fatalf("cleanup should accept an exact set of task names: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
 // named task or combined with --all-merged, both of which select worktrees
 // to inspect rather than task directories to sweep.
 func TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	if err := command.Flags().Set("retire-shells", "true"); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
 	}
-	cleanup := newWorktreeCleanupCmd()
+	cleanup := newWorktreeCleanupCmd(&invocation{})
 	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead", "--superseded-by", "trusted-reviewer receipt"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)

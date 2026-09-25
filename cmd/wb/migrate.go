@@ -14,7 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func newMigrateCmd() *cobra.Command {
+func newMigrateCmd(inv *invocation) *cobra.Command {
 	var (
 		apply     bool
 		check     bool
@@ -43,7 +43,7 @@ func newMigrateCmd() *cobra.Command {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hierarchical {
-				code := runHierarchicalMigration(args[0], args[1:], hierarchicalMigrationOptions{
+				code := runHierarchicalMigration(inv, args[0], args[1:], hierarchicalMigrationOptions{
 					apply: apply, check: check, format: format, reportDir: reportDir, githubDir: githubDir,
 					ref: ref, moduleRefs: moduleRefs, verify: verify, noVerify: noVerify, commit: commit, push: push,
 					pr: pr, merge: merge, parallel: parallel, resume: resume, cleanup: cleanup,
@@ -101,7 +101,7 @@ type hierarchicalMigrationOptions struct {
 	progressOut                                                      io.Writer
 }
 
-func runHierarchicalMigration(specPath string, roots []string, options hierarchicalMigrationOptions) int {
+func runHierarchicalMigration(inv *invocation, specPath string, roots []string, options hierarchicalMigrationOptions) int {
 	if options.cleanup && (options.apply || options.check || options.commit || options.push || options.pr || options.merge || options.resume || options.noVerify || options.verifyExplicit) {
 		fmt.Fprintln(os.Stderr, "--cleanup cannot be combined with apply, verification, commit, push, PR, merge, resume, or check options")
 		return 2
@@ -164,7 +164,7 @@ func runHierarchicalMigration(specPath string, roots []string, options hierarchi
 	if progressOut == nil {
 		progressOut = os.Stderr
 	}
-	campaign := newCampaignProgress(progressOut, console.Interactive(progressOut, nonInteractive), "migrate "+spec.ID)
+	campaign := newCampaignProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive), "migrate "+spec.ID)
 	report, runErr := migrate.RunCampaign(spec, roots[0], migrate.CampaignOptions{
 		GitHubDir: githubDir, Ref: options.ref, ModuleRefs: refs, Apply: options.apply,
 		Verify: verification, Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge, Resume: options.resume,

@@ -110,7 +110,7 @@ const (
 	waitStatusError   = "error"
 )
 
-func newWaitCmd() *cobra.Command {
+func newWaitCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "wait",
 		Short: "Wait for something WB can observe, then report what changed",
@@ -140,15 +140,15 @@ The older spellings keep working.
 These commands report. They never merge, publish, or change a target. Use
 ` + "`wb pr land`" + ` to wait for checks and then land a pull request.`,
 	}
-	command.AddCommand(newWaitPRCmd())
-	command.AddCommand(newWaitChecksCmd())
+	command.AddCommand(newWaitPRCmd(inv))
+	command.AddCommand(newWaitChecksCmd(inv))
 	command.AddCommand(newWaitAgentCmd())
 	command.AddCommand(newWaitOperationCmd())
 	command.AddCommand(newWaitListCmd())
 	return command
 }
 
-func newWaitPRCmd() *cobra.Command {
+func newWaitPRCmd(inv *invocation) *cobra.Command {
 	var until string
 	var slice, interval time.Duration
 	var jsonOut bool
@@ -215,7 +215,7 @@ wb wait pr sneat-dev/wb#581 --slice 8m --json`,
 			// and clear it however this call ends.
 			release := registerWait("pr", targets, string(condition), slice)
 			defer release()
-			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			interactive := console.Interactive(command.ErrOrStderr(), inv.nonInteractive)
 			progress := newLiveProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(fmt.Sprintf("wait pr: %d target(s) until %s", len(targets), condition))
 			if warning := waitBudgetWarning(len(targets), interval); warning != "" {
@@ -746,8 +746,8 @@ wb wait list --json`,
 // newWaitChecksCmd is `wb ci wait` under the verb. The object is an exact
 // commit's checks — "ci" names a domain, not a thing a caller can point at.
 // This remains the authoritative merge-evidence waiter; `wb wait pr` does not.
-func newWaitChecksCmd() *cobra.Command {
-	command := newCIWaitCmd()
+func newWaitChecksCmd(inv *invocation) *cobra.Command {
+	command := newCIWaitCmd(inv)
 	command.Use = strings.Replace(command.Use, "wait ", "checks ", 1)
 	command.Short = "Wait one bounded slice for checks on an exact head (was: wb ci wait)"
 	command.Aliases = append(command.Aliases, "ci")

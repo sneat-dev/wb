@@ -628,8 +628,8 @@ func TestCwWtWorktreeCmdsRejectBadFormatInProcess(t *testing.T) {
 		"checkpoint":  newWorktreeCheckpointFetchCmd,
 		"rescue":      newWorktreeRescueCmd,
 		"end":         newWorktreeEndCmd,
-		"gc":          newWorktreeGCCmd,
-		"cleanup":     newWorktreeCleanupCmd,
+		"gc":          func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) },
+		"cleanup":     func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) },
 	}
 	arguments := map[string][]string{
 		"checkpoint":  {"--task", "t"},
@@ -666,7 +666,7 @@ func TestCwWtWorktreeCleanupArgValidation(t *testing.T) {
 		{args: []string{"t", "--resume-interrupted", "--apply", "extra"}, want: "--resume-interrupted requires one explicit task"},
 	}
 	for _, test := range cases {
-		_, _, err := cwCovExec(t, projects, newWorktreeCleanupCmd, test.args...)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, test.args...)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("cleanup %v error = %v, want %q", test.args, err, test.want)
 		}
@@ -949,8 +949,8 @@ func TestCwWtWorktreeErrorPropagationFromBackend(t *testing.T) {
 		{name: "summary", build: newWorktreeSummaryCmd, args: []string{"t"}},
 		{name: "backfill", build: newWorktreeBackfillCmd},
 		{name: "orphans", build: newWorktreeOrphansCmd},
-		{name: "gc", build: newWorktreeGCCmd},
-		{name: "cleanup", build: newWorktreeCleanupCmd, args: []string{"t"}},
+		{name: "gc", build: func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }},
+		{name: "cleanup", build: func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, args: []string{"t"}},
 		{name: "rename", build: newWorktreeRenameCmd, args: []string{"a", "b"}},
 		{name: "relocate", build: newWorktreeRelocateCmd, args: []string{"t"}},
 		{name: "adopt", build: newWorktreeAdoptCmd, args: []string{"--all-external"}},

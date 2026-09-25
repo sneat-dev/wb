@@ -1186,7 +1186,7 @@ func TestCIWaitRejectsInvalidTargetBranch(t *testing.T) {
 }
 
 func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
-	command := newCIWaitCmd()
+	command := newCIWaitCmd(&invocation{})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	if err := printCIWait(command, ciWaitOutput{
@@ -1210,7 +1210,7 @@ func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 }
 
 func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
-	command := newCIWaitCmd()
+	command := newCIWaitCmd(&invocation{})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	err := printCIWait(command, ciWaitOutput{PullRequestWaitResult: orchestrate.PullRequestWaitResult{

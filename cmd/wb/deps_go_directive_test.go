@@ -41,7 +41,7 @@ func writeGoDirectiveFixture(t *testing.T, dir, moduleGoVersion, depDir, depGoVe
 
 func runDepsGoDirective(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	command := newDepsGoDirectiveCmd()
+	command := newDepsGoDirectiveCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out bytes.Buffer
