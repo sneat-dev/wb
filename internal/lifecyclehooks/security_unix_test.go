@@ -7,13 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestLoadRejectsSymlinkedOrGroupWritableConfig(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	executable := filepath.Join(root, "indexer")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	config := writeTestConfig(t, root, executable, "warn")

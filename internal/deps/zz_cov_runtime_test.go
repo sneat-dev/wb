@@ -22,6 +22,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // depsCovRuntimeAdapter is a scripted deps adapter used to drive
@@ -64,7 +65,7 @@ func depsCovRuntimeRequireShell(t *testing.T) {
 func depsCovRuntimeWriteExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path

@@ -40,7 +40,7 @@ func installArchivedFakeGh(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nset -eu\nprintf 'true\\n'\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nset -eu\nprintf 'true\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

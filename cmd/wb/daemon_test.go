@@ -17,6 +17,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestDaemonRequiresLoopbackListener(t *testing.T) {
@@ -806,7 +807,7 @@ func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) 
 	}
 
 	newExecutable := filepath.Join(root, "wb-new")
-	if err := os.WriteFile(newExecutable, []byte("new installed binary"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(newExecutable, []byte("new installed binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps.executable = func() (string, error) { return newExecutable, nil }
@@ -835,7 +836,7 @@ func TestDaemonJSONShortcutRejectsConflictingFormat(t *testing.T) {
 func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 	t.Helper()
 	executable := filepath.Join(root, "wb")
-	if err := os.WriteFile(executable, []byte("old installed binary"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("old installed binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	alive := map[int]bool{}

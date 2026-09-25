@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // rpCovFakeCommands installs `gh` and `npm` shims on PATH, backed by fixture
@@ -88,7 +90,7 @@ func rpCovInstallFakeCommands(t *testing.T) *rpCovFakeCommands {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{"gh": rpCovGhShim, "npm": rpCovNpmShim} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,7 +134,7 @@ func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testi
 
 	dir := t.TempDir()
 	ok := filepath.Join(dir, "ok-tool")
-	if err := os.WriteFile(ok, []byte("#!/bin/sh\necho out-$1\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ok, []byte("#!/bin/sh\necho out-$1\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result := OSCommandRunner{}.Run(context.Background(), dir, "./ok-tool", "hello")
@@ -141,7 +143,7 @@ func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testi
 	}
 
 	failing := filepath.Join(dir, "failing-tool")
-	if err := os.WriteFile(failing, []byte("#!/bin/sh\necho bad >&2\nexit 7\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(failing, []byte("#!/bin/sh\necho bad >&2\nexit 7\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result = OSCommandRunner{}.Run(context.Background(), dir, "./failing-tool")

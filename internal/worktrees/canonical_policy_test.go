@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestCanonicalPolicyReaderIsReadOnlyAndDescriptorBound(t *testing.T) {
@@ -124,7 +126,7 @@ func TestSecureCanonicalPolicyHelperRejectsCanonicalRootSwapAfterRead(t *testing
 	moved := fixture.canonical + "-moved"
 	external := t.TempDir()
 	script := filepath.Join(t.TempDir(), "swap-canonical.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\n"+
 		"mv \"$WB_TEST_POLICY_CANONICAL\" \"$WB_TEST_POLICY_MOVED\"\n"+
 		"ln -s \"$WB_TEST_POLICY_EXTERNAL\" \"$WB_TEST_POLICY_CANONICAL\"\n"+
 		"printf 'unexpected policy bytes'\n"), 0o700); err != nil {
@@ -156,7 +158,7 @@ func TestSecureCanonicalPolicyHelperRejectsCanonicalGitDirectorySwapAfterRead(t 
 	base := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	parkedGit := filepath.Join(fixture.canonical, ".git-parked")
 	script := filepath.Join(t.TempDir(), "swap-git-directory.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\n"+
 		"mv \"$WB_TEST_POLICY_GIT\" \"$WB_TEST_POLICY_PARKED_GIT\"\n"+
 		"mkdir \"$WB_TEST_POLICY_GIT\"\n"+
 		"printf 'unexpected policy bytes'\n"), 0o700); err != nil {

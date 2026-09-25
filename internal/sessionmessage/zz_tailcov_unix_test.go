@@ -5,11 +5,12 @@ package sessionmessage
 import (
 	"bytes"
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestTailCovNewOSTmuxRejectsNonRegularExecutable proves the adapter refuses a
@@ -40,7 +41,7 @@ func TestTailCovExecTmuxCommandRunnerWiresStreams(t *testing.T) {
 		"cat\n" +
 		"printf 'diagnostic: %s' \"$1\" >&2\n" +
 		"exit 3\n"
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

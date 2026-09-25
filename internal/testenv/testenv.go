@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/execfile"
 )
 
 // Isolate truly unsets every WB_AGENT_* variable -- the key itself is
@@ -216,4 +217,14 @@ func ConfigureGitAutoMaintenanceOff(t testing.TB, repoPath string) {
 			t.Fatalf("git -C %s config %s %s: %v: %s", repoPath, key, gitAutoMaintenanceValues[index], err, out)
 		}
 	}
+}
+
+// WriteExecutableFile re-exports execfile.WriteExecutableFile for the
+// callers across this repository that already import testenv for other
+// fixtures. See that package's doc comment for why the implementation
+// lives there instead of here: internal/envguard (which this package
+// itself imports, for Isolate) needs the same primitive in its own tests,
+// and internal/envguard importing internal/testenv back would be a cycle.
+func WriteExecutableFile(path string, content []byte, perm os.FileMode) error {
+	return execfile.WriteExecutableFile(path, content, perm)
 }

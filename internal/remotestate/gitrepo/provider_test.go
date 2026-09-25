@@ -190,7 +190,7 @@ if [ ! -f "$marker" ]; then
 fi
 exit 0
 `, promoteSHA)
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -209,7 +209,7 @@ func installRejectAlwaysPushHook(t *testing.T, origin string) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

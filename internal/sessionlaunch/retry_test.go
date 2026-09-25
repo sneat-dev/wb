@@ -12,7 +12,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 type launcherRetryFixture struct {
@@ -60,7 +61,7 @@ func newLauncherRetryFixture(t *testing.T) *launcherRetryFixture {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,7 +116,7 @@ func (fixture *launcherRetryFixture) options(before BeforeRelease) Options {
 	}
 }
 
-func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFailure, keepFenceHeld bool) (*os.File, int) {
+func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFailure, keepFenceHeld bool) (*execFence, int) {
 	t.Helper()
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, true)
 	if err != nil {
@@ -168,7 +169,7 @@ func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFai
 
 func (fixture *launcherRetryFixture) configureSuccessfulStart(t *testing.T) (BeforeRelease, <-chan error) {
 	t.Helper()
-	var fence *os.File
+	var fence *execFence
 	var attemptID string
 	pid := os.Getpid()
 	fixture.tmux.onStart = func() {

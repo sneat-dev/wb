@@ -224,7 +224,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_CREATE_STATE", fixture.state)
@@ -930,7 +930,7 @@ func TestCreateCommitAllStopsBeforeAnyPushWhenTheHookFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook := "#!/bin/sh\necho blocked by hook >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(hook), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-commit"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	worktree := fixture.createWorktree(t, "hook-task", "feature/hook", "main")
@@ -1234,7 +1234,7 @@ func TestCreateReturnsFindingsWithCommittedPathsWhenPushFailsAfterCommit(t *test
 		t.Fatal(err)
 	}
 	hook := "#!/bin/sh\necho blocked by pre-push hook >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hook), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-push"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	worktree := fixture.createWorktree(t, "push-hook-task", "feature/push-hook", "main")

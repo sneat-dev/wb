@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
@@ -312,7 +314,7 @@ fi
 echo "unexpected gh args: $*" >&2
 exit 30
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -361,7 +363,7 @@ fi
 echo "unexpected gh args: $*" >&2
 exit 30
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -400,7 +402,7 @@ fi
 echo "unexpected gh args: $*" >&2
 exit 30
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -431,7 +433,7 @@ fi
 echo "unexpected gh args: $*" >&2
 exit 30
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -471,7 +473,7 @@ if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
 fi
 echo "unexpected gh args: $*" >&2; exit 30
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -597,7 +599,7 @@ fi
 echo "unexpected gh args: $*" >&2; exit 30
 `
 			path := filepath.Join(bin, "gh")
-			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("XDG_STATE_HOME", t.TempDir())

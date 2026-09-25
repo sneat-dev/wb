@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installWorktreeMergeDeferralGH installs a fake `gh` that serves the three
@@ -29,7 +30,7 @@ func installWorktreeMergeDeferralGH(t *testing.T, branchJSON, classicDetailJSON,
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -541,7 +542,7 @@ func TestWorktreeMergeValidationPlanHolderResolvesRouteExactlyOnce(t *testing.T)
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' '[]' ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_CALL_COUNTER", counter)

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixtureRepo builds a tiny real git repository containing a one-package Go
@@ -1188,7 +1190,7 @@ func TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed(t *testin
 		"fi\n" +
 		"exec " + realGo + " \"$@\"\n"
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))

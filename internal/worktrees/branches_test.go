@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func writeAndCommit(t *testing.T, dir, name, content, message string) string {
@@ -285,7 +287,7 @@ func TestReviewedCleanupOptionsAndPlanFailClosed(t *testing.T) {
 func TestReviewedRemoteForkGuardFailsClosed(t *testing.T) {
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$WB_TEST_REPOSITORY_METADATA\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$WB_TEST_REPOSITORY_METADATA\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -406,7 +408,7 @@ func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *t
 func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1014,7 +1016,7 @@ func installOpenPullRequestFixture(t *testing.T, head string) {
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	content := "#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\nprintf '%s\\n' \"$WB_TEST_OPEN_PULLS\"\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	payload := `[{"number":9,"html_url":"https://example.test/pull/9","state":"open","head":{"ref":"feature/open-pr","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}]`
