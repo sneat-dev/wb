@@ -18,10 +18,11 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 )
 
-// run executes a command in dir and returns combined output. WB runs the git
-// executable rather than a Go Git library: it needs linked worktrees, rebase,
-// stash, apply and bundle, and it must honour the user's own Git configuration
-// and credential helpers (README: "Why WB runs the `git` CLI"). The child runs
+// run executes a command in dir and returns combined output. Git calls made
+// through run use the git executable rather than a Go Git library: WB needs
+// linked worktrees, rebase, stash, apply and bundle, and must honour the user's
+// own Git configuration and credential helpers (README: "Why WB runs the `git`
+// CLI"). The child runs
 // with prompting disabled so a missing credential or an unknown host key fails
 // with a message instead of blocking on a terminal nobody is watching.
 func run(dir, name string, args ...string) (string, error) {
