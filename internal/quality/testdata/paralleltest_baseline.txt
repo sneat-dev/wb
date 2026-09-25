@@ -240,6 +240,129 @@ internal/daemon::TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork	ser
 internal/daemon::TestWorkerRegistrationAndQueueFailClosedOnPermissionsAndSecrets	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/dashboard::TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/dashboard::TestPeersOptionOmittedLeavesTheRouteUnmounted	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchRefusesFreshPlanDrift	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchRenamesAndProvesResult	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestArchiveRestoreReceiptFailureEdges	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchArchiveRestoreReceiptValidation	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchConfigAndExactScopeRejectMalformedInputs	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchGitHelpersReportExecutionFailures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchGitRunsAndReportsFailures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedOrigin	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources/#2	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismatch	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismatch/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchReportPathAndValidationGuardrails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchReportPersistsAndPrintsCloneFindings	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchResumeSourceRefusesMissingOrStaleBindings	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresTerminalPagesProof	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresTerminalPagesProof/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchSafetyBlocksActiveBranchDependencies	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchSafetyBlocksActiveBranchDependencies/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestEffectiveDefaultBranchPrefersExplicitThenOrgThenFleet	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestHasFindingsCoversEveryFindingCategory	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestInspectDefaultBranchFailsClosedOnUntrustedObservations	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestInspectDefaultBranchFailsClosedOnUntrustedObservations/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestInspectDefaultBranchHandlesEmptyAndForkParentSafely	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestInspectDefaultBranchRefusesArchivedAndDifferentTarget	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestInspectDefaultBranchRefusesForkPRInEitherRepository	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestInspectDefaultBranchRefusesForkPRInEitherRepository/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedDirSyncFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPending	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPending/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReadDefaultBranchReportRequiresExactCallerDigestBeforeParsing	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRefusesStaleRemoteHead	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDivergence	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDivergence/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchResumesMacReceiptOnVMClone	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchRewritesWorkflowThenRenames	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestUnfinishedPagesRepairBlocksWhenDefaultChanges	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestValidatePlannedArchivedDefaultBranchFailsClosed	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestValidatePlannedArchivedDefaultBranchFailsClosed/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestVerifyDefaultBranchAttachmentReportsReadFailures	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestVerifyDefaultBranchAttachmentReportsReadFailures/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/defaultbranch::TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences	kept serial because a nested subtest must stay serial: #1
+internal/defaultbranch::TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/deps::TestAnalyzeDriftReportsRepositoryProgress	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/deps::TestBuildGraphIgnoresDistPackageJSONButKeepsDistinguishedSource	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/deps::TestBuildGraphIgnoresTestdataPackageJSONFixtures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
