@@ -346,27 +346,28 @@ func TestAnnouncementHeartbeatKeepsALiveHolderFromAging(t *testing.T) {
 //
 // #753: the previous version used a deliberately tiny staleAfter (20ms) and
 // registered the live ticket FIRST, before two os.WriteFile calls plus an
-// os.Chtimes. Neither the old temp file's staleness nor the fresh temp
-// file's freshness ever depended on real elapsed time -- os.Chtimes
-// backdates the old one directly, and the fresh one only needs to still be
-// newer than staleAfter -- but the LIVE TICKET's own liveness check
-// (isLive: time.Since(UpdatedAt) < staleAfter) does depend on real elapsed
-// time, and 20ms is not a safe margin against ordinary CI scheduling
-// jitter: the CI failure that opened #753 recorded Total:0, meaning the
-// live ticket itself was reaped as stale by the time Peek finally ran,
-// exactly like the .tmp-old file next to it. The fix removes that
-// dependency at its source instead of masking it with a sleep or a retry
-// (decision 13): staleAfter is widened to a value no realistic amount of
-// setup work or scheduler jitter can exceed within one test function, and
-// the live ticket is registered and heartbeat-refreshed LAST, immediately
-// before the one Peek call that reads it back, so nothing dependent on the
-// staleness window sits between "UpdatedAt is set" and "UpdatedAt is
-// checked" except that single function call.
+// os.Chtimes. That made the live ticket's own liveness check
+// (isLive: time.Since(UpdatedAt) < staleAfter) depend on real elapsed time,
+// and 20ms was not a safe margin against ordinary CI scheduling jitter: the
+// CI failure that opened #753 recorded Total:0, meaning the live ticket
+// itself was reaped as stale by the time Peek finally ran, exactly like the
+// .tmp-old file next to it. A first attempt widened staleAfter to 2s and
+// reordered Register/Heartbeat to run last, but round-2 review proved that
+// still only shrinks the window rather than removing it (a 2.1s injected
+// stall reproduced the identical Total:0 failure).
+//
+// The fix instead pins every timestamp readTicketsIn/reapStaleTempFile
+// compares, so no comparison depends on real elapsed time at all, at the
+// production-default staleAfter: .tmp-old is backdated to time.Unix(1, 0)
+// (stale under any staleAfter, ever), .tmp-fresh is dated 24h in the future
+// (time.Since of a future mtime is negative, so it can never register as
+// stale), and the live ticket's own record is rewritten with UpdatedAt 24h
+// in the future using the same os.WriteFile(ticket.path, json) idiom
+// TestHeartbeatKeepsALiveWaiterFromAging already uses below. A 2.1s stall
+// injected between the setup and Peek (matching round-2 review's repro)
+// passes with this version; it was removed once confirmed.
 func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
 	root := t.TempDir()
-	previous := staleAfter
-	staleAfter = 2 * time.Second
-	defer func() { staleAfter = previous }()
 
 	dir := ticketDir(root)
 	oldTemp := filepath.Join(dir, ".tmp-old")
@@ -376,22 +377,33 @@ func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
 	if err := os.WriteFile(oldTemp, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	oldTime := time.Now().Add(-2 * staleAfter)
-	if err := os.Chtimes(oldTemp, oldTime, oldTime); err != nil {
+	longAgo := time.Unix(1, 0)
+	if err := os.Chtimes(oldTemp, longAgo, longAgo); err != nil {
 		t.Fatal(err)
 	}
 	freshTemp := filepath.Join(dir, ".tmp-fresh")
 	if err := os.WriteFile(freshTemp, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	farFuture := time.Now().Add(24 * time.Hour)
+	if err := os.Chtimes(freshTemp, farFuture, farFuture); err != nil {
+		t.Fatal(err)
+	}
 
-	// Register (and Forget) the live ticket only now, as close to Peek as
-	// possible, and Heartbeat it immediately beforehand so its UpdatedAt is
-	// set a function call, not a directory's worth of setup, before it is
-	// read back.
 	live := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
 	defer live.Forget()
-	live.Heartbeat()
+	liveTicket := ticketRecord{
+		Participant: live.self,
+		CreatedAt:   live.createdAt,
+		UpdatedAt:   farFuture,
+	}
+	payload, err := json.Marshal(liveTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live.path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if state := Peek(root, 1); state.Total != 1 {
 		t.Fatalf("Peek = %+v, want only the live ticket counted (temp files must never count)", state)
