@@ -3807,3 +3807,25 @@ func TestEffectiveDefaultBranchPrefersExplicitThenOrgThenFleet(t *testing.T) {
 		t.Fatalf("fleet default = %q", got)
 	}
 }
+
+// TestHasFindingsCoversEveryFindingCategory exercises HasFindings directly:
+// cmd/wb's own dispatch tests exercise it too (via defaultbranch.Run then
+// defaultbranch.HasFindings), but that cross-package call does not count
+// toward this package's own coverage profile, so the move needs this direct
+// test to keep this exported entry point covered here.
+func TestHasFindingsCoversEveryFindingCategory(t *testing.T) {
+	if HasFindings(Report{}) {
+		t.Fatal("empty summary reported findings")
+	}
+	for name, report := range map[string]Report{
+		"drift":            {Summary: Summary{Drift: 1}},
+		"blocked":          {Summary: Summary{Blocked: 1}},
+		"errors":           {Summary: Summary{Errors: 1}},
+		"canonicalBlocked": {Summary: Summary{CanonicalBlocked: 1}},
+		"canonicalErrors":  {Summary: Summary{CanonicalErrors: 1}},
+	} {
+		if !HasFindings(report) {
+			t.Fatalf("%s: HasFindings = false, want true for %#v", name, report)
+		}
+	}
+}
