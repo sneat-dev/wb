@@ -107,8 +107,7 @@ internal/gitops/zz_cov_gitops_pure_test.go	1	task-21
 internal/gitops/zz_cov_gitops_repo_test.go	1	task-21
 internal/gitremote/zz_tailcov_remote_test.go	2	task-21
 internal/graduation/tailcov_test.go	8	task-21
-internal/hostload/loadavg_darwin_tailcov_test.go	4	task-21
-internal/hostload/tailcov_test.go	12	task-21
+internal/hostload/tailcov_test.go	8	task-21
 internal/hubstore/tailcov_hubstore_test.go	3	task-21
 internal/landinglane/landinglane_tailcov_flock_unix_test.go	2	task-21
 internal/landinglane/landinglane_tailcov_test.go	14	task-21
@@ -196,7 +195,7 @@ internal/sessionlaunch/cov_tmux_test.go	1	task-21
 internal/sessionmessage/zz_tailcov_test.go	23	task-21
 internal/sessionmessage/zz_tailcov_unix_test.go	3	task-21
 internal/sessionmessenger/sd_cov_test.go	1	task-21
-internal/sessionparkcourier/zz_tailcov_ssh_test.go	10	task-21
+internal/sessionparkcourier/zz_tailcov_ssh_test.go	9	task-21
 internal/sessionparkreceive/tailcov_receive_test.go	24	task-21
 internal/sessionreceive/sd_cov_test.go	1	task-21
 internal/streams/cov_stubs_test.go	1	task-21
@@ -213,7 +212,6 @@ internal/streamsync/sync_cov_test.go	1	task-21
 internal/syncreport/tailcov_loaddirectory_test.go	6	task-21
 internal/syncreport/tailcov_merge_test.go	4	task-21
 internal/syncreport/tailcov_parse_test.go	4	task-21
-internal/syncreport/tailcov_validate_test.go	10	task-21
 internal/taskoffload/tailcov_store_test.go	9	task-21
 internal/tui/tailcov_test.go	14	task-21
 internal/unixcompat/tailcov_unix_test.go	3	task-21
