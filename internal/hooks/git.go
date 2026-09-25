@@ -101,7 +101,11 @@ func resolveGitPath(path string) string {
 
 // setHooksPathAt runs the config update from the retained repository directory
 // descriptor. Git's lexical -C form would re-resolve a swapped repo pathname
-// after hooks have already been validated and installed.
+// after hooks have already been validated and installed, so a short-lived WB
+// helper inherits the descriptors, fchdirs into the common directory and runs
+// an absolute git path with --git-dir=. (fchdir cannot be done in WB's own
+// multi-threaded process). go-git opens repositories by path name and would not
+// give this by default; see README "Why WB runs the `git` CLI".
 func setHooksPathAt(repo, common *os.File, path string) error {
 	if repo == nil || common == nil {
 		return fmt.Errorf("repository or Git common-directory descriptor is unavailable")
