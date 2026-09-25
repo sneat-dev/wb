@@ -427,7 +427,7 @@ func TestNpmPublishRealAcceptanceCampaignPlansAsOneOperation(t *testing.T) {
 	var output bytes.Buffer
 	command := newNpmPublishCmdWithRun(&invocation{}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
 		runCalls++
-		return runNpmPublishWithPreflight(command, options, func(options npmPublishOptions) (npmPublishPrepared, error) {
+		return runNpmPublishWithPreflight(command, options, func(_ *invocation, options npmPublishOptions) (npmPublishPrepared, error) {
 			var err error
 			prepared, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				return nil, nil
@@ -465,7 +465,7 @@ func TestNpmPublishCommandRejectsSeparatedDuplicateTuplesBeforeFleetDiscoveryOrW
 	commandRuns := 0
 	command := newNpmPublishCmdWithRun(&invocation{}, func(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
 		commandRuns++
-		return runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+		return runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 			fleetDiscoveryCalls++
 			return npmPublishPrepared{}, nil
 		}, inv)
@@ -545,7 +545,7 @@ func TestRunNpmPublishApplyRefusesActiveOperationLockBeforeFleetDiscovery(t *tes
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
 	preflightCalls := 0
-	err = runNpmPublishWithPreflight(command, options, func(got npmPublishOptions) (npmPublishPrepared, error) {
+	err = runNpmPublishWithPreflight(command, options, func(_ *invocation, got npmPublishOptions) (npmPublishPrepared, error) {
 		preflightCalls++
 		if got.apply != options.apply {
 			t.Fatalf("apply option changed before lock acquisition")

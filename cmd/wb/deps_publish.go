@@ -142,12 +142,10 @@ workflow dispatch only.`,
 }
 
 func runNpmPublish(command *cobra.Command, options npmPublishOptions, inv *invocation) error {
-	return runNpmPublishWithPreflight(command, options, func(o npmPublishOptions) (npmPublishPrepared, error) {
-		return preflightNpmPublish(inv, o)
-	}, inv)
+	return runNpmPublishWithPreflight(command, options, preflightNpmPublish, inv)
 }
 
-type npmPublishPreflight func(npmPublishOptions) (npmPublishPrepared, error)
+type npmPublishPreflight func(*invocation, npmPublishOptions) (npmPublishPrepared, error)
 
 func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOptions, preflight npmPublishPreflight, inv *invocation) error {
 	releases, operation, err := npmPublicationIdentity(options)
@@ -165,7 +163,7 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 	defer locks.Release()
 	selectionProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), inv.nonInteractive), "deps publish npm")
 	options.campaign = selectionProgress
-	prepared, err := preflight(options)
+	prepared, err := preflight(inv, options)
 	if err != nil {
 		selectionProgress.finish("failed")
 		return err

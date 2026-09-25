@@ -514,13 +514,13 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 
 	// A preflight that reports a different operation is refused: the lock was
 	// claimed for one campaign and the plan describes another.
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{operation: "something-else"}, nil
 	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
 		t.Fatalf("operation mismatch = %v", err)
 	}
 	// A failing preflight fails the selection campaign and surfaces the error.
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{}, errTestPreflight
 	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
 		t.Fatalf("preflight failure = %v", err)
@@ -532,7 +532,7 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 		reportDir:    filepath.Join(home, "reports", "cw-npm-preflight"),
 		operation:    operation,
 	}
-	if err := runNpmPublishWithPreflight(command, options, func(npmPublishOptions) (npmPublishPrepared, error) {
+	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return prepared, nil
 	}, &invocation{}); err != nil {
 		t.Fatalf("consistent preflight: %v\nstdout: %s", err, out.String())
