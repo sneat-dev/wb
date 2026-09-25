@@ -68,12 +68,31 @@ func (Real) RunOpts(ctx context.Context, dir string, opts RunOptions, name strin
 	if opts.WaitDelay > 0 {
 		command.WaitDelay = opts.WaitDelay
 	}
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
+	capture := configureOutputCapture(command, opts.CaptureCombined)
 	runErr := command.Run()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCodeOf(runErr)}
+	result := Result{Stdout: capture.stdout.String(), Stderr: capture.stderr.String(), CombinedOutput: capture.combined.String(), ExitCode: exitCodeOf(runErr)}
 	return withoutSpuriousWaitDelay(command, result, runErr)
+}
+
+// outputCapture owns the writers attached to one child. Keeping it alive
+// through command.Run also keeps every captured buffer alive through Wait.
+type outputCapture struct {
+	stdout   bytes.Buffer
+	stderr   bytes.Buffer
+	combined bytes.Buffer
+}
+
+func configureOutputCapture(command *exec.Cmd, combined bool) *outputCapture {
+	capture := &outputCapture{}
+	if combined {
+		// The same writer makes os/exec use one pipe, matching CombinedOutput.
+		command.Stdout = &capture.combined
+		command.Stderr = &capture.combined
+	} else {
+		command.Stdout = &capture.stdout
+		command.Stderr = &capture.stderr
+	}
+	return capture
 }
 
 // Start begins name with args in dir and returns a Handle without waiting

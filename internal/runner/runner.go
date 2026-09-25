@@ -47,13 +47,19 @@ import (
 
 // Result is one Run or Start/Wait call's captured output.
 type Result struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
+	Stdout string
+	Stderr string
+	// CombinedOutput is populated only when RunOptions.CaptureCombined is set.
+	CombinedOutput string
+	ExitCode       int
 }
 
 // RunOptions customizes a RunOpts call beyond dir/argv.
 type RunOptions struct {
+	// CaptureCombined sends stdout and stderr to one pipe and preserves their
+	// observed order, as exec.Cmd.CombinedOutput does. When set, the capture
+	// is returned in Result.CombinedOutput instead of Stdout and Stderr.
+	CaptureCombined bool
 	// Env overrides the child's environment. Nil inherits the calling
 	// process's own environment, matching os/exec.Cmd's own default when
 	// Env is left nil -- the same default Run and RunWithInput use.

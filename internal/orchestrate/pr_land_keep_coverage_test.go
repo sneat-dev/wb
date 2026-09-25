@@ -2,9 +2,14 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // orchCovSourceCommits reads the commits a landing would carry, in the order
@@ -68,7 +73,7 @@ func TestOrchCovPlanKeptCommitsKeepsEveryNamedCommitWhenNoneIsAggregated(t *test
 
 func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 	t.Parallel()
-	refusal := buildAt(context.Background(), t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, nil)
+	refusal := buildAt(context.Background(), nil, t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, nil)
 	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
 		t.Fatalf("uninferable build refusal = %+v", refusal)
 	}
@@ -80,12 +85,17 @@ func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 
 func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 	t.Parallel()
-	if refusal := buildAt(context.Background(), t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, []string{"sh", "-c", "exit 0"}); refusal != nil {
+	worktree := t.TempDir()
+	build := []string{"go", "build", "./..."}
+	run := runnertest.New(t)
+	run.ExpectArgv(build, runner.Result{}, nil)
+	run.ExpectArgv(build, runner.Result{CombinedOutput: "compile exploded\n"}, errors.New("exit status 1"))
+	if refusal := buildAt(context.Background(), run, worktree, SourceCommit{SHA: "0123456789abcdef"}, build); refusal != nil {
 		t.Fatalf("passing build refusal = %+v", refusal)
 	}
-	refusal := buildAt(context.Background(), t.TempDir(),
+	refusal := buildAt(context.Background(), run, worktree,
 		SourceCommit{SHA: "0123456789abcdef", Subject: "add the thing"},
-		[]string{"sh", "-c", "echo compile exploded >&2; exit 1"})
+		build)
 	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
 		t.Fatalf("failing build refusal = %+v", refusal)
 	}
@@ -94,6 +104,11 @@ func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 	}
 	if !strings.Contains(refusal.command, "0123456789ab") {
 		t.Fatalf("failing build refusal command = %q", refusal.command)
+	}
+	for _, call := range run.Calls() {
+		if call.Op != "RunOpts" || call.Dir != worktree || !call.Opts.CaptureCombined || strings.Join(call.Opts.Env, "\x00") != strings.Join(console.Env(), "\x00") {
+			t.Fatalf("build runner call = %+v", call)
+		}
 	}
 }
 
@@ -255,9 +270,11 @@ func TestOrchCovRewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *test
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
+	run := runnertest.New(t)
+	run.ExpectArgv([]string{"sh", "-c", "exit 0"}, runner.Result{}, nil)
 	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
 		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "reviewer@example.test",
-		"these two stand alone", []string{"sh", "-c", "exit 0"})
+		"these two stand alone", []string{"sh", "-c", "exit 0"}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +315,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
 	view.Head.SHA = strings.Repeat("b", 40)
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
-		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
+		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +347,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranc
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
-		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
+		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +379,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
-		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
+		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,9 +399,11 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t 
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
+	run := runnertest.New(t)
+	run.ExpectArgv([]string{"sh", "-c", "exit 7"}, runner.Result{}, errors.New("exit status 7"))
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
 		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "", "",
-		[]string{"sh", "-c", "exit 7"})
+		[]string{"sh", "-c", "exit 7"}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +474,9 @@ func TestOrchCovLandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
 		KeepCommits: []string{commits[0].SHA}, Reason: "the first commit stands alone",
 		BuildCommand: []string{"sh", "-c", "exit 0"},
 	}
+	run := runnertest.New(t)
+	run.ExpectArgv(options.BuildCommand, runner.Result{}, nil)
+	options.run = run
 
 	landed, rewritten, refusal, err := landKeepingCommits(context.Background(), options, view, commits, "7", "reviewer@example.test")
 	if err != nil {
@@ -462,6 +484,9 @@ func TestOrchCovLandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
 	}
 	if refusal != nil {
 		t.Fatalf("keep refusal = %+v", refusal)
+	}
+	if calls := run.Calls(); len(calls) != 1 || calls[0].Op != "RunOpts" || !calls[0].Opts.CaptureCombined {
+		t.Fatalf("injected build runner calls = %+v", calls)
 	}
 	if rewritten == "" || rewritten == head || len(landed) != 2 {
 		t.Fatalf("rewritten head=%q landed=%+v", rewritten, landed)
