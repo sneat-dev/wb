@@ -141,7 +141,81 @@ func TestLinkInjectedHonoursPendingMarkerFailures(t *testing.T) {
 			if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
 				t.Fatalf("installed package was replaced despite the marker-write failure: %v", statErr)
 			}
+			// N1: the claimed stage directory must also be gone -- the
+			// marker-write failure path removes it in every branch here
+			// (StepOpenOrCreate's own cleanup succeeds because stage is
+			// still empty; StepWrite/StepClose remove it unconditionally).
+			target := filepath.Join(consumer, "node_modules", "@acme", "core")
+			stageInfo, lstatErr := os.Lstat(target)
+			if lstatErr != nil {
+				t.Fatal(lstatErr)
+			}
+			stage, stageErr := nodeLinkStagePath(consumer, target, stageInfo)
+			if stageErr != nil {
+				t.Fatal(stageErr)
+			}
+			if _, statErr := os.Stat(stage); !os.IsNotExist(statErr) {
+				t.Fatalf("failed marker write left a visible stage %s: %v", stage, statErr)
+			}
 		})
+	}
+}
+
+// TestLinkInjectedReportsUnclaimedStageWhenCleanupFails covers
+// writeLinkPendingMarker's stage-cleanup-failure branch (execports.go, the
+// `if cleanupErr := os.Remove(stage); cleanupErr != nil` arm): the marker
+// create fails, and the Hook that fires immediately before it drops a file
+// inside stage, so the following os.Remove(stage) fails with ENOTEMPTY
+// instead of succeeding.
+func TestLinkInjectedReportsUnclaimedStageWhenCleanupFails(t *testing.T) {
+	t.Parallel()
+	consumer := t.TempDir()
+	installed := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	marker := linkAppliedMarkerPath(consumer, "@acme/core")
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	targetInfo, lstatErr := os.Lstat(target)
+	if lstatErr != nil {
+		t.Fatal(lstatErr)
+	}
+	stage, stageErr := nodeLinkStagePath(consumer, target, targetInfo)
+	if stageErr != nil {
+		t.Fatal(stageErr)
+	}
+	inj := &filewrite.Injector{
+		Step: filewrite.StepOpenOrCreate,
+		Name: marker,
+		Err:  errBoomPR8,
+		Hook: func() {
+			// Runs after linkInjected has claimed (os.Mkdir'd) stage but
+			// before the marker create fails, so the leftover file makes
+			// the pending marker's own stage-cleanup os.Remove fail.
+			if err := os.WriteFile(filepath.Join(stage, "leftover"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	_, err := node.linkInjected(context.Background(), consumer, "@acme/core", dist, inj)
+	if !errors.Is(err, errBoomPR8) {
+		t.Fatalf("linkInjected(stage-cleanup failure) = %v, want errors.Is errBoomPR8", err)
+	}
+	if !strings.Contains(err.Error(), "preserve unclaimed stage") {
+		t.Fatalf("linkInjected(stage-cleanup failure) = %v, want it to mention the preserved stage", err)
+	}
+	// The cleanup genuinely failed: stage, and the leftover file that
+	// caused the failure, must still be there.
+	if _, statErr := os.Stat(filepath.Join(stage, "leftover")); statErr != nil {
+		t.Fatalf("stage %s lost its leftover file despite the reported cleanup failure: %v", stage, statErr)
 	}
 }
 

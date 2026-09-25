@@ -490,12 +490,7 @@ func writeJSONAtomicInjected(path string, value any, mode os.FileMode, inj *file
 	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	return syncDirectoryInjected(filepath.Dir(path), inj)
 }
 
 func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error) {
@@ -526,14 +521,8 @@ func (dispatcher Dispatcher) quarantineFileInjected(path, reason string, inj *fi
 		return "", err
 	}
 	for _, directory := range []string{filepath.Dir(path), dispatcher.quarantineDir()} {
-		opened, err := os.Open(directory)
-		if err != nil {
+		if err := syncDirectoryInjected(directory, inj); err != nil {
 			return destination, err
-		}
-		syncErr := filewrite.SyncDir(opened, inj)
-		_ = opened.Close()
-		if syncErr != nil {
-			return destination, syncErr
 		}
 	}
 	return destination, nil

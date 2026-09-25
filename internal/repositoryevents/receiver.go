@@ -238,8 +238,9 @@ func (store CursorStore) saveStateInjected(state cursorState, inj *filewrite.Inj
 	if err != nil {
 		return err
 	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	syncErr := filewrite.SyncDir(directory, inj)
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func syncDirectory(path string) error {

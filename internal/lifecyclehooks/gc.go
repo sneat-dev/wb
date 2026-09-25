@@ -191,12 +191,7 @@ func rewriteReceiptRecordsInjected(path string, records []receiptRecord, inj *fi
 	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	return syncDirectoryInjected(filepath.Dir(path), inj)
 }
 
 func (dispatcher Dispatcher) removeReceiptDiagnostics(receipt Receipt) (bool, error) {

@@ -527,8 +527,9 @@ func (queue *Queue) persistInjected(item *job, inj *filewrite.Injector) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	syncErr := filewrite.SyncDir(directory, inj)
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func (queue *Queue) notifyLocked() {

@@ -70,7 +70,7 @@ func setRemoteHubInjected(path, hubURL, machine, tokenFile string, inj *filewrit
 		return fmt.Errorf("encode config: %w", err)
 	}
 	if err := encoder.Close(); err != nil {
-		_ = filewrite.Close(temporary, temporaryName, inj)
+		_ = temporary.Close()
 		return fmt.Errorf("finish config: %w", err)
 	}
 	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {

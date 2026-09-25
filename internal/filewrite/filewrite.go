@@ -290,6 +290,11 @@ type writer struct {
 	inj  *Injector
 }
 
+// var _ io.ReaderFrom = (*writer)(nil) pins the io.Copy fast-path contract
+// at compile time (review-t9-pr8 N6): if ReadFrom were ever dropped from
+// *writer, this line -- not just a test -- would fail to build.
+var _ io.ReaderFrom = (*writer)(nil)
+
 // Write makes byte-identical write calls and error text to a direct
 // file.Write with a nil Injector: it runs the same injection check as
 // Write above, then calls file.Write(p) once and returns its real (n,
@@ -316,7 +321,9 @@ func (w *writer) Write(p []byte) (int, error) {
 // *os.File or a socket (task-9 PR-6 review note N3): the returned value
 // also implements io.ReaderFrom (see ReadFrom below), so io.Copy still
 // takes its copy_file_range/splice/sendfile fast path exactly as it would
-// writing to file directly.
+// writing to file directly. On that fast path, StepWrite injection fires
+// once for the whole io.Copy, not once per chunk as it would for the
+// plain Write path (review-t9-pr8 N7).
 func Writer(file *os.File, name string, inj *Injector) io.Writer {
 	return &writer{file: file, name: name, inj: inj}
 }
