@@ -379,7 +379,10 @@ func TestCwDepsSyncCommandDispatchesToRunSyncInProcess(t *testing.T) {
 	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 
-	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSyncCmd(&invocation{nonInteractive: true}) },
+	projectsRoot := t.TempDir()
+	stdout, _, err := cwCovExec(t, projectsRoot, func() *cobra.Command {
+		return newSyncCmd(&invocation{projectsRoot: projectsRoot, nonInteractive: true})
+	},
 		"--dry-run")
 	if err != nil {
 		t.Fatalf("wb sync --dry-run: %v\n%s", err, stdout)

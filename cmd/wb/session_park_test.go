@@ -867,7 +867,7 @@ func unregisteredParkFixture(t *testing.T) (string, string) {
 func TestSessionParkRegistersAnUnregisteredSessionBeforeParking(t *testing.T) {
 	home, contextPath := unregisteredParkFixture(t)
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd(&invocation{})
+	command := newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -919,9 +919,9 @@ func TestSessionParkRegistersAnUnregisteredSessionBeforeParking(t *testing.T) {
 }
 
 func TestSessionParkTextOutputNamesAParkTimeRegistration(t *testing.T) {
-	_, contextPath := unregisteredParkFixture(t)
+	home, contextPath := unregisteredParkFixture(t)
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd(&invocation{})
+	command := newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -942,7 +942,7 @@ func TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering(t *testing.T)
 	if err := os.WriteFile(contextPath, []byte("explicitly targeted continuation\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := newSessionParkCmd(&invocation{})
+	command := newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-never-registered"})
 	command.SetOut(new(bytes.Buffer))
 	command.SetErr(new(bytes.Buffer))
@@ -951,7 +951,7 @@ func TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering(t *testing.T)
 	}
 
 	stdout := new(bytes.Buffer)
-	command = newSessionParkCmd(&invocation{})
+	command = newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-explicit-park-target", "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(new(bytes.Buffer))
@@ -977,7 +977,7 @@ func TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout(t *tes
 		t.Fatal(err)
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd(&invocation{})
+	command := newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
 	command.SetOut(stdout)
 	command.SetErr(stderr)
@@ -1088,7 +1088,7 @@ func TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) 
 		t.Fatal(err)
 	}
 	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
-	command := newSessionParkCmd(&invocation{})
+	command := newSessionParkCmd(&invocation{projectsRoot: filepath.Dir(home)})
 	command.SetArgs([]string{"--context-file", contextPath, "--format", "json", "--override-secret", overrideKey})
 	command.SetOut(stdout)
 	command.SetErr(stderr)

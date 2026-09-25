@@ -343,7 +343,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 			options.versions = append([]string(nil), base.versions...)
 			test.mutate(&options)
 			called := false
-			_, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
+			_, err := preflightNpmPublishWithDiscovery(&invocation{projectsRoot: t.TempDir()}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				called = true
 				return nil, nil
 			})
@@ -356,7 +356,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 		})
 	}
 	// A nil discovery seam is refused rather than panicking.
-	if _, err := preflightNpmPublishWithDiscovery(&invocation{}, base, nil); err == nil ||
+	if _, err := preflightNpmPublishWithDiscovery(&invocation{projectsRoot: t.TempDir()}, base, nil); err == nil ||
 		!strings.Contains(err.Error(), "fleet discovery is unavailable") {
 		t.Fatalf("nil discovery = %v", err)
 	}
@@ -381,7 +381,7 @@ func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
 	// reaching that exact refusal (rather than a nil-pointer panic, or the
 	// test's own fake ever answering) proves preflightNpmPublish handed the
 	// real discoverer to preflightNpmPublishWithDiscovery.
-	if _, err := preflightNpmPublish(&invocation{}, options); err == nil ||
+	if _, err := preflightNpmPublish(&invocation{projectsRoot: t.TempDir()}, options); err == nil ||
 		!strings.Contains(err.Error(), "no repositories match the selected fleet filters") {
 		t.Fatalf("err = %v, want the real discoverer's empty-fleet refusal", err)
 	}
@@ -457,7 +457,7 @@ func TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry(t *testin
 	}
 	var out bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
-	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{}); err != nil {
+	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{projectsRoot: home}); err != nil {
 		t.Fatalf("apply publication: %v\nstdout: %s", err, out.String())
 	}
 	if !strings.Contains(strings.Join(runner.calls, "\n"), "npm view "+cwDepsReleaseFixture().Package+"@"+cwDepsReleaseFixture().Version) {
@@ -547,7 +547,7 @@ func TestCwDepsRunPreparedNpmPublishPlan(t *testing.T) {
 	var out, errOut bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
 	command.SetErr(&errOut)
-	err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{})
+	err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{projectsRoot: home})
 	if err != nil {
 		t.Fatalf("plan publication: %v\nstdout: %s", err, out.String())
 	}
@@ -612,13 +612,13 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 	// claimed for one campaign and the plan describes another.
 	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{operation: "something-else"}, nil
-	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
+	}, &invocation{projectsRoot: home}); err == nil || !strings.Contains(err.Error(), "changed the requested operation") {
 		t.Fatalf("operation mismatch = %v", err)
 	}
 	// A failing preflight fails the selection campaign and surfaces the error.
 	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return npmPublishPrepared{}, errTestPreflight
-	}, &invocation{}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
+	}, &invocation{projectsRoot: home}); err == nil || !strings.Contains(err.Error(), "fixture preflight failure") {
 		t.Fatalf("preflight failure = %v", err)
 	}
 	// A consistent preflight reaches the durable plan.
@@ -630,7 +630,7 @@ func TestCwDepsRunNpmPublishWithPreflightUsesTheInjectedPreflight(t *testing.T) 
 	}
 	if err := runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
 		return prepared, nil
-	}, &invocation{}); err != nil {
+	}, &invocation{projectsRoot: home}); err != nil {
 		t.Fatalf("consistent preflight: %v\nstdout: %s", err, out.String())
 	}
 }

@@ -321,7 +321,7 @@ func TestNpmPublishPreflightRejectsInvalidOptionsBeforeFleetDiscovery(t *testing
 			options := validNpmPublishOptions()
 			test.change(&options)
 			discovered := false
-			_, err := preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
+			_, err := preflightNpmPublishWithDiscovery(&invocation{projectsRoot: t.TempDir()}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 				discovered = true
 				return nil, nil
 			})
@@ -351,7 +351,7 @@ func TestNpmPublishFreshReportRequiresResumeBeforeFleetDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	discovered := false
-	_, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
+	_, err = preflightNpmPublishWithDiscovery(&invocation{projectsRoot: t.TempDir()}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 		discovered = true
 		return nil, nil
 	})
@@ -384,7 +384,7 @@ func TestNpmPublishJSONOnlyReportBlocksFreshApplyBeforeFleetDiscovery(t *testing
 		t.Fatal(err)
 	}
 	discovered := false
-	_, err = preflightNpmPublishWithDiscovery(&invocation{}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
+	_, err = preflightNpmPublishWithDiscovery(&invocation{projectsRoot: t.TempDir()}, options, func(*invocation, []string, depsSetOptions) ([]deps.Repository, error) {
 		discovered = true
 		return nil, nil
 	})

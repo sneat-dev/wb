@@ -67,7 +67,7 @@ func cwCovWriteFile(t *testing.T, path, body string) {
 func cwCovRunDepsPolicy(t *testing.T, projects string, args ...string) (string, error) {
 	t.Helper()
 	testenv.Isolate(t)
-	command := newDepsPolicyCmd(&invocation{})
+	command := newDepsPolicyCmd(&invocation{projectsRoot: projects})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out bytes.Buffer
