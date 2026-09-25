@@ -23,6 +23,7 @@ import (
 	// Aliased: this file already uses "provenance" as a local variable name
 	// for model provenance (modelProvenanceCallerDeclared/-Unknown), unrelated
 	// to wb#631's harness-identity package.
+	"github.com/sneat-dev/wb/internal/filewrite"
 	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
@@ -3554,6 +3555,16 @@ func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent
 var writeBytesImmutableAtBeforeRename = func(*os.File, string) {}
 
 func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool) error {
+	return writeBytesImmutableAtInjected(directory, name, content, mode, idempotent, nil)
+}
+
+// writeBytesImmutableAtInjected is writeBytesImmutableAt's test seam
+// (task-9 PR-3): every production call site reaches it only through
+// writeBytesImmutableAt, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/sync/close/rename-no-replace/dir-sync
+// failure branch deterministically.
+func writeBytesImmutableAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool, inj *filewrite.Injector) error {
 	if strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe immutable filename %q", name)
 	}
@@ -3570,7 +3581,7 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 		return err
 	}
 	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
-	fd, err := unix.Openat(int(directory.Fd()), temporary, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, uint32(mode.Perm()))
+	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
 		return err
 	}
@@ -3582,24 +3593,26 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
 		}
 	}()
-	if _, err := file.Write(content); err != nil {
+	if err := filewrite.Write(file, content, temporary, inj); err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
 	writeBytesImmutableAtBeforeRename(directory, name)
-	if err := renameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name); err != nil {
+	if err := filewrite.RenameNoReplace(func() error {
+		return renameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name)
+	}, name, inj); err != nil {
 		if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
 			return nil
 		}
 		return err
 	}
 	cleanup = false
-	return directory.Sync()
+	return filewrite.SyncDir(directory, inj)
 }
 
 func readBytesAt(directory *os.File, name string) ([]byte, error) {
@@ -3640,6 +3653,16 @@ func writeJSONAtomicAt(directory *os.File, name string, value any, mode os.FileM
 }
 
 func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os.FileMode) error {
+	return writeBytesAtomicAtInjected(directory, name, content, mode, nil)
+}
+
+// writeBytesAtomicAtInjected is writeBytesAtomicAt's test seam (task-9
+// PR-3): every production call site reaches it only through
+// writeBytesAtomicAt, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/sync/close/rename/dir-sync failure
+// branch deterministically.
+func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
 	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe atomic filename %q", name)
 	}
@@ -3648,7 +3671,7 @@ func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 		return err
 	}
 	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
-	fd, err := unix.Openat(int(directory.Fd()), temporary, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, uint32(mode.Perm()))
+	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
 		return err
 	}
@@ -3660,48 +3683,58 @@ func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
 		}
 	}()
-	if _, err := file.Write(content); err != nil {
+	if err := filewrite.Write(file, content, temporary, inj); err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := unix.Renameat(int(directory.Fd()), temporary, int(directory.Fd()), name); err != nil {
+	if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
 		return err
 	}
 	cleanup = false
-	return directory.Sync()
+	return filewrite.SyncDir(directory, inj)
 }
 
 func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) error {
+	return writeBytesAtomicInjected(directory, name, content, mode, nil)
+}
+
+// writeBytesAtomicInjected is writeBytesAtomic's test seam (task-9 PR-3):
+// every production call site reaches it only through writeBytesAtomic,
+// which always passes a nil *filewrite.Injector, so production behaviour
+// is unchanged; a test passes its own Injector directly to reach a
+// create/chmod/write/sync/close/rename/dir-sync failure branch
+// deterministically.
+func writeBytesAtomicInjected(directory, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, "."+name+".tmp-*")
+	temporary, err := filewrite.CreateTemp(directory, "."+name+".tmp-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(mode); err != nil {
+	if err := filewrite.Chmod(int(temporary.Fd()), uint32(mode), temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(content); err != nil {
+	if err := filewrite.Write(temporary, content, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryName, filepath.Join(directory, name)); err != nil {
+	if err := filewrite.Rename(temporaryName, filepath.Join(directory, name), inj); err != nil {
 		return err
 	}
 	dir, err := os.Open(directory)
@@ -3709,5 +3742,5 @@ func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) 
 		return err
 	}
 	defer func() { _ = dir.Close() }()
-	return dir.Sync()
+	return filewrite.SyncDir(dir, inj)
 }

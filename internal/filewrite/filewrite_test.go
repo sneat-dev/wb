@@ -988,3 +988,194 @@ func TestRenameReportsARealFailure(t *testing.T) {
 		t.Fatal("Rename of a missing oldpath = nil, want an error")
 	}
 }
+
+// --- RenameAt (task-9 PR-3) ---
+
+func TestRenameAtPublishesFromNameToToName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err == nil {
+		t.Fatal("fromName still exists after RenameAt")
+	}
+}
+
+func TestRenameAtReplacesAnExistingToName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("new-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir.Name(), "new"), []byte("stale-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new-content" {
+		t.Fatalf("content = %q, want the replacing content", got)
+	}
+}
+
+func TestRenameAtHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepRename, Name: "new", Err: errBoom}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("RenameAt with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the injected failure")
+	}
+}
+
+func TestRenameAtReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := RenameAt(int(dir.Fd()), "missing", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameAt of a missing fromName = nil, want an error")
+	}
+}
+
+// --- RenameNoReplace (task-9 PR-3) ---
+
+func TestRenameNoReplaceRunsTheGivenRenameFunc(t *testing.T) {
+	t.Parallel()
+	called := false
+	if err := RenameNoReplace(func() error { called = true; return nil }, "name", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("RenameNoReplace did not run its rename func")
+	}
+}
+
+func TestRenameNoReplaceHonoursAnInjectedFailureWithoutRunningRename(t *testing.T) {
+	t.Parallel()
+	called := false
+	inj := &Injector{Step: StepRenameNoReplace, Name: "name", Err: errBoom}
+	if err := RenameNoReplace(func() error { called = true; return nil }, "name", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("RenameNoReplace with injected failure = %v, want errBoom", err)
+	}
+	if called {
+		t.Fatal("RenameNoReplace ran its rename func despite the injected failure")
+	}
+}
+
+func TestRenameNoReplaceReportsARealFailureFromRename(t *testing.T) {
+	t.Parallel()
+	if err := RenameNoReplace(func() error { return errBoom }, "name", nil); !errors.Is(err, errBoom) {
+		t.Fatalf("RenameNoReplace = %v, want errBoom", err)
+	}
+}
+
+// --- CreateOrTruncatePath (task-9 PR-3) ---
+
+func TestCreateOrTruncatePathCreatesAMissingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	file, err := CreateOrTruncatePath(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("created file missing: %v", err)
+	}
+}
+
+func TestCreateOrTruncatePathTruncatesAnExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("stale content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := CreateOrTruncatePath(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("size = %d, want 0 after truncation", info.Size())
+	}
+}
+
+func TestCreateOrTruncatePathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepOpenOrCreate, Name: path, Err: errBoom}
+	if _, err := CreateOrTruncatePath(path, 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("CreateOrTruncatePath with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("injected failure still created the file")
+	}
+}
+
+func TestCreateOrTruncatePathReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-dir", "f")
+	if _, err := CreateOrTruncatePath(path, 0o600, nil); err == nil {
+		t.Fatal("CreateOrTruncatePath under a missing directory = nil, want an error")
+	}
+}
+
+// --- WriteFile (task-9 PR-3) ---
+
+func TestWriteFileWritesTheGivenBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := WriteFile(path, []byte("content"), 0o600, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+}
+
+func TestWriteFileHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepWrite, Name: path, Err: errBoom}
+	if err := WriteFile(path, []byte("content"), 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("WriteFile with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("injected failure still created the file")
+	}
+}
+
+func TestWriteFileReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-dir", "f")
+	if err := WriteFile(path, []byte("content"), 0o600, nil); err == nil {
+		t.Fatal("WriteFile under a missing directory = nil, want an error")
+	}
+}

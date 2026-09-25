@@ -19,11 +19,12 @@
 // This package's exported surface only includes primitives spec/plans/
 // coverage-to-100 task-9's PR series has an actual production caller for
 // as of the PR that adds them; a primitive with no caller yet (a
-// RenameNoReplace, Mkdirat, or a "create, chmod, write, sync, but do not
-// close" composite) is added in the PR that first needs it, not
-// spuriously ahead of time. CreateTemp, CreateExclusivePath, ChmodPath,
-// Rename, and the exported Close were added in task-9 PR-2, the first PR
-// with a path-based (rather than fd-relative) call site.
+// Mkdirat, or a "create, chmod, write, sync, but do not close" composite)
+// is added in the PR that first needs it, not spuriously ahead of time.
+// CreateTemp, CreateExclusivePath, ChmodPath, Rename, and the exported
+// Close were added in task-9 PR-2, the first PR with a path-based
+// (rather than fd-relative) call site. RenameAt, RenameNoReplace,
+// CreateOrTruncatePath, and WriteFile were added in task-9 PR-3.
 package filewrite
 
 import (
@@ -74,6 +75,13 @@ const (
 	// used (task-9 PR-2: these sites resolve a plain absolute path, with
 	// no already-open parent directory descriptor to rename relative to).
 	StepRename Step = "rename"
+	// StepRenameNoReplace covers a fd-relative no-replace rename publish
+	// (RenameNoReplace) -- the sequence task-9 PR-3's
+	// internal/worktrees/worklog.go:writeBytesImmutableAt uses in place of
+	// LinkNoReplace's Linkat, so two racing publishers of identical
+	// content converge on whichever one wins the rename instead of each
+	// producing its own inode.
+	StepRenameNoReplace Step = "rename_no_replace"
 )
 
 // Injector lets a test force one named step to fail, or run a hook
@@ -426,4 +434,53 @@ func Rename(oldpath, newpath string, inj *Injector) error {
 		return err
 	}
 	return os.Rename(oldpath, newpath)
+}
+
+// RenameAt publishes a fd-relative rename (unix.Renameat), replacing any
+// existing toName -- the fd-relative twin of Rename for a task-9 PR-3
+// internal/worktrees call site that already holds an open directory
+// descriptor and has no reason to resolve a path through it.
+func RenameAt(fromDirectoryFD int, fromName string, toDirectoryFD int, toName string, inj *Injector) error {
+	if err := inj.run(StepRename, toName); err != nil {
+		return err
+	}
+	return unix.Renameat(fromDirectoryFD, fromName, toDirectoryFD, toName)
+}
+
+// RenameNoReplace runs rename, an already-resolved, fd-relative,
+// no-replace rename publish a caller built itself (renameat2's
+// RENAME_NOREPLACE on Linux, renameatx_np's RENAME_EXCL on Darwin --
+// platform mechanics this package does not duplicate, since
+// internal/worktrees' own renameNoReplace already implements them and is
+// also called from unrelated, non-write-sequence call sites this task
+// does not touch), after first giving toName an injectable failure
+// point matching this package's other publish steps.
+func RenameNoReplace(rename func() error, toName string, inj *Injector) error {
+	if err := inj.run(StepRenameNoReplace, toName); err != nil {
+		return err
+	}
+	return rename()
+}
+
+// CreateOrTruncatePath opens path for writing, creating it if it does
+// not exist and truncating it to empty if it does: O_WRONLY|O_CREAT|
+// O_TRUNC, mode -- the shape a task-9 PR-3 call site uses for a fixed
+// (not uniquely-named) temporary path it always fully overwrites, unlike
+// CreateExclusivePath's refuse-if-present contract.
+func CreateOrTruncatePath(path string, mode os.FileMode, inj *Injector) (*os.File, error) {
+	if err := inj.run(StepOpenOrCreate, path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+}
+
+// WriteFile writes data to path in one call (os.WriteFile: open-create-
+// truncate, write, close, no fsync) -- the shape task-9 PR-3's
+// WriteFile-to-temp+Rename call sites use for their temporary half, where
+// the original inline code never called Sync either.
+func WriteFile(path string, data []byte, mode os.FileMode, inj *Injector) error {
+	if err := inj.run(StepWrite, path); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, mode)
 }
