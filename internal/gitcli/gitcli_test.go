@@ -404,13 +404,35 @@ func TestClientCommitObjectExists(t *testing.T) {
 	t.Parallel()
 	fake := runnertest.New(t)
 	fake.ExpectArgv([]string{"git", "cat-file", "-e", "sha1^{commit}"}, runner.Result{}, nil)
-	if !New(fake).CommitObjectExists(context.Background(), "/repo", "sha1") {
-		t.Fatal("want true")
+	exists, err := New(fake).CommitObjectExists(context.Background(), "/repo", "sha1")
+	if err != nil || !exists {
+		t.Fatalf("CommitObjectExists() = (%v, %v), want (true, nil)", exists, err)
 	}
 
-	fake.ExpectArgv([]string{"git", "cat-file", "-e", "sha1^{commit}"}, runner.Result{}, errors.New("exit status 128"))
-	if New(fake).CommitObjectExists(context.Background(), "/repo", "sha1") {
-		t.Fatal("want false")
+	// Exit status 1 (object exists but isn't a commit) and exit status 128
+	// ("fatal: Not a valid object name", the shape a sha that is not any
+	// object at all actually produces) are both ordinary, error-free
+	// negative answers -- neither is something the caller should ever see
+	// as err.
+	fake.ExpectArgv([]string{"git", "cat-file", "-e", "sha1^{commit}"}, runner.Result{ExitCode: 1}, errors.New("exit status 1"))
+	exists, err = New(fake).CommitObjectExists(context.Background(), "/repo", "sha1")
+	if err != nil || exists {
+		t.Fatalf("CommitObjectExists() = (%v, %v), want (false, nil) for exit status 1", exists, err)
+	}
+	fake.ExpectArgv([]string{"git", "cat-file", "-e", "sha1^{commit}"}, runner.Result{ExitCode: 128, Stderr: "fatal: Not a valid object name sha1^{commit}\n"}, errors.New("exit status 128"))
+	exists, err = New(fake).CommitObjectExists(context.Background(), "/repo", "sha1")
+	if err != nil || exists {
+		t.Fatalf("CommitObjectExists() = (%v, %v), want (false, nil) for exit status 128 (not a valid object name)", exists, err)
+	}
+
+	// The one failure that must surface as an error rather than be read as
+	// "the commit doesn't exist" (B5): task-24's runtime guard refusing to
+	// start the process at all, once this method is reached through a
+	// guarded runner.
+	fake.ExpectArgv([]string{"git", "cat-file", "-e", "sha1^{commit}"}, runner.Result{}, runner.ErrRealProcessBlocked)
+	exists, err = New(fake).CommitObjectExists(context.Background(), "/repo", "sha1")
+	if !errors.Is(err, runner.ErrRealProcessBlocked) || exists {
+		t.Fatalf("CommitObjectExists() = (%v, %v), want (false, ErrRealProcessBlocked)", exists, err)
 	}
 }
 

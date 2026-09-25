@@ -94,7 +94,7 @@ func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOption
 	// fallback (the commits API) covers a head this fetch could not reach.
 	_, _, _ = runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
 		"+refs/heads/"+branch+":refs/remotes/origin/"+branch)
-	return reviewedHeadAdvanceChain(ctx, worktree, branch, options.Repository, view.Base.Ref, reviewedHead, currentHead)
+	return reviewedHeadAdvanceChain(ctx, options.resolveGit(), worktree, branch, options.Repository, view.Base.Ref, reviewedHead, currentHead)
 }
 
 // resolveReviewProofCheckout finds a local git checkout the proof can run
@@ -129,7 +129,7 @@ func resolveReviewProofCheckout(ctx context.Context, options PullRequestLandOpti
 // the checkout directly rather than locating one — the seam tests use to
 // exercise the walk with reviewHeadAdvanceProof faked, without a real git
 // checkout or worktree inventory.
-func reviewedHeadAdvanceChain(ctx context.Context, worktree, branch, repository, target, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
+func reviewedHeadAdvanceChain(ctx context.Context, git Git, worktree, branch, repository, target, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
 	head := currentHead
 	for hop := 0; hop < maxReviewAdvanceHops; hop++ {
 		if strings.EqualFold(head, reviewedHead) {
@@ -145,7 +145,7 @@ func reviewedHeadAdvanceChain(ctx context.Context, worktree, branch, repository,
 		if len(parents) != 2 {
 			return false, false, ""
 		}
-		proven, proofErr := reviewHeadAdvanceProof(ctx, worktree, branch, target, repository, parents[0], parents[1], head)
+		proven, proofErr := reviewHeadAdvanceProof(ctx, git, worktree, branch, target, repository, parents[0], parents[1], head)
 		if proofErr != nil {
 			if IsTransientReadFailure(proofErr) {
 				return false, true, "a transient GitHub read failure interrupted the check (" + proofErr.Error() + ")"

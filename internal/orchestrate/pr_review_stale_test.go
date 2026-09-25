@@ -113,7 +113,7 @@ func TestReviewStaleRefusalNamesTheTransientCauseNotAlwaysNoCheckout(t *testing.
 	reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
 		return nil, githubobserver.ErrTransientRetriesExhausted
 	}
-	reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+	reviewHeadAdvanceProof = func(ctx context.Context, _ Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 		t.Fatal("proof must not be consulted when the parent read itself failed transiently")
 		return false, nil
 	}

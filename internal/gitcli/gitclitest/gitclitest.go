@@ -63,7 +63,7 @@ type Fake struct {
 	BranchSetUpstreamToErrByCase       map[string]error
 	MergeTreeWriteTreeByCase           map[string]Result
 	ShowTreeFormatByCase               map[string]Result
-	CommitObjectExistsByCase           map[string]bool
+	CommitObjectExistsByCase           map[string]BoolResult
 	ConfigRegexpMatchesByCase          map[string]BoolResult
 
 	mu      sync.Mutex
@@ -335,13 +335,13 @@ func (f *Fake) ShowTreeFormat(_ context.Context, dir, commit string) (string, er
 }
 
 // CommitObjectExists implements orchestrate.Git.
-func (f *Fake) CommitObjectExists(_ context.Context, dir, sha string) bool {
+func (f *Fake) CommitObjectExists(_ context.Context, dir, sha string) (bool, error) {
 	caseKey := key(dir, sha)
-	value, ok := f.CommitObjectExistsByCase[caseKey]
+	result, ok := f.CommitObjectExistsByCase[caseKey]
 	if !ok {
 		panic("gitclitest.Fake: CommitObjectExists not scripted for " + caseKey)
 	}
-	return value
+	return result.Value, result.Err
 }
 
 // ConfigRegexpMatches implements orchestrate.Git.

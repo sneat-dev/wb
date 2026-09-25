@@ -248,12 +248,9 @@ func TestFakeWorktreeRemoveForceReturnsScriptedError(t *testing.T) {
 
 func TestFakeWorktreeRemoveForcePanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).WorktreeRemoveForce(context.Background(), "/repo", "/scratch") //nolint:errcheck
 	})
-	(&Fake{}).WorktreeRemoveForce(context.Background(), "/repo", "/scratch") //nolint:errcheck
 }
 
 func TestFakeWorktreeAddDetachedReturnsScriptedError(t *testing.T) {
@@ -267,12 +264,9 @@ func TestFakeWorktreeAddDetachedReturnsScriptedError(t *testing.T) {
 
 func TestFakeWorktreeAddDetachedPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).WorktreeAddDetached(context.Background(), "/repo", "/scratch", "abc123") //nolint:errcheck
 	})
-	(&Fake{}).WorktreeAddDetached(context.Background(), "/repo", "/scratch", "abc123") //nolint:errcheck
 }
 
 func TestFakeCherryPickNoCommitReturnsScriptedError(t *testing.T) {
@@ -286,12 +280,9 @@ func TestFakeCherryPickNoCommitReturnsScriptedError(t *testing.T) {
 
 func TestFakeCherryPickNoCommitPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).CherryPickNoCommit(context.Background(), "/repo", "sha1") //nolint:errcheck
 	})
-	(&Fake{}).CherryPickNoCommit(context.Background(), "/repo", "sha1") //nolint:errcheck
 }
 
 func TestFakeCommitNoVerifyReturnsScriptedError(t *testing.T) {
@@ -305,12 +296,9 @@ func TestFakeCommitNoVerifyReturnsScriptedError(t *testing.T) {
 
 func TestFakeCommitNoVerifyPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).CommitNoVerify(context.Background(), "/repo", "aggregate") //nolint:errcheck
 	})
-	(&Fake{}).CommitNoVerify(context.Background(), "/repo", "aggregate") //nolint:errcheck
 }
 
 func TestFakeCherryPickReturnsScriptedError(t *testing.T) {
@@ -324,12 +312,9 @@ func TestFakeCherryPickReturnsScriptedError(t *testing.T) {
 
 func TestFakeCherryPickPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).CherryPick(context.Background(), "/repo", "sha1") //nolint:errcheck
 	})
-	(&Fake{}).CherryPick(context.Background(), "/repo", "sha1") //nolint:errcheck
 }
 
 func TestFakePushForceWithLeaseHeadReturnsScriptedError(t *testing.T) {
@@ -343,12 +328,9 @@ func TestFakePushForceWithLeaseHeadReturnsScriptedError(t *testing.T) {
 
 func TestFakePushForceWithLeaseHeadPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).PushForceWithLeaseHead(context.Background(), "/repo", "feature", "sha1") //nolint:errcheck
 	})
-	(&Fake{}).PushForceWithLeaseHead(context.Background(), "/repo", "feature", "sha1") //nolint:errcheck
 }
 
 func TestFakeFetchRefsReturnsScriptedError(t *testing.T) {
@@ -362,12 +344,9 @@ func TestFakeFetchRefsReturnsScriptedError(t *testing.T) {
 
 func TestFakeFetchRefsPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).FetchRefs(context.Background(), "/repo", "origin", "main") //nolint:errcheck
 	})
-	(&Fake{}).FetchRefs(context.Background(), "/repo", "origin", "main") //nolint:errcheck
 }
 
 func TestFakeRevListReverseRangeReturnsScriptedResult(t *testing.T) {
@@ -381,12 +360,9 @@ func TestFakeRevListReverseRangeReturnsScriptedResult(t *testing.T) {
 
 func TestFakeRevListReverseRangePanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).RevListReverseRange(context.Background(), "/repo", "base", "head") //nolint:errcheck
 	})
-	(&Fake{}).RevListReverseRange(context.Background(), "/repo", "base", "head") //nolint:errcheck
 }
 
 func TestFakeRemotePushURLReturnsScriptedResult(t *testing.T) {
@@ -400,12 +376,9 @@ func TestFakeRemotePushURLReturnsScriptedResult(t *testing.T) {
 
 func TestFakeRemotePushURLPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted remote")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).RemotePushURL(context.Background(), "/repo", "origin") //nolint:errcheck
 	})
-	(&Fake{}).RemotePushURL(context.Background(), "/repo", "origin") //nolint:errcheck
 }
 
 func TestFakeStatusPorcelainReturnsScriptedResult(t *testing.T) {
@@ -419,12 +392,9 @@ func TestFakeStatusPorcelainReturnsScriptedResult(t *testing.T) {
 
 func TestFakeStatusPorcelainPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted dir")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).StatusPorcelain(context.Background(), "/repo") //nolint:errcheck
 	})
-	(&Fake{}).StatusPorcelain(context.Background(), "/repo") //nolint:errcheck
 }
 
 func TestFakeBranchShowCurrentReturnsScriptedResult(t *testing.T) {
@@ -438,12 +408,9 @@ func TestFakeBranchShowCurrentReturnsScriptedResult(t *testing.T) {
 
 func TestFakeBranchShowCurrentPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted dir")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).BranchShowCurrent(context.Background(), "/repo") //nolint:errcheck
 	})
-	(&Fake{}).BranchShowCurrent(context.Background(), "/repo") //nolint:errcheck
 }
 
 func TestFakeMergeBaseIsAncestorStrictReturnsScriptedError(t *testing.T) {
@@ -457,12 +424,9 @@ func TestFakeMergeBaseIsAncestorStrictReturnsScriptedError(t *testing.T) {
 
 func TestFakeMergeBaseIsAncestorStrictPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).MergeBaseIsAncestorStrict(context.Background(), "/repo", "base", "head") //nolint:errcheck
 	})
-	(&Fake{}).MergeBaseIsAncestorStrict(context.Background(), "/repo", "base", "head") //nolint:errcheck
 }
 
 func TestFakeBranchSetUpstreamToReturnsScriptedError(t *testing.T) {
@@ -476,12 +440,9 @@ func TestFakeBranchSetUpstreamToReturnsScriptedError(t *testing.T) {
 
 func TestFakeBranchSetUpstreamToPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_ = (&Fake{}).BranchSetUpstreamTo(context.Background(), "/repo", "origin/feature", "feature") //nolint:errcheck
 	})
-	(&Fake{}).BranchSetUpstreamTo(context.Background(), "/repo", "origin/feature", "feature") //nolint:errcheck
 }
 
 func TestFakeMergeTreeWriteTreeReturnsScriptedResult(t *testing.T) {
@@ -495,12 +456,9 @@ func TestFakeMergeTreeWriteTreeReturnsScriptedResult(t *testing.T) {
 
 func TestFakeMergeTreeWriteTreePanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).MergeTreeWriteTree(context.Background(), "/repo", "a", "b") //nolint:errcheck
 	})
-	(&Fake{}).MergeTreeWriteTree(context.Background(), "/repo", "a", "b") //nolint:errcheck
 }
 
 func TestFakeShowTreeFormatReturnsScriptedResult(t *testing.T) {
@@ -514,30 +472,26 @@ func TestFakeShowTreeFormatReturnsScriptedResult(t *testing.T) {
 
 func TestFakeShowTreeFormatPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).ShowTreeFormat(context.Background(), "/repo", "head1") //nolint:errcheck
 	})
-	(&Fake{}).ShowTreeFormat(context.Background(), "/repo", "head1") //nolint:errcheck
 }
 
 func TestFakeCommitObjectExistsReturnsScriptedResult(t *testing.T) {
 	t.Parallel()
-	fake := &Fake{CommitObjectExistsByCase: map[string]bool{key("/repo", "sha1"): true}}
-	if !fake.CommitObjectExists(context.Background(), "/repo", "sha1") {
-		t.Fatal("CommitObjectExists() = false, want true")
+	wantErr := errors.New("boom")
+	fake := &Fake{CommitObjectExistsByCase: map[string]BoolResult{key("/repo", "sha1"): {Value: true, Err: wantErr}}}
+	exists, err := fake.CommitObjectExists(context.Background(), "/repo", "sha1")
+	if !exists || err != wantErr {
+		t.Fatalf("CommitObjectExists() = (%v, %v), want (true, %v)", exists, err, wantErr)
 	}
 }
 
 func TestFakeCommitObjectExistsPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).CommitObjectExists(context.Background(), "/repo", "sha1") //nolint:errcheck
 	})
-	(&Fake{}).CommitObjectExists(context.Background(), "/repo", "sha1")
 }
 
 func TestFakeConfigRegexpMatchesReturnsScriptedResult(t *testing.T) {
@@ -552,10 +506,7 @@ func TestFakeConfigRegexpMatchesReturnsScriptedResult(t *testing.T) {
 
 func TestFakeConfigRegexpMatchesPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	t.Cleanup(func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).ConfigRegexpMatches(context.Background(), "/repo", "^remote\\.x\\.") //nolint:errcheck
 	})
-	(&Fake{}).ConfigRegexpMatches(context.Background(), "/repo", "^remote\\.x\\.") //nolint:errcheck
 }

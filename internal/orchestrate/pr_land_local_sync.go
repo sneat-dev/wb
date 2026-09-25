@@ -33,7 +33,7 @@ func syncLocalWorktreeAfterUpdateBranch(ctx context.Context, options PullRequest
 		// report.
 		return ""
 	}
-	return fastForwardWorktreeToUpdatedHead(ctx, worktree, branch, updatedHead)
+	return fastForwardWorktreeToUpdatedHead(ctx, options.resolveGit(), worktree, branch, updatedHead)
 }
 
 // fastForwardWorktreeToUpdatedHead brings a local WB worktree that has
@@ -51,14 +51,14 @@ func syncLocalWorktreeAfterUpdateBranch(ctx context.Context, options PullRequest
 // does not have, or a fetched head that disagrees with updatedHead — becomes
 // a short note in the returned string; only a clean worktree whose HEAD is
 // an ancestor of the newly fetched branch is fast-forwarded.
-func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, updatedHead string) (note string) {
+func fastForwardWorktreeToUpdatedHead(ctx context.Context, git Git, worktree, branch, updatedHead string) (note string) {
 	worktree = strings.TrimSpace(worktree)
 	if worktree == "" {
 		return ""
 	}
 	prefix := fmt.Sprintf("local worktree not fast-forwarded: %s: ", worktree)
 
-	status, err := orchestrateGit.StatusPorcelain(ctx, worktree)
+	status, err := git.StatusPorcelain(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -66,7 +66,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 		return prefix + "uncommitted changes"
 	}
 
-	current, err := orchestrateGit.BranchShowCurrent(ctx, worktree)
+	current, err := git.BranchShowCurrent(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -89,7 +89,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 			shortMergeRevision(fetched), shortMergeRevision(updatedHead))
 	}
 
-	if ancestorErr := orchestrateGit.MergeBaseIsAncestorStrict(ctx, worktree, "HEAD", remoteRef); ancestorErr != nil {
+	if ancestorErr := git.MergeBaseIsAncestorStrict(ctx, worktree, "HEAD", remoteRef); ancestorErr != nil {
 		return prefix + "diverged local commits"
 	}
 
@@ -99,7 +99,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 
 	// Best effort: the fast-forward already succeeded, and a tracking-branch
 	// slip is not worth reporting as an obstacle to it.
-	_ = orchestrateGit.BranchSetUpstreamTo(ctx, worktree, "origin/"+branch, branch)
+	_ = git.BranchSetUpstreamTo(ctx, worktree, "origin/"+branch, branch)
 
 	return fmt.Sprintf("fast-forwarded worktree %s to %s", worktree, shortMergeRevision(updatedHead))
 }

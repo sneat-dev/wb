@@ -156,11 +156,11 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			// "foreign" has only one parent: not an update-branch merge shape.
 			return []string{"reviewed"}, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		reviewHeadAdvanceProof = func(ctx context.Context, _ Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			t.Fatal("proof must not be consulted for a non-merge commit")
 			return false, nil
 		}
-		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "foreign"); advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, nil, "wt", "feature", "acme/app", "main", "reviewed", "foreign"); advanced || unverifiable {
 			t.Fatalf("a foreign, non-merge commit must not be treated as still current or unverifiable: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -174,10 +174,10 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			t.Fatalf("unexpected commit parents lookup for %s", sha)
 			return nil, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		reviewHeadAdvanceProof = func(ctx context.Context, _ Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return candidateSHA == "reviewed" && targetParent == "target1" && headSHA == "current", nil
 		}
-		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); !advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, nil, "wt", "feature", "acme/app", "main", "reviewed", "current"); !advanced || unverifiable {
 			t.Fatalf("a proved update-branch merge advance must be allowed: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -186,10 +186,10 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
 			return []string{"reviewed", "target1"}, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		reviewHeadAdvanceProof = func(ctx context.Context, _ Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return false, nil // right parent shape, wrong content
 		}
-		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, nil, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || unverifiable {
 			t.Fatalf("a merge shape that fails the tree/ancestor proof must not be trusted: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -202,10 +202,10 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
 			return []string{"reviewed", "target1"}, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		reviewHeadAdvanceProof = func(ctx context.Context, _ Git, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return false, githubobserver.ErrTransientRetriesExhausted
 		}
-		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || !unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, nil, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || !unverifiable {
 			t.Fatalf("a transient proof failure must be unverifiable, not a stale verdict: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})

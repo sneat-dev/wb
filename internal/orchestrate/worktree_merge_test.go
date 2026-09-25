@@ -1006,7 +1006,7 @@ func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t 
 	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: resolve later target conflict")
 	head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
 
-	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt)
+	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), nil, &receipt)
 	if err != nil {
 		t.Fatalf("advance exact published ancestry chain: %v", err)
 	}
@@ -1019,7 +1019,7 @@ func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t 
 	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "untrusted.txt"), "untrusted\n")
 	runEngineGit(t, receipt.Candidate.Worktree, "add", "untrusted.txt")
 	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: untrusted ancestry probe")
-	if _, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt); err == nil || !strings.Contains(err.Error(), "published candidate predecessor") {
+	if _, err := advancePublishedWorktreeMergeCandidate(context.Background(), nil, &receipt); err == nil || !strings.Contains(err.Error(), "published candidate predecessor") {
 		t.Fatalf("unrelated published predecessor was not refused: %v", err)
 	}
 }

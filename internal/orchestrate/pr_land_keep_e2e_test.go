@@ -20,10 +20,10 @@ import (
 
 func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 	t.Parallel()
-	if refusal := buildAt(context.Background(), t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, []string{"sh", "-c", "exit 0"}); refusal != nil {
+	if refusal := buildAt(context.Background(), defaultRunner, t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, []string{"sh", "-c", "exit 0"}); refusal != nil {
 		t.Fatalf("passing build refusal = %+v", refusal)
 	}
-	refusal := buildAt(context.Background(), t.TempDir(),
+	refusal := buildAt(context.Background(), defaultRunner, t.TempDir(),
 		SourceCommit{SHA: "0123456789abcdef", Subject: "add the thing"},
 		[]string{"sh", "-c", "echo compile exploded >&2; exit 1"})
 	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
@@ -40,18 +40,18 @@ func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt", "c.txt")
-	commits, err := commitsBetween(context.Background(), fixture.canonical, fixture.baseSHA, fixture.headSHA)
+	commits, err := commitsBetween(context.Background(), defaultGit, fixture.canonical, fixture.baseSHA, fixture.headSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(commits) != 3 || commits[0] != fixture.commitSHAs[0] || commits[2] != fixture.commitSHAs[2] {
 		t.Fatalf("commits between = %v, want %v", commits, fixture.commitSHAs)
 	}
-	first, err := patchIdentity(context.Background(), fixture.canonical, commits[0])
+	first, err := patchIdentity(context.Background(), defaultRunner, fixture.canonical, commits[0])
 	if err != nil || first == "" {
 		t.Fatalf("patch identity = %q, err %v", first, err)
 	}
-	second, err := patchIdentity(context.Background(), fixture.canonical, commits[1])
+	second, err := patchIdentity(context.Background(), defaultRunner, fixture.canonical, commits[1])
 	if err != nil || second == first {
 		t.Fatalf("distinct commits shared a patch identity: %q vs %q (err %v)", first, second, err)
 	}
@@ -72,7 +72,7 @@ func TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit(t *testing.T) {
 	runEngineGit(t, fixture.canonical, "merge", "--no-ff", "-m", "merge side", sideSHA)
 	mergeSHA := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
 
-	identity, err := patchIdentity(context.Background(), fixture.canonical, mergeSHA)
+	identity, err := patchIdentity(context.Background(), defaultRunner, fixture.canonical, mergeSHA)
 	if err != nil || identity != "" {
 		t.Fatalf("merge commit patch identity = %q, err %v", identity, err)
 	}
@@ -83,7 +83,7 @@ func TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit(t *testing.T) {
 		{SourceSHA: mergeSHA, Subject: "merge side", Kept: true},
 		{SourceSHA: sideSHA, Subject: "side work"},
 	}
-	mapped, err := MapLandedCommits(context.Background(), fixture.canonical, "main", fixture.baseSHA, landed)
+	mapped, err := MapLandedCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical, "main", fixture.baseSHA, landed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity(t *testing.T) {
 		{SourceSHA: fixture.commitSHAs[0], Subject: "change a.txt"},
 		{SourceSHA: fixture.commitSHAs[2], Subject: "change c.txt"},
 	}
-	mapped, err := MapLandedCommits(context.Background(), fixture.canonical, "landed", fixture.baseSHA, landed)
+	mapped, err := MapLandedCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical, "landed", fixture.baseSHA, landed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestOrchCovMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate(t *te
 	runEngineGit(t, fixture.canonical, "checkout", "main")
 
 	landed := []LandedCommit{{SourceSHA: fixture.commitSHAs[0], Subject: "change a.txt", Kept: true}}
-	mapped, err := MapLandedCommits(context.Background(), fixture.canonical, "landed", fixture.baseSHA, landed)
+	mapped, err := MapLandedCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical, "landed", fixture.baseSHA, landed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestOrchCovRewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *test
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
-	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
+	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
 		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "reviewer@example.test",
 		"these two stand alone", []string{"sh", "-c", "exit 0"})
 	if err != nil {
@@ -201,7 +201,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
 	view.Head.Ref, view.Base.Ref = "candidate", "main"
 	view.Head.SHA = strings.Repeat("b", 40)
 
-	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
 		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranc
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
-	_, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
+	_, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
 		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
-	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
 		"acme/app", "candidate", advanced, plan, view, commits, "", "", []string{"sh", "-c", "exit 0"})
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t 
 	view := PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
-	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), fixture.canonical,
+	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
 		"acme/app", "candidate", fixture.baseSHA, plan, view, commits, "", "",
 		[]string{"sh", "-c", "exit 7"})
 	if err != nil {

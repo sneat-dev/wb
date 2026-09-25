@@ -492,16 +492,19 @@ func TestContractGitcliCommitObjectExistsMatchesRealGit(t *testing.T) {
 	featureSHA := contractGit(t, dir, "rev-parse", "feature")
 
 	realClient := gitcli.New(runner.New())
-	if !realClient.CommitObjectExists(context.Background(), dir, featureSHA) {
-		t.Fatal("real Client.CommitObjectExists = false for a commit that exists")
+	exists, err := realClient.CommitObjectExists(context.Background(), dir, featureSHA)
+	if err != nil || !exists {
+		t.Fatalf("real Client.CommitObjectExists = (%v, %v), want (true, nil) for a commit that exists", exists, err)
 	}
-	if realClient.CommitObjectExists(context.Background(), dir, "0000000000000000000000000000000000000000") {
-		t.Fatal("real Client.CommitObjectExists = true for a SHA that does not exist")
+	absent, err := realClient.CommitObjectExists(context.Background(), dir, "0000000000000000000000000000000000000000")
+	if err != nil || absent {
+		t.Fatalf("real Client.CommitObjectExists = (%v, %v), want (false, nil) for a SHA that does not exist", absent, err)
 	}
 
-	fake := &gitclitest.Fake{CommitObjectExistsByCase: map[string]bool{dir + "\x00" + featureSHA: true}}
-	if !fake.CommitObjectExists(context.Background(), dir, featureSHA) {
-		t.Fatal("fake.CommitObjectExists = false, want true")
+	fake := &gitclitest.Fake{CommitObjectExistsByCase: map[string]gitclitest.BoolResult{dir + "\x00" + featureSHA: {Value: true}}}
+	fakeExists, err := fake.CommitObjectExists(context.Background(), dir, featureSHA)
+	if err != nil || !fakeExists {
+		t.Fatalf("fake.CommitObjectExists = (%v, %v), want (true, nil)", fakeExists, err)
 	}
 }
 

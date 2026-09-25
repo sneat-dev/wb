@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -33,6 +34,14 @@ type landFixture struct {
 
 func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	t.Helper()
+	// This file's tests are on internal/quality/testdata/unit_tier.pending
+	// (task-17): every landing under test here reaches PullRequestLandOptions'
+	// git/run seam (pr_land.go), which defaults to production's real
+	// gitcli/runner adapters and so starts a real process through
+	// task-24's guarded runner exactly as this fixture's own runEngineGit
+	// calls already do outside it. AllowRealProcess is what the guard's own
+	// refusal message names as the fix for a file already on that list.
+	runnertest.AllowRealProcess(t)
 	if len(files) == 0 {
 		files = []string{"go.sum"}
 	}

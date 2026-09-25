@@ -68,7 +68,7 @@ func TestOrchCovPlanKeptCommitsKeepsEveryNamedCommitWhenNoneIsAggregated(t *test
 
 func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 	t.Parallel()
-	refusal := buildAt(context.Background(), t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, nil)
+	refusal := buildAt(context.Background(), nil, t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, nil)
 	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
 		t.Fatalf("uninferable build refusal = %+v", refusal)
 	}

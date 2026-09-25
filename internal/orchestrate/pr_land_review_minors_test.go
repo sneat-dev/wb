@@ -56,7 +56,7 @@ func TestAdvancePublishedWorktreeMergeCandidateClearsAStaleLocalSyncNote(t *test
 		t.Fatal(err)
 	}
 	receipt.LocalSync = "local worktree not fast-forwarded: stale failure note from an earlier resume"
-	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt)
+	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), nil, &receipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestAdvancePublishedWorktreeMergeCandidateAppendsLocalSyncToDriftError(t *t
 	runEngineGit(t, receipt.Candidate.Worktree, "add", "-A")
 	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "unrecorded local drift")
 
-	_, err = advancePublishedWorktreeMergeCandidate(context.Background(), &receipt)
+	_, err = advancePublishedWorktreeMergeCandidate(context.Background(), nil, &receipt)
 	if err == nil {
 		t.Fatal("want a drift error for an unrecorded candidate advance")
 	}
@@ -298,7 +298,7 @@ func TestAdoptWorktreeMergeUpdateBranchAdvanceRefusesAHeadItDidNotHold(t *testin
 	const staleHead = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	const updated = "1234567890123456789012345678901234567890"
 
-	err := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), &receipt, staleHead, updated)
+	err := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), nil, &receipt, staleHead, updated)
 	if err == nil {
 		t.Fatalf("want a refusal when previous (%s) does not match the receipt's own candidate (%s)", staleHead, receipt.Candidate.SHA)
 	}

@@ -11,6 +11,17 @@
 // (or runGit-helper) call it replaces, so migrating a call site onto it
 // changes nothing observable -- error text, argv and behaviour stay
 // identical (spec/plans/coverage-to-100 rule 1).
+//
+// The seam a unit test substitutes into is not a package-level var: it is
+// the git (and, for pr_land_keep.go's non-git-port calls, run) field
+// PullRequestLandOptions and WorktreeMergeLandOptions each carry, resolved
+// through their resolveGit()/resolveRunner() accessors, which fall back to
+// defaultGit/defaultRunner below only when a caller leaves the field nil.
+// This follows internal/streams/ports.go's engine.Git struct-field
+// precedent: every call site already threads an Options value down its
+// parameter chain (or is one hop from a function that does), so the git/run
+// values ride along the same path rather than living in mutable package
+// state nothing in this package ever reassigns.
 package orchestrate
 
 import (
@@ -58,20 +69,27 @@ type Git interface {
 	// ShowTreeFormat resolves commit's tree id.
 	ShowTreeFormat(ctx context.Context, dir, commit string) (string, error)
 	// CommitObjectExists reports whether sha's commit object already
-	// exists in dir's object database.
-	CommitObjectExists(ctx context.Context, dir, sha string) bool
+	// exists in dir's object database. A definitive negative answer (the
+	// object is absent) is (false, nil); any other failure -- including a
+	// guarded runner refusing to start the process at all -- is a non-nil
+	// error the caller must not read as a negative answer (B5).
+	CommitObjectExists(ctx context.Context, dir, sha string) (bool, error)
 }
 
-// orchestrateGit is production's Git port. A unit test replaces it with a
-// *gitclitest.Fake.
-var orchestrateGit Git = gitcli.New(runner.New())
+// defaultGit is production's Git port: the value PullRequestLandOptions and
+// WorktreeMergeLandOptions's resolveGit() accessors return when the
+// caller's own git field is nil. It is immutable -- nothing in this package
+// ever reassigns it, by design; see the package doc above for the seam a
+// test actually substitutes into.
+var defaultGit Git = gitcli.New(runner.New())
 
-// orchestrateRunner is production's generic command runner, for this
-// package's non-git-port external calls (pr_land_keep.go's kept-commit
-// build verification and patch-identity shell pipeline). command.go's own
+// defaultRunner is production's generic command runner, for this package's
+// non-git-port external calls (pr_land_keep.go's kept-commit build
+// verification and patch-identity shell pipeline). command.go's own
 // retrying runCommand keeps calling exec.CommandContext directly rather
-// than through this seam -- see its doc comment. A unit test replaces this
-// var with a runnertest.Fake.
-var orchestrateRunner runner.Runner = runner.New()
+// than through this seam -- see its doc comment. Same immutability and
+// fallback shape as defaultGit: PullRequestLandOptions's resolveRunner()
+// accessor returns it only when the caller's own run field is nil.
+var defaultRunner runner.Runner = runner.New()
 
 var _ Git = gitcli.Client{}

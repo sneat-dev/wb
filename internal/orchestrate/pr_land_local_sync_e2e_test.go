@@ -174,7 +174,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	runEngineGit(t, worktree, "config", "user.email", "wb@example.test")
 
 	const bogusHead = "0000000000000000000000000000000000000000"
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), worktree, "feature", bogusHead)
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), defaultGit, worktree, "feature", bogusHead)
 	if !strings.Contains(note, "does not match updated head") {
 		t.Fatalf("note = %q, want a fetched-head mismatch note", note)
 	}

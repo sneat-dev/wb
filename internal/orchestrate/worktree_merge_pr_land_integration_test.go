@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -31,6 +32,13 @@ type wmEngineGH struct {
 
 func installWorktreeMergeEngineGH(t *testing.T, fixture engineFixture, candidateSHA, candidateBranch string) *wmEngineGH {
 	t.Helper()
+	// This file is on internal/quality/testdata/unit_tier.pending (task-17):
+	// every landing under test here reaches WorktreeMergeLandOptions' git
+	// seam (worktree_merge.go), which defaults to production's real
+	// gitcli/runner adapters and so starts a real process through
+	// task-24's guarded runner exactly as this fixture's own runEngineGit
+	// calls already do outside it.
+	runnertest.AllowRealProcess(t)
 	// The fake GitHub commits directly in the remote (update-branch merges,
 	// "GitHub merges while WB is away"), so the bare remote needs a git
 	// identity of its own: a CI runner has no global one to fall back on.

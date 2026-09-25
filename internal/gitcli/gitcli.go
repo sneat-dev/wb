@@ -230,14 +230,34 @@ func (c Client) ShowTreeFormat(ctx context.Context, dir, commit string) (string,
 }
 
 // CommitObjectExists reports whether sha's commit object already exists in
-// dir's object database. Unlike every other method here, it collapses any
-// failure (missing object, an unreadable repository, a cancelled context)
-// into false rather than returning an error: the call this replaces
-// (internal/orchestrate's commitExistsLocally) only ever used the call's
-// success as its answer and had no error return of its own to preserve.
-func (c Client) CommitObjectExists(ctx context.Context, dir, sha string) bool {
-	_, err := c.run(ctx, dir, "cat-file", "-e", sha+"^{commit}")
-	return err == nil
+// dir's object database. Unlike ConfigRegexpMatches and IsAncestor above,
+// it cannot lean on one fixed "exit code 1 means no" shape: `cat-file -e
+// <sha>^{commit}` exits 1 for an object that exists but is not (yet) a
+// commit, and exits 128 with a "fatal: Not a valid object name" message for
+// a sha that is not any object at all -- both are ordinary, error-free
+// negative answers. What must never be read as one is
+// [github.com/sneat-dev/wb/internal/runner.ErrRealProcessBlocked]: once
+// this method is reached through a guarded runner (as it is once a
+// consumer package migrates onto it), that sentinel means task-24's runtime
+// guard refused to start the process at all, which is a real error the
+// caller must not treat as "the commit doesn't exist". Collapsing every
+// failure into false was the shape this replaced before
+// spec/plans/coverage-to-100 task-17 routed it through a guarded runner:
+// internal/orchestrate's pre-migration commitExistsLocally called an
+// unguarded exec.CommandContext directly, so ErrRealProcessBlocked could
+// never occur there. It can here, so this method (and commitExistsLocally,
+// its only caller) must tell it apart from every other failure, which stays
+// a negative answer exactly as before.
+func (c Client) CommitObjectExists(ctx context.Context, dir, sha string) (bool, error) {
+	result, err := c.Runner.Run(ctx, dir, "git", "cat-file", "-e", sha+"^{commit}")
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, runner.ErrRealProcessBlocked) {
+		args := []string{"cat-file", "-e", sha + "^{commit}"}
+		return false, &GitError{Argv: args, Stderr: result.Stderr, Err: err}
+	}
+	return false, nil
 }
 
 // ConfigRegexpMatches reports whether `git config --get-regexp pattern` in

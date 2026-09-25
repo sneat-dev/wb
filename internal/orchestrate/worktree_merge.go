@@ -357,6 +357,23 @@ type WorktreeMergeLandOptions struct {
 	// CheckoutUpdated is called only after the checked-out canonical target
 	// has moved and the exact landed commit is proven reachable. Nil discards.
 	CheckoutUpdated func(context.Context, CheckoutUpdate)
+	// git overrides this package's Git port (ports.go); nil uses defaultGit.
+	// A unit test sets this to a *gitclitest.Fake so a land/resume call that
+	// reaches the migrated call sites (spec/plans/coverage-to-100 task-17)
+	// never starts a real process, without mutating any shared package
+	// state. See resolveGit below and PullRequestLandOptions' identical
+	// seam in pr_land.go.
+	git Git
+}
+
+// resolveGit returns options.git, falling back to defaultGit (ports.go) when
+// the caller left it nil -- production's implicit choice, and every existing
+// caller's behaviour before task-17 introduced this seam.
+func (options WorktreeMergeLandOptions) resolveGit() Git {
+	if options.git != nil {
+		return options.git
+	}
+	return defaultGit
 }
 
 type CheckoutUpdate struct {
@@ -1352,7 +1369,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		// See adoptServerUpdatedWorktreeMergeHead (M5) and
 		// adoptWorktreeMergeUpdateBranchAdvance's M3 persist-first ordering,
 		// whose crash window this closes.
-		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, &receipt)
+		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, options.resolveGit(), &receipt)
 		if adoptErr != nil {
 			if IsTransientGitHubFailure(adoptErr) {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
@@ -1369,7 +1386,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, &receipt)
+		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, options.resolveGit(), &receipt)
 		if advanceErr != nil {
 			if IsTransientGitHubFailure(advanceErr) {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
@@ -1941,7 +1958,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	return receipt, nil
 }
 
-func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt) (bool, error) {
+func advancePublishedWorktreeMergeCandidate(ctx context.Context, git Git, receipt *WorktreeMergeReceipt) (bool, error) {
 	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("read published candidate HEAD: %w", err)
@@ -1975,7 +1992,7 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *Worktr
 	// itself best-effort: the receipt is the durable record here, and the
 	// worktree is a convenience the next resume can still repair.
 	if worktreeMergeCandidateAdvanceRecorded(*receipt, head, receipt.Candidate.SHA) {
-		if note := fastForwardWorktreeToUpdatedHead(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
+		if note := fastForwardWorktreeToUpdatedHead(ctx, git, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
 			receipt.LocalSync = note
 		}
 		return false, nil

@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -158,6 +159,37 @@ type PullRequestLandOptions struct {
 	// worktree-merge PR route uses it to persist the receipt's advanced
 	// target/candidate before fast-forwarding the local candidate worktree.
 	headUpdated func(previous, updated string) error
+	// git overrides this package's Git port (ports.go); nil uses defaultGit.
+	// A unit test sets this to a *gitclitest.Fake so a landing that reaches
+	// the migrated call sites (spec/plans/coverage-to-100 task-17) never
+	// starts a real process, without mutating any shared package state --
+	// following internal/streams/ports.go's engine.Git struct-field
+	// precedent rather than a package-level mutable var. See the git()
+	// accessor below.
+	git Git
+	// run overrides this package's generic command runner (ports.go); nil
+	// uses defaultRunner. A unit test sets this to a runnertest.Fake for the
+	// same reason as git above.
+	run runner.Runner
+}
+
+// resolveGit returns options.git, falling back to defaultGit (ports.go) when
+// the caller left it nil -- production's implicit choice, and every existing
+// caller's behaviour before task-17 introduced this seam.
+func (options PullRequestLandOptions) resolveGit() Git {
+	if options.git != nil {
+		return options.git
+	}
+	return defaultGit
+}
+
+// resolveRunner returns options.run, falling back to defaultRunner
+// (ports.go) when the caller left it nil.
+func (options PullRequestLandOptions) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return defaultRunner
 }
 
 // PullRequestLandResult is the receipt, and the JSON envelope.
@@ -940,8 +972,8 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 		// The landed SHAs exist only now: a rebase merge replays every commit.
 		canonical, _, _, locateErr := locateBranchCheckout(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref)
 		if locateErr == nil && canonical != "" {
-			if fetchErr := orchestrateGit.FetchRefs(ctx, canonical, "origin", view.Base.Ref); fetchErr == nil {
-				mapped, mapErr := MapLandedCommits(ctx, canonical, "refs/remotes/origin/"+view.Base.Ref, view.Base.SHA, result.Commits)
+			if fetchErr := options.resolveGit().FetchRefs(ctx, canonical, "origin", view.Base.Ref); fetchErr == nil {
+				mapped, mapErr := MapLandedCommits(ctx, options.resolveGit(), options.resolveRunner(), canonical, "refs/remotes/origin/"+view.Base.Ref, view.Base.SHA, result.Commits)
 				if mapErr == nil {
 					result.Commits = mapped
 				}
@@ -1323,7 +1355,7 @@ func deleteRemoteBranch(ctx context.Context, canonical, repository string, view,
 	}
 	// deleteRemoteBranch sits on every successful landing's happy path (not
 	// only the dedicated keep-commits/delete-branch tests), so migrating
-	// this call onto orchestrateGit -- unlike this file's other one
+	// this call onto this package's Git port -- unlike this file's other one
 	// (finalizeLandedPullRequest's FetchRefs, reached only when the landing
 	// tracked kept-commit SHAs) -- would require moving most of
 	// pr_land_test.go's suite behind the e2e tag as well. That is judged out

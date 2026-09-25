@@ -108,7 +108,7 @@ func TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRe
 	t.Setenv("WB_TEST_COMMIT_TREE_TRANSIENT", marker)
 
 	originalCandidateSHA := receipt.Candidate.SHA
-	adoptErr := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), &receipt, receipt.Candidate.SHA, updated)
+	adoptErr := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), defaultGit, &receipt, receipt.Candidate.SHA, updated)
 	if adoptErr == nil {
 		t.Fatal("want an error once the proof's own GitHub read fails transiently on every attempt")
 	}
