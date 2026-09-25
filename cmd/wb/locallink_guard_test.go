@@ -58,6 +58,22 @@ func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
 	}
 }
 
+// A resume argument naming a worktree directly (not a merge receipt) is the
+// documented second form of the argument; refuseLinkedReceiptWorktrees must
+// route it straight into the live-link guard instead of trying to parse it
+// as a receipt.
+func TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly(t *testing.T) {
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	worktree := filepath.Join(t.TempDir(), "some-worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseLinkedReceiptWorktrees(&invocation{projectsRoot: projectsRoot}, worktree); err != nil {
+		t.Fatalf("a worktree argument with no recorded live link was refused: %v", err)
+	}
+}
+
 func jsonString(value string) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
