@@ -66,7 +66,7 @@ func (f *fixture) installFakeGh(stdout string, ok bool) {
 		"if [ \"$1 $2 $4 $5 $6\" != \"repo view --json isArchived --jq\" ]; then\n" +
 		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
 		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
 	f.t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -642,7 +642,7 @@ func installMixedFakeGh(t *testing.T, failSlug string) {
 	content := "#!/bin/sh\nset -eu\n" +
 		"if [ \"$3\" = \"" + failSlug + "\" ]; then exit 1; fi\n" +
 		"printf 'true\\n'\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

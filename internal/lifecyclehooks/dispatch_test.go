@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline(t *testing.T) {
@@ -244,7 +246,7 @@ func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(insideExecutable), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(insideExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(insideExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	configured := filepath.Join(root, "trusted-bin", "indexer")
@@ -294,7 +296,7 @@ func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement := invocation.Run + ".replacement"
-	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(replacement, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(replacement, invocation.Run); err != nil {
@@ -348,7 +350,7 @@ func testDispatcher(t *testing.T) (Dispatcher, string) {
 	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	repository := filepath.Join(root, "checkout")

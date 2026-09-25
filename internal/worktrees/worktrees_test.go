@@ -1568,7 +1568,7 @@ func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 	}
 	workingDirectory := t.TempDir()
 	trustedGit := filepath.Join(workingDirectory, "git")
-	if err := os.WriteFile(trustedGit, []byte("#!/bin/sh\nexec \"$WB_TEST_REAL_GIT\" \"$@\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(trustedGit, []byte("#!/bin/sh\nexec \"$WB_TEST_REAL_GIT\" \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	originalDirectory, err := os.Getwd()
@@ -1591,7 +1591,7 @@ func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 		afterSecureStageValidation: func() {
 			fakeGit := filepath.Join(testStageRoot(t, operationRoot), "git")
 			contents := "#!/bin/sh\ntouch \"" + fakeWasRun + "\"\nexit 99\n"
-			if writeErr := os.WriteFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
+			if writeErr := testenv.WriteExecutableFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
 				t.Fatalf("write staged fake git: %v", writeErr)
 			}
 		}, WorkLog: WorkLogOptions{Model: "unknown"},
@@ -2241,7 +2241,7 @@ func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
 	gitTest(t, worktree, "fetch", "origin", "main")
 	gitTest(t, worktree, "config", "rebase.abbreviateCommands", "true")
 	sequenceEditor := filepath.Join(t.TempDir(), "sequence-editor")
-	if err := os.WriteFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^p /e /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^p /e /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if output, rebaseErr := gitTestRunEnv(worktree, []string{"GIT_SEQUENCE_EDITOR=" + sequenceEditor}, "rebase", "-i", "origin/main"); rebaseErr != nil {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installPerCommitPullRequestFixture serves GitHub's commit-to-pull-request
@@ -47,7 +49,7 @@ if [ -f "$WB_TEST_PR_INDEX/$sha.unknown" ]; then
 fi
 printf '[]'
 `
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_PR_INDEX", indexDir)

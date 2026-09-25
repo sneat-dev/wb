@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // npmPackageJSONWithDependency renders a minimal but Prettier-shaped
@@ -107,7 +109,7 @@ func writeFakePnpm(t *testing.T, script string) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pnpm")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

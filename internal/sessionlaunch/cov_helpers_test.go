@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // slCovWrite writes body at path with the exact mode.
@@ -23,18 +24,27 @@ func slCovWrite(t *testing.T, path string, mode os.FileMode, body string) {
 }
 
 // slCovScript writes one executable /bin/sh script and returns its path.
+//
+// This goes through testenv.WriteExecutableFile, not slCovWrite/os.WriteFile:
+// a direct write-then-exec at the final path races any concurrent fork
+// elsewhere in this parallel test binary (golang/go#22315; task-21, #739).
 func slCovScript(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "script")
-	slCovWrite(t, path, 0o755, "#!/bin/sh\n"+body)
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
-// slCovExecutable writes one executable regular fixture file.
+// slCovExecutable writes one executable regular fixture file. See
+// slCovScript for why this uses testenv.WriteExecutableFile.
 func slCovExecutable(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	slCovWrite(t, path, 0o755, "fixture")
+	if err := testenv.WriteExecutableFile(path, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 

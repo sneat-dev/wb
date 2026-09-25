@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func writeConfig(t *testing.T, contents string) string {
@@ -327,7 +329,7 @@ func TestCheckHerdrBinaryFailsClosedOnAnInvalidBinPath(t *testing.T) {
 func TestCheckHerdrBinarySucceedsWhenResolved(t *testing.T) {
 	t.Parallel()
 	binPath := filepath.Join(t.TempDir(), "herdr")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake herdr binary fixture: %v", err)
 	}
 	fakeEnv := func(key string) (string, bool) {

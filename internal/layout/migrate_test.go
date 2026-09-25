@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -1457,7 +1458,7 @@ func TestMigrateMovesCloneReferencedByParkedSessionAndResumeResolvesByIdentity(t
 	// (ls-remote, fetch) against that literal URL, while `remote get-url`
 	// itself never touches it.
 	sshScript := filepath.Join(t.TempDir(), "github-ssh")
-	if err := os.WriteFile(sshScript, []byte("#!/bin/sh\nexec git-upload-pack "+realRemote+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
+	if err := testenv.WriteExecutableFile(sshScript, []byte("#!/bin/sh\nexec git-upload-pack "+realRemote+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_SSH_COMMAND", sshScript)

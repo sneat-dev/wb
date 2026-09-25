@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fakeHarnessScript is a deterministic stand-in for the real coding harness. It
@@ -67,7 +69,7 @@ func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 	}
 	directory := t.TempDir()
 	path = filepath.Join(directory, HarnessCodex)
-	if err := os.WriteFile(path, []byte(fakeHarnessScript), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(fakeHarnessScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps = DefaultOwnerDeps()
@@ -238,7 +240,7 @@ sh -c 'trap "" TERM; sleep 600' &
 echo $! > grandchild.pid
 sleep 600
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
@@ -537,7 +539,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	// reports readiness by touching a file, because signalling before the shell
 	// has installed its trap would kill it outright and never exercise
 	// escalation.
-	if err := os.WriteFile(path, []byte("#!/bin/sh\ntrap '' TERM\n: > ignored-termination.ready\nwhile true; do sleep 1; done\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\ntrap '' TERM\n: > ignored-termination.ready\nwhile true; do sleep 1; done\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // This file adds targeted coverage for the githubobserver package. Every test
@@ -1192,7 +1193,7 @@ func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
 	script := "#!/bin/sh\nprintf 'stdout-line'\nprintf 'stderr-line' >&2\nexit 3\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir)
@@ -1208,7 +1209,7 @@ func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
 		t.Fatalf("stdout = %q stderr = %q, want both streams captured", result.Stdout, result.Stderr)
 	}
 
-	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nprintf 'ok'\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte("#!/bin/sh\nprintf 'ok'\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result = runGH(context.Background(), "", "version")

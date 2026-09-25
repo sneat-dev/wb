@@ -390,7 +390,7 @@ func TestExecGitPushWithLeaseRefusesAStaleLease(t *testing.T) {
 func stCovWriteExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -923,7 +923,7 @@ func TestPushWithLeaseReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	mainSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "main"))
 
 	hook := filepath.Join(remote, "hooks", "post-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
