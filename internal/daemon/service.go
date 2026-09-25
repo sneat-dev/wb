@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/process"
 	"github.com/sneat-dev/wb/internal/runqueue"
@@ -511,28 +512,39 @@ func (service *Service) persistLocked(item *record) error {
 }
 
 func (service *Service) persistRecord(item *record) error {
+	return service.persistRecordInjected(item, nil)
+}
+
+// persistRecordInjected is persistRecord's test seam (task-9 PR-7): every
+// production call site reaches it only through persistRecord, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/write/sync/close/rename
+// failure branches deterministically. filewrite.CreateOrTruncatePath uses
+// the identical O_WRONLY|O_CREATE|O_TRUNC flag set the original
+// os.OpenFile call used.
+func (service *Service) persistRecordInjected(item *record, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode daemon operation: %w", err)
 	}
 	path := filepath.Join(service.directory, item.Operation.OperationId+".json")
 	temporary := path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := filewrite.CreateOrTruncatePath(temporary, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("write daemon operation: %w", err)
 	}
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
+	if err := filewrite.Write(file, contents, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return fmt.Errorf("write daemon operation: %w", err)
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if err := filewrite.Sync(file, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return fmt.Errorf("sync daemon operation: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return fmt.Errorf("close daemon operation: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return fmt.Errorf("publish daemon operation: %w", err)
 	}
 	return nil

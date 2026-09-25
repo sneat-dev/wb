@@ -3995,13 +3995,17 @@ func extractWorktreeMergeArchive(archivePath, destination string) error {
 // seam (task-9 PR-4): every production call site reaches it only through
 // extractWorktreeMergeArchive, which always passes a nil
 // *filewrite.Injector, so production behaviour is unchanged; a test passes
-// its own Injector directly to reach a create/close failure branch on a
-// tar.TypeReg entry deterministically. Each regular-file entry is created
-// with a fixed name (from the archive) that is always fully overwritten
-// (O_CREATE|O_TRUNC, never O_EXCL), so this uses CreateOrTruncatePath
-// rather than CreateExclusivePath; the streaming io.Copy from the tar
-// reader is left bare -- no filewrite primitive fits a streaming copy from
-// an arbitrary io.Reader.
+// its own Injector directly to reach a create/write/close failure branch
+// on a tar.TypeReg entry deterministically. Each regular-file entry is
+// created with a fixed name (from the archive) that is always fully
+// overwritten (O_CREATE|O_TRUNC, never O_EXCL), so this uses
+// CreateOrTruncatePath rather than CreateExclusivePath. The streaming copy
+// from the tar reader goes through io.Copy(filewrite.Writer(file, path,
+// inj), reader) (review-t9-pr6 N1): filewrite.Writer is an io.Writer
+// adapter, not a []byte-at-a-time primitive, so it fits an arbitrary-size
+// streaming source exactly as well as it fits a small in-memory payload,
+// making io.Copy's write failures injectable without changing the chunks
+// io.Copy writes or how it wraps their errors.
 func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *filewrite.Injector) error {
 	archive, err := os.Open(archivePath)
 	if err != nil {
@@ -4039,7 +4043,7 @@ func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *f
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.Copy(file, reader)
+			_, copyErr := io.Copy(filewrite.Writer(file, path, inj), reader)
 			closeErr := filewrite.Close(file, path, inj)
 			if copyErr != nil {
 				return copyErr
