@@ -333,6 +333,22 @@ func TestBranchListEmptyProjectsRootReportsNoBranches(t *testing.T) {
 	}
 }
 
+// TestBranchCountEmptyProjectsRootReportsZeroTotals drives "wb branch count"
+// through the real CLI dispatch (not just a structural flag check), so the
+// RunE closure that reads inv.filterFlag before calling worktrees.BranchList
+// actually executes.
+func TestBranchCountEmptyProjectsRootReportsZeroTotals(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"branch", "count", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stderr=%s", args, code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "STATUS       REFS") {
+		t.Fatalf("stdout = %q, want the count table header", stdout.String())
+	}
+}
+
 func TestBranchCleanupDryRunOnEmptyProjectsRootWritesNoReport(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

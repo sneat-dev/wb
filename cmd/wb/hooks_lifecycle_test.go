@@ -164,6 +164,23 @@ func TestLifecycleResumeAndGCAreSafeOnEmptyState(t *testing.T) {
 	}
 }
 
+// TestHooksLifecycleBackfillCommandOnEmptyProjectsRootReportsZeroExecutions
+// drives "wb hooks lifecycle backfill" through the real CLI dispatch (not
+// just planLifecycleBackfill called directly), so the RunE closure that
+// reads inv.filterFlag before calling planLifecycleBackfill actually
+// executes.
+func TestHooksLifecycleBackfillCommandOnEmptyProjectsRootReportsZeroExecutions(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"hooks", "lifecycle", "backfill", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stderr=%s", args, code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "planned 0 execution(s) from 0 repositories") {
+		t.Fatalf("stdout = %q, want a zero-execution plan", stdout.String())
+	}
+}
+
 func TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories(t *testing.T) {
 	root := t.TempDir()
 	matching := filepath.Join(root, "acme", "app")
