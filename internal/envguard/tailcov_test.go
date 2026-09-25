@@ -1,15 +1,9 @@
 package envguard
 
 import (
-	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/sneat-dev/wb/internal/execfile"
 )
 
 // tailCovWriteFile writes a fixture file inside dir, creating dir first.
@@ -23,44 +17,6 @@ func tailCovWriteFile(t *testing.T, dir, name, content string) string {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
-}
-
-// tailCovWriteExecutable stages a fake external binary in its own directory
-// and returns the directory, so a caller can prepend it to PATH.
-func tailCovWriteExecutable(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := execfile.WriteExecutableFile(filepath.Join(dir, "git"), []byte(content), 0o755); err != nil {
-		t.Fatalf("stage fake git: %v", err)
-	}
-	return dir
-}
-
-// tailCovRealGit resolves the real git binary so a fake one can forward to
-// it, or skips when the machine has no git at all (the pre-existing tests in
-// this package take the same route).
-func tailCovRealGit(t *testing.T) string {
-	t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	return git
-}
-
-// tailCovScratchRepo creates a git repository whose HEAD commits a go.work,
-// i.e. a repository that owns multi-module workspace mode intrinsically.
-func tailCovScratchRepo(t *testing.T) string {
-	t.Helper()
-	tailCovRealGit(t) // runGit shells out; skip cleanly on a machine without git
-	repository := t.TempDir()
-	tailCovWriteFile(t, repository, "go.work", "go 1.27\n")
-	runGit(t, repository, "init")
-	runGit(t, repository, "config", "user.email", "test@example.com")
-	runGit(t, repository, "config", "user.name", "Test")
-	runGit(t, repository, "add", "go.work")
-	runGit(t, repository, "commit", "-m", "add go.work")
-	return repository
 }
 
 // TestTailCovInspectSkipsBlankDirectoryArguments pins that a blank dir is not
@@ -214,134 +170,5 @@ func TestTailCovTracksOwnGoWorkFalseForNonRegularGoWork(t *testing.T) {
 	}
 	if tracked {
 		t.Fatal("a go.work directory was treated as the repository's own")
-	}
-}
-
-// TestTailCovMissingGitBinaryIsReported covers the git-inspection failure
-// that is not a git exit status: when git cannot be executed at all, the
-// tracked-go.work probe reports that failure instead of guessing, and
-// GoEnvOverrides still fails closed toward isolation.
-func TestTailCovMissingGitBinaryIsReported(t *testing.T) {
-	root := filepath.Dir(tailCovWriteFile(t, t.TempDir(), "go.work", "go 1.27\n"))
-	t.Setenv("PATH", t.TempDir()) // an empty PATH: git cannot be looked up
-
-	tracked, err := TracksOwnGoWork(root)
-	if err == nil {
-		t.Fatal("TracksOwnGoWork reported success with no runnable git")
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		t.Fatalf("error = %v, want the launch failure rather than a git exit status", err)
-	}
-	if tracked {
-		t.Fatal("TracksOwnGoWork = true with no runnable git")
-	}
-
-	overrides := GoEnvOverrides(root)
-	if len(overrides) != 1 || overrides[0] != "GOWORK=off" {
-		t.Fatalf("GoEnvOverrides = %v, want [GOWORK=off] on an inspection failure", overrides)
-	}
-}
-
-// TestTailCovRelativeGitTopLevelIsReported covers `git rev-parse
-// --show-toplevel` returning something that cannot be made relative to the
-// go.work path. A toplevel that is not absolute is unusable, so the caller
-// must see the failure rather than a silent "not tracked".
-func TestTailCovRelativeGitTopLevelIsReported(t *testing.T) {
-	root := filepath.Dir(tailCovWriteFile(t, t.TempDir(), "go.work", "go 1.27\n"))
-	dir := tailCovWriteExecutable(t, "#!/bin/sh\necho not-an-absolute-toplevel\n")
-	t.Setenv("PATH", dir)
-
-	tracked, err := TracksOwnGoWork(root)
-	if err == nil {
-		t.Fatal("a relative git toplevel was silently accepted")
-	}
-	if tracked {
-		t.Fatal("TracksOwnGoWork = true with a relative git toplevel")
-	}
-	if !strings.Contains(err.Error(), "not-an-absolute-toplevel") {
-		t.Fatalf("error = %v, want it to name the unusable toplevel", err)
-	}
-}
-
-// TestTailCovUnrunnableObjectProbeIsReported covers the git object probe
-// failing to run at all (as opposed to exiting non-zero, which means "not in
-// HEAD"). The failure is reported, never converted into a clean "not
-// tracked".
-func TestTailCovUnrunnableObjectProbeIsReported(t *testing.T) {
-	realGit := tailCovRealGit(t)
-	chmod, err := exec.LookPath("chmod")
-	if err != nil {
-		t.Skip("chmod not available")
-	}
-	repository := tailCovScratchRepo(t)
-
-	// Forward rev-parse to the real git, then make this git unexecutable so
-	// the following `git cat-file` cannot even be launched.
-	script := fmt.Sprintf(`#!/bin/sh
-for argument in "$@"; do
-	if [ "$argument" = "rev-parse" ]; then
-		%q -C "$2" rev-parse --show-toplevel || exit 1
-		%q -x "$0"
-		exit 0
-	fi
-done
-exit 3
-`, realGit, chmod)
-	t.Setenv("PATH", tailCovWriteExecutable(t, script))
-
-	tracked, err := TracksOwnGoWork(repository)
-	if err == nil {
-		t.Fatal("an unrunnable git object probe was reported as success")
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		t.Fatalf("error = %v, want the launch failure rather than a git exit status", err)
-	}
-	if tracked {
-		t.Fatal("TracksOwnGoWork = true after an unrunnable object probe")
-	}
-}
-
-// TestTailCovUnexpectedDiffFailureIsReported covers `git diff --quiet`
-// failing for a reason other than "the file differs" (exit 1). Any other
-// status means the comparison never happened, so it is an error -- not an
-// unchanged file.
-func TestTailCovUnexpectedDiffFailureIsReported(t *testing.T) {
-	realGit := tailCovRealGit(t)
-	repository := tailCovScratchRepo(t)
-
-	script := fmt.Sprintf(`#!/bin/sh
-for argument in "$@"; do
-	if [ "$argument" = "diff" ]; then
-		exit 2
-	fi
-done
-exec %q "$@"
-`, realGit)
-	t.Setenv("PATH", tailCovWriteExecutable(t, script))
-
-	tracked, err := TracksOwnGoWork(repository)
-	if err == nil {
-		t.Fatal("a failing git diff was reported as an unchanged go.work")
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
-		t.Fatalf("error = %v, want the git diff exit status 2", err)
-	}
-	if tracked {
-		t.Fatal("TracksOwnGoWork = true after a failing git diff")
-	}
-}
-
-// TestTailCovGoEnvOverridesKeepsIntrinsicWorkspace covers the one case where
-// the check is NOT isolated: a repository that commits its own go.work and
-// leaves it unchanged keeps workspace mode, so there is no override at all.
-func TestTailCovGoEnvOverridesKeepsIntrinsicWorkspace(t *testing.T) {
-	t.Parallel()
-	repository := tailCovScratchRepo(t)
-
-	if overrides := GoEnvOverrides(repository); len(overrides) != 0 {
-		t.Fatalf("GoEnvOverrides = %v, want no override for a repository that tracks its own go.work", overrides)
 	}
 }

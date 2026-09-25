@@ -22,13 +22,22 @@
 package envguard
 
 import (
+	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
+
+// realRunner returns the production [runner.Runner]. It is a function, not
+// a package-level var, so envguard carries no mutable global seam: every
+// call constructs a fresh, stateless [runner.Real], and a test reaches the
+// git-backed helpers below through their own unexported *With variant
+// instead, passing a [runnertest.Fake].
+func realRunner() runner.Runner { return runner.New() }
 
 // AgentVarPrefix is the prefix every ambient agent-identity variable carries.
 const AgentVarPrefix = "WB_AGENT_"
@@ -195,6 +204,14 @@ func SanitizeEnv(base []string, overrides ...string) []string {
 // relative to that top level, never against a HEAD:go.work path assumed to
 // be rooted at repoRoot itself.
 func TracksOwnGoWork(repoRoot string) (bool, error) {
+	return tracksOwnGoWork(realRunner(), repoRoot)
+}
+
+// tracksOwnGoWork is [TracksOwnGoWork]'s test seam: every production call
+// site reaches it only through TracksOwnGoWork, which always passes
+// [realRunner], so production behaviour is unchanged. A test passes a
+// [runnertest.Fake] to reach every git-outcome branch deterministically.
+func tracksOwnGoWork(r runner.Runner, repoRoot string) (bool, error) {
 	resolvedRoot, err := filepath.EvalSymlinks(repoRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -207,7 +224,7 @@ func TracksOwnGoWork(repoRoot string) (bool, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return false, nil
 	}
-	toplevel, err := gitTopLevel(repoRoot)
+	toplevel, err := gitTopLevel(r, repoRoot)
 	if err != nil {
 		return false, err
 	}
@@ -219,26 +236,24 @@ func TracksOwnGoWork(repoRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	tracked, err := gitPathExistsAtHEAD(toplevel, relativePath)
+	tracked, err := gitPathExistsAtHEAD(r, toplevel, relativePath)
 	if err != nil || !tracked {
 		return false, err
 	}
-	return gitPathUnchangedFromHEAD(toplevel, relativePath)
+	return gitPathUnchangedFromHEAD(r, toplevel, relativePath)
 }
 
 // gitTopLevel resolves the git top-level directory containing dir, or ""
 // (with a nil error) when dir is not inside a git repository at all.
-func gitTopLevel(dir string) (string, error) {
-	command := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
-	output, err := command.Output()
+func gitTopLevel(r runner.Runner, dir string) (string, error) {
+	result, err := r.Run(context.Background(), "", "git", "-C", dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if result.ExitCode != 0 {
 			return "", nil
 		}
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(result.Stdout), nil
 }
 
 // GoEnvOverrides returns the environment overrides a Go check against dir
@@ -252,8 +267,14 @@ func gitTopLevel(dir string) (string, error) {
 // failure fails closed toward isolation (GOWORK=off) rather than failing the
 // check outright.
 func GoEnvOverrides(dir string) []string {
+	return goEnvOverrides(realRunner(), dir)
+}
+
+// goEnvOverrides is [GoEnvOverrides]'s test seam, following the same
+// pattern as [tracksOwnGoWork].
+func goEnvOverrides(r runner.Runner, dir string) []string {
 	if repoRoot := nearestGoWorkDir(dir); repoRoot != "" {
-		if tracksOwn, err := TracksOwnGoWork(repoRoot); err == nil && tracksOwn {
+		if tracksOwn, err := tracksOwnGoWork(r, repoRoot); err == nil && tracksOwn {
 			return nil
 		}
 	}
@@ -282,27 +303,23 @@ func nearestGoWorkDir(dir string) string {
 	}
 }
 
-func gitPathExistsAtHEAD(repoRoot, path string) (bool, error) {
-	command := exec.Command("git", "-C", repoRoot, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
-	err := command.Run()
+func gitPathExistsAtHEAD(r runner.Runner, repoRoot, path string) (bool, error) {
+	result, err := r.Run(context.Background(), "", "git", "-C", repoRoot, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if result.ExitCode != 0 {
 		return false, nil
 	}
 	return false, err
 }
 
-func gitPathUnchangedFromHEAD(repoRoot, path string) (bool, error) {
-	command := exec.Command("git", "-C", repoRoot, "diff", "--quiet", "HEAD", "--", path)
-	err := command.Run()
+func gitPathUnchangedFromHEAD(r runner.Runner, repoRoot, path string) (bool, error) {
+	result, err := r.Run(context.Background(), "", "git", "-C", repoRoot, "diff", "--quiet", "HEAD", "--", path)
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if result.ExitCode == 1 {
 		return false, nil
 	}
 	return false, err

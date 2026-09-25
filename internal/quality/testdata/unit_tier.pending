@@ -104,8 +104,6 @@ internal/deps/zz_cov_graphs_test.go	14	task-14
 internal/deps/zz_cov_runtime_test.go	7	task-14
 internal/discover/discover_cov_extra_test.go	6	task-15
 internal/discover/discover_test.go	2	task-15
-internal/envguard/envguard_test.go	16	task-15
-internal/envguard/tailcov_test.go	9	task-15
 internal/execfile/execfile_test.go	2	task-9
 internal/fleetsync/diverged_test.go	22	task-15
 internal/fleetsync/emptyremote_test.go	18	task-15
@@ -210,7 +208,7 @@ internal/prinventory/rp_coverage_test.go	4	task-8
 internal/process/tailcov_process_test.go	2	task-8
 internal/prsnapshot/snapshot_test.go	2	task-15
 internal/prwatch/watch_test.go	11	task-15
-internal/quality/ambient_isolation_test.go	7	task-15
+internal/quality/ambient_isolation_test.go	8	task-15
 internal/quality/changed_packages_test.go	14	task-15
 internal/quality/deadcode_test.go	2	task-15
 internal/quality/dqcov_shim_test.go	2	task-15

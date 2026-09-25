@@ -1,12 +1,16 @@
 package envguard
 
 import (
+	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestSanitizeEnvOverrideWinsOverAmbientDuplicate(t *testing.T) {
@@ -77,7 +81,7 @@ func TestSanitizeEnvPreservesFirstSeenOrderForStableOutput(t *testing.T) {
 
 func TestInspectFindsGoWorkAncestorsGoworkAndAgentVars(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := evalSymlinksTempDir(t)
 	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +118,7 @@ func TestInspectFindsGoWorkAncestorsGoworkAndAgentVars(t *testing.T) {
 
 func TestInspectEmptyWhenNothingObserved(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir() // no go.work anywhere in this fresh directory
+	root := evalSymlinksTempDir(t) // no go.work anywhere in this fresh directory
 	inputs := Inspect([]string{"PATH=/bin", "HOME=/home"}, root)
 	if !inputs.Empty() {
 		t.Fatalf("inputs = %+v, want Empty", inputs)
@@ -126,7 +130,7 @@ func TestInspectEmptyWhenNothingObserved(t *testing.T) {
 
 func TestGoEnvOverridesOffByDefaultAndOffOnError(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := evalSymlinksTempDir(t)
 	// No go.work anywhere in this ancestry: always GOWORK=off.
 	overrides := GoEnvOverrides(root)
 	if len(overrides) != 1 || overrides[0] != "GOWORK=off" {
@@ -134,49 +138,66 @@ func TestGoEnvOverridesOffByDefaultAndOffOnError(t *testing.T) {
 	}
 }
 
+// gitTopLevelArgv, gitCatFileArgv and gitDiffArgv build the exact argv the
+// production helpers pass to the runner, so a script matches by argv
+// rather than by a loose predicate -- proving the seam sends what real git
+// would need, not just "some call happened".
+
+func gitTopLevelArgv(dir string) []string {
+	return []string{"git", "-C", dir, "rev-parse", "--show-toplevel"}
+}
+
+func gitCatFileArgv(repoRoot, path string) []string {
+	return []string{"git", "-C", repoRoot, "cat-file", "-e", "HEAD:" + filepath.ToSlash(path)}
+}
+
+func gitDiffArgv(repoRoot, path string) []string {
+	return []string{"git", "-C", repoRoot, "diff", "--quiet", "HEAD", "--", path}
+}
+
 func TestTracksOwnGoWorkTrueOnlyWhenCommittedAndUnchanged(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	repository := t.TempDir()
+	repository := evalSymlinksTempDir(t)
 	if err := os.WriteFile(filepath.Join(repository, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repository, "init")
-	runGit(t, repository, "config", "user.email", "test@example.com")
-	runGit(t, repository, "config", "user.name", "Test")
 
-	// Untracked go.work: not the repository's own.
-	tracked, err := TracksOwnGoWork(repository)
+	// Untracked go.work: `cat-file -e` reports it absent from HEAD (exit 1).
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(repository), runner.Result{Stdout: repository}, nil)
+	fake.ExpectArgv(gitCatFileArgv(repository, "go.work"), runner.Result{ExitCode: 1}, fmt.Errorf("exit status 1"))
+	tracked, err := tracksOwnGoWork(fake, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tracked {
-		t.Fatal("TracksOwnGoWork = true for an untracked go.work")
+		t.Fatal("tracksOwnGoWork = true for an untracked go.work")
 	}
 
-	runGit(t, repository, "add", "go.work")
-	runGit(t, repository, "commit", "-m", "add go.work")
-
-	tracked, err = TracksOwnGoWork(repository)
+	// Tracked and unchanged: `cat-file -e` and `diff --quiet` both exit 0.
+	fake = runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(repository), runner.Result{Stdout: repository}, nil)
+	fake.ExpectArgv(gitCatFileArgv(repository, "go.work"), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(repository, "go.work"), runner.Result{}, nil)
+	tracked, err = tracksOwnGoWork(fake, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !tracked {
-		t.Fatal("TracksOwnGoWork = false for a committed, unchanged go.work")
+		t.Fatal("tracksOwnGoWork = false for a committed, unchanged go.work")
 	}
 
-	// Dirty working-tree edit: no longer "its own" until committed again.
-	if err := os.WriteFile(filepath.Join(repository, "go.work"), []byte("go 1.26\n\nuse ./extra\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tracked, err = TracksOwnGoWork(repository)
+	// Dirty working-tree edit: tracked in HEAD, but `diff --quiet` exits 1.
+	fake = runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(repository), runner.Result{Stdout: repository}, nil)
+	fake.ExpectArgv(gitCatFileArgv(repository, "go.work"), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(repository, "go.work"), runner.Result{ExitCode: 1}, fmt.Errorf("exit status 1"))
+	tracked, err = tracksOwnGoWork(fake, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tracked {
-		t.Fatal("TracksOwnGoWork = true for a go.work that differs from HEAD")
+		t.Fatal("tracksOwnGoWork = true for a go.work that differs from HEAD")
 	}
 }
 
@@ -188,14 +209,7 @@ func TestTracksOwnGoWorkTrueOnlyWhenCommittedAndUnchanged(t *testing.T) {
 // go.work's own directory is the git root.
 func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	root := t.TempDir()
-	runGit(t, root, "init")
-	runGit(t, root, "config", "user.email", "test@example.com")
-	runGit(t, root, "config", "user.name", "Test")
-
+	root := evalSymlinksTempDir(t)
 	nested := filepath.Join(root, "nested")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -203,39 +217,24 @@ func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, root, "add", "nested/go.work")
-	runGit(t, root, "commit", "-m", "add nested go.work")
+	relative := filepath.Join("nested", "go.work")
 
-	// Checks run "under nested/" -- repoRoot is the go.work's own
-	// directory, one level below the git top level.
-	tracked, err := TracksOwnGoWork(nested)
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(nested), runner.Result{Stdout: root}, nil)
+	fake.ExpectArgv(gitCatFileArgv(root, relative), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(root, relative), runner.Result{}, nil)
+
+	tracked, err := tracksOwnGoWork(fake, nested)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !tracked {
-		t.Fatal("TracksOwnGoWork = false for a committed, unchanged nested/go.work with the git root above it")
-	}
-
-	// A dirty edit to the nested go.work is no longer "its own" until
-	// committed again -- proves the diff check also resolves the correct
-	// relative path, not just the existence check.
-	if err := os.WriteFile(filepath.Join(nested, "go.work"), []byte("go 1.26\n\nuse ./extra\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tracked, err = TracksOwnGoWork(nested)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tracked {
-		t.Fatal("TracksOwnGoWork = true for a nested go.work that differs from HEAD")
+		t.Fatal("tracksOwnGoWork = false for a committed, unchanged nested/go.work with the git root above it")
 	}
 }
 
 func TestTracksOwnGoWorkResolvesSymlinkedRepositoryRoot(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	physical, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -244,54 +243,193 @@ func TestTracksOwnGoWorkResolvesSymlinkedRepositoryRoot(t *testing.T) {
 	if err := os.Mkdir(repository, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repository, "init")
-	runGit(t, repository, "config", "user.email", "test@example.com")
-	runGit(t, repository, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(repository, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, repository, "add", "go.work")
-	runGit(t, repository, "commit", "-m", "add go.work")
 	alias := filepath.Join(physical, "repository-alias")
 	if err := os.Symlink(repository, alias); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	tracked, err := TracksOwnGoWork(alias)
+	// The git calls must name the resolved (physical) repository, not the
+	// symlinked alias TracksOwnGoWork was called with.
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(repository), runner.Result{Stdout: repository}, nil)
+	fake.ExpectArgv(gitCatFileArgv(repository, "go.work"), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(repository, "go.work"), runner.Result{}, nil)
+
+	tracked, err := tracksOwnGoWork(fake, alias)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !tracked {
-		t.Fatal("TracksOwnGoWork = false through a symlinked repository root")
+		t.Fatal("tracksOwnGoWork = false through a symlinked repository root")
 	}
 }
 
 // TestTracksOwnGoWorkFalseOutsideAnyGitRepository covers a temp module (a
-// go.work with no enclosing git repository at all): GoEnvOverrides must
+// go.work with no enclosing git repository at all): goEnvOverrides must
 // yield GOWORK=off rather than erroring or panicking when `git rev-parse
-// --show-toplevel` finds no repository.
+// --show-toplevel` finds no repository (empty stdout, non-zero exit).
 func TestTracksOwnGoWorkFalseOutsideAnyGitRepository(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	root := t.TempDir()
+	root := evalSymlinksTempDir(t)
 	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	tracked, err := TracksOwnGoWork(root)
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{ExitCode: 128}, fmt.Errorf("exit status 128"))
+
+	tracked, err := tracksOwnGoWork(fake, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tracked {
-		t.Fatal("TracksOwnGoWork = true for a go.work outside any git repository")
+		t.Fatal("tracksOwnGoWork = true for a go.work outside any git repository")
 	}
-
-	overrides := GoEnvOverrides(root)
+	// goEnvOverrides makes the exact same TracksOwnGoWork call again, so a
+	// fresh fake is scripted with the same single expectation.
+	fake = runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{ExitCode: 128}, fmt.Errorf("exit status 128"))
+	overrides := goEnvOverrides(fake, root)
 	if len(overrides) != 1 || overrides[0] != "GOWORK=off" {
 		t.Fatalf("overrides = %v, want [GOWORK=off]", overrides)
 	}
+}
+
+// TestTracksOwnGoWorkRelativeGitTopLevelIsReported covers `git rev-parse
+// --show-toplevel` reporting something that cannot be made relative to the
+// go.work path: filepath.Rel needs both sides absolute or both relative, so
+// a relative-looking toplevel against an absolute go.work path is an error
+// that must be surfaced, not swallowed into "not tracked".
+func TestTracksOwnGoWorkRelativeGitTopLevelIsReported(t *testing.T) {
+	t.Parallel()
+	root := evalSymlinksTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{Stdout: "not-an-absolute-toplevel"}, nil)
+
+	tracked, err := tracksOwnGoWork(fake, root)
+	if err == nil {
+		t.Fatal("a relative git toplevel was silently accepted")
+	}
+	if tracked {
+		t.Fatal("tracksOwnGoWork = true with a relative git toplevel")
+	}
+}
+
+// TestTracksOwnGoWorkUnrunnableTopLevelProbeIsReported covers `git
+// rev-parse --show-toplevel` itself failing to launch -- ExitCode 0
+// alongside a non-nil error -- which must be reported rather than treated
+// as "not inside a git repository".
+func TestTracksOwnGoWorkUnrunnableTopLevelProbeIsReported(t *testing.T) {
+	t.Parallel()
+	root := evalSymlinksTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launchErr := errors.New("exec: \"git\": executable file not found in $PATH")
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{}, launchErr)
+
+	tracked, err := tracksOwnGoWork(fake, root)
+	if !errors.Is(err, launchErr) {
+		t.Fatalf("error = %v, want the launch failure surfaced", err)
+	}
+	if tracked {
+		t.Fatal("tracksOwnGoWork = true after an unrunnable top-level probe")
+	}
+}
+
+// TestTracksOwnGoWorkUnrunnableObjectProbeIsReported covers the git object
+// probe (`cat-file -e`) failing to launch at all -- as opposed to exiting
+// non-zero, which means "not in HEAD". A launch failure carries ExitCode 0
+// alongside a non-nil error, so it must be reported, never converted into a
+// clean "not tracked".
+func TestTracksOwnGoWorkUnrunnableObjectProbeIsReported(t *testing.T) {
+	t.Parallel()
+	root := evalSymlinksTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launchErr := errors.New("exec: \"git\": executable file not found in $PATH")
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{Stdout: root}, nil)
+	fake.ExpectArgv(gitCatFileArgv(root, "go.work"), runner.Result{}, launchErr)
+
+	tracked, err := tracksOwnGoWork(fake, root)
+	if !errors.Is(err, launchErr) {
+		t.Fatalf("error = %v, want the launch failure surfaced", err)
+	}
+	if tracked {
+		t.Fatal("tracksOwnGoWork = true after an unrunnable object probe")
+	}
+}
+
+// TestTracksOwnGoWorkUnexpectedDiffFailureIsReported covers `git diff
+// --quiet` failing for a reason other than "the file differs" (exit 1). Any
+// other status means the comparison never happened, so it is an error --
+// not an unchanged file.
+func TestTracksOwnGoWorkUnexpectedDiffFailureIsReported(t *testing.T) {
+	t.Parallel()
+	root := evalSymlinksTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diffErr := fmt.Errorf("exit status 2")
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{Stdout: root}, nil)
+	fake.ExpectArgv(gitCatFileArgv(root, "go.work"), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(root, "go.work"), runner.Result{ExitCode: 2}, diffErr)
+
+	tracked, err := tracksOwnGoWork(fake, root)
+	if !errors.Is(err, diffErr) {
+		t.Fatalf("error = %v, want the git diff exit status 2 surfaced", err)
+	}
+	if tracked {
+		t.Fatal("tracksOwnGoWork = true after a failing git diff")
+	}
+}
+
+// TestGoEnvOverridesKeepsIntrinsicWorkspace covers the one case where the
+// check is NOT isolated: a repository that commits its own go.work and
+// leaves it unchanged keeps workspace mode, so there is no override at all.
+func TestGoEnvOverridesKeepsIntrinsicWorkspace(t *testing.T) {
+	t.Parallel()
+	root := evalSymlinksTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := runnertest.New(t)
+	fake.ExpectArgv(gitTopLevelArgv(root), runner.Result{Stdout: root}, nil)
+	fake.ExpectArgv(gitCatFileArgv(root, "go.work"), runner.Result{}, nil)
+	fake.ExpectArgv(gitDiffArgv(root, "go.work"), runner.Result{}, nil)
+
+	if overrides := goEnvOverrides(fake, root); len(overrides) != 0 {
+		t.Fatalf("goEnvOverrides = %v, want no override for a repository that tracks its own go.work", overrides)
+	}
+}
+
+// evalSymlinksTempDir returns t.TempDir(), resolved through
+// filepath.EvalSymlinks. macOS routes /var through /private/var, so the raw
+// t.TempDir() path differs from the path filepath.EvalSymlinks(repoRoot)
+// inside tracksOwnGoWork will actually pass to the git runner -- an
+// ExpectArgv script built from the raw path would never match.
+func evalSymlinksTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func envValues(entries []string) map[string]string {
@@ -303,12 +441,4 @@ func envValues(entries []string) map[string]string {
 		}
 	}
 	return values
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
-	}
 }
