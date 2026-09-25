@@ -107,6 +107,39 @@ func TestWaitPRPendingResumesOnlyTheUnsettledTargets(t *testing.T) {
 	}
 }
 
+// TestWaitPRShortensTheFinalDelayToFitWithinTheRemainingSlice pins
+// observeWaitTargets' own delay-shrinking branch directly: when the
+// configured poll Interval is longer than the time left before the bounded
+// slice's deadline, the pause before the next observation must be cut down
+// to the remaining time, not the full interval, so the loop can still end
+// (settled or not) at the deadline it was given.
+func TestWaitPRShortensTheFinalDelayToFitWithinTheRemainingSlice(t *testing.T) {
+	targets := []waitReference{waitRef("acme/app#1")}
+	clock := time.Unix(0, 0)
+	var observedDelay time.Duration
+	output := observeWaitTargets(context.Background(), waitRun{
+		Targets:   targets,
+		Condition: waitUntilChecksSettled,
+		Slice:     2 * time.Second,
+		Interval:  10 * time.Second, // longer than the remaining slice below
+		observe: func(_ context.Context, reference waitReference) waitTarget {
+			return waitTarget{Selector: reference.Selector, State: "open", Checks: map[string]int{"pending": 1}}
+		},
+		now: func() time.Time { return clock },
+		sleep: func(_ context.Context, delay time.Duration) error {
+			observedDelay = delay
+			clock = clock.Add(time.Hour) // ends the loop on the next iteration
+			return nil
+		},
+	})
+	if output.Status != waitStatusPending {
+		t.Fatalf("status = %q, want pending", output.Status)
+	}
+	if observedDelay != 2*time.Second {
+		t.Fatalf("pause delay = %s, want it shortened to the remaining slice (2s), not the full interval (10s)", observedDelay)
+	}
+}
+
 func TestWaitPRChangedComparesOnlyActionableFacts(t *testing.T) {
 	targets := []waitReference{waitRef("acme/app#7")}
 	// An identical re-observation is not a change; a new head is.

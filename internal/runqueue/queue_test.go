@@ -273,6 +273,103 @@ func TestAcquireCoordinatesIndependentCallers(t *testing.T) {
 	second.Release()
 }
 
+// TestQueueRootOverrideIsolatesAdmissionFromAnOuterHolderOfTheSameProjectsRoot
+// pins the sneat-dev/wb#623 deadlock this seam exists to fix:
+// TestRunCommandAdmitsCPUHeavyWorkBelowFloor (and any test invoking `wb run
+// --` in-process) used to join the very same machine-wide CPU admission
+// queue an outer `wb run -- go test ./cmd/wb/...` already held every slot
+// in, for the very same projectsRoot, and would wait behind it forever.
+//
+// This test reproduces that shape directly against this package's own API
+// (cmd/wb's regression test, hostload_admission_test.go, exercises the same
+// fix at the `wb run --` level): an "outer holder" takes every budget slot
+// under a shared projectsRoot, using the real, unoverridden formula,
+// exactly as it would before any override existed. Only then is the
+// override installed — keyed to that identical projectsRoot, exactly as
+// TestMain keys it to whatever `defaultProjectsRoot()` resolves to at
+// binary start — and an "inner" Admit call against that same projectsRoot
+// is admitted immediately despite the outer holder never releasing,
+// because it resolves to a different, isolated directory instead.
+func TestQueueRootOverrideIsolatesAdmissionFromAnOuterHolderOfTheSameProjectsRoot(t *testing.T) {
+	defer SetNumCPUForTest(4)()
+	sharedProjectsRoot := t.TempDir()
+
+	budget := Budget()
+	if budget < 1 {
+		t.Fatalf("Budget() at NumCPU=4 = %d, want at least 1", budget)
+	}
+	outer, _, err := Acquire(context.Background(), sharedProjectsRoot, budget, budget)
+	if err != nil {
+		t.Fatalf("simulate outer holder: %v", err)
+	}
+	defer outer.Release()
+
+	restore := SetQueueRootForTest(sharedProjectsRoot, t.TempDir())
+	defer restore()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	self := Participant{PID: os.Getpid(), Summary: "inner-under-test"}
+	admission, err := Admit(ctx, sharedProjectsRoot, []string{"go", "test", "./..."}, self, nil)
+	if err != nil {
+		t.Fatalf("Admit with an isolated queue root still blocked behind the outer holder of the same projectsRoot (deadlock regressed): %v", err)
+	}
+	defer admission.Lease.Release()
+}
+
+// TestQueueRootOverrideOnlyRedirectsTheKeyedProjectsRoot pins review
+// finding B1 on sneat-dev/wb#736: an unkeyed override redirected every
+// projectsRoot, silently defeating any existing test that pre-holds slots
+// under its own explicit root and expects `wb run --projects-root
+// <that root>` to contend for the same, real, unoverridden directory
+// (e.g. cmd/wb's TestRunCommandReportsQueueVisibilityOnStderr). The
+// override must redirect only the exact projectsRoot it was keyed to —
+// never any other, even one from the very same test — and restoring must
+// return every root, keyed or not, to its own real, unoverridden path.
+func TestQueueRootOverrideOnlyRedirectsTheKeyedProjectsRoot(t *testing.T) {
+	keyedRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	overrideDir := t.TempDir()
+	restore := SetQueueRootForTest(keyedRoot, overrideDir)
+	t.Cleanup(restore)
+
+	if got := queueRoot(keyedRoot); got != overrideDir {
+		t.Fatalf("queueRoot(keyedRoot) = %q, want the override %q", got, overrideDir)
+	}
+	wantOther := filepath.Join(otherRoot, ".wb", "runtime", "cpu")
+	if got := queueRoot(otherRoot); got != wantOther {
+		t.Fatalf("queueRoot(otherRoot) = %q, want its own unoverridden path %q (a test-owned root must never be redirected)", got, wantOther)
+	}
+
+	restore()
+	wantKeyed := filepath.Join(keyedRoot, ".wb", "runtime", "cpu")
+	if got := queueRoot(keyedRoot); got != wantKeyed {
+		t.Fatalf("queueRoot(keyedRoot) after restore = %q, want %q", got, wantKeyed)
+	}
+}
+
+// TestQueueDirForTestReturnsExactlyWhatQueueRootResolves pins
+// QueueDirForTest's own contract directly (PR #736 review finding B1,
+// round 3): it is a plain, read-only mirror of queueRoot, used by cmd/wb's
+// TestMain to assert its own installed isolation is actually in effect,
+// so it must track an active override precisely, both for the keyed root
+// and for any other root.
+func TestQueueDirForTestReturnsExactlyWhatQueueRootResolves(t *testing.T) {
+	keyedRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	overrideDir := t.TempDir()
+	restore := SetQueueRootForTest(keyedRoot, overrideDir)
+	t.Cleanup(restore)
+
+	if got := QueueDirForTest(keyedRoot); got != overrideDir {
+		t.Fatalf("QueueDirForTest(keyedRoot) = %q, want the override %q", got, overrideDir)
+	}
+	wantOther := filepath.Join(otherRoot, ".wb", "runtime", "cpu")
+	if got := QueueDirForTest(otherRoot); got != wantOther {
+		t.Fatalf("QueueDirForTest(otherRoot) = %q, want %q", got, wantOther)
+	}
+}
+
 // withTinyLeaseHeartbeatInterval shrinks leaseHeartbeatInterval for the
 // duration of a test, so armHeartbeat's ticker fires essentially
 // immediately and reliably races a Release called right after admission,
