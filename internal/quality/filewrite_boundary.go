@@ -113,9 +113,6 @@ import (
 // through internal/filewrite. Every entry names the task-9 PR that will
 // migrate it; that PR removes the entry in the same commit it lands.
 var PendingMigrationExemptions = map[string]string{
-	"internal/worktrees/worklog.go:writeBytesImmutableAt":   "PR-3: worktrees -- rename-based immutable publish (via renameNoReplace)",
-	"internal/worktrees/worklog.go:writeBytesAtomicAt":      "PR-3: worktrees -- fd-relative rename-based atomic write",
-	"internal/worktrees/worklog.go:writeBytesAtomic":        "PR-3: worktrees -- path-based twin of writeBytesAtomicAt",
 	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
 	"internal/hooks/manager.go:writeExecutableAt":           "PR-5: hooks -- fd-relative create+chmod+write+renameNoReplace publish",
 
@@ -166,11 +163,6 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/waitregistry/registry.go:Register":                                                                               "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
 	"internal/wbconfig/peers.go:SetPeersUpstream":                                                                              "PR-8: misc-atomic-writers -- CreateTemp-based publish",
 	"internal/wbconfig/remote.go:SetRemoteHub":                                                                                 "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/worktrees/branches_quarantine.go:writeQuarantineReport":                                                          "PR-3: worktrees -- OpenFile+sync+Rename",
-	"internal/worktrees/lifecycle.go:writeCleanupReport":                                                                       "PR-3: worktrees -- WriteFile-to-temp+Rename",
-	"internal/worktrees/rename.go:writeRenameReport":                                                                           "PR-3: worktrees -- WriteFile-to-temp+Rename",
-	"internal/worktrees/retire.go:writeRetireReport":                                                                           "PR-3: worktrees -- CreateTemp-based publish",
-	"internal/worktrees/stage_recovery.go:writeRetiredStageReceipt":                                                            "PR-3: worktrees -- WriteFile-to-temp+Rename",
 
 	// Category B: publish through a package-level os.Link alias, or the
 	// write and the publish split across functions (review items 48-56).
@@ -181,7 +173,6 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/orchestrate/worktree_merge_ack.go:persistMissingCleanupAcknowledgement":          "PR-4: orchestrate -- publishes via package-var alias linkMissingCleanupAcknowledgement = os.Link",
 	"internal/orchestrate/worktree_merge_ack.go:persistSelfSupersessionCorrection":             "PR-4: orchestrate -- publishes via package-var alias linkSelfSupersessionCorrection = os.Link",
 	"internal/orchestrate/worktree_merge_adopt_published.go:persistPublishedCandidateAdoption": "PR-4: orchestrate -- publishes via package-var alias linkPublishedCandidateAdoption = os.Link",
-	"internal/worktrees/branches_cleanup.go:writeBranchCleanupReport":                          "PR-3: worktrees -- writeDurableFile(temporary) then os.Rename",
 	"internal/nodeidentity/nodeidentity.go:publishNodeID":                                      "PR-7: session-and-lifecycle -- publishes via os.Link; its temp-file half writeNodeIDTempFile migrates in the same PR",
 	"internal/nodeidentity/nodeidentity.go:writeNodeIDTempFile":                                "PR-7: session-and-lifecycle -- CreateTemp+chmod+write+sync via package-var seams fileChmod/fileWriteString/fileSync/fileClose, escapes the OpenFile content-write gate; migrates with publishNodeID",
 
@@ -192,11 +183,8 @@ var PendingMigrationExemptions = map[string]string{
 	"internal/retiredcandidateack/ack.go:Persist":                        "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
 	"internal/session/session.go:MarkParked":                             "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once (parked lifecycle marker)",
 	"internal/session/session.go:MarkResumed":                            "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
-	"internal/worktrees/branches_cleanup.go:writeDurableFile":            "PR-3: worktrees -- OpenFile O_EXCL write-once (also used non-temp)",
-	"internal/worktrees/branches_cleanup.go:copyFileSHA256":              "PR-3: worktrees -- OpenFile O_EXCL write-once (copy via io.Copy)",
 	"internal/locallink/execports.go:ExecNode.Link":                      "PR-8: misc-atomic-writers -- two OpenFile O_CREATE|O_EXCL write-once marker/backup writes ahead of a rename; not rename-only, unlike ExecNode.Unlink",
 	"internal/locallink/execports.go:copyBuiltPackageContents":           "PR-8: misc-atomic-writers -- OpenFile O_EXCL write-once (copy via io.Copy)",
-	"internal/worktrees/retire.go:retireCaptureFile":                     "PR-3: worktrees -- OpenFile O_EXCL write-once (copy via io.Copy)",
 	"internal/orchestrate/worktree_merge.go:extractWorktreeMergeArchive": "PR-4: orchestrate -- OpenFile O_CREATE|O_TRUNC write via io.Copy for each archive entry",
 
 	// Category D (round 2): create-only scratch/name-reservation temp
@@ -274,10 +262,8 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// callers of renameNoReplace use for fault injection; the primitive
 	// itself stays where it is until the PR that folds it in (see N3 in
 	// the task-9 PR-1 review).
-	"internal/worktrees/rename_noreplace_darwin.go:renameNoReplace": "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/worktrees/rename_noreplace_linux.go:renameNoReplace":  "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/hooks/rename_noreplace_darwin.go:renameNoReplace":     "OS-specific renameNoReplace syscall wrapper, not a write sequence",
-	"internal/hooks/rename_noreplace_linux.go:renameNoReplace":      "OS-specific renameNoReplace syscall wrapper, not a write sequence",
+	"internal/hooks/rename_noreplace_darwin.go:renameNoReplace": "OS-specific renameNoReplace syscall wrapper, not a write sequence",
+	"internal/hooks/rename_noreplace_linux.go:renameNoReplace":  "OS-specific renameNoReplace syscall wrapper, not a write sequence",
 
 	// Append-only log writes: an O_APPEND descriptor with a flock (or a
 	// bare append), never a temp name, never a rename or link. There is no

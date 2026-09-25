@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -395,28 +396,40 @@ func atomicLocalBranchRename(ctx context.Context, path, source, destination, sha
 }
 
 func writeQuarantineReport(path string, outcome BranchQuarantineOutcome) error {
+	return writeQuarantineReportInjected(path, outcome, nil)
+}
+
+// writeQuarantineReportInjected is writeQuarantineReport's test seam
+// (task-9 PR-3): every production call site reaches it only through
+// writeQuarantineReport, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a create/write/sync/close/rename failure branch
+// deterministically. Unlike a CreateTemp-based publish, temporary is a
+// fixed name (path+".tmp") that is always fully overwritten, so this uses
+// CreateOrTruncatePath rather than CreateTemp or CreateExclusivePath.
+func writeQuarantineReportInjected(path string, outcome BranchQuarantineOutcome, inj *filewrite.Injector) error {
 	data, err := json.MarshalIndent(outcome, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
 	temporary := path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := filewrite.CreateOrTruncatePath(temporary, 0o600, inj)
 	if err != nil {
 		return err
 	}
-	if _, err := file.Write(data); err != nil {
+	if err := filewrite.Write(file, data, temporary, inj); err != nil {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, temporary, inj); err != nil {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))

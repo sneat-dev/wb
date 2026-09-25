@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/repopath"
@@ -5955,6 +5956,26 @@ func writeCleanupReport(
 	artifacts []LifecycleArtifact,
 	recovery *InterruptedLockRecovery,
 ) (string, error) {
+	return writeCleanupReportInjected(options, generatedAt, phase, results, diagnostics, artifacts, recovery, nil)
+}
+
+// writeCleanupReportInjected is writeCleanupReport's test seam (task-9
+// PR-3): every production call site reaches it only through
+// writeCleanupReport, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a write or rename failure branch deterministically.
+// The original call site never called Sync -- WriteFile alone -- so this
+// preserves that (filewrite.WriteFile wraps os.WriteFile with no fsync).
+func writeCleanupReportInjected(
+	options CleanupOptions,
+	generatedAt time.Time,
+	phase string,
+	results []CleanupResult,
+	diagnostics []ListDiagnostic,
+	artifacts []LifecycleArtifact,
+	recovery *InterruptedLockRecovery,
+	inj *filewrite.Injector,
+) (string, error) {
 	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create cleanup report directory: %w", err)
 	}
@@ -5982,10 +6003,10 @@ func writeCleanupReport(
 	content = append(content, '\n')
 	path := filepath.Join(options.ReportDir, "cleanup.json")
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o644); err != nil {
+	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
 		return "", fmt.Errorf("write cleanup report: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return "", fmt.Errorf("activate cleanup report: %w", err)
 	}
 	return path, nil

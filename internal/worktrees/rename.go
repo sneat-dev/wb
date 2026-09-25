@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -1633,6 +1634,24 @@ func writeRenameReport(
 	results []RenameResult,
 	diagnostics []ListDiagnostic,
 ) (string, error) {
+	return writeRenameReportInjected(options, generatedAt, phase, results, diagnostics, nil)
+}
+
+// writeRenameReportInjected is writeRenameReport's test seam (task-9
+// PR-3): every production call site reaches it only through
+// writeRenameReport, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged; a test passes its own Injector
+// directly to reach a write or rename failure branch deterministically.
+// The original call site never called Sync -- WriteFile alone -- so this
+// preserves that.
+func writeRenameReportInjected(
+	options RenameOptions,
+	generatedAt time.Time,
+	phase string,
+	results []RenameResult,
+	diagnostics []ListDiagnostic,
+	inj *filewrite.Injector,
+) (string, error) {
 	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create rename report directory: %w", err)
 	}
@@ -1650,10 +1669,10 @@ func writeRenameReport(
 	content = append(content, '\n')
 	path := filepath.Join(options.ReportDir, "rename.json")
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o644); err != nil {
+	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
 		return "", fmt.Errorf("write rename report: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return "", fmt.Errorf("activate rename report: %w", err)
 	}
 	return path, nil
