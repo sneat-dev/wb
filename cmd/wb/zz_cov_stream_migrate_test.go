@@ -571,6 +571,23 @@ func TestCwCovRunHierarchicalMigrationRefusalsAndCleanup(t *testing.T) {
 	}
 }
 
+// --github-dir defaults to --projects-root when the flag is omitted; every
+// other hierarchical-migration test above passes --github-dir explicitly, so
+// this is the only one that exercises the fallback itself.
+func TestCwCovRunHierarchicalMigrationDefaultsGithubDirToProjectsRoot(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "migration.hcl")
+	if err := os.WriteFile(specPath, []byte(cwCovMigrationSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	code := cwCovCaptureStdoutInt(t, func() int {
+		return runHierarchicalMigration(&invocation{projectsRoot: projectsRoot}, specPath, nil, hierarchicalMigrationOptions{format: "json"})
+	})
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (hierarchical requires exactly one source root)", code)
+	}
+}
+
 // TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration
 // proves that "wb migrate --hierarchical" reaches runHierarchicalMigration
 // through the real command tree, not just through direct unit calls.
