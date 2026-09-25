@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/spf13/cobra"
 )
 
@@ -257,8 +261,15 @@ func TestCwCovWriteVerificationOutputAndMarkdown(t *testing.T) {
 }
 
 func TestCwCovVerificationGitSnapshot(t *testing.T) {
+	// This file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22): verificationGitSnapshot now runs through internal/runner
+	// (task-8), and this test's whole point is to observe real git's clean/
+	// dirty/missing-repository behaviour against the real repository below.
+	runnertest.AllowRealProcess(t)
+	realRunner := runner.New()
+	ctx := context.Background()
 	repository := scratchRepo(t)
-	if state := verificationGitSnapshot(repository); state.err == nil {
+	if state := verificationGitSnapshot(ctx, realRunner, repository); state.err == nil {
 		t.Fatal("a repository with no commit has no HEAD to bind")
 	}
 	runGit(t, repository, "config", "user.email", "wb@example.test")
@@ -269,17 +280,17 @@ func TestCwCovVerificationGitSnapshot(t *testing.T) {
 	runGit(t, repository, "add", ".")
 	runGit(t, repository, "commit", "-m", "init")
 
-	state := verificationGitSnapshot(repository)
+	state := verificationGitSnapshot(ctx, realRunner, repository)
 	if state.err != nil || !state.clean || len(state.revision) != 40 {
 		t.Fatalf("clean snapshot = %+v", state)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "dirty.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if dirty := verificationGitSnapshot(repository); dirty.err != nil || dirty.clean {
+	if dirty := verificationGitSnapshot(ctx, realRunner, repository); dirty.err != nil || dirty.clean {
 		t.Fatalf("dirty snapshot = %+v, want clean=false", dirty)
 	}
-	if missing := verificationGitSnapshot(filepath.Join(t.TempDir(), "absent")); missing.err == nil {
+	if missing := verificationGitSnapshot(ctx, realRunner, filepath.Join(t.TempDir(), "absent")); missing.err == nil {
 		t.Fatal("a missing repository must report an error")
 	}
 }
@@ -427,7 +438,15 @@ func TestCwCovRunVerificationTargetsReportsAnUnrunnableTarget(t *testing.T) {
 	// A directory that cannot hold a run is reported as a failed row, and the
 	// error is surfaced rather than swallowed.
 	missing := filepath.Join(t.TempDir(), "absent")
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/absent", path: missing}},
+	// missing does not exist, so both the before and after
+	// verificationGitSnapshot calls fail the way real git would refuse a
+	// non-existent directory; this test asserts only that the run is
+	// reported as unrunnable, not the (absent) git identity.
+	anyCall := func(runnertest.Call) bool { return true }
+	fake := runnertest.New(t)
+	fake.Expect(anyCall, runner.Result{}, errors.New("no such directory"))
+	fake.Expect(anyCall, runner.Result{}, errors.New("no such directory"))
+	reports := runVerificationTargets(fake, []qualityTarget{{repository: "acme/absent", path: missing}},
 		[]quality.Check{quality.CheckBuild}, 1, quality.RunOptions{})
 	if len(reports) != 1 {
 		t.Fatalf("reports = %+v", reports)

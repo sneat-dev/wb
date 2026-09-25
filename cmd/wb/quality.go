@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -22,6 +21,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type qualityOptions struct {
@@ -230,7 +230,7 @@ func newVerifyCmd(inv *invocation) *cobra.Command {
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			reports := runVerificationTargets(inv.commandRunner(), targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Checks: checks, Repositories: reports}
@@ -253,7 +253,7 @@ func newVerifyCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write verify.md and verify.yaml to this directory")
-	command.AddCommand(newVerifyReceiptCmd())
+	command.AddCommand(newVerifyReceiptCmd(inv))
 	return command
 }
 
@@ -295,7 +295,7 @@ func newCheckCmd(inv *invocation) *cobra.Command {
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			reports := runVerificationTargets(inv.commandRunner(), targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Profile: profile, Checks: checks, Repositories: reports}
@@ -426,7 +426,7 @@ func coverageRunOptionsForTarget(options quality.RunOptions, target qualityTarge
 	return quality.RepositoryRunOptions(target.path, options)
 }
 
-func runVerificationTargets(targets []qualityTarget, checks []quality.Check, parallel int, options quality.RunOptions) []quality.VerificationReport {
+func runVerificationTargets(r runner.Runner, targets []qualityTarget, checks []quality.Check, parallel int, options quality.RunOptions) []quality.VerificationReport {
 	reports := make([]quality.VerificationReport, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
@@ -441,9 +441,9 @@ func runVerificationTargets(targets []qualityTarget, checks []quality.Check, par
 			reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 			return
 		}
-		before := verificationGitSnapshot(target.path)
+		before := verificationGitSnapshot(context.Background(), r, target.path)
 		report := quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, targetOptions)
-		after := verificationGitSnapshot(target.path)
+		after := verificationGitSnapshot(context.Background(), r, target.path)
 		if before.err == nil && after.err == nil && before.clean && after.clean && before.revision == after.revision {
 			report.Revision = before.revision
 			report.WorkspaceClean = true
@@ -465,20 +465,20 @@ type verificationGitState struct {
 	err      error
 }
 
-func verificationGitSnapshot(repositoryPath string) verificationGitState {
-	revisionOutput, err := exec.Command("git", "-C", repositoryPath, "rev-parse", "--verify", "HEAD").Output()
+func verificationGitSnapshot(ctx context.Context, r runner.Runner, repositoryPath string) verificationGitState {
+	revisionResult, err := r.Run(ctx, "", "git", "-C", repositoryPath, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return verificationGitState{err: err}
 	}
-	revision := strings.ToLower(strings.TrimSpace(string(revisionOutput)))
+	revision := strings.ToLower(strings.TrimSpace(revisionResult.Stdout))
 	if !exactGitObjectID.MatchString(revision) {
 		return verificationGitState{err: fmt.Errorf("invalid Git revision %q", revision)}
 	}
-	statusOutput, err := exec.Command("git", "-C", repositoryPath, "status", "--porcelain=v1", "--untracked-files=all").Output()
+	statusResult, err := r.Run(ctx, "", "git", "-C", repositoryPath, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return verificationGitState{err: err}
 	}
-	return verificationGitState{revision: revision, clean: len(statusOutput) == 0}
+	return verificationGitState{revision: revision, clean: len(statusResult.Stdout) == 0}
 }
 
 func qualityRunOptionsForTarget(options quality.RunOptions, repository string) quality.RunOptions {

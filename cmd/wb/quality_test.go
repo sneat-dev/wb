@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestQualityTargetsSupportsGlobAndRegex(t *testing.T) {
@@ -101,7 +104,15 @@ func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
 	if err := os.WriteFile(policyPath, []byte("version: 1\nunknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
+	// repository holds no .git directory, so both the before and after
+	// verificationGitSnapshot calls fail at "rev-parse --verify HEAD" the
+	// same way real git would refuse a non-repository; this test asserts
+	// only the policy failure, not the (absent) git identity.
+	notARepository := func(runnertest.Call) bool { return true }
+	fake := runnertest.New(t)
+	fake.Expect(notARepository, runner.Result{}, errors.New("not a git repository"))
+	fake.Expect(notARepository, runner.Result{}, errors.New("not a git repository"))
+	reports := runVerificationTargets(fake, []qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
 	if len(reports) != 1 || reports[0].Status != quality.StatusFailed || len(reports[0].Results) != 1 || !strings.Contains(reports[0].Results[0].Detail, "field unknown not found") {
 		t.Fatalf("verification policy failure = %#v", reports)
 	}
@@ -128,6 +139,12 @@ func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.
 }
 
 func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
+	// This file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22): verificationGitSnapshot now runs through internal/runner
+	// (task-8), and this test's whole point is to observe real git's clean/
+	// dirty revision behaviour against the real repository built below.
+	runnertest.AllowRealProcess(t)
+	realRunner := runner.New()
 	repository := t.TempDir()
 	git := func(arguments ...string) string {
 		t.Helper()
@@ -148,7 +165,7 @@ func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
 	git("-c", "commit.gpgSign=false", "commit", "-m", "initial")
 	wantRevision := git("rev-parse", "HEAD")
 
-	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	reports := runVerificationTargets(realRunner, []qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
 	if len(reports) != 1 || reports[0].Revision != wantRevision || !reports[0].WorkspaceClean {
 		t.Fatalf("clean exact verification identity = %#v", reports)
 	}
@@ -156,7 +173,7 @@ func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reports = runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	reports = runVerificationTargets(realRunner, []qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
 	if reports[0].Revision != "" || reports[0].WorkspaceClean {
 		t.Fatalf("dirty workspace received exact verification identity = %#v", reports[0])
 	}

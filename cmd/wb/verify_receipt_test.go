@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +14,8 @@ import (
 	"github.com/sneat-dev/wb/internal/graduation"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -72,27 +72,19 @@ func TestVerifyReceiptRefusesOverwrite(t *testing.T) {
 func TestVerifyReceiptRemoteTargetUsesFixedGitObservation(t *testing.T) {
 	revision := strings.Repeat("a", 40)
 	now := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
-	var calls []string
+	repositoryPath := t.TempDir()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", repositoryPath, "check-ref-format", "--branch", "main"}, runner.Result{}, nil)
+	fake.ExpectArgv([]string{"git", "-C", repositoryPath, "remote", "get-url", "origin"}, runner.Result{Stdout: "git@github.com:sneat-dev/wb.git\n"}, nil)
+	fake.ExpectArgv([]string{"git", "-C", repositoryPath, "ls-remote", "--refs", "origin", "refs/heads/main"}, runner.Result{Stdout: revision + "\trefs/heads/main\n"}, nil)
 	deps := graduationCommandDeps{
-		now: func() time.Time { return now },
-		runGit: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			calls = append(calls, strings.Join(args, " "))
-			switch args[0] {
-			case "check-ref-format":
-				return nil, nil
-			case "remote":
-				return []byte("git@github.com:sneat-dev/wb.git\n"), nil
-			case "ls-remote":
-				return []byte(revision + "\trefs/heads/main\n"), nil
-			default:
-				return nil, fmt.Errorf("unexpected git args: %v", args)
-			}
-		},
+		now:    func() time.Time { return now },
+		runner: fake,
 	}
 	command := newVerifyReceiptCmdWithDeps(deps)
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
-	command.SetArgs([]string{"remote-target", "--repo", "sneat-dev/wb", "--repository-path", t.TempDir(), "--remote", "origin", "--target", "main"})
+	command.SetArgs([]string{"remote-target", "--repo", "sneat-dev/wb", "--repository-path", repositoryPath, "--remote", "origin", "--target", "main"})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -103,30 +95,21 @@ func TestVerifyReceiptRemoteTargetUsesFixedGitObservation(t *testing.T) {
 	if evidence.Producer != graduation.RemoteTargetProducer || evidence.Revision != revision || evidence.ObservedAt != now || evidence.ObservedOutputSHA256 != graduation.Digest([]byte(evidence.ObservedOutput)) {
 		t.Fatalf("remote evidence=%#v", evidence)
 	}
-	wantCalls := []string{"check-ref-format --branch main", "remote get-url origin", "ls-remote --refs origin refs/heads/main"}
-	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
-		t.Fatalf("git calls=%v, want %v", calls, wantCalls)
+	if got := fake.CallCount(); got != 3 {
+		t.Fatalf("git calls = %d, want 3 (calls=%+v)", got, fake.Calls())
 	}
 }
 
 func TestVerifyReceiptRemoteTargetRejectsRepositoryAndPayloadMismatch(t *testing.T) {
-	revision := strings.Repeat("a", 40)
 	for name, remoteURL := range map[string]string{
 		"different repository": "git@github.com:sneat-dev/other.git\n",
 		"embedded credential":  "https://token@github.com/sneat-dev/wb.git\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			deps := graduationCommandDeps{now: time.Now, runGit: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-				switch args[0] {
-				case "check-ref-format":
-					return nil, nil
-				case "remote":
-					return []byte(remoteURL), nil
-				case "ls-remote":
-					return []byte(revision + " refs/heads/main\n"), nil
-				}
-				return nil, nil
-			}}
+			fake := runnertest.New(t)
+			fake.Expect(gitTailMatch("check-ref-format", "--branch", "main"), runner.Result{}, nil)
+			fake.Expect(gitTailMatch("remote", "get-url", "origin"), runner.Result{Stdout: remoteURL}, nil)
+			deps := graduationCommandDeps{now: time.Now, runner: fake}
 			command := newVerifyReceiptCmdWithDeps(deps)
 			command.SetArgs([]string{"remote-target", "--repo", "sneat-dev/wb", "--target", "main"})
 			if err := command.Execute(); err == nil {
@@ -137,13 +120,34 @@ func TestVerifyReceiptRemoteTargetRejectsRepositoryAndPayloadMismatch(t *testing
 }
 
 func TestVerifyReceiptRemoteTargetRejectsOptionLikeRemoteName(t *testing.T) {
-	command := newVerifyReceiptCmdWithDeps(graduationCommandDeps{now: time.Now, runGit: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		t.Fatal("unsafe remote reached git")
-		return nil, nil
-	}})
+	// An unscripted runnertest.Fake fails the test the moment anything calls
+	// it (runnertest.go: "no script matched"), so no explicit assertion is
+	// needed: reaching git at all fails this test.
+	command := newVerifyReceiptCmdWithDeps(graduationCommandDeps{now: time.Now, runner: runnertest.New(t)})
 	command.SetArgs([]string{"remote-target", "--repo", "sneat-dev/wb", "--remote=--upload-pack=evil", "--target", "main"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "safe configured remote") {
 		t.Fatalf("unsafe remote error=%v", err)
+	}
+}
+
+// gitTailMatch matches a runnertest.Call for `git -C <any directory> tail...`,
+// ignoring the directory: several verify-receipt tests exercise git calls
+// without pinning --repository-path to one exact resolved path.
+func gitTailMatch(tail ...string) func(runnertest.Call) bool {
+	return func(c runnertest.Call) bool {
+		if c.Name != "git" || len(c.Args) < 2 || c.Args[0] != "-C" {
+			return false
+		}
+		got := c.Args[2:]
+		if len(got) != len(tail) {
+			return false
+		}
+		for i, want := range tail {
+			if got[i] != want {
+				return false
+			}
+		}
+		return true
 	}
 }
 

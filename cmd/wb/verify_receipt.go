@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/graduation"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -22,22 +22,35 @@ const maxGraduationEvidenceBytes = 4 << 20
 var graduationRemoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
 type graduationCommandDeps struct {
-	now    func() time.Time
-	runGit func(context.Context, string, ...string) ([]byte, error)
+	now func() time.Time
+	// runner is task-8's command-runner port: every git subcommand below
+	// runs "git -C <directory> <arguments...>" through it, matching the
+	// exact argv, dir and stdout-only capture the retired direct
+	// exec.CommandContext(...).Output() call had.
+	runner runner.Runner
 }
 
-func defaultGraduationCommandDeps() graduationCommandDeps {
+func defaultGraduationCommandDeps(inv *invocation) graduationCommandDeps {
 	return graduationCommandDeps{
-		now: func() time.Time { return time.Now().UTC() },
-		runGit: func(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
-			args := append([]string{"-C", directory}, arguments...)
-			return exec.CommandContext(ctx, "git", args...).Output()
-		},
+		now:    func() time.Time { return time.Now().UTC() },
+		runner: inv.commandRunner(),
 	}
 }
 
-func newVerifyReceiptCmd() *cobra.Command {
-	return newVerifyReceiptCmdWithDeps(defaultGraduationCommandDeps())
+// gitCommand runs "git -C directory arguments..." through deps.runner and
+// returns its captured stdout, exactly as the retired
+// exec.CommandContext(...).Output() call did. It is deliberately not named
+// with one of internal/quality's git-helper-call detector names (runGit,
+// gitOutput, ...): those name an unmigrated direct-exec helper, and this one
+// already routes through task-8's runner.
+func (deps graduationCommandDeps) gitCommand(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
+	args := append([]string{"-C", directory}, arguments...)
+	result, err := deps.runner.Run(ctx, "", "git", args...)
+	return []byte(result.Stdout), err
+}
+
+func newVerifyReceiptCmd(inv *invocation) *cobra.Command {
+	return newVerifyReceiptCmdWithDeps(defaultGraduationCommandDeps(inv))
 }
 
 func newVerifyReceiptCmdWithDeps(deps graduationCommandDeps) *cobra.Command {
@@ -145,10 +158,10 @@ func newVerifyReceiptRemoteTargetCmd(deps graduationCommandDeps) *cobra.Command 
 			if err != nil {
 				return fmt.Errorf("resolve --repository-path: %w", err)
 			}
-			if _, err := deps.runGit(command.Context(), absolutePath, "check-ref-format", "--branch", target); err != nil {
+			if _, err := deps.gitCommand(command.Context(), absolutePath, "check-ref-format", "--branch", target); err != nil {
 				return fmt.Errorf("--target is not a valid Git branch: %w", err)
 			}
-			remoteURLRaw, err := deps.runGit(command.Context(), absolutePath, "remote", "get-url", remote)
+			remoteURLRaw, err := deps.gitCommand(command.Context(), absolutePath, "remote", "get-url", remote)
 			if err != nil {
 				return fmt.Errorf("resolve remote %s: %w", remote, err)
 			}
@@ -157,7 +170,7 @@ func newVerifyReceiptRemoteTargetCmd(deps graduationCommandDeps) *cobra.Command 
 				return err
 			}
 			targetRef := "refs/heads/" + target
-			observed, err := deps.runGit(command.Context(), absolutePath, "ls-remote", "--refs", remote, targetRef)
+			observed, err := deps.gitCommand(command.Context(), absolutePath, "ls-remote", "--refs", remote, targetRef)
 			if err != nil {
 				return fmt.Errorf("observe %s %s: %w", remote, targetRef, err)
 			}
