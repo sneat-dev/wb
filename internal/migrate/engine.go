@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // FileChange describes one planned, atomic file replacement.
@@ -108,6 +110,15 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 // Apply writes all planned changes, refusing to overwrite a source file that
 // changed after planning. Each individual file write is atomic.
 func Apply(plan Plan) error {
+	return applyInjected(plan, nil)
+}
+
+// applyInjected is Apply's test seam (task-9 PR-8): every production call
+// site reaches it only through Apply, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the create/write/chmod/close/rename failure
+// branches deterministically.
+func applyInjected(plan Plan, inj *filewrite.Injector) error {
 	for _, change := range plan.Changes {
 		current, err := os.ReadFile(change.Path)
 		if err != nil {
@@ -121,22 +132,22 @@ func Apply(plan Plan) error {
 		if err != nil {
 			return err
 		}
-		tmp, err := os.CreateTemp(filepath.Dir(change.Path), ".wb-migrate-*")
+		tmp, err := filewrite.CreateTemp(filepath.Dir(change.Path), ".wb-migrate-*", inj)
 		if err != nil {
 			return err
 		}
 		tmpName := tmp.Name()
-		if _, err = tmp.Write(change.Updated); err == nil {
-			err = tmp.Chmod(info.Mode())
+		if err = filewrite.Write(tmp, change.Updated, tmpName, inj); err == nil {
+			err = filewrite.ChmodFile(tmp, info.Mode(), tmpName, inj)
 		}
-		if closeErr := tmp.Close(); err == nil {
+		if closeErr := filewrite.Close(tmp, tmpName, inj); err == nil {
 			err = closeErr
 		}
 		if err != nil {
 			_ = os.Remove(tmpName)
 			return fmt.Errorf("write %s: %w", change.Path, err)
 		}
-		if err := os.Rename(tmpName, change.Path); err != nil {
+		if err := filewrite.Rename(tmpName, change.Path, inj); err != nil {
 			_ = os.Remove(tmpName)
 			return fmt.Errorf("replace %s: %w", change.Path, err)
 		}

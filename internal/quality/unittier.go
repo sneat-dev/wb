@@ -173,6 +173,13 @@ var UnitTierGitHelperNames = map[string]bool{
 	// here is enough for both an unqualified, same-package call and a
 	// qualified testenv.Xxx one.
 	"InitBareRemoteForTest": true, // internal/testenv/testenv.go
+
+	// Generic process wrappers whose own body invokes exec.Command/
+	// exec.CommandContext with the executable name as a parameter, so any
+	// unqualified call site starts an unaccounted-for real process (review
+	// note #769 N2).
+	"runCommand":    true, // cmd/wb/worktree_marker_test.go; also internal/deps/command.go, internal/orchestrate/command.go
+	"installFakeGH": true, // internal/orchestrate/ciwait_deadline_unix_test.go
 }
 
 // UnitTierMatch is one occurrence of a banned pattern in one default-tier

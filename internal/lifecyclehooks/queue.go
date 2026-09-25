@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 type queuedJob struct {
@@ -448,6 +450,15 @@ func readJob(path string) (queuedJob, error) {
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
+	return writeJSONAtomicInjected(path, value, mode, nil)
+}
+
+// writeJSONAtomicInjected is writeJSONAtomic's test seam (task-9 PR-8): every
+// production call site reaches it only through writeJSONAtomic, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename/dir-sync failure branches deterministically.
+func writeJSONAtomicInjected(path string, value any, mode os.FileMode, inj *filewrite.Injector) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -455,34 +466,43 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".tmp-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, mode, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(raw, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(raw, '\n'), temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	return syncDirectoryInjected(filepath.Dir(path), inj)
 }
 
 func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error) {
+	return dispatcher.quarantineFileInjected(path, reason, nil)
+}
+
+// quarantineFileInjected is quarantineFile's test seam (task-9 PR-8): every
+// production call site reaches it only through quarantineFile, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the rename/chmod/write/dir-sync
+// failure branches deterministically.
+func (dispatcher Dispatcher) quarantineFileInjected(path, reason string, inj *filewrite.Injector) (string, error) {
 	if err := os.MkdirAll(dispatcher.quarantineDir(), 0o700); err != nil {
 		return "", err
 	}
@@ -491,16 +511,21 @@ func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error)
 	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + "-" + receiptID(dispatcher.Now().UTC()) + ".bad"
 	destination := filepath.Join(dispatcher.quarantineDir(), name)
-	if err := os.Rename(path, destination); err != nil {
+	if err := filewrite.Rename(path, destination, inj); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
+	if err := filewrite.ChmodPath(destination, 0o600, inj); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(destination+".reason.txt", []byte(boundedMessage(reason, 1024)+"\n"), 0o600); err != nil {
+	if err := filewrite.WriteFile(destination+".reason.txt", []byte(boundedMessage(reason, 1024)+"\n"), 0o600, inj); err != nil {
 		return "", err
 	}
-	return destination, syncQueueDirectories(filepath.Dir(path), dispatcher.quarantineDir())
+	for _, directory := range []string{filepath.Dir(path), dispatcher.quarantineDir()} {
+		if err := syncDirectoryInjected(directory, inj); err != nil {
+			return destination, err
+		}
+	}
+	return destination, nil
 }
 
 func appendReceipt(path string, receipt Receipt) error {

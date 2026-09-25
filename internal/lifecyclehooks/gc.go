@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 type GCOptions struct {
@@ -147,39 +149,49 @@ func readReceiptRecords(path string) ([]receiptRecord, []string, error) {
 }
 
 func rewriteReceiptRecords(path string, records []receiptRecord) error {
+	return rewriteReceiptRecordsInjected(path, records, nil)
+}
+
+// rewriteReceiptRecordsInjected is rewriteReceiptRecords's test seam (task-9
+// PR-8): every production call site reaches it only through
+// rewriteReceiptRecords, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to reach
+// the create/chmod/write/sync/close/rename/dir-sync failure branches
+// deterministically.
+func rewriteReceiptRecordsInjected(path string, records []receiptRecord, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".lifecycle-receipts-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".lifecycle-receipts-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
 	for _, record := range records {
 		if record.remove {
 			continue
 		}
-		if _, err := temporary.Write(append(record.raw, '\n')); err != nil {
-			_ = temporary.Close()
+		if err := filewrite.Write(temporary, append(record.raw, '\n'), temporaryPath, inj); err != nil {
+			_ = filewrite.Close(temporary, temporaryPath, inj)
 			return err
 		}
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	return syncDirectoryInjected(filepath.Dir(path), inj)
 }
 
 func (dispatcher Dispatcher) removeReceiptDiagnostics(receipt Receipt) (bool, error) {

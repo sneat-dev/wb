@@ -37,6 +37,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // FileName is the marker's name in every checkout.
@@ -302,24 +304,34 @@ func EnsureExclude(excludePath string) (bool, error) {
 // directory, so an interrupted write can never leave a half-written marker or,
 // far worse, a truncated exclude file that stops ignoring the marker.
 func writeFileAtomically(path, contents string) error {
+	return writeFileAtomicallyInjected(path, contents, nil)
+}
+
+// writeFileAtomicallyInjected is writeFileAtomically's test seam (task-9
+// PR-8): every production call site reaches it only through
+// writeFileAtomically, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the create/write/close/chmod/rename failure branches
+// deterministically.
+func writeFileAtomicallyInjected(path, contents string, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".wb-marker-*")
+	temporary, err := filewrite.CreateTemp(directory, ".wb-marker-*", inj)
 	if err != nil {
 		return fmt.Errorf("stage a replacement for %s: %w", path, err)
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if _, err := temporary.WriteString(contents); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, []byte(contents), name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return fmt.Errorf("close %s: %w", name, err)
 	}
-	if err := os.Chmod(name, 0o644); err != nil {
+	if err := filewrite.ChmodPath(name, 0o644, inj); err != nil {
 		return fmt.Errorf("set permissions on %s: %w", name, err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := filewrite.Rename(name, path, inj); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil

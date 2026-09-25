@@ -6,12 +6,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"gopkg.in/yaml.v3"
 )
 
 // SetRemoteHub updates only the remote provider fields owned by hub
 // enrollment. Other top-level configuration and remote settings are retained.
 func SetRemoteHub(path, hubURL, machine, tokenFile string) error {
+	return setRemoteHubInjected(path, hubURL, machine, tokenFile, nil)
+}
+
+// setRemoteHubInjected is SetRemoteHub's test seam (task-9 PR-8): every
+// production call site reaches it only through SetRemoteHub, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename failure branches deterministically.
+func setRemoteHubInjected(path, hubURL, machine, tokenFile string, inj *filewrite.Injector) error {
 	var document yaml.Node
 	raw, err := os.ReadFile(path)
 	switch {
@@ -43,34 +53,34 @@ func SetRemoteHub(path, hubURL, machine, tokenFile string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".wb-config-*.yaml")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".wb-config-*.yaml", inj)
 	if err != nil {
 		return fmt.Errorf("stage config: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("protect staged config: %w", err)
 	}
-	encoder := yaml.NewEncoder(temporary)
+	encoder := yaml.NewEncoder(filewrite.Writer(temporary, temporaryName, inj))
 	encoder.SetIndent(2)
 	if err := encoder.Encode(&document); err != nil {
-		_ = temporary.Close()
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("encode config: %w", err)
 	}
 	if err := encoder.Close(); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("finish config: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("sync config: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return fmt.Errorf("close config: %w", err)
 	}
-	if err := os.Rename(temporaryName, path); err != nil {
+	if err := filewrite.Rename(temporaryName, path, inj); err != nil {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil

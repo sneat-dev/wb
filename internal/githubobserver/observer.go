@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -919,28 +920,39 @@ func readCacheEntry(path string) (*cacheEntry, error) {
 }
 
 func writeCacheEntry(path string, entry *cacheEntry) error {
+	return writeCacheEntryInjected(path, entry, nil)
+}
+
+// writeCacheEntryInjected is writeCacheEntry's test seam (task-9 PR-8): every
+// production call site reaches it only through writeCacheEntry, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/close/rename
+// failure branches deterministically. The write-failure and close-failure
+// branches deliberately share the same "write GitHub observer cache %s: %w"
+// error text, matching the pre-migration original.
+func writeCacheEntryInjected(path string, entry *cacheEntry, inj *filewrite.Injector) error {
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("encode GitHub observer cache %s: %w", path, err)
 	}
-	tmpFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	tmpFile, err := filewrite.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*", inj)
 	if err != nil {
 		return fmt.Errorf("create GitHub observer cache temp file for %s: %w", path, err)
 	}
 	tmp := tmpFile.Name()
 	defer func() { _ = os.Remove(tmp) }()
-	if err := tmpFile.Chmod(0o600); err != nil {
-		_ = tmpFile.Close()
+	if err := filewrite.ChmodFile(tmpFile, 0o600, tmp, inj); err != nil {
+		_ = filewrite.Close(tmpFile, tmp, inj)
 		return fmt.Errorf("set GitHub observer cache temp permissions for %s: %w", path, err)
 	}
-	if _, err := tmpFile.Write(raw); err != nil {
-		_ = tmpFile.Close()
+	if err := filewrite.Write(tmpFile, raw, tmp, inj); err != nil {
+		_ = filewrite.Close(tmpFile, tmp, inj)
 		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
 	}
-	if err := tmpFile.Close(); err != nil {
+	if err := filewrite.Close(tmpFile, tmp, inj); err != nil {
 		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := filewrite.Rename(tmp, path, inj); err != nil {
 		return fmt.Errorf("activate GitHub observer cache %s: %w", path, err)
 	}
 	return nil

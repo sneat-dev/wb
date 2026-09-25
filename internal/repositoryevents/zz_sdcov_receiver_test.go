@@ -26,13 +26,13 @@ func TestSdCovSleepContextHonorsTimerAndCancellation(t *testing.T) {
 	}
 }
 
-func TestSdCovSyncDirectoryReportsMissingDirectory(t *testing.T) {
+func TestSdCovSyncDirectoryInjectedReportsMissingDirectory(t *testing.T) {
 	t.Parallel()
-	if err := syncDirectory(t.TempDir()); err != nil {
-		t.Fatalf("syncDirectory(existing) = %v", err)
+	if err := syncDirectoryInjected(t.TempDir(), nil); err != nil {
+		t.Fatalf("syncDirectoryInjected(existing) = %v", err)
 	}
-	if err := syncDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("syncDirectory accepted a missing directory")
+	if err := syncDirectoryInjected(filepath.Join(t.TempDir(), "missing"), nil); err == nil {
+		t.Fatal("syncDirectoryInjected accepted a missing directory")
 	}
 }
 

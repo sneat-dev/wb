@@ -300,32 +300,10 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 		}
 	}
 
-	reports := make([]ciaudit.Report, 0, len(paths))
-	for _, repoPath := range paths {
-		absolute, err := filepath.Abs(repoPath)
-		if err != nil {
-			return 1, err
-		}
-		report, err := ciaudit.Audit(absolute)
-		if err != nil {
-			return 1, err
-		}
-		if target != "" {
-			targetFindings, err := ciaudit.CompareAgainstTarget(absolute, target)
-			if err != nil {
-				return 1, err
-			}
-			report.Findings = append(report.Findings, targetFindings...)
-			sort.Slice(report.Findings, func(i, j int) bool {
-				if report.Findings[i].Code == report.Findings[j].Code {
-					return report.Findings[i].File < report.Findings[j].File
-				}
-				return report.Findings[i].Code < report.Findings[j].Code
-			})
-		}
-		reports = append(reports, report)
+	reports, err := auditReports(paths, target, ciaudit.CompareAgainstTarget)
+	if err != nil {
+		return 1, err
 	}
-	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
 
 	if jsonOut {
 		encoder := json.NewEncoder(os.Stdout)
@@ -345,6 +323,42 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// auditReports runs ciaudit.Audit over every path and, when target is
+// non-empty, folds in compareAgainstTarget's findings for that path, sorted
+// alongside Audit's own. runCIAudit always calls this with
+// ciaudit.CompareAgainstTarget; compareAgainstTarget is a parameter, not a
+// package-level seam, so a test can swap in a fake without adding
+// package-level mutable state to cmd/wb.
+func auditReports(paths []string, target string, compareAgainstTarget func(root, target string) ([]ciaudit.Finding, error)) ([]ciaudit.Report, error) {
+	reports := make([]ciaudit.Report, 0, len(paths))
+	for _, repoPath := range paths {
+		absolute, err := filepath.Abs(repoPath)
+		if err != nil {
+			return nil, err
+		}
+		report, err := ciaudit.Audit(absolute)
+		if err != nil {
+			return nil, err
+		}
+		if target != "" {
+			targetFindings, err := compareAgainstTarget(absolute, target)
+			if err != nil {
+				return nil, err
+			}
+			report.Findings = append(report.Findings, targetFindings...)
+			sort.Slice(report.Findings, func(i, j int) bool {
+				if report.Findings[i].Code == report.Findings[j].Code {
+					return report.Findings[i].File < report.Findings[j].File
+				}
+				return report.Findings[i].Code < report.Findings[j].Code
+			})
+		}
+		reports = append(reports, report)
+	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
+	return reports, nil
 }
 
 func printCIAudit(reports []ciaudit.Report) {

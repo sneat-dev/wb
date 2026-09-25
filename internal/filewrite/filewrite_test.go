@@ -2,6 +2,7 @@ package filewrite
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -509,6 +510,59 @@ func TestWriterHonoursAnInjectedFailure(t *testing.T) {
 	}
 	if got, statErr := os.ReadFile(filepath.Join(dir.Name(), "f")); statErr != nil || len(got) != 0 {
 		t.Fatalf("file content after injected failure = %q, %v, want empty (the real write must not run)", got, statErr)
+	}
+}
+
+func TestWriterReadFromCopiesFromAnOsFileSource(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	sourcePath := filepath.Join(dir.Name(), "source")
+	if err := os.WriteFile(sourcePath, []byte("hello from a real *os.File"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	file := openWritableFile(t, dir, "f")
+	w := Writer(file, "f", nil)
+	n, err := io.Copy(w, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != int64(len("hello from a real *os.File")) {
+		t.Fatalf("io.Copy copied %d bytes, want %d", n, len("hello from a real *os.File"))
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello from a real *os.File" {
+		t.Fatalf("content = %q, want the source's exact bytes", got)
+	}
+}
+
+func TestWriterReadFromHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	sourcePath := filepath.Join(dir.Name(), "source")
+	if err := os.WriteFile(sourcePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	file := openWritableFile(t, dir, "f")
+	inj := &Injector{Step: StepWrite, Name: "f", Err: errBoom}
+	w := Writer(file, "f", inj)
+	if _, err := io.Copy(w, source); !errors.Is(err, errBoom) {
+		t.Fatalf("io.Copy with injected ReadFrom failure = %v, want errBoom", err)
+	}
+	if got, statErr := os.ReadFile(filepath.Join(dir.Name(), "f")); statErr != nil || len(got) != 0 {
+		t.Fatalf("file content after injected failure = %q, %v, want empty (the real ReadFrom must not run)", got, statErr)
 	}
 }
 
@@ -1402,6 +1456,70 @@ func TestCreateOrTruncatePathReportsARealFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-dir", "f")
 	if _, err := CreateOrTruncatePath(path, 0o600, nil); err == nil {
 		t.Fatal("CreateOrTruncatePath under a missing directory = nil, want an error")
+	}
+}
+
+// --- OpenAppend ---
+
+func TestOpenAppendCreatesAMissingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	file, err := OpenAppend(path, 0o644, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("created file missing: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("created file mode = %o, want 0644", perm)
+	}
+}
+
+func TestOpenAppendAppendsToAnExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := OpenAppend(path, 0o644, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(file, []byte("second\n"), path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first\nsecond\n" {
+		t.Fatalf("content = %q, want %q", got, "first\nsecond\n")
+	}
+}
+
+func TestOpenAppendHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepOpenOrCreate, Name: path, Err: errBoom}
+	if _, err := OpenAppend(path, 0o644, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("OpenAppend with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("injected failure still created the file")
+	}
+}
+
+func TestOpenAppendReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-dir", "f")
+	if _, err := OpenAppend(path, 0o644, nil); err == nil {
+		t.Fatal("OpenAppend under a missing directory = nil, want an error")
 	}
 }
 
