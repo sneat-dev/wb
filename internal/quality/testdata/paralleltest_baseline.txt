@@ -1585,6 +1585,8 @@ internal/orchestrate::TestWaitForCommitChecksPublishesEmptyReceiptForUnfencedCan
 internal/orchestrate::TestWaitForCommitChecksPublishesEmptyReceiptWhenPolicyAuthorityIsUnavailable	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestWaitForCommitChecksReportsAuthorityUnavailableOnFirstObservation	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsPullRequestIdentity	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestWaitForCommitChecksReturnsPendingWhenTheDeadlineKillsTargetHead	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestWaitForCommitChecksShortensOnlyTheChecksBearingConfirmingReread	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestWaitForCommitChecksTreatsExhaustedTransientCandidateAncestryReadAsPendingNotFailed	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestWaitForCommitChecksTreatsExhaustedTransientPullRequestIdentityReadAsPendingNotFailed	serial pending case-by-case review (sneat-dev/wb#623 baseline)
