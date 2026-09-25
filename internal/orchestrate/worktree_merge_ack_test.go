@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -249,28 +250,39 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionNeverOverwritesConcurrentAcknow
 	}
 	conflictingBytes = append(conflictingBytes, '\n')
 	path := receiptCollisionAcknowledgementPath(receipt.ReceiptPath)
-	previousLink := linkReceiptCollisionAcknowledgement
-	linkReceiptCollisionAcknowledgement = func(_, destination string) error {
-		if destination != path {
-			t.Fatalf("atomic create destination = %s, want %s", destination, path)
-		}
-		if err := os.WriteFile(destination, conflictingBytes, 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// A genuine concurrent writer wins the race by publishing the
+	// conflicting acknowledgement from inside the Injector.Hook,
+	// immediately before this call's own filewrite.LinkPath attempt at
+	// StepLink, so the real underlying os.Link returns a genuine
+	// os.ErrExist -- no injected error is needed to reach this branch.
+	// This exercises the caller's "after atomic create collision" re-read
+	// (worktree_merge_ack.go's persist-time EEXIST branch), not just the
+	// earlier pre-publish read-check.
+	hookRan := false
+	inj := &filewrite.Injector{Step: filewrite.StepLink, Hook: func() {
+		hookRan = true
+		if err := os.WriteFile(path, conflictingBytes, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return os.ErrExist
-	}
-	t.Cleanup(func() { linkReceiptCollisionAcknowledgement = previousLink })
+	}}
 
 	options.Apply = true
-	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
+	_, err = acknowledgeWorktreeMergeReceiptCollisionInjected(context.Background(), options, inj)
+	if err == nil || !strings.Contains(err.Error(), "receipt-collision acknowledgement") || !strings.Contains(err.Error(), "binds different immutable evidence") {
 		t.Fatalf("concurrent conflicting acknowledgement error = %v", err)
+	}
+	if !hookRan {
+		t.Fatal("Hook did not run before the real link")
 	}
 	current, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(current, conflictingBytes) {
 		t.Fatalf("conflicting acknowledgement was replaced: err=%v", err)
 	}
 
-	linkReceiptCollisionAcknowledgement = previousLink
 	replayed, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
 	if err == nil || replayed.ID != "" {
 		t.Fatalf("conflicting replay was accepted: acknowledgement=%+v err=%v", replayed, err)
@@ -1946,16 +1958,30 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 		t.Fatal(err)
 	}
 	competingBytes = append(competingBytes, '\n')
-	previousLink := linkSelfSupersessionCorrection
-	linkSelfSupersessionCorrection = func(_, path string) error {
-		if err := os.WriteFile(path, competingBytes, 0o600); err != nil {
-			return err
-		}
-		return os.ErrExist
+	competingPath := selfSupersessionCorrectionPath(receipt.ReceiptPath)
+	if err := os.MkdirAll(filepath.Dir(competingPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { linkSelfSupersessionCorrection = previousLink })
-	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), options); err == nil || !strings.Contains(err.Error(), "concurrent self-supersession correction") {
+	// A genuine concurrent writer wins the race by publishing the
+	// competing correction from inside the Injector.Hook, immediately
+	// before this call's own filewrite.LinkPath attempt at StepLink, so
+	// the real underlying os.Link returns a genuine os.ErrExist. This
+	// exercises the caller's own EEXIST-after-LinkPath re-read/refuse
+	// branch directly, not just the earlier pre-publish read-check
+	// (which is already covered by the ":1803" test in this file).
+	hookRan := false
+	inj := &filewrite.Injector{Step: filewrite.StepLink, Hook: func() {
+		hookRan = true
+		if err := os.WriteFile(competingPath, competingBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	_, err = correctValidationFailedSelfSupersessionInjected(context.Background(), options, inj)
+	if err == nil || !strings.Contains(err.Error(), "concurrent self-supersession correction") || !strings.Contains(err.Error(), "binds different immutable evidence") {
 		t.Fatalf("concurrent correction error = %v", err)
+	}
+	if !hookRan {
+		t.Fatal("Hook did not run before the real link")
 	}
 	current, err := os.ReadFile(selfSupersessionCorrectionPath(receipt.ReceiptPath))
 	if err != nil {

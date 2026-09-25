@@ -622,6 +622,102 @@ func TestLinkNoReplaceHonoursAnInjectedFailure(t *testing.T) {
 	}
 }
 
+// --- LinkPath (task-9 PR-4) ---
+
+func TestLinkPathCreatesASecondNameForTheSameContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	if err := LinkPath(oldPath, newPath, nil); err != nil {
+		t.Fatalf("LinkPath: %v", err)
+	}
+	oldInfo, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newInfo, err := os.Stat(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(oldInfo, newInfo) {
+		t.Fatal("LinkPath did not create a link to the same inode")
+	}
+}
+
+func TestLinkPathReportsAnErrorOnAnExistingDestination(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	newPath := filepath.Join(dir, "new")
+	for _, path := range []string{oldPath, newPath} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := LinkPath(oldPath, newPath, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath(existing destination) = %v, want a wrapped os.ErrExist", err)
+	}
+}
+
+func TestLinkPathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	inj := &Injector{Step: StepLink, Name: newPath, Err: errBoom}
+	if err := LinkPath(oldPath, newPath, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("LinkPath with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		t.Fatal("injected failure still created the link")
+	}
+}
+
+// TestLinkPathHookCreatesARealRaceBeforeTheLink asserts Injector.Hook lets
+// a test build a genuine collision at LinkPath's destination -- exactly
+// the pattern the 6 internal/orchestrate acknowledgement-persist call
+// sites this primitive replaces need: a competing writer publishes its
+// own content to newpath first, and the real os.Link call that follows
+// then observes a real EEXIST, not a simulated one.
+func TestLinkPathHookCreatesARealRaceBeforeTheLink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	hookRan := false
+	inj := &Injector{
+		Step: StepLink,
+		Name: newPath,
+		Hook: func() {
+			hookRan = true
+			if err := os.WriteFile(newPath, []byte("competing"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	err := LinkPath(oldPath, newPath, inj)
+	if !hookRan {
+		t.Fatal("Hook did not run")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath after a Hook-created collision = %v, want a wrapped os.ErrExist", err)
+	}
+	contents, readErr := os.ReadFile(newPath)
+	if readErr != nil || string(contents) != "competing" {
+		t.Fatalf("newPath contents = %q, err = %v, want the competing writer's content preserved", contents, readErr)
+	}
+}
+
 // --- CreateExclusiveWriteSync ---
 
 func TestCreateExclusiveWriteSyncWritesSyncsAndClosesANewFile(t *testing.T) {
