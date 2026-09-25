@@ -163,7 +163,7 @@ internal/migrate/zz_migcov_campaign_helpers_test.go	8	task-15
 internal/migrate/zz_migcov_campaign_manifest_test.go	3	task-15
 internal/migrate/zz_migcov_campaign_phases_test.go	20	task-15
 internal/migrate/zz_migcov_campaign_pr_test.go	1	task-15
-internal/npmrelease/rp_commands_test.go	4	task-15
+internal/npmrelease/rp_commands_test.go	7	task-15
 internal/orchestrate/absorbed_conflict_lookup_test.go	4	task-17
 internal/orchestrate/ciwait_commitchecks_test.go	2	task-17
 internal/orchestrate/ciwait_deadline_unix_test.go	5	task-17

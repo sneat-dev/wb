@@ -1002,6 +1002,7 @@ internal/nodeidentity::TestPublishNodeIDReportsAnUnrelatedLinkFailure	serial pen
 internal/nodeidentity::TestReadNodeIDReportsAnEmptyFile	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/nodeidentity::TestReadNodeIDReportsInvalidHex	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovListExactWorkflowRunsThroughTheSharedObserver	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/npmrelease::TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovResolveHeadThroughTheSharedObserver	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovRunThroughRealCommandsPublishesAnExactVersion	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/npmrelease::TestRPCovRunThroughRealCommandsReportsDispatchFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)

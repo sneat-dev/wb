@@ -42,7 +42,6 @@ internal/lifecyclehooks/dispatch.go	1	task-15
 internal/locallink/execports.go	2	task-15
 internal/locallink/guard.go	2	task-15
 internal/migrate/campaign.go	1	task-15
-internal/npmrelease/release.go	1	task-15
 internal/orchestrate/command.go	1	task-17
 internal/orchestrate/pr_land.go	2	task-17
 internal/orchestrate/pr_land_keep.go	15	task-17

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -127,7 +128,7 @@ func rpCovHTTPBody(body string) string {
 }
 
 func TestRPCovOSCommandRunnerPropagatesOutputExitCodesAndLaunchFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	if result := (OSCommandRunner{}).Run(context.Background(), ""); result.Code != 2 || result.Err == nil {
 		t.Fatalf("empty command result = %+v, want the usage refusal", result)
 	}
@@ -322,6 +323,7 @@ func TestRPCovValidateReleaseRejectsAnUnparseableTargetVersion(t *testing.T) {
 // record every invocation, so the assertions are about the exact commands WB
 // issued, not only the final report.
 func TestRPCovRunThroughRealCommandsPublishesAnExactVersion(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "success", created.Add(time.Second))
 	fake := rpCovInstallFakeCommands(t)
@@ -369,6 +371,7 @@ func TestRPCovRunThroughRealCommandsPublishesAnExactVersion(t *testing.T) {
 // branch of the real boundary: a rejected workflow dispatch must leave a
 // dispatch_failed receipt and must not touch the npm registry.
 func TestRPCovRunThroughRealCommandsReportsDispatchFailure(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	created := time.Now().UTC().Truncate(time.Second)
 	fake := rpCovInstallFakeCommands(t)
 	fake.write("api.body", rpCovHTTPBody(`{"object":{"sha":"`+releaseHead+`"}}`))

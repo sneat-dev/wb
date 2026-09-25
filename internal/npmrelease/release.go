@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -27,6 +26,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
+	procrunner "github.com/sneat-dev/wb/internal/runner"
 	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
 )
@@ -131,24 +131,44 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) CommandResult
 }
 
-type OSCommandRunner struct{}
+// OSCommandRunner is the production CommandRunner, built on task-8's
+// runner.Runner seam rather than exec.CommandContext directly. A zero-value
+// OSCommandRunner{} -- what release.go's own default (Options.Runner ==
+// nil) constructs -- resolves to the production runner.Runner via
+// resolveRunner; a unit test injects a runner.Runner field of its own.
+type OSCommandRunner struct {
+	Runner procrunner.Runner
+}
 
-func (OSCommandRunner) Run(ctx context.Context, dir string, args ...string) CommandResult {
+// exitCoder is the subset of *os/exec.ExitError CommandRunner cares about --
+// only its ExitCode -- so this stays decoupled from os/exec's own type.
+type exitCoder interface{ ExitCode() int }
+
+func (r OSCommandRunner) Run(ctx context.Context, dir string, args ...string) CommandResult {
 	if len(args) == 0 {
 		return CommandResult{Code: 2, Err: errors.New("empty command")}
 	}
-	command := exec.CommandContext(ctx, args[0], args[1:]...)
-	command.Dir = dir
-	output, err := command.CombinedOutput()
-	result := CommandResult{Output: string(output), Code: 0, Err: err}
+	result, err := resolveRunner(r.Runner).Run(ctx, dir, args[0], args[1:]...)
+	output := result.Stdout + result.Stderr
+	commandResult := CommandResult{Output: output, Code: 0, Err: err}
 	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			result.Code = exitError.ExitCode()
+		var coder exitCoder
+		if errors.As(err, &coder) {
+			commandResult.Code = coder.ExitCode()
 		} else {
-			result.Code = 1
+			commandResult.Code = 1
 		}
 	}
-	return result
+	return commandResult
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r procrunner.Runner) procrunner.Runner {
+	if r != nil {
+		return r
+	}
+	return procrunner.New()
 }
 
 // Options controls publication safety and polling. Apply is the only option
