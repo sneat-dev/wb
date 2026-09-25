@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 func newCICmd(inv *invocation) *cobra.Command {
@@ -82,7 +83,7 @@ it. This command never starts a detached watcher or background loop.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
+			return validateCIWaitInputs(command.Context(), inv.commandRunner(), repository, pullRequest, target, head, slice, interval)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
 			machineOutput := jsonOut || format == "json"
@@ -128,7 +129,7 @@ it. This command never starts a detached watcher or background loop.`,
 	return command
 }
 
-func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration) error {
+func validateCIWaitInputs(ctx context.Context, r runner.Runner, repository, pullRequest, target, head string, slice, interval time.Duration) error {
 	owner, name, validRepository := strings.Cut(strings.TrimSpace(repository), "/")
 	if !validRepository || owner == "" || name == "" || strings.Contains(name, "/") {
 		return fmt.Errorf("--repo must be owner/repository")
@@ -136,8 +137,9 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 	if strings.TrimSpace(target) == "" || strings.TrimSpace(target) != target {
 		return fmt.Errorf("--target is required and must not have surrounding whitespace")
 	}
-	if output, err := exec.Command("git", "check-ref-format", "--branch", target).CombinedOutput(); err != nil {
-		return fmt.Errorf("--target must be a valid Git branch: %s", strings.TrimSpace(string(output)))
+	if result, err := r.Run(ctx, "", "git", "check-ref-format", "--branch", target); err != nil {
+		output := result.Stdout + result.Stderr
+		return fmt.Errorf("--target must be a valid Git branch: %s", strings.TrimSpace(output))
 	}
 	if !exactGitObjectID.MatchString(head) {
 		return fmt.Errorf("--head must be an exact 40- or 64-hex Git SHA")

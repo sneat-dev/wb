@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -1239,6 +1240,14 @@ func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
 
 func writeCIWaitExecutable(t *testing.T, path, contents string) {
 	t.Helper()
+	// This file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22): every test here still runs `wb ci wait` end-to-end through
+	// run(), including its git check-ref-format validation, which now goes
+	// through internal/runner (task-8) and is refused by its runtime guard
+	// unless allow-listed. Real git is deterministic and side-effect-free
+	// for that one call, so allow it here rather than fake the whole
+	// end-to-end command dispatch, which is task-22's job, not this seam's.
+	runnertest.AllowRealProcess(t)
 	if !strings.Contains(contents, "/actions/runs?head_sha=") {
 		const response = `if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
   echo '{"total_count":0,"workflow_runs":[]}'

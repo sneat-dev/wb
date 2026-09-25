@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/ciaudit"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // TestValidateCIWaitInputsRejectsBadRepository drives validateCIWaitInputs'
@@ -21,7 +23,7 @@ import (
 // refused before any git subprocess runs.
 func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 	t.Parallel()
-	err := validateCIWaitInputs("not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second)
+	err := validateCIWaitInputs(context.Background(), runnertest.New(t), "not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "--repo must be owner/repository") {
 		t.Fatalf("error = %v; want a --repo shape refusal", err)
 	}
@@ -33,7 +35,7 @@ func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 func TestValidateCIWaitInputsRejectsBlankTarget(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"", "  main", "main  "} {
-		err := validateCIWaitInputs("acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second)
+		err := validateCIWaitInputs(context.Background(), runnertest.New(t), "acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second)
 		if err == nil || !strings.Contains(err.Error(), "--target is required") {
 			t.Fatalf("target=%q error = %v; want a --target refusal", target, err)
 		}
