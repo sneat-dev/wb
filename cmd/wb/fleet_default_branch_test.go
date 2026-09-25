@@ -1889,6 +1889,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *test
 	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
 	}
+	assertNoLeftoverDefaultBranchReportTempFile(t, filepath.Dir(path))
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
@@ -1899,6 +1900,23 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure(t *tes
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
 	if err := persistDefaultBranchReportInjected(defaultBranchReport{ReportPath: path}, inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("persistDefaultBranchReportInjected error = %v", err)
+	}
+	assertNoLeftoverDefaultBranchReportTempFile(t, filepath.Dir(path))
+}
+
+// assertNoLeftoverDefaultBranchReportTempFile asserts
+// persistDefaultBranchReportInjected's defer os.Remove(temporaryName) ran:
+// no ".default-branch-*.json" staging file survives a close or rename
+// failure (task-9 PR-2 review, B2 mutation evidence: deleting that defer
+// survived every test that only asserted the returned error).
+func assertNoLeftoverDefaultBranchReportTempFile(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".default-branch-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover default branch report temp file(s) after failure: %v", matches)
 	}
 }
 

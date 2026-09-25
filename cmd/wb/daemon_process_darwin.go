@@ -94,8 +94,9 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 // directly to reach a create/chmod/write/close/rename failure branch
 // deterministically. This file builds only on darwin, so Linux CI's
 // coverage ratchet cannot see any of it either way; verification here is
-// necessarily a darwin cross-compile plus a launchctl-faked test, not a
-// Linux coverage number.
+// a darwin cross-compile (`GOOS=darwin go vet ./cmd/wb/`) plus this
+// package's own code review -- there is no launchctl-faked test exercising
+// this seam, on darwin or otherwise, as of task-9 PR-2's review round.
 func startDaemonProcessInjected(executable string, args []string, logPath string, inj *filewrite.Injector) (int, error) {
 	if err := daemonRefuseTestBinary(executable); err != nil {
 		return 0, err
@@ -117,7 +118,7 @@ func startDaemonProcessInjected(executable string, args []string, logPath string
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := filewrite.Chmod(int(temporary.Fd()), 0o600, temporaryName, inj); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
 		_ = temporary.Close()
 		return 0, err
 	}
