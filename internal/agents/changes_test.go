@@ -2,53 +2,51 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
-// initChangeRepo builds a small real repository so the change summary is
-// exercised against actual Git output rather than a hand-written fixture that
-// can drift from what Git prints.
-func initChangeRepo(t *testing.T) (dir, baseSHA string) {
-	t.Helper()
-	dir = t.TempDir()
-	runGit(t, dir, "init", "-b", "main")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-	runGit(t, dir, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("one\ntwo\nthree\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "initial")
-	return dir, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+// statusArgv, diffShortstatArgv and revListCountArgv build the exact argv
+// summarizeChanges' three gitOutput calls send, so a script matches by argv
+// rather than by a loose predicate.
+
+func statusArgv(dir string) []string {
+	return []string{"git", "-C", dir, "status", "--porcelain"}
 }
 
-func runGit(t *testing.T, dir string, arguments ...string) string {
-	t.Helper()
-	command := exec.Command("git", append([]string{"-C", dir}, arguments...)...)
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
+func diffShortstatArgv(dir, baseSHA string) []string {
+	return []string{"git", "-C", dir, "diff", "--shortstat", baseSHA}
+}
+
+func revListCountArgv(dir, baseSHA string) []string {
+	return []string{"git", "-C", dir, "rev-list", "--count", baseSHA + "..HEAD"}
+}
+
+func TestSummarizeChangesReturnsNilForABlankWorktreeDirectory(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	if summary := summarizeChanges(context.Background(), fake, "   ", "abc"); summary != nil {
+		t.Fatalf("summary = %#v, want nil (no git call should even be attempted)", summary)
 	}
-	return string(output)
+	if fake.CallCount() != 0 {
+		t.Fatalf("CallCount() = %d, want 0", fake.CallCount())
+	}
 }
 
 func TestSummarizeChangesCountsTheArtefactAndNotAReview(t *testing.T) {
 	t.Parallel()
-	dir, base := initChangeRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("one\ntwo changed\nthree\nfour\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir, base := "/repo", "base-sha"
+	fake := runnertest.New(t)
+	fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: " M tracked.txt\n?? untracked.txt\n"}, nil)
+	fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: " 1 file changed, 2 insertions(+), 1 deletion(-)\n"}, nil)
+	fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "0\n"}, nil)
 
-	summary := SummarizeChanges(context.Background(), dir, base)
+	summary := summarizeChanges(context.Background(), fake, dir, base)
 	if summary == nil {
 		t.Fatal("a worktree with changes must produce a summary")
 	}
@@ -69,56 +67,110 @@ func TestSummarizeChangesCountsTheArtefactAndNotAReview(t *testing.T) {
 
 func TestSummarizeChangesCountsCommitsTheWorkerMade(t *testing.T) {
 	t.Parallel()
-	dir, base := initChangeRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("committed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-qm", "worker commit")
+	dir, base := "/repo", "base-sha"
+	fake := runnertest.New(t)
+	fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: ""}, nil)
+	fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: ""}, nil)
+	fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "1\n"}, nil)
 
-	summary := SummarizeChanges(context.Background(), dir, base)
+	summary := summarizeChanges(context.Background(), fake, dir, base)
 	if summary == nil || summary.Commits != 1 {
 		t.Fatalf("summary = %#v, want one commit", summary)
 	}
 }
 
-func TestSummarizeChangesDegradesInsteadOfFailingARun(t *testing.T) {
+func TestSummarizeChangesSkipsDiffAndRevListWhenBaseSHAIsBlank(t *testing.T) {
 	t.Parallel()
-	// No directory: WB must report no summary rather than fail a run whose
-	// worktree is the actual artefact.
-	if summary := SummarizeChanges(context.Background(), "", "abc"); summary != nil {
-		t.Fatalf("an empty worktree directory must yield no summary: %#v", summary)
-	}
-	// A directory that is not a repository: Git fails, and the run still has a
-	// truthful (empty) summary.
-	summary := SummarizeChanges(context.Background(), t.TempDir(), "")
+	dir := "/repo"
+	fake := runnertest.New(t)
+	fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: ""}, nil)
+
+	summary := summarizeChanges(context.Background(), fake, dir, "  ")
 	if summary == nil {
-		t.Fatal("a non-repository directory must still yield a summary object")
+		t.Fatal("expected a summary")
 	}
-	if summary.FilesChanged != 0 || len(summary.Files) != 0 {
-		t.Fatalf("summary = %#v", summary)
+	if fake.CallCount() != 1 {
+		t.Fatalf("CallCount() = %d, want 1 (status only; no base to diff against)", fake.CallCount())
 	}
-	// An unusable base revision must not erase the porcelain-derived counts.
-	dir, _ := initChangeRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	summary = SummarizeChanges(context.Background(), dir, "not-a-revision")
-	if summary == nil || summary.FilesChanged != 1 {
-		t.Fatalf("summary = %#v, want the untracked file still counted", summary)
-	}
+}
+
+func TestSummarizeChangesDegradesEachGitCallIndependently(t *testing.T) {
+	t.Parallel()
+	dir, base := "/repo", "not-a-revision"
+	gitFailure := fmt.Errorf("exit status 128")
+
+	t.Run("status fails", func(t *testing.T) {
+		t.Parallel()
+		fake := runnertest.New(t)
+		fake.ExpectArgv(statusArgv(dir), runner.Result{ExitCode: 128}, gitFailure)
+		fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: ""}, nil)
+		fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "0\n"}, nil)
+
+		summary := summarizeChanges(context.Background(), fake, dir, base)
+		if summary == nil {
+			t.Fatal("a git failure must still yield a (empty) summary object, never nil")
+		}
+		if summary.FilesChanged != 0 || len(summary.Files) != 0 {
+			t.Fatalf("summary = %#v, want no files when status failed", summary)
+		}
+	})
+
+	t.Run("diff --shortstat fails", func(t *testing.T) {
+		t.Parallel()
+		fake := runnertest.New(t)
+		fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: "?? extra.txt\n"}, nil)
+		fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{ExitCode: 128}, gitFailure)
+		fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "0\n"}, nil)
+
+		summary := summarizeChanges(context.Background(), fake, dir, base)
+		if summary == nil || summary.FilesChanged != 1 {
+			t.Fatalf("summary = %#v, want the porcelain-derived count unaffected by an unusable base revision", summary)
+		}
+		if summary.Insertions != 0 || summary.Deletions != 0 {
+			t.Fatalf("summary = %#v, want zero line counts when diff --shortstat failed", summary)
+		}
+	})
+
+	t.Run("rev-list --count fails", func(t *testing.T) {
+		t.Parallel()
+		fake := runnertest.New(t)
+		fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: ""}, nil)
+		fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: ""}, nil)
+		fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{ExitCode: 128}, gitFailure)
+
+		summary := summarizeChanges(context.Background(), fake, dir, base)
+		if summary == nil || summary.Commits != 0 {
+			t.Fatalf("summary = %#v, want zero commits when rev-list --count failed", summary)
+		}
+	})
+
+	t.Run("rev-list --count prints something unparsable", func(t *testing.T) {
+		t.Parallel()
+		fake := runnertest.New(t)
+		fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: ""}, nil)
+		fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: ""}, nil)
+		fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "not-a-number\n"}, nil)
+
+		summary := summarizeChanges(context.Background(), fake, dir, base)
+		if summary == nil || summary.Commits != 0 {
+			t.Fatalf("summary = %#v, want zero commits for an unparsable count rather than a poisoned value", summary)
+		}
+	})
 }
 
 func TestSummarizeChangesBoundsTheChangedFileList(t *testing.T) {
 	t.Parallel()
-	dir, base := initChangeRepo(t)
+	dir, base := "/repo", "base-sha"
+	var status strings.Builder
 	for index := 0; index < maxChangedFiles+5; index++ {
-		name := filepath.Join(dir, fmt.Sprintf("file-%03d.txt", index))
-		if err := os.WriteFile(name, []byte("x\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		fmt.Fprintf(&status, " M file-%03d.txt\n", index)
 	}
-	summary := SummarizeChanges(context.Background(), dir, base)
+	fake := runnertest.New(t)
+	fake.ExpectArgv(statusArgv(dir), runner.Result{Stdout: status.String()}, nil)
+	fake.ExpectArgv(diffShortstatArgv(dir, base), runner.Result{Stdout: ""}, nil)
+	fake.ExpectArgv(revListCountArgv(dir, base), runner.Result{Stdout: "0\n"}, nil)
+
+	summary := summarizeChanges(context.Background(), fake, dir, base)
 	if summary == nil {
 		t.Fatal("expected a summary")
 	}
@@ -147,9 +199,51 @@ func TestParseShortstatReadsGitOutput(t *testing.T) {
 	}
 }
 
+func TestGitOutputReturnsTrimmedStdoutOnSuccess(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", "/repo", "rev-parse", "HEAD"}, runner.Result{Stdout: "deadbeef\n"}, nil)
+
+	output, err := gitOutput(context.Background(), fake, "/repo", "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("gitOutput: %v", err)
+	}
+	if output != "deadbeef\n" {
+		t.Fatalf("output = %q, want the runner's raw stdout unmodified", output)
+	}
+}
+
 func TestGitOutputReportsFailures(t *testing.T) {
 	t.Parallel()
-	if _, err := gitOutput(context.Background(), t.TempDir(), "rev-parse", "HEAD"); err == nil {
-		t.Fatal("a Git failure must be reported")
+	fake := runnertest.New(t)
+	wantErr := errors.New("exit status 128")
+	fake.ExpectArgv([]string{"git", "-C", "/repo", "rev-parse", "HEAD"}, runner.Result{ExitCode: 128}, wantErr)
+
+	_, err := gitOutput(context.Background(), fake, "/repo", "rev-parse", "HEAD")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want it to wrap %v", err, wantErr)
+	}
+	if !strings.Contains(err.Error(), "git rev-parse HEAD in /repo") {
+		t.Fatalf("err = %v, want it to name the argv and directory", err)
+	}
+}
+
+func TestGitOutputRunsWithARestrictedEnvironment(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	var seen []string
+	fake.Expect(func(c runnertest.Call) bool {
+		seen = c.Env
+		return c.Name == "git"
+	}, runner.Result{Stdout: "ok"}, nil)
+
+	if _, err := gitOutput(context.Background(), fake, "/repo", "status"); err != nil {
+		t.Fatalf("gitOutput: %v", err)
+	}
+	joined := strings.Join(seen, "\n")
+	for _, want := range []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_OPTIONAL_LOCKS=0"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("env = %v, want it to contain %q", seen, want)
+		}
 	}
 }

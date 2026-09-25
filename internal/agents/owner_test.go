@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -86,6 +89,13 @@ func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 // can write into.
 func ownedRun(t *testing.T, task string, timeout time.Duration) (Store, Record, string) {
 	t.Helper()
+	// RunOwner ends every run by calling SummarizeChanges against this real
+	// worktree, which since task-15's exec-site migration drives real git
+	// through internal/runner.Real: task-24's runtime guard now applies.
+	// Every caller of ownedRun already drives RunOwner against a real fake
+	// harness process (testenv.WriteExecutableFile below), so this is one
+	// more real process alongside that, not a new kind of test.
+	runnertest.AllowRealProcess(t)
 	home := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", home)
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
@@ -687,33 +697,56 @@ func TestWaitForProcessExitReturnsFalseWhenDeadlinePasses(t *testing.T) {
 	}
 }
 
-func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
+// TestSpawnOwnerPublicWrapperUsesTheProductionRunner covers SpawnOwner's own
+// one-line delegation to spawnOwner(realRunner(), ...): the executable
+// lookup fails before spawnOwner would ever reach r.Detach, so this needs
+// no runnertest.AllowRealProcess -- no process start is even attempted.
+func TestSpawnOwnerPublicWrapperUsesTheProductionRunner(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("the detached owner uses a POSIX session")
-	}
-	// Spawn this test binary in a mode that exits immediately, which is enough
-	// to prove the owner is started, released, and reported.
-	runDir := t.TempDir()
-	pid, err := SpawnOwner(runDir, func() (string, error) { return "/bin/sleep", nil })
-	if err != nil {
-		t.Fatalf("SpawnOwner: %v", err)
-	}
-	if pid <= 0 {
-		t.Fatalf("SpawnOwner returned pid %d", pid)
-	}
-	// The owner is released rather than waited on, so it may briefly outlive
-	// this call; it must not become a zombie this process has to reap.
-	deadline := time.Now().Add(5 * time.Second)
-	for processAlive(pid) && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	if _, err := SpawnOwner(runDir, func() (string, error) { return "", os.ErrNotExist }); err == nil {
+	if _, err := SpawnOwner(t.TempDir(), func() (string, error) { return "", os.ErrNotExist }); err == nil {
 		t.Fatal("an unresolvable executable must be reported")
 	}
-	if _, err := SpawnOwner(runDir, func() (string, error) { return "/nonexistent/wb", nil }); err == nil {
-		t.Fatal("a failed exec must be reported")
+}
+
+func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
+	t.Parallel()
+	runDir := t.TempDir()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"/bin/sleep", OwnerArgument, "--run-dir", runDir}, runner.Result{ExitCode: 4242}, nil)
+
+	pid, err := spawnOwner(fake, runDir, func() (string, error) { return "/bin/sleep", nil })
+	if err != nil {
+		t.Fatalf("spawnOwner: %v", err)
+	}
+	if pid != 4242 {
+		t.Fatalf("spawnOwner returned pid %d, want the runner's reported pid 4242", pid)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Op != "Detach" || calls[0].Dir != "" {
+		t.Fatalf("calls = %+v, want one Detach call with no working directory override", calls)
+	}
+}
+
+func TestSpawnOwnerReportsAnUnresolvableExecutable(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	if _, err := spawnOwner(fake, t.TempDir(), func() (string, error) { return "", os.ErrNotExist }); err == nil {
+		t.Fatal("an unresolvable executable must be reported")
+	}
+	if fake.CallCount() != 0 {
+		t.Fatalf("CallCount() = %d, want 0: locating the executable failed before any process start was attempted", fake.CallCount())
+	}
+}
+
+func TestSpawnOwnerReportsAFailedDetach(t *testing.T) {
+	t.Parallel()
+	runDir := t.TempDir()
+	fake := runnertest.New(t)
+	detachErr := os.ErrNotExist
+	fake.ExpectArgv([]string{"/nonexistent/wb", OwnerArgument, "--run-dir", runDir}, runner.Result{}, detachErr)
+
+	if _, err := spawnOwner(fake, runDir, func() (string, error) { return "/nonexistent/wb", nil }); !errors.Is(err, detachErr) {
+		t.Fatalf("err = %v, want it to wrap the runner's own failure", err)
 	}
 }
 
@@ -741,4 +774,18 @@ func TestTerminateOwnerIgnoresAnAlreadyGoneProcessGroup(t *testing.T) {
 	if err := terminateOwner(999999999, terminationSignal()); err != nil {
 		t.Fatalf("terminateOwner on a gone group = %v, want nil", err)
 	}
+}
+
+// runGit runs a real git command, used only to build a real repository for
+// ownedRun's worktree -- RunOwner's own SummarizeChanges call needs one to
+// derive a real change summary, exactly as it does in production.
+func runGit(t *testing.T, dir string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", dir}, arguments...)...)
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
+	}
+	return string(output)
 }

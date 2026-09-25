@@ -13,7 +13,15 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runner"
 )
+
+// realRunner returns the production [runner.Runner]. It is a function, not
+// a package-level var, so this package carries no mutable global seam: each
+// call constructs a fresh, stateless [runner.Real], and a test reaches the
+// runner-backed helpers below through their own unexported seam variant
+// instead, passing a [runnertest.Fake].
+func realRunner() runner.Runner { return runner.New() }
 
 // OwnerArgument selects the private, detached run-owner command. It is handled
 // before normal command dispatch, following WB's existing self-exec convention
@@ -294,24 +302,35 @@ func OwnerCLI(arguments []string, deps OwnerDeps) int {
 // the private owner argument, so a dispatched run needs no daemon and survives
 // the dispatching CLI exiting.
 func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
+	return spawnOwner(realRunner(), runDir, executable)
+}
+
+// spawnOwner is [SpawnOwner]'s test seam: every production call site reaches
+// it only through SpawnOwner, which always passes [realRunner], so
+// production behaviour is unchanged. A test passes a [runnertest.Fake] to
+// reach both failure branches deterministically.
+//
+// It reaches r.Detach with the exact argv, working directory ("" -- inherit
+// the caller's, matching the original exec.Command(path, ...) call, which
+// never set a Dir either) and environment (nil -- inherit the caller's
+// ambient one, the same net effect as the original's explicit
+// command.Env = os.Environ()) the hand-rolled exec.Command/
+// process.ConfigureDetached/Start/Release sequence this replaces used.
+// [runner.Real.Detach] itself already does that same sequence -- including
+// redirecting stdio to the null device, which a nil Stdin/Stdout/Stderr
+// does the same way exec.Command's did explicitly -- with one disclosed
+// simplification: a failure to Release the process handle after Start is
+// swallowed rather than returned, matching every other Detach call site in
+// this codebase (daemon launch, browser.go, lifecycle hooks) rather than
+// carrying owner.go's own one-off handling of that essentially unreachable
+// case.
+func spawnOwner(r runner.Runner, runDir string, executable func() (string, error)) (int, error) {
 	path, err := executable()
 	if err != nil {
 		return 0, fmt.Errorf("locate the wb executable for the run owner: %w", err)
 	}
-	command := exec.Command(path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
-	command.Env = os.Environ()
-	process.ConfigureDetached(command)
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	pid, err := r.Detach("", path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
 	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = null.Close() }()
-	command.Stdin, command.Stdout, command.Stderr = null, null, null
-	if err := command.Start(); err != nil {
-		return 0, err
-	}
-	pid := command.Process.Pid
-	if err := command.Process.Release(); err != nil {
 		return 0, err
 	}
 	return pid, nil

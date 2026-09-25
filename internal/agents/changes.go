@@ -3,9 +3,10 @@ package agents
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // SummarizeChanges derives a cheap, deterministic description of what a worker
@@ -16,11 +17,19 @@ import (
 // A failure to read Git state yields no summary rather than a failed run: the
 // worktree is the artefact and a missing diff stat must not hide it.
 func SummarizeChanges(ctx context.Context, worktreeDir, baseSHA string) *ChangeSummary {
+	return summarizeChanges(ctx, realRunner(), worktreeDir, baseSHA)
+}
+
+// summarizeChanges is [SummarizeChanges]'s test seam: every production call
+// site reaches it only through SummarizeChanges, which always passes
+// [realRunner], so production behaviour is unchanged. A test passes a
+// [runnertest.Fake] to reach every git-outcome branch deterministically.
+func summarizeChanges(ctx context.Context, r runner.Runner, worktreeDir, baseSHA string) *ChangeSummary {
 	if strings.TrimSpace(worktreeDir) == "" {
 		return nil
 	}
 	summary := &ChangeSummary{}
-	if status, err := gitOutput(ctx, worktreeDir, "status", "--porcelain"); err == nil {
+	if status, err := gitOutput(ctx, r, worktreeDir, "status", "--porcelain"); err == nil {
 		for _, line := range strings.Split(status, "\n") {
 			line = strings.TrimRight(line, "\r")
 			if len(line) < 4 {
@@ -35,11 +44,11 @@ func SummarizeChanges(ctx context.Context, worktreeDir, baseSHA string) *ChangeS
 		}
 	}
 	if strings.TrimSpace(baseSHA) != "" {
-		if shortstat, err := gitOutput(ctx, worktreeDir, "diff", "--shortstat", baseSHA); err == nil {
+		if shortstat, err := gitOutput(ctx, r, worktreeDir, "diff", "--shortstat", baseSHA); err == nil {
 			insertions, deletions := parseShortstat(shortstat)
 			summary.Insertions, summary.Deletions = insertions, deletions
 		}
-		if count, err := gitOutput(ctx, worktreeDir, "rev-list", "--count", baseSHA+"..HEAD"); err == nil {
+		if count, err := gitOutput(ctx, r, worktreeDir, "rev-list", "--count", baseSHA+"..HEAD"); err == nil {
 			if commits, convErr := strconv.Atoi(strings.TrimSpace(count)); convErr == nil {
 				summary.Commits = commits
 			}
@@ -73,14 +82,13 @@ func parseShortstat(output string) (insertions, deletions int) {
 	return insertions, deletions
 }
 
-func gitOutput(ctx context.Context, dir string, arguments ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, arguments...)...)
-	command.Env = append(gitEnvironment(), "GIT_OPTIONAL_LOCKS=0")
-	output, err := command.Output()
+func gitOutput(ctx context.Context, r runner.Runner, dir string, arguments ...string) (string, error) {
+	env := append(gitEnvironment(), "GIT_OPTIONAL_LOCKS=0")
+	result, err := r.RunEnv(ctx, "", env, "git", append([]string{"-C", dir}, arguments...)...)
 	if err != nil {
 		return "", fmt.Errorf("git %s in %s: %w", strings.Join(arguments, " "), dir, err)
 	}
-	return string(output), nil
+	return result.Stdout, nil
 }
 
 // gitEnvironment keeps Git from reading a user's global or system

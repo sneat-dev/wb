@@ -75,9 +75,9 @@ cmd/wb/zz_cov_wt_marker_test.go	2	task-22
 cmd/wb/zz_cov_wt_merge_test.go	25	task-22
 internal/agentguard/agentguard_test.go	11	task-15
 internal/agentguard/autotags_test.go	1	task-15
-internal/agents/changes_test.go	10	task-15
+internal/agents/changes_test.go	3	task-15
 internal/agents/env_test.go	6	task-15
-internal/agents/owner_test.go	6	task-15
+internal/agents/owner_test.go	8	task-15
 internal/archiveprune/archiveprune_test.go	7	task-15
 internal/archiveprune/rp_coverage_test.go	6	task-15
 internal/canonicalrescue/canonicalrescue_test.go	25	task-15
