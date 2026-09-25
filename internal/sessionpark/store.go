@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
@@ -409,7 +410,7 @@ func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
 		_ = root.Close()
 		return nil, fmt.Errorf("parked session bundle is not canonical")
 	}
-	lockFD, err := openOrCreateRegularAt(int(aggregate.Fd()), sourceResumeLockName, 0o600)
+	lockFD, err := filewrite.OpenOrCreateRegular(int(aggregate.Fd()), sourceResumeLockName, 0o600, nil)
 	if err != nil {
 		_ = bundleFile.Close()
 		_ = aggregate.Close()
@@ -970,7 +971,7 @@ func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
 	if err != nil {
 		return err
 	}
-	created, err := writeImmutableAt(events, fmt.Sprintf("%020d.json", event.Sequence), raw, 0o600)
+	created, err := filewrite.CreateExclusiveWriteSync(events, fmt.Sprintf("%020d.json", event.Sequence), raw, 0o600, nil)
 	if err != nil {
 		return err
 	}

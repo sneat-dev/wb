@@ -217,7 +217,7 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 		return state, err
 	}
 	defer func() { _ = directory.Close() }()
-	created, err := publishImmutableAt(directory, messagePayloadFileName, raw, 0o600)
+	created, err := publishImmutableAt(directory, messagePayloadFileName, raw, 0o600, nil)
 	if err != nil {
 		return state, fmt.Errorf("persist exact session message: %w", err)
 	}
@@ -236,7 +236,7 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 	if err != nil {
 		return state, err
 	}
-	if _, err := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600); err != nil {
+	if _, err := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); err != nil {
 		return state, fmt.Errorf("persist session message record: %w", err)
 	}
 	state, err = loadMessageStateAt(directory, request, direction, message.MessageID, handoffReceipt)
@@ -304,7 +304,7 @@ func (s Store) ResumeOutgoingMessageUnderLock(lock *ExecutionLock, handoffID str
 		if marshalErr != nil {
 			return MessageState{}, marshalErr
 		}
-		if _, publishErr := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600); publishErr != nil {
+		if _, publishErr := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); publishErr != nil {
 			return MessageState{}, fmt.Errorf("repair outgoing session message record: %w", publishErr)
 		}
 	} else if err != nil {
@@ -368,7 +368,7 @@ func (s Store) SaveIncomingPasteIntentUnderLock(lock *ExecutionLock, handoffID s
 	if err != nil {
 		return MessagePasteIntent{}, false, err
 	}
-	created, err := publishImmutableAt(directory, messageIntentFileName, raw, 0o600)
+	created, err := publishImmutableAt(directory, messageIntentFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessagePasteIntent{}, false, err
 	}
@@ -429,7 +429,7 @@ func (s Store) saveMessageReceiptUnderLock(lock *ExecutionLock, handoffID string
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}
-	created, err := publishImmutableAt(directory, messageReceiptFileName, raw, 0o600)
+	created, err := publishImmutableAt(directory, messageReceiptFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}

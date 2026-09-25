@@ -8,20 +8,26 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // rpCovRunner is a deterministic Runner that records the exact argv of every
 // call and answers through fn, so tests can assert the commands inventory
-// issues as well as the values it derives from their output.
+// issues as well as the values it derives from their output. Inventory calls
+// Run from a worker pool, so recorded calls need their own mutex: production
+// concurrency is real, not a test artefact to paper over.
 type rpCovRunner struct {
+	mu    sync.Mutex
 	calls [][]string
 	fn    func(args []string) ([]byte, error)
 }
 
 func (r *rpCovRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), args...))
+	r.mu.Unlock()
 	return r.fn(args)
 }
 

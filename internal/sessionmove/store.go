@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
@@ -77,7 +78,7 @@ func (s Store) EnsureHandoverUnderLock(lock *ExecutionLock, handoffID string, di
 	if !request.HandoverDigest.Matches(raw) {
 		return "", fmt.Errorf("%w: handoff %s inline handover content does not match its digest", ErrHandoffConflict, handoffID)
 	}
-	if _, err := publishImmutableAt(handoff, HandoverFileName, raw, 0o600); err != nil {
+	if _, err := publishImmutableAt(handoff, HandoverFileName, raw, 0o600, nil); err != nil {
 		return "", fmt.Errorf("persist private handover: %w", err)
 	}
 	return PrivateHandoverPath(s.Root, handoffID), nil
@@ -114,7 +115,7 @@ func (s Store) Admit(raw []byte, digest Digest) (Admission, error) {
 		return Admission{}, err
 	}
 	defer func() { _ = handoff.Close() }()
-	created, err := publishImmutableAt(handoff, requestFileName, raw, 0o600)
+	created, err := publishImmutableAt(handoff, requestFileName, raw, 0o600, nil)
 	if err != nil {
 		return Admission{}, fmt.Errorf("persist handoff request: %w", err)
 	}
@@ -210,7 +211,7 @@ func saveReceiptAt(handoff *os.File, request Request, digest Digest, receipt Rec
 	if len(raw) > maxReceiptBytes {
 		return Receipt{}, false, fmt.Errorf("session move receipt exceeds %d bytes", maxReceiptBytes)
 	}
-	created, err := publishImmutableAt(handoff, receiptFileName, raw, 0o600)
+	created, err := publishImmutableAt(handoff, receiptFileName, raw, 0o600, nil)
 	if err != nil {
 		return Receipt{}, false, fmt.Errorf("persist handoff receipt: %w", err)
 	}
@@ -304,7 +305,7 @@ func appendEventAt(handoff *os.File, handoffID string, digest Digest, event Hand
 		if len(raw) > maxEventBytes {
 			return HandoffEvent{}, fmt.Errorf("handoff event exceeds %d bytes", maxEventBytes)
 		}
-		created, err := publishImmutableAt(events, eventFileName(next), raw, 0o600)
+		created, err := publishImmutableAt(events, eventFileName(next), raw, 0o600, nil)
 		if err != nil {
 			return HandoffEvent{}, fmt.Errorf("append handoff event: %w", err)
 		}
@@ -702,7 +703,20 @@ func readImmutableAt(directory *os.File, name string, limit int64, label string)
 	return raw, nil
 }
 
-func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
+// publishImmutableAt writes raw as a fresh temporary name under
+// directory, then publishes it as name by hard link rather than rename:
+// two racing publishers of identical content converge on one shared
+// inode (an existing name is EEXIST, not an error) instead of each
+// producing their own file. inj is nil in every production call; tests
+// pass a *filewrite.Injector to reach a chosen step's error branch
+// deterministically instead of depending on a real disk or filesystem
+// failure. The syscall-level create/chmod/write/sync/link/dir-sync steps
+// go through internal/filewrite; this function keeps the protocol-
+// specific pieces that package has no business knowing about: the
+// temporary name's shape, the per-step error-wrapping text callers and
+// tests match on, and the same-inode identity verification against a
+// racing publisher.
+func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.FileMode, inj *filewrite.Injector) (bool, error) {
 	if directory == nil {
 		return false, fmt.Errorf("immutable publication directory authority is required")
 	}
@@ -714,8 +728,7 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 		return false, fmt.Errorf("generate immutable temporary name: %w", err)
 	}
 	temporaryName := ".pending-" + hex.EncodeToString(random[:])
-	fd, err := unix.Openat(int(directory.Fd()), temporaryName,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
+	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporaryName, uint32(mode.Perm()), inj)
 	if err != nil {
 		return false, fmt.Errorf("create immutable temporary file: %w", err)
 	}
@@ -732,17 +745,17 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
 		}
 	}()
-	if err := unix.Fchmod(fd, uint32(mode.Perm())); err != nil {
+	if err := filewrite.Chmod(fd, uint32(mode.Perm()), temporaryName, inj); err != nil {
 		return false, fmt.Errorf("secure immutable temporary file: %w", err)
 	}
-	if _, err := temporary.Write(raw); err != nil {
+	if err := filewrite.Write(temporary, raw, temporaryName, inj); err != nil {
 		return false, fmt.Errorf("write immutable temporary file: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		return false, fmt.Errorf("sync immutable temporary file: %w", err)
 	}
 	created := true
-	if err := unix.Linkat(int(directory.Fd()), temporaryName, int(directory.Fd()), name, 0); err != nil {
+	if err := filewrite.LinkNoReplace(int(directory.Fd()), temporaryName, name, inj); err != nil {
 		if !errors.Is(err, unix.EEXIST) {
 			return false, fmt.Errorf("publish immutable file: %w", err)
 		}
@@ -753,7 +766,7 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 	}
 	removeTemporary = false
 	if created {
-		publishedFD, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		publishedFD, err := filewrite.OpenReadOnly(int(directory.Fd()), name, inj)
 		if err != nil {
 			return false, fmt.Errorf("open published immutable file: %w", err)
 		}
@@ -777,7 +790,7 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 			return false, fmt.Errorf("published immutable file does not retain the exact prepared inode")
 		}
 	}
-	if err := unix.Fsync(int(directory.Fd())); err != nil {
+	if err := filewrite.SyncDir(directory, inj); err != nil {
 		return false, fmt.Errorf("sync immutable publication directory: %w", err)
 	}
 	return created, nil

@@ -41,7 +41,7 @@ func (s Store) SaveOutgoingMessageSynchestraDispatchUnderLock(lock *ExecutionLoc
 	if err != nil {
 		return MessageSynchestraDispatch{}, false, err
 	}
-	created, err := publishImmutableAt(directory, messageSynchestraDispatchFileName, raw, 0o600)
+	created, err := publishImmutableAt(directory, messageSynchestraDispatchFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessageSynchestraDispatch{}, false, err
 	}
