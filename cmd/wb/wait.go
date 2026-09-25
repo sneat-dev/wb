@@ -691,7 +691,7 @@ wb wait list --json`,
 				return err
 			}
 			if prune {
-				removed, pruneErr := waitregistry.Prune(home)
+				removed, pruneErr := waitregistry.Prune(home, waitregistry.Options{})
 				if pruneErr != nil {
 					return pruneErr
 				}
@@ -700,7 +700,7 @@ wb wait list --json`,
 				}
 				return nil
 			}
-			records, err := waitregistry.List(home)
+			records, err := waitregistry.List(home, waitregistry.Options{})
 			if err != nil {
 				return err
 			}

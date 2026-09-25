@@ -5,10 +5,9 @@ package archiveprune
 // Pack unit p02 coverage: openDirectoryAt and hashFileAt replaced-while-planning
 // guards. Unit tier only: real temp-dir filesystem, no real git.
 //
-// golang.org/x/sys/unix (Stat/Stat_t below) does not build on Windows, and
-// this file's premise -- proving a directory or file was swapped out from
-// under a planned prune by comparing device+inode -- is itself POSIX-only,
-// so it is excluded from the Windows build entirely rather than adapted.
+// golang.org/x/sys/unix.Stat/Stat_t have no Windows implementation, so this
+// exercise is unix-only; the production code under test (untracked.go) goes
+// through internal/unixcompat, which does build on Windows.
 
 import (
 	"os"
