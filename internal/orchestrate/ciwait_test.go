@@ -486,6 +486,139 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
+// TestWaitForCommitChecksReportsAuthorityUnavailableOnFirstObservation drives
+// waitForCommitChecks' first required-check-authority branch (#766): when
+// requiredChecksReceipt fails on the very first observation, the slice is
+// nowhere near its deadline and result.Reason is still empty, so the
+// "reuse the prior reason at deadline" branch cannot apply and the function
+// must fall through to setting a fresh "required-check authority is
+// unavailable" reason and returning a pending receipt immediately.
+func TestWaitForCommitChecksReportsAuthorityUnavailableOnFirstObservation(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	head := "cccccccccccccccccccccccccccccccccccccccc"
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"` + head + `"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":0,"check_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then echo '{"total_count":0,"workflow_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo 'gh: internal server error (HTTP 500)' >&2; exit 1
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: head,
+		Slice: 5 * time.Second, CheckPollInterval: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForCommitChecks: %v", err)
+	}
+	if result.Status != PullRequestWaitPending ||
+		!strings.Contains(result.Reason, "required-check authority is unavailable") ||
+		!strings.Contains(result.Reason, "HTTP 500") {
+		t.Fatalf("first-observation authority-unavailable receipt = %+v", result)
+	}
+}
+
+// TestWaitForCommitChecksPreservesPriorReasonWhenAuthorityFailsAtDeadline
+// drives waitForCommitChecks' other required-check-authority branch (#766):
+// when the slice's own deadline is what kills the required-check authority
+// read (rather than the read failing quickly on its own), the function must
+// return the prior observation's reason unchanged rather than overwrite it
+// with a fresh "authority is unavailable" reason it never got a complete
+// receipt for.
+//
+// The first observation is engineered to succeed and be immediately
+// terminal-pending-confirmation (an authoritatively empty check set under
+// AllowUnfenced), which sets result.Reason to a fixed, recognizable string
+// and schedules a second observation after CheckPollInterval. The bare
+// `gh` fake then makes exactly the fourth (and every later) call to
+// `api .../pulls/17` — reached only from the second observation's own
+// required-check-authority read, after its two earlier per-observation
+// pull-request reads have already both completed fast — hang far longer
+// than the remaining slice, so the slice's own deadline (not the script)
+// is what terminates it: WithDeadline cancels the fake `gh` subprocess out
+// from under the read once the deadline passes, regardless of load, which
+// is what makes this deterministic rather than a real-time race.
+func TestWaitForCommitChecksPreservesPriorReasonWhenAuthorityFailsAtDeadline(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(t.TempDir(), "pulls-calls")
+	head := "dddddddddddddddddddddddddddddddddddddddd"
+	target := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"` + target + `"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/` + target + `...` + head + `'; then echo '{"status":"identical","base_commit":{"sha":"` + target + `"},"merge_base_commit":{"sha":"` + target + `"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":0,"check_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then echo '{"total_count":0,"workflow_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":false,"protection":{}}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
+  count=0
+  [ -f "$WB_PULLS_COUNTER" ] && count=$(cat "$WB_PULLS_COUNTER")
+  count=$((count + 1))
+  printf '%s' "$count" > "$WB_PULLS_COUNTER"
+  if [ "$count" -ge 6 ]; then
+    # Every observation reads /pulls/17 three times, in this order:
+    # pullRequestIdentity (top of the loop), commitChecks' own head-match
+    # read, and finally requiredChecksReceipt's pullRequestTargetsBase --
+    # the exact call this test targets. Only the SECOND observation's third
+    # (6th overall) call is made to hang: its first two calls (4, 5) must
+    # still succeed fast, or pullRequestIdentity's or commitChecks' own
+    # earlier reason-handling returns first and this test would exercise
+    # that branch instead of the one under test.
+    #
+    # exec replaces this script's own process image with sleep, rather than
+    # forking a child of it: Go's context cancellation kills exactly the
+    # direct child process it started (this script's PID), and a forked
+    # grandchild left holding the stdout/stderr pipe open would keep
+    # CombinedOutput blocked on that pipe for the full sleep regardless of
+    # the parent's death, turning a deliberately short deadline into a real
+    # multi-second stall in this test.
+    exec sleep 30
+  fi
+  echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_PULLS_COUNTER", counter)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: head,
+		AllowUnfenced: true, Slice: 2 * time.Second, CheckPollInterval: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForCommitChecks: %v", err)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want a pending receipt reusing the prior observation's reason", result)
+	}
+	if strings.Contains(result.Reason, "required-check authority is unavailable") {
+		t.Fatalf("result.Reason = %q, must reuse the prior observation's reason rather than a fresh authority-unavailable one once the deadline is what killed the read", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "terminal checks require one unchanged foreground reread") {
+		t.Fatalf("result.Reason = %q, want the first observation's own terminal-pending-confirmation reason preserved", result.Reason)
+	}
+}
+
 func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 	t.Parallel()
 	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
