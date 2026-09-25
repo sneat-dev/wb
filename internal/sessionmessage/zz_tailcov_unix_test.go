@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -34,7 +35,7 @@ func TestTailCovNewOSTmuxRejectsNonRegularExecutable(t *testing.T) {
 // the child, and the child's stdout, stderr, and exit status must be surfaced
 // unchanged. Unix-only because the stub is a shell script.
 func TestTailCovExecTmuxCommandRunnerWiresStreams(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "stub")
 	script := "#!/bin/sh\n" +

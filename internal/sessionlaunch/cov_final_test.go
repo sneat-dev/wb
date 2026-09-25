@@ -338,7 +338,7 @@ func TestSlCovValidatePrivatePlanHarnessFailures(t *testing.T) {
 func TestSlCovValidatePrivateParkPlanHarnessExecutable(t *testing.T) {
 	state, plan, _, _ := slCovParkFixture(t)
 	plan.HarnessExecutable = filepath.Join(t.TempDir(), "codex")
-	if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "harness executable") {
+	if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil || !strings.Contains(err.Error(), "harness executable") {
 		t.Fatalf("invalid parked harness executable = %v", err)
 	}
 }
@@ -349,7 +349,7 @@ func TestSlCovVerifyPrivateLocalRootDirectFailures(t *testing.T) {
 		t.Parallel()
 		broken := plan
 		broken.RootMode = string(sessionauthority.LaunchRootParkedLocal)
-		if err := verifyPrivateLocalRoot(state, bundle, broken); err == nil {
+		if err := verifyPrivateLocalRoot(state, bundle, broken, realRunner()); err == nil {
 			t.Fatal("accepted a mismatched parked root mode")
 		}
 	})
@@ -365,7 +365,7 @@ func TestSlCovVerifyPrivateLocalRootDirectFailures(t *testing.T) {
 		localPlan.RootMode = string(sessionauthority.LaunchRootParkedLocal)
 		localPlan.WorktreeDir = repo
 		t.Setenv("PATH", t.TempDir())
-		if err := verifyPrivateLocalRoot(state, local, localPlan); err == nil || !strings.Contains(err.Error(), "git executable is unavailable") {
+		if err := verifyPrivateLocalRoot(state, local, localPlan, realRunner()); err == nil || !strings.Contains(err.Error(), "git executable is unavailable") {
 			t.Fatalf("missing git = %v", err)
 		}
 	})

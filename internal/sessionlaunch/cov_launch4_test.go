@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
 func TestSlCovTmuxFailureNoServerAndMultiPane(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	t.Run("no server", func(t *testing.T) {
 		t.Parallel()
 		path := slCovScript(t, `printf 'no server running on /private/tmp/tmux-501/default\n'; exit 1`)

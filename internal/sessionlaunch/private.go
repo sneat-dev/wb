@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -29,12 +30,16 @@ type privateLauncherDependencies struct {
 	verifyPinned func(context.Context, launchPlan) error
 	now          func() time.Time
 	wbExecutable func() (string, error)
+	// runner is the seam the parked-local-root git verification goes
+	// through. Nil (the production default) resolves to the real runner;
+	// a test injects runnertest.Fake.
+	runner runner.Runner
 }
 
 func defaultPrivateLauncherDependencies() privateLauncherDependencies {
 	return privateLauncherDependencies{pid: os.Getpid, register: session.Register, sleep: time.Sleep,
 		exec: syscall.Exec, verifyPinned: verifyPinnedWorktree, now: func() time.Time { return time.Now().UTC() },
-		wbExecutable: os.Executable}
+		wbExecutable: os.Executable, runner: realRunner()}
 }
 
 // RunPrivateLauncher is the early-dispatch child started only through the
@@ -92,7 +97,7 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 			privateContinuation = plan.HandoverPath
 		}
 	} else {
-		privateContinuation, err = validatePrivateParkPlan(launchState, plan)
+		privateContinuation, err = validatePrivateParkPlan(launchState, plan, deps.runner)
 		if err != nil {
 			return err
 		}
@@ -303,7 +308,7 @@ func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request, store 
 // sessionpark envelope through a descriptor retained by launchState, derives
 // the expected launch authority from that envelope, and then compares every
 // plan field before the private continuation path can enter the environment.
-func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error) {
+func validatePrivateParkPlan(state *launchState, plan launchPlan, r runner.Runner) (string, error) {
 	if sessionauthority.ContinuationKind(plan.ContinuationKind) != sessionauthority.ContinuationPrivate {
 		return "", fmt.Errorf("parked launcher plan does not name the fixed private authority artifacts")
 	}
@@ -403,14 +408,14 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 		if !bytes.HasPrefix(continuation, []byte(localBundle.Continuation)) {
 			return "", fmt.Errorf("private parked continuation conflicts with admitted bundle")
 		}
-		if err := verifyPrivateLocalRoot(state, *localBundle, plan); err != nil {
+		if err := verifyPrivateLocalRoot(state, *localBundle, plan, r); err != nil {
 			return "", err
 		}
 	}
 	return continuationPath, nil
 }
 
-func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan launchPlan) error {
+func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan launchPlan, r runner.Runner) error {
 	mode := sessionauthority.LaunchRootMode(plan.RootMode)
 	if len(bundle.Worktrees) == 0 {
 		want := filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.LocalNeutralDirName)
@@ -448,10 +453,10 @@ func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan 
 		return err
 	}
 	for _, member := range bundle.Worktrees {
-		branch, branchErr := exec.Command(gitPath, "-C", member.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
-		head, headErr := exec.Command(gitPath, "-C", member.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
-		if branchErr != nil || headErr != nil || string(bytes.TrimSpace(branch)) != member.Branch ||
-			string(bytes.TrimSpace(head)) != member.Head {
+		branchResult, branchErr := resolveRunner(r).Run(context.Background(), "", gitPath, "-C", member.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD")
+		headResult, headErr := resolveRunner(r).Run(context.Background(), "", gitPath, "-C", member.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}")
+		if branchErr != nil || headErr != nil || strings.TrimSpace(branchResult.Stdout) != member.Branch ||
+			strings.TrimSpace(headResult.Stdout) != member.Head {
 			return fmt.Errorf("parked-local member branch or HEAD changed immediately before harness exec")
 		}
 	}

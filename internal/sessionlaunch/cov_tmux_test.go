@@ -7,10 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestSlCovStartDetachedRunsFixedArgvForAbsentSession(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	log := filepath.Join(t.TempDir(), "new-session.log")
 	path := slCovScript(t, `case "$1" in
   list-panes) printf '0\t\n' ;;
@@ -31,7 +33,7 @@ esac
 }
 
 func TestSlCovStartDetachedRemovesTerminalSessionBeforeRecreating(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	killLog := filepath.Join(t.TempDir(), "kill.log")
 	newLog := filepath.Join(t.TempDir(), "new.log")
 	path := slCovScript(t, `case "$1" in
@@ -57,7 +59,7 @@ esac
 }
 
 func TestSlCovStartDetachedSurfacesKillAndStartFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	t.Run("kill failure", func(t *testing.T) {
 		t.Parallel()
 		path := slCovScript(t, `case "$1" in
@@ -98,7 +100,7 @@ esac
 }
 
 func TestSlCovPanePIDRejectsMalformedFieldShapes(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	tests := []struct {
 		name   string
 		output string
@@ -134,7 +136,7 @@ func TestSlCovPanePIDRejectsMalformedFieldShapes(t *testing.T) {
 }
 
 func TestSlCovPaneFailureSurfacesCaptureAndParseFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	t.Run("capture failure", func(t *testing.T) {
 		t.Parallel()
 		path := slCovScript(t, `case "$1" in

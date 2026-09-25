@@ -37,7 +37,7 @@ func TestValidatePrivateParkPlanRejectsNonCanonicalEnvelope(t *testing.T) {
 	}
 	plan.RequestDigest = sessionmove.DigestBytes([]byte(tampered))
 
-	if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "not canonical") {
+	if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil || !strings.Contains(err.Error(), "not canonical") {
 		t.Fatalf("validatePrivateParkPlan(non-canonical envelope) = %v, want a not-canonical error", err)
 	}
 }

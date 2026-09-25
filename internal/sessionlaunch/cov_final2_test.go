@@ -228,7 +228,7 @@ func TestSlCovVerifyPrivateLocalRootModeMismatch(t *testing.T) {
 	broken := plan
 	broken.RootMode = string(sessionauthority.LaunchRootPinnedClean)
 	broken.WorktreeDir = repo
-	if err := verifyPrivateLocalRoot(state, local, broken); err == nil || !strings.Contains(err.Error(), "local root does not match") {
+	if err := verifyPrivateLocalRoot(state, local, broken, realRunner()); err == nil || !strings.Contains(err.Error(), "local root does not match") {
 		t.Fatalf("mode mismatch = %v", err)
 	}
 }

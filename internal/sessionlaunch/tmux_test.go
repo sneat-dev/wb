@@ -6,11 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	write := func(name, diagnostic string) string {
 		path := filepath.Join(t.TempDir(), name)
 		body := "#!/bin/sh\nprintf '%s\\n' \"" + diagnostic + "\" >&2\nexit 1\n"
@@ -28,7 +29,7 @@ func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing
 }
 
 func TestTmuxPanePIDScopesAllPanesInExactSession(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 if [ "$1" != "list-panes" ] || [ "$2" != "-s" ] || [ "$3" != "-t" ] || [ "$4" != "=wb-session-x" ]; then
@@ -47,7 +48,7 @@ printf '4242\t0\n'
 }
 
 func TestTmuxPaneFailureRetainsExitStatusAndBoundedDiagnostic(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 case "$1" in
@@ -66,7 +67,7 @@ esac
 }
 
 func TestTmuxPaneFailureAcceptsLivePaneWithEmptyExitStatus(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 case "$1" in

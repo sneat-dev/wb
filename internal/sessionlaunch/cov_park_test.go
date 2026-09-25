@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -92,7 +93,7 @@ func slCovParkFixture(t *testing.T) (*launchState, launchPlan, sessionpark.Bundl
 func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 	t.Run("exact bundle", func(t *testing.T) {
 		state, plan, _, continuationPath := slCovParkFixture(t)
-		got, err := validatePrivateParkPlan(state, plan)
+		got, err := validatePrivateParkPlan(state, plan, realRunner())
 		if err != nil || got != continuationPath {
 			t.Fatalf("validatePrivateParkPlan = %q %v", got, err)
 		}
@@ -100,14 +101,14 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 	t.Run("not private", func(t *testing.T) {
 		state, plan, _, _ := slCovParkFixture(t)
 		plan.ContinuationKind = ""
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a non-private plan")
 		}
 	})
 	t.Run("unknown authority file", func(t *testing.T) {
 		state, plan, _, _ := slCovParkFixture(t)
 		plan.AuthorityFile = "other.json"
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted an unknown authority artifact")
 		}
 	})
@@ -116,14 +117,14 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 		if err := os.Remove(filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.BundleFileName)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a missing bundle")
 		}
 	})
 	t.Run("bundle digest mismatch", func(t *testing.T) {
 		state, plan, _, _ := slCovParkFixture(t)
 		plan.RequestDigest = slCovDigest("other")
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a divergent bundle digest")
 		}
 	})
@@ -132,7 +133,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 		if err := os.Remove(filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.SuccessorContextFileName)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a missing successor context")
 		}
 	})
@@ -140,7 +141,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 		state, plan, bundle, _ := slCovParkFixture(t)
 		slCovWrite(t, filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.BundleFileName), 0o600, "{}\n")
 		plan.RequestDigest = sessionmove.DigestBytes([]byte("{}\n"))
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a non-canonical bundle")
 		}
 	})
@@ -151,7 +152,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Chmod(neutral, 0o700) }()
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a public neutral root")
 		}
 	})
@@ -183,7 +184,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				state, plan, _, _ := slCovParkFixture(t)
 				mutate(&plan)
-				if _, err := validatePrivateParkPlan(state, plan); err == nil {
+				if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 					t.Fatalf("divergence %q was accepted", name)
 				}
 			})
@@ -199,7 +200,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Chdir(previous) }()
-		if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "not rooted in the pinned target worktree") {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil || !strings.Contains(err.Error(), "not rooted in the pinned target worktree") {
 			t.Fatalf("wrong cwd = %v", err)
 		}
 	})
@@ -282,14 +283,14 @@ func slCovParkEnvelopeFixture(t *testing.T, continuation string, requestContinua
 func TestSlCovValidatePrivateParkPlanRemoteEnvelope(t *testing.T) {
 	t.Run("exact envelope", func(t *testing.T) {
 		state, plan, continuationPath := slCovParkEnvelopeFixture(t, "envelope continuation\n", "envelope continuation\n")
-		got, err := validatePrivateParkPlan(state, plan)
+		got, err := validatePrivateParkPlan(state, plan, realRunner())
 		if err != nil || got != continuationPath {
 			t.Fatalf("validatePrivateParkPlan = %q %v", got, err)
 		}
 	})
 	t.Run("successor context does not extend the request continuation", func(t *testing.T) {
 		state, plan, _ := slCovParkEnvelopeFixture(t, "envelope continuation\n", "different prefix\n")
-		if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "conflicts with admitted envelope") {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil || !strings.Contains(err.Error(), "conflicts with admitted envelope") {
 			t.Fatalf("continuation prefix conflict = %v", err)
 		}
 	})
@@ -298,7 +299,7 @@ func TestSlCovValidatePrivateParkPlanRemoteEnvelope(t *testing.T) {
 		raw := "{}\n"
 		slCovWrite(t, filepath.Join(plan.StoreRoot, plan.HandoffID, sessionpark.EnvelopeFileName), 0o600, raw)
 		plan.RequestDigest = sessionmove.DigestBytes([]byte(raw))
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a non-canonical envelope")
 		}
 	})
@@ -307,13 +308,14 @@ func TestSlCovValidatePrivateParkPlanRemoteEnvelope(t *testing.T) {
 		if err := os.Remove(filepath.Join(plan.StoreRoot, plan.HandoffID, sessionpark.EnvelopeFileName)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a missing envelope")
 		}
 	})
 }
 
 func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	_, gitErr := exec.LookPath("git")
 	storeRoot := filepath.Join(t.TempDir(), sessionpark.SourceDirName)
 	bundle := slCovLocalBundle()
@@ -381,12 +383,12 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	if gitErr != nil {
 		t.Setenv("PATH", t.TempDir())
-		if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "git executable is unavailable") {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil || !strings.Contains(err.Error(), "git executable is unavailable") {
 			t.Fatalf("parked-local plan without git = %v", err)
 		}
 		return
 	}
-	if _, err := validatePrivateParkPlan(state, plan); err != nil {
+	if _, err := validatePrivateParkPlan(state, plan, realRunner()); err != nil {
 		t.Fatalf("exact parked-local plan = %v", err)
 	}
 	t.Run("member HEAD changed", func(t *testing.T) {
@@ -394,7 +396,7 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 		slCovWrite(t, filepath.Join(repo, "extra.txt"), 0o644, "extra\n")
 		slCovGit(t, repo, "add", "extra.txt")
 		slCovGit(t, repo, "commit", "-q", "-m", "extra")
-		if _, err := validatePrivateParkPlan(state, plan); err == nil {
+		if _, err := validatePrivateParkPlan(state, plan, realRunner()); err == nil {
 			t.Fatal("accepted a changed parked-local member HEAD")
 		}
 	})

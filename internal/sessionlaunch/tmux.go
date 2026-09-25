@@ -2,11 +2,11 @@ package sessionlaunch
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type tmux interface {
@@ -15,7 +15,26 @@ type tmux interface {
 	PaneFailure(context.Context, string) (tmuxFailure, bool, error)
 }
 
-type osTmux struct{ executable string }
+// realRunner is the production seam default: every entry point without a
+// caller-supplied runner.Runner resolves to this rather than a
+// package-level mutable var.
+func realRunner() runner.Runner { return runner.New() }
+
+// resolveRunner returns r, or realRunner() when r is nil.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return realRunner()
+}
+
+type osTmux struct {
+	executable string
+	// Runner is the seam every tmux invocation goes through. Nil (the
+	// production default) resolves to the real runner; a test injects
+	// runnertest.Fake.
+	Runner runner.Runner
+}
 
 type tmuxFailure struct {
 	ExitStatus int
@@ -26,29 +45,27 @@ func (t osTmux) StartDetached(ctx context.Context, name, cwd, executable string,
 	if _, dead, err := t.PaneFailure(ctx, name); err != nil {
 		return err
 	} else if dead {
-		command := exec.CommandContext(ctx, t.executable, "kill-session", "-t", "="+name)
-		if output, err := command.CombinedOutput(); err != nil {
-			return fmt.Errorf("remove terminal tmux successor %s: %w: %s", name, err, boundedTmuxDetail(output))
+		result, err := resolveRunner(t.Runner).Run(ctx, "", t.executable, "kill-session", "-t", "="+name)
+		if err != nil {
+			return fmt.Errorf("remove terminal tmux successor %s: %w: %s", name, err, boundedTmuxDetail([]byte(result.Stdout+result.Stderr)))
 		}
 	}
 	args := []string{"new-session", "-d", "-s", name, "-c", cwd, executable}
 	args = append(args, arguments...)
 	args = append(args, ";", "set-option", "-t", "="+name, "remain-on-exit", "on")
-	command := exec.CommandContext(ctx, t.executable, args...)
-	output, err := command.CombinedOutput()
+	result, err := resolveRunner(t.Runner).Run(ctx, "", t.executable, args...)
 	if err != nil {
-		return fmt.Errorf("start detached tmux successor: %w: %s", err, boundedTmuxDetail(output))
+		return fmt.Errorf("start detached tmux successor: %w: %s", err, boundedTmuxDetail([]byte(result.Stdout+result.Stderr)))
 	}
 	return nil
 }
 
 func (t osTmux) PanePID(ctx context.Context, name string) (int, bool, error) {
-	command := exec.CommandContext(ctx, t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_pid}\t#{pane_dead}")
-	output, err := command.CombinedOutput()
+	result, err := resolveRunner(t.Runner).Run(ctx, "", t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_pid}\t#{pane_dead}")
+	output := []byte(result.Stdout + result.Stderr)
 	if err != nil {
-		var exitErr *exec.ExitError
 		detail := strings.ToLower(string(output))
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 &&
+		if result.ExitCode == 1 &&
 			(strings.Contains(detail, "can't find session:") || strings.Contains(detail, "no server running on")) {
 			return 0, false, nil
 		}
@@ -72,12 +89,11 @@ func (t osTmux) PanePID(ctx context.Context, name string) (int, bool, error) {
 }
 
 func (t osTmux) PaneFailure(ctx context.Context, name string) (tmuxFailure, bool, error) {
-	command := exec.CommandContext(ctx, t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_dead}\t#{pane_dead_status}")
-	output, err := command.CombinedOutput()
+	result, err := resolveRunner(t.Runner).Run(ctx, "", t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_dead}\t#{pane_dead_status}")
+	output := []byte(result.Stdout + result.Stderr)
 	if err != nil {
-		var exitErr *exec.ExitError
 		detail := strings.ToLower(string(output))
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 &&
+		if result.ExitCode == 1 &&
 			(strings.Contains(detail, "can't find session:") || strings.Contains(detail, "no server running on")) {
 			return tmuxFailure{}, false, nil
 		}
@@ -90,8 +106,8 @@ func (t osTmux) PaneFailure(ctx context.Context, name string) (tmuxFailure, bool
 	if dead == 0 {
 		return tmuxFailure{}, false, nil
 	}
-	capture := exec.CommandContext(ctx, t.executable, "capture-pane", "-p", "-S", "-200", "-t", "="+name)
-	diagnostic, captureErr := capture.CombinedOutput()
+	captureResult, captureErr := resolveRunner(t.Runner).Run(ctx, "", t.executable, "capture-pane", "-p", "-S", "-200", "-t", "="+name)
+	diagnostic := []byte(captureResult.Stdout + captureResult.Stderr)
 	if captureErr != nil {
 		return tmuxFailure{}, false, fmt.Errorf("capture terminal tmux successor %s: %w: %s", name, captureErr, boundedTmuxDetail(diagnostic))
 	}

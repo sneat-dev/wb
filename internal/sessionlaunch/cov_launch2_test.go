@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
@@ -88,6 +89,7 @@ func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
 }
 
 func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Run("git unavailable", func(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())

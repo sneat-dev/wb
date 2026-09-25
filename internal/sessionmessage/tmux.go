@@ -12,7 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
+
+// realRunner is the production seam default: execTmuxCommandRunner's zero
+// value (the production default installed by newOSTmux) resolves to this
+// rather than a package-level mutable var.
+func realRunner() runner.Runner { return runner.New() }
+
+// resolveRunner returns r, or realRunner() when r is nil.
+func resolveRunner(r runner.Runner) runner.Runner {
+	if r != nil {
+		return r
+	}
+	return realRunner()
+}
 
 var canonicalPaneID = regexp.MustCompile(`^%[0-9]+$`)
 
@@ -26,14 +41,20 @@ type tmuxCommandRunner interface {
 	Run(context.Context, string, []string, []byte, io.Writer, io.Writer) error
 }
 
-type execTmuxCommandRunner struct{}
+// execTmuxCommandRunner is tmuxCommandRunner's production implementation,
+// routed through internal/runner.Runner.Stream so a unit test can substitute
+// runnertest.Fake in its place instead of starting a real tmux process.
+type execTmuxCommandRunner struct {
+	// Runner is the seam this adapter's one process start goes through.
+	// Nil (the production default newOSTmux installs) resolves to the real
+	// runner.
+	Runner runner.Runner
+}
 
-func (execTmuxCommandRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
-	command := exec.CommandContext(ctx, executable, args...)
-	command.Stdin = bytes.NewReader(stdin)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	return command.Run()
+func (e execTmuxCommandRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
+	opts := runner.StreamOptions{Stdin: bytes.NewReader(stdin), Stdout: stdout, Stderr: stderr}
+	_, err := resolveRunner(e.Runner).Stream(ctx, "", opts, executable, args...)
+	return err
 }
 
 type osTmux struct {

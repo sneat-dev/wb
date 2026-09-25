@@ -1,7 +1,6 @@
 package sessionlaunch
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,9 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -836,6 +837,10 @@ func inspectStarted(ctx context.Context, options Options, deps dependencies, sta
 }
 
 func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
+	return verifyPinnedWorktreeWith(ctx, plan, realRunner())
+}
+
+func verifyPinnedWorktreeWith(ctx context.Context, plan launchPlan, r runner.Runner) error {
 	mode := sessionauthority.LaunchRootMode(plan.RootMode)
 	if mode == "" {
 		mode = sessionauthority.LaunchRootPinnedClean
@@ -856,23 +861,23 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 	if err != nil {
 		return err
 	}
-	head, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
-	if err != nil || string(bytes.TrimSpace(head)) != plan.PinnedCommit {
+	headResult, err := resolveRunner(r).Run(ctx, "", gitPath, "-C", plan.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || strings.TrimSpace(headResult.Stdout) != plan.PinnedCommit {
 		return fmt.Errorf("pinned successor worktree HEAD no longer equals %s", plan.PinnedCommit)
 	}
 	pinnedBranch := plan.PinnedBranch
 	if pinnedBranch == "" { // Read compatibility for already-written launch-plan schema v1 artifacts.
 		pinnedBranch = "wb-session/" + plan.HandoffID
 	}
-	branch, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
-	if err != nil || string(bytes.TrimSpace(branch)) != pinnedBranch {
+	branchResult, err := resolveRunner(r).Run(ctx, "", gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil || strings.TrimSpace(branchResult.Stdout) != pinnedBranch {
 		return fmt.Errorf("pinned successor worktree is not on its exact WB session branch")
 	}
-	status, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all").Output()
+	statusResult, err := resolveRunner(r).Run(ctx, "", gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect pinned successor worktree status: %w", err)
 	}
-	if len(status) != 0 && mode != sessionauthority.LaunchRootParkedLocal {
+	if len(statusResult.Stdout) != 0 && mode != sessionauthority.LaunchRootParkedLocal {
 		return fmt.Errorf("pinned successor worktree is dirty before harness release")
 	}
 	return nil

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -508,7 +509,7 @@ func TestTailCovReceiveWithoutInjectedClockUsesWallTime(t *testing.T) {
 // --- tmux adapter ---------------------------------------------------------
 
 func TestTailCovExecTmuxCommandRunnerPropagatesExitFailures(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	runner := execTmuxCommandRunner{}
 	var stdout, stderr bytes.Buffer
 	err := runner.Run(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), nil, nil, &stdout, &stderr)
