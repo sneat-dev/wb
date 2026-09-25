@@ -110,6 +110,35 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 	}
 }
 
+// TestPRCreateAutoMergeAloneBuildsItsOwnLandingLaneRequest proves the
+// --auto-merge-without---land branch that builds a dedicated landing-lane
+// guard request (pr_create.go:197) is reached: every other test in this file
+// either omits --auto-merge or combines it with --land, so that lane
+// assignment was never exercised.
+func TestPRCreateAutoMergeAloneBuildsItsOwnLandingLaneRequest(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	command := newPRCreateCmd(&invocation{})
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--auto-merge"})
+	err = command.Execute()
+	var exit *exitError
+	if errors.As(err, &exit) && exit.code == exitUsage {
+		t.Fatalf("--auto-merge alone must not be a usage error: %v", exit)
+	}
+}
+
 func TestPRCreateRejectsAddWithCommitAll(t *testing.T) {
 	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
