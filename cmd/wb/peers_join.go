@@ -31,11 +31,13 @@ type peersJoinDeps struct {
 	restart    func(ctx context.Context, projectsRoot string) error
 }
 
-func defaultPeersJoinDeps() peersJoinDeps {
+func defaultPeersJoinDeps(inv *invocation) peersJoinDeps {
 	return peersJoinDeps{
 		configPath: wbconfig.DefaultPath,
 		verify:     verifyPeerConnectProbe,
-		restart:    restartDaemonAfterRemoteEnroll,
+		restart: func(ctx context.Context, projectsRoot string) error {
+			return restartDaemonAfterRemoteEnroll(ctx, inv.commandRunner(), projectsRoot)
+		},
 	}
 }
 
@@ -54,7 +56,7 @@ restarts a running daemon so the peer session starts immediately.
   cat token.txt | wb peers join https://vm1.sneat.dev --token-stdin   # on the laptop`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersJoin(command.Context(), defaultPeersJoinDeps(), inv.projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
+			return runPeersJoin(command.Context(), defaultPeersJoinDeps(inv), inv.projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	command.Flags().StringVar(&tokenFile, "token-file", "", "read the one-time token from this absolute path")

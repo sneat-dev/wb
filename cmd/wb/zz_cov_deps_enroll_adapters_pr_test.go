@@ -13,6 +13,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -151,7 +153,7 @@ func TestCwDepsReadRemoteEnrollmentTokenRefusals(t *testing.T) {
 
 func TestCwDepsDefaultRemoteEnrollDependencies(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	deps := defaultRemoteEnrollDeps()
+	deps := defaultRemoteEnrollDeps(&invocation{})
 	if deps.configPath == nil || deps.verify == nil || deps.restart == nil {
 		t.Fatal("a default enrollment dependency is missing")
 	}
@@ -167,13 +169,17 @@ func TestCwDepsDefaultRemoteEnrollDependencies(t *testing.T) {
 	}
 }
 
-// TestCwDepsRestartDaemonAfterRemoteEnrollSurfacesTheChildFailure invokes the
-// real restart path. The test binary rejects the WB flags it is handed, which
-// is exactly the non-zero exit the function must turn into an error.
+// TestCwDepsRestartDaemonAfterRemoteEnrollSurfacesTheChildFailure drives the
+// restart path's error-propagation branch: a failed child run must be
+// reported, not swallowed. Injected via runnertest.Fake (task-8) rather than
+// a real re-exec of the test binary.
 func TestCwDepsRestartDaemonAfterRemoteEnrollSurfacesTheChildFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := restartDaemonAfterRemoteEnroll(ctx, t.TempDir())
+	fake := runnertest.New(t)
+	fake.Expect(func(runnertest.Call) bool { return true },
+		runner.Result{ExitCode: 1, Stderr: "unknown flag: --projects-root"}, errors.New("exit status 1"))
+	err := restartDaemonAfterRemoteEnroll(ctx, fake, t.TempDir())
 	if err == nil {
 		t.Fatal("a daemon restart that produced no output/exit must not be reported as success")
 	}

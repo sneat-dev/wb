@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -28,7 +28,7 @@ type remoteEnrollDeps struct {
 	restart    func(context.Context, string) error
 }
 
-func defaultRemoteEnrollDeps() remoteEnrollDeps {
+func defaultRemoteEnrollDeps(inv *invocation) remoteEnrollDeps {
 	return remoteEnrollDeps{
 		configPath: wbconfig.DefaultPath,
 		verify: func(ctx context.Context, hubURL, machine, token string) error {
@@ -39,7 +39,9 @@ func defaultRemoteEnrollDeps() remoteEnrollDeps {
 			_, err = provider.List(ctx)
 			return err
 		},
-		restart: restartDaemonAfterRemoteEnroll,
+		restart: func(ctx context.Context, projectsRoot string) error {
+			return restartDaemonAfterRemoteEnroll(ctx, inv.commandRunner(), projectsRoot)
+		},
 	}
 }
 
@@ -69,7 +71,7 @@ WB command telemetry. From the dashboard, copy the credential and run:
   pbpaste | wb remote enroll --machine studio-mac --token-stdin`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return runRemoteEnroll(command.Context(), defaultRemoteEnrollDeps(), inv.projectsRoot, machine, hubURL, tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout())
+			return runRemoteEnroll(command.Context(), defaultRemoteEnrollDeps(inv), inv.projectsRoot, machine, hubURL, tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout())
 		},
 	}
 	command.Flags().StringVar(&machine, "machine", "", "unique name for this machine (required)")
@@ -193,15 +195,14 @@ func writePrivateCredentialInjected(path, token string, inj *filewrite.Injector)
 	return true, nil
 }
 
-func restartDaemonAfterRemoteEnroll(ctx context.Context, projectsRoot string) error {
+func restartDaemonAfterRemoteEnroll(ctx context.Context, r runner.Runner, projectsRoot string) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, executable, "--projects-root", projectsRoot, "--non-interactive", "daemon", "restart", "--if-running", "--format=json") //nolint:gosec // current verified executable.
-	output, err := command.CombinedOutput()
+	result, err := r.Run(ctx, "", executable, "--projects-root", projectsRoot, "--non-interactive", "daemon", "restart", "--if-running", "--format=json")
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(result.Stdout+result.Stderr))
 	}
 	return nil
 }
