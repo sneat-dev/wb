@@ -337,7 +337,7 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 	// more thing to report instead of a hard error.
 	unusableRoot := filepath.Join(blocker, "projects")
 	pinDaemonHome(t, unusableRoot)
-	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, unusableRoot, func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: root}, deps) })
+	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, unusableRoot, func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: unusableRoot}, deps) })
 	if blockedStatusErr != nil {
 		t.Fatalf("status against an unresolvable projects root = %v", blockedStatusErr)
 	}
