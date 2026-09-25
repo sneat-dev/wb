@@ -459,9 +459,13 @@ func commitsBetween(ctx context.Context, git Git, canonical, from, to string) ([
 // (spec/plans/coverage-to-100 task-17) rather than exec.CommandContext
 // directly. The pipe stays inside the "sh -c" script argument -- exactly as
 // it did before -- so this is still one child process (sh), not two piped
-// through the runner; only how that one child is started has changed.
+// through the runner; only how that one child is started has changed. It
+// calls RunOpts with an explicit console.Env(), matching the exec.CommandContext
+// call this replaced (which set command.Env = console.Env() itself): Run's
+// own default is an unmodified inherited environment, not byte-identical to
+// what this call site did before (coverage-to-100 rule 1).
 func patchIdentity(ctx context.Context, run runner.Runner, canonical, commit string) (string, error) {
-	result, err := run.Run(ctx, "", "sh", "-c",
+	result, err := run.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "sh", "-c",
 		"git -C "+shellQuote(canonical)+" diff-tree -p --no-color "+shellQuote(commit)+" | git patch-id --stable")
 	if err != nil {
 		return "", fmt.Errorf("patch identity of %s: %w", shortMergeRevision(commit), err)
