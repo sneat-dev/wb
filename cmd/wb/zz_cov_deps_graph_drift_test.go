@@ -53,6 +53,19 @@ func TestCwDepsGraphCommandInProcess(t *testing.T) {
 			t.Errorf("deps graph did not write %s: %v", name, statErr)
 		}
 	}
+	// Without --report-dir, the report still lands under the WB home's own
+	// reports directory, keyed by ecosystem.
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{projectsRoot: root}) },
+		"--fleet", "--ecosystem", "go", "--format", "json", "--parallel", "1"); err != nil {
+		t.Fatalf("deps graph without --report-dir: %v", err)
+	}
+	home, err := wbhome.EnsureRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "reports", "deps-graph-go", "deps-graph.json")); statErr != nil {
+		t.Errorf("deps graph without --report-dir did not persist under the WB home: %v", statErr)
+	}
 	// A view the graph does not support is refused before anything is written.
 	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsGraphCmd(&invocation{projectsRoot: root}) }, "--fleet", "--view", "nonsense"); err == nil {
 		t.Fatal("an unsupported graph view must be refused")
