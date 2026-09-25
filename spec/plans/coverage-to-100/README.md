@@ -796,6 +796,7 @@ Its rules:
 - *Plan choice (coordinator, 2026-09-25): detector changes.*
   - A PR that widens the detector may raise the list's total. The rise may come only from matches in lines that PR doesn't add. The reviewer checks it entry by entry: the PR's diff of each file whose count rose adds no new process-starting call.
   - Named exception: lane `cov-fix-769` added 3 counted fake-`gh` calls in `internal/orchestrate/ciwait_deadline_unix_test.go` (owner task-17). Before task-8 there was no `gh` fake, and those tests fix the #769 ratchet at `ciwait.go:146-147`. Task-17 converts them.
+  - Named exception (founder, 2026-09-25, chose "Allow +38, named"): lane `cov-t5-ctx-4` (task-5 PR-4), cut before this detector existed, adds 38 counted real-`git`/fake-`gh` calls: `cmd/wb/agent_remote_test.go` +1, `cmd/wb/worktree_merge_test.go` +13, `cmd/wb/pr_create_link_preflight_test.go` 16 and `cmd/wb/worktree_retire_test.go` 8 (owner task-16). The pending total goes from 4,841 to 4,879. Task-16 moves them onto task-8's fakes.
 - Follow-ups:
   - Wire the e2e tier into the nightly job.
   - Fail when the base branch has `unit_tier.pending` and the head doesn't. Otherwise a PR that deletes the list counts as the list-creating PR.
