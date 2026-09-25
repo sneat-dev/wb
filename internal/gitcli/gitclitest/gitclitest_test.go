@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+// mustPanic runs fn and returns the recovered value. It recovers inside its
+// own call frame rather than via a deferred function in the caller, so a
+// parallel test can use it without tripping the paralleltest check-cleanup
+// rule (defer alongside t.Parallel() in the same function).
+func mustPanic(t *testing.T, fn func()) any {
+	t.Helper()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		fn()
+	}()
+	if recovered == nil {
+		t.Fatal("want a panic")
+	}
+	return recovered
+}
+
 func TestFakeCurrentBranchReturnsScriptedResult(t *testing.T) {
 	t.Parallel()
 	fake := &Fake{CurrentBranchByDir: map[string]Result{"/repo": {Value: "main"}}}
@@ -17,12 +34,9 @@ func TestFakeCurrentBranchReturnsScriptedResult(t *testing.T) {
 
 func TestFakeCurrentBranchPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted dir")
-		}
-	}()
-	(&Fake{}).CurrentBranch(context.Background(), "/repo") //nolint:errcheck
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).CurrentBranch(context.Background(), "/repo")
+	})
 }
 
 func TestFakeRevParseReturnsScriptedResult(t *testing.T) {
@@ -36,12 +50,9 @@ func TestFakeRevParseReturnsScriptedResult(t *testing.T) {
 
 func TestFakeRevParsePanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted rev")
-		}
-	}()
-	(&Fake{}).RevParse(context.Background(), "/repo", "HEAD") //nolint:errcheck
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).RevParse(context.Background(), "/repo", "HEAD")
+	})
 }
 
 func TestFakeIsAncestorReturnsScriptedResult(t *testing.T) {
@@ -56,12 +67,9 @@ func TestFakeIsAncestorReturnsScriptedResult(t *testing.T) {
 
 func TestFakeIsAncestorPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted case")
-		}
-	}()
-	(&Fake{}).IsAncestor(context.Background(), "/repo", "base", "head") //nolint:errcheck
+	mustPanic(t, func() {
+		_, _ = (&Fake{}).IsAncestor(context.Background(), "/repo", "base", "head")
+	})
 }
 
 func TestFakeFetchReturnsScriptedError(t *testing.T) {
@@ -75,10 +83,7 @@ func TestFakeFetchReturnsScriptedError(t *testing.T) {
 
 func TestFakeFetchPanicsWhenUnscripted(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for an unscripted remote")
-		}
-	}()
-	(&Fake{}).Fetch(context.Background(), "/repo", "origin") //nolint:errcheck
+	mustPanic(t, func() {
+		_ = (&Fake{}).Fetch(context.Background(), "/repo", "origin")
+	})
 }
