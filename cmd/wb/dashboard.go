@@ -28,9 +28,9 @@ type dashboardCommandDependencies struct {
 	localURL func(context.Context, string) (url string, warning string, err error)
 }
 
-func defaultDashboardCommandDependencies() dashboardCommandDependencies {
+func defaultDashboardCommandDependencies(inv *invocation) dashboardCommandDependencies {
 	return dashboardCommandDependencies{
-		open: openBrowser,
+		open: func(target string) error { return openBrowser(inv.commandRunner(), target) },
 		localURL: func(ctx context.Context, root string) (string, string, error) {
 			result, err := newDaemonController(defaultDaemonDependencies(), root).Start(ctx, daemonDefaultListen)
 			if err != nil {
@@ -46,7 +46,7 @@ func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 }
 
 func newDashboardCmd(inv *invocation) *cobra.Command {
-	return newDashboardCmdWithDependencies(inv, defaultDashboardCommandDependencies())
+	return newDashboardCmdWithDependencies(inv, defaultDashboardCommandDependencies(inv))
 }
 
 func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDependencies) *cobra.Command {

@@ -3,12 +3,16 @@ package main
 import (
 	"fmt"
 	"net/url"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
-func openBrowser(target string) error {
+// openBrowser starts the platform's browser/URL opener for target through r
+// and does not wait for it: it outlives this call exactly as the original
+// exec.Command(...).Start() (never Wait()) did.
+func openBrowser(r runner.Runner, target string) error {
 	resolved, err := browserTarget(target)
 	if err != nil {
 		return err
@@ -17,7 +21,8 @@ func openBrowser(target string) error {
 	if err != nil {
 		return err
 	}
-	return exec.Command(name, args...).Start()
+	_, err = r.Detach("", name, args...)
+	return err
 }
 
 func browserTarget(target string) (string, error) {

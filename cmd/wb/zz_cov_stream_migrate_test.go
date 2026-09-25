@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/migrate"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/streamsync"
@@ -731,10 +734,14 @@ func TestCwCovBrowserTargetAndCommand(t *testing.T) {
 		t.Errorf("unsupported GOOS error = %v", err)
 	}
 
-	// With no launcher on PATH the failure is reported, never swallowed.
-	t.Setenv("PATH", t.TempDir())
-	if err := openBrowser(t.TempDir()); err == nil {
-		t.Error("openBrowser succeeded with no browser launcher on PATH")
+	// A launcher failure to start is reported, never swallowed. Injected via
+	// runnertest.Fake (task-8): openBrowser no longer starts a real process,
+	// so this exercises the same propagation path without touching PATH.
+	launchErr := errors.New("boom")
+	fake := runnertest.New(t)
+	fake.Expect(func(runnertest.Call) bool { return true }, runner.Result{}, launchErr)
+	if err := openBrowser(fake, t.TempDir()); !errors.Is(err, launchErr) {
+		t.Errorf("openBrowser error = %v, want %v", err, launchErr)
 	}
 }
 
