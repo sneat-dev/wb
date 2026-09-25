@@ -39,10 +39,10 @@ func TestCwWtCleanupRetirerReportsUnretiredCandidate(t *testing.T) {
 
 func TestCwWtWorktreeEndDryRunIsNotAFinding(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "gc-cli"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli"); err != nil {
 		t.Fatalf("worktree end dry run: %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "gc-cli", "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json"); err != nil {
 		t.Fatalf("worktree end dry run json: %v", err)
 	}
 }

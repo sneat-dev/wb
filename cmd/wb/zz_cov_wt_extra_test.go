@@ -103,7 +103,7 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 
 	// The json spelling carries the same excluded rows.
 	out.Reset()
-	command = newWorktreeAbortCmd(&invocation{filterFlag: "no-such-repository"})
+	command = newWorktreeAbortCmd(&invocation{projectsRoot: projects, filterFlag: "no-such-repository"})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetOut(&out)
@@ -219,7 +219,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup with residue: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 	}
 
 	// The same residue is a first-class artefact in the json envelope.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup json with residue: %v", err)
 	}

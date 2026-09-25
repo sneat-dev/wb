@@ -208,7 +208,7 @@ func TestCwWtGitStashCaptureAndNotesAndRetirer(t *testing.T) {
 
 func TestCwWtWorktreeEndInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "gc-cli")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("worktree end dry run: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestCwWtWorktreeEndInProcess(t *testing.T) {
 		t.Fatalf("worktree end stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("worktree end json: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestCwWtWorktreeEndInProcess(t *testing.T) {
 	}
 
 	// A task that does not exist is reported as an errfindings-free error.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "absent-task")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "absent-task")
 	if err == nil || !strings.Contains(err.Error(), "has no worktrees") {
 		t.Fatalf("worktree end of an absent task = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCwWtWorktreeEndRefusesLiveLink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, streams.GoWorkFile), []byte("go 1.24\n\nuse ./local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) }, "gc-cli", "--apply")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeEndCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--apply")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("worktree end with a live link exit = %d (%v)\n%s", code, err, stdout)
 	}
