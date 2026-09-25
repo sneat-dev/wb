@@ -16,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/spf13/cobra"
 )
 
 type defaultBranchFailWriter struct {
@@ -3695,4 +3696,27 @@ func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
 func repo(slug string) discover.Repo {
 	owner, name, _ := strings.Cut(slug, "/")
 	return discover.Repo{Org: owner, Name: name}
+}
+
+// TestCwFleetRequestedDefaultBranchOwnersReadsTheRootOrg proves that
+// --org is read from both the command-local selection and, once the root
+// persistent --org was actually set, the invocation's extraOrgs.
+func TestCwFleetRequestedDefaultBranchOwnersReadsTheRootOrg(t *testing.T) {
+	inv := &invocation{}
+	command := newFleetDefaultBranchCmd(inv)
+	if got := requestedDefaultBranchOwners(inv, command, []string{"local"}); len(got) != 1 || got[0] != "local" {
+		t.Fatalf("command-local owners = %v", got)
+	}
+	root := &cobra.Command{Use: "wb"}
+	root.PersistentFlags().StringArray("org", nil, "additional owner")
+	defaultBranch := newFleetDefaultBranchCmd(inv)
+	root.AddCommand(defaultBranch)
+	if err := root.PersistentFlags().Set("org", "root-org"); err != nil {
+		t.Fatal(err)
+	}
+	inv.extraOrgs = []string{"root-org"}
+	got := requestedDefaultBranchOwners(inv, defaultBranch, []string{"local"})
+	if len(got) != 2 || got[1] != "root-org" {
+		t.Fatalf("root owners = %v", got)
+	}
 }

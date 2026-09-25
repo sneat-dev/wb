@@ -185,3 +185,36 @@ func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 		t.Fatalf("--latest without --scope = %v", err)
 	}
 }
+
+// TestCwDepsSetPropagateFleetDelegatesToDepsBump proves that "deps set
+// --propagate --fleet" builds a single exact_set release event from the set
+// target and hands it to the same wave engine as "deps bump", rather than
+// applying the exact-version edit directly.
+func TestCwDepsSetPropagateFleetDelegatesToDepsBump(t *testing.T) {
+	root := cwDepsSetFixture(t)
+
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsSetCmd(&invocation{}) },
+		"go", "github.com/acme/library@v1.2.4", "--fleet", "--propagate", "--dry-run", "--format", "json", "--parallel", "1")
+	if err != nil {
+		t.Fatalf("deps set --propagate --fleet: %v\n%s", err, stdout)
+	}
+	var report struct {
+		Operation  string `json:"operation"`
+		Ecosystem  string `json:"ecosystem"`
+		SeedEvents []struct {
+			Dependency string `json:"dependency"`
+			Version    string `json:"version"`
+			Source     string `json:"source"`
+		} `json:"seed_events"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("deps set --propagate JSON: %v\n%s", err, stdout)
+	}
+	if report.Operation == "" || report.Ecosystem != "go" {
+		t.Fatalf("propagate report = %+v", report)
+	}
+	if len(report.SeedEvents) != 1 || report.SeedEvents[0].Dependency != "github.com/acme/library" ||
+		report.SeedEvents[0].Version != "v1.2.4" || report.SeedEvents[0].Source != "exact_set" {
+		t.Fatalf("propagate seed events = %+v", report.SeedEvents)
+	}
+}

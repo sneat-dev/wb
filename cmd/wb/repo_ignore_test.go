@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // scratchGit runs git in dir and fails the test on error.
@@ -102,5 +105,23 @@ func TestRepoIgnoreAcceptsExplicitPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(elsewhere, ".git")); err == nil {
 		t.Fatal("wb repo ignore initialized a repo in the working directory")
+	}
+}
+
+// TestRepoStatusCommandReportsOneRepositoryInProcess proves that "wb repo
+// status" reaches runRepositoryStatus through the real command tree,
+// threading its invocation into the progress reporter.
+func TestRepoStatusCommandReportsOneRepositoryInProcess(t *testing.T) {
+	dir := scratchRepo(t)
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRepoStatusCmd(&invocation{}) }, dir, "--format", "json")
+	if err != nil {
+		t.Fatalf("wb repo status: %v\n%s", err, stdout)
+	}
+	var report statusIndex
+	if jsonErr := json.Unmarshal([]byte(stdout), &report); jsonErr != nil {
+		t.Fatalf("repo status JSON: %v\n%s", jsonErr, stdout)
+	}
+	if len(report.Repositories) != 1 || report.Repositories[0].Status != "clean" {
+		t.Fatalf("repo status report = %+v", report)
 	}
 }

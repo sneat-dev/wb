@@ -373,6 +373,20 @@ func TestCwCovQualityCommandsInProcess(t *testing.T) {
 		t.Fatalf("verification index = %+v", index)
 	}
 
+	// check runs the named profile's checks over one repository.
+	stdout = cwCovCaptureStdout(t, func() {
+		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newCheckCmd(&invocation{}) }, root, "--profile", "fast", "--format", "json")
+	})
+	if code := exitCodeOf(t, err); code != exitOK {
+		t.Fatalf("check exit = %d\n%s", code, stdout)
+	}
+	if jsonErr := json.Unmarshal([]byte(stdout), &index); jsonErr != nil {
+		t.Fatalf("check JSON: %v\n%s", jsonErr, stdout)
+	}
+	if index.SchemaVersion != 1 || len(index.Repositories) != 1 || index.Profile != "fast" {
+		t.Fatalf("check index = %+v", index)
+	}
+
 	// Usage refusals happen before any check runs.
 	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, root, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {

@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
@@ -666,6 +667,21 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 	}
 	if errOut.String() != "" {
 		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
+// TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress proves that
+// "wb remote publish" wires its production defaultRemoteDeps() and inv through
+// to runRemotePublishWithProgress via the real command tree, not just through
+// direct unit calls to that function: with no wb.yaml configured in this
+// isolated WB_HOME, it surfaces the same named usage error that
+// TestRemotePublishUnconfiguredIsUsageError proves for the direct call.
+func TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress(t *testing.T) {
+	root := t.TempDir()
+	_, _, err := cwCovExec(t, root, func() *cobra.Command { return newRemotePublishCmd(&invocation{}) }, "--dry-run")
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
+		t.Fatalf("err = %v, want the same usage error as an unconfigured direct runRemotePublish call", err)
 	}
 }
 

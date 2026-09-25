@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/streamsync"
+	"github.com/spf13/cobra"
 )
 
 func TestCwCovParseLibraryTargets(t *testing.T) {
@@ -567,6 +568,28 @@ func TestCwCovRunHierarchicalMigrationRefusalsAndCleanup(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(reportDir, name)); err != nil {
 			t.Errorf("campaign report %s was not written: %v", name, err)
 		}
+	}
+}
+
+// TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration
+// proves that "wb migrate --hierarchical" reaches runHierarchicalMigration
+// through the real command tree, not just through direct unit calls.
+func TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "migration.hcl")
+	if err := os.WriteFile(specPath, []byte(cwCovMigrationSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := cwCovMigrationSource(t)
+	githubDir := t.TempDir()
+	t.Setenv("WB_HOME", t.TempDir())
+
+	_, stderr, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newMigrateCmd(&invocation{}) },
+		specPath, root, "--hierarchical", "--cleanup", "--github-dir", githubDir)
+	if err == nil {
+		t.Fatal("--hierarchical --cleanup with a source root must be refused")
+	}
+	if exitCodeOf(t, err) != exitUsage {
+		t.Fatalf("exit code = %v, want exitUsage\nstderr: %s", err, stderr)
 	}
 }
 
