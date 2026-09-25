@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // These tests exercise the ambient-state isolation described in
@@ -94,6 +96,13 @@ func TestGoCheckKeepsWorkspaceModeWhenRepositoryTracksOwnGoWork(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	// commandEnv reaches envguard.GoEnvOverrides, which since task-15's
+	// exec-site migration drives real git through internal/runner.Real:
+	// task-24's runtime guard now applies, and this test genuinely needs a
+	// real git repository to prove workspace mode survives a real HEAD
+	// commit -- there is no fake to substitute for "the repository's own
+	// go.work is committed and unchanged".
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	t.Setenv("GOWORK", "")
 	t.Setenv("TMPDIR", filepath.Join(root, "tmp"))
