@@ -101,10 +101,66 @@ func TestMain(m *testing.M) {
 	}
 	testIsolatedQueueDir = queueDir
 	restoreQueueRoot := runqueue.SetQueueRootForTest(fromRoot, queueDir)
+	// #751: snapshot wb-smoke-* directories that already exist under
+	// os.TempDir() before this test binary runs anything, so the check
+	// below (after cleanup) only ever flags a directory THIS run created
+	// and failed to remove -- never one left by a stale prior run, nor one
+	// a genuinely concurrent second cmd/wb test binary on this shared VM is
+	// still building into right now (this VM allows up to 2 concurrent Go
+	// lanes; a naive whole-TempDir scan would false-positive on that).
+	preexistingSmokeDirs := wbSmokeDirs()
 	code := m.Run()
 	restoreQueueRoot()
 	_ = os.RemoveAll(queueDir)
+	// cli_smoke_test.go's buildWB compiles the real `wb` binary once per
+	// test binary run into its own os.MkdirTemp("", "wb-smoke-") directory;
+	// smokeBuildDir records that path (empty if no smoke test in this run
+	// ever called buildWB) so it can be removed here, the same way queueDir
+	// is, rather than left behind holding a full built binary (tens of MB;
+	// 161 had built up on the shared dev VM, reaching 91% disk usage).
+	if smokeBuildDir != "" {
+		_ = os.RemoveAll(smokeBuildDir)
+	}
+	if leaked := newWBSmokeDirs(preexistingSmokeDirs); len(leaked) > 0 {
+		fmt.Fprintf(os.Stderr, "fatal: %d wb-smoke-* director(y/ies) this run created are still present under %s after cleanup: %v\n", len(leaked), os.TempDir(), leaked)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
+}
+
+// wbSmokeDirs lists every "wb-smoke-*" directory currently present directly
+// under os.TempDir().
+func wbSmokeDirs() map[string]bool {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return nil
+	}
+	found := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "wb-smoke-") {
+			found[entry.Name()] = true
+		}
+	}
+	return found
+}
+
+// newWBSmokeDirs lists every "wb-smoke-*" directory present now that was not
+// in preexisting, i.e. one this test binary's own run created (via
+// cli_smoke_test.go's buildWB) and left behind despite TestMain's cleanup
+// above. It exists purely so a regression that starts leaking these again
+// (a second call site, a changed prefix, a RemoveAll that silently no-ops)
+// fails this test binary loudly instead of quietly rebuilding the
+// disk-usage incident #751 fixed.
+func newWBSmokeDirs(preexisting map[string]bool) []string {
+	var leaked []string
+	for name := range wbSmokeDirs() {
+		if !preexisting[name] {
+			leaked = append(leaked, filepath.Join(os.TempDir(), name))
+		}
+	}
+	return leaked
 }
 
 // TestTestMainIsolatesTheDefaultProjectsRootFromTheRealMachineQueue pins
