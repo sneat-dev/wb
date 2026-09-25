@@ -41,15 +41,19 @@ func AllowRealProcess(t testing.TB) {
 	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "1")
 }
 
-// Call records one Run/RunWithInput/Start/Detach/Interactive invocation the
-// Fake received.
+// Call records one Run/RunWithInput/RunOpts/Start/Detach/Interactive
+// invocation the Fake received.
 type Call struct {
-	Op   string // "Run", "RunWithInput", "Start", "Detach" or "Interactive"
+	Op   string // "Run", "RunWithInput", "RunOpts", "Start", "Detach" or "Interactive"
 	Dir  string
 	Name string
 	Args []string
-	// Input is the stdin RunWithInput was given. Empty for every other Op.
+	// Input is the stdin RunWithInput was given, or opts.Stdin for RunOpts.
+	// Empty for every other Op.
 	Input []byte
+	// Opts is the RunOptions a RunOpts call was given. Zero value for every
+	// other Op.
+	Opts runner.RunOptions
 }
 
 // Argv is Name followed by Args, the shape Expect's matcher predicates
@@ -183,6 +187,13 @@ func (f *Fake) Run(_ context.Context, dir, name string, args ...string) (runner.
 // match function alongside the argv.
 func (f *Fake) RunWithInput(_ context.Context, dir string, input []byte, name string, args ...string) (runner.Result, error) {
 	return f.answer(Call{Op: "RunWithInput", Dir: dir, Name: name, Args: args, Input: input})
+}
+
+// RunOpts implements runner.Runner. opts is recorded on Call.Opts (and its
+// Stdin duplicated onto Call.Input alongside RunWithInput's), so a test can
+// assert on the environment/stdin/WaitDelay a call was given.
+func (f *Fake) RunOpts(_ context.Context, dir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	return f.answer(Call{Op: "RunOpts", Dir: dir, Name: name, Args: args, Input: opts.Stdin, Opts: opts})
 }
 
 // Start implements runner.Runner. The returned Handle's Wait replays the
