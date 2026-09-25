@@ -413,6 +413,34 @@ func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	}
 }
 
+// TestCwDepsPreflightNpmPublishApplyRevalidatesTheBumpAfterResumeLookup
+// proves preflight's second, post-report-dir bump revalidation (which runs
+// only under --apply, after the resume/bump-previous lookups have had a
+// chance to populate prepared.bumpPrevious) is itself reached and passes,
+// not just the earlier pre-report-dir validation that runs unconditionally.
+// Without --apply the two later blocks never execute at all.
+func TestCwDepsPreflightNpmPublishApplyRevalidatesTheBumpAfterResumeLookup(t *testing.T) {
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	projectsRoot := t.TempDir()
+
+	options := cwDepsPublishOptionsFixture()
+	options.fleet = true
+	options.maxWaves = 1
+	options.apply = true
+	prepared, err := preflightNpmPublishWithDiscovery(&invocation{projectsRoot: projectsRoot}, options, func(_ *invocation, _ []string, _ depsSetOptions) ([]deps.Repository, error) {
+		return []deps.Repository{{Slug: "acme/consumer", Path: filepath.Join(projectsRoot, "acme", "consumer")}}, nil
+	})
+	if err != nil {
+		t.Fatalf("apply preflight: %v", err)
+	}
+	if prepared.bumpPrevious != nil {
+		t.Errorf("prepared.bumpPrevious = %+v, want nil without --resume", prepared.bumpPrevious)
+	}
+	if prepared.reportDir == "" {
+		t.Fatalf("prepared = %+v", prepared)
+	}
+}
+
 // cwDepsWorkflowRunFixture renders the exact gh run list/view JSON shape
 // npmrelease.Run decodes, mirroring internal/npmrelease's own workflowRunFixture.
 func cwDepsWorkflowRunFixture(id, status, conclusion string, headSHA string, created time.Time) string {
