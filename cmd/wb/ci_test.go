@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -74,6 +75,26 @@ func TestAuditReportsPropagatesComparatorError(t *testing.T) {
 	}
 	if reports != nil {
 		t.Fatalf("reports = %+v, want nil on error", reports)
+	}
+}
+
+// TestRunCIAuditPropagatesAuditError covers cmd/wb/ci.go:305 and :343:
+// runCIAudit's explicit (non-fleet) path is handed straight to auditReports,
+// and when ciaudit.Audit cannot walk that path (here: it does not exist)
+// runCIAudit must surface exit code 1 and the underlying error rather than
+// swallow it. No --target is set, so ciaudit.CompareAgainstTarget is never
+// reached and this stays free of git.
+func TestRunCIAuditPropagatesAuditError(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	code, err := runCIAudit(missing, "", "", "", false, false, false)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("err = %v, want fs.ErrNotExist", err)
 	}
 }
 
