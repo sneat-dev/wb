@@ -71,7 +71,7 @@ cmd/wb/zz_cov_wt_end_retire_test.go	1	task-22
 cmd/wb/zz_cov_wt_end_test.go	2	task-22
 cmd/wb/zz_cov_wt_guard_test.go	3	task-22
 cmd/wb/zz_cov_wt_helpers_test.go	5	task-22
-cmd/wb/zz_cov_wt_marker_test.go	4	task-22
+cmd/wb/zz_cov_wt_marker_test.go	2	task-22
 cmd/wb/zz_cov_wt_merge_test.go	25	task-22
 internal/agentguard/agentguard_test.go	11	task-15
 internal/agentguard/autotags_test.go	1	task-15
