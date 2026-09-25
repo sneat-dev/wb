@@ -16,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -1265,15 +1266,24 @@ func updateManifestClone(manifest *migrationManifest, outcome MigrateClone, now 
 // reader — or a process crash mid-write — never observes a half-written
 // manifest.
 func writeManifest(path string, manifest *migrationManifest) error {
+	return writeManifestInjected(path, manifest, nil)
+}
+
+// writeManifestInjected is writeManifest's test seam (task-9 PR-8): every
+// production call site reaches it only through writeManifest, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the write/rename failure branches
+// deterministically.
+func writeManifestInjected(path string, manifest *migrationManifest, inj *filewrite.Injector) error {
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
 	temp := path + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if err := os.WriteFile(temp, append(raw, '\n'), 0o644); err != nil {
+	if err := filewrite.WriteFile(temp, append(raw, '\n'), 0o644, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temp, path); err != nil {
+	if err := filewrite.Rename(temp, path, inj); err != nil {
 		_ = os.Remove(temp)
 		return err
 	}

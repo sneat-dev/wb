@@ -241,8 +241,12 @@ Pass --target <branch> to additionally compare every numeric
 min_test_coverage_percent against the same workflow file on the fetched
 target branch (lesson l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit):
 a threshold lower here than on the target is a coverage-floor-lowered
-finding. This is a no-op when the current branch already equals --target, and
-fetches origin/<target> (the one place this command is not read-only).`,
+finding. It also compares internal/quality/testdata/unit_tier.pending's
+grand total against the target's committed copy (spec/plans/coverage-to-100
+task-24): a rise is a unit-tier-pending-total-rose finding unless this PR
+shrinks other entries by at least as much. Both comparisons are a no-op when
+the current branch already equals --target, and fetch origin/<target> (the
+one place this command is not read-only).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
@@ -264,7 +268,7 @@ fetches origin/<target> (the one place this command is not read-only).`,
 	}
 	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
-	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors against this fetched target branch")
+	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors and the unit-tier pending total against this fetched target branch")
 	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
@@ -296,32 +300,10 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 		}
 	}
 
-	reports := make([]ciaudit.Report, 0, len(paths))
-	for _, repoPath := range paths {
-		absolute, err := filepath.Abs(repoPath)
-		if err != nil {
-			return 1, err
-		}
-		report, err := ciaudit.Audit(absolute)
-		if err != nil {
-			return 1, err
-		}
-		if target != "" {
-			targetFindings, err := ciaudit.CompareCoverageFloors(absolute, target)
-			if err != nil {
-				return 1, err
-			}
-			report.Findings = append(report.Findings, targetFindings...)
-			sort.Slice(report.Findings, func(i, j int) bool {
-				if report.Findings[i].Code == report.Findings[j].Code {
-					return report.Findings[i].File < report.Findings[j].File
-				}
-				return report.Findings[i].Code < report.Findings[j].Code
-			})
-		}
-		reports = append(reports, report)
+	reports, err := auditReports(paths, target, ciaudit.CompareAgainstTarget)
+	if err != nil {
+		return 1, err
 	}
-	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
 
 	if jsonOut {
 		encoder := json.NewEncoder(os.Stdout)
@@ -341,6 +323,42 @@ func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bo
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// auditReports runs ciaudit.Audit over every path and, when target is
+// non-empty, folds in compareAgainstTarget's findings for that path, sorted
+// alongside Audit's own. runCIAudit always calls this with
+// ciaudit.CompareAgainstTarget; compareAgainstTarget is a parameter, not a
+// package-level seam, so a test can swap in a fake without adding
+// package-level mutable state to cmd/wb.
+func auditReports(paths []string, target string, compareAgainstTarget func(root, target string) ([]ciaudit.Finding, error)) ([]ciaudit.Report, error) {
+	reports := make([]ciaudit.Report, 0, len(paths))
+	for _, repoPath := range paths {
+		absolute, err := filepath.Abs(repoPath)
+		if err != nil {
+			return nil, err
+		}
+		report, err := ciaudit.Audit(absolute)
+		if err != nil {
+			return nil, err
+		}
+		if target != "" {
+			targetFindings, err := compareAgainstTarget(absolute, target)
+			if err != nil {
+				return nil, err
+			}
+			report.Findings = append(report.Findings, targetFindings...)
+			sort.Slice(report.Findings, func(i, j int) bool {
+				if report.Findings[i].Code == report.Findings[j].Code {
+					return report.Findings[i].File < report.Findings[j].File
+				}
+				return report.Findings[i].Code < report.Findings[j].Code
+			})
+		}
+		reports = append(reports, report)
+	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
+	return reports, nil
 }
 
 func printCIAudit(reports []ciaudit.Report) {

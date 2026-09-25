@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 var fullGitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -252,7 +254,16 @@ func comparableDowngrade(before, target string) bool {
 }
 
 func writeAtomic(path string, contents []byte, mode os.FileMode) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".wb-deps-*")
+	return writeAtomicInjected(path, contents, mode, nil)
+}
+
+// writeAtomicInjected is writeAtomic's test seam (task-9 PR-8): every
+// production call site reaches it only through writeAtomic, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged.
+// A test passes its own Injector to reach the create/write/chmod/close/
+// rename failure branches deterministically.
+func writeAtomicInjected(path string, contents []byte, mode os.FileMode, inj *filewrite.Injector) error {
+	file, err := filewrite.CreateTemp(filepath.Dir(path), ".wb-deps-*", inj)
 	if err != nil {
 		return err
 	}
@@ -263,18 +274,18 @@ func writeAtomic(path string, contents []byte, mode os.FileMode) error {
 			_ = os.Remove(temporary)
 		}
 	}()
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
+	if err := filewrite.Write(file, contents, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return err
 	}
-	if err := file.Chmod(mode.Perm()); err != nil {
-		_ = file.Close()
+	if err := filewrite.ChmodFile(file, mode.Perm(), temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return err
 	}
 	remove = false

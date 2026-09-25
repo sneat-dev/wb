@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"gopkg.in/yaml.v3"
 )
 
@@ -101,6 +102,15 @@ func isLoopbackPeersHost(host string) bool {
 // to be identical — before the staged file is ever renamed into place. Any
 // mismatch refuses and leaves the original file untouched.
 func SetPeersUpstream(path, hubURL, tokenFile string) error {
+	return setPeersUpstreamInjected(path, hubURL, tokenFile, nil)
+}
+
+// setPeersUpstreamInjected is SetPeersUpstream's test seam (task-9 PR-8):
+// every production call site reaches it only through SetPeersUpstream, which
+// always passes a nil *filewrite.Injector, so production behaviour is
+// unchanged. A test passes its own Injector to reach the create/chmod/
+// write/sync/close/rename failure branches deterministically.
+func setPeersUpstreamInjected(path, hubURL, tokenFile string, inj *filewrite.Injector) error {
 	if err := validatePeersUpstreamURL(hubURL); err != nil {
 		return fmt.Errorf("peers.upstream.url: %w", err)
 	}
@@ -130,28 +140,28 @@ func SetPeersUpstream(path, hubURL, tokenFile string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".wb-config-*.yaml")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".wb-config-*.yaml", inj)
 	if err != nil {
 		return fmt.Errorf("stage config: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("protect staged config: %w", err)
 	}
-	if _, err := temporary.WriteString(updated); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, []byte(updated), temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("write config: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("sync config: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return fmt.Errorf("close config: %w", err)
 	}
-	if err := os.Rename(temporaryName, path); err != nil {
+	if err := filewrite.Rename(temporaryName, path, inj); err != nil {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil

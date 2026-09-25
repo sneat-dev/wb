@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -434,15 +435,24 @@ func readRecord(path string) (Record, bool, error) {
 }
 
 func writeRecord(path string, record Record) error {
+	return writeRecordInjected(path, record, nil)
+}
+
+// writeRecordInjected is writeRecord's test seam (task-9 PR-8): every
+// production call site reaches it only through writeRecord, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the write/rename failure branches
+// deterministically.
+func writeRecordInjected(path string, record Record, inj *filewrite.Injector) error {
 	encoded, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode landing lane record: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, 0o600); err != nil {
+	if err := filewrite.WriteFile(tmp, encoded, 0o600, inj); err != nil {
 		return fmt.Errorf("write landing lane record: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := filewrite.Rename(tmp, path, inj); err != nil {
 		return fmt.Errorf("commit landing lane record: %w", err)
 	}
 	return nil

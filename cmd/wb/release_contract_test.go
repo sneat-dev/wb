@@ -180,9 +180,9 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
-	for _, name := range []string{"source", "static", "lint", "race"} {
+	for _, name := range []string{"source", "static", "lint", "race", "e2e"} {
 		job, ok := jobs[name].(map[string]any)
 		if !ok {
 			t.Fatalf("validation job %s missing", name)
@@ -521,8 +521,8 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal("required check must only summarize the validation results")
 	}
 	step := steps[0]
-	if len(step.Env) != 13 {
-		t.Fatalf("summary receives %d environment values, want the thirteen event/eligibility/reuse/scope/contract/validation/Windows values", len(step.Env))
+	if len(step.Env) != 14 {
+		t.Fatalf("summary receives %d environment values, want the fourteen event/eligibility/reuse/scope/contract/validation/e2e/Windows values", len(step.Env))
 	}
 	runValues := func(values map[string]string) error {
 		cmd := exec.Command("sh", "-c", step.Run)
@@ -580,6 +580,7 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"LINT_RESULT":        "skipped",
 			"COVERAGE_RESULT":    "success",
 			"RACE_RESULT":        "skipped",
+			"E2E_RESULT":         "skipped",
 			"WINDOWS_RESULT":     "skipped",
 		}
 		if err := runValues(values); err != nil {
@@ -603,6 +604,7 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"LINT_RESULT":        "skipped",
 			"COVERAGE_RESULT":    "skipped",
 			"RACE_RESULT":        "skipped",
+			"E2E_RESULT":         "skipped",
 			"WINDOWS_RESULT":     "skipped",
 		}
 		if err := runValues(values); err == nil {
@@ -623,6 +625,7 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"LINT_RESULT":     "skipped",
 			"COVERAGE_RESULT": "skipped",
 			"RACE_RESULT":     "skipped",
+			"E2E_RESULT":      "skipped",
 			"WINDOWS_RESULT":  "skipped",
 			"CONTRACT_RESULT": contractResult,
 		}

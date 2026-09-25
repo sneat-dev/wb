@@ -113,60 +113,37 @@ import (
 // through internal/filewrite. Every entry names the task-9 PR that will
 // migrate it; that PR removes the entry in the same commit it lands.
 var PendingMigrationExemptions = map[string]string{
-	"internal/sessionlaunch/state.go:publishLaunchArtifact": "PR-7: session-and-lifecycle -- link-based immutable publish",
-
 	// internal/execfile predates task-9's filewrite consolidation (added by
 	// task-21/#739) and is exactly PR-8's own shape: a path-based
-	// CreateTemp+chmod+Rename publish with no sync call. It slots into the
-	// existing PR-8 misc-atomic-writers batch alongside the other 23
-	// entries below, not a separate series. PR-8's migration of this site
-	// must keep syscall.ForkLock.RLock held for the temp fd's whole open
-	// lifetime (see execfile.go's WriteExecutableFile doc comment for why:
+	// CreateTemp+chmod+Rename publish with no sync call. It was deliberately
+	// held back out of PR-8's misc-atomic-writers batch (which migrated the
+	// other 23 entries this comment used to list): its
+	// createTempExecutableFile/renameExecutableFile package-var test-seam
+	// abstraction is a *tempExecutableFile interface, not filewrite's
+	// *os.File-only primitives, so migrating it needs a deliberate seam
+	// redesign of its own rather than the same-shaped swap PR-8's other 23
+	// sites got. Its migration must also keep
+	// syscall.ForkLock.RLock held for the temp fd's whole open lifetime
+	// (see execfile.go's WriteExecutableFile doc comment for why:
 	// golang/go#22315) -- internal/filewrite has no such option today, so
-	// PR-8 must either add one or keep the RLock in the caller.
-	"internal/execfile/execfile.go:WriteExecutableFile": "PR-8: misc-atomic-writers -- path-based CreateTemp+chmod+Rename, no sync; migration must keep syscall.ForkLock.RLock held across the temp file's open lifetime",
+	// that future pass must either add one or keep the RLock in the caller.
+	"internal/execfile/execfile.go:WriteExecutableFile": "PR-10 (deferred from PR-8): misc-atomic-writers -- path-based CreateTemp+chmod+Rename, no sync; the tempExecutableFile interface seam and syscall.ForkLock.RLock discipline need a dedicated migration pass, not a careless one alongside PR-8's other 23 sites",
 
 	// Category A: os.CreateTemp/os.OpenFile/os.WriteFile + os.Rename, all
 	// in the same function (spec/plans/coverage-to-100 task-9 PR-1 review,
-	// B1 inventory items 1-47).
-	"internal/agents/run.go:Store.Save":                               "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
-	"internal/archiveprune/untracked.go:overwriteArchiveCleanReceipt": "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
-	"internal/checkoutmarker/checkoutmarker.go:writeFileAtomically":   "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/daemon/lifecycle.go:Store.Save":                         "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
-	"internal/daemon/service.go:Service.persistRecord":                "PR-7: session-and-lifecycle -- OpenFile+sync+Rename",
-	"internal/deps/github_actions.go:writeAtomic":                     "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/discover/local_index.go:writeLocalIndex":                "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/fleetsync/receipt.go:overwriteRemovalReceipt":           "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/githubobserver/observer.go:writeCacheEntry":             "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/landinglane/landinglane.go:writeRecord":                 "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
-	"internal/layout/migrate.go:writeManifest":                        "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
-	"internal/lifecyclehooks/gc.go:rewriteReceiptRecords":             "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
-	"internal/lifecyclehooks/queue.go:writeJSONAtomic":                "PR-8: misc-atomic-writers -- CreateTemp+chmod+sync+Rename",
-	"internal/mergeack/mergeack.go:Persist":                           "PR-7: session-and-lifecycle -- CreateTemp+chmod+sync+Rename",
-	"internal/migrate/engine.go:Apply":                                "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/npmrelease/release.go:writeAtomic":                      "PR-8: misc-atomic-writers -- CreateTemp+chmod+Rename",
-	"internal/repositoryevents/queue.go:Queue.persist":                "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/repositoryevents/receiver.go:CursorStore.saveState":     "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/runqueue/visibility.go:atomicWriteFile":                 "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/streams/store.go:Store.writeAtomically":                 "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/waitregistry/registry.go:Register":                      "PR-8: misc-atomic-writers -- WriteFile-to-temp+Rename",
-	"internal/wbconfig/peers.go:SetPeersUpstream":                     "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-	"internal/wbconfig/remote.go:SetRemoteHub":                        "PR-8: misc-atomic-writers -- CreateTemp-based publish",
-
-	// Category B: publish through a package-level os.Link alias, or the
-	// write and the publish split across functions (review items 48-56).
-	"internal/nodeidentity/nodeidentity.go:publishNodeID":       "PR-7: session-and-lifecycle -- publishes via os.Link; its temp-file half writeNodeIDTempFile migrates in the same PR",
-	"internal/nodeidentity/nodeidentity.go:writeNodeIDTempFile": "PR-7: session-and-lifecycle -- CreateTemp+chmod+write+sync via package-var seams fileChmod/fileWriteString/fileSync/fileClose, escapes the OpenFile content-write gate; migrates with publishNodeID",
+	// B1 inventory items 1-47). Every entry this category used to list is
+	// now migrated: PR-7's session-and-lifecycle sites (landed upstream
+	// while this PR-8 branch was in flight) and PR-8's misc-atomic-writers
+	// sites (this commit) both route through internal/filewrite now.
 
 	// Category C: create-exclusive, write, sync, no publish -- the
 	// write-once-immutable shape (review items 57-63, plus writeOneTimeToken
 	// and MarkParked found while regenerating this inventory against the
 	// call-based detector). PR-1 migrated this shape for sessionpark only.
-	"internal/retiredcandidateack/ack.go:Persist":              "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
-	"internal/session/session.go:MarkParked":                   "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once (parked lifecycle marker)",
-	"internal/session/session.go:MarkResumed":                  "PR-7: session-and-lifecycle -- OpenFile O_EXCL write-once",
-	"internal/locallink/execports.go:ExecNode.Link":            "PR-8: misc-atomic-writers -- two OpenFile O_CREATE|O_EXCL write-once marker/backup writes ahead of a rename; not rename-only, unlike ExecNode.Unlink",
-	"internal/locallink/execports.go:copyBuiltPackageContents": "PR-8: misc-atomic-writers -- OpenFile O_EXCL write-once (copy via io.Copy)",
+	// Every entry this category used to list is now migrated: PR-7's
+	// session-and-lifecycle sites (landed upstream while this PR-8 branch
+	// was in flight) and PR-8's ExecNode.Link/copyBuiltPackageContents
+	// (this commit) both route through internal/filewrite now.
 
 	// Category D (round 2): create-only scratch/name-reservation temp
 	// files -- created, immediately closed (some also removed) and never
@@ -209,8 +186,6 @@ var PendingMigrationExemptions = map[string]string{
 	// appends content of its own (ExecGit.ExcludePath) is not rename-only,
 	// and moving a git exclude file is not a durable log either -- neither
 	// belongs on the permanent list (round-3 review, B2/N1).
-	"internal/lifecyclehooks/queue.go:Dispatcher.quarantineFile": "PR-8: misc-atomic-writers -- renames the quarantined file, then os.WriteFile's a \".reason.txt\" sidecar of its own -- not rename-only",
-	"internal/locallink/execports.go:ExecGit.ExcludePath":        "PR-8: misc-atomic-writers -- O_APPEND write to a git exclude file; not a durable log, so not permanent-list append-only",
 }
 
 // NotAFileWritePublishExemptions lists "relative/path.go:FuncName" (or
@@ -232,6 +207,7 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatch":                   "renames a queue job's state directory to claim it; not a file write",
 	"internal/streams/store.go:Store.archiveLocked":                            "renames a stream's directory into an archive location; not a file write",
 	"internal/locallink/execports.go:ExecNode.Unlink":                          "renames an existing backup directory back into place; not a temp-file write",
+	"internal/locallink/execports.go:ExecNode.linkInjected":                    "renames/moves the previously-installed package aside and swaps in the staged replacement; task-9 PR-8 extracted its two content writes (the pending marker and the symlink backup) into writeLinkPendingMarker and writeLinkSymlinkBackup, which route through internal/filewrite -- linkInjected itself now only renames, removes, and symlinks",
 	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":           "renames a request file into a quarantine directory; not a write publish",
 	"internal/worktrees/worktrees.go:moveExpectedDirectoryNoReplaceAuthorized": "moves a worktree directory after an identity check; not a file write",
 	"internal/worktrees/worktrees.go:moveExpectedLockNoReplace":                "moves a lock file after an identity check, without writing new content; not a file write",

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -83,29 +84,39 @@ func removalReceiptName(receipt RemovalReceipt) string {
 // receipt is worse than none: it is the only record that a clone existed, and
 // it is read by a human reconstructing what happened after the fact.
 func overwriteRemovalReceipt(path string, receipt RemovalReceipt) error {
+	return overwriteRemovalReceiptInjected(path, receipt, nil)
+}
+
+// overwriteRemovalReceiptInjected is overwriteRemovalReceipt's test seam
+// (task-9 PR-8): every production call site reaches it only through
+// overwriteRemovalReceipt, which always passes a nil *filewrite.Injector,
+// so production behaviour is unchanged. A test passes its own Injector to
+// reach the create/write/close/chmod/rename failure branches
+// deterministically.
+func overwriteRemovalReceiptInjected(path string, receipt RemovalReceipt, inj *filewrite.Injector) error {
 	raw, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode prune receipt: %w", err)
 	}
 	raw = append(raw, '\n')
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".prune-receipt-*")
+	temporary, err := filewrite.CreateTemp(directory, ".prune-receipt-*", inj)
 	if err != nil {
 		return fmt.Errorf("stage prune receipt: %w", err)
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if _, err := temporary.Write(raw); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, raw, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return fmt.Errorf("close %s: %w", name, err)
 	}
-	if err := os.Chmod(name, 0o600); err != nil {
+	if err := filewrite.ChmodPath(name, 0o600, inj); err != nil {
 		return fmt.Errorf("set permissions on %s: %w", name, err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := filewrite.Rename(name, path, inj); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil
