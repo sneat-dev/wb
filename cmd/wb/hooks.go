@@ -16,24 +16,24 @@ import (
 	"github.com/sneat-dev/wb/internal/hooks"
 )
 
-func newHooksCmd() *cobra.Command {
+func newHooksCmd(inv *invocation) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hooks",
 		Short: "Install, validate, run, and measure user-owned Git hooks",
 	}
-	cmd.AddCommand(newHooksInstallCmd(false))
-	cmd.AddCommand(newHooksCheckCmd())
-	cmd.AddCommand(newHooksInstallCmd(true))
+	cmd.AddCommand(newHooksInstallCmd(inv, false))
+	cmd.AddCommand(newHooksCheckCmd(inv))
+	cmd.AddCommand(newHooksInstallCmd(inv, true))
 	cmd.AddCommand(newHooksRunCmd())
 	cmd.AddCommand(newHooksAgentCmd())
 	cmd.AddCommand(newHooksMetricsCmd())
 	cmd.AddCommand(newHooksMeasureCmd())
 	cmd.AddCommand(newHooksPushTierCmd())
-	cmd.AddCommand(newHooksLifecycleCmd())
+	cmd.AddCommand(newHooksLifecycleCmd(inv))
 	return cmd
 }
 
-func newHooksInstallCmd(repair bool) *cobra.Command {
+func newHooksInstallCmd(inv *invocation, repair bool) *cobra.Command {
 	var (
 		configPath string
 		force      bool
@@ -66,7 +66,7 @@ reject relative, repository-local, non-regular, or non-executable results.`,
 				if len(args) > 0 {
 					return fmt.Errorf("repository-path cannot be used with --fleet")
 				}
-				return applyHooksFleet(cmd, configPath, repair, force)
+				return applyHooksFleet(inv, cmd, configPath, repair, force)
 			}
 			repoPath := argumentOrCurrent(args)
 			result, err := hooks.Apply(hooks.ApplyOptions{
@@ -104,7 +104,7 @@ reject relative, repository-local, non-regular, or non-executable results.`,
 	return cmd
 }
 
-func newHooksCheckCmd() *cobra.Command {
+func newHooksCheckCmd(inv *invocation) *cobra.Command {
 	var (
 		configPath string
 		jsonOut    bool
@@ -120,7 +120,7 @@ func newHooksCheckCmd() *cobra.Command {
 				if len(args) > 0 {
 					return fmt.Errorf("repository-path cannot be used with --fleet")
 				}
-				return checkHooksFleet(cmd, configPath, jsonOut)
+				return checkHooksFleet(inv, cmd, configPath, jsonOut)
 			}
 			report, err := hooks.Check(argumentOrCurrent(args), configPath, hookExecutable(), projectsRoot)
 			if err != nil {
@@ -149,8 +149,8 @@ func newHooksCheckCmd() *cobra.Command {
 	return cmd
 }
 
-func applyHooksFleet(cmd *cobra.Command, configPath string, repair, force bool) error {
-	repos, err := localHookRepos(projectsRoot, filterFlag)
+func applyHooksFleet(inv *invocation, cmd *cobra.Command, configPath string, repair, force bool) error {
+	repos, err := localHookRepos(projectsRoot, inv.filterFlag)
 	if err != nil {
 		return err
 	}
@@ -198,8 +198,8 @@ type fleetHooksCheck struct {
 	Error      string             `json:"error,omitempty"`
 }
 
-func checkHooksFleet(cmd *cobra.Command, configPath string, jsonOut bool) error {
-	repos, err := localHookRepos(projectsRoot, filterFlag)
+func checkHooksFleet(inv *invocation, cmd *cobra.Command, configPath string, jsonOut bool) error {
+	repos, err := localHookRepos(projectsRoot, inv.filterFlag)
 	if err != nil {
 		return err
 	}

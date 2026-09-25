@@ -239,7 +239,7 @@ func TestCwCovSplitCommaSeparated(t *testing.T) {
 }
 
 func TestCwCovPrintBranchListAndDispositionTotals(t *testing.T) {
-	command := newBranchListCmd()
+	command := newBranchListCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 
@@ -289,7 +289,7 @@ func TestCwCovPrintBranchListAndDispositionTotals(t *testing.T) {
 }
 
 func TestCwCovPrintBranchCleanup(t *testing.T) {
-	command := newBranchCleanupCmd()
+	command := newBranchCleanupCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	outcome := worktrees.BranchCleanupOutcome{

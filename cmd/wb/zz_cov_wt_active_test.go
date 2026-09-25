@@ -365,7 +365,7 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 	// Default dependencies against an empty root.
 	projects := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projects)
-	stdout, _, err := cwCovExec(t, projects, newWorktreeActiveCmd, "--local-only")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--local-only")
 	if err != nil {
 		t.Fatalf("active --local-only: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 		t.Fatalf("active text stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeActiveCmd, "--format", "json", "--local-only")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--format", "json", "--local-only")
 	if err != nil {
 		t.Fatalf("active json: %v", err)
 	}
@@ -382,12 +382,12 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 	}
 
 	// Without a configured remote the preflight is incomplete: exit 1.
-	_, _, err = cwCovExec(t, projects, newWorktreeActiveCmd)
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("active without a remote exit = %d (%v)", code, err)
 	}
 
-	if _, _, err := cwCovExec(t, projects, newWorktreeActiveCmd, "--format", "bogus"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{}) }, "--format", "bogus"); err == nil {
 		t.Fatal("active with a bogus format must fail")
 	}
 }
@@ -400,7 +400,7 @@ func TestCwWtWorktreeActiveCmdWithDepsIncompleteIsFindings(t *testing.T) {
 		func(string) ([]session.View, error) { return nil, nil },
 		cwWtRemoteDeps(t, "me", nil, &cwWtFakeProvider{}, nil, time.Now().UTC()),
 	)
-	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(deps) })
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(&invocation{}, deps) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("active with an omitted local claim exit = %d (%v)\n%s", code, err, stdout)
 	}
@@ -409,7 +409,7 @@ func TestCwWtWorktreeActiveCmdWithDepsIncompleteIsFindings(t *testing.T) {
 	}
 
 	// The same report in json reaches the encoder instead.
-	stdout, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(deps) }, "--format", "json")
+	stdout, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(&invocation{}, deps) }, "--format", "json")
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("active json exit = %d (%v)", code, err)
 	}

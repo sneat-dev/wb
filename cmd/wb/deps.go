@@ -938,13 +938,13 @@ func dependencyRepositories(inv *invocation, args []string, options depsSetOptio
 		if !matchesDependencyRepository(slug, options.match, expression) {
 			return nil, fmt.Errorf("repository %s does not match selected filters", slug)
 		}
-		if filterFlag != "" && !strings.Contains(slug, filterFlag) {
-			return nil, fmt.Errorf("repository %s does not match --filter %q", slug, filterFlag)
+		if inv.filterFlag != "" && !strings.Contains(slug, inv.filterFlag) {
+			return nil, fmt.Errorf("repository %s does not match --filter %q", slug, inv.filterFlag)
 		}
 		progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", Repository: slug, State: progress.Completed, Completed: 1, Total: 1})
 		return []deps.Repository{{Slug: slug, Path: absolute, CloneURL: cloneURL}}, nil
 	}
-	selected, err := fleet(projectsRoot, filterFlag, func() []string { return fleetOwners(inv.extraOrgs) })
+	selected, err := fleet(projectsRoot, inv.filterFlag, func() []string { return fleetOwners(inv.extraOrgs) })
 	if err != nil {
 		return nil, err
 	}

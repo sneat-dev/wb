@@ -75,7 +75,7 @@ func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T
 			t.Fatalf("correct-identity is missing --%s", flag)
 		}
 	}
-	abort := newWorktreeAbortCmd()
+	abort := newWorktreeAbortCmd(&invocation{})
 	for _, flag := range []string{"model", "cli", "provider", "absorbed-by"} {
 		if abort.Flags().Lookup(flag) == nil {
 			t.Fatalf("abort is missing --%s", flag)
@@ -215,7 +215,7 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 }
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
-	list := newWorktreeListCmd()
+	list := newWorktreeListCmd(&invocation{})
 	for _, wanted := range []string{"resolver-recognized layout", "repository-local", "configured shared root", "worktree relocate", "only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
@@ -501,7 +501,7 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 }
 
 func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
-	command := newWorktreeRenameCmd()
+	command := newWorktreeRenameCmd(&invocation{})
 	for _, wanted := range []string{
 		"descriptor-relative", "no-replace", "git worktree repair", "node_modules",
 		"always deleted", "--force", "dry-run",
@@ -523,7 +523,7 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 }
 
 func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
-	command := newWorktreeRelocateCmd()
+	command := newWorktreeRelocateCmd(&invocation{})
 	for _, wanted := range []string{"--to=local", "--to=shared", "descriptor-anchored", "append-only relocation receipt", "--format=json"} {
 		if !strings.Contains(command.Long, wanted) {
 			t.Errorf("relocate help does not mention %q", wanted)

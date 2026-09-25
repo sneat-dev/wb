@@ -34,7 +34,7 @@ type markerOutcome struct {
 	Error          string `json:"error,omitempty"`
 }
 
-func newWorktreeMarkerCmd() *cobra.Command {
+func newWorktreeMarkerCmd(inv *invocation) *cobra.Command {
 	var fleet, dryRun bool
 	var format, base string
 	command := &cobra.Command{
@@ -71,7 +71,7 @@ worktree registered to one.`,
 			if fleet && len(args) == 1 {
 				return fmt.Errorf("--fleet refreshes every checkout; do not also name one")
 			}
-			checkouts, err := markerCheckouts(cmd.Context(), fleet, args)
+			checkouts, err := markerCheckouts(inv, cmd.Context(), fleet, args)
 			if err != nil {
 				return err
 			}
@@ -157,7 +157,7 @@ func markerWouldChange(inspection checkoutmarker.Inspection) (marker, exclude bo
 }
 
 // markerCheckouts resolves which checkouts to mark.
-func markerCheckouts(ctx context.Context, fleet bool, args []string) ([]string, error) {
+func markerCheckouts(inv *invocation, ctx context.Context, fleet bool, args []string) ([]string, error) {
 	if !fleet {
 		if len(args) == 1 {
 			return []string{args[0]}, nil
@@ -171,7 +171,7 @@ func markerCheckouts(ctx context.Context, fleet bool, args []string) ([]string, 
 	seen := map[string]bool{}
 	var checkouts []string
 	for _, repository := range repositories {
-		if filterFlag != "" && !strings.Contains(repository.Slug(), filterFlag) {
+		if inv.filterFlag != "" && !strings.Contains(repository.Slug(), inv.filterFlag) {
 			continue
 		}
 		// Use the path discovery actually found. A canonical clone may live at
