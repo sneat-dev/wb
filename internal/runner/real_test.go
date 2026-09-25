@@ -1,4 +1,4 @@
-package runner
+package runner_test
 
 import (
 	"context"
@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // TestRunnerHelperProcess is the child half of every real_test.go case
@@ -35,13 +38,13 @@ func helperArgs() []string {
 }
 
 func TestRealRunCapturesStdoutStderrAndExitStatus(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_STDOUT", "hello-stdout")
 	t.Setenv("WB_RUNNER_STDERR", "hello-stderr")
 	t.Setenv("WB_RUNNER_EXIT", "0")
 
-	result, err := New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	result, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -51,11 +54,11 @@ func TestRealRunCapturesStdoutStderrAndExitStatus(t *testing.T) {
 }
 
 func TestRealRunReportsNonZeroExitStatus(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_EXIT", "7")
 
-	result, err := New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	result, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
 	if err == nil {
 		t.Fatal("want an error for a non-zero exit")
 	}
@@ -65,8 +68,8 @@ func TestRealRunReportsNonZeroExitStatus(t *testing.T) {
 }
 
 func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
-	result, err := New().Run(context.Background(), t.TempDir(), "wb-runner-does-not-exist-anywhere")
+	runnertest.AllowRealProcess(t)
+	result, err := runner.New().Run(context.Background(), t.TempDir(), "wb-runner-does-not-exist-anywhere")
 	if err == nil {
 		t.Fatal("want an error for a program that does not exist")
 	}
@@ -76,12 +79,12 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 }
 
 func TestRealStartAndHandleWaitReportOutputAndExitStatus(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_STDOUT", "started-then-waited")
 	t.Setenv("WB_RUNNER_EXIT", "0")
 
-	handle, err := New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	handle, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -98,18 +101,18 @@ func TestRealStartAndHandleWaitReportOutputAndExitStatus(t *testing.T) {
 }
 
 func TestRealStartReturnsAnErrorForAProgramThatDoesNotExist(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
-	if _, err := New().Start(context.Background(), t.TempDir(), "wb-runner-does-not-exist-anywhere"); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := runner.New().Start(context.Background(), t.TempDir(), "wb-runner-does-not-exist-anywhere"); err == nil {
 		t.Fatal("want an error for a program that does not exist")
 	}
 }
 
 func TestRealHandleSignalDeliversToTheProcess(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_SLEEP", "1")
 
-	handle, err := New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	handle, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -122,11 +125,11 @@ func TestRealHandleSignalDeliversToTheProcess(t *testing.T) {
 }
 
 func TestRealDetachStartsAProcessAndReportsItsPid(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_EXIT", "0")
 
-	pid, err := New().Detach(t.TempDir(), os.Args[0], helperArgs()...)
+	pid, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...)
 	if err != nil {
 		t.Fatalf("Detach: %v", err)
 	}
@@ -136,62 +139,62 @@ func TestRealDetachStartsAProcessAndReportsItsPid(t *testing.T) {
 }
 
 func TestRealDetachReturnsAnErrorForAProgramThatDoesNotExist(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
-	if _, err := New().Detach(t.TempDir(), "wb-runner-does-not-exist-anywhere"); err == nil {
+	runnertest.AllowRealProcess(t)
+	if _, err := runner.New().Detach(t.TempDir(), "wb-runner-does-not-exist-anywhere"); err == nil {
 		t.Fatal("want an error for a program that does not exist")
 	}
 }
 
 func TestRealInteractiveRunsToCompletion(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_EXIT", "0")
 
-	if err := New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != nil {
+	if err := runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != nil {
 		t.Fatalf("Interactive: %v", err)
 	}
 }
 
 func TestRealInteractiveReportsNonZeroExitStatus(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_EXIT", "3")
 
-	if err := New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err == nil {
+	if err := runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err == nil {
 		t.Fatal("want an error for a non-zero exit")
 	}
 }
 
 func TestRealRunBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	if _, err := New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != ErrRealProcessBlocked {
-		t.Fatalf("Run() err = %v, want ErrRealProcessBlocked", err)
+	if _, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("Run() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealStartBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	if _, err := New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != ErrRealProcessBlocked {
-		t.Fatalf("Start() err = %v, want ErrRealProcessBlocked", err)
+	if _, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("Start() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealDetachBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	if _, err := New().Detach(t.TempDir(), os.Args[0], helperArgs()...); err != ErrRealProcessBlocked {
-		t.Fatalf("Detach() err = %v, want ErrRealProcessBlocked", err)
+	if _, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("Detach() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealInteractiveBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	if err := New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != ErrRealProcessBlocked {
-		t.Fatalf("Interactive() err = %v, want ErrRealProcessBlocked", err)
+	if err := runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
+		t.Fatalf("Interactive() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealHandleSignalAfterWaitReportsAnErrorRatherThanPanicking(t *testing.T) {
-	t.Setenv(envAllowRealProcess, "1")
+	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
 	t.Setenv("WB_RUNNER_EXIT", "0")
 
-	handle, err := New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	handle, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

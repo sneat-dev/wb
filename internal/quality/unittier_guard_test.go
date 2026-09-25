@@ -98,19 +98,27 @@ func TestUnitTierPendingDoesNotRegress(t *testing.T) {
 // flags at all -- is caught immediately, the same shrink-only discipline
 // TestEveryFilewriteBoundaryExemptionMatchesALiveViolation applies to
 // internal/filewrite's own allow-lists) and that every one of its matches is
-// either a genuine self-reexec (UnitTierPatternExecStart with SelfReexec
-// true -- the program argument is exactly os.Args[0], review note #764 B1:
-// "must require the exec program argument to be os.Args[0], not just any
-// exec.Command-type call") or the expected companion
-// UnitTierPatternHelperProcessEnv marker match that pattern's own re-exec
-// dispatch reads to tell the helper-process child from the ordinary test run
-// (see UnitTierPatternHelperProcessEnv's doc comment). The allow list is
-// seeded only with files that genuinely re-run the test binary itself
-// (task-24 PR-1's own scope note): an exec.Command call whose first argument
-// is anything else -- "git", a shell path, a fake PATH executable -- must
-// fail here even if it sits in an otherwise allow-listed file, so appending
-// one to an allow-listed file (the review's own mutation) cannot pass
-// silently.
+// one of the three shapes task-24's own "Allow list" text names as
+// legitimate for a file on this list ("Files on it may call
+// exec.Command(os.Args[0], …) and runnertest.AllowRealProcess"): a genuine
+// self-reexec (UnitTierPatternExecStart with SelfReexec true -- the program
+// argument is exactly os.Args[0], review note #764 B1: "must require the
+// exec program argument to be os.Args[0], not just any exec.Command-type
+// call"), the expected companion UnitTierPatternHelperProcessEnv marker
+// match that pattern's own re-exec dispatch reads to tell the helper-process
+// child from the ordinary test run (see UnitTierPatternHelperProcessEnv's
+// doc comment), or a runnertest.AllowRealProcess call
+// (UnitTierPatternAllowRealProcess) -- task-8's runtime-guard escape hatch
+// for a test that reaches a real process only through the runner.Runner
+// interface, never a literal exec.Command call of its own (review note #764
+// B1's fix: internal/runner/real_test.go and
+// internal/runner/runnertest/runnertest_test.go). The allow list is seeded
+// only with files that genuinely re-run the test binary itself, gated by one
+// of these three shapes (task-24 PR-1's own scope note): an exec.Command
+// call whose first argument is anything else -- "git", a shell path, a fake
+// PATH executable -- must fail here even if it sits in an otherwise
+// allow-listed file, so appending one to an allow-listed file (the review's
+// own mutation) cannot pass silently.
 func TestUnitTierAllowListEntriesAreGenuineHelperProcessReexec(t *testing.T) {
 	t.Parallel()
 
@@ -139,9 +147,11 @@ func TestUnitTierAllowListEntriesAreGenuineHelperProcessReexec(t *testing.T) {
 			continue
 		}
 		for _, m := range fileMatches {
-			genuine := (m.Pattern == UnitTierPatternExecStart && m.SelfReexec) || m.Pattern == UnitTierPatternHelperProcessEnv
+			genuine := (m.Pattern == UnitTierPatternExecStart && m.SelfReexec) ||
+				m.Pattern == UnitTierPatternHelperProcessEnv ||
+				m.Pattern == UnitTierPatternAllowRealProcess
 			if !genuine {
-				problems = append(problems, fmt.Sprintf("%s:%d: allow-listed, but this match is %s (self-reexec=%t), not a genuine os.Args[0] re-exec -- move it to unit_tier.pending instead", file, m.Line, m.Pattern, m.SelfReexec))
+				problems = append(problems, fmt.Sprintf("%s:%d: allow-listed, but this match is %s (self-reexec=%t), not a genuine os.Args[0] re-exec or runnertest.AllowRealProcess call -- move it to unit_tier.pending instead", file, m.Line, m.Pattern, m.SelfReexec))
 			}
 		}
 	}

@@ -242,6 +242,153 @@ func ordinary() { exec.Command("git", "status") }
 	}
 }
 
+// TestFindExecSiteMatchesFindsCallInsideAPackageLevelVarFuncLiteral is
+// review note #764 B2's own reproduction: a package-level `var name =
+// func(...) {...}` is a *ast.GenDecl, not a *ast.FuncDecl, so the detector
+// must walk its function-literal value the same way it already walks a
+// plain top-level function's body -- exactly the shape
+// cmd/wb/fleet_default_branch.go's defaultBranchGit and cmd/wb/daemon.go's
+// runSystemctl already used, invisibly, before this fix.
+func TestFindExecSiteMatchesFindsCallInsideAPackageLevelVarFuncLiteral(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+var runSystemctl = func(args ...string) ([]byte, error) {
+	return exec.Command("systemctl", args...).CombinedOutput()
+}
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != ExecSitePatternDirectExec {
+		t.Fatalf("matches = %+v, want one direct-exec match inside the var-assigned closure", matches)
+	}
+}
+
+// TestFindExecSiteMatchesRespectsAllowListedNameForAPackageLevelVarFuncLiteral
+// proves the fix's exemption is keyed off the var's own name, not just a
+// plain FuncDecl's: a closure assigned to an allow-listed name is exempt the
+// same way a plain function of that name already is.
+func TestFindExecSiteMatchesRespectsAllowListedNameForAPackageLevelVarFuncLiteral(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+var RunSecureHooksGitHelper = func() { exec.Command("git", "hook-run") }
+
+var ordinary = func() { exec.Command("git", "status") }
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Line != 7 {
+		t.Fatalf("matches = %+v, want only the ordinary closure's call (line 7), not RunSecureHooksGitHelper's", matches)
+	}
+}
+
+// TestFindExecSiteMatchesFindsCallInsideAStructFieldFuncLiteral covers a
+// function literal with no single declared name at all -- a map value, here
+// -- which the fix's exemption inherits from its enclosing context (module
+// scope, so not exempt) rather than trying to name.
+func TestFindExecSiteMatchesFindsCallInsideAStructFieldFuncLiteral(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+var handlers = map[string]func(){
+	"start": func() { exec.Command("git", "status") },
+}
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != ExecSitePatternGitLiteral {
+		t.Fatalf("matches = %+v, want one git-literal match inside the map-value closure", matches)
+	}
+}
+
+// TestFindExecSiteMatchesFindsCallInsideFuncInit covers Go's special init
+// position: a plain *ast.FuncDecl named "init", already walked by the
+// original per-FuncDecl loop, but worth pinning explicitly since it is one
+// of the non-FuncDecl-body shapes review note #764 B2 named.
+func TestFindExecSiteMatchesFindsCallInsideFuncInit(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+func init() { exec.Command("git", "status") }
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != ExecSitePatternGitLiteral {
+		t.Fatalf("matches = %+v, want one git-literal match inside func init()", matches)
+	}
+}
+
+// TestFindExecSiteMatchesFindsCallInsideAMethodDeclaration covers a method
+// (Go represents it as a *ast.FuncDecl with a receiver, listed in
+// file.Decls exactly like an ordinary function): already worked before this
+// fix, pinned here as one of review note #764 B2's named shapes ("method
+// values").
+func TestFindExecSiteMatchesFindsCallInsideAMethodDeclaration(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+type Runner struct{}
+
+func (r Runner) Run() { exec.Command("git", "status") }
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != ExecSitePatternGitLiteral {
+		t.Fatalf("matches = %+v, want one git-literal match inside the method", matches)
+	}
+}
+
+// TestFindExecSiteMatchesFindsCallInsideAClosureNestedInAnAllowListedFunction
+// pins the allow-listed-function exemption still reaches a closure nested
+// inside it (the review's own adversarial check, confirmed correct before
+// this fix and re-confirmed here now that the walk was rewritten).
+func TestFindExecSiteMatchesFindsCallInsideAClosureNestedInAnAllowListedFunction(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+func RunSecureHooksGitHelper() {
+	run := func() { exec.Command("git", "hook-run") }
+	run()
+}
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %+v, want none: the nested closure inherits its allow-listed enclosing function's exemption", matches)
+	}
+}
+
 func TestFindExecSiteMatchesSkipsAllowListedDirectories(t *testing.T) {
 	t.Parallel()
 	root := execSiteFixtureModule(t)

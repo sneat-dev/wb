@@ -154,33 +154,120 @@ func FindExecSiteMatches(root string) ([]ExecSiteMatch, error) {
 	return matches, nil
 }
 
-// scanExecSiteFile scans every top-level function declaration in file that
-// is not itself named in execSiteAllowedFunctionNames.
+// scanExecSiteFile scans every call expression anywhere in file -- not just
+// inside a top-level function declaration's body, but also inside a package-
+// level var's function-literal value (`var runSystemctl = func(...) {...}`),
+// a struct field or map value that is itself a function literal, and any
+// closure nested inside any of those -- tracking, at each call, whether the
+// innermost enclosing function is exempt via execSiteAllowedFunctionNames.
+//
+// A plain top-level FuncDecl (including a method: Go represents a method
+// declaration as a FuncDecl with a receiver, in file.Decls exactly like an
+// ordinary function) is exempt when its own name is listed. A package-level
+// var/const-assigned function literal is exempt the same way, keyed off the
+// name it was assigned to (execSiteTopLevelFuncLitNames resolves that
+// mapping ahead of the walk, since a *ast.FuncLit carries no name of its
+// own). Any other function literal -- nested inside a closure, a struct
+// field, a map value, or anywhere else with no single declared name --
+// simply inherits whichever function it sits inside, the same exemption a
+// nested closure inside an allow-listed top-level function already got
+// before this walk was rewritten to cover every position, not only
+// top-level FuncDecls (review note #764 B2).
 func scanExecSiteFile(fset *token.FileSet, file *ast.File, rel string) []ExecSiteMatch {
 	aliases := execSitePackageAliases(file)
+	litNames := execSiteTopLevelFuncLitNames(file)
 	var out []ExecSiteMatch
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
-		}
-		if execSiteAllowedFunctionNames[fn.Name.Name] {
-			continue
-		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			if match, ok := classifyExecSiteCall(call, aliases); ok {
-				match.File = rel
-				match.Line = fset.Position(call.Pos()).Line
-				out = append(out, match)
-			}
-			return true
-		})
-	}
+	ast.Walk(&execSiteVisitor{
+		fset:     fset,
+		aliases:  aliases,
+		rel:      rel,
+		litNames: litNames,
+		out:      &out,
+	}, file)
 	return out
+}
+
+// execSiteTopLevelFuncLitNames maps a package-level var declaration's
+// function-literal value back to the name it was assigned to (`var
+// runSystemctl = func(...) {...}` -> "runSystemctl"), the same identifier
+// execSiteAllowedFunctionNames would need to exempt that closure the way it
+// already exempts a plain top-level FuncDecl of the same name. A literal
+// that is instead a struct field, a map value, or nested inside another
+// closure has no single declared name of its own and is left out of this
+// map -- execSiteVisitor falls back to inheriting its parent's exemption for
+// those.
+//
+// Every *ast.GenDecl with Tok == token.VAR is guaranteed by Go's grammar to
+// hold only *ast.ValueSpec entries in Specs (import/type/const-only shapes
+// don't arise for VAR), and a ValueSpec's Values never has more entries than
+// its Names (the parser rejects any source where they would mismatch outside
+// a single multi-value call on the right of `:=`/`=`, which itself always
+// yields exactly one Values entry). So neither the ValueSpec type assertion
+// nor an index bound on Names needs an explicit check here the way
+// unittier.go's more defensive, input-untrusted parsers need one -- both
+// would be dead code no test could reach through a real parsed file.
+func execSiteTopLevelFuncLitNames(file *ast.File) map[*ast.FuncLit]string {
+	names := map[*ast.FuncLit]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs := spec.(*ast.ValueSpec) //nolint:forcetypeassert // guaranteed by go/ast for a VAR GenDecl
+			for i, value := range vs.Values {
+				lit, ok := value.(*ast.FuncLit)
+				if !ok {
+					continue
+				}
+				names[lit] = vs.Names[i].Name
+			}
+		}
+	}
+	return names
+}
+
+// execSiteVisitor implements ast.Visitor, walking a *ast.File while
+// threading each function's exemption down to the calls inside it.
+// ast.Walk's contract -- Visit's returned Visitor is used for the node's
+// children, and a nil return skips them entirely -- lets each FuncDecl or
+// FuncLit hand its children a fresh *execSiteVisitor carrying its own
+// exempt value (a value copy, so sibling subtrees never see each other's
+// state) without an explicit push/pop stack.
+type execSiteVisitor struct {
+	fset     *token.FileSet
+	aliases  map[string]string
+	rel      string
+	litNames map[*ast.FuncLit]string
+	exempt   bool
+	out      *[]ExecSiteMatch
+}
+
+func (v *execSiteVisitor) Visit(n ast.Node) ast.Visitor {
+	switch node := n.(type) {
+	case *ast.FuncDecl:
+		if node.Body == nil {
+			return nil
+		}
+		child := *v
+		child.exempt = execSiteAllowedFunctionNames[node.Name.Name]
+		return &child
+	case *ast.FuncLit:
+		child := *v
+		if name, named := v.litNames[node]; named {
+			child.exempt = execSiteAllowedFunctionNames[name]
+		}
+		return &child
+	case *ast.CallExpr:
+		if !v.exempt {
+			if match, ok := classifyExecSiteCall(node, v.aliases); ok {
+				match.File = v.rel
+				match.Line = v.fset.Position(node.Pos()).Line
+				*v.out = append(*v.out, match)
+			}
+		}
+	}
+	return v
 }
 
 // execSitePackageAliases resolves file's own imports of "os/exec", "os",

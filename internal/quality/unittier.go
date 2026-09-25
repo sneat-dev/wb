@@ -435,6 +435,16 @@ func classifyUnitTierCall(call *ast.CallExpr, aliases map[string]string) (UnitTi
 		if UnitTierGitHelperNames[fn.Name] {
 			return UnitTierMatch{Pattern: UnitTierPatternGitHelper, Detail: fn.Name}, true
 		}
+		// An unqualified AllowRealProcess(t) call: only reachable from
+		// inside package runnertest itself (every other caller must
+		// qualify it as runnertest.AllowRealProcess, the *ast.SelectorExpr
+		// case above), so the bare name is unambiguous. Without this,
+		// internal/runner/runnertest/runnertest_test.go's own test of
+		// AllowRealProcess was invisible to the detector (review note #764
+		// B1's detector-completeness half).
+		if fn.Name == "AllowRealProcess" {
+			return UnitTierMatch{Pattern: UnitTierPatternAllowRealProcess, Detail: fn.Name}, true
+		}
 	}
 	return UnitTierMatch{}, false
 }

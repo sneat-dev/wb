@@ -10,10 +10,12 @@
 # migration lands.
 cmd/wb/browser.go	1	task-16
 cmd/wb/ci.go	1	task-16
-cmd/wb/daemon.go	1	task-22
+cmd/wb/daemon.go	2	task-22
+cmd/wb/daemon_process_darwin.go	1	task-16
 cmd/wb/daemon_process_unix.go	1	task-16
 cmd/wb/daemon_process_windows.go	1	task-16
 cmd/wb/deps.go	1	task-16
+cmd/wb/fleet_default_branch.go	6	task-22
 cmd/wb/quality.go	2	task-16
 cmd/wb/remote_enroll.go	1	task-16
 cmd/wb/selfupdate.go	2	task-16
