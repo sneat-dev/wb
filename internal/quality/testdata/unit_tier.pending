@@ -47,8 +47,8 @@ cmd/wb/status_test.go	3	task-22
 cmd/wb/wait_test.go	4	task-22
 cmd/wb/worktree_end_test.go	7	task-22
 cmd/wb/worktree_gc_test.go	10	task-22
-cmd/wb/worktree_host_level_test.go	23	task-22
-cmd/wb/worktree_marker_test.go	11	task-22
+cmd/wb/worktree_host_level_test.go	24	task-22
+cmd/wb/worktree_marker_test.go	12	task-22
 cmd/wb/worktree_merge_test.go	48	task-22
 cmd/wb/worktree_publication_test.go	12	task-22
 cmd/wb/worktree_rescue_test.go	15	task-22
