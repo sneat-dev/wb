@@ -15,6 +15,7 @@ import "testing"
 // real Git repository -- end to end through the exported
 // CompareAgainstTarget wrapper.
 func TestContractCompareAgainstTargetRealGit(t *testing.T) {
+	t.Parallel()
 	fixture := newTargetFixture(t, "85")
 	write(t, fixture.Root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
 	targetGit(t, fixture.Root, "add", "-A")
