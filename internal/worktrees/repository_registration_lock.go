@@ -27,11 +27,18 @@ type repositoryRegistrationLock struct {
 // waits for that same lock forever.
 var repositoryRegistrationLockTimeout = 2 * time.Minute
 
-func acquireRepositoryRegistrationLock(canonical *canonicalRepository) (*repositoryRegistrationLock, error) {
+// now and sleep are the clock and retry-backoff seam for both the
+// transient-ENOENT retry and the flock-contention wait below. Every
+// production caller passes time.Now/time.Sleep; a test passes fakes to
+// exercise a timeout branch without a real wait. Neither is a
+// package-level mutable var, so a test cannot leave shared package state
+// mutated for another test running in parallel (mirrors gitrepo's
+// acquireCloneLock).
+func acquireRepositoryRegistrationLock(canonical *canonicalRepository, now func() time.Time, sleep func(time.Duration)) (*repositoryRegistrationLock, error) {
 	if canonical == nil || canonical.common == nil {
 		return nil, fmt.Errorf("repository registration lock requires canonical Git descriptor")
 	}
-	deadline := time.Now().Add(repositoryRegistrationLockTimeout)
+	deadline := now().Add(repositoryRegistrationLockTimeout)
 	var file *os.File
 	var err error
 	for {
@@ -59,13 +66,13 @@ func acquireRepositoryRegistrationLock(canonical *canonicalRepository) (*reposit
 		if validateErr := canonical.validate(); validateErr != nil {
 			return nil, fmt.Errorf("open repository registration lock after canonical validation: %w", validateErr)
 		}
-		if time.Now().After(deadline) {
+		if now().After(deadline) {
 			return nil, fmt.Errorf("open repository registration lock after %s: %w", repositoryRegistrationLockTimeout, err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		sleep(20 * time.Millisecond)
 	}
 	for {
-		if time.Now().After(deadline) {
+		if now().After(deadline) {
 			_ = file.Close()
 			return nil, fmt.Errorf("another WB Git mutation held the repository registration lock for %s", repositoryRegistrationLockTimeout)
 		}
@@ -78,7 +85,7 @@ func acquireRepositoryRegistrationLock(canonical *canonicalRepository) (*reposit
 			_ = file.Close()
 			return nil, fmt.Errorf("hold repository registration lock: %w", err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		sleep(20 * time.Millisecond)
 	}
 	return &repositoryRegistrationLock{file: file}, nil
 }
