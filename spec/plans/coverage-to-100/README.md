@@ -9,7 +9,7 @@ status: Executing
 **Date:** 2026-09-23
 **Owner:** alex
 **Supersedes:** —
-**Reworked:** 2026-09-25, founder decisions 17–20 (two test tiers; thin `cmd/wb`; e2e on every PR; e2e tests happy paths)
+**Reworked:** 2026-09-25, founder decisions 17–21 (two test tiers; thin `cmd/wb`; e2e on every PR; e2e tests happy paths; integration branch)
 
 ## Summary
 
@@ -90,6 +90,16 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 20. **E2E scope.** The founder said: "I am thinking e2e tests can test only happy path, and maybe just few of failure cases".
     - Each e2e journey tests its happy path.
     - Failure cases belong to the unit tier, against the fakes. Only a few failure cases are e2e tests; task-23 names them.
+21. **Integration branch.** Asked whether the coverage programme's PRs should land in an integration branch, which then lands in main in batches, the founder answered "Yes, let's use integration branch". The coordinator had proposed this because `main` requires PR branches to be up to date. Every landing made each other open PR stale and cost it another ~17-minute CI run. The coordinator also named the costs: a large PR into main, and refactors that sit off main for up to a day.
+    - The founder then asked: "We don't need pr to merge into integration branch, right? We can merge and test locally?" So lanes open no PRs. A lane branches from `cov/integration`, and before handing over it runs its own packages' tests and a coverage check on the VM.
+    - An adversarial reviewer reads the lane branch's diff against `cov/integration` and records `Reviewed-Head`, just as for a PR.
+    - The founder added: "You can have a single PR on the integration branch into main and track it stays green. So we test feature branches locally and integration branch after merge and push in CI PR workflow". So one standing PR runs from `cov/integration` into `main`.
+    - The coordinator merges an approved lane branch into `cov/integration` locally, with a merge commit, and pushes it. Each push runs that PR's full go-ci workflow on GitHub's runners, per-change ratchet against main included. The coordinator pushes one lane per merge, so a red run points at that lane.
+    - The coordinator keeps the PR green. A red run is fixed forward before the next lane merges, and decision 13 still applies: no retries as flake fixes.
+    - The coordinator merges `origin/main` into `cov/integration` at least daily.
+    - The PR lands through `wb pr land`, with a merge commit and an adversarial review of the whole batch, at least daily and at the end of each wave. A new standing PR then opens from `cov/integration`.
+    - A task's plan status becomes complete only once its work is on `main`.
+    - For coverage-programme work, older text in this plan that says "PR" (for example "refactor PR" or "test PR") now means a lane branch merged into `cov/integration` after its own review. The ~3,000-line guideline applies to each lane branch.
 
 *Plan choices, not founder instructions:*
 - folding the seven existing per-package runners into one (task-8);
@@ -98,7 +108,15 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 - the 10-minute e2e budget (task-23);
 - the runtime guard, the pending and allow lists (task-24, task-8);
 - the rule for which failure cases may be e2e tests, and one contract case per error kind a fake emulates (task-23, task-24);
-- making the e2e job required in branch protection through `gh api`, and running the e2e tier nightly (task-24).
+- making the e2e job required in branch protection through `gh api`, and running the e2e tier nightly (task-24);
+- in decision 21:
+  - the lane's local test and coverage check before handover;
+  - one lane per merge push;
+  - fixing forward before the next lane merges;
+  - the daily sync from main;
+  - the landing cadence (at least daily and at each wave's end), with a batch adversarial review at each landing;
+  - "complete only once on main";
+  - a new standing PR after each landing.
 
 ## Journey
 
@@ -165,8 +183,8 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
 - Task-9 starts as soon as task-4 lands, ahead of tasks 5–7 (decision 16).
 - W1 (task-14) already started early for five packages (decision 14); its lanes finished with #719/#720, so task-14 has no running lane until a wave slot frees.
-- As of 2026-09-25, the 3 Go lanes are task-5 (PR-4 #760), task-9 (PR-3 #756) and a task-21 flaky-test lane (#759).
-- The next free lane goes to task-22's `fleet default-branch` (decision 18), then to task-24 and task-8's first PR.
+- As of 2026-09-25 (afternoon), the 3 Go lanes are task-5 (PR-4, branch `cov-t5-ctx-4`), task-9 (PR-7) and task-24 (PR-1).
+- Task-22's `fleet default-branch` (decision 18) waits for task-5 PR-4, because both rewrite the same `cmd/wb` files. task-8's first PR follows task-24.
 - The original text follows for its reasoning.
 
 *Original:* The founder's standing VM cap applies to every task in this plan, not only the waves: at most 3 concurrent lanes, at most 2 of them Go lanes (`VM resource limits` memory). A concrete scheduling risk: once task-4 (#646) lands, task-5 (cmd/wb context refactor) and task-6 (run-queue seam + #582 fix) both become ready at once — that is already 2 Go lanes, so nothing else Go-lane-sized should start until one of them frees a lane. Once task-7 (hermetic tests) then lands, tasks 8, 9, 10 (three more Go refactor lanes), task-13 (failing-writer helper + cross-package diagnostic), and wave W1 (task-14, long-tail A) all become ready at once — more than 2 Go lanes' worth of ready work. Wave W2 (task-15, long-tail B) is not among them: it depends on task-11 for its one seam-needing package (`internal/hooks`), so it is not ready until task-11 lands. Schedule Go lanes in this order to respect the cap: land task-5 and task-6 together first (2 Go lanes); once task-7 lands, land task-8 (git/exec runner) and task-9 (file-write primitive) together next (2 Go lanes), then task-10 (clock/sleep seam) or task-13 (failing-writer + diagnostic) once one of those frees a lane, then start wave W1 (task-14) opportunistically in whatever Go lane is free — it needs no refactor seam. Wave W2 (task-15) becomes startable once task-11 lands. Do not start task-11, task-12 or task-19 until their own `Depends-On` tasks are landed, even if a lane is idle.

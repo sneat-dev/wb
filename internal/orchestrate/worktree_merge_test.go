@@ -3617,6 +3617,70 @@ func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
 	}
 }
 
+// TestActiveLaneReceiptSkipsValidPreparedRebatchSidecar pins
+// activeWorktreeMergeLaneReceipt's `continue` under `if rebatched` (#748):
+// a lane receipt carrying a genuinely valid (not merely unusable, as above)
+// `.prepared.rebatched.ack.json` sidecar must be skipped by the lane scan
+// on every run, not only when directory-listing order happens to reach it
+// before its replacement. The replacement receipt's filename is derived
+// from a hash of its (superseded) source set, so it sorts unpredictably
+// relative to the original's -- #748's own coverage flake was exactly
+// that: on a run where the replacement happened to list first, the scan
+// returned it as active without ever visiting (and thus never covering
+// the rebatched-skip continue on) the original. Passing the replacement's
+// own path as `except` removes that non-determinism: the scan then has
+// only the original to consider, so it must reach and cover line 4550
+// every time, and the assertion on hasPreparedWorktreeMergeRebatch
+// isolates the rebatched-sidecar reason from every other reason
+// activeWorktreeMergeLaneReceipt might otherwise skip a receipt for.
+func TestActiveLaneReceiptSkipsValidPreparedRebatchSidecar(t *testing.T) {
+	fixture := newEngineFixture(t)
+	original := createMergeSource(t, fixture, "rebatch-skip-original", "feature/rebatch-skip-original", "original.txt", "original\n")
+	old, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{original.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := createMergeSource(t, fixture, "rebatch-skip-extra", "feature/rebatch-skip-extra", "extra.txt", "extra\n")
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{original.WorktreeDir, extra.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+		RebatchReceipt: old.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ReceiptPath == old.ReceiptPath {
+		t.Fatalf("rebatch reused the original receipt path %s", old.ReceiptPath)
+	}
+	reread, err := readWorktreeMergeReceipt(old.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(reread); rebatchErr != nil || !rebatched {
+		t.Fatalf("hasPreparedWorktreeMergeRebatch(original) = %t, %v; want a valid, authenticated sidecar", rebatched, rebatchErr)
+	}
+	// Excluding the replacement forces the scan to consider only the
+	// rebatched original, deterministically reaching (and covering) the
+	// `if rebatched { continue }` branch regardless of directory order.
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(old.ReceiptPath), old.Lane, replacement.ReceiptPath)
+	if err != nil {
+		t.Fatalf("lane scan aborted on the valid rebatch sidecar: %v", err)
+	}
+	if active != nil {
+		t.Fatalf("active lane after excluding the replacement = %+v, want nil (the rebatched original must be skipped)", active)
+	}
+	// Without excluding anything, the lane's one live receipt is the
+	// replacement, whichever order the scan visits the two files in.
+	active, err = activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(old.ReceiptPath), old.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil || active.ReceiptPath != replacement.ReceiptPath {
+		t.Fatalf("active lane = %+v, want the replacement %s", active, replacement.ReceiptPath)
+	}
+}
+
 func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvidence(t *testing.T) {
 	newPrepared := func(t *testing.T) (engineFixture, worktrees.CreateResult, WorktreeMergeReceipt) {
 		t.Helper()

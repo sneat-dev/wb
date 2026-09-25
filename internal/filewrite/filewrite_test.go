@@ -464,6 +464,54 @@ func TestWriteClampsAnOutOfRangeShortWriteToZeroBytes(t *testing.T) {
 	}
 }
 
+// --- Writer ---
+
+func TestWriterWritesTheExactChunksItIsGiven(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	w := Writer(file, "f", nil)
+	if n, err := w.Write([]byte("hel")); n != 3 || err != nil {
+		t.Fatalf("Write(%q) = %d, %v, want 3, nil", "hel", n, err)
+	}
+	if n, err := w.Write([]byte("lo")); n != 2 || err != nil {
+		t.Fatalf("Write(%q) = %d, %v, want 2, nil", "lo", n, err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("content = %q, want %q", got, "hello")
+	}
+}
+
+func TestWriterReportsARealFailureOnAClosedFile(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	_ = file.Close()
+	w := Writer(file, "f", nil)
+	if n, err := w.Write([]byte("x")); err == nil {
+		t.Fatalf("Write(closed file) = %d, nil, want a real error", n)
+	}
+}
+
+func TestWriterHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	inj := &Injector{Step: StepWrite, Name: "f", Err: errBoom}
+	w := Writer(file, "f", inj)
+	n, err := w.Write([]byte("x"))
+	if n != 0 || !errors.Is(err, errBoom) {
+		t.Fatalf("Write with injected failure = %d, %v, want 0, errBoom", n, err)
+	}
+	if got, statErr := os.ReadFile(filepath.Join(dir.Name(), "f")); statErr != nil || len(got) != 0 {
+		t.Fatalf("file content after injected failure = %q, %v, want empty (the real write must not run)", got, statErr)
+	}
+}
+
 // --- Sync / Close / SyncDir ---
 
 func TestSyncFsyncsARegularFile(t *testing.T) {

@@ -37,6 +37,7 @@ package filewrite
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
@@ -277,6 +278,43 @@ func Write(file *os.File, data []byte, name string, inj *Injector) error {
 		return &ShortWriteError{Name: name, Wrote: n, Want: len(data)}
 	}
 	return nil
+}
+
+// writer adapts an already-open *os.File to io.Writer, routing every Write
+// call through the same Injector.Step (StepWrite) and Name key that a
+// single-shot Write call above uses. See Writer's doc comment for why this
+// exists and what it deliberately does not do.
+type writer struct {
+	file *os.File
+	name string
+	inj  *Injector
+}
+
+// Write makes byte-identical write calls and error text to a direct
+// file.Write with a nil Injector: it runs the same injection check as
+// Write above, then calls file.Write(p) once and returns its real (n,
+// err) unchanged. Unlike Write, it never checks for a short write itself
+// -- it is a plain io.Writer, and its caller (bufio.Writer, io.Copy, ...)
+// already treats n < len(p) with a nil error as its own short-write
+// condition, exactly as it would writing to file directly.
+func (w *writer) Write(p []byte) (int, error) {
+	if err := w.inj.run(StepWrite, w.name); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
+// Writer wraps file as an io.Writer whose every Write call is injectable
+// at StepWrite/name -- the seam for a call site that hands its temp file
+// to a streaming or buffered writer (bufio.Writer, io.Copy, ...) instead
+// of assembling one []byte and calling Write once. With a nil Injector
+// this issues exactly the same file.Write calls, in the same chunks its
+// caller already made, and passes the same error up unwrapped: a
+// bufio.Writer or io.Copy already writes and errors byte-identically
+// whether its io.Writer happens to be *os.File directly or this thin
+// wrapper around it.
+func Writer(file *os.File, name string, inj *Injector) io.Writer {
+	return &writer{file: file, name: name, inj: inj}
 }
 
 // Sync fsyncs a regular file via file.Sync(). Every inline call site this

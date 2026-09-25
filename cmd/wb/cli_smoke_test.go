@@ -23,6 +23,7 @@ const smokeDeadline = 60 * time.Second
 
 var (
 	smokeBinary    string
+	smokeBuildDir  string
 	smokeBuildErr  error
 	smokeBuildOnce = make(chan struct{}, 1)
 )
@@ -47,6 +48,13 @@ func buildWB(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
+	// #751: this directory holds a full built `wb` binary (tens of MB) and
+	// was never removed, leaking one per test-binary run (161 had built up
+	// on the shared dev VM, driving disk usage to 91%). TestMain removes it
+	// after m.Run(), the same way it already owns and removes
+	// wb-test-cpu-queue-* (main_test.go); recording it here, rather than
+	// only inside this once-per-run build, is what lets TestMain find it.
+	smokeBuildDir = directory
 	binary := filepath.Join(directory, "wb")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"

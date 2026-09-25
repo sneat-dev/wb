@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/spf13/cobra"
 )
 
@@ -1497,7 +1498,7 @@ func TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames(t *testing
 	scratchGit(t, seed, "add", "README.md")
 	scratchGit(t, seed, "commit", "-qm", "base")
 	base := scratchGit(t, seed, "rev-parse", "HEAD")
-	scratchGit(t, root, "init", "-q", "--bare", "--initial-branch=main", origin)
+	testenv.InitBareRemoteForTest(t, origin)
 	scratchGit(t, seed, "remote", "add", "origin", origin)
 	scratchGit(t, seed, "push", "-q", "origin", "master:main")
 	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("first\nsecond\n"), 0o600); err != nil {

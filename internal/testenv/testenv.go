@@ -219,6 +219,33 @@ func ConfigureGitAutoMaintenanceOff(t testing.TB, repoPath string) {
 	}
 }
 
+// InitBareRemoteForTest creates a bare repository at path (with an initial
+// branch of "main", creating path's parent directory as needed) and
+// immediately disables gc.auto, maintenance.auto and receive.autogc directly
+// in it via ConfigureGitAutoMaintenanceOff.
+//
+// #754's round-2 review found the same latent flake class -- a same-host
+// `git push` can leave receive-pack's own detached `git gc --auto`/`git
+// maintenance run --auto` still writing inside a bare fixture repo, racing
+// t.TempDir()'s recursive removal of it at test end -- present in roughly
+// fifteen other cmd/wb fixtures that created a bare remote directly and
+// never called ConfigureGitAutoMaintenanceOff on it. This helper exists so
+// every bare remote a wb test fixture creates gets that protection by
+// construction, rather than depending on each new fixture remembering the
+// call.
+func InitBareRemoteForTest(t testing.TB, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	cmd := exec.Command("git", "init", "--bare", "--initial-branch=main", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare --initial-branch=main %s: %v: %s", path, err, out)
+	}
+	ConfigureGitAutoMaintenanceOff(t, path)
+	return path
+}
+
 // WriteExecutableFile re-exports execfile.WriteExecutableFile for the
 // callers across this repository that already import testenv for other
 // fixtures. See that package's doc comment for why the implementation

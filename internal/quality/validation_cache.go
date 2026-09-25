@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const validationCacheSchema = 2
@@ -193,6 +195,15 @@ func sameValidationCacheKey(a, b ValidationCacheKey) bool {
 // SaveValidationCache writes terminal evidence atomically. Failed writes are
 // returned to the caller; a cache failure never changes validation semantics.
 func SaveValidationCache(cacheRoot string, key ValidationCacheKey, report VerificationReport) error {
+	return saveValidationCacheInjected(cacheRoot, key, report, nil)
+}
+
+// saveValidationCacheInjected is SaveValidationCache's test seam (task-9
+// PR-6): every production call site reaches it only through
+// SaveValidationCache, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach a write/sync/close/rename failure branch deterministically.
+func saveValidationCacheInjected(cacheRoot string, key ValidationCacheKey, report VerificationReport, inj *filewrite.Injector) error {
 	if report.Status == StatusSkipped || report.Revision != key.TargetRevision || !report.WorkspaceClean {
 		return fmt.Errorf("validation cache accepts only terminal clean evidence")
 	}
@@ -212,24 +223,28 @@ func SaveValidationCache(cacheRoot string, key ValidationCacheKey, report Verifi
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(cacheRoot, ".validation-*.tmp")
+	tmp, err := filewrite.CreateTemp(cacheRoot, ".validation-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
+	// Unconditional cleanup, unchanged from the pre-migration code: a
+	// random-suffixed CreateTemp name is never shared between concurrent
+	// writers, so removing it after a successful Rename (a harmless no-op
+	// ENOENT) or after a failure (a genuine leftover) is always correct.
 	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(raw); err != nil {
+	if err := filewrite.Write(tmp, raw, tmpName, inj); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := filewrite.Sync(tmp, tmpName, inj); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := filewrite.Close(tmp, tmpName, inj); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, filepath.Join(cacheRoot, keyDigest+".json"))
+	return filewrite.Rename(tmpName, filepath.Join(cacheRoot, keyDigest+".json"), inj)
 }
 
 // ValidationCacheDir is kept in one place so all merge baseline callers share

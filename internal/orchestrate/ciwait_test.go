@@ -486,6 +486,49 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
+// TestWaitForCommitChecksReportsAuthorityUnavailableOnFirstObservation drives
+// waitForCommitChecks' first required-check-authority branch (#766): when
+// requiredChecksReceipt fails on the very first observation, the slice is
+// nowhere near its deadline and result.Reason is still empty, so the
+// "reuse the prior reason at deadline" branch cannot apply and the function
+// must fall through to setting a fresh "required-check authority is
+// unavailable" reason and returning a pending receipt immediately.
+func TestWaitForCommitChecksReportsAuthorityUnavailableOnFirstObservation(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	head := "cccccccccccccccccccccccccccccccccccccccc"
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"` + head + `"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":0,"check_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then echo '{"total_count":0,"workflow_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo 'gh: internal server error (HTTP 500)' >&2; exit 1
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: head,
+		Slice: 5 * time.Second, CheckPollInterval: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForCommitChecks: %v", err)
+	}
+	if result.Status != PullRequestWaitPending ||
+		!strings.Contains(result.Reason, "required-check authority is unavailable") ||
+		!strings.Contains(result.Reason, "HTTP 500") {
+		t.Fatalf("first-observation authority-unavailable receipt = %+v", result)
+	}
+}
+
 func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 	t.Parallel()
 	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {

@@ -104,6 +104,31 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	restoreQueueRoot()
 	_ = os.RemoveAll(queueDir)
+	// #751: cli_smoke_test.go's buildWB compiles the real `wb` binary once
+	// per test binary run into its own os.MkdirTemp("", "wb-smoke-")
+	// directory; smokeBuildDir records that path (empty if no smoke test in
+	// this run ever called buildWB) so it can be removed here, the same way
+	// queueDir is, rather than left behind holding a full built binary
+	// (tens of MB; 161 had built up on the shared dev VM, reaching 91%
+	// disk usage).
+	//
+	// The check below only ever inspects smokeBuildDir, the one directory
+	// THIS run created -- never a bare os.TempDir() scan for any
+	// "wb-smoke-*" name. A round-2 review caught exactly that mistake in an
+	// earlier version of this check: this VM allows up to 2 concurrent Go
+	// lanes, and a second cmd/wb test binary running at the same time keeps
+	// its own wb-smoke-* directory alive for its whole run (removed only at
+	// its own TestMain exit), so a whole-TempDir scan flagged that
+	// unrelated, still-live directory as a leak of this run's own.
+	if smokeBuildDir != "" {
+		_ = os.RemoveAll(smokeBuildDir)
+		if _, statErr := os.Stat(smokeBuildDir); !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "fatal: this run's own wb-smoke-* directory %s is still present after cleanup: statErr=%v\n", smokeBuildDir, statErr)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
 	os.Exit(code)
 }
 
