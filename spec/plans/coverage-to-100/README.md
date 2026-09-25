@@ -91,8 +91,11 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
     - Each e2e journey tests its happy path.
     - Failure cases belong to the unit tier, against the fakes. Only a few failure cases are e2e tests; task-23 names them.
 21. **Integration branch.** Asked whether the coverage programme's PRs should land in an integration branch, which then lands in main in batches, the founder answered "Yes, let's use integration branch". The coordinator had proposed this because `main` requires PR branches to be up to date. Every landing made each other open PR stale and cost it another ~17-minute CI run. The coordinator also named the costs: a large PR into main, and refactors that sit off main for up to a day.
-    - Lanes branch from `cov/integration`, and their PRs target it. Each PR still gets its own adversarial review and must pass CI, including the per-change ratchet against its `cov/integration` base.
-    - `cov/integration` has no up-to-date requirement, so a green, approved PR merges at once. It is merged with a merge commit, through `wb pr land`.
+    - The founder then asked: "We don't need pr to merge into integration branch, right? We can merge and test locally?" So lanes open no PRs. A lane branches from `cov/integration`, and before handing over it runs its own packages' tests and a coverage check on the VM.
+    - An adversarial reviewer reads the lane branch's diff against `cov/integration` and records `Reviewed-Head`, just as for a PR.
+    - The coordinator merges an approved lane branch into `cov/integration` locally, with a merge commit, and pushes it. Every push to `cov/integration` runs the full go-ci suite on GitHub's runners. The coordinator pushes one lane per merge, so a red run points at that lane.
+    - A red `cov/integration` run is fixed forward before the next lane merges. Decision 13 still applies: no retries as flake fixes.
+    - The per-change ratchet runs only on pull requests. On this branch it therefore runs once per batch, on the PR from `cov/integration` into `main`.
     - The coordinator merges `origin/main` into `cov/integration` at least daily.
     - The coordinator also lands `cov/integration` in `main` through one PR, at least daily and at the end of each wave. That PR is a merge commit, reviewed adversarially as a whole, with the full CI and the ratchet against main.
     - A task's plan status becomes complete only once its work is on `main`.
