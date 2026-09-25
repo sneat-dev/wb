@@ -5,17 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
+
+// testIsolatedQueueDir records the isolated CPU admission queue directory
+// TestMain installs below, so TestTestMainIsolatesTheDefaultProjectsRoot...
+// can assert the real installed value directly, rather than only that
+// *some* redirection happened.
+var testIsolatedQueueDir string
 
 func TestMain(m *testing.M) {
 	// Every CLI test in this package that invokes `wb run --` or `wb
@@ -65,7 +73,64 @@ func TestMain(m *testing.M) {
 	// transport still needs its own testenv.ConfigureGitAutoMaintenanceOff
 	// call (see remote_test.go's setGitIdentity).
 	testenv.GitAutoMaintenanceOffProcess()
-	os.Exit(m.Run())
+	// Give this whole test binary its own CPU admission queue, isolated
+	// from the real, machine-wide one (internal/runqueue) rooted at
+	// whatever projectsRoot this process would otherwise resolve by
+	// default (no explicit --projects-root). Without this, a test that
+	// itself invokes `wb run --` in-process with no explicit root (e.g.
+	// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins the very same
+	// queue an outer `wb run -- go test ./cmd/wb/...` already holds a
+	// slot in, and waits behind its own outer holder forever — the known
+	// deadlock this package's own tests hit on this VM (sneat-dev/wb#623).
+	// The override is keyed to defaultProjectsRoot()'s result, captured
+	// here before any test runs, so a test that passes its OWN explicit
+	// --projects-root (e.g. TestRunCommandReportsQueueVisibilityOnStderr)
+	// is unaffected and keeps contending for its own real, unoverridden
+	// queue directory (PR #736 review finding B1). See
+	// runqueue.SetQueueRootForTest.
+	//
+	// A failure to create the isolation directory must not let the suite
+	// run un-isolated — that silently brings back the deadlock this
+	// isolation exists to prevent (a hang, not a clean failure) — so exit
+	// non-zero instead of merely warning.
+	fromRoot := defaultProjectsRoot()
+	queueDir, queueDirErr := os.MkdirTemp("", "wb-test-cpu-queue-")
+	if queueDirErr != nil {
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate test CPU admission queue: %v\n", queueDirErr)
+		os.Exit(1)
+	}
+	testIsolatedQueueDir = queueDir
+	restoreQueueRoot := runqueue.SetQueueRootForTest(fromRoot, queueDir)
+	code := m.Run()
+	restoreQueueRoot()
+	_ = os.RemoveAll(queueDir)
+	os.Exit(code)
+}
+
+// TestTestMainIsolatesTheDefaultProjectsRootFromTheRealMachineQueue pins
+// PR #736 review finding B1 (round 3) directly: nothing else in this
+// package asserts that TestMain's own binary-wide isolation is actually in
+// effect — TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder
+// installs its own, separately keyed override for the deadlock test's
+// own duration, which proves the runqueue mechanism works in general, but
+// says nothing about whether TestMain's installation, for this binary's
+// real default projects root, is still the one in effect. If TestMain's
+// call became a no-op, or were keyed to anything other than the exact
+// root an un-rooted `wb run --` resolves, the real sneat-dev/wb#623
+// deadlock would return with no test here going red.
+//
+// This is a plain assertion, not a goroutine/deadline reproduction: it
+// only needs to show that the isolation is wired, not race it.
+func TestTestMainIsolatesTheDefaultProjectsRootFromTheRealMachineQueue(t *testing.T) {
+	fromRoot := defaultProjectsRoot()
+	got := runqueue.QueueDirForTest(fromRoot)
+	realMachineQueueDir := filepath.Join(fromRoot, ".wb", "runtime", "cpu")
+	if got == realMachineQueueDir {
+		t.Fatalf("TestMain's isolation is not in effect: the default projects root %q resolves to the real, machine-wide queue directory %q", fromRoot, got)
+	}
+	if got != testIsolatedQueueDir {
+		t.Fatalf("the default projects root %q resolves to %q, want TestMain's own isolated queue directory %q", fromRoot, got, testIsolatedQueueDir)
+	}
 }
 
 func TestPropagateRuntimeWBExecutable(t *testing.T) {
