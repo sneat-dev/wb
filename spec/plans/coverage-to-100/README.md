@@ -105,7 +105,7 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 *Plan choices, not founder instructions:*
 - folding the seven existing per-package runners into one (task-8);
 - the gh port;
-- the 60-statement cap on `cmd/wb` functions (task-22);
+- the 60-statement cap on `cmd/wb` functions (task-22), dropped by decision 23;
 - the 10-minute e2e budget (task-23);
 - the runtime guard, the pending and allow lists (task-24, task-8);
 - the rule for which failure cases may be e2e tests, and one contract case per error kind a fake emulates (task-23, task-24);
@@ -155,6 +155,7 @@ The founder's words are quoted verbatim. *The text after each quote is the plan'
 - **Agents.** One fresh agent per unit, aiming at a 40–80k context. It retires at handover. A review fix goes to a new agent that gets only the review file.
 - **Reports.** No heartbeats or interim lane reports: a lane reports once, at handover.
 - **Quick wins.** Waves of small packages run in parallel with task-8.
+- **Models.** Implementation and lane review run on Sonnet, the batch review into main on Opus (decision 22). No Haiku trial: the previous coordinator's handoff records it as not approved.
 
 ## Journey
 
@@ -220,7 +221,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 - Task-8 (the command runner and git interfaces) lands its interfaces, fakes and guard early; it depends on task-4 and task-24. Each package's call sites migrate in the refactor PR that precedes that package's wave or task-22 family.
 - Task-10 (the clock) now depends on task-4, not task-7.
 - Task-7 keeps only the hermetic setup: HOME, umask and the state directory.
-- Task-22 thins `cmd/wb` and starts now (decision 18); task-16 waits for it.
+- Task-22 thins `cmd/wb` and starts now (decision 18). Since decision 23, task-16 no longer waits for it.
 - Task-23 builds the real-git e2e suite while the waves run.
 - Task-20 gates the unit tier alone, once every pending list is empty.
 
@@ -505,7 +506,7 @@ Split each of the seven fd-inheriting secure git helpers named in task-8's table
 **Note:** On demand since decision 23. A function in the list below is split only when its wave needs the split to reach 100%, as decision 10 already says for the other 50. The fail-call-N sweeps reach the error returns of long functions without splitting them. No wave depends on this task.
 **Verifies:** each of the six named functions below that a wave needed split is no longer a single unsplit function over 150 lines; characterization tests captured before a split pass unchanged after it.
 
-A brace-counting pass in round 2 undercounted this pair of files at four functions; a `go/ast`-based scan (body Lbrace-to-Rbrace span, not brace counting — script and full repo-wide output committed as [`_research/long-functions/`](_research/long-functions/README.md) and [`_research/long-functions.txt`](_research/long-functions.txt), run 2026-09-23) finds six in `internal/orchestrate/worktree_merge.go` and `internal/worktrees/lifecycle.go` combined, and 56 repository-wide. The six in scope here — this is the named list, not an open-ended "and others": `LandWorktreeMerge` (`internal/orchestrate/worktree_merge.go:1045`, 897 lines / 604 statements), `Cleanup` (`internal/worktrees/lifecycle.go:2332`, 769 lines / 450 statements), `PrepareWorktreeMerge` (`internal/orchestrate/worktree_merge.go:426`, 601 lines / 381 statements), `inspectLifecycleWorktree` (`internal/worktrees/lifecycle.go:3602`, 315 lines), `listLayout` (`internal/worktrees/lifecycle.go:1911`, 194 lines) and `ListWithDiagnostics` (`internal/worktrees/lifecycle.go:1099`, 173 lines). Split each into named steps. Write characterization tests first and change no behaviour. This makes about 1,500 recovery branches cheap to test. Because `LandWorktreeMerge` and `PrepareWorktreeMerge` live in `internal/orchestrate`, not `internal/worktrees`, task-17 (the `internal/orchestrate` waves) depends on this task, not only task-18 (the `internal/worktrees` waves). Per founder decision 1, the characterization tests and whatever tests each extracted step needs must themselves cover 100% of what this PR touches; split the PR per function if a single PR would exceed the ~3,000-line test-PR guideline above.
+A brace-counting pass in round 2 undercounted this pair of files at four functions; a `go/ast`-based scan (body Lbrace-to-Rbrace span, not brace counting — script and full repo-wide output committed as [`_research/long-functions/`](_research/long-functions/README.md) and [`_research/long-functions.txt`](_research/long-functions.txt), run 2026-09-23) finds six in `internal/orchestrate/worktree_merge.go` and `internal/worktrees/lifecycle.go` combined, and 56 repository-wide. The six in scope here — this is the named list, not an open-ended "and others": `LandWorktreeMerge` (`internal/orchestrate/worktree_merge.go:1045`, 897 lines / 604 statements), `Cleanup` (`internal/worktrees/lifecycle.go:2332`, 769 lines / 450 statements), `PrepareWorktreeMerge` (`internal/orchestrate/worktree_merge.go:426`, 601 lines / 381 statements), `inspectLifecycleWorktree` (`internal/worktrees/lifecycle.go:3602`, 315 lines), `listLayout` (`internal/worktrees/lifecycle.go:1911`, 194 lines) and `ListWithDiagnostics` (`internal/worktrees/lifecycle.go:1099`, 173 lines). Split each into named steps. Write characterization tests first and change no behaviour. This makes about 1,500 recovery branches cheap to test. `LandWorktreeMerge` and `PrepareWorktreeMerge` live in `internal/orchestrate`, so a split, when a wave needs one, can come from task-17 (the `internal/orchestrate` waves) as well as task-18 (the `internal/worktrees` waves); neither depends on this task (decision 23). Per founder decision 1, the characterization tests and whatever tests each extracted step needs must themselves cover 100% of what this PR touches; split the PR per function if a single PR would exceed the ~3,000-line test-PR guideline above.
 
 The other 50 of the 56 functions over 150 lines (`_research/long-functions.txt`, everything outside these two files) are not split by this task. Each is split, if and when the package's wave (tasks 14–18) actually needs it to reach 100%, in its own refactor PR separate from that wave's test PRs — not split pre-emptively across the board. Per decision 10, they are not split regardless of coverage need.
 
