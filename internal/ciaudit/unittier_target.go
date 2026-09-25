@@ -103,12 +103,23 @@ func compareUnitTierPendingTotal(root, target string, git unitTierGitRunner) ([]
 // isGitShowPathMissingOnTarget reports whether err is `git show`'s own
 // "the path does not exist on this ref" failure, as opposed to any other
 // git error (network, auth, an unknown ref). `git show <ref>:<path>` fails
-// with "fatal: path '<path>' does not exist in '<ref>'" (and a distinct,
-// but still path-naming, message for a path that never existed anywhere in
-// the repository's history) when the path is simply absent from that
-// commit -- the one case task-24 exempts as "this PR creates the file".
+// with one of two messages depending on whether the path exists anywhere in
+// the working tree, and this function's own author confirmed both against
+// real git rather than assuming one: a path that never existed in the
+// repository's history at all ("fatal: path '<path>' does not exist in
+// '<ref>'"), and a path that exists on disk on the current branch but was
+// never committed on the target ref ("fatal: path '<path>' exists on disk,
+// but not in '<ref>'") -- exactly task-24's own creating-PR shape, since a
+// freshly authored unit_tier.pending sits on disk, tracked on this branch,
+// before the target branch has ever seen it. Both mean the same thing for
+// this comparison: the path is simply absent from that commit -- the one
+// case task-24 exempts as "this PR creates the file".
 func isGitShowPathMissingOnTarget(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "does not exist in")
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "does not exist in") || strings.Contains(message, "exists on disk, but not in")
 }
 
 // CompareAgainstTarget runs every `wb ci audit --target` cross-branch

@@ -42,11 +42,22 @@ func (f *fakeUnitTierGit) run(_ string, arguments ...string) (string, error) {
 }
 
 // gitShowPathMissingErr is the exact shape `git show <ref>:<path>` fails
-// with when path does not exist on ref -- the one error
-// compareUnitTierPendingTotal treats as "this PR creates the file",
-// isGitShowPathMissingOnTarget's own doc comment.
+// with when path never existed anywhere in the repository's history -- one
+// of the two errors compareUnitTierPendingTotal treats as "this PR creates
+// the file", isGitShowPathMissingOnTarget's own doc comment.
 func gitShowPathMissingErr(ref, path string) error {
 	return fmt.Errorf("git show %s:%s: exit status 128: fatal: path '%s' does not exist in '%s'", ref, path, path, ref)
+}
+
+// gitShowPathExistsOnDiskButNotOnTargetErr is the other shape `git show
+// <ref>:<path>` fails with: path exists, tracked, on the current branch, but
+// was never committed on ref -- confirmed against real git (`git show
+// origin/cov/integration:internal/quality/testdata/unit_tier.pending`
+// against this very PR, which is exactly this scenario), and the one this
+// package's first cut at isGitShowPathMissingOnTarget missed entirely by
+// only matching "does not exist in".
+func gitShowPathExistsOnDiskButNotOnTargetErr(ref, path string) error {
+	return fmt.Errorf("git show %s:%s: exit status 128: fatal: path '%s' exists on disk, but not in '%s'", ref, path, path, ref)
 }
 
 // TestCompareUnitTierPendingTotalReportsARisingTotal pins task-24's cross-PR
@@ -146,6 +157,21 @@ func TestCompareUnitTierPendingTotalFalsePositives(t *testing.T) {
 		root := t.TempDir()
 		write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
 		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showErr: gitShowPathMissingErr("origin/main", unitTierPendingPath)}
+
+		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
+		if err != nil {
+			t.Fatalf("compareUnitTierPendingTotal: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("the creating PR produced findings: %+v", findings)
+		}
+	})
+
+	t.Run("the pending list is new on this branch, tracked but uncommitted on target", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		write(t, root, unitTierPendingPath, "a_test.go\t3\ttask-1\n")
+		git := &fakeUnitTierGit{t: t, currentBranch: "feature/x", showErr: gitShowPathExistsOnDiskButNotOnTargetErr("origin/main", unitTierPendingPath)}
 
 		findings, err := compareUnitTierPendingTotal(root, "main", git.run)
 		if err != nil {
