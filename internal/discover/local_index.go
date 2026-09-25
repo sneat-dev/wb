@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/repopath"
 )
 
@@ -195,6 +196,15 @@ func readLocalIndex(path string) (persistedLocalIndex, error) {
 }
 
 func writeLocalIndex(path string, index persistedLocalIndex) error {
+	return writeLocalIndexInjected(path, index, nil)
+}
+
+// writeLocalIndexInjected is writeLocalIndex's test seam (task-9 PR-8):
+// every production call site reaches it only through writeLocalIndex,
+// which always passes a nil *filewrite.Injector, so production behaviour
+// is unchanged. A test passes its own Injector to reach the create/chmod/
+// write/close/rename failure branches deterministically.
+func writeLocalIndexInjected(path string, index persistedLocalIndex, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return err
@@ -203,24 +213,24 @@ func writeLocalIndex(path string, index persistedLocalIndex) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".fleet-inventory-*.tmp")
+	temporary, err := filewrite.CreateTemp(directory, ".fleet-inventory-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(contents, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(contents, '\n'), temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func cloneRepos(repositories []Repo) []Repo {

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/session"
 )
@@ -83,6 +84,15 @@ func dir(home string) string { return filepath.Join(home, directory) }
 // caller defers that function: a wait that ends normally leaves nothing behind,
 // and one that is killed leaves a record List reports as stale.
 func Register(home string, record Record) (func(), error) {
+	return registerInjected(home, record, nil)
+}
+
+// registerInjected is Register's test seam (task-9 PR-8): every production
+// call site reaches it only through Register, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the write/rename failure branches
+// deterministically.
+func registerInjected(home string, record Record, inj *filewrite.Injector) (func(), error) {
 	if strings.TrimSpace(record.ID) == "" {
 		return nil, errors.New("wait record requires an id")
 	}
@@ -117,10 +127,10 @@ func Register(home string, record Record) (func(), error) {
 	}
 	// Written whole, then renamed, so a reader never sees half a record.
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+	if err := filewrite.WriteFile(temporary, encoded, 0o600, inj); err != nil {
 		return nil, fmt.Errorf("write wait record: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return nil, fmt.Errorf("commit wait record: %w", err)
 	}
 	return func() { _ = os.Remove(path) }, nil
