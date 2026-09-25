@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestPlanRejectsControlStateInsideCheckoutIncludingSymlinkedParent(t *testing.T) {
@@ -140,7 +141,7 @@ func TestAsyncFailureIsWarnedOnNextDispatchExactlyOnce(t *testing.T) {
 }
 
 func TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork(t *testing.T) {
-	t.Parallel()
+	runnertest.AllowRealProcess(t)
 	dispatcher, repository := testDispatcher(t)
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{event}); err != nil {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestHkCovPackageLevelDispatchIsHermeticAndEmpty(t *testing.T) {
@@ -302,6 +304,7 @@ func TestHkCovFailureClassDistinguishesExitAndConfiguration(t *testing.T) {
 }
 
 func TestHkCovLaunchWorkerSpawnsDetachedRunPending(t *testing.T) {
+	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	argvPath := filepath.Join(root, "argv.txt")
 	t.Setenv("HKCOV_LAUNCH_WORKER_CHILD", "1")

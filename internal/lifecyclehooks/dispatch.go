@@ -15,7 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/gitremote"
-	"github.com/sneat-dev/wb/internal/process"
+	procrunner "github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -300,33 +300,65 @@ func (dispatcher Dispatcher) revalidate(invocation Invocation) error {
 }
 
 func runInvocation(ctx context.Context, invocation Invocation) error {
-	command := process.CommandContext(ctx, invocation.Run, invocation.Args...) //nolint:gosec // trusted config; no shell
-	command.Dir = invocation.Dir
-	command.Env = invocation.Env
-	command.Stdout = invocation.Stdout
-	command.Stderr = invocation.Stderr
-	return command.Run()
+	return runInvocationWithRunner(ctx, invocation, nil)
+}
+
+// runInvocationWithRunner is runInvocation's testable core: r is the
+// runner.Runner seam a unit test substitutes with runnertest.Fake. A nil r
+// resolves to the production runner.Runner (resolveRunner), exactly as the
+// exported runInvocation does.
+//
+// invocation.Stdout/Stderr are always the bounded diagnostic log files
+// openDiagnostics opens (see queue.go), never a live interactive stream, so
+// capturing the child's full output through RunOpts and writing it into
+// them in one shot each -- rather than exec.Cmd's incremental pipe copy --
+// is the one accepted behavior change this migration makes: a hook killed
+// mid-run (a context deadline, a crash) leaves its diagnostic log empty
+// instead of holding whatever it had already produced. Streaming a
+// captured Result into an arbitrary io.Writer as the child runs would need
+// a real redesign of runner.Runner's buffered-capture model; this file
+// accepts the narrower loss instead, per task-8's own note on a gap the
+// runner cannot express.
+func runInvocationWithRunner(ctx context.Context, invocation Invocation, r procrunner.Runner) error {
+	opts := procrunner.RunOptions{Env: invocation.Env}
+	result, err := resolveRunner(r).RunOpts(ctx, invocation.Dir, opts, invocation.Run, invocation.Args...) //nolint:gosec // trusted config; no shell
+	if invocation.Stdout != nil {
+		_, _ = invocation.Stdout.Write([]byte(result.Stdout))
+	}
+	if invocation.Stderr != nil {
+		_, _ = invocation.Stderr.Write([]byte(result.Stderr))
+	}
+	return err
 }
 
 func launchWorker(request WorkerRequest) error {
+	return launchWorkerWithRunner(request, nil)
+}
+
+// launchWorkerWithRunner is launchWorker's testable core; see
+// runInvocationWithRunner's doc on r. It delegates entirely to
+// runner.Runner.Detach: Detach's own implementation already applies
+// process.ConfigureDetached and, like exec.Cmd itself, leaves stdio
+// connected to /dev/null and Env inheriting the caller's environment when
+// neither is set explicitly -- both exactly what this function's own
+// pre-seam body did by hand.
+func launchWorkerWithRunner(request WorkerRequest, r procrunner.Runner) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	arguments := []string{"hooks", "lifecycle", "run-pending", "--config", request.ConfigPath, "--state-dir", request.StateDir, "--receipt", request.ReceiptPath}
-	command := exec.Command(executable, arguments...) //nolint:gosec // current WB executable and fixed argv
-	command.Env = os.Environ()
-	process.ConfigureDetached(command)
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
-		return err
+	_, err = resolveRunner(r).Detach("", executable, arguments...) //nolint:gosec // current WB executable and fixed argv
+	return err
+}
+
+// resolveRunner defaults r to the production runner.Runner when the caller
+// left it unset.
+func resolveRunner(r procrunner.Runner) procrunner.Runner {
+	if r != nil {
+		return r
 	}
-	defer func() { _ = null.Close() }()
-	command.Stdin, command.Stdout, command.Stderr = null, null, null
-	if err := command.Start(); err != nil {
-		return err
-	}
-	return command.Process.Release()
+	return procrunner.New()
 }
 
 func hookEnvironment(event Event, operationID string) []string {

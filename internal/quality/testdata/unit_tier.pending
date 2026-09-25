@@ -141,11 +141,11 @@ internal/layout/host_level_test.go	5	task-14
 internal/layout/layout_test.go	4	task-14
 internal/layout/migrate_test.go	4	task-14
 internal/layout/zz_tailcov_test.go	3	task-14
-internal/lifecyclehooks/coverage_dispatch_test.go	4	task-15
+internal/lifecyclehooks/coverage_dispatch_test.go	5	task-15
 internal/lifecyclehooks/coverage_helpers_test.go	1	task-15
 internal/lifecyclehooks/coverage_security_test.go	1	task-15
 internal/lifecyclehooks/dispatch_test.go	3	task-15
-internal/lifecyclehooks/resilience_test.go	4	task-15
+internal/lifecyclehooks/resilience_test.go	5	task-15
 internal/lifecyclehooks/security_unix_test.go	1	task-15
 internal/locallink/execports_test.go	3	task-15
 internal/locallink/guard_test.go	6	task-15

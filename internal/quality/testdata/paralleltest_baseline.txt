@@ -843,6 +843,7 @@ internal/layout::TestMigrateUndoReversesRelocationAndRemovesEmptyTaskDirectory	c
 internal/layout::TestOriginAddressReportsTheLiteralHostAndSlug	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/layout::TestTailCovAbsolutePathsFailClosedWithoutAWorkingDirectory	calls t.Chdir, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/layout::TestTailCovOriginSlugPathShapes	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/lifecyclehooks::TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/lifecyclehooks::TestHkCovDefaultReceiptPathHonoursXDGAndHomeFallback	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/lifecyclehooks::TestHkCovDefaultsFillsMissingFields	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/lifecyclehooks::TestHkCovLaunchWorkerSpawnsDetachedRunPending	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
