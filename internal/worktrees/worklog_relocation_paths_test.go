@@ -10,9 +10,9 @@ import (
 // The old claim and the listed checkout may name different repositories only
 // when their paths describe the same deterministic repository transfer.
 func TestLegacyRepositoryRelocationPathsAcceptsOnlyDeterministicTransfers(t *testing.T) {
+	t.Parallel()
 	// A host-qualified canonical path gives placement its host directly, so
 	// this path validation test needs no Git checkout or subprocess.
-	t.Setenv("PATH", t.TempDir())
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	canonical := filepath.Join(projectsRoot, "github.com", "acme", "renamed")
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
@@ -25,6 +25,7 @@ func TestLegacyRepositoryRelocationPathsAcceptsOnlyDeterministicTransfers(t *tes
 	base := ListResult{Repository: "acme/renamed", CanonicalDir: canonical,
 		WorktreesRoot: store, WorktreeDir: newPath, Task: task}
 	claim := workLogClaim{Repository: "github.com/acme/app", Worktree: old}
+	outsideCanonical := t.TempDir()
 
 	cases := []struct {
 		name    string
@@ -45,11 +46,12 @@ func TestLegacyRepositoryRelocationPathsAcceptsOnlyDeterministicTransfers(t *tes
 		{name: "malformed claimed repository", edit: func(_ *ListResult, claim *workLogClaim) { claim.Repository = "invalid" }, wantErr: true, want: "must be owner/name"},
 		{name: "malformed listed repository", edit: func(entry *ListResult, _ *workLogClaim) { entry.Repository = "invalid" }, wantErr: true, want: "must be owner/name"},
 		{name: "canonical outside projects root", edit: func(entry *ListResult, _ *workLogClaim) {
-			entry.CanonicalDir = t.TempDir()
+			entry.CanonicalDir = outsideCanonical
 		}, wantErr: true, want: "canonical clone"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			entry, recorded := base, claim
 			if tc.edit != nil {
 				tc.edit(&entry, &recorded)
