@@ -556,13 +556,26 @@ func ParseUnitTierPendingBytes(data []byte, sourceName string) (map[string]UnitT
 // FormatUnitTierPending renders entries as the committed file format:
 // a header comment, then one sorted, tab-separated line per entry.
 func FormatUnitTierPending(entries map[string]UnitTierPendingEntry) string {
+	return formatPendingList(entries, unitTierPendingHeader)
+}
+
+// formatPendingList is the shared renderer behind FormatUnitTierPending and
+// execsites.go's FormatExecSitesPending: both committed lists share the
+// exact <path>\t<count>\t<owning task> line format (execsites.go's own doc
+// comment: "exec_sites.pending shares unit_tier.pending's exact file
+// format... and this package's own parser for it"), but each needs its own
+// header describing which detector and which ratchet owns it -- reusing
+// unitTierPendingHeader verbatim for exec_sites.pending would describe the
+// wrong detector and the wrong ciaudit comparator in a committed file a
+// reviewer reads.
+func formatPendingList(entries map[string]UnitTierPendingEntry, header string) string {
 	sorted := make([]UnitTierPendingEntry, 0, len(entries))
 	for _, e := range entries {
 		sorted = append(sorted, e)
 	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].File < sorted[j].File })
 	var b strings.Builder
-	b.WriteString(unitTierPendingHeader)
+	b.WriteString(header)
 	for _, e := range sorted {
 		fmt.Fprintf(&b, "%s\t%d\t%s\n", e.File, e.Count, e.Owner)
 	}

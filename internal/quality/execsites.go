@@ -288,6 +288,23 @@ func CountExecSiteMatchesByFile(matches []ExecSiteMatch) map[string]int {
 // thin, discoverable aliases onto the same implementation, not a second
 // format.
 
+// execSitesPendingHeader is written by FormatExecSitesPending and recognised
+// (as ordinary "#"-prefixed comment lines) by ParseExecSitesPendingBytes
+// (ParseUnitTierPendingBytes underneath). It deliberately does not reuse
+// unitTierPendingHeader's text: that header names task-24's detector and
+// ciaudit.CompareUnitTierPendingTotal, neither of which owns this file.
+const execSitesPendingHeader = "" +
+	"# spec/plans/coverage-to-100 task-8: one line per non-test .go file,\n" +
+	"# outside internal/runner, internal/gitcli, internal/process and the\n" +
+	"# fd-inheriting secure git helpers, where the exec-site detector\n" +
+	"# (internal/quality/execsites.go) still matches, beyond zero. Format:\n" +
+	"# <path>\\t<count>\\t<owning task>. The grand total may not rise against\n" +
+	"# the base branch's copy of this file (ciaudit.CompareExecSitesPendingTotal,\n" +
+	"# wired into `wb ci audit --target`) unless the same PR shrinks other\n" +
+	"# entries by at least as much; the PR that creates this file is exempt.\n" +
+	"# Remove an entry once its count reaches 0, or once the owning task's\n" +
+	"# migration lands.\n"
+
 // ParseExecSitesPending parses testdata/exec_sites.pending.
 func ParseExecSitesPending(path string) (map[string]UnitTierPendingEntry, error) {
 	return ParseUnitTierPending(path)
@@ -300,9 +317,9 @@ func ParseExecSitesPendingBytes(data []byte, sourceName string) (map[string]Unit
 }
 
 // FormatExecSitesPending renders entries back into exec_sites.pending's file
-// format, sorted by path.
+// format, sorted by path, under execSitesPendingHeader.
 func FormatExecSitesPending(entries map[string]UnitTierPendingEntry) string {
-	return FormatUnitTierPending(entries)
+	return formatPendingList(entries, execSitesPendingHeader)
 }
 
 // ExecSitesPendingTotal sums every entry's count.
