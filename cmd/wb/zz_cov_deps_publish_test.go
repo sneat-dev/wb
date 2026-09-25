@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,26 @@ func cwDepsReleaseFixture() npmrelease.Release {
 // errTestPreflight is the injected preflight failure the command seam must
 // surface unchanged.
 var errTestPreflight = errors.New("fixture preflight failure")
+
+// cwDepsFakeNpmReleaseRunner is a scripted npmrelease.CommandRunner, the same
+// recording-and-replaying shape internal/npmrelease's own tests use to drive
+// Run's real Apply:true dispatch path without touching a real gh/npm
+// subprocess. It is wired in through npmPublishOptions.runner, the test-only
+// seam runPreparedNpmPublishLocked forwards into npmrelease.Options.
+type cwDepsFakeNpmReleaseRunner struct {
+	calls []string
+	steps []npmrelease.CommandResult
+}
+
+func (r *cwDepsFakeNpmReleaseRunner) Run(_ context.Context, _ string, args ...string) npmrelease.CommandResult {
+	r.calls = append(r.calls, strings.Join(args, " "))
+	if len(r.steps) == 0 {
+		return npmrelease.CommandResult{Code: 2, Err: errors.New("cwDepsFakeNpmReleaseRunner: unexpected command")}
+	}
+	result := r.steps[0]
+	r.steps = r.steps[1:]
+	return result
+}
 
 // cwDepsPublishOptionsFixture is a minimal options set that passes tuple
 // alignment for the fixture tuple.
@@ -347,6 +368,18 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 	}
 }
 
+// TestPreflightNpmPublishDelegatesToRealDependencyDiscovery proves the
+// production preflightNpmPublish wrapper wires the real dependencyRepositories
+// discoverer into preflightNpmPublishWithDiscovery, not only a test fake: the
+// missing --fleet requirement it surfaces is the same validation
+// preflightNpmPublishWithDiscovery itself performs before ever calling discover.
+func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) {
+	if _, err := preflightNpmPublish(&invocation{}, npmPublishOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "deps publish npm requires --fleet") {
+		t.Fatalf("err = %v, want the --fleet requirement", err)
+	}
+}
+
 func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	previousRoot := projectsRoot
@@ -372,6 +405,76 @@ func TestCwDepsPreflightNpmPublishSelectsTheFleet(t *testing.T) {
 	}
 	if !strings.HasPrefix(prepared.reportDir, os.Getenv("WB_HOME")) {
 		t.Errorf("prepared report dir = %q", prepared.reportDir)
+	}
+}
+
+// cwDepsWorkflowRunFixture renders the exact gh run list/view JSON shape
+// npmrelease.Run decodes, mirroring internal/npmrelease's own workflowRunFixture.
+func cwDepsWorkflowRunFixture(id, status, conclusion string, headSHA string, created time.Time) string {
+	return fmt.Sprintf(
+		`{"databaseId":%s,"headSha":%q,"status":%q,"conclusion":%q,"event":"workflow_dispatch","createdAt":%q,"updatedAt":%q,"url":%q}`,
+		id, headSHA, status, conclusion, created.UTC().Format(time.RFC3339), created.UTC().Add(time.Second).Format(time.RFC3339),
+		"https://github.com/acme/app/actions/runs/"+id)
+}
+
+// TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry drives the
+// real --apply dispatch branch of runPreparedNpmPublishLocked end to end
+// through a scripted npmrelease.CommandRunner: resolve the release head,
+// dispatch the workflow, observe it complete, and verify the registry - the
+// same sequence internal/npmrelease's own TestRunDispatchWaitAndRegistryEvidence
+// proves at the package level, now proven reachable from the command tree.
+func TestCwDepsRunPreparedNpmPublishApplyDispatchesAndVerifiesRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, home)
+	previousRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousRoot })
+
+	const headSHA = "0123456789abcdef0123456789abcdef01234567"
+	created := time.Now().UTC().Truncate(time.Second)
+	run := cwDepsWorkflowRunFixture("123", "completed", "success", headSHA, created.Add(time.Second))
+	runner := &cwDepsFakeNpmReleaseRunner{steps: []npmrelease.CommandResult{
+		{Output: headSHA + "\n"},
+		{Output: `[]`},
+		{},
+		{Output: "[" + run + "]"},
+		{Output: run},
+		{Output: `"1.2.3"`},
+	}}
+
+	options := cwDepsPublishOptionsFixture()
+	options.fleet = true
+	options.apply = true
+	options.maxWaves = 1
+	options.runner = runner
+	prepared := npmPublishPrepared{
+		releases:  []npmrelease.Release{cwDepsReleaseFixture()},
+		checks:    []quality.Check{},
+		reportDir: filepath.Join(home, "reports", "cw-npm-apply-dispatch"),
+		operation: "deps-npm-publish-cwfixture",
+	}
+	var out bytes.Buffer
+	command := cwDepsNewOutCommand(&out)
+	if err := runPreparedNpmPublishLocked(command, options, prepared, &invocation{}); err != nil {
+		t.Fatalf("apply publication: %v\nstdout: %s", err, out.String())
+	}
+	if !strings.Contains(strings.Join(runner.calls, "\n"), "npm view "+cwDepsReleaseFixture().Package+"@"+cwDepsReleaseFixture().Version) {
+		t.Fatalf("registry was not verified through the injected runner: %v", runner.calls)
+	}
+	// Read the durable JSON receipt directly rather than through
+	// npmrelease.LoadReport: that helper's YAML/JSON generation-consistency
+	// check is a separate concern from the invocation-threading this test
+	// covers, and is exercised by internal/npmrelease's own test suite.
+	persisted, err := os.ReadFile(filepath.Join(prepared.reportDir, "npm-publish.json"))
+	if err != nil {
+		t.Fatalf("read persisted report: %v", err)
+	}
+	var report npmrelease.Report
+	if err := json.Unmarshal(persisted, &report); err != nil {
+		t.Fatalf("decode persisted report: %v", err)
+	}
+	if report.Status != npmrelease.StatusPublished || len(report.Releases) != 1 || report.Releases[0].RunID != "123" {
+		t.Fatalf("persisted report = %+v", report)
 	}
 }
 

@@ -36,6 +36,14 @@ type npmPublishOptions struct {
 	registry       string
 	workflowPoll   time.Duration
 	apply          bool
+	// runner overrides the command runner npmrelease.Run uses to dispatch
+	// GitHub workflows and query npm. It is never set by flag parsing or any
+	// production code path; it exists only so tests can exercise the real
+	// --apply dispatch branch in runPreparedNpmPublishLocked hermetically,
+	// without touching a real gh/npm subprocess. Left nil (its zero value),
+	// npmrelease.Run falls back to OSCommandRunner exactly as before this
+	// field existed.
+	runner npmrelease.CommandRunner
 }
 
 type npmPublishOutput struct {
@@ -296,6 +304,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 		ReportDir: prepared.reportDir, Previous: prepared.previous,
 		Persist:  func(report npmrelease.Report) error { return npmrelease.WriteReport(prepared.reportDir, report) },
 		Progress: publicationProgress.reporter(),
+		Runner:   options.runner,
 	})
 	if publicationErr != nil {
 		publicationProgress.finish("failed")
