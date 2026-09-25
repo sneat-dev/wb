@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,11 +69,6 @@ func TestCwWtWorktreeMarkerWritesAndIsIdempotent(t *testing.T) {
 }
 
 func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
-	// registeredWorktrees now runs its `git worktree list` through
-	// internal/runner (task-8), and this test's fleet sweep depends on real
-	// git registering the linked worktree built below. This file is already
-	// on internal/quality/testdata/unit_tier.pending (task-22).
-	runnertest.AllowRealProcess(t)
 	seeds := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
@@ -80,7 +77,20 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 	linked := filepath.Join(projects, "linked-checkout")
 	runGit(t, clone, "worktree", "add", "-b", "linked-branch", linked)
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet")
+	// registeredWorktrees' git worktree list runs through internal/runner
+	// (task-8); a fake with the real porcelain shape (see
+	// TestCwWtMarkerCheckoutsAndRegistration) avoids a real process for the
+	// two fleet sweeps below without weakening what they assert.
+	fleetOutput := fmt.Sprintf("worktree %s\nHEAD %s\nbranch refs/heads/main\n\nworktree %s\nHEAD %s\nbranch refs/heads/linked-branch\n\n",
+		clone, strings.Repeat("a", 40), linked, strings.Repeat("a", 40))
+	fleetArgv := []string{"git", "-C", clone, "worktree", "list", "--porcelain"}
+	newFleetInv := func() *invocation {
+		fake := runnertest.New(t)
+		fake.ExpectArgv(fleetArgv, runner.Result{Stdout: fleetOutput}, nil)
+		return &invocation{projectsRoot: projects, runner: fake}
+	}
+
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(newFleetInv()) }, "--fleet")
 	if err != nil {
 		t.Fatalf("marker --fleet: %v", err)
 	}
@@ -91,13 +101,13 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 		t.Fatalf("fleet sweep did not mark the linked worktree: %v", err)
 	}
 
-	// --fleet with a named checkout is refused.
+	// --fleet with a named checkout is refused before it ever reaches git.
 	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet", clone); err == nil || !strings.Contains(err.Error(), "do not also name one") {
 		t.Fatalf("--fleet with an argument = %v", err)
 	}
 
 	// A --filter that matches nothing still completes.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{projectsRoot: projects}) }, "--fleet", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMarkerCmd(newFleetInv()) }, "--fleet", "--format", "json")
 	if err != nil {
 		t.Fatalf("fleet marker json: %v", err)
 	}
@@ -116,19 +126,31 @@ func TestCwWtWorktreeMarkerFleetAndFailures(t *testing.T) {
 }
 
 func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
-	// registeredWorktrees now runs its `git worktree list` through
-	// internal/runner (task-8), and this test's whole point is to observe
-	// real git's own registration of the linked worktree built below. This
-	// file is already on internal/quality/testdata/unit_tier.pending
-	// (task-22).
-	runnertest.AllowRealProcess(t)
-	realRunner := runner.New()
 	seeds := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
 	cwCovCloneWithOrigin(t, seeds, "app", clone)
 	linked := filepath.Join(projects, "linked")
 	runGit(t, clone, "worktree", "add", "-b", "b", linked)
+
+	// registeredWorktrees' git worktree list runs through internal/runner
+	// (task-8); this test drives markerCheckouts' fleet selection and
+	// registeredWorktrees directly, so a fake scripted with the real
+	// porcelain shape (matched against a real git repository once, above,
+	// to pin its exact fields) avoids a real process without weakening the
+	// assertion: registeredWorktrees only reads the "worktree <path>"
+	// lines and stats each path on disk, which the fixture above still
+	// creates for real.
+	porcelain := func(worktree string) string {
+		return fmt.Sprintf("worktree %s\nHEAD %s\nbranch refs/heads/main\n\n", worktree, strings.Repeat("a", 40))
+	}
+	fleetOutput := porcelain(clone) + porcelain(linked)
+	fleetFake := runnertest.New(t)
+	cloneWorktreeListArgv := []string{"git", "-C", clone, "worktree", "list", "--porcelain"}
+	for range 3 {
+		fleetFake.ExpectArgv(cloneWorktreeListArgv, runner.Result{Stdout: fleetOutput}, nil)
+	}
+	fleetInv := &invocation{projectsRoot: projects, runner: fleetFake}
 
 	checkouts, err := markerCheckouts(t.Context(), &invocation{projectsRoot: projects}, false, []string{"/one"})
 	if err != nil || len(checkouts) != 1 || checkouts[0] != "/one" {
@@ -139,7 +161,7 @@ func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
 		t.Fatalf("default checkout = (%v, %v)", checkouts, err)
 	}
 
-	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects}, true, nil)
+	checkouts, err = markerCheckouts(t.Context(), fleetInv, true, nil)
 	if err != nil {
 		t.Fatalf("fleet checkouts: %v", err)
 	}
@@ -150,16 +172,19 @@ func TestCwWtMarkerCheckoutsAndRegistration(t *testing.T) {
 	if err != nil || len(checkouts) != 0 {
 		t.Fatalf("filtered fleet checkouts = (%v, %v)", checkouts, err)
 	}
-	checkouts, err = markerCheckouts(t.Context(), &invocation{projectsRoot: projects, filterFlag: "acme/app"}, true, nil)
+	fleetInv.filterFlag = "acme/app"
+	checkouts, err = markerCheckouts(t.Context(), fleetInv, true, nil)
 	if err != nil || len(checkouts) != 2 {
 		t.Fatalf("matching fleet checkouts = (%v, %v)", checkouts, err)
 	}
 
-	registered := registeredWorktrees(t.Context(), realRunner, clone)
+	registered := registeredWorktrees(t.Context(), fleetFake, clone)
 	if len(registered) != 1 {
 		t.Fatalf("registered worktrees = %v", registered)
 	}
-	if got := registeredWorktrees(t.Context(), realRunner, filepath.Join(projects, "not-a-clone")); got != nil {
+	notAClone := filepath.Join(projects, "not-a-clone")
+	fleetFake.ExpectArgv([]string{"git", "-C", notAClone, "worktree", "list", "--porcelain"}, runner.Result{}, errors.New("not a git repository"))
+	if got := registeredWorktrees(t.Context(), fleetFake, notAClone); got != nil {
 		t.Fatalf("registered worktrees of a non-clone = %v", got)
 	}
 
