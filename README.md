@@ -2668,8 +2668,8 @@ exists, so this is the reason reconstructed from what WB relies on (checked
 - **WB is built on features go-git lacks or only partly has.** WB runs linked
   worktrees (`git worktree`), `rebase`, non-fast-forward `merge`,
   `cherry-pick`, `stash`, `apply`, `bundle` and `patch-id`.
-  - go-git's compatibility table lists no `rebase`, `stash`, `apply` or
-    `bundle`, and it does not list `patch-id`.
+  - go-git's compatibility table marks `rebase`, `stash`, `apply` and
+    `bundle` as unsupported, and does not list `patch-id` at all.
   - Its `merge` is fast-forward only.
   - Its `cherry-pick` and linked-worktree support are partial.
 - **It must behave exactly like the user's Git.** WB acts on the same
@@ -2683,7 +2683,7 @@ exists, so this is the reason reconstructed from what WB relies on (checked
 - **The secure helpers keep a race-free guarantee that go-git would not give by
   default.** Some operations, for example `setHooksPathAt` in
   `internal/hooks/git.go`, hand already-opened directory descriptors to a
-  short-lived WB helper process. The helper enters the repository with `fchdir`
+  short-lived WB helper process. The helper enters the Git common directory with `fchdir`
   and then runs a fixed `git` executable with `--git-dir=.`, so a path swapped
   after validation cannot redirect the write. go-git opens repositories by path
   name, so it would re-resolve a swapped path unless it were given a
