@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -28,7 +29,7 @@ func newHostLevelCheckoutFixture(t *testing.T) hostLevelCheckoutFixture {
 	t.Helper()
 	base := t.TempDir()
 	origin := filepath.Join(base, "origin.git")
-	runCommand(t, base, "git", "init", "-q", "--bare", origin)
+	testenv.InitBareRemoteForTest(t, origin)
 	projectsRoot := filepath.Join(base, "projects")
 	canonical := filepath.Join(projectsRoot, "github.com", "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
@@ -196,7 +197,7 @@ func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	projectsRoot := filepath.Join(root, "projects")
 	remote := filepath.Join(root, "remote.git")
 	canonical := filepath.Join(projectsRoot, "acme", "app")
-	gcGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

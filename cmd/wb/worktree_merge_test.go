@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -689,6 +690,7 @@ func newCLIWorktreeMergeFixture(t *testing.T, sourceCount int) cliWorktreeMergeF
 	runCLIWorktreeGit(t, seed, "add", "-A")
 	runCLIWorktreeGit(t, seed, "commit", "-m", "initial")
 	runCLIWorktreeGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

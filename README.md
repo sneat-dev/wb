@@ -2657,6 +2657,50 @@ wb sync --dry-run                      # preview a fleet sync
 wb run --list                          # see your configured recipes
 ```
 
+## Why WB runs the `git` CLI
+
+WB runs the `git` executable for every Git operation. It does not use a Go Git
+library such as [go-git](https://github.com/go-git/go-git). No decision record
+exists, so this is the reason reconstructed from what WB relies on (checked
+2026-09-25 against go-git's
+[`COMPATIBILITY.md`](https://github.com/go-git/go-git/blob/main/COMPATIBILITY.md)):
+
+- **WB is built on features go-git lacks or only partly has.** WB runs linked
+  worktrees (`git worktree`), `rebase`, non-fast-forward `merge`,
+  `cherry-pick`, `stash`, `apply`, `bundle` and `patch-id`.
+  - go-git's compatibility table marks `rebase`, `stash`, `apply` and
+    `bundle` as unsupported, and does not list `patch-id` at all.
+  - Its `merge` is fast-forward only.
+  - Its `cherry-pick` and linked-worktree support are partial.
+- **It must behave exactly like the user's Git.** WB acts on the same
+  repositories people and agents work in with the `git` CLI, so it has to honour
+  their configuration, `includeIf` rules, credential helpers, hooks
+  (`core.hooksPath` is part of WB's own hook management) and signing.
+  - go-git's SSH transport authenticates through the SSH agent by default, and
+    reads only `Hostname` and `Port` from `~/.ssh/config`.
+  - The `git` CLI runs the user's own `ssh` (or `core.sshCommand`), with their
+    identity files and proxy settings.
+- **The secure helpers keep a race-free guarantee that go-git would not give by
+  default.** Some operations, for example `setHooksPathAt` in
+  `internal/hooks/git.go`, hand already-opened directory descriptors to a
+  short-lived WB helper process. The helper enters the Git common directory with `fchdir`
+  and then runs a fixed `git` executable with `--git-dir=.`, so a path swapped
+  after validation cannot redirect the write. go-git opens repositories by path
+  name, so it would re-resolve a swapped path unless it were given a
+  descriptor-rooted filesystem.
+
+**Testing.** Using the CLI does not mean tests need real Git. The coverage
+plan ([`spec/plans/coverage-to-100`](spec/plans/coverage-to-100/README.md),
+task-8, not yet implemented) will route every Git call through one command
+runner and small per-package Git interfaces:
+
+- Unit tests will substitute fakes for them.
+- End-to-end tests will run the real `git` and check that each fake behaves
+  like it.
+
+Once that is in place, a library-backed implementation of one of those
+interfaces could be added without changing any caller.
+
 ## Adding a new operation
 
 For anything expressible as "detect matching repos, mutate, land the

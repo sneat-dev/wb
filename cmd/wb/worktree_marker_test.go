@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type checkoutFixture struct {
@@ -23,7 +24,7 @@ func newCheckoutFixture(t *testing.T) checkoutFixture {
 	t.Helper()
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
-	runCommand(t, root, "git", "init", "-q", "--bare", origin)
+	testenv.InitBareRemoteForTest(t, origin)
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "sneat-co", "backstage")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/progress"
@@ -3987,6 +3988,25 @@ func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree
 }
 
 func extractWorktreeMergeArchive(archivePath, destination string) error {
+	return extractWorktreeMergeArchiveInjected(archivePath, destination, nil)
+}
+
+// extractWorktreeMergeArchiveInjected is extractWorktreeMergeArchive's test
+// seam (task-9 PR-4): every production call site reaches it only through
+// extractWorktreeMergeArchive, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/write/close failure branch
+// on a tar.TypeReg entry deterministically. Each regular-file entry is
+// created with a fixed name (from the archive) that is always fully
+// overwritten (O_CREATE|O_TRUNC, never O_EXCL), so this uses
+// CreateOrTruncatePath rather than CreateExclusivePath. The streaming copy
+// from the tar reader goes through io.Copy(filewrite.Writer(file, path,
+// inj), reader) (review-t9-pr6 N1): filewrite.Writer is an io.Writer
+// adapter, not a []byte-at-a-time primitive, so it fits an arbitrary-size
+// streaming source exactly as well as it fits a small in-memory payload,
+// making io.Copy's write failures injectable without changing the chunks
+// io.Copy writes or how it wraps their errors.
+func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *filewrite.Injector) error {
 	archive, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -4019,12 +4039,12 @@ func extractWorktreeMergeArchive(archivePath, destination string) error {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
-			file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			file, err := filewrite.CreateOrTruncatePath(path, os.FileMode(header.Mode), inj)
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.Copy(file, reader)
-			closeErr := file.Close()
+			_, copyErr := io.Copy(filewrite.Writer(file, path, inj), reader)
+			closeErr := filewrite.Close(file, path, inj)
 			if copyErr != nil {
 				return copyErr
 			}
@@ -4837,6 +4857,16 @@ func writeWorktreeMergePrompt(repository, target string, sources []WorktreeMerge
 }
 
 func persistWorktreeMergeReceipt(receipt WorktreeMergeReceipt) error {
+	return persistWorktreeMergeReceiptInjected(receipt, nil)
+}
+
+// persistWorktreeMergeReceiptInjected is persistWorktreeMergeReceipt's test
+// seam (task-9 PR-4): every production call site reaches it only through
+// persistWorktreeMergeReceipt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistWorktreeMergeReceiptInjected(receipt WorktreeMergeReceipt, inj *filewrite.Injector) error {
 	if receipt.ReceiptPath == "" {
 		return fmt.Errorf("merge receipt path is required")
 	}
@@ -4848,28 +4878,28 @@ func persistWorktreeMergeReceipt(receipt WorktreeMergeReceipt) error {
 		return err
 	}
 	contents = append(contents, '\n')
-	temporary, err := os.CreateTemp(filepath.Dir(receipt.ReceiptPath), ".merge-receipt-*.tmp")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(receipt.ReceiptPath), ".merge-receipt-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, receipt.ReceiptPath)
+	return filewrite.Rename(temporaryPath, receipt.ReceiptPath, inj)
 }
 
 // PeekWorktreeMergeReceipt resolves input (a candidate worktree or a receipt

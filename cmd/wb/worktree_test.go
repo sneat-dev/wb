@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -643,6 +644,16 @@ func setUpRenameCLIFixture(t *testing.T) (projects string) {
 	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
 		t.Fatalf("init bare remote: %v\n%s", err, output)
 	}
+	// #754: git strips every GIT_CONFIG_* variable from the environment it
+	// hands the server-side receive-pack a same-host `git push` spawns, so
+	// TestMain's process-wide GitAutoMaintenanceOffProcess never reaches it.
+	// Without this, a push below (or one worktree-merge-prepare later does
+	// against a candidate branched from this remote) can leave receive-pack's
+	// own detached `git gc --auto`/`git maintenance run --auto` still writing
+	// inside this bare remote -- which lives directly under root -- racing
+	// t.TempDir()'s own recursive removal of root at test end (task-21,
+	// decision 13; see #711, which hit the identical class of race).
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	projects = filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

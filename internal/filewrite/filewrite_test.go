@@ -464,6 +464,54 @@ func TestWriteClampsAnOutOfRangeShortWriteToZeroBytes(t *testing.T) {
 	}
 }
 
+// --- Writer ---
+
+func TestWriterWritesTheExactChunksItIsGiven(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	w := Writer(file, "f", nil)
+	if n, err := w.Write([]byte("hel")); n != 3 || err != nil {
+		t.Fatalf("Write(%q) = %d, %v, want 3, nil", "hel", n, err)
+	}
+	if n, err := w.Write([]byte("lo")); n != 2 || err != nil {
+		t.Fatalf("Write(%q) = %d, %v, want 2, nil", "lo", n, err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("content = %q, want %q", got, "hello")
+	}
+}
+
+func TestWriterReportsARealFailureOnAClosedFile(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	_ = file.Close()
+	w := Writer(file, "f", nil)
+	if n, err := w.Write([]byte("x")); err == nil {
+		t.Fatalf("Write(closed file) = %d, nil, want a real error", n)
+	}
+}
+
+func TestWriterHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	file := openWritableFile(t, dir, "f")
+	inj := &Injector{Step: StepWrite, Name: "f", Err: errBoom}
+	w := Writer(file, "f", inj)
+	n, err := w.Write([]byte("x"))
+	if n != 0 || !errors.Is(err, errBoom) {
+		t.Fatalf("Write with injected failure = %d, %v, want 0, errBoom", n, err)
+	}
+	if got, statErr := os.ReadFile(filepath.Join(dir.Name(), "f")); statErr != nil || len(got) != 0 {
+		t.Fatalf("file content after injected failure = %q, %v, want empty (the real write must not run)", got, statErr)
+	}
+}
+
 // --- Sync / Close / SyncDir ---
 
 func TestSyncFsyncsARegularFile(t *testing.T) {
@@ -619,6 +667,102 @@ func TestLinkNoReplaceHonoursAnInjectedFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir.Name(), "new")); err == nil {
 		t.Fatal("injected failure still created the link")
+	}
+}
+
+// --- LinkPath (task-9 PR-4) ---
+
+func TestLinkPathCreatesASecondNameForTheSameContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	if err := LinkPath(oldPath, newPath, nil); err != nil {
+		t.Fatalf("LinkPath: %v", err)
+	}
+	oldInfo, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newInfo, err := os.Stat(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(oldInfo, newInfo) {
+		t.Fatal("LinkPath did not create a link to the same inode")
+	}
+}
+
+func TestLinkPathReportsAnErrorOnAnExistingDestination(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	newPath := filepath.Join(dir, "new")
+	for _, path := range []string{oldPath, newPath} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := LinkPath(oldPath, newPath, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath(existing destination) = %v, want a wrapped os.ErrExist", err)
+	}
+}
+
+func TestLinkPathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	inj := &Injector{Step: StepLink, Name: newPath, Err: errBoom}
+	if err := LinkPath(oldPath, newPath, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("LinkPath with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		t.Fatal("injected failure still created the link")
+	}
+}
+
+// TestLinkPathHookCreatesARealRaceBeforeTheLink asserts Injector.Hook lets
+// a test build a genuine collision at LinkPath's destination -- exactly
+// the pattern the 6 internal/orchestrate acknowledgement-persist call
+// sites this primitive replaces need: a competing writer publishes its
+// own content to newpath first, and the real os.Link call that follows
+// then observes a real EEXIST, not a simulated one.
+func TestLinkPathHookCreatesARealRaceBeforeTheLink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	if err := os.WriteFile(oldPath, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(dir, "new")
+	hookRan := false
+	inj := &Injector{
+		Step: StepLink,
+		Name: newPath,
+		Hook: func() {
+			hookRan = true
+			if err := os.WriteFile(newPath, []byte("competing"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	err := LinkPath(oldPath, newPath, inj)
+	if !hookRan {
+		t.Fatal("Hook did not run")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("LinkPath after a Hook-created collision = %v, want a wrapped os.ErrExist", err)
+	}
+	contents, readErr := os.ReadFile(newPath)
+	if readErr != nil || string(contents) != "competing" {
+		t.Fatalf("newPath contents = %q, err = %v, want the competing writer's content preserved", contents, readErr)
 	}
 }
 
@@ -1061,5 +1205,246 @@ func TestRenameReportsARealFailure(t *testing.T) {
 	dir := t.TempDir()
 	if err := Rename(filepath.Join(dir, "missing"), filepath.Join(dir, "new"), nil); err == nil {
 		t.Fatal("Rename of a missing oldpath = nil, want an error")
+	}
+}
+
+// --- RenameAt (task-9 PR-3) ---
+
+func TestRenameAtPublishesFromNameToToName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err == nil {
+		t.Fatal("fromName still exists after RenameAt")
+	}
+}
+
+func TestRenameAtReplacesAnExistingToName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("new-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir.Name(), "new"), []byte("stale-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new-content" {
+		t.Fatalf("content = %q, want the replacing content", got)
+	}
+}
+
+func TestRenameAtHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepRename, Name: "new", Err: errBoom}
+	if err := RenameAt(int(dir.Fd()), "old", int(dir.Fd()), "new", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("RenameAt with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the injected failure")
+	}
+}
+
+func TestRenameAtReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := RenameAt(int(dir.Fd()), "missing", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameAt of a missing fromName = nil, want an error")
+	}
+}
+
+// --- RenameNoReplace (task-9 PR-3; performs its own syscall since
+// review-756 N1, rather than running a caller-supplied closure) ---
+
+func TestRenameNoReplaceMovesFromNameToANewToName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err == nil {
+		t.Fatal("fromName still exists after RenameNoReplace")
+	}
+}
+
+func TestRenameNoReplaceReportsARealFailureWhenToNameAlreadyExists(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("new-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir.Name(), "new"), []byte("existing-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameNoReplace onto an existing toName = nil, want an error")
+	}
+	got, err := os.ReadFile(filepath.Join(dir.Name(), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "existing-content" {
+		t.Fatalf("toName content = %q, want the original existing content unreplaced", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the no-replace refusal")
+	}
+}
+
+func TestRenameNoReplaceHonoursAnInjectedFailureWithoutRunningRename(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := os.WriteFile(filepath.Join(dir.Name(), "old"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inj := &Injector{Step: StepRenameNoReplace, Name: "new", Err: errBoom}
+	if err := RenameNoReplace(int(dir.Fd()), "old", int(dir.Fd()), "new", inj); !errors.Is(err, errBoom) {
+		t.Fatalf("RenameNoReplace with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir.Name(), "old")); err != nil {
+		t.Fatal("fromName was renamed away despite the injected failure")
+	}
+}
+
+func TestRenameNoReplaceReportsARealFailureFromAMissingFromName(t *testing.T) {
+	t.Parallel()
+	dir := openTestDir(t)
+	if err := RenameNoReplace(int(dir.Fd()), "missing", int(dir.Fd()), "new", nil); err == nil {
+		t.Fatal("RenameNoReplace of a missing fromName = nil, want an error")
+	}
+}
+
+// --- CreateOrTruncatePath (task-9 PR-3) ---
+
+func TestCreateOrTruncatePathCreatesAMissingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	file, err := CreateOrTruncatePath(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("created file missing: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("created file mode = %o, want 0600", perm)
+	}
+}
+
+func TestCreateOrTruncatePathTruncatesAnExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("stale content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := CreateOrTruncatePath(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("size = %d, want 0 after truncation", info.Size())
+	}
+}
+
+func TestCreateOrTruncatePathHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepOpenOrCreate, Name: path, Err: errBoom}
+	if _, err := CreateOrTruncatePath(path, 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("CreateOrTruncatePath with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("injected failure still created the file")
+	}
+}
+
+func TestCreateOrTruncatePathReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-dir", "f")
+	if _, err := CreateOrTruncatePath(path, 0o600, nil); err == nil {
+		t.Fatal("CreateOrTruncatePath under a missing directory = nil, want an error")
+	}
+}
+
+// --- WriteFile (task-9 PR-3) ---
+
+func TestWriteFileWritesTheGivenBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	if err := WriteFile(path, []byte("content"), 0o600, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "content" {
+		t.Fatalf("content = %q, want %q", got, "content")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("written file mode = %o, want 0600", perm)
+	}
+}
+
+func TestWriteFileHonoursAnInjectedFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "f")
+	inj := &Injector{Step: StepWrite, Name: path, Err: errBoom}
+	if err := WriteFile(path, []byte("content"), 0o600, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("WriteFile with injected failure = %v, want errBoom", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("injected failure still created the file")
+	}
+}
+
+func TestWriteFileReportsARealFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-dir", "f")
+	if err := WriteFile(path, []byte("content"), 0o600, nil); err == nil {
+		t.Fatal("WriteFile under a missing directory = nil, want an error")
 	}
 }

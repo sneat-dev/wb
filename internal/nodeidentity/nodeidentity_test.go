@@ -8,7 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
+
+// errBoomPR7NodeIdentity is task-9 PR-7's sentinel injected failure for this
+// package, distinct from any other package's or task's sentinel so
+// errors.Is never accidentally matches a different test's error by
+// coincidence.
+var errBoomPR7NodeIdentity = errors.New("pr7 boom")
 
 // TestLoadPersistsAcrossRestart encodes the AC: a node ID survives a daemon
 // restart, i.e. calling Load twice against the same projects root returns the
@@ -231,55 +239,38 @@ func TestLoadPropagatesAnUnresolvableProjectsRoot(t *testing.T) {
 }
 
 // TestWriteNodeIDTempFileReportsEachBackendFailure covers
-// writeNodeIDTempFile's four post-create failure branches (Chmod, the write,
-// Sync, and Close), none of which a real filesystem can be made to fail
-// portably and deterministically moments after successfully creating the
-// same temp file — hence the package's own fileChmod/fileWriteString/
-// fileSync/fileClose test seams, restored after each subtest so the rest of
-// the suite keeps exercising the real *os.File methods.
+// writeNodeIDTempFileInjected's five failure branches (create, Chmod, the
+// write, Sync, and Close) via *filewrite.Injector (task-9 PR-7), replacing
+// the package's former fileChmod/fileWriteString/fileSync/fileClose
+// package-var test seams: those were forbidden by this migration's own
+// convention (an Injector is always passed explicitly per call, never held
+// in a package var shared across goroutines and tests).
 func TestWriteNodeIDTempFileReportsEachBackendFailure(t *testing.T) {
-	injected := errors.New("injected backend failure")
-
-	t.Run("chmod fails", func(t *testing.T) {
-		originalChmod := fileChmod
-		fileChmod = func(*os.File, os.FileMode) error { return injected }
-		t.Cleanup(func() { fileChmod = originalChmod })
-		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
-			t.Fatal("expected an error when Chmod fails")
-		}
-	})
-
-	t.Run("write fails", func(t *testing.T) {
-		originalWrite := fileWriteString
-		fileWriteString = func(*os.File, string) (int, error) { return 0, injected }
-		t.Cleanup(func() { fileWriteString = originalWrite })
-		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
-			t.Fatal("expected an error when the write fails")
-		}
-	})
-
-	t.Run("sync fails", func(t *testing.T) {
-		originalSync := fileSync
-		fileSync = func(*os.File) error { return injected }
-		t.Cleanup(func() { fileSync = originalSync })
-		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
-			t.Fatal("expected an error when Sync fails")
-		}
-	})
-
-	t.Run("close fails", func(t *testing.T) {
-		originalClose := fileClose
-		fileClose = func(*os.File) error { return injected }
-		t.Cleanup(func() { fileClose = originalClose })
-		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
-			t.Fatal("expected an error when Close fails")
-		}
-	})
-
-	// Confirms the seams are restored to real behaviour: this ordinary call
-	// must still succeed once every subtest above has cleaned up.
-	if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err != nil {
-		t.Fatalf("writeNodeIDTempFile after seam restoration = %v, want nil", err)
+	t.Parallel()
+	for _, step := range []filewrite.Step{
+		filewrite.StepOpenOrCreate, filewrite.StepChmod, filewrite.StepWrite,
+		filewrite.StepSync, filewrite.StepClose,
+	} {
+		step := step
+		t.Run(string(step), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			inj := &filewrite.Injector{Step: step, Err: errBoomPR7NodeIdentity}
+			path, err := writeNodeIDTempFileInjected(dir, "id", inj)
+			if !errors.Is(err, errBoomPR7NodeIdentity) {
+				t.Fatalf("writeNodeIDTempFileInjected(%s failure) = %v, want errBoomPR7NodeIdentity", step, err)
+			}
+			if path != "" {
+				t.Fatalf("writeNodeIDTempFileInjected(%s failure) returned a path %q, want empty", step, path)
+			}
+			matches, globErr := filepath.Glob(filepath.Join(dir, ".node-id-*.tmp"))
+			if globErr != nil {
+				t.Fatal(globErr)
+			}
+			if len(matches) != 0 {
+				t.Fatalf("leftover temp file(s) after injected failure: %v", matches)
+			}
+		})
 	}
 }
 
@@ -333,6 +324,28 @@ func TestPublishNodeIDReportsAnUnrelatedLinkFailure(t *testing.T) {
 	badPath := filepath.Join(dir, "missing-parent", "node-id")
 	if _, err := publishNodeID(tempPath, badPath, "id"); err == nil {
 		t.Fatal("expected an error when the destination directory does not exist")
+	}
+}
+
+// TestPublishNodeIDInjectedHonoursAnInjectedLinkFailure covers
+// publishNodeIDInjected's link failure branch deterministically through
+// *filewrite.Injector, alongside the two real-filesystem-driven branches
+// above (a lost race and an unrelated real link failure).
+func TestPublishNodeIDInjectedHonoursAnInjectedLinkFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tempPath, err := writeNodeIDTempFile(dir, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(tempPath) })
+	path := filepath.Join(dir, "node-id")
+	inj := &filewrite.Injector{Step: filewrite.StepLink, Err: errBoomPR7NodeIdentity}
+	if _, err := publishNodeIDInjected(tempPath, path, "id", inj); !errors.Is(err, errBoomPR7NodeIdentity) {
+		t.Fatalf("publishNodeIDInjected(link failure) = %v, want errBoomPR7NodeIdentity", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("failed publish left a visible node-id file: %v", statErr)
 	}
 }
 

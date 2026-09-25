@@ -19,19 +19,25 @@
 // This package's exported surface only includes primitives spec/plans/
 // coverage-to-100 task-9's PR series has an actual production caller for
 // as of the PR that adds them; a primitive with no caller yet (a
-// RenameNoReplace, Mkdirat, or a "create, chmod, write, sync, but do not
-// close" composite) is added in the PR that first needs it, not
-// spuriously ahead of time. CreateTemp, CreateExclusivePath, ChmodPath,
-// Rename, and the exported Close were added in task-9 PR-2, the first PR
-// with a path-based (rather than fd-relative) call site. ChmodFile was
-// added in the same PR's review round, for a call site holding an
-// *os.File rather than a bare fd, so it keeps file.Chmod's *fs.PathError
-// wrapping instead of Chmod's bare Fchmod errno.
+// Mkdirat, or a "create, chmod, write, sync, but do not close" composite)
+// is added in the PR that first needs it, not spuriously ahead of time.
+// CreateTemp, CreateExclusivePath, ChmodPath, Rename, and the exported
+// Close were added in task-9 PR-2, the first PR with a path-based
+// (rather than fd-relative) call site. ChmodFile was added in the same
+// PR's review round, for a call site holding an *os.File rather than a
+// bare fd, so it keeps file.Chmod's *fs.PathError wrapping instead of
+// Chmod's bare Fchmod errno. RenameAt, RenameNoReplace,
+// CreateOrTruncatePath, and WriteFile were added in task-9 PR-3. LinkPath
+// was added in task-9 PR-4, replacing 6 internal/orchestrate
+// package-level os.Link aliases (var linkXxx = os.Link) that existed only
+// as an ad hoc test seam -- exactly what this package's explicit
+// no-package-level-variable rule above exists to replace.
 package filewrite
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
@@ -77,6 +83,13 @@ const (
 	// used (task-9 PR-2: these sites resolve a plain absolute path, with
 	// no already-open parent directory descriptor to rename relative to).
 	StepRename Step = "rename"
+	// StepRenameNoReplace covers a fd-relative no-replace rename publish
+	// (RenameNoReplace) -- the sequence task-9 PR-3's
+	// internal/worktrees/worklog.go:writeBytesImmutableAt uses in place of
+	// LinkNoReplace's Linkat, so two racing publishers of identical
+	// content converge on whichever one wins the rename instead of each
+	// producing its own inode.
+	StepRenameNoReplace Step = "rename_no_replace"
 )
 
 // Injector lets a test force one named step to fail, or run a hook
@@ -185,8 +198,16 @@ func (e *ShortWriteError) Error() string {
 
 // CreateExclusive opens name under the directory identified by
 // directoryFD for writing, creating it and failing if it already exists:
-// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, the flag set every
-// write-once-immutable call site in this repository used. The returned
+// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC. Most write-once-immutable
+// call sites in this repository already used exactly this flag set before
+// migrating here. The two task-9 PR-3 exceptions --
+// internal/worktrees/worklog.go's writeBytesImmutableAtInjected and
+// writeBytesAtomicAtInjected -- previously opened their temp file with a
+// raw unix.Openat that omitted O_CLOEXEC; routing them through
+// CreateExclusive is a deliberate behaviour change (review-756 B3), not an
+// oversight: it closes a real fd leak, where a child process exec'd while
+// the temp file was open (git and friends) used to inherit a writable fd
+// on it, and nothing in this repository depends on that leak. The returned
 // error is the syscall's own (typically wrapped in nothing further, so
 // callers keep their existing errors.Is(err, unix.EEXIST) checks).
 func CreateExclusive(directoryFD int, name string, mode uint32, inj *Injector) (int, error) {
@@ -259,6 +280,53 @@ func Write(file *os.File, data []byte, name string, inj *Injector) error {
 	return nil
 }
 
+// writer adapts an already-open *os.File to io.Writer, routing every Write
+// call through the same Injector.Step (StepWrite) and Name key that a
+// single-shot Write call above uses. See Writer's doc comment for why this
+// exists and what it deliberately does not do.
+type writer struct {
+	file *os.File
+	name string
+	inj  *Injector
+}
+
+// Write makes byte-identical write calls and error text to a direct
+// file.Write with a nil Injector: it runs the same injection check as
+// Write above, then calls file.Write(p) once and returns its real (n,
+// err) unchanged. Unlike Write, it never checks for a short write itself
+// -- it is a plain io.Writer, and its caller (bufio.Writer, io.Copy, ...)
+// already treats n < len(p) with a nil error as its own short-write
+// condition, exactly as it would writing to file directly.
+func (w *writer) Write(p []byte) (int, error) {
+	if err := w.inj.run(StepWrite, w.name); err != nil {
+		return 0, err
+	}
+	return w.file.Write(p)
+}
+
+// Writer wraps file as an io.Writer whose every Write call is injectable
+// at StepWrite/name -- the seam for a call site that hands its temp file
+// to a streaming or buffered writer (bufio.Writer, io.Copy, ...) instead
+// of assembling one []byte and calling Write once. With a nil Injector
+// this issues exactly the same file.Write calls, in the same chunks its
+// caller already made, and passes the same error up unwrapped: a
+// bufio.Writer already writes and errors byte-identically whether its
+// io.Writer happens to be *os.File directly or this thin wrapper around
+// it. This is NOT true for an io.Copy whose *source* is itself an
+// *os.File or a socket: io.Copy special-cases that pairing with
+// copy_file_range/splice/sendfile fast paths that require its destination
+// to implement io.ReaderFrom, which this plain io.Writer deliberately does
+// not, so io.Copy falls back to its ordinary buffered-read/Write loop
+// instead -- a real, usually-harmless behaviour and performance change,
+// not a byte-identical one, for that specific pairing (review-t9-pr6 N3).
+// No call site task-9 has migrated so far pairs this with an *os.File or
+// socket source; if one ever does, give writer a ReadFrom method that
+// delegates to file after the same injection check, to restore the fast
+// path.
+func Writer(file *os.File, name string, inj *Injector) io.Writer {
+	return &writer{file: file, name: name, inj: inj}
+}
+
 // Sync fsyncs a regular file via file.Sync(). Every inline call site this
 // package replaces already called file.Sync() on the same *os.File
 // before this package existed, so this call's behaviour -- including on
@@ -325,6 +393,24 @@ func LinkNoReplace(directoryFD int, oldName, newName string, inj *Injector) erro
 		return err
 	}
 	return unix.Linkat(directoryFD, oldName, directoryFD, newName, 0)
+}
+
+// LinkPath hard-links oldpath to newpath, both resolved paths, failing
+// instead of replacing an existing newpath (os.Link's own contract) --
+// the path-based twin of LinkNoReplace for a task-9 PR-4
+// internal/orchestrate call site that already has a resolved absolute
+// destination path and no parent directory descriptor to link relative
+// to. It shares StepLink with LinkNoReplace: a test targets "the link"
+// step regardless of which of the two publishes it. An Injector's Hook
+// can create a real race here exactly as documented on Injector.Hook --
+// for example writing a competing acknowledgement to newpath and then
+// returning os.ErrExist, so the following assertion observes a real
+// collision instead of a simulated one.
+func LinkPath(oldpath, newpath string, inj *Injector) error {
+	if err := inj.run(StepLink, newpath); err != nil {
+		return err
+	}
+	return os.Link(oldpath, newpath)
 }
 
 // CreateExclusiveWriteSync creates name under directory (O_WRONLY|
@@ -453,4 +539,60 @@ func Rename(oldpath, newpath string, inj *Injector) error {
 		return err
 	}
 	return os.Rename(oldpath, newpath)
+}
+
+// RenameAt publishes a fd-relative rename (unix.Renameat), replacing any
+// existing toName -- the fd-relative twin of Rename for a task-9 PR-3
+// internal/worktrees call site that already holds an open directory
+// descriptor and has no reason to resolve a path through it.
+func RenameAt(fromDirectoryFD int, fromName string, toDirectoryFD int, toName string, inj *Injector) error {
+	if err := inj.run(StepRename, toName); err != nil {
+		return err
+	}
+	return unix.Renameat(fromDirectoryFD, fromName, toDirectoryFD, toName)
+}
+
+// RenameNoReplace publishes a fd-relative, no-replace rename
+// (renameat2's RENAME_NOREPLACE on Linux, renameatx_np's RENAME_EXCL on
+// Darwin, an explicit unsupported error elsewhere) -- the fd-relative,
+// content-addressed-publish twin of RenameAt, used where two racing
+// publishers of identical content must converge on whichever one wins
+// the rename instead of each producing its own inode.
+//
+// This package owns the platform mechanics itself (task-9 PR-3
+// review-756 N1): earlier, a caller built the already-resolved rename
+// itself and handed RenameNoReplace a closure to run, which meant this
+// package's 100% coverage said nothing about the renameat2/renameatx_np
+// mechanics. internal/worktrees' own renameNoReplace, which is also
+// called from unrelated, non-write-sequence call sites this task does
+// not touch, is now a thin delegate to this function instead of an
+// independent implementation.
+func RenameNoReplace(fromDirectoryFD int, fromName string, toDirectoryFD int, toName string, inj *Injector) error {
+	if err := inj.run(StepRenameNoReplace, toName); err != nil {
+		return err
+	}
+	return renameNoReplaceSyscall(fromDirectoryFD, fromName, toDirectoryFD, toName)
+}
+
+// CreateOrTruncatePath opens path for writing, creating it if it does
+// not exist and truncating it to empty if it does: O_WRONLY|O_CREAT|
+// O_TRUNC, mode -- the shape a task-9 PR-3 call site uses for a fixed
+// (not uniquely-named) temporary path it always fully overwrites, unlike
+// CreateExclusivePath's refuse-if-present contract.
+func CreateOrTruncatePath(path string, mode os.FileMode, inj *Injector) (*os.File, error) {
+	if err := inj.run(StepOpenOrCreate, path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+}
+
+// WriteFile writes data to path in one call (os.WriteFile: open-create-
+// truncate, write, close, no fsync) -- the shape task-9 PR-3's
+// WriteFile-to-temp+Rename call sites use for their temporary half, where
+// the original inline code never called Sync either.
+func WriteFile(path string, data []byte, mode os.FileMode, inj *Injector) error {
+	if err := inj.run(StepWrite, path); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, mode)
 }

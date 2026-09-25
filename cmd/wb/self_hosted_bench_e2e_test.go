@@ -297,7 +297,7 @@ func newFakeGitHubRemote(t *testing.T) *fakeGitHubRemote {
 	t.Cleanup(func() { _ = os.RemoveAll(origin) })
 
 	remote := &fakeGitHubRemote{bare: filepath.Join(origin, "app.git"), seed: filepath.Join(origin, "seed")}
-	git(t, origin, "init", "--bare", "--initial-branch=main", remote.bare)
+	testenv.InitBareRemoteForTest(t, remote.bare)
 	git(t, origin, "init", "--initial-branch=main", remote.seed)
 	configureGitIdentity(t, remote.seed)
 	if err := os.WriteFile(filepath.Join(remote.seed, "README.md"), []byte("bench\n"), 0o600); err != nil {
