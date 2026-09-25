@@ -52,7 +52,9 @@ type OwnerDeps struct {
 	// StopGrace and StopPollInterval configure StopRun's escalation wait.
 	// Both are struct fields, not package-level mutable vars, so a test
 	// cannot leave shared package state mutated for another test running in
-	// parallel; zero uses the production defaults.
+	// parallel. StopRun does not default a zero OwnerDeps -- every caller
+	// (production and test) builds on DefaultOwnerDeps, which already
+	// populates every field, so StopRun trusts deps as given.
 	StopGrace        time.Duration
 	StopPollInterval time.Duration
 }
@@ -320,18 +322,6 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 // so a stopped run reports a real outcome instead of vanishing into
 // "abandoned".
 func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
-	if deps.Now == nil {
-		deps.Now = time.Now
-	}
-	if deps.Sleep == nil {
-		deps.Sleep = time.Sleep
-	}
-	if deps.StopGrace <= 0 {
-		deps.StopGrace = defaultStopGrace
-	}
-	if deps.StopPollInterval <= 0 {
-		deps.StopPollInterval = defaultStopPollInterval
-	}
 	record, err := store.Load(agentID)
 	if err != nil {
 		return Record{}, err

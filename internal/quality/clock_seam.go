@@ -116,10 +116,21 @@ func (m ClockSeamMatch) String() string {
 // cannot be found in its file at all -- a stale or mistyped
 // ClockSeamSites entry must fail loudly, never silently pass as clean.
 func FindClockSeamViolations(root string) ([]ClockSeamMatch, error) {
+	return findClockSeamViolationsAgainst(root, ClockSeamSites)
+}
+
+// findClockSeamViolationsAgainst is FindClockSeamViolations' implementation,
+// parameterized on the site list. Production always calls it with the
+// reviewed ClockSeamSites (via FindClockSeamViolations); tests call it
+// directly with a test-local site list pointed at fixture sources, so the
+// detector's own matching, sorting and error-handling logic can be exercised
+// without mutating the shared, production-only ClockSeamSites slice (which
+// parallel tests elsewhere in this package also read).
+func findClockSeamViolationsAgainst(root string, sites []ClockSeamSite) ([]ClockSeamMatch, error) {
 	fset := token.NewFileSet()
 	parsed := map[string]*ast.File{}
 	var matches []ClockSeamMatch
-	for _, site := range ClockSeamSites {
+	for _, site := range sites {
 		file, ok := parsed[site.File]
 		if !ok {
 			path := filepath.Join(root, filepath.FromSlash(site.File))
