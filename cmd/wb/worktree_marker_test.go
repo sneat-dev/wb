@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -110,6 +111,12 @@ func TestWorktreeMarkerIsIdempotent(t *testing.T) {
 // TestWorktreeMarkerFleetCoversClonesAndTheirWorktrees checks the sweep the
 // brief asks to be idempotent and safe to re-run.
 func TestWorktreeMarkerFleetCoversClonesAndTheirWorktrees(t *testing.T) {
+	// registeredWorktrees now runs its `git worktree list` through
+	// internal/runner (task-8), and this test's fleet sweep depends on real
+	// git registering the linked worktree the fixture below builds. This
+	// file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22).
+	runnertest.AllowRealProcess(t)
 	checkouts := newCheckoutFixture(t)
 	code, stdout, stderr := runCheckoutCommand(t, "--projects-root", checkouts.ProjectsRoot, "worktree", "marker", "--fleet", "--format", "json")
 	if code != exitOK {

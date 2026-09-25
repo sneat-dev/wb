@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -110,6 +111,12 @@ func TestWorktreeCreateMarksAHostLevelCanonicalClone(t *testing.T) {
 // refresh AGENTS.md tells every agent to rely on — reaches a clone that only
 // exists at the literal host level, and its linked worktree with it.
 func TestWorktreeMarkerFleetCoversAHostLevelClone(t *testing.T) {
+	// registeredWorktrees now runs its `git worktree list` through
+	// internal/runner (task-8), and this test's fleet sweep depends on real
+	// git registering the linked worktree the fixture below builds. This
+	// file is already on internal/quality/testdata/unit_tier.pending
+	// (task-22).
+	runnertest.AllowRealProcess(t)
 	checkouts := newHostLevelCheckoutFixture(t)
 
 	code, stdout, stderr := runCheckoutCommand(t, "--projects-root", checkouts.ProjectsRoot, "worktree", "marker", "--fleet", "--format", "json")
