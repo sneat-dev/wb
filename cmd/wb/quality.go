@@ -25,6 +25,7 @@ import (
 )
 
 type qualityOptions struct {
+	ci              bool
 	fleet           bool
 	match           string
 	regex           string
@@ -88,6 +89,9 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			if err := validateCoverageExecutionOptions(options); err != nil {
 				return err
 			}
+			if options.ci {
+				return runCICoverage(cmd, path, options)
+			}
 			if options.changed {
 				return runChangedCoverage(cmd, path, options)
 			}
@@ -129,6 +133,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 		},
 	}
 	bindQualityScopeFlags(command, &options)
+	command.Flags().BoolVar(&options.ci, "ci", false, "display latest CI-reported test coverage without running tests locally")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, json, or summary (summary requires --report-dir)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write coverage.md and coverage.yaml to this directory")
 	command.Flags().IntVar(&options.testShards, "test-shards", 1, "process-isolated shards for every explicit --shard-package")
@@ -140,10 +145,28 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.baselineFile, "baseline-file", "", "per-package uncovered-count baseline JSON for --changed; measures the merge base directly when empty or missing")
 	command.Flags().DurationVar(&options.baselineTimeout, "baseline-timeout", 20*time.Minute, "wall-time budget for measuring the merge base directly when --baseline-file is empty or missing")
 	command.AddCommand(newCoverageBaselineCmd())
+	command.AddCommand(newCoverageSummaryCmd())
 	return command
 }
 
 func validateCoverageExecutionOptions(options qualityOptions) error {
+	if options.ci {
+		if options.changed {
+			return &exitError{code: exitUsage, message: "--ci cannot be combined with --changed"}
+		}
+		if options.resume {
+			return fmt.Errorf("--ci cannot be combined with --resume")
+		}
+		if options.coverageProfile != "" {
+			return fmt.Errorf("--ci cannot be combined with --coverage-profile")
+		}
+		if options.testShards > 1 {
+			return fmt.Errorf("--ci cannot be combined with --test-shards")
+		}
+		if len(options.shardPackages) > 0 {
+			return fmt.Errorf("--ci cannot be combined with --shard-package")
+		}
+	}
 	if options.testShards < 1 {
 		return fmt.Errorf("--test-shards must be at least 1")
 	}

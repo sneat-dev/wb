@@ -29,19 +29,22 @@ const (
 	oauthCredentialCookie          = "__Secure-wb_github_oauth"
 	installationContinuationPath   = APIPrefix + "/github/installations/"
 	installationOpenerOrigin       = "https://sneat.work"
+	CoveragePath                   = APIPrefix + "/coverage"
 )
 
 type HandlerOptions struct {
-	ViewerResolver   ViewerResolver
-	MachineBearer    MachineBearerResolver
-	Enrollment       *MachineEnrollmentService
-	Snapshots        *MachineSnapshotService
-	Installations    *InstallationConnectionService
-	RepositoryEvents *RepositoryEventService
-	Status           *StatusService
-	Projection       ProjectionProcessor
-	WebhookSecret    []byte
-	AllowedOrigin    string
+	ViewerResolver    ViewerResolver
+	MachineBearer     MachineBearerResolver
+	Enrollment        *MachineEnrollmentService
+	Snapshots         *MachineSnapshotService
+	Installations     *InstallationConnectionService
+	RepositoryEvents  *RepositoryEventService
+	Status            *StatusService
+	Coverage          RepositoryCoverageStore
+	CoverageHarvester CoverageHarvester
+	Projection        ProjectionProcessor
+	WebhookSecret     []byte
+	AllowedOrigin     string
 	// Narrate receives one line for every delivery the handler itself
 	// rejects, written before the response to GitHub is sent. Deliveries the
 	// handler accepts are narrated by RepositoryEventService instead, so each
@@ -80,6 +83,9 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux.HandleFunc("POST "+WebhookPath, handler.webhook)
 	mux.HandleFunc("GET "+StatusPath, handler.status)
 	mux.HandleFunc("GET "+PeersConnectPath, handler.peersConnect)
+	mux.HandleFunc("GET "+CoveragePath, handler.listCoverage)
+	mux.HandleFunc("POST "+CoveragePath, handler.saveCoverage)
+	mux.HandleFunc("GET "+CoveragePath+"/{owner}/{repo}", handler.getCoverage)
 	return cors(options.AllowedOrigin, mux)
 }
 
@@ -517,6 +523,11 @@ func (h apiHandler) webhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "webhook_event_enqueue_failed")
 		return
 	}
+	if h.options.CoverageHarvester != nil && delivery.Event == "workflow_run" {
+		if err := h.options.CoverageHarvester.HarvestWorkflowRun(r.Context(), delivery); err != nil {
+			h.narrateRejection(r, delivery.Repository, "harvest failed: "+err.Error())
+		}
+	}
 	if h.options.Projection != nil {
 		if e := h.options.Projection.ProcessProjection(r.Context(), delivery, signature); e != nil {
 			writeError(w, http.StatusServiceUnavailable, "webhook_projection_failed")
@@ -562,6 +573,88 @@ func boundedInt(raw string, fallback, min, max int) (int, error) {
 		return 0, errors.New("out of bounds")
 	}
 	return v, nil
+}
+
+func (h apiHandler) authorizedForCoverage(r *http.Request) bool {
+	if h.options.MachineBearer != nil {
+		if _, ok := h.machine(r); ok {
+			return true
+		}
+	}
+	if h.options.ViewerResolver != nil {
+		if _, ok := h.viewer(r); ok {
+			return true
+		}
+	}
+	return h.options.MachineBearer == nil && h.options.ViewerResolver == nil
+}
+
+func (h apiHandler) listCoverage(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizedForCoverage(r) {
+		writeError(w, http.StatusUnauthorized, "coverage_unauthorized")
+		return
+	}
+	if h.options.Coverage == nil {
+		writeError(w, http.StatusServiceUnavailable, "coverage_unavailable")
+		return
+	}
+	records, err := h.options.Coverage.ListCoverage(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "coverage_failed")
+		return
+	}
+	if records == nil {
+		records = []StoredRepositoryCoverage{}
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (h apiHandler) getCoverage(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizedForCoverage(r) {
+		writeError(w, http.StatusUnauthorized, "coverage_unauthorized")
+		return
+	}
+	if h.options.Coverage == nil {
+		writeError(w, http.StatusServiceUnavailable, "coverage_unavailable")
+		return
+	}
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
+	target := owner + "/" + repo
+	if owner == "" || repo == "" {
+		target = strings.TrimPrefix(r.URL.Path, CoveragePath+"/")
+	}
+	record, found, err := h.options.Coverage.GetCoverage(r.Context(), target)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "coverage_failed")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "coverage_not_found")
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizedForCoverage(r) {
+		writeError(w, http.StatusUnauthorized, "coverage_unauthorized")
+		return
+	}
+	if h.options.Coverage == nil {
+		writeError(w, http.StatusServiceUnavailable, "coverage_unavailable")
+		return
+	}
+	var record StoredRepositoryCoverage
+	if err := decodeRequest(w, r, maxJSONBodyBytes, &record); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_coverage_payload")
+		return
+	}
+	if err := h.options.Coverage.SaveCoverage(r.Context(), record); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, record)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
