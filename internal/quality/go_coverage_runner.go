@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,9 +26,10 @@ type goCoverageJob struct {
 }
 
 type goCoverageJobResult struct {
-	output   string
-	err      error
-	attempts int
+	output        string
+	err           error
+	diagnosticErr error
+	attempts      int
 }
 
 const (
@@ -175,7 +177,17 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 		}
 	}
 
-	results := runGoCoverageJobs(ctx, module, jobs, boundedCoverageParallelism(shardCount, len(jobs), runtime.GOMAXPROCS(0)), timeout, retry, reporter)
+	var diagnostics *coverageDiagnosticsSink
+	if diagnosticsDir != "" {
+		diagnostics = newCoverageDiagnosticsSink(diagnosticsDir, repository, module)
+	}
+	persistFailure := func(index int, result goCoverageJobResult) error {
+		if diagnostics == nil {
+			return nil
+		}
+		return diagnostics.persist(index, jobs[index], result)
+	}
+	results := runGoCoverageJobs(ctx, module, jobs, boundedCoverageParallelism(shardCount, len(jobs), runtime.GOMAXPROCS(0)), timeout, retry, reporter, persistFailure)
 	maxAttempts := 1
 	for _, result := range results {
 		if result.attempts > maxAttempts {
@@ -187,6 +199,9 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 	profiles := make([]string, 0, len(jobs))
 	var runErr error
 	for index, result := range results {
+		if result.diagnosticErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", result.diagnosticErr))
+		}
 		if result.err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
 		} else {
@@ -216,11 +231,6 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 			}
 			failedOutput.WriteString(result.err.Error())
 			failedOutput.WriteByte('\n')
-		}
-		if diagnosticsDir != "" {
-			if err := writeCoverageDiagnostics(diagnosticsDir, repository, module, jobs, results); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", err))
-			}
 		}
 		return failedOutput.String(), maxAttempts, runErr
 	}
@@ -285,44 +295,118 @@ func failedGoTestNames(output string) []string {
 	return names
 }
 
-func writeCoverageDiagnostics(directory, repository, module string, jobs []goCoverageJob, results []goCoverageJobResult) error {
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+type coverageDiagnosticsSink struct {
+	mu         sync.Mutex
+	directory  string
+	repository string
+	module     string
+	stem       string
+	manifest   CoverageDiagnosticManifest
+	files      map[int]CoverageDiagnosticFile
+}
+
+func newCoverageDiagnosticsSink(directory, repository, module string) *coverageDiagnosticsSink {
+	return &coverageDiagnosticsSink{
+		directory: directory, repository: repository, module: module,
+		stem: coverageDiagnosticStem(repository, module),
+		manifest: CoverageDiagnosticManifest{
+			SchemaVersion: 1, Repository: repository, Module: module,
+			Ambient: envguard.Inspect(os.Environ(), os.TempDir(), module),
+		},
+		files: make(map[int]CoverageDiagnosticFile),
+	}
+}
+
+func (sink *coverageDiagnosticsSink) persist(index int, job goCoverageJob, result goCoverageJobResult) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if result.err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(sink.directory, 0o700); err != nil {
 		return err
 	}
-	stem := coverageDiagnosticStem(repository, module)
-	manifest := CoverageDiagnosticManifest{
-		SchemaVersion: 1,
-		Repository:    repository,
-		Module:        module,
-		Ambient:       envguard.Inspect(os.Environ(), os.TempDir(), module),
+	path := filepath.Join(sink.directory, "coverage-raw-"+sink.stem+fmt.Sprintf("-%d.log", index+1))
+	raw := []byte(result.output)
+	if len(raw) == 0 {
+		raw = []byte(result.err.Error() + "\n")
 	}
+	if err := writeCoverageDiagnosticFileAtomically(path, raw); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	sink.files[index] = CoverageDiagnosticFile{
+		Label: job.label, Path: path, Bytes: len(raw), SHA256: hex.EncodeToString(digest[:]),
+	}
+	sink.manifest.Files = sink.manifest.Files[:0]
+	indices := make([]int, 0, len(sink.files))
+	for jobIndex := range sink.files {
+		indices = append(indices, jobIndex)
+	}
+	sort.Ints(indices)
+	for _, jobIndex := range indices {
+		sink.manifest.Files = append(sink.manifest.Files, sink.files[jobIndex])
+	}
+	manifestRaw, err := yaml.Marshal(sink.manifest)
+	if err != nil {
+		return err
+	}
+	manifestPath := filepath.Join(sink.directory, "coverage-diagnostics-"+sink.stem+".yaml")
+	return writeCoverageDiagnosticFileAtomically(manifestPath, manifestRaw)
+}
+
+func writeCoverageDiagnosticFileAtomically(path string, data []byte) (err error) {
+	directory := filepath.Dir(path)
+	temporary, err := filewrite.CreateTemp(directory, ".coverage-diagnostic-*.tmp", nil)
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if temporary != nil {
+			err = errors.Join(err, filewrite.Close(temporary, temporaryPath, nil))
+		}
+		if err != nil {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, nil); err != nil {
+		return err
+	}
+	if err := filewrite.Write(temporary, data, temporaryPath, nil); err != nil {
+		return err
+	}
+	if err := filewrite.Sync(temporary, temporaryPath, nil); err != nil {
+		return err
+	}
+	if err := filewrite.Close(temporary, temporaryPath, nil); err != nil {
+		return err
+	}
+	temporary = nil
+	if err := filewrite.Rename(temporaryPath, path, nil); err != nil {
+		return err
+	}
+	directoryFile, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	syncErr := filewrite.SyncDir(directoryFile, nil)
+	closeErr := directoryFile.Close()
+	if syncErr != nil || closeErr != nil {
+		return errors.Join(syncErr, closeErr)
+	}
+	return nil
+}
+
+func writeCoverageDiagnostics(directory, repository, module string, jobs []goCoverageJob, results []goCoverageJobResult) error {
+	sink := newCoverageDiagnosticsSink(directory, repository, module)
 	for index, result := range results {
 		if result.err == nil {
 			continue
 		}
-		path := filepath.Join(directory, "coverage-raw-"+stem+fmt.Sprintf("-%d.log", index+1))
-		raw := []byte(result.output)
-		if len(raw) == 0 {
-			raw = []byte(result.err.Error() + "\n")
-		}
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
+		if err := sink.persist(index, jobs[index], result); err != nil {
 			return err
 		}
-		digest := sha256.Sum256(raw)
-		manifest.Files = append(manifest.Files, CoverageDiagnosticFile{
-			Label: jobs[index].label, Path: path, Bytes: len(raw), SHA256: hex.EncodeToString(digest[:]),
-		})
-	}
-	if len(manifest.Files) == 0 {
-		return nil
-	}
-	manifestRaw, err := yaml.Marshal(manifest)
-	if err != nil {
-		return err
-	}
-	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml")
-	if err := os.WriteFile(manifestPath, manifestRaw, 0o600); err != nil {
-		return err
 	}
 	return nil
 }
@@ -374,7 +458,11 @@ func discoverGoTests(ctx context.Context, module, packagePath string) ([]string,
 	return tests, nil
 }
 
-func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob, parallel int, timeout time.Duration, retry int, reporter func(Progress)) []goCoverageJobResult {
+func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob, parallel int, timeout time.Duration, retry int, reporter func(Progress), persistFailureCallbacks ...func(int, goCoverageJobResult) error) []goCoverageJobResult {
+	var persistFailure func(int, goCoverageJobResult) error
+	if len(persistFailureCallbacks) > 0 {
+		persistFailure = persistFailureCallbacks[0]
+	}
 	if parallel > len(jobs) {
 		parallel = len(jobs)
 	}
@@ -430,7 +518,11 @@ func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob,
 					}
 					report(index, ProgressRetrying, StatusFailed, attempts, fmt.Sprintf("%s attempt %d failed: %s; retrying", jobs[index].label, attempts, detail))
 				}
-				results[index] = goCoverageJobResult{output: output, err: err, attempts: attempts}
+				result := goCoverageJobResult{output: output, err: err, attempts: attempts}
+				if err != nil && persistFailure != nil {
+					result.diagnosticErr = persistFailure(index, result)
+				}
+				results[index] = result
 				status := StatusPassed
 				if err != nil {
 					status = StatusFailed

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -1705,6 +1706,7 @@ func TestBetaFails(t *testing.T) {
 	t.Log(strings.Repeat("oversized shard output ", 3000))
 	t.Fatal("exact-failing-shard-test")
 }
+
 `)
 	diagnosticsDir := filepath.Join(t.TempDir(), "reports")
 	report := CoverWithOptions(context.Background(), "example/durable", module, RunOptions{
@@ -1752,6 +1754,181 @@ func TestBetaFails(t *testing.T) {
 	digest := sha256.Sum256(artifact)
 	if manifest.Files[0].SHA256 != fmt.Sprintf("%x", digest) {
 		t.Fatalf("diagnostic digest = %q, want %x", manifest.Files[0].SHA256, digest)
+	}
+}
+
+func TestShardedCoveragePersistsFailureBeforeLaterShardCancellation(t *testing.T) {
+	module := t.TempDir()
+	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/interrupted\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial.go"), "package serial\n")
+	marker := filepath.Join(t.TempDir(), "later-shard-started")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial_test.go"), `package serial
+
+import (
+	"os"
+	"time"
+	"testing"
+)
+
+func TestAlphaFails(t *testing.T) { t.Log("durable-before-next-shard"); t.Fatal("exact-failing-shard-test") }
+func TestBetaBlocks(t *testing.T) {
+	if err := os.WriteFile(os.Getenv("WB_COVERAGE_BLOCK_MARKER"), []byte("started"), 0600); err != nil { t.Fatal(err) }
+	time.Sleep(30 * time.Second)
+}
+`)
+	t.Setenv("WB_COVERAGE_BLOCK_MARKER", marker)
+	oldProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(oldProcs)
+	diagnosticsDir := filepath.Join(t.TempDir(), "reports")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reporterMu sync.Mutex
+	var firstFailureManifest []byte
+	var firstFailureErr error
+	var firstFailureSHA string
+	var startedLater bool
+	var cancelOnce sync.Once
+	reporter := func(event Progress) {
+		if event.State == ProgressCompleted && event.Status == StatusFailed && strings.Contains(event.Detail, "shard 1/") {
+			raw, err := os.ReadFile(filepath.Join(diagnosticsDir, "coverage-diagnostics-"+coverageDiagnosticStem("example/interrupted", module)+".yaml"))
+			diagnostic := coverageDiagnosticFor(diagnosticsDir, "example/interrupted", module)
+			reporterMu.Lock()
+			firstFailureManifest, firstFailureErr = raw, err
+			if diagnostic != nil {
+				firstFailureSHA = diagnostic.SHA256
+			}
+			reporterMu.Unlock()
+		}
+		if event.State == ProgressStarted && strings.Contains(event.Detail, "shard 2/") {
+			reporterMu.Lock()
+			startedLater = true
+			reporterMu.Unlock()
+			cancelOnce.Do(func() {
+				go func() {
+					deadline := time.Now().Add(10 * time.Second)
+					for time.Now().Before(deadline) {
+						if _, err := os.Stat(marker); err == nil {
+							cancel()
+							return
+						}
+						if ctx.Err() != nil {
+							return
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+					cancel()
+				}()
+			})
+		}
+	}
+	_, _, runErr := runShardedCoverageWithDiagnosticsAndProgressOptions(ctx, module, filepath.Join(t.TempDir(), "coverage.out"), []string{"./serial"}, 2, diagnosticsDir, "example/interrupted", 0, 0, reporter)
+	if runErr == nil {
+		t.Fatal("sharded coverage succeeded despite failed first shard and cancelled second shard")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("later shard never reached its blocking test: %v", err)
+	}
+	reporterMu.Lock()
+	started, persistedRaw, persistedErr, persistedSHA := startedLater, firstFailureManifest, firstFailureErr, firstFailureSHA
+	reporterMu.Unlock()
+	if !started {
+		t.Fatal("later shard never started")
+	}
+	if persistedErr != nil {
+		t.Fatalf("failed-shard manifest was unavailable at completion notification: %v", persistedErr)
+	}
+	persistedDigest := sha256.Sum256(persistedRaw)
+	if persistedSHA != fmt.Sprintf("%x", persistedDigest) {
+		t.Fatalf("failed-shard manifest digest at completion = %q, want %x", persistedSHA, persistedDigest)
+	}
+	assertDurableFailureManifest := func(raw []byte, wantEntries int) {
+		t.Helper()
+		var manifest CoverageDiagnosticManifest
+		if err := yaml.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("parse durable manifest: %v", err)
+		}
+		if len(manifest.Files) < wantEntries {
+			t.Fatalf("manifest entries = %d, want at least %d", len(manifest.Files), wantEntries)
+		}
+		found := false
+		for _, file := range manifest.Files {
+			artifact, err := os.ReadFile(file.Path)
+			if err != nil {
+				t.Fatalf("read durable diagnostic %s: %v", file.Path, err)
+			}
+			digest := sha256.Sum256(artifact)
+			if len(artifact) != file.Bytes || fmt.Sprintf("%x", digest) != file.SHA256 {
+				t.Fatalf("diagnostic size or digest mismatch for %s", file.Path)
+			}
+			if strings.Contains(string(artifact), "exact-failing-shard-test") && strings.Contains(string(artifact), "TestAlphaFails") && strings.Contains(string(artifact), "durable-before-next-shard") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("manifest lacks exact raw output and named failed test")
+		}
+	}
+	assertDurableFailureManifest(persistedRaw, 1)
+	manifestPath := filepath.Join(diagnosticsDir, "coverage-diagnostics-"+coverageDiagnosticStem("example/interrupted", module)+".yaml")
+	finalRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read final diagnostic manifest: %v", err)
+	}
+	assertDurableFailureManifest(finalRaw, 1)
+	diagnostic := coverageDiagnosticFor(diagnosticsDir, "example/interrupted", module)
+	manifestDigest := sha256.Sum256(finalRaw)
+	if diagnostic == nil || diagnostic.SHA256 != fmt.Sprintf("%x", manifestDigest) {
+		t.Fatalf("final manifest digest is invalid: diagnostic=%+v want=%x", diagnostic, manifestDigest)
+	}
+}
+
+func TestCoverageDiagnosticsSinkSerializesConcurrentFailures(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "reports")
+	sink := newCoverageDiagnosticsSink(directory, "example/concurrent", "module")
+	const count = 8
+	errs := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			output := fmt.Sprintf("failure-%d\n--- FAIL: TestFailure%d (0.00s)\n", index, index)
+			err := sink.persist(index, goCoverageJob{label: fmt.Sprintf("shard %d", index+1)}, goCoverageJobResult{output: output, err: errors.New("failed")})
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("persist concurrent diagnostic: %v", err)
+		}
+	}
+	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem("example/concurrent", "module")+".yaml")
+	manifestRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read concurrent manifest: %v", err)
+	}
+	var manifest CoverageDiagnosticManifest
+	if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("parse concurrent manifest: %v", err)
+	}
+	if len(manifest.Files) != count {
+		t.Fatalf("concurrent manifest entries = %d, want %d", len(manifest.Files), count)
+	}
+	for index, file := range manifest.Files {
+		if want := fmt.Sprintf("shard %d", index+1); file.Label != want {
+			t.Fatalf("manifest[%d].Label = %q, want %q", index, file.Label, want)
+		}
+		artifact, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatalf("read concurrent artifact %s: %v", file.Path, err)
+		}
+		digest := sha256.Sum256(artifact)
+		if len(artifact) != file.Bytes || fmt.Sprintf("%x", digest) != file.SHA256 {
+			t.Fatalf("concurrent artifact %s has invalid size or digest", file.Path)
+		}
 	}
 }
 
