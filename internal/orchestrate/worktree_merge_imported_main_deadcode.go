@@ -17,10 +17,13 @@ const worktreeMergeDeadcodeCommand = "go run ./cmd/wb deadcode"
 // WorktreeMergeImportedMainDeadcode binds the one imported main parent to the
 // candidate and the exact target whose validation it may supplement.
 type WorktreeMergeImportedMainDeadcode struct {
-	CandidateSHA  string                     `json:"candidate_sha"`
-	TargetSHA     string                     `json:"target_sha"`
-	MergeSHA      string                     `json:"merge_sha"`
-	ImportedSHA   string                     `json:"imported_sha"`
+	CandidateSHA string `json:"candidate_sha"`
+	TargetSHA    string `json:"target_sha"`
+	MergeSHA     string `json:"merge_sha"`
+	ImportedSHA  string `json:"imported_sha"`
+	// OriginMainSHA is the authoritative main head at initial validation. It
+	// may be later than ImportedSHA; resumes require it to remain an ancestor
+	// of the freshly fetched authoritative main head.
 	OriginMainSHA string                     `json:"origin_main_sha"`
 	Validation    quality.VerificationReport `json:"validation"`
 }
@@ -31,22 +34,15 @@ func worktreeMergeImportedMainDeadcode(ctx context.Context, receipt *WorktreeMer
 	if err != nil || !found {
 		return nil, err
 	}
-	main, _, err := runCommand(ctx, timeout, retry, path, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
+	attestedMainSHA, err := verifyImportedMainLineage(ctx, path, importedSHA, "", retry)
 	if err != nil {
-		return nil, fmt.Errorf("attest authoritative origin/main: %w", err)
-	}
-	fields := strings.Fields(main)
-	if len(fields) != 2 || fields[1] != "refs/heads/main" {
-		return nil, fmt.Errorf("origin/main lookup returned malformed result %q", strings.TrimSpace(main))
-	}
-	if fields[0] != importedSHA {
-		return nil, fmt.Errorf("imported main parent %s does not match authoritative origin/main %s", importedSHA, fields[0])
+		return nil, fmt.Errorf("attest imported main lineage: %w", err)
 	}
 	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, receipt.Repository, path, importedSHA, timeout, retry, checkTimeout)
 	if err != nil {
 		return nil, err
 	}
-	return &WorktreeMergeImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: fields[0], Validation: validation}, nil
+	return &WorktreeMergeImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: attestedMainSHA, Validation: validation}, nil
 }
 
 // worktreeMergeImportedMainGraph accepts only a linear candidate suffix above
@@ -147,21 +143,75 @@ func importedMainDeadcodeIdentities(report quality.VerificationReport, check qua
 	return worktreeMergeDeadcodeIdentitySet(report.Results, "go", check, command, module)
 }
 
+func verifyImportedMainLineage(ctx context.Context, repository, importedSHA, previousAttestedSHA string, retry int) (string, error) {
+	remoteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, _, err := runCommand(remoteCtx, 30*time.Second, retry, repository, "git", "fetch", "--no-tags", "origin", "refs/heads/main"); err != nil {
+		return "", fmt.Errorf("fetch origin/main: %w", err)
+	}
+	fetchedOutput, _, err := runCommand(remoteCtx, 30*time.Second, retry, repository, "git", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve fetched origin/main: %w", err)
+	}
+	remoteOutput, _, err := runCommand(remoteCtx, 30*time.Second, retry, repository, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
+	if err != nil {
+		return "", fmt.Errorf("read fresh origin/main: %w", err)
+	}
+	currentSHA, err := matchedFetchedOriginMain(fetchedOutput, remoteOutput)
+	if err != nil {
+		return "", err
+	}
+	if err := requireGitAncestor(remoteCtx, repository, importedSHA, currentSHA); err != nil {
+		return "", fmt.Errorf("imported main %s is not an ancestor of current origin/main %s: %w", importedSHA, currentSHA, err)
+	}
+	if previousAttestedSHA != "" {
+		if err := requireGitAncestor(remoteCtx, repository, importedSHA, previousAttestedSHA); err != nil {
+			return "", fmt.Errorf("initially attested origin/main %s is not descended from imported main %s: %w", previousAttestedSHA, importedSHA, err)
+		}
+		if err := requireGitAncestor(remoteCtx, repository, previousAttestedSHA, currentSHA); err != nil {
+			return "", fmt.Errorf("current origin/main %s rewound or diverged from initially attested %s: %w", currentSHA, previousAttestedSHA, err)
+		}
+	}
+	return currentSHA, nil
+}
+
+func matchedFetchedOriginMain(fetchedOutput, remoteOutput string) (string, error) {
+	fetched := strings.Fields(fetchedOutput)
+	remote := strings.Fields(remoteOutput)
+	if len(fetched) != 1 || len(remote) != 2 || remote[1] != "refs/heads/main" {
+		return "", fmt.Errorf("origin/main fetch or lookup returned malformed result (fetch=%q, remote=%q)", strings.TrimSpace(fetchedOutput), strings.TrimSpace(remoteOutput))
+	}
+	if fetched[0] != remote[0] {
+		return "", fmt.Errorf("origin/main moved during attestation: fetched %s but ls-remote reports %s", fetched[0], remote[0])
+	}
+	return fetched[0], nil
+}
+
+func requireGitAncestor(ctx context.Context, repository, ancestor, descendant string) error {
+	if strings.TrimSpace(ancestor) == "" || strings.TrimSpace(descendant) == "" {
+		return errors.New("both ancestry revisions are required")
+	}
+	if _, _, err := runCommand(ctx, 30*time.Second, 0, repository, "git", "merge-base", "--is-ancestor", ancestor, descendant); err != nil {
+		return err
+	}
+	return nil
+}
+
 func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) error {
 	evidence := receipt.ImportedMainDeadcode
 	if evidence == nil {
 		return nil
 	}
-	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA != evidence.ImportedSHA || evidence.Validation.Revision != evidence.ImportedSHA || !validImportedMainDeadcodeReport(evidence.Validation) {
+	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA == "" || evidence.Validation.Revision != evidence.ImportedSHA || !validImportedMainDeadcodeReport(evidence.Validation) {
 		return errors.New("imported main deadcode evidence does not bind the exact candidate, target and imported main revision")
 	}
 	ioTimeout := timeout
 	if ioTimeout <= 0 || ioTimeout > 30*time.Second {
 		ioTimeout = 30 * time.Second
 	}
-	remoteCtx, cancel := context.WithTimeout(ctx, ioTimeout)
-	defer cancel()
-	merge, imported, found, err := worktreeMergeImportedMainGraph(remoteCtx, receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.TargetSHA)
+	graphCtx, cancelGraph := context.WithTimeout(ctx, ioTimeout)
+	merge, imported, found, err := worktreeMergeImportedMainGraph(graphCtx, receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.TargetSHA)
+	cancelGraph()
 	if err != nil {
 		return err
 	}
@@ -174,13 +224,10 @@ func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt Workt
 	if err := revalidateImportedMainDeadcodeEvidence(ctx, receipt, evidence, timeout, retry, checkTimeout); err != nil {
 		return err
 	}
-	remote, _, err := runCommand(remoteCtx, ioTimeout, retry, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
-	if err != nil {
-		return fmt.Errorf("recheck authoritative origin/main: %w", err)
-	}
-	fields := strings.Fields(remote)
-	if len(fields) != 2 || fields[0] != evidence.OriginMainSHA || fields[1] != "refs/heads/main" {
-		return errors.New("authoritative origin/main changed since imported parent validation")
+	lineageCtx, cancelLineage := context.WithTimeout(ctx, ioTimeout)
+	defer cancelLineage()
+	if _, err := verifyImportedMainLineage(lineageCtx, receipt.Candidate.Worktree, evidence.ImportedSHA, evidence.OriginMainSHA, retry); err != nil {
+		return fmt.Errorf("recheck imported main lineage against authoritative origin/main: %w", err)
 	}
 	return nil
 }
