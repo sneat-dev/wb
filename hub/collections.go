@@ -48,5 +48,6 @@ func Collections() []string {
 
 		webhookRedeliveryCollection,
 		repositoryCoverageCollection,
+		repositoryMetricsCollection,
 	}
 }
