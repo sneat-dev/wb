@@ -18,6 +18,7 @@ func deadcodeFailureOutput(identities ...string) string {
 }
 
 func TestDeadcodeFailureEvidenceRetainsCompleteFindingsAcrossBoundedDetailAndJSON(t *testing.T) {
+	t.Parallel()
 	var identities []string
 	for index := 0; index < 100; index++ {
 		identities = append(identities, fmt.Sprintf("example.test/pkg.Function%d", index))
@@ -45,6 +46,7 @@ func TestDeadcodeFailureEvidenceRetainsCompleteFindingsAcrossBoundedDetailAndJSO
 }
 
 func TestDeadcodeFailureEvidenceRejectsPartialAndNonFindingOutput(t *testing.T) {
+	t.Parallel()
 	good := deadcodeFailureOutput("example.test/pkg.A", "example.test/pkg.B")
 	for _, output := range []string{
 		strings.Replace(good, "functions (2)", "functions (3)", 1),
@@ -61,6 +63,7 @@ func TestDeadcodeFailureEvidenceRejectsPartialAndNonFindingOutput(t *testing.T) 
 }
 
 func TestDeadcodeFailureEvidenceAcceptsCompleteFixedSection(t *testing.T) {
+	t.Parallel()
 	output := deadcodeFailureOutput("example.test/pkg.A")
 	output = strings.Replace(output, "error: 1 function(s)", "\nBaseline entries now reachable or gone (1) — rerun with --update-baseline to drop them:\n  example.test/pkg.Gone\nerror: 1 function(s)", 1)
 	if evidence := parseDeadcodeFailureEvidence(output); !evidence.Valid() || evidence.Identities[0] != "example.test/pkg.A" {

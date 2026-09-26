@@ -1883,6 +1883,7 @@ func TestBetaBlocks(t *testing.T) {
 }
 
 func TestCoverageDiagnosticsSinkSerializesConcurrentFailures(t *testing.T) {
+	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "reports")
 	sink := newCoverageDiagnosticsSink(directory, "example/concurrent", "module")
 	const count = 8

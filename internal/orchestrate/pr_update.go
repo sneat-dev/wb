@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -252,7 +253,7 @@ func newPullRequestUpdateReceiptPath(options PullRequestUpdateOptions) (string, 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	file, err := os.CreateTemp(dir, "update-*.json")
+	file, err := filewrite.CreateTemp(dir, "update-*.json", nil)
 	if err != nil {
 		return "", err
 	}
@@ -270,12 +271,12 @@ func persistPullRequestUpdateReceipt(result PullRequestUpdateResult) error {
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(result.ReceiptPath), ".update-*.tmp")
+	file, err := filewrite.CreateTemp(filepath.Dir(result.ReceiptPath), ".update-*.tmp", nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
-	if _, err = file.Write(append(data, '\n')); err != nil {
+	if err = filewrite.Write(file, append(data, '\n'), file.Name(), nil); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -286,7 +287,7 @@ func persistPullRequestUpdateReceipt(result PullRequestUpdateResult) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), result.ReceiptPath)
+	return filewrite.Rename(file.Name(), result.ReceiptPath, nil)
 }
 
 func syncOwnedPullRequestUpdateWorktree(ctx context.Context, options PullRequestUpdateOptions, branch, head string) string {

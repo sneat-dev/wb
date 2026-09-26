@@ -11,6 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
+//nolint:paralleltest // This helper exits the test process in child mode and must run directly under -test.run.
 func TestCombinedCaptureHelperProcess(t *testing.T) {
 	if os.Getenv("WB_RUNNER_COMBINED_HELPER") != "1" {
 		return
@@ -33,6 +34,7 @@ func TestCombinedCaptureHelperProcess(t *testing.T) {
 }
 
 func TestRealRunOptsCombinedCaptureKeepsOutputOnFailure(t *testing.T) {
+	t.Parallel()
 	opts := runner.RunOptions{
 		Env:             append(os.Environ(), "WB_RUNNER_COMBINED_HELPER=1", "WB_RUNNER_COMBINED_EXIT=7"),
 		CaptureCombined: true,
@@ -54,6 +56,7 @@ func TestRealRunOptsCombinedCaptureKeepsOutputOnFailure(t *testing.T) {
 }
 
 func TestRealRunOptsCombinedCapturePreservesAlternatingStreams(t *testing.T) {
+	t.Parallel()
 	opts := runner.RunOptions{
 		Env:             append(os.Environ(), "WB_RUNNER_COMBINED_HELPER=1", "WB_RUNNER_COMBINED_EXIT=0"),
 		CaptureCombined: true,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func deadcodeFailureReport(command, detail string, identities ...string) quality.VerificationReport {
@@ -22,6 +23,7 @@ func deadcodeFailureReport(command, detail string, identities ...string) quality
 }
 
 func TestWorktreeMergeDeadcodeNonRegressionUsesCompleteIdentities(t *testing.T) {
+	t.Parallel()
 	const command = "go run ./cmd/wb deadcode"
 	baseline := deadcodeFailureReport(command, "bounded baseline output", "example.test/pkg.A", "example.test/pkg.B")
 	for _, test := range []struct {
@@ -39,6 +41,7 @@ func TestWorktreeMergeDeadcodeNonRegressionUsesCompleteIdentities(t *testing.T) 
 		{"incomplete evidence", deadcodeFailureReport(command, "same detail", "example.test/pkg.A"), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if test.name == "count mismatch" {
 				test.candidate.Results[0].Deadcode.Count++
 			}
@@ -60,6 +63,7 @@ func TestWorktreeMergeDeadcodeNonRegressionUsesCompleteIdentities(t *testing.T) 
 }
 
 func TestWorktreeMergeDeadcodeOldReceiptKeepsExactMatch(t *testing.T) {
+	t.Parallel()
 	const command = "go run ./cmd/wb deadcode"
 	baseline := deadcodeFailureReport(command, "same old diagnostic", "example.test/pkg.A")
 	baseline.Results[0].Deadcode = nil
@@ -72,6 +76,7 @@ func TestWorktreeMergeDeadcodeOldReceiptKeepsExactMatch(t *testing.T) {
 }
 
 func TestWorktreeMergeDeadcodeUnionIsBoundedToAttestedImportedMain(t *testing.T) {
+	t.Parallel()
 	const command = "go run ./cmd/wb deadcode"
 	baseline := deadcodeFailureReport(command, "target", "target.A")
 	imported := &WorktreeMergeImportedMainDeadcode{Validation: deadcodeFailureReport(command, "main", "main.B")}
@@ -89,6 +94,7 @@ func TestWorktreeMergeDeadcodeUnionIsBoundedToAttestedImportedMain(t *testing.T)
 		{"parent module mismatch", deadcodeFailureReport(command, "module", "main.B"), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			parent := *imported
 			parent.Validation = deadcodeFailureReport(command, "main", "main.B")
 			if test.name == "truncated parent evidence" {
@@ -112,6 +118,7 @@ func TestWorktreeMergeDeadcodeUnionIsBoundedToAttestedImportedMain(t *testing.T)
 }
 
 func TestWorktreeMergeDeadcodeUnionAcceptsImportedIdentityWithCleanTarget(t *testing.T) {
+	t.Parallel()
 	const command = worktreeMergeDeadcodeCommand
 	baseline := quality.VerificationReport{Status: quality.StatusPassed, Results: []quality.VerificationEntry{{
 		Language: "go", Module: ".", Check: quality.CheckLint, Command: command, Status: quality.StatusPassed,
@@ -126,6 +133,7 @@ func TestWorktreeMergeDeadcodeUnionAcceptsImportedIdentityWithCleanTarget(t *tes
 }
 
 func TestWorktreeMergeValidationDoesNotAttestWhenTargetAlreadyCoversDeadcode(t *testing.T) {
+	t.Parallel()
 	const command = worktreeMergeDeadcodeCommand
 	baseline := deadcodeFailureReport(command, "target", "target.A", "target.B")
 	candidate := deadcodeFailureReport(command, "candidate", "target.B")
@@ -148,6 +156,7 @@ func TestWorktreeMergeValidationDoesNotAttestWhenTargetAlreadyCoversDeadcode(t *
 }
 
 func TestWorktreeMergeSavedReceiptPassesReuseAndPublishGuards(t *testing.T) {
+	t.Parallel()
 	const candidateSHA = "candidate-sha"
 	receipt := WorktreeMergeReceipt{
 		Status:     WorktreeMergePrepared,
@@ -240,9 +249,10 @@ func TestWorktreeMergeSavedImportedMainReceiptReusesAndPublishesWithCleanTarget(
 }
 
 func TestWorktreeMergeImportedMainLineageRejectsRewindDivergenceAndBadLookup(t *testing.T) {
+	t.Parallel()
 	repository, _, importedSHA, mergeSHA, _, _ := importedMainReceiptFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	initial, err := verifyImportedMainLineage(ctx, repository, importedSHA, "", 0)
 	if err != nil || initial != importedSHA {
 		t.Fatalf("initial lineage = (%s, %v)", initial, err)
@@ -343,13 +353,14 @@ func importedMainReceiptFixture(t *testing.T) (repository, targetSHA, importedSH
 	candidateSHA = commit("linear validation fix")
 	output := "New unreachable functions (1):\n  main.go:1: main.B\nerror: 1 function(s) are unreachable from main and are not in .wb/deadcode-baseline.txt; wire them up, delete them, or record them with --update-baseline\nexit status 1\n"
 	goScript := "#!/bin/sh\nprintf '%s' '" + strings.ReplaceAll(output, "'", "'\\''") + "'\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(goScript), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(fakeBin, "go"), []byte(goScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin
 }
 
 func TestWorktreeMergeImportedMainDeadcodeReceiptRoundTrips(t *testing.T) {
+	t.Parallel()
 	evidence := WorktreeMergeImportedMainDeadcode{
 		CandidateSHA: "candidate", TargetSHA: "target", MergeSHA: "merge", ImportedSHA: "main", OriginMainSHA: "main",
 		Validation: deadcodeFailureReport(worktreeMergeDeadcodeCommand, "complete", "main.A"),
@@ -368,6 +379,7 @@ func TestWorktreeMergeImportedMainDeadcodeReceiptRoundTrips(t *testing.T) {
 }
 
 func TestWorktreeMergeImportedMainDeadcodeReportRequiresExactCompleteEvidence(t *testing.T) {
+	t.Parallel()
 	report := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "parent", "main.A")
 	if !validImportedMainDeadcodeReport(report) {
 		t.Fatal("complete exact deadcode report rejected")
@@ -383,6 +395,7 @@ func TestWorktreeMergeImportedMainDeadcodeReportRequiresExactCompleteEvidence(t 
 }
 
 func TestWorktreeMergeImportedMainGraphRequiresExactLinearMerge(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	gitMergeGraphTest(t, repository, "init", "-b", "main")
 	gitMergeGraphTest(t, repository, "config", "user.email", "test@example.invalid")

@@ -2485,6 +2485,7 @@ func TestAcknowledgeLandedValidationFailureRefusesChangedReceiptedSource(t *test
 	}
 }
 
+//nolint:paralleltest // The real-Git fixture calls t.Setenv to isolate WB_PROJECTS_ROOT and its fake GitHub command.
 func TestAcknowledgeCleanedDirectPostTargetCIFailureUsesExactTerminalProofs(t *testing.T) {
 	fixture, _, receipt, claims := landedTerminalCleanupFixture(t)
 	if receipt.Route.Route != WorktreeMergeRouteDirect || receipt.LandingSHA != receipt.Candidate.SHA {
@@ -2558,6 +2559,7 @@ func TestAcknowledgeCleanedDirectPostTargetCIFailureUsesExactTerminalProofs(t *t
 	}
 }
 
+//nolint:paralleltest // The real-Git fixture calls t.Setenv; Go forbids parallel tests with process environment changes.
 func TestCleanedLandedFailureAncestryRejectsIndependentlyIntegratedRoots(t *testing.T) {
 	for _, test := range []struct {
 		name            string
@@ -2567,6 +2569,7 @@ func TestCleanedLandedFailureAncestryRejectsIndependentlyIntegratedRoots(t *test
 		{name: "source is separately integrated", want: "does not contain receipted source"},
 		{name: "source claim base is separately integrated", sourceClaimBase: true, want: "does not contain immutable claim base"},
 	} {
+		//nolint:paralleltest // newEngineFixture calls t.Setenv for this real-Git subtest.
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newEngineFixture(t)
 			base := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "origin/main"))
