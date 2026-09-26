@@ -384,6 +384,25 @@ jobs:
           path: coverage-baseline.json
           if-no-files-found: error
           retention-days: 90
+      - name: Publish coverage summary
+        if: ${{ github.event_name == 'push' }}
+        run: >-
+          go run ./cmd/wb coverage summary profile.cov
+          --module .
+          --repo "${{ github.repository }}"
+          --sha "${{ github.sha }}"
+          --ref "${{ github.ref }}"
+          --workflow-run-id "${{ github.run_id }}"
+          --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --out coverage-summary.json
+      - name: Upload coverage summary artifact
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wb-coverage-summary
+          path: coverage-summary.json
+          if-no-files-found: error
+          retention-days: 90
 
   race:
     name: Race tests
