@@ -139,7 +139,10 @@ type VerificationEntry struct {
 	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
 	Status   Status `yaml:"status" json:"status"`
 	Detail   string `yaml:"detail,omitempty" json:"detail,omitempty"`
-	Attempts int    `yaml:"attempts,omitempty" json:"attempts,omitempty"`
+	// Deadcode retains complete machine-comparable findings separately from
+	// the bounded human diagnostic. A non-nil incomplete value fails closed.
+	Deadcode *DeadcodeFailureEvidence `yaml:"deadcode,omitempty" json:"deadcode,omitempty"`
+	Attempts int                      `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
 // Verify runs the requested conventional Go and Node checks. The caller owns
@@ -519,6 +522,14 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		if isDeadcodeVerificationCommand(language, check, command) {
+			entry.Deadcode = &DeadcodeFailureEvidence{}
+			// A timeout or another execution failure must not become an inherited
+			// finding merely because the subprocess emitted a complete report.
+			if err.Error() == "exit status 1" && checkCtx.Err() == nil {
+				entry.Deadcode = parseDeadcodeFailureEvidence(output)
+			}
+		}
 		if ambient := envguard.Inspect(os.Environ(), os.TempDir(), dir); !ambient.Empty() {
 			entry.Detail = strings.TrimRight(entry.Detail, "\n") + "\n" + ambient.String()
 		}

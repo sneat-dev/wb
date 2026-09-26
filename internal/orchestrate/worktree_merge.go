@@ -4094,6 +4094,12 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 	}
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
+		if candidateFailure.Deadcode != nil {
+			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) {
+				continue
+			}
+			return fmt.Errorf("candidate validation introduced or changed deadcode failure: %s", candidateFailure.Command)
+		}
 		if candidateFailure.Language == "go" && candidateFailure.Check == quality.CheckTest {
 			if matchGoCoverageBaselineFailure(baselineFailures, candidateFailure) {
 				continue
@@ -4118,6 +4124,37 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 		}
 	}
 	return nil
+}
+
+// matchDeadcodeBaselineFailure compares complete function identities, not the
+// bounded human diagnostic or its count alone. An older baseline receipt
+// without structured evidence retains the strict historical detail match.
+func matchDeadcodeBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
+	if candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != "go run ./cmd/wb deadcode" || !candidate.Deadcode.Valid() {
+		return false
+	}
+	for _, previous := range baseline {
+		if previous.Language != candidate.Language || previous.Module != candidate.Module || previous.Check != candidate.Check || previous.Command != candidate.Command {
+			continue
+		}
+		if previous.Deadcode == nil {
+			return sameWorktreeMergeFailure(previous, candidate)
+		}
+		if !previous.Deadcode.Valid() {
+			return false
+		}
+		known := make(map[string]bool, len(previous.Deadcode.Identities))
+		for _, identity := range previous.Deadcode.Identities {
+			known[identity] = true
+		}
+		for _, identity := range candidate.Deadcode.Identities {
+			if !known[identity] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // matchGoCoverageBaselineFailure compares the failing-test identities emitted
