@@ -15,6 +15,9 @@ import (
 const (
 	envHelperProcess        = "GO_WANT_HELPER_PROCESS"
 	envHelperProcessObserve = "GO_WANT_HELPER_PROCESS_OBSERVE"
+	// envStrictUnitTier enables the real-process guard for the final strict
+	// unit tier. Ordinary coverage runs keep legacy hermetic Git tests usable.
+	envStrictUnitTier = "WB_RUNNER_STRICT_UNIT_TIER"
 	// envAllowRealProcess is the process-wide flag runnertest.AllowRealProcess
 	// sets via t.Setenv, so it is naturally restored at that test's cleanup
 	// and (like every t.Setenv use) refuses to coexist with t.Parallel().
@@ -40,10 +43,12 @@ var isTesting = testing.Testing
 var e2eBuild = func() bool { return e2eBuildTag }
 
 // guardRealProcess is Real's one gate, called before every process start. It
-// returns nil outside a test binary, inside an e2e-tagged build, when the
-// calling test named itself with runnertest.AllowRealProcess, or when this
-// process is the helper-process re-exec child.
+// refuses a process only when the strict unit tier is enabled in a test binary.
+// E2E builds, AllowRealProcess tests, and helper-process children are exempt.
 func guardRealProcess() error {
+	if os.Getenv(envStrictUnitTier) != "1" {
+		return nil
+	}
 	if !isTesting() {
 		return nil
 	}

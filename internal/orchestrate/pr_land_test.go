@@ -185,7 +185,6 @@ case "$*" in
     fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
-    if [ -f "$S/merge-sha-override" ]; then merge_sha=$(cat "$S/merge-sha-override"); fi
     printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
       "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head"
     # M3: a force push that landed in the exact window between the
