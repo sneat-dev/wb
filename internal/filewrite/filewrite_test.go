@@ -1566,3 +1566,117 @@ func TestWriteFileReportsARealFailure(t *testing.T) {
 		t.Fatal("WriteFile under a missing directory = nil, want an error")
 	}
 }
+
+// --- CreateScratch ---
+
+func TestCreateScratchCreatesAndClosesWithNoModeOrContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("size = %d, want 0 (no content requested)", info.Size())
+	}
+	// os.CreateTemp itself already produces a 0600 file; mode == 0 must skip
+	// the ChmodFile step rather than re-asserting a mode of 0.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("mode = %o, want 0600 (unchanged from CreateTemp)", perm)
+	}
+}
+
+func TestCreateScratchAppliesModeAndContentWhenGiven(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0o640, []byte("payload"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("content = %q, want %q", got, "payload")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o640 {
+		t.Fatalf("mode = %o, want 0640", perm)
+	}
+}
+
+func TestCreateScratchWritingZeroBytesIsDistinctFromNoContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// content == []byte{} (non-nil, empty) must still make a Write call --
+	// only a nil content skips it. Inject a write failure and confirm it
+	// fires, proving the Write call happened.
+	inj := &Injector{Step: StepWrite, Err: errBoom}
+	if _, err := CreateScratch(dir, "scratch-*.tmp", 0, []byte{}, inj); !errors.Is(err, errBoom) {
+		t.Fatalf("CreateScratch(empty, non-nil content) with injected write failure = %v, want errBoom", err)
+	}
+}
+
+func TestCreateScratchReturnsNoPathOnAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inj := &Injector{Step: StepOpenOrCreate, Err: errBoom}
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0o600, []byte("x"), inj)
+	if path != "" || !errors.Is(err, errBoom) {
+		t.Fatalf("CreateScratch with injected create failure = (%q, %v), want (\"\", errBoom)", path, err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, "scratch-*.tmp"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover scratch file(s) after an injected create failure: %v", matches)
+	}
+}
+
+func TestCreateScratchReturnsThePathOnAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inj := &Injector{Step: StepChmod, Err: errBoom}
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0o600, nil, inj)
+	if path == "" || !errors.Is(err, errBoom) {
+		t.Fatalf("CreateScratch with injected chmod failure = (%q, %v), want (non-empty, errBoom)", path, err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("reservation missing after an injected chmod failure: %v", statErr)
+	}
+}
+
+func TestCreateScratchReturnsThePathOnAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inj := &Injector{Step: StepWrite, Err: errBoom}
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0, []byte("x"), inj)
+	if path == "" || !errors.Is(err, errBoom) {
+		t.Fatalf("CreateScratch with injected write failure = (%q, %v), want (non-empty, errBoom)", path, err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("reservation missing after an injected write failure: %v", statErr)
+	}
+}
+
+func TestCreateScratchReturnsThePathOnAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inj := &Injector{Step: StepClose, Err: errBoom}
+	path, err := CreateScratch(dir, "scratch-*.tmp", 0, nil, inj)
+	if path == "" || !errors.Is(err, errBoom) {
+		t.Fatalf("CreateScratch with injected close failure = (%q, %v), want (non-empty, errBoom)", path, err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("reservation missing after an injected close failure: %v", statErr)
+	}
+}

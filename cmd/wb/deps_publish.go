@@ -164,7 +164,7 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 	// preflight selects the fleet. A concurrent invocation must fail without
 	// even walking downstream repositories, including an overlapping subset or
 	// superset campaign that would otherwise dispatch the same npm version.
-	locks, err := acquireNpmPublicationLocks(operation, releases, options.resume)
+	locks, err := acquireNpmPublicationLocks(inv, operation, releases, options.resume)
 	if err != nil {
 		return err
 	}
@@ -209,14 +209,14 @@ type npmPublicationLocks struct {
 // for every npm package-version in sorted order. Claims stay independent of
 // workflow inputs and the surrounding campaign so overlap is fail-closed even
 // when two callers use different report directories or tuple sets.
-func acquireNpmPublicationLocks(operation string, releases []npmrelease.Release, resume bool) (npmPublicationLocks, error) {
-	campaign, err := orchestrate.AcquireOperationLock(projectsRoot, operation, resume)
+func acquireNpmPublicationLocks(inv *invocation, operation string, releases []npmrelease.Release, resume bool) (npmPublicationLocks, error) {
+	campaign, err := orchestrate.AcquireOperationLock(inv.projectsRoot, operation, resume)
 	if err != nil {
 		return npmPublicationLocks{}, err
 	}
 	locks := npmPublicationLocks{locks: []orchestrate.OperationLock{campaign}}
 	for _, claim := range npmrelease.PublicationClaimOperationIDs(releases) {
-		lock, err := orchestrate.AcquireOperationLock(projectsRoot, claim, resume)
+		lock, err := orchestrate.AcquireOperationLock(inv.projectsRoot, claim, resume)
 		if err != nil {
 			locks.Release()
 			return npmPublicationLocks{}, fmt.Errorf("acquire npm publication claim %q: %w", claim, err)
@@ -240,7 +240,7 @@ func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, pr
 	// package-version locks before either a dry-run plan or --apply can touch
 	// it, so a plan cannot overwrite an in-progress apply/resume handoff and an
 	// overlapping campaign cannot publish the same npm version concurrently.
-	locks, err := acquireNpmPublicationLocks(prepared.operation, prepared.releases, options.resume)
+	locks, err := acquireNpmPublicationLocks(inv, prepared.operation, prepared.releases, options.resume)
 	if err != nil {
 		return err
 	}
@@ -281,7 +281,7 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 	if err != nil {
 		return err
 	}
-	if err := validateNpmPublicationBump(options, prepared.checks, prepared.reportDir, releaseEventsForReleases(prepared.releases), !options.merge, prepared.bumpPrevious != nil, prepared.bumpPrevious); err != nil {
+	if err := validateNpmPublicationBump(inv, options, prepared.checks, prepared.reportDir, releaseEventsForReleases(prepared.releases), !options.merge, prepared.bumpPrevious != nil, prepared.bumpPrevious); err != nil {
 		return err
 	}
 
@@ -396,15 +396,15 @@ func preflightNpmPublishWithDiscovery(inv *invocation, options npmPublishOptions
 	// normalization, so the user-supplied value is sufficient for this pure
 	// preflight pass.
 	events := releaseEventsForReleases(normalized)
-	if err := validateNpmPublicationBump(options, checks, options.reportDir, events, true, false, nil); err != nil {
+	if err := validateNpmPublicationBump(inv, options, checks, options.reportDir, events, true, false, nil); err != nil {
 		return npmPublishPrepared{}, err
 	}
 	if options.apply {
-		if err := validateNpmPublicationBump(options, checks, options.reportDir, events, !options.merge, false, nil); err != nil {
+		if err := validateNpmPublicationBump(inv, options, checks, options.reportDir, events, !options.merge, false, nil); err != nil {
 			return npmPublishPrepared{}, err
 		}
 	}
-	reportDir, err := npmPublicationReportDir(normalized, options.reportDir)
+	reportDir, err := npmPublicationReportDir(inv, normalized, options.reportDir)
 	if err != nil {
 		return npmPublishPrepared{}, err
 	}
@@ -425,7 +425,7 @@ func preflightNpmPublishWithDiscovery(inv *invocation, options npmPublishOptions
 		}
 	}
 	if options.apply {
-		if err := validateNpmPublicationBump(options, checks, reportDir, events, !options.merge, prepared.bumpPrevious != nil, prepared.bumpPrevious); err != nil {
+		if err := validateNpmPublicationBump(inv, options, checks, reportDir, events, !options.merge, prepared.bumpPrevious != nil, prepared.bumpPrevious); err != nil {
 			return npmPublishPrepared{}, err
 		}
 	}
@@ -463,11 +463,11 @@ func validateNpmPublicationSelection(options npmPublishOptions) error {
 	return nil
 }
 
-func npmPublicationReportDir(releases []npmrelease.Release, requested string) (string, error) {
+func npmPublicationReportDir(inv *invocation, releases []npmrelease.Release, requested string) (string, error) {
 	if requested != "" {
 		return requested, nil
 	}
-	home, err := wbhome.EnsureRoot(projectsRoot)
+	home, err := wbhome.EnsureRoot(inv.projectsRoot)
 	if err != nil {
 		return "", err
 	}
@@ -543,10 +543,10 @@ func releaseEventsForReleases(releases []npmrelease.Release) []deps.ReleaseEvent
 	return events
 }
 
-func validateNpmPublicationBump(options npmPublishOptions, checks []quality.Check, reportDir string, events []deps.ReleaseEvent, dryRun bool, resume bool, previous *deps.BumpReport) error {
+func validateNpmPublicationBump(inv *invocation, options npmPublishOptions, checks []quality.Check, reportDir string, events []deps.ReleaseEvent, dryRun bool, resume bool, previous *deps.BumpReport) error {
 	propagation := npmPublicationPropagationOptions(options, reportDir, dryRun, resume)
 	return deps.ValidateBumpOptions(deps.BumpOptions{
-		Options: dependencyOptions(propagation, checks), Ecosystem: deps.EcosystemNPM,
+		Options: dependencyOptions(inv, propagation, checks), Ecosystem: deps.EcosystemNPM,
 		MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
 		Previous: previous,
 	}, events)
@@ -569,7 +569,7 @@ func npmPublicationPropagationOptions(options npmPublishOptions, reportDir strin
 
 func runNpmPublicationBump(command *cobra.Command, prepared npmPublishPrepared, options npmPublishOptions, events []deps.ReleaseEvent, dryRun, resume, noRegistry bool, inv *invocation) (deps.BumpReport, error) {
 	propagation := npmPublicationPropagationOptions(options, prepared.reportDir, dryRun, resume)
-	report, _, err := executeDepsBumpWithRegistryPolicy(inv, command, deps.EcosystemNPM, events, prepared.repositories, propagation, dependencyOptions(propagation, prepared.checks), noRegistry)
+	report, _, err := executeDepsBumpWithRegistryPolicy(inv, command, deps.EcosystemNPM, events, prepared.repositories, propagation, dependencyOptions(inv, propagation, prepared.checks), noRegistry)
 	return report, err
 }
 

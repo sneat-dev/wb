@@ -42,12 +42,14 @@ type taskOffloadOutput struct {
 	Target      string `json:"target,omitempty"`
 }
 
-func defaultTaskOffloadDependencies() taskOffloadDependencies {
+func defaultTaskOffloadDependencies(inv *invocation) taskOffloadDependencies {
 	return taskOffloadDependencies{
 		create: worktrees.Create,
-		launch: launchTaskWithSessionMove,
+		launch: func(command *cobra.Command, request taskLaunchRequest) error {
+			return launchTaskWithSessionMove(inv, command, request)
+		},
 		store: func() (taskoffload.Store, error) {
-			home, err := wbhome.Root(projectsRoot)
+			home, err := wbhome.Root(inv.projectsRoot)
 			if err != nil {
 				return taskoffload.Store{}, err
 			}
@@ -56,19 +58,19 @@ func defaultTaskOffloadDependencies() taskOffloadDependencies {
 	}
 }
 
-func newTaskCmd() *cobra.Command {
+func newTaskCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "task",
 		Short: "Park, pick up, or offload a portion of work as its own successor session",
 	}
-	deps := defaultTaskOffloadDependencies()
-	command.AddCommand(newTaskOffloadCmdWithDeps(deps, false))
-	command.AddCommand(newTaskOffloadCmdWithDeps(deps, true))
+	deps := defaultTaskOffloadDependencies(inv)
+	command.AddCommand(newTaskOffloadCmdWithDeps(inv, deps, false))
+	command.AddCommand(newTaskOffloadCmdWithDeps(inv, deps, true))
 	command.AddCommand(newTaskPickupCmdWithDeps(deps))
 	return command
 }
 
-func newTaskOffloadCmdWithDeps(deps taskOffloadDependencies, parkOnly bool) *cobra.Command {
+func newTaskOffloadCmdWithDeps(inv *invocation, deps taskOffloadDependencies, parkOnly bool) *cobra.Command {
 	var contextFile, harness, model, target, format, originalPrompt string
 	use := "offload <task> [owner/repository...]"
 	short := "Create an isolated worktree and start a successor session for a portion of work"
@@ -115,7 +117,7 @@ func newTaskOffloadCmdWithDeps(deps taskOffloadDependencies, parkOnly bool) *cob
 			if err != nil {
 				return err
 			}
-			workLog, err := worktrees.PrepareWorkLogOptions(projectsRoot, args[0], worktrees.WorkLogOptions{
+			workLog, err := worktrees.PrepareWorkLogOptions(inv.projectsRoot, args[0], worktrees.WorkLogOptions{
 				OriginalPrompt:        originalPrompt,
 				RequireOriginalPrompt: true,
 				TaskSummary:           "offload " + args[0],
@@ -131,7 +133,7 @@ func newTaskOffloadCmdWithDeps(deps taskOffloadDependencies, parkOnly bool) *cob
 				}
 			}
 			results, err := deps.create(command.Context(), repositories, worktrees.CreateOptions{
-				ProjectsRoot: projectsRoot, Operation: args[0], WorkLog: workLog, SessionRequired: true,
+				ProjectsRoot: inv.projectsRoot, Operation: args[0], WorkLog: workLog, SessionRequired: true,
 			})
 			if err != nil {
 				return err
@@ -240,8 +242,8 @@ func newTaskPickupCmdWithDeps(deps taskOffloadDependencies) *cobra.Command {
 	return command
 }
 
-func launchTaskWithSessionMove(command *cobra.Command, request taskLaunchRequest) error {
-	move := newSessionMoveCmd()
+func launchTaskWithSessionMove(inv *invocation, command *cobra.Command, request taskLaunchRequest) error {
+	move := newSessionMoveCmd(inv)
 	args := []string{request.WorktreeDir, "--handover-file", request.ContextFile}
 	if request.Target != "" {
 		args = append(args, "--to", request.Target)

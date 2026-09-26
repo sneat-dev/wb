@@ -188,6 +188,54 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	}
 }
 
+// A dry run (no --apply) still persists its plan under --report-dir, so an
+// operator can inspect exactly what apply would change before running it.
+func TestRunMergePolicyDryRunStillPersistsReportUnderReportDir(t *testing.T) {
+	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() {
+		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
+	})
+	mergePolicyDiscover = func(string, string, []string, []string, bool) ([]discover.Repo, error) {
+		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
+	}
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "/rules/branches/") {
+			return []byte(`[]`), nil
+		}
+		if strings.Contains(endpoint, "/protection") {
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		}
+		return []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`), nil
+	}
+	mutated := false
+	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{Err: errors.New("dry run must never mutate")}
+	}
+	reportDir := t.TempDir()
+	report, err := runMergePolicy(context.Background(), &invocation{}, mergePolicyOptions{parallel: 1, reportDir: reportDir}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutated {
+		t.Fatal("dry run invoked a mutation")
+	}
+	stored, err := os.ReadFile(filepath.Join(reportDir, "merge-policy.json"))
+	if err != nil {
+		t.Fatalf("dry run report was not persisted under --report-dir: %v", err)
+	}
+	if !strings.Contains(string(stored), "acme/app") {
+		t.Fatalf("persisted dry-run report = %q, want it to name the repository", stored)
+	}
+	var persisted mergePolicyReport
+	if err := json.Unmarshal(stored, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted.Summary, report.Summary) {
+		t.Fatalf("persisted summary %#v != %#v", persisted.Summary, report.Summary)
+	}
+}
+
 func TestRunMergePolicyApplyIgnoresUnrelatedRepositoryResponseChanges(t *testing.T) {
 	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() {

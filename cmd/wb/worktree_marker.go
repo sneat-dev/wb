@@ -71,12 +71,12 @@ worktree registered to one.`,
 			if fleet && len(args) == 1 {
 				return fmt.Errorf("--fleet refreshes every checkout; do not also name one")
 			}
-			checkouts, err := markerCheckouts(inv, cmd.Context(), fleet, args)
+			checkouts, err := markerCheckouts(cmd.Context(), inv, fleet, args)
 			if err != nil {
 				return err
 			}
 			options := checkoutmarker.DescribeOptions{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				BaseBranch:   base,
 				Version:      "wb " + buildinfo.Version(),
 			}
@@ -157,14 +157,14 @@ func markerWouldChange(inspection checkoutmarker.Inspection) (marker, exclude bo
 }
 
 // markerCheckouts resolves which checkouts to mark.
-func markerCheckouts(inv *invocation, ctx context.Context, fleet bool, args []string) ([]string, error) {
+func markerCheckouts(ctx context.Context, inv *invocation, fleet bool, args []string) ([]string, error) {
 	if !fleet {
 		if len(args) == 1 {
 			return []string{args[0]}, nil
 		}
 		return []string{"."}, nil
 	}
-	repositories, err := discover.ScanLocal(projectsRoot)
+	repositories, err := discover.ScanLocal(inv.projectsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scan local repositories: %w", err)
 	}
@@ -303,9 +303,9 @@ func markerSymbol(outcome markerOutcome) string {
 // result the caller depends on; a marker WB could not write is a diagnostic,
 // not a reason to fail a checkout that already exists on disk and already
 // carries a claim.
-func markCreatedCheckouts(command *cobra.Command, base string, results []worktrees.CreateResult) {
+func markCreatedCheckouts(inv *invocation, command *cobra.Command, base string, results []worktrees.CreateResult) {
 	options := checkoutmarker.DescribeOptions{
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: inv.projectsRoot,
 		BaseBranch:   base,
 		Version:      "wb " + buildinfo.Version(),
 	}
@@ -372,9 +372,9 @@ func refreshSyncedCheckoutMarkers(results []fleetsync.Result, projectsRoot strin
 // Best-effort for the same reason as create: the move already happened and is
 // already recorded, so a marker WB could not rewrite is a diagnostic rather
 // than a reason to report a completed rename as a failure.
-func markRenamedCheckouts(command *cobra.Command, base string, results []worktrees.RenameResult) {
+func markRenamedCheckouts(inv *invocation, command *cobra.Command, base string, results []worktrees.RenameResult) {
 	options := checkoutmarker.DescribeOptions{
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: inv.projectsRoot,
 		BaseBranch:   base,
 		Version:      "wb " + buildinfo.Version(),
 	}
@@ -393,9 +393,9 @@ func markRenamedCheckouts(command *cobra.Command, base string, results []worktre
 // successful physical move. Failure is a warning: the durable relocation
 // receipt and Git registration already establish the completed operation, and
 // a later `wb worktree marker --fleet` can safely repair this convenience file.
-func markRelocatedCheckouts(command *cobra.Command, results []worktrees.RelocateResult) {
+func markRelocatedCheckouts(inv *invocation, command *cobra.Command, results []worktrees.RelocateResult) {
 	options := checkoutmarker.DescribeOptions{
-		ProjectsRoot: projectsRoot,
+		ProjectsRoot: inv.projectsRoot,
 		BaseBranch:   "main",
 		Version:      "wb " + buildinfo.Version(),
 	}

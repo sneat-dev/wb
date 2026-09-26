@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -104,6 +105,9 @@ type PullRequestLandOptions struct {
 	// BuildCommand overrides the per-kept-commit build guard. Empty uses the
 	// repository's own target, which is `go build ./...` for a Go module.
 	BuildCommand []string
+	// run supplies the kept-commit build runner for this landing. Nil selects
+	// the production runner at the landing boundary.
+	run runner.Runner
 	// AllowUnfenced lands on observed checks alone, where the target branch has
 	// no server-enforced strict up-to-date policy. Without such a fence, green
 	// checks prove the head was green, not that it is still green against the
@@ -158,6 +162,13 @@ type PullRequestLandOptions struct {
 	// worktree-merge PR route uses it to persist the receipt's advanced
 	// target/candidate before fast-forwarding the local candidate worktree.
 	headUpdated func(previous, updated string) error
+}
+
+func (options PullRequestLandOptions) resolveRunner() runner.Runner {
+	if options.run != nil {
+		return options.run
+	}
+	return runner.New()
 }
 
 // PullRequestLandResult is the receipt, and the JSON envelope.

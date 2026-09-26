@@ -495,7 +495,7 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	// lag the push that produced pushedHead, and arming (or classifying) a
 	// stale head would silently describe or merge different content than
 	// what was actually pushed.
-	view, err := pinPullRequestViewToHead(ctx, repository, number, pushedHead, view)
+	view, err := pinPullRequestViewToHead(ctx, repository, number, pushedHead, view, time.Sleep)
 	if err != nil {
 		return result, err
 	}
@@ -575,10 +575,9 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	return result, nil
 }
 
-// pinPullRequestViewPollDelay is a var, not a const, so a test exercising
-// more than one poll iteration can shrink it instead of waiting out the
-// real interval.
-var pinPullRequestViewPollDelay = 200 * time.Millisecond
+// pinPullRequestViewPollDelay is the real poll interval pinPullRequestViewToHead
+// waits between re-reads.
+const pinPullRequestViewPollDelay = 200 * time.Millisecond
 
 // pinPullRequestViewToHead re-reads a pull request until its own reported
 // head SHA matches pushedHead, bounded rather than immediate: GitHub's own
@@ -586,13 +585,18 @@ var pinPullRequestViewPollDelay = 200 * time.Millisecond
 // briefly still report the head observed before the push that produced
 // pushedHead. A view already at pushedHead is returned unchanged with no
 // extra call.
-func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view PullRequestView) (PullRequestView, error) {
+//
+// sleep is the retry-backoff seam: createPullRequestAutoMerge always passes
+// time.Sleep; a test passes a recorder. It is a function parameter, not a
+// package-level mutable var, so a test cannot leave shared package state
+// mutated for another test running in parallel.
+func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view PullRequestView, sleep func(time.Duration)) (PullRequestView, error) {
 	if pushedHead == "" || view.Head.SHA == pushedHead {
 		return view, nil
 	}
 	const attempts = 5
 	for attempt := 1; attempt < attempts; attempt++ {
-		time.Sleep(pinPullRequestViewPollDelay)
+		sleep(pinPullRequestViewPollDelay)
 		refreshed, err := ReadPullRequest(ctx, repository, number)
 		if err != nil {
 			return view, fmt.Errorf("re-read pull request %s#%s to confirm its pushed head: %w", repository, number, err)

@@ -62,8 +62,6 @@ func newHostLevelCheckoutFixture(t *testing.T) hostLevelCheckoutFixture {
 func TestWorktreeCreateMarksAHostLevelCanonicalClone(t *testing.T) {
 	checkouts := newHostLevelCheckoutFixture(t)
 	prompt := writeOriginalPromptFixture(t, "host level create prompt")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", checkouts.ProjectsRoot, "worktree", "create", "host-create", "acme/app",

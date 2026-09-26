@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -138,7 +139,10 @@ type VerificationEntry struct {
 	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
 	Status   Status `yaml:"status" json:"status"`
 	Detail   string `yaml:"detail,omitempty" json:"detail,omitempty"`
-	Attempts int    `yaml:"attempts,omitempty" json:"attempts,omitempty"`
+	// Deadcode retains complete machine-comparable findings separately from
+	// the bounded human diagnostic. A non-nil incomplete value fails closed.
+	Deadcode *DeadcodeFailureEvidence `yaml:"deadcode,omitempty" json:"deadcode,omitempty"`
+	Attempts int                      `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
 // Verify runs the requested conventional Go and Node checks. The caller owns
@@ -500,7 +504,7 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	checkCtx := ctx
 	cancel := func() {}
 	if options.CheckTimeout > 0 {
-		checkCtx, cancel = context.WithTimeout(ctx, options.CheckTimeout)
+		checkCtx, cancel = context.WithTimeoutCause(ctx, options.CheckTimeout, errLogicalCheckTimeout)
 	}
 	defer cancel()
 	var output string
@@ -518,6 +522,14 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		if isDeadcodeVerificationCommand(language, check, command) {
+			entry.Deadcode = &DeadcodeFailureEvidence{}
+			// A timeout or another execution failure must not become an inherited
+			// finding merely because the subprocess emitted a complete report.
+			if err.Error() == "exit status 1" && checkCtx.Err() == nil {
+				entry.Deadcode = parseDeadcodeFailureEvidence(output)
+			}
+		}
 		if ambient := envguard.Inspect(os.Environ(), os.TempDir(), dir); !ambient.Empty() {
 			entry.Detail = strings.TrimRight(entry.Detail, "\n") + "\n" + ambient.String()
 		}
@@ -536,13 +548,21 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 }
 
 func runShardedVerification(ctx context.Context, options RunOptions, module string) (string, int, error) {
-	profile, err := os.CreateTemp("", "wb-verify-coverage-*.out")
+	return runShardedVerificationInjected(ctx, options, module, nil)
+}
+
+// runShardedVerificationInjected is runShardedVerification's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// runShardedVerification, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func runShardedVerificationInjected(ctx context.Context, options RunOptions, module string, inj *filewrite.Injector) (string, int, error) {
+	profilePath, err := filewrite.CreateScratch("", "wb-verify-coverage-*.out", 0, nil, inj)
 	if err != nil {
-		return "", 0, err
-	}
-	profilePath := profile.Name()
-	if err := profile.Close(); err != nil {
-		_ = os.Remove(profilePath)
+		if profilePath != "" {
+			_ = os.Remove(profilePath)
+		}
 		return "", 0, err
 	}
 	defer func() { _ = os.Remove(profilePath) }()

@@ -24,8 +24,8 @@ func newHooksCmd(inv *invocation) *cobra.Command {
 	cmd.AddCommand(newHooksInstallCmd(inv, false))
 	cmd.AddCommand(newHooksCheckCmd(inv))
 	cmd.AddCommand(newHooksInstallCmd(inv, true))
-	cmd.AddCommand(newHooksRunCmd())
-	cmd.AddCommand(newHooksAgentCmd())
+	cmd.AddCommand(newHooksRunCmd(inv))
+	cmd.AddCommand(newHooksAgentCmd(inv))
 	cmd.AddCommand(newHooksMetricsCmd())
 	cmd.AddCommand(newHooksMeasureCmd())
 	cmd.AddCommand(newHooksPushTierCmd())
@@ -73,7 +73,7 @@ reject relative, repository-local, non-regular, or non-executable results.`,
 				RepoPath:     repoPath,
 				ConfigPath:   configPath,
 				WBExecutable: hookExecutable(),
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Repair:       repair,
 				Force:        force,
 			})
@@ -122,7 +122,7 @@ func newHooksCheckCmd(inv *invocation) *cobra.Command {
 				}
 				return checkHooksFleet(inv, cmd, configPath, jsonOut)
 			}
-			report, err := hooks.Check(argumentOrCurrent(args), configPath, hookExecutable(), projectsRoot)
+			report, err := hooks.Check(argumentOrCurrent(args), configPath, hookExecutable(), inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -150,7 +150,7 @@ func newHooksCheckCmd(inv *invocation) *cobra.Command {
 }
 
 func applyHooksFleet(inv *invocation, cmd *cobra.Command, configPath string, repair, force bool) error {
-	repos, err := localHookRepos(projectsRoot, inv.filterFlag)
+	repos, err := localHookRepos(inv.projectsRoot, inv.filterFlag)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func applyHooksFleet(inv *invocation, cmd *cobra.Command, configPath string, rep
 			RepoPath:     repo.Path,
 			ConfigPath:   configPath,
 			WBExecutable: hookExecutable(),
-			ProjectsRoot: projectsRoot,
+			ProjectsRoot: inv.projectsRoot,
 			Repair:       repair,
 			Force:        force,
 		})
@@ -199,14 +199,14 @@ type fleetHooksCheck struct {
 }
 
 func checkHooksFleet(inv *invocation, cmd *cobra.Command, configPath string, jsonOut bool) error {
-	repos, err := localHookRepos(projectsRoot, inv.filterFlag)
+	repos, err := localHookRepos(inv.projectsRoot, inv.filterFlag)
 	if err != nil {
 		return err
 	}
 	results := make([]fleetHooksCheck, 0, len(repos))
 	problems := 0
 	for _, repo := range repos {
-		report, checkErr := hooks.Check(repo.Path, configPath, hookExecutable(), projectsRoot)
+		report, checkErr := hooks.Check(repo.Path, configPath, hookExecutable(), inv.projectsRoot)
 		entry := fleetHooksCheck{Repository: repo.Slug()}
 		if checkErr != nil {
 			entry.Error = checkErr.Error()
@@ -347,7 +347,7 @@ func (e *hooksCheckError) Error() string {
 	return fmt.Sprintf("hooks check found %d problem(s); run `wb hooks repair`", e.count)
 }
 
-func newHooksRunCmd() *cobra.Command {
+func newHooksRunCmd(inv *invocation) *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:    "run <hook> [hook-args...]",
@@ -364,7 +364,7 @@ func newHooksRunCmd() *cobra.Command {
 				Stdout:       cmd.OutOrStdout(),
 				Stderr:       cmd.ErrOrStderr(),
 				WBExecutable: hookExecutable(),
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 			})
 			if result.MetricsError != nil {
 				// A metrics warning must never turn a successful Git hook into a

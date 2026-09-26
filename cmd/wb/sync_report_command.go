@@ -55,11 +55,11 @@ func syncReportClonePath(root, repository string) (string, error) {
 	return worktrees.CanonicalRepositoryPathForURL(root, repository, syncReportCloneURL(repository))
 }
 
-func newSyncReportCmd() *cobra.Command {
-	return newSyncReportCmdWithDeps(defaultSyncReportCommandDeps())
+func newSyncReportCmd(inv *invocation) *cobra.Command {
+	return newSyncReportCmdWithDeps(inv, defaultSyncReportCommandDeps())
 }
 
-func newSyncReportCmdWithDeps(deps syncReportCommandDeps) *cobra.Command {
+func newSyncReportCmdWithDeps(inv *invocation, deps syncReportCommandDeps) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "sync-report",
 		Short: "Validate and publish per-repository sync analyses",
@@ -70,7 +70,7 @@ wb sync-report validate ./sync-analysis
 wb sync-report publish ./sync-analysis --repo alice/workbench`,
 	}
 	setDiscoveryTerms(command, "sync report analysis findings repository ingitdb markdown persist publish web view")
-	command.AddCommand(newSyncReportValidateCmd(deps), newSyncReportPublishCmd(deps))
+	command.AddCommand(newSyncReportValidateCmd(deps), newSyncReportPublishCmd(inv, deps))
 	return command
 }
 
@@ -100,7 +100,7 @@ func newSyncReportValidateCmd(deps syncReportCommandDeps) *cobra.Command {
 	return command
 }
 
-func newSyncReportPublishCmd(deps syncReportCommandDeps) *cobra.Command {
+func newSyncReportPublishCmd(inv *invocation, deps syncReportCommandDeps) *cobra.Command {
 	var repository string
 	var jsonOut bool
 	command := &cobra.Command{
@@ -118,7 +118,7 @@ func newSyncReportPublishCmd(deps syncReportCommandDeps) *cobra.Command {
 			if err := deps.validate(cmd.Context(), report); err != nil {
 				return err
 			}
-			result, err := deps.publish(cmd.Context(), repository, projectsRoot, report)
+			result, err := deps.publish(cmd.Context(), repository, inv.projectsRoot, report)
 			if err != nil {
 				return err
 			}

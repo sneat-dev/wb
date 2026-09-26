@@ -4,7 +4,14 @@
 ready — land it". It verifies, merges, proves the merge reached the base,
 deletes the branch, and retires the worktree that produced it.
 
-Use it whenever you would otherwise run `gh pr merge`. Never run `gh pr merge`
+To bring the target into the PR head **without landing it**, run
+`wb pr update <owner/repository#number>`. It uses GitHub update-branch with an
+observed-head lease, verifies and records the exact before/after/target SHAs,
+and fast-forwards a clean WB-managed checkout when one holds the head branch.
+It does not wait for CI, arm auto-merge, merge the PR into its target, or
+clean up. Inspect the receipt and new-head CI before a later `wb pr land`.
+
+Use `wb pr land` whenever you would otherwise run `gh pr merge`. Never run `gh pr merge`
 by hand: that is the measured root cause of sixty abandoned worktrees on one
 machine — the merge stage of the older verb broke on the installed `gh`, people
 fell back to the raw command, and the opt-in cleanup that should have retired

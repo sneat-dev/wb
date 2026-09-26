@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding covers the two
@@ -23,9 +25,9 @@ func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
 	}
 }
 
-// TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves the overall
-// deadline (not only the per-shard attempt deadline) terminates the run and is
-// named in the returned error.
+// TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves an explicit
+// logical check deadline (not only the per-shard attempt deadline) terminates
+// the run and is named in the returned error.
 func TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
@@ -33,18 +35,104 @@ func TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
 		"DQCOV_GO_LIST_MAIN":  "./serial",
 		"DQCOV_GO_LIST_OTHER": "./serial",
 		"DQCOV_GO_TEST_LIST":  "TestAlpha",
-		"DQCOV_GO_SLEEP":      "5",
+		"DQCOV_GO_SLEEP":      "2",
 	})
 	started := time.Now()
 	_, _, err := runCoverageWithOptions(context.Background(), RunOptions{
-		Timeout: 300 * time.Millisecond, ShardAttemptTimeout: 20 * time.Second,
+		Timeout: 20 * time.Second, CheckTimeout: 300 * time.Millisecond, ShardAttemptTimeout: 20 * time.Second,
 		GoTestShards: 2, GoShardPackages: []string{"./serial"},
 	}, module, filepath.Join(module, "merged.out"))
-	if err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
+	if err == nil || !strings.Contains(err.Error(), "check timed out after 300ms") {
 		t.Fatalf("overall deadline error = %v, want the overall timeout named", err)
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("overall deadline took %s, want the shard processes terminated promptly", elapsed)
+	}
+}
+
+// Each queued shard receives its own attempt budget. Seven jobs run through
+// at least four waves with at most two workers, so their total exceeds Timeout
+// even though every individual command finishes comfortably inside it.
+//
+//nolint:paralleltest // dqCovFakeGo changes process PATH with t.Setenv.
+func TestQueuedGoCoverageShardsReceiveFullAttemptBudget(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	dqCovSetGoEnv(t, map[string]string{
+		"DQCOV_GO_LIST_MAIN":     "./ordinary\n./serial1\n./serial2\n./serial3",
+		"DQCOV_GO_LIST_OTHER":    "@pattern",
+		"DQCOV_GO_TEST_LIST":     "TestAlpha\nTestBravo",
+		"DQCOV_GO_SLEEP":         "1",
+		"DQCOV_GO_WRITE_PROFILE": "1",
+	})
+	profile := filepath.Join(module, "merged.cov")
+	started := time.Now()
+	_, attempts, err := runCoverageWithOptions(context.Background(), RunOptions{
+		Timeout: 3 * time.Second, GoTestShards: 2, GoShardPackages: []string{"./serial1", "./serial2", "./serial3"},
+	}, module, profile)
+	if err != nil {
+		t.Fatalf("queued coverage failed despite per-attempt budget: %v", err)
+	}
+	if attempts != 1 || time.Since(started) < 3*time.Second {
+		t.Fatalf("attempts/elapsed = %d/%s, want a completed second wave past the old shared deadline", attempts, time.Since(started))
+	}
+	if statements, covered, err := profileTotals(profile); err != nil || statements == 0 || covered == 0 {
+		t.Fatalf("merged profile = %d/%d, %v; want covered statements", covered, statements, err)
+	}
+}
+
+//nolint:paralleltest // dqCovFakeGo changes process PATH with t.Setenv.
+func TestShardTimeoutDiagnosticsDistinguishCheckAndAttempt(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_SLEEP": "1"})
+	jobs := []goCoverageJob{{label: "shard 1", arguments: []string{"test", "./serial"}}}
+	for _, tc := range []struct {
+		name          string
+		checkTimeout  time.Duration
+		attemptBudget time.Duration
+		wantSource    string
+		wantIndex     string
+		cancelBefore  bool
+	}{
+		{name: "attempt", attemptBudget: 100 * time.Millisecond, wantSource: "attempt", wantIndex: "attempt timeout; elapsed "},
+		{name: "check", checkTimeout: 100 * time.Millisecond, attemptBudget: 2 * time.Second, wantSource: "check", wantIndex: "check timeout; elapsed "},
+		{name: "caller cancellation", attemptBudget: 2 * time.Second, wantSource: "caller-cancelled", wantIndex: "caller-cancelled cancellation; elapsed ", cancelBefore: true},
+	} {
+		//nolint:paralleltest // Child cases share the parent's PATH-scoped fake Go executable.
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cancel := func() {}
+			if tc.cancelBefore {
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			} else if tc.checkTimeout > 0 {
+				ctx, cancel = context.WithTimeoutCause(ctx, tc.checkTimeout, errLogicalCheckTimeout)
+			}
+			defer cancel()
+			directory := t.TempDir()
+			sink := newCoverageDiagnosticsSink(directory, "example/repo", module)
+			results := runGoCoverageJobs(ctx, module, jobs, 1, tc.attemptBudget, 0, nil, func(index int, result goCoverageJobResult) error {
+				return sink.persist(index, jobs[index], result)
+			})
+			if len(results) != 1 || results[0].err == nil || results[0].timeoutSource != tc.wantSource || results[0].elapsed <= 0 {
+				t.Fatalf("results = %+v, want %s timeout with elapsed time", results, tc.wantSource)
+			}
+			manifestRaw, err := os.ReadFile(filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem("example/repo", module)+".yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest CoverageDiagnosticManifest
+			if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if len(manifest.Files) != 1 || manifest.Files[0].TimeoutSource != tc.wantSource || manifest.Files[0].ElapsedNS <= 0 {
+				t.Fatalf("durable manifest = %+v, want %s source and elapsed nanoseconds", manifest, tc.wantSource)
+			}
+			if index := summarizeCoverageFailures(jobs, results); !strings.Contains(index, tc.wantIndex) {
+				t.Fatalf("failure index = %q, want source and elapsed time", index)
+			}
+		})
 	}
 }
 
@@ -82,7 +170,7 @@ func TestDqCovRunShardedCoverageOptionsRejectsBadPlans(t *testing.T) {
 		module := t.TempDir()
 		dqCovFakeGo(t, module)
 		dqCovSetGoEnv(t, env)
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, 0, nil)
 		return err
 	}
 
@@ -145,7 +233,7 @@ func TestDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t *testi
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LIST_MAIN": "./serial", "DQCOV_GO_LIST_OTHER": "./serial"})
 	t.Setenv("TMPDIR", filepath.Join(module, "missing"))
-	_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, nil)
+	_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
 	if err == nil {
 		t.Fatal("an unusable temporary root was accepted")
 	}
@@ -167,7 +255,7 @@ func TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *te
 	})
 	merged := filepath.Join(module, "merged.out")
 	var progress []Progress
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, merged, []string{"./serial"}, 2, "", "", 0, 0, func(event Progress) {
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, merged, []string{"./serial"}, 2, "", "", 0, 0, 0, func(event Progress) {
 		progress = append(progress, event)
 	})
 	if err != nil {
@@ -217,7 +305,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 			"DQCOV_GO_TEST_OUT":       "ok",
 			"DQCOV_GO_PROFILE_SHARD2": "mode: count\npkg/a.go:1.1,2.2 2 1",
 		})
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
 		if err == nil || !strings.Contains(err.Error(), "mode mismatch") {
 			t.Fatalf("merge error = %v, want the profile mode mismatch", err)
 		}
@@ -235,7 +323,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 		})
 		blocker := filepath.Join(module, "not-a-directory")
 		writeQualityFile(t, blocker, "x")
-		output, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, nil)
+		output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, 0, nil)
 		if err == nil || !strings.Contains(err.Error(), "write coverage diagnostics") {
 			t.Fatalf("diagnostics error = %v, want the write failure surfaced", err)
 		}
@@ -304,7 +392,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	t.Run("no failures writes no manifest", func(t *testing.T) {
 		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "ok", profilePath: "p"}}, []goCoverageJobResult{{output: "fine", attempts: 1}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "ok", profilePath: "p"}, goCoverageJobResult{output: "fine", attempts: 1}); err != nil {
 			t.Fatal(err)
 		}
 		manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
@@ -316,7 +404,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	t.Run("empty failure output records the error", func(t *testing.T) {
 		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("exit status 1")}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("exit status 1")}); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := os.ReadFile(filepath.Join(directory, "coverage-raw-"+coverageDiagnosticStem(repository, module)+"-1.log"))
@@ -332,7 +420,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "file")
 		writeQualityFile(t, blocker, "x")
-		err := writeCoverageDiagnostics(filepath.Join(blocker, "reports"), repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("boom")}})
+		err := newCoverageDiagnosticsSink(filepath.Join(blocker, "reports"), repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("boom")})
 		if err == nil {
 			t.Fatal("an unwritable diagnostics directory was accepted")
 		}
@@ -345,7 +433,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(directory, "coverage-raw-"+stem+"-1.log"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding raw artifact path was accepted")
 		}
@@ -358,7 +446,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding manifest path was accepted")
 		}

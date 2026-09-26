@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -133,6 +134,7 @@ func rewriteBranchForKeptCommits(
 	commits []SourceCommit,
 	approvedBy, reason string,
 	buildCommand []string,
+	run runner.Runner,
 ) ([]LandedCommit, string, *landRefusal, error) {
 	scratch, err := os.MkdirTemp("", "wb-pr-land-")
 	if err != nil {
@@ -184,7 +186,7 @@ func rewriteBranchForKeptCommits(
 		}
 		// A commit that does not build is not a place anyone can bisect to, so
 		// promoting it to its own place in the log is worse than aggregating it.
-		if refusal := buildAt(ctx, worktree, source, buildCommand); refusal != nil {
+		if refusal := buildAt(ctx, run, worktree, source, buildCommand); refusal != nil {
 			return nil, "", refusal, nil
 		}
 		// The SHA this scratch worktree produced is not the SHA that will land:
@@ -213,7 +215,7 @@ func rewriteBranchForKeptCommits(
 }
 
 // buildAt runs the repository's own build at the current checkout.
-func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCommand []string) *landRefusal {
+func buildAt(ctx context.Context, run runner.Runner, worktree string, source SourceCommit, buildCommand []string) *landRefusal {
 	command := buildCommand
 	if len(command) == 0 {
 		command = defaultBuildCommand(worktree)
@@ -230,14 +232,12 @@ func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCom
 			command: "wb pr land … --keep-commits … --reason \"…\" --build-command \"<the repository's build>\"",
 		}
 	}
-	run := exec.CommandContext(ctx, command[0], command[1:]...)
-	run.Dir = worktree
-	run.Env = console.Env()
-	if output, err := run.CombinedOutput(); err != nil {
+	result, err := run.RunOpts(ctx, worktree, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, command[0], command[1:]...)
+	if err != nil {
 		return &landRefusal{
 			code: LandRefusalKeepDoesNotBuild,
 			reason: "kept commit " + shortMergeRevision(source.SHA) + " (" + source.Subject + ") does not build: " +
-				strings.TrimSpace(lastLines(string(output), 5)),
+				strings.TrimSpace(lastLines(result.CombinedOutput, 5)),
 			command: "wb pr land --keep-commits <a smaller set that excludes " + shortMergeRevision(source.SHA) + "> --reason \"…\"",
 		}
 	}
@@ -387,7 +387,7 @@ func landKeepingCommits(
 		return nil, "", nil, err
 	}
 	return rewriteBranchForKeptCommits(ctx, canonical, options.Repository, view.Head.Ref, baseSHA,
-		plan, view, commits, approvedBy, options.Reason, options.BuildCommand)
+		plan, view, commits, approvedBy, options.Reason, options.BuildCommand, options.resolveRunner())
 }
 
 // MapLandedCommits pairs each source commit with the commit that carried it

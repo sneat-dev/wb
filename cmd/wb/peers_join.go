@@ -39,7 +39,7 @@ func defaultPeersJoinDeps() peersJoinDeps {
 	}
 }
 
-func newPeersJoinCmd() *cobra.Command {
+func newPeersJoinCmd(inv *invocation) *cobra.Command {
 	var tokenFile string
 	var tokenStdin, restartDaemon, jsonOut bool
 	command := &cobra.Command{
@@ -54,7 +54,7 @@ restarts a running daemon so the peer session starts immediately.
   cat token.txt | wb peers join https://vm1.sneat.dev --token-stdin   # on the laptop`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersJoin(command.Context(), defaultPeersJoinDeps(), projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
+			return runPeersJoin(command.Context(), defaultPeersJoinDeps(), inv.projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	command.Flags().StringVar(&tokenFile, "token-file", "", "read the one-time token from this absolute path")

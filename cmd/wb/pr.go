@@ -12,17 +12,69 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newPRCmd() *cobra.Command {
+func newPRCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "pr",
-		Short: "Land and inspect pull requests as one deterministic operation",
+		Short: "Update or land pull requests with exact-head evidence",
 	}
-	command.AddCommand(newPRCreateCmd())
-	command.AddCommand(newPRLandCmd())
+	command.AddCommand(newPRCreateCmd(inv))
+	command.AddCommand(newPRUpdateCmd(inv))
+	command.AddCommand(newPRLandCmd(inv))
 	return command
 }
 
-func newPRLandCmd() *cobra.Command {
+func newPRUpdateCmd(inv *invocation) *cobra.Command {
+	var format string
+	command := &cobra.Command{
+		Use:   "update <owner/repository#number>",
+		Short: "Merge a PR target into its head without landing the PR",
+		Long: `Bring one open pull request's head up to date with its target through
+GitHub update-branch, pinned to the observed head SHA. WB verifies the new
+merge and writes an exact-SHA receipt. A clean matching WB-managed local
+worktree is fast-forwarded; an unmanaged, dirty, or diverged checkout is left
+untouched and reported. This command never waits for CI, arms auto-merge,
+merges the pull request into its target, or cleans up the worktree.`,
+		Example: "wb pr update sneat-dev/wb#773 --format json",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			repository, number, err := splitPullRequestSelector(args[0])
+			if err != nil {
+				return &exitError{code: exitUsage, message: err.Error()}
+			}
+			result, updateErr := orchestrate.UpdatePullRequest(command.Context(), orchestrate.PullRequestUpdateOptions{
+				Repository: repository, PullRequest: number, ProjectsRoot: inv.projectsRoot,
+			})
+			if result.ReceiptPath != "" {
+				if format == "json" {
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					if err := encoder.Encode(result); err != nil {
+						return err
+					}
+				} else if _, err := fmt.Fprintf(command.OutOrStdout(), "PR %s#%s: %s; %s -> %s; target %s -> %s; local: %s; receipt: %s\n",
+					result.Repository, result.PullRequest, result.Status, result.BeforeSHA, result.AfterSHA,
+					result.TargetBeforeSHA, result.TargetCurrentSHA, result.LocalSync, result.ReceiptPath); err != nil {
+					return err
+				}
+			}
+			if updateErr != nil {
+				return &exitError{code: exitFindings, message: updateErr.Error()}
+			}
+			if strings.HasSuffix(result.Status, "_partial") || result.Status == "unverified" {
+				return &exitError{code: exitFindings, message: "PR target freshness or local sync needs attention; see receipt"}
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	setDiscoveryTerms(command, "update pull request pr sync target into feature branch without landing")
+	return command
+}
+
+func newPRLandCmd(inv *invocation) *cobra.Command {
 	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile string
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
@@ -138,16 +190,16 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			// GitHub read: a worktree of this repository still building against
 			// an unpublished tree makes every check observation meaningless.
 			progress.live.update("pr land: local link preflight: " + repository + ": started")
-			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+			if err := refuseLinkedRepositoryWorktrees(inv, repository); err != nil {
 				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
 				return err
 			}
 			progress.live.update("pr land: local link preflight: " + repository + ": completed")
-			events, streamName := landingEventLog(repository)
+			events, streamName := landingEventLog(inv, repository)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:          repository,
 				PullRequest:         number,
-				ProjectsRoot:        projectsRoot,
+				ProjectsRoot:        inv.projectsRoot,
 				Keep:                keep,
 				ApprovedBy:          approvedBy,
 				ReviewComment:       reviewComment,
@@ -166,7 +218,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				OperationProgress:   progress.operationReporter("pr land"),
 				Events:              events,
 				Stream:              streamName,
-				Lane:                landingLaneGuardRequest("wb pr land", laneReason, takeOverLane),
+				Lane:                landingLaneGuardRequest(inv, "wb pr land", laneReason, takeOverLane),
 				CheckoutUpdated:     lifecycleCheckoutUpdated(command.ErrOrStderr()),
 			})
 			if err != nil {
@@ -341,8 +393,8 @@ func shortSHAForDisplay(sha string) string {
 // `wb report stream` able to show the landing beside the work that produced it.
 // A landing outside every stream still writes an event — the analytics exist to
 // measure verbs, not only streams — into the fleet log.
-func landingEventLog(repository string) (streams.EventAppender, string) {
-	store, err := streams.Open(projectsRoot)
+func landingEventLog(inv *invocation, repository string) (streams.EventAppender, string) {
+	store, err := streams.Open(inv.projectsRoot)
 	if err != nil {
 		return streams.DiscardEvents{}, ""
 	}

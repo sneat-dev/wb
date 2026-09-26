@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/layout"
 )
 
-func newLayoutCmd() *cobra.Command {
+func newLayoutCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "layout",
 		Short: "Audit and clean local clone placement under --projects-root",
@@ -30,13 +30,13 @@ still read in place at the legacy {owner}/{repository} placement, so a fleet
 that has not moved yet stays auditable and nothing is "fixed" for it. Linked
 worktrees are ignored.`,
 	}
-	command.AddCommand(newLayoutAuditCmd())
-	command.AddCommand(newLayoutCleanCmd())
-	command.AddCommand(newLayoutMigrateCmd())
+	command.AddCommand(newLayoutAuditCmd(inv))
+	command.AddCommand(newLayoutCleanCmd(inv))
+	command.AddCommand(newLayoutMigrateCmd(inv))
 	return command
 }
 
-func newLayoutAuditCmd() *cobra.Command {
+func newLayoutAuditCmd(inv *invocation) *cobra.Command {
 	var format, reportDir string
 	command := &cobra.Command{
 		Use:   "audit",
@@ -52,7 +52,7 @@ reports the host its origin remote already names, which is the host level it
 must move under.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := layout.Audit(cmd.Context(), projectsRoot)
+			report, err := layout.Audit(cmd.Context(), inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -78,7 +78,7 @@ must move under.`,
 	return command
 }
 
-func newLayoutCleanCmd() *cobra.Command {
+func newLayoutCleanCmd(inv *invocation) *cobra.Command {
 	var (
 		format, reportDir     string
 		apply                 bool
@@ -96,7 +96,7 @@ delete. A legacy {owner}/{repository} first level is never treated as a
 removable top-level clone.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := layout.Clean(cmd.Context(), projectsRoot, layout.CleanOptions{
+			report, err := layout.Clean(cmd.Context(), inv.projectsRoot, layout.CleanOptions{
 				Apply:                 apply,
 				AllowMissingCanonical: allowMissingCanonical,
 			})
@@ -127,7 +127,7 @@ removable top-level clone.`,
 	return command
 }
 
-func newLayoutMigrateCmd() *cobra.Command {
+func newLayoutMigrateCmd(inv *invocation) *cobra.Command {
 	var (
 		format, reportDir, undoID string
 		apply, clonesOnly         bool
@@ -191,7 +191,7 @@ with --undo is a usage error, since undo does not accept new inclusions.`,
 			if err := requireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
 				return err
 			}
-			report, err := layout.Migrate(cmd.Context(), projectsRoot, layout.MigrateOptions{
+			report, err := layout.Migrate(cmd.Context(), inv.projectsRoot, layout.MigrateOptions{
 				Repositories:       args,
 				Apply:              apply,
 				ClonesOnly:         clonesOnly,

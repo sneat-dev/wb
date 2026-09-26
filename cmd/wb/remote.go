@@ -112,11 +112,11 @@ For the authenticated outbound HTTPS hub:
   wb remote claims     list every claim in the store, with staleness`,
 	}
 	cmd.AddCommand(newRemotePublishCmd(inv))
-	cmd.AddCommand(newRemoteStatusCmd())
-	cmd.AddCommand(newRemoteMachinesCmd())
-	cmd.AddCommand(newRemoteClaimCmd())
-	cmd.AddCommand(newRemoteReleaseCmd())
-	cmd.AddCommand(newRemoteClaimsCmd())
-	cmd.AddCommand(newRemoteEnrollCmd())
+	cmd.AddCommand(newRemoteStatusCmd(inv))
+	cmd.AddCommand(newRemoteMachinesCmd(inv))
+	cmd.AddCommand(newRemoteClaimCmd(inv))
+	cmd.AddCommand(newRemoteReleaseCmd(inv))
+	cmd.AddCommand(newRemoteClaimsCmd(inv))
+	cmd.AddCommand(newRemoteEnrollCmd(inv))
 	return cmd
 }

@@ -379,7 +379,10 @@ func TestCwDepsSyncCommandDispatchesToRunSyncInProcess(t *testing.T) {
 	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 
-	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSyncCmd(&invocation{nonInteractive: true}) },
+	projectsRoot := t.TempDir()
+	stdout, _, err := cwCovExec(t, projectsRoot, func() *cobra.Command {
+		return newSyncCmd(&invocation{projectsRoot: projectsRoot, nonInteractive: true})
+	},
 		"--dry-run")
 	if err != nil {
 		t.Fatalf("wb sync --dry-run: %v\n%s", err, stdout)
@@ -430,13 +433,10 @@ func TestCwDepsRunQueueSummaryKeepsTelemetryPrivate(t *testing.T) {
 // listing shapes in text and JSON.
 func TestCwDepsPrintRunQueueRendersRunningAndWaitingSeats(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	var out bytes.Buffer
 	command := cwDepsNewOutCommand(&out)
-	if err := printRunQueue(command, false); err != nil {
+	if err := printRunQueue(&invocation{}, command, false); err != nil {
 		t.Fatalf("printRunQueue text: %v", err)
 	}
 	for _, want := range []string{"WB CPU queue", "running (", "waiting ("} {
@@ -446,7 +446,7 @@ func TestCwDepsPrintRunQueueRendersRunningAndWaitingSeats(t *testing.T) {
 	}
 	out.Reset()
 	command = cwDepsNewOutCommand(&out)
-	if err := printRunQueue(command, true); err != nil {
+	if err := printRunQueue(&invocation{}, command, true); err != nil {
 		t.Fatalf("printRunQueue json: %v", err)
 	}
 	var decoded map[string]json.RawMessage

@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorktreeEndCmd() *cobra.Command {
+func newWorktreeEndCmd(inv *invocation) *cobra.Command {
 	var (
 		repository, note, format string
 		apply, keepCapture       bool
@@ -61,12 +61,12 @@ wb worktree end improve-login --repo acme/app --apply --note "landed in #412"`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			store, err := streams.Open(projectsRoot)
+			store, err := streams.Open(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
 			engine := &worktreeend.Engine{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Inventory:    worktreeInventory{},
 				Links:        streamLinkGuard{store: store},
 				Capture:      gitStashCapture{},

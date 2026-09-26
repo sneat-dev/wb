@@ -318,7 +318,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 
 func runDefaultBranch(ctx context.Context, inv *invocation, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
 	if options.restoreArchiveFrom != "" {
-		return runDefaultBranchArchiveRestore(ctx, options, progress)
+		return runDefaultBranchArchiveRestore(inv, ctx, options, progress)
 	}
 	config, err := loadDefaultBranchConfig(defaultBranchConfigPath())
 	if err != nil {
@@ -332,7 +332,7 @@ func runDefaultBranch(ctx context.Context, inv *invocation, options defaultBranc
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
-	locals, err := defaultBranchLocalClones(inv.filterFlag)
+	locals, err := defaultBranchLocalClones(inv, inv.filterFlag)
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
@@ -361,7 +361,7 @@ func runDefaultBranch(ctx context.Context, inv *invocation, options defaultBranc
 	wg.Wait()
 	attachDefaultBranchLocalBlockers(&report, locals.Blocked)
 	if options.apply {
-		path, err := defaultBranchReportPath(options.reportDir)
+		path, err := defaultBranchReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -491,7 +491,7 @@ func runDefaultBranch(ctx context.Context, inv *invocation, options defaultBranc
 		}
 	}
 	if !options.apply && options.reportDir != "" {
-		path, err := defaultBranchReportPath(options.reportDir)
+		path, err := defaultBranchReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -538,7 +538,7 @@ func readDefaultBranchReport(path, expectedDigest string) (*defaultBranchReport,
 // runDefaultBranchArchiveRestore is deliberately separate from normal apply:
 // it has one repository, reads one caller-bound receipt, and can only restore
 // the archived bit.  It never discovers a fleet or scans/reconciles a clone.
-func runDefaultBranchArchiveRestore(ctx context.Context, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
+func runDefaultBranchArchiveRestore(inv *invocation, ctx context.Context, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
 	prior, err := readDefaultBranchArchiveRestoreReport(options.restoreArchiveFrom, options.restoreArchiveSHA256)
 	if err != nil {
 		return defaultBranchReport{}, err
@@ -547,7 +547,7 @@ func runDefaultBranchArchiveRestore(ctx context.Context, options defaultBranchOp
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
-	path, err := defaultBranchReportPath(options.reportDir)
+	path, err := defaultBranchReportPath(inv, options.reportDir)
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
@@ -902,12 +902,12 @@ func attachDefaultBranchLocalBlockers(report *defaultBranchReport, blockers map[
 	}
 }
 
-func defaultBranchLocalClones(filter string) (defaultBranchLocalCloneSet, error) {
+func defaultBranchLocalClones(inv *invocation, filter string) (defaultBranchLocalCloneSet, error) {
 	result := defaultBranchLocalCloneSet{Eligible: map[string][]discover.Repo{}, Blocked: map[string][]defaultBranchCanonical{}}
-	if strings.TrimSpace(projectsRoot) == "" {
+	if strings.TrimSpace(inv.projectsRoot) == "" {
 		return result, nil
 	}
-	local, err := discover.ScanLocal(projectsRoot)
+	local, err := discover.ScanLocal(inv.projectsRoot)
 	if err != nil {
 		return result, fmt.Errorf("scan local canonical clones: %w", err)
 	}
@@ -2466,9 +2466,19 @@ func defaultBranchHasFindings(report defaultBranchReport) bool {
 	return report.Summary.Drift+report.Summary.Blocked+report.Summary.Errors+
 		report.Summary.CanonicalBlocked+report.Summary.CanonicalErrors > 0
 }
-func defaultBranchReportPath(dir string) (string, error) {
+func defaultBranchReportPath(inv *invocation, dir string) (string, error) {
+	return defaultBranchReportPathInjected(inv, dir, nil)
+}
+
+// defaultBranchReportPathInjected is defaultBranchReportPath's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// defaultBranchReportPath, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func defaultBranchReportPathInjected(inv *invocation, dir string, inj *filewrite.Injector) (string, error) {
 	if dir == "" {
-		home, err := wbhome.Root(projectsRoot)
+		home, err := wbhome.Root(inv.projectsRoot)
 		if err != nil {
 			return "", err
 		}
@@ -2477,12 +2487,8 @@ func defaultBranchReportPath(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	reserved, err := os.CreateTemp(dir, "default-branch-"+time.Now().UTC().Format("20060102T150405.000000000Z")+"-*.json")
+	path, err := filewrite.CreateScratch(dir, "default-branch-"+time.Now().UTC().Format("20060102T150405.000000000Z")+"-*.json", 0, nil, inj)
 	if err != nil {
-		return "", err
-	}
-	path := reserved.Name()
-	if err := reserved.Close(); err != nil {
 		return "", err
 	}
 	if err := os.Remove(path); err != nil {

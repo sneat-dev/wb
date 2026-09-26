@@ -23,6 +23,13 @@ type Options struct {
 	ClonePath string
 	// CloneURL is what git clone receives when ClonePath does not exist yet.
 	CloneURL string
+	// Now and Sleep are the clock and retry-backoff seam every clone-lock
+	// wait and Fetch retry goes through. Both default to the real functions
+	// in New; a test supplies fakes to exercise a lock timeout or an
+	// exhausted fetch retry without a real wait. Neither is a package-level
+	// mutable var (see acquireCloneLock's doc comment).
+	Now   func() time.Time
+	Sleep func(time.Duration)
 }
 
 // Provider implements remotestate.Provider over a git clone.
@@ -31,7 +38,15 @@ type Provider struct {
 }
 
 // New returns a provider; nothing touches disk until Publish/Fetch/List.
-func New(opts Options) *Provider { return &Provider{opts: opts} }
+func New(opts Options) *Provider {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.Sleep == nil {
+		opts.Sleep = time.Sleep
+	}
+	return &Provider{opts: opts}
+}
 
 // SnapshotPath is the store-relative path of one machine's snapshot.
 func SnapshotPath(login, machine string) string {
@@ -208,7 +223,7 @@ func (p *Provider) Fetch(_ context.Context) error {
 				if onFetchRetry != nil {
 					onFetchRetry()
 				}
-				time.Sleep(fetchRetryBackoff)
+				p.opts.Sleep(fetchRetryBackoff)
 			}
 			continue
 		}
@@ -245,7 +260,7 @@ func (p *Provider) push() error {
 // that follows it is one critical section against the shared clone
 // directory, not just the Fetch half of it — see clonelock.go.
 func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (remotestate.PublishResult, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return remotestate.PublishResult{}, err
 	}
@@ -302,7 +317,7 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 // concurrent with another process's in-flight Fetch/rebase can otherwise
 // observe a half-updated working tree.
 func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +332,7 @@ func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
 // claims while holding the same clone lock. List and Claims remain
 // self-contained for callers that need either projection on its own.
 func (p *Provider) Status(ctx context.Context) (remotestate.StatusSnapshot, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return remotestate.StatusSnapshot{}, err
 	}

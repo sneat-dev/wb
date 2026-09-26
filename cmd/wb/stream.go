@@ -42,7 +42,7 @@ const (
 	outcomeRefused  = "refused"
 )
 
-func newStreamCmd() *cobra.Command {
+func newStreamCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "stream",
 		Aliases: []string{"streams"},
@@ -72,12 +72,12 @@ group), 2 refusal or usage error. A findings exit does not mean the stream was
 not created; read the report or the JSON envelope.`,
 	}
 	command.AddCommand(
-		newStreamStartCmd(),
-		newStreamJoinCmd(),
-		newStreamSyncCmd(),
-		newStreamStatusCmd(),
-		newStreamEndCmd(),
-		newStreamDeleteCmd(),
+		newStreamStartCmd(inv),
+		newStreamJoinCmd(inv),
+		newStreamSyncCmd(inv),
+		newStreamStatusCmd(inv),
+		newStreamEndCmd(inv),
+		newStreamDeleteCmd(inv),
 	)
 	setDiscoveryTerms(command, "stream library consumer cross-repository propagate link draft pull request lease")
 	return command
@@ -88,26 +88,26 @@ type streamEngineOptions struct {
 	format string
 }
 
-func newStreamEngine(command *cobra.Command, workLog worktrees.WorkLogOptions, sessionMode bool, base string) (*streams.Engine, error) {
-	store, err := streams.Open(projectsRoot)
+func newStreamEngine(inv *invocation, command *cobra.Command, workLog worktrees.WorkLogOptions, sessionMode bool, base string) (*streams.Engine, error) {
+	store, err := streams.Open(inv.projectsRoot)
 	if err != nil {
 		return nil, err
 	}
-	login, machine := streamLeaseIdentity(defaultRemoteDeps(), projectsRoot)
+	login, machine := streamLeaseIdentity(defaultRemoteDeps(), inv.projectsRoot)
 	return &streams.Engine{
 		Store:        store,
 		Git:          streams.ExecGit{},
 		GitHub:       streams.ExecGitHub{},
-		Worktrees:    &streamWorktrees{projectsRoot: projectsRoot, workLog: workLog, sessionMode: sessionMode, base: base},
-		ProjectsRoot: projectsRoot,
-		HooksCheck:   streams.InstalledHooksChecker(hookExecutable(), projectsRoot),
+		Worktrees:    &streamWorktrees{projectsRoot: inv.projectsRoot, workLog: workLog, sessionMode: sessionMode, base: base},
+		ProjectsRoot: inv.projectsRoot,
+		HooksCheck:   streams.InstalledHooksChecker(hookExecutable(), inv.projectsRoot),
 		Login:        login,
 		Machine:      machine,
 		Session:      streamSessionIdentity(),
 	}, nil
 }
 
-func newStreamStartCmd() *cobra.Command {
+func newStreamStartCmd(inv *invocation) *cobra.Command {
 	var (
 		shared                                                                                  streamEngineOptions
 		library, base                                                                           string
@@ -163,7 +163,7 @@ wb stream start checkout-rewrite acme/app acme/library --library acme/library \
 			if err := streams.ValidateName(args[0]); err != nil {
 				return streamUsage(command, "stream start", shared.format, err.Error())
 			}
-			workLog, sessionMode, err := streamWorkLog(command, args[0], workLogFlags{
+			workLog, sessionMode, err := streamWorkLog(inv, command, args[0], workLogFlags{
 				mode: mode, effortID: effortID, runID: runID, initiator: initiator,
 				agentID: agentID, agentRuntime: agentRuntime, model: model,
 				cli: cli, provider: provider, originalPrompt: originalPrompt,
@@ -171,12 +171,12 @@ wb stream start checkout-rewrite acme/app acme/library --library acme/library \
 			if err != nil {
 				return streamUsage(command, "stream start", shared.format, err.Error())
 			}
-			engine, err := newStreamEngine(command, workLog, sessionMode, base)
+			engine, err := newStreamEngine(inv, command, workLog, sessionMode, base)
 			if err != nil {
 				return err
 			}
 			repositories := args[1:]
-			transitive, proposed, err := proposedTransitiveConsumers(projectsRoot, repositories)
+			transitive, proposed, err := proposedTransitiveConsumers(inv.projectsRoot, repositories)
 			if err != nil {
 				return err
 			}
@@ -204,7 +204,7 @@ wb stream start checkout-rewrite acme/app acme/library --library acme/library \
 	return command
 }
 
-func newStreamJoinCmd() *cobra.Command {
+func newStreamJoinCmd(inv *invocation) *cobra.Command {
 	var (
 		shared                                                                                  streamEngineOptions
 		role, base                                                                              string
@@ -257,7 +257,7 @@ Refusals (exit 2):
 					fmt.Sprintf("unsupported role %q; use library or consumer", role),
 					"wb stream join "+args[0]+" "+args[1]+" --role consumer")
 			}
-			workLog, sessionMode, err := streamWorkLog(command, args[0], workLogFlags{
+			workLog, sessionMode, err := streamWorkLog(inv, command, args[0], workLogFlags{
 				mode: mode, effortID: effortID, runID: runID, initiator: initiator,
 				agentID: agentID, agentRuntime: agentRuntime, model: model,
 				cli: cli, provider: provider, originalPrompt: originalPrompt,
@@ -265,7 +265,7 @@ Refusals (exit 2):
 			if err != nil {
 				return streamUsage(command, "stream join", shared.format, err.Error())
 			}
-			engine, err := newStreamEngine(command, workLog, sessionMode, base)
+			engine, err := newStreamEngine(inv, command, workLog, sessionMode, base)
 			if err != nil {
 				return err
 			}
@@ -286,7 +286,7 @@ Refusals (exit 2):
 	return command
 }
 
-func newStreamStatusCmd() *cobra.Command {
+func newStreamStatusCmd(inv *invocation) *cobra.Command {
 	var shared streamEngineOptions
 	command := &cobra.Command{
 		Use:   "status [name]",
@@ -316,7 +316,7 @@ wb stream status checkout-rewrite --format json`,
 			if err := requireOutputFormat(shared.format, "text", "json"); err != nil {
 				return err
 			}
-			engine, err := newStreamEngine(command, worktrees.WorkLogOptions{}, false, "")
+			engine, err := newStreamEngine(inv, command, worktrees.WorkLogOptions{}, false, "")
 			if err != nil {
 				return err
 			}
@@ -335,7 +335,7 @@ wb stream status checkout-rewrite --format json`,
 	return command
 }
 
-func newStreamEndCmd() *cobra.Command {
+func newStreamEndCmd(inv *invocation) *cobra.Command {
 	var (
 		shared           streamEngineOptions
 		apply            bool
@@ -391,7 +391,7 @@ wb stream end checkout-rewrite --apply`,
 			if err := requireOutputFormat(shared.format, "text", "json"); err != nil {
 				return err
 			}
-			engine, err := newStreamEngine(command, worktrees.WorkLogOptions{}, false, "")
+			engine, err := newStreamEngine(inv, command, worktrees.WorkLogOptions{}, false, "")
 			if err != nil {
 				return err
 			}
@@ -416,7 +416,7 @@ wb stream end checkout-rewrite --apply`,
 	return command
 }
 
-func newStreamDeleteCmd() *cobra.Command {
+func newStreamDeleteCmd(inv *invocation) *cobra.Command {
 	var shared streamEngineOptions
 	command := &cobra.Command{
 		Use:   "delete <name>",
@@ -436,7 +436,7 @@ longer wanted.`,
 			if err := requireOutputFormat(shared.format, "text", "json"); err != nil {
 				return err
 			}
-			store, err := streams.Open(projectsRoot)
+			store, err := streams.Open(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -817,7 +817,7 @@ func addStreamWorkLogFlags(command *cobra.Command, mode, effortID, runID, initia
 // streamWorkLog prepares the same Work Log options `wb worktree create`
 // requires, including the mandatory private prompt archive. A stream is a
 // task, so it carries a task's provenance; nothing here is stream-specific.
-func streamWorkLog(command *cobra.Command, task string, flags workLogFlags) (worktrees.WorkLogOptions, bool, error) {
+func streamWorkLog(inv *invocation, command *cobra.Command, task string, flags workLogFlags) (worktrees.WorkLogOptions, bool, error) {
 	if flags.mode != "" && flags.mode != "auto" && flags.mode != "agent" && flags.mode != "manual" {
 		return worktrees.WorkLogOptions{}, false, fmt.Errorf("unsupported execution mode %q; use auto, agent, or manual", flags.mode)
 	}
@@ -846,7 +846,7 @@ func streamWorkLog(command *cobra.Command, task string, flags workLogFlags) (wor
 			return worktrees.WorkLogOptions{}, false, err
 		}
 	}
-	prepared, err := worktrees.PrepareWorkLogOptions(projectsRoot, task, workLog)
+	prepared, err := worktrees.PrepareWorkLogOptions(inv.projectsRoot, task, workLog)
 	if err != nil {
 		return worktrees.WorkLogOptions{}, false, err
 	}

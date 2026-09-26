@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newStreamSyncCmd() *cobra.Command {
+func newStreamSyncCmd(inv *invocation) *cobra.Command {
 	var (
 		format, base, reason string
 		libraries            []string
@@ -88,7 +88,7 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
-			store, err := streams.Open(projectsRoot)
+			store, err := streams.Open(inv.projectsRoot)
 			if err != nil {
 				return err
 			}

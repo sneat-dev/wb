@@ -36,18 +36,18 @@ type daemonOperationResult struct {
 	StderrTail            string `json:"stderr_tail,omitempty"`
 }
 
-func newDaemonOperationCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonOperationCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	command := &cobra.Command{Use: "operation", Short: "Submit and inspect authenticated local daemon operations"}
 	command.AddCommand(
-		newDaemonOperationSubmitCmd(deps),
-		newDaemonOperationGetCmd(deps),
-		newDaemonOperationWaitCmd(deps),
-		newDaemonOperationCancelCmd(deps),
+		newDaemonOperationSubmitCmd(inv, deps),
+		newDaemonOperationGetCmd(inv, deps),
+		newDaemonOperationWaitCmd(inv, deps),
+		newDaemonOperationCancelCmd(inv, deps),
 	)
 	return command
 }
 
-func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonOperationSubmitCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var idempotencyKey, format string
 	var cpuUnits uint32
 	var wait, jsonOut bool
@@ -68,10 +68,10 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
+			if err := requireDaemonRawExecutionPolicy(deps, inv.projectsRoot); err != nil {
 				return err
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
+			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -100,7 +100,7 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonOperationGetCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonOperationGetCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut bool
 	command := &cobra.Command{Use: "get <operation-id>", Short: "Get one durable operation receipt", Args: cobra.ExactArgs(1),
@@ -109,7 +109,7 @@ func newDaemonOperationGetCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
+			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -124,7 +124,7 @@ func newDaemonOperationGetCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonOperationWaitCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonOperationWaitCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format, afterCursor string
 	var timeout time.Duration
 	var jsonOut bool
@@ -147,7 +147,7 @@ func newDaemonOperationWaitCmd(deps daemonDependencies) *cobra.Command {
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			client, err := daemonOperationClient(ctx, deps, projectsRoot, progress)
+			client, err := daemonOperationClient(ctx, deps, inv.projectsRoot, progress)
 			if err != nil {
 				return err
 			}
@@ -166,7 +166,7 @@ func newDaemonOperationWaitCmd(deps daemonDependencies) *cobra.Command {
 	return command
 }
 
-func newDaemonOperationCancelCmd(deps daemonDependencies) *cobra.Command {
+func newDaemonOperationCancelCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut bool
 	command := &cobra.Command{Use: "cancel <operation-id>", Short: "Cancel a queued or running local operation", Args: cobra.ExactArgs(1),
@@ -175,7 +175,7 @@ func newDaemonOperationCancelCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
+			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -280,12 +280,12 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 	return nil
 }
 
-func submitWorkerOperation(command *cobra.Command, deps daemonDependencies, targetWorkerID, idempotencyKey string, args []string) error {
+func submitWorkerOperation(inv *invocation, command *cobra.Command, deps daemonDependencies, targetWorkerID, idempotencyKey string, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
+	client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
 	if err != nil {
 		return err
 	}

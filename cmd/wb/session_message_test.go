@@ -29,7 +29,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 				Receipt: sessionmove.MessageReceipt{MessageID: options.MessageID}}, nil
 		},
 	}
-	command := newSessionSendCmdWithDeps(deps)
+	command := newSessionSendCmdWithDeps(&invocation{}, deps)
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{"wbs-successor", "--message", "Continue the focused race test."})
@@ -45,7 +45,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 		t.Fatalf("send acknowledgement = %q", text)
 	}
 
-	tooLarge := newSessionSendCmdWithDeps(deps)
+	tooLarge := newSessionSendCmdWithDeps(&invocation{}, deps)
 	var tooLargeStderr bytes.Buffer
 	tooLarge.SetErr(&tooLargeStderr)
 	tooLarge.SetArgs([]string{"wbs-successor", "--message", strings.Repeat("x", sessionmove.MaxMessageBodyBytes+1)})
@@ -56,7 +56,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 		t.Fatalf("oversize send stderr must stay bounded and diagnostic, len=%d text=%q", len(got), got)
 	}
 
-	missing := newSessionSendCmdWithDeps(deps)
+	missing := newSessionSendCmdWithDeps(&invocation{}, deps)
 	missing.SetArgs([]string{"wbs-successor"})
 	if err := missing.Execute(); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("missing input error = %v", err)
@@ -67,7 +67,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 	if err := os.WriteFile(messagePath, []byte("exact file message\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fromFile := newSessionSendCmdWithDeps(deps)
+	fromFile := newSessionSendCmdWithDeps(&invocation{}, deps)
 	fromFile.SetOut(&bytes.Buffer{})
 	fromFile.SetArgs([]string{"wbs-successor", "--message-file", messagePath})
 	if err := fromFile.Execute(); err != nil || captured.Body != "exact file message\n" {
@@ -77,7 +77,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 	if err := os.Symlink(messagePath, symlink); err != nil {
 		t.Fatal(err)
 	}
-	linked := newSessionSendCmdWithDeps(deps)
+	linked := newSessionSendCmdWithDeps(&invocation{}, deps)
 	linked.SetArgs([]string{"wbs-successor", "--message-file", symlink})
 	if err := linked.Execute(); err == nil {
 		t.Fatal("session send followed a message-file symlink")
@@ -99,7 +99,7 @@ func TestSessionMessageResumeRejectsReplacementAndReportsExactRetryCommand(t *te
 			return result, &sessionmessenger.DeliveryError{MessageID: "message-stable", TargetWBSessionID: "wbs-successor", Cause: errors.New("unknown transport outcome")}
 		},
 	}
-	command := newSessionSendCmdWithDeps(deps)
+	command := newSessionSendCmdWithDeps(&invocation{}, deps)
 	command.SetArgs([]string{"wbs-successor", "--message", "exact content"})
 	err := command.Execute()
 	if err == nil || !strings.Contains(err.Error(), "wb session send wbs-successor --resume message-stable") {
@@ -109,7 +109,7 @@ func TestSessionMessageResumeRejectsReplacementAndReportsExactRetryCommand(t *te
 		t.Fatalf("delivery error leaked message body: %v", err)
 	}
 
-	resume := newSessionSendCmdWithDeps(deps)
+	resume := newSessionSendCmdWithDeps(&invocation{}, deps)
 	resume.SetArgs([]string{"wbs-successor", "--resume", "message-stable", "--message", "replacement"})
 	if err := resume.Execute(); err == nil || !strings.Contains(err.Error(), "does not accept replacement message input") {
 		t.Fatalf("replacement resume error = %v", err)
@@ -130,13 +130,13 @@ func TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume(t *testing.T
 				Receipt: sessionmove.MessageReceipt{MessageID: firstNonempty(options.MessageID, options.ResumeMessageID)}}, nil
 		},
 	}
-	fresh := newSessionRequestHandoffCmdWithDeps(deps)
+	fresh := newSessionRequestHandoffCmdWithDeps(&invocation{}, deps)
 	fresh.SetOut(&bytes.Buffer{})
 	fresh.SetArgs([]string{"wbs-successor"})
 	if err := fresh.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	resume := newSessionRequestHandoffCmdWithDeps(deps)
+	resume := newSessionRequestHandoffCmdWithDeps(&invocation{}, deps)
 	resume.SetOut(&bytes.Buffer{})
 	resume.SetArgs([]string{"wbs-successor", "--resume", "message-handoff"})
 	if err := resume.Execute(); err != nil {
@@ -168,7 +168,7 @@ func TestSessionReceiveMessageReturnsCanonicalReceiptOnly(t *testing.T) {
 			return sessionmessage.Result{Receipt: receipt}, nil
 		},
 	}
-	command := newSessionReceiveMessageCmdWithDeps(deps)
+	command := newSessionReceiveMessageCmdWithDeps(&invocation{}, deps)
 	var output bytes.Buffer
 	command.SetIn(bytes.NewReader(rawMessage))
 	command.SetOut(&output)
@@ -184,7 +184,7 @@ func TestSessionReceiveMessageReturnsCanonicalReceiptOnly(t *testing.T) {
 		t.Fatalf("receiver output=%q want=%q options=%#v", output.Bytes(), want, captured)
 	}
 
-	textCommand := newSessionReceiveMessageCmdWithDeps(deps)
+	textCommand := newSessionReceiveMessageCmdWithDeps(&invocation{}, deps)
 	output.Reset()
 	textCommand.SetIn(bytes.NewReader(rawMessage))
 	textCommand.SetOut(&output)

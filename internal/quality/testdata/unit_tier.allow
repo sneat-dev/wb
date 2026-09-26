@@ -7,4 +7,6 @@ internal/daemon/dqcov_rlimit_unix_test.go	re-runs the test binary itself (exec.C
 internal/process/command_unix_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) as internal/process's own helper-process fixture
 internal/quality/dqcov_fault_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) to force a fault-injection path
 internal/runlog/runlog_tailcov_unix_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)) to exercise a tail-coverage helper process
+internal/runner/real_test.go	re-runs the test binary itself via runner.Real's Run/Start/Detach/Interactive against os.Args[0] (task-8's runner, over Go's helper-process pattern), gated by runnertest.AllowRealProcess per task-24's runtime guard -- never git or gh
+internal/runner/runnertest/runnertest_test.go	exercises runnertest.AllowRealProcess itself (task-24's runtime-guard escape hatch), which only sets WB_RUNNER_ALLOW_REAL_PROCESS and never starts a process
 internal/worktrees/git_capability_linux_test.go	re-runs the test binary itself (exec.Command(os.Args[0], ...)), twice, to exercise the fd-inheriting git-capability helper under a real Linux filesystem capability

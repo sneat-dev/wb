@@ -6,7 +6,7 @@
 # --target`) unless the same PR shrinks other entries by at least as
 # much; the PR that creates this file is exempt. Remove an entry once
 # its count reaches 0.
-cmd/wb/agent_remote_test.go	3	task-22
+cmd/wb/agent_remote_test.go	4	task-22
 cmd/wb/archive_test.go	9	task-22
 cmd/wb/ci_wait_test.go	26	task-22
 cmd/wb/cli_smoke_test.go	2	task-22
@@ -29,6 +29,7 @@ cmd/wb/layout_migrate_include_test.go	14	task-22
 cmd/wb/layout_migrate_test.go	35	task-22
 cmd/wb/layout_test.go	9	task-22
 cmd/wb/module_archive_test.go	10	task-22
+cmd/wb/pr_create_link_preflight_test.go	16	task-16
 cmd/wb/pr_test.go	1	task-22
 cmd/wb/quality_test.go	7	task-22
 cmd/wb/release_contract_test.go	32	task-22
@@ -49,9 +50,10 @@ cmd/wb/worktree_end_test.go	6	task-22
 cmd/wb/worktree_gc_test.go	10	task-22
 cmd/wb/worktree_host_level_test.go	23	task-22
 cmd/wb/worktree_marker_test.go	11	task-22
-cmd/wb/worktree_merge_test.go	35	task-22
+cmd/wb/worktree_merge_test.go	48	task-22
 cmd/wb/worktree_publication_test.go	12	task-22
 cmd/wb/worktree_rescue_test.go	15	task-22
+cmd/wb/worktree_retire_test.go	8	task-16
 cmd/wb/worktree_test.go	25	task-22
 cmd/wb/worktree_upgrade_integration_test.go	12	task-22
 cmd/wb/zz_cov_deps_graph_drift_test.go	2	task-22
@@ -187,10 +189,13 @@ internal/orchestrate/pr_land_test.go	28	task-17
 internal/orchestrate/pr_land_update_branch_test.go	4	task-17
 internal/orchestrate/worktree_merge_absorbed_conflict_go_test.go	17	task-17
 internal/orchestrate/worktree_merge_absorbed_conflict_test.go	53	task-17
-internal/orchestrate/worktree_merge_ack_test.go	161	task-17
+# Reviewed real-Git receipts: the added eight calls construct and rewind isolated remotes to prove cleaned-landing ancestry.
+internal/orchestrate/worktree_merge_ack_test.go	169	task-17
 internal/orchestrate/worktree_merge_adopt_published_test.go	16	task-17
 internal/orchestrate/worktree_merge_conflict_replacement_test.go	8	task-17
 internal/orchestrate/worktree_merge_coverage_test.go	14	task-17
+# Reviewed real-Git imported-main graph: git subprocess, isolated PATH fixture, and executable helper remain exercised in the default tier.
+internal/orchestrate/worktree_merge_deadcode_test.go	3	task-17
 internal/orchestrate/worktree_merge_pr_land_integration_test.go	90	task-17
 internal/orchestrate/worktree_merge_pr_land_test.go	20	task-17
 internal/orchestrate/worktree_merge_pr_route_test.go	6	task-17
@@ -213,7 +218,8 @@ internal/quality/changed_packages_test.go	14	task-15
 internal/quality/deadcode_test.go	2	task-15
 internal/quality/dqcov_shim_test.go	2	task-15
 internal/quality/dqcov_verify_test.go	1	task-15
-internal/quality/quality_test.go	10	task-15
+internal/quality/quality_process_cancellation_unix_test.go	1	task-15
+internal/quality/quality_test.go	9	task-15
 internal/quality/ratchet_test.go	34	task-15
 internal/recipe/command_test.go	5	task-15
 internal/recipe/land_test.go	15	task-15

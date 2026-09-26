@@ -8,7 +8,7 @@ import (
 )
 
 func TestPRCreateRejectsBodyAndBodyFileTogether(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--body", "x", "--body-file", "x.md"})
 	err := command.Execute()
@@ -22,7 +22,7 @@ func TestPRCreateRejectsBodyAndBodyFileTogether(t *testing.T) {
 }
 
 func TestPRCreateRejectsDraftWithAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--draft", "--auto-merge"})
 	err := command.Execute()
@@ -36,7 +36,7 @@ func TestPRCreateRejectsDraftWithAutoMerge(t *testing.T) {
 }
 
 func TestPRCreateRejectsApprovedByWithoutAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--approved-by", "review.md"})
 	err := command.Execute()
@@ -54,7 +54,7 @@ func TestPRCreateRejectsApprovedByWithoutAutoMerge(t *testing.T) {
 // comment, so accepting either flag without --land would silently ignore
 // it rather than refuse.
 func TestPRCreateRejectsReviewCommentWithoutLand(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--auto-merge", "--approved-by", "opus@codex@run-1", "--review-comment", "looks good"})
 	err := command.Execute()
@@ -68,7 +68,7 @@ func TestPRCreateRejectsReviewCommentWithoutLand(t *testing.T) {
 }
 
 func TestPRCreateRejectsAllowUnfencedWithoutAutoMerge(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--allow-unfenced"})
 	err := command.Execute()
@@ -100,7 +100,7 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--allow-unfenced"})
 	err = command.Execute()
@@ -110,8 +110,37 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 	}
 }
 
+// TestPRCreateAutoMergeAloneBuildsItsOwnLandingLaneRequest proves the
+// --auto-merge-without---land branch that builds a dedicated landing-lane
+// guard request (pr_create.go:197) is reached: every other test in this file
+// either omits --auto-merge or combines it with --land, so that lane
+// assignment was never exercised.
+func TestPRCreateAutoMergeAloneBuildsItsOwnLandingLaneRequest(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	command := newPRCreateCmd(&invocation{})
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--auto-merge"})
+	err = command.Execute()
+	var exit *exitError
+	if errors.As(err, &exit) && exit.code == exitUsage {
+		t.Fatalf("--auto-merge alone must not be a usage error: %v", exit)
+	}
+}
+
 func TestPRCreateRejectsAddWithCommitAll(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	command.SilenceUsage = true
 	command.SetArgs([]string{"--add", "x.go", "--commit-all", "-m", "feat: x"})
 	err := command.Execute()
@@ -125,7 +154,7 @@ func TestPRCreateRejectsAddWithCommitAll(t *testing.T) {
 }
 
 func TestPRCreateHelpStatesItsContract(t *testing.T) {
-	command := newPRCreateCmd()
+	command := newPRCreateCmd(&invocation{})
 	var output strings.Builder
 	command.SetOut(&output)
 	if err := command.Help(); err != nil {

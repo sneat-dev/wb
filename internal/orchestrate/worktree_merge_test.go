@@ -436,6 +436,39 @@ func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t
 	}
 }
 
+func TestWorktreeMergeValidationRegressionComparesTimeoutSourceWithoutElapsedTime(t *testing.T) {
+	t.Parallel()
+	const header = "WB coverage failure index:\n"
+	const attempt = "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.254192833s)\n"
+	const named = "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.254170416s)\n"
+	const raw = "WB coverage raw output:\n[unsharded packages]\ntimed out after 8m0s\n[github.com/sneat-dev/wb/internal/orchestrate shard 1/4]\ntimed out after 8m0s\n"
+	report := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test -coverprofile … ./...", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := report(header + attempt + named + raw)
+	for _, tc := range []struct {
+		name      string
+		detail    string
+		wantError bool
+	}{
+		{name: "elapsed differs", detail: header + "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.252630334s)\n- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.252606292s)\n" + raw},
+		{name: "timeout source changes", detail: header + "- [unsharded packages] command failed without a named Go test (check timeout; elapsed 8m0.252630334s)\n" + named + raw, wantError: true},
+		{name: "named timeout source changes", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (check timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
+		{name: "new named test fails", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestNew (attempt timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
+		{name: "new job fails", detail: header + attempt + named + "- [github.com/sneat-dev/wb/internal/worktrees shard 2/4] command failed without a named Go test (attempt timeout; elapsed 8m0.1s)\n" + raw, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := worktreeMergeValidationRegression(baseline, report(tc.detail))
+			if (err != nil) != tc.wantError {
+				t.Fatalf("regression error = %v, want error=%t", err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
 	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationReport {
@@ -794,13 +827,13 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA {
 		t.Fatalf("prepare did not publish exact validation identity: %+v", receipt.ValidationIdentity)
 	}
-	reusable, identityErr := preparedValidationStillValid(receipt, worktreeMergeValidationPlan{})
+	reusable, identityErr := preparedValidationStillValidContext(context.Background(), receipt, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if identityErr != nil || !reusable {
 		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
 	}
 	drifted := receipt
 	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", WBBuild: receipt.ValidationIdentity.WBBuild, WBExecutableSHA: receipt.ValidationIdentity.WBExecutableSHA, Validators: receipt.ValidationIdentity.Validators, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
-	reusable, identityErr = preparedValidationStillValid(drifted, worktreeMergeValidationPlan{})
+	reusable, identityErr = preparedValidationStillValidContext(context.Background(), drifted, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if identityErr != nil || reusable {
 		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
 	}
@@ -808,7 +841,7 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	validatorIdentity := *receipt.ValidationIdentity
 	validatorIdentity.Validators = map[string]string{"go": "drifted"}
 	validatorDrifted.ValidationIdentity = &validatorIdentity
-	reusable, identityErr = preparedValidationStillValid(validatorDrifted, worktreeMergeValidationPlan{})
+	reusable, identityErr = preparedValidationStillValidContext(context.Background(), validatorDrifted, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if identityErr != nil || reusable {
 		t.Fatalf("validator executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
 	}
@@ -816,7 +849,7 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	wbIdentity := *receipt.ValidationIdentity
 	wbIdentity.WBExecutableSHA = "drifted"
 	wbDrifted.ValidationIdentity = &wbIdentity
-	reusable, identityErr = preparedValidationStillValid(wbDrifted, worktreeMergeValidationPlan{})
+	reusable, identityErr = preparedValidationStillValidContext(context.Background(), wbDrifted, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if identityErr != nil || reusable {
 		t.Fatalf("WB executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
 	}
@@ -824,7 +857,7 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if reusable, identityErr = preparedValidationStillValid(persistedPrepare, worktreeMergeValidationPlan{}); identityErr != nil || !reusable {
+	if reusable, identityErr = preparedValidationStillValidContext(context.Background(), persistedPrepare, worktreeMergeValidationPlan{}, 0, 0, 0); identityErr != nil || !reusable {
 		current, _ := worktreeMergeValidationIdentity(persistedPrepare)
 		t.Fatalf("persisted prepared validation was not reusable: reusable=%t err=%v status=%s phase=%s persisted=%+v current=%+v validation=%+v clean=%t", reusable, identityErr, persistedPrepare.Status, persistedPrepare.Phase, persistedPrepare.ValidationIdentity, current, persistedPrepare.Validation, persistedPrepare.Validation.WorkspaceClean)
 	}
@@ -1037,7 +1070,7 @@ func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktr
 		t.Fatal("non-Go worktree identity was not fingerprintable")
 	}
 	receipt.ValidationIdentity = &identity
-	reusable, err := preparedValidationStillValid(receipt, worktreeMergeValidationPlan{})
+	reusable, err := preparedValidationStillValidContext(context.Background(), receipt, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if err != nil || !reusable {
 		t.Fatalf("non-Go passed receipt was not reusable without baseline: reusable=%t err=%v", reusable, err)
 	}
@@ -1583,13 +1616,13 @@ func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *t
 			CandidateSHA: "cafef00d",
 		},
 	}
-	if err := requireWorktreeMergePublishedValidation(base, worktreeMergeValidationPlan{}); err != nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), base, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil {
 		t.Fatalf("validated exact candidate was refused: %v", err)
 	}
 
 	failedStatus := base
 	failedStatus.Status = WorktreeMergeValidationFailed
-	if err := requireWorktreeMergePublishedValidation(failedStatus, worktreeMergeValidationPlan{}); err == nil ||
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), failedStatus, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil ||
 		!strings.Contains(err.Error(), "cafef00d") || !strings.Contains(err.Error(), "wb worktree merge resume /tmp/receipt.json") {
 		t.Fatalf("validation_failed receipt status was not refused with a resume hint: %v", err)
 	}
@@ -1598,19 +1631,19 @@ func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *t
 	identity := *base.ValidationIdentity
 	identity.CandidateSHA = "deadbeef"
 	mismatchedIdentity.ValidationIdentity = &identity
-	if err := requireWorktreeMergePublishedValidation(mismatchedIdentity, worktreeMergeValidationPlan{}); err == nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), mismatchedIdentity, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil {
 		t.Fatal("candidate SHA identity mismatch was not refused")
 	}
 
 	staleRevision := base
 	staleRevision.Validation.Revision = "deadbeef"
-	if err := requireWorktreeMergePublishedValidation(staleRevision, worktreeMergeValidationPlan{}); err == nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), staleRevision, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil {
 		t.Fatal("validation recorded against a different revision was not refused")
 	}
 
 	missingIdentity := base
 	missingIdentity.ValidationIdentity = nil
-	if err := requireWorktreeMergePublishedValidation(missingIdentity, worktreeMergeValidationPlan{}); err == nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), missingIdentity, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil {
 		t.Fatal("missing validation identity was not refused")
 	}
 
@@ -1621,13 +1654,13 @@ func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *t
 	publishedAtCurrentSHA := base
 	publishedAtCurrentSHA.PullRequest = "https://example.test/acme/app/pull/1"
 	publishedAtCurrentSHA.PublishedCandidateSHA = "cafef00d"
-	if err := requireWorktreeMergePublishedValidation(publishedAtCurrentSHA, worktreeMergeValidationPlan{}); err != nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), publishedAtCurrentSHA, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil {
 		t.Fatalf("already-published candidate at its exact validated SHA was incorrectly refused: %v", err)
 	}
 	publishedAtCurrentSHAButFailed := failedStatus
 	publishedAtCurrentSHAButFailed.PullRequest = "https://example.test/acme/app/pull/1"
 	publishedAtCurrentSHAButFailed.PublishedCandidateSHA = "cafef00d"
-	if err := requireWorktreeMergePublishedValidation(publishedAtCurrentSHAButFailed, worktreeMergeValidationPlan{}); err == nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), publishedAtCurrentSHAButFailed, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil {
 		t.Fatal("published-at-current-SHA carve-out was applied despite a validation_failed status")
 	}
 
@@ -1639,7 +1672,7 @@ func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *t
 	publishedAdvance := failedStatus
 	publishedAdvance.PullRequest = "https://example.test/acme/app/pull/445"
 	publishedAdvance.PublishedCandidateSHA = "183b0a7"
-	if err := requireWorktreeMergePublishedValidation(publishedAdvance, worktreeMergeValidationPlan{}); err == nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), publishedAdvance, worktreeMergeValidationPlan{}, 0, 0, 0); err == nil {
 		t.Fatal("advanced candidate past an old PublishedCandidateSHA was not refused")
 	}
 	// An advanced candidate whose exact SHA HAS been locally re-validated
@@ -1652,7 +1685,7 @@ func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *t
 	advancedAndRevalidated := base
 	advancedAndRevalidated.PullRequest = "https://example.test/acme/app/pull/445"
 	advancedAndRevalidated.PublishedCandidateSHA = "183b0a7"
-	if err := requireWorktreeMergePublishedValidation(advancedAndRevalidated, worktreeMergeValidationPlan{}); err != nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), advancedAndRevalidated, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil {
 		t.Fatalf("advanced candidate that was re-validated at its exact SHA was incorrectly refused: %v", err)
 	}
 }
@@ -3344,7 +3377,7 @@ func TestPrepareWorktreeMergeRebatchClosesSupersededPullRequest(t *testing.T) {
 	if err := os.Remove(closedLog); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensurePreparedWorktreeMergeRebatch(context.Background(), &WorktreeMergePreparedRebatch{ReceiptPath: first.ReceiptPath}, &replacement); err != nil {
+	if err := ensurePreparedWorktreeMergeRebatch(context.Background(), &WorktreeMergePreparedRebatch{ReceiptPath: first.ReceiptPath}, &replacement, time.Sleep); err != nil {
 		t.Fatal(err)
 	}
 	if _, statErr := os.Stat(closedLog); !os.IsNotExist(statErr) {

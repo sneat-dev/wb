@@ -172,7 +172,7 @@ func TestCwCovShortSHAForDisplay(t *testing.T) {
 }
 
 func TestCwCovPrintPullRequestLand(t *testing.T) {
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 

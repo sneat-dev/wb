@@ -50,31 +50,31 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 		command *cobra.Command
 		group   string
 	}{
-		{newWorktreeCreateCmd(), "start"},
+		{newWorktreeCreateCmd(inv), "start"},
 		{newWorktreeAdoptCmd(inv), "start"},
 		{newWorktreeMergeCmd(inv), "finish"},
 		{newWorktreeLandCmd(inv), "finish"},
-		{newWorktreeEndCmd(), "finish"},
+		{newWorktreeEndCmd(inv), "finish"},
 		{newWorktreeCleanupCmd(inv), "finish"},
 		{newWorktreeRetireCmd(inv), "finish"},
 		{newWorktreeGCCmd(inv), "finish"},
 		{newWorktreeAbortCmd(inv), "finish"},
 		{newWorktreeSummaryCmd(inv), "inspect"},
 		{newWorktreeActiveCmd(inv), "inspect"},
-		{newWorktreeInfoCmd(), "inspect"},
+		{newWorktreeInfoCmd(inv), "inspect"},
 		{newWorktreeListCmd(inv), "inspect"},
-		{newWorktreeGuardCmd(), "recover"},
+		{newWorktreeGuardCmd(inv), "recover"},
 		{newWorktreeRescueCmd(inv), "recover"},
-		{newWorktreeWorkLogCmd(), "recover"},
+		{newWorktreeWorkLogCmd(inv), "recover"},
 		{newWorktreeCheckpointFetchCmd(), "recover"},
 		{newWorktreeOwnCmd(), "recover"},
 		{newWorktreeMarkerCmd(inv), "admin"},
 		{newWorktreeRelocateCmd(inv), "admin"},
 		{newWorktreeRenameCmd(inv), "admin"},
-		{newWorktreeCorrectIdentityCmd(), "admin"},
-		{newWorktreeSetCmd(), "admin"},
-		{newWorktreeOrphansCmd(), "admin"},
-		{newWorktreeBackfillCmd(), "admin"},
+		{newWorktreeCorrectIdentityCmd(inv), "admin"},
+		{newWorktreeSetCmd(inv), "admin"},
+		{newWorktreeOrphansCmd(inv), "admin"},
+		{newWorktreeBackfillCmd(inv), "admin"},
 	}
 	for _, child := range children {
 		child.command.GroupID = child.group
@@ -146,13 +146,13 @@ keeps stdout machine-readable; progress and diagnostics use stderr.`,
 				}
 			}()
 			outcome, err := worktrees.Relocate(command.Context(), worktrees.RelocateOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Filter: inv.filterFlag, To: to, Apply: apply,
+				ProjectsRoot: inv.projectsRoot, Task: args[0], Filter: inv.filterFlag, To: to, Apply: apply,
 			})
 			if err != nil {
 				return err
 			}
 			if apply {
-				markRelocatedCheckouts(command, outcome.Results)
+				markRelocatedCheckouts(inv, command, outcome.Results)
 			}
 			for _, diagnostic := range outcome.Diagnostics {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: relocate skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message)
@@ -247,7 +247,7 @@ target branch.`,
 	return command
 }
 
-func newWorktreeInfoCmd() *cobra.Command {
+func newWorktreeInfoCmd(inv *invocation) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "info [worktree-path]",
@@ -270,14 +270,14 @@ as one JSON document on stdout.`,
 				path = args[0]
 			}
 			view, err := worktrees.LoadWorkLogView(command.Context(), worktrees.LoadWorkLogOptions{
-				ProjectsRoot:        projectsRoot,
+				ProjectsRoot:        inv.projectsRoot,
 				Worktree:            path,
 				IncludePromptBodies: false,
 			})
 			if err != nil {
 				return err
 			}
-			laneClaim, err := activeMergeLaneClaimForWorktreeInfo(projectsRoot, view)
+			laneClaim, err := activeMergeLaneClaimForWorktreeInfo(inv.projectsRoot, view)
 			if err != nil {
 				return err
 			}
@@ -338,7 +338,7 @@ func formatMergerLaneClaimText(claim *orchestrate.MergeLaneClaim) string {
 	return b.String()
 }
 
-func newWorktreeWorkLogCmd() *cobra.Command {
+func newWorktreeWorkLogCmd(inv *invocation) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:     "log [worktree-path]",
@@ -369,7 +369,7 @@ archive remain read-only until --apply.`,
 				path = args[0]
 			}
 			view, err := worktrees.LoadWorkLogView(command.Context(), worktrees.LoadWorkLogOptions{
-				ProjectsRoot:        projectsRoot,
+				ProjectsRoot:        inv.projectsRoot,
 				Worktree:            path,
 				IncludePromptBodies: true,
 			})
@@ -389,17 +389,17 @@ archive remain read-only until --apply.`,
 	command.PersistentFlags().String("mode", "auto", "execution mode for mutation verbs: auto, agent (requires a live registered session), or manual (requires --initiator)")
 	command.PersistentFlags().String("initiator", "", "human or agent that authorized a manual Work Log mutation")
 	command.AddCommand(
-		newWorktreeLogInitCmd(),
-		newWorktreeLogSteerCmd(),
-		newWorktreeLogShowCmd(),
-		newWorktreeLogCheckpointCmd(),
-		newWorktreeLogRefreshCmd(),
-		newWorktreeLogIntegrateCmd(),
-		newWorktreeLogHandoffCmd(),
-		newWorktreeLogRecoverCmd(),
-		newWorktreeLogFinalizeCmd(),
-		newWorktreeLogSyncCmd(),
-		newWorktreeLogArchiveCmd(),
+		newWorktreeLogInitCmd(inv),
+		newWorktreeLogSteerCmd(inv),
+		newWorktreeLogShowCmd(inv),
+		newWorktreeLogCheckpointCmd(inv),
+		newWorktreeLogRefreshCmd(inv),
+		newWorktreeLogIntegrateCmd(inv),
+		newWorktreeLogHandoffCmd(inv),
+		newWorktreeLogRecoverCmd(inv),
+		newWorktreeLogFinalizeCmd(inv),
+		newWorktreeLogSyncCmd(inv),
+		newWorktreeLogArchiveCmd(inv),
 	)
 	return command
 }
@@ -452,7 +452,7 @@ func worktreeLogPath(args []string) string {
 	return "."
 }
 
-func newWorktreeLogInitCmd() *cobra.Command {
+func newWorktreeLogInitCmd(inv *invocation) *cobra.Command {
 	var prompt, promptFile, source, runtime, agentID, model, cli, provider, format string
 	command := &cobra.Command{
 		Use:   "init [worktree-path]",
@@ -476,7 +476,7 @@ func newWorktreeLogInitCmd() *cobra.Command {
 				}
 			}
 			result, err := worktrees.LogInit(command.Context(), worktrees.LogInitOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Prompt: body, Source: source, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
 				AgentID: agentID,
 			})
@@ -498,7 +498,7 @@ func newWorktreeLogInitCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeLogSteerCmd() *cobra.Command {
+func newWorktreeLogSteerCmd(inv *invocation) *cobra.Command {
 	var prompt, promptFile, source, runtime, model, cli, provider, format string
 	command := &cobra.Command{
 		Use:   "steer [worktree-path]",
@@ -525,7 +525,7 @@ which records human_declared.`,
 				source = worktrees.PromptSourceAgent
 			}
 			result, err := worktrees.LogSteer(command.Context(), worktrees.LogSteerOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Body: body, Source: source, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
 			})
 			if err != nil {
@@ -545,7 +545,7 @@ which records human_declared.`,
 	return command
 }
 
-func newWorktreeLogShowCmd() *cobra.Command {
+func newWorktreeLogShowCmd(inv *invocation) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "show [worktree-path]",
@@ -559,7 +559,7 @@ exact private original prompt.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			view, projection, err := worktrees.LogShow(command.Context(), projectsRoot, worktreeLogPath(args))
+			view, projection, err := worktrees.LogShow(command.Context(), inv.projectsRoot, worktreeLogPath(args))
 			if err != nil {
 				return err
 			}
@@ -576,7 +576,7 @@ exact private original prompt.`,
 	return command
 }
 
-func newWorktreeLogCheckpointCmd() *cobra.Command {
+func newWorktreeLogCheckpointCmd(inv *invocation) *cobra.Command {
 	var message, nextAction, usageDisc, currency, providerRef, format string
 	var inputTokens, outputTokens int64
 	var estimatedCost float64
@@ -615,7 +615,7 @@ target branch on origin. Retrieve a checkpoint from another machine with
 				costPtr = &estimatedCost
 			}
 			result, err := worktrees.LogCheckpoint(command.Context(), worktrees.LogCheckpointOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Message: message, NextAction: nextAction, UsageDisc: usageDisc,
 				InputTokens: inPtr, OutputTokens: outPtr, EstimatedCost: costPtr,
 				Currency: currency, ProviderRef: providerRef, SkipRemote: skipRemote,
@@ -644,7 +644,7 @@ target branch on origin. Retrieve a checkpoint from another machine with
 	return command
 }
 
-func newWorktreeLogRefreshCmd() *cobra.Command {
+func newWorktreeLogRefreshCmd(inv *invocation) *cobra.Command {
 	var base, format string
 	command := &cobra.Command{
 		Use:   "refresh [worktree-path]",
@@ -660,7 +660,7 @@ func newWorktreeLogRefreshCmd() *cobra.Command {
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogRefresh(command.Context(), worktrees.LogRefreshOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base,
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args), Base: base,
 			})
 			if err != nil {
 				return err
@@ -673,7 +673,7 @@ func newWorktreeLogRefreshCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeLogIntegrateCmd() *cobra.Command {
+func newWorktreeLogIntegrateCmd(inv *invocation) *cobra.Command {
 	var base, strategy, format string
 	command := &cobra.Command{
 		Use:   "integrate [worktree-path]",
@@ -689,7 +689,7 @@ func newWorktreeLogIntegrateCmd() *cobra.Command {
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogIntegrate(command.Context(), worktrees.LogIntegrateOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base, Strategy: strategy,
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args), Base: base, Strategy: strategy,
 			})
 			if err != nil {
 				return err
@@ -703,7 +703,7 @@ func newWorktreeLogIntegrateCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeLogHandoffCmd() *cobra.Command {
+func newWorktreeLogHandoffCmd(inv *invocation) *cobra.Command {
 	var summary, nextAction, successor, model, cli, provider, format string
 	var apply bool
 	command := &cobra.Command{
@@ -720,7 +720,7 @@ func newWorktreeLogHandoffCmd() *cobra.Command {
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogHandoff(command.Context(), worktrees.LogHandoffOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Summary: summary, NextAction: nextAction, Successor: successor,
 				Model: model, CLI: cli, Provider: provider, Apply: apply,
 			})
@@ -741,7 +741,7 @@ func newWorktreeLogHandoffCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeLogRecoverCmd() *cobra.Command {
+func newWorktreeLogRecoverCmd(inv *invocation) *cobra.Command {
 	var actor, format, reconcileBranch, expectedHead, reason, eventID string
 	var apply, establishClaim, takeover, remote bool
 	command := &cobra.Command{
@@ -758,7 +758,7 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogRecover(command.Context(), worktrees.LogRecoverOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Apply: apply, EstablishClaim: establishClaim, Takeover: takeover, Actor: actor,
 				ReconcileBranch: reconcileBranch, ExpectedHead: expectedHead, Remote: remote,
 				Reason: reason, EventID: eventID,
@@ -782,7 +782,7 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeLogFinalizeCmd() *cobra.Command {
+func newWorktreeLogFinalizeCmd(inv *invocation) *cobra.Command {
 	var resultValue, message, format, reportFile string
 	var apply, reportStdin bool
 	command := &cobra.Command{
@@ -831,7 +831,7 @@ report is accepted but not persisted.`,
 				}
 			}
 			result, err := worktrees.LogFinalize(command.Context(), worktrees.LogFinalizeOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args),
 				Result: resultValue, Message: message, Apply: apply, Report: report,
 			})
 			if err != nil {
@@ -849,7 +849,7 @@ report is accepted but not persisted.`,
 	return command
 }
 
-func newWorktreeLogSyncCmd() *cobra.Command {
+func newWorktreeLogSyncCmd(inv *invocation) *cobra.Command {
 	var format string
 	var apply bool
 	command := &cobra.Command{
@@ -868,7 +868,7 @@ command stays offline, retains the local outbox, and records a sync_attempt.`,
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogSync(command.Context(), worktrees.LogSyncOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply,
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args), Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -881,7 +881,7 @@ command stays offline, retains the local outbox, and records a sync_attempt.`,
 	return command
 }
 
-func newWorktreeLogArchiveCmd() *cobra.Command {
+func newWorktreeLogArchiveCmd(inv *invocation) *cobra.Command {
 	var format string
 	var apply, force bool
 	command := &cobra.Command{
@@ -898,7 +898,7 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 			}
 			defer releaseAdmission()
 			result, err := worktrees.LogArchive(command.Context(), worktrees.LogArchiveOptions{
-				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply, Force: force,
+				ProjectsRoot: inv.projectsRoot, Worktree: worktreeLogPath(args), Apply: apply, Force: force,
 			})
 			if err != nil {
 				return err
@@ -912,7 +912,7 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 	return command
 }
 
-func newWorktreeCorrectIdentityCmd() *cobra.Command {
+func newWorktreeCorrectIdentityCmd(inv *invocation) *cobra.Command {
 	var model, cli, provider, actor, reason, eventID, format string
 	command := &cobra.Command{
 		Use:   "correct-identity <effort> <run> <claim-id>",
@@ -946,7 +946,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 				providerValue = &provider
 			}
 			result, err := worktrees.CorrectExecutionIdentity(worktrees.CorrectExecutionIdentityOptions{
-				ProjectsRoot: projectsRoot, EffortID: args[0], RunID: args[1], ClaimID: args[2], EventID: eventID,
+				ProjectsRoot: inv.projectsRoot, EffortID: args[0], RunID: args[1], ClaimID: args[2], EventID: eventID,
 				Actor: actor, Reason: reason, Initiator: mutationInitiator(command), Model: modelValue, CLI: cliValue, Provider: providerValue,
 			})
 			if err != nil {
@@ -1039,7 +1039,7 @@ The default is a dry-run plan.`,
 				return err
 			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: inv.filterFlag,
+				ProjectsRoot: inv.projectsRoot, Task: args[0], Base: base, Filter: inv.filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
 				AbsorbedBy: absorbedBy,
 				ClaimID:    claimID, Actor: actor, Reason: reason,
@@ -1083,7 +1083,7 @@ The default is a dry-run plan.`,
 			var releaseLeaked bool
 			switch {
 			case apply && releasable && remaining == 0:
-				result := tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
+				result := tryAutoRelease(defaultRemoteDeps(), inv.projectsRoot, args[0], remoteClaimWriter(command))
 				releaseLeaked = exitNonZeroOnReleaseLeak && result.Leaked()
 			case apply && releasable && remaining > 0:
 				skippedAutoRelease(remoteClaimWriter(command), fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
@@ -1150,7 +1150,7 @@ The default is a dry-run plan.`,
 	return command
 }
 
-func newWorktreeCreateCmd() *cobra.Command {
+func newWorktreeCreateCmd(inv *invocation) *cobra.Command {
 	var branch, branchPrefix, base, format string
 	var mode string
 	var resume, noClaim bool
@@ -1288,7 +1288,7 @@ wb worktree create improve-login owner/repository --resume \
 			if err != nil {
 				return err
 			}
-			workLog, err = worktrees.PrepareWorkLogOptions(projectsRoot, args[0], workLog)
+			workLog, err = worktrees.PrepareWorkLogOptions(inv.projectsRoot, args[0], workLog)
 			if err != nil {
 				return err
 			}
@@ -1302,7 +1302,7 @@ wb worktree create improve-login owner/repository --resume \
 			if resume && !command.Flags().Changed("run") {
 				workLog.RunID = ""
 			}
-			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
+			if err := refreshManagedHooksBeforeWorktreeCreate(inv, repositories); err != nil {
 				return err
 			}
 			// In text mode the hook's own printed line on stdout is the
@@ -1311,9 +1311,9 @@ wb worktree create improve-login owner/repository --resume \
 			// channel rather than this command's result, so it must not
 			// land in the json document or in text stdout. In json mode the
 			// outcome also travels structurally in the remote_claim field.
-			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, projectsRoot, args[0], remoteClaimWriter(command))
+			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, inv.projectsRoot, args[0], remoteClaimWriter(command))
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
-				ProjectsRoot:       projectsRoot,
+				ProjectsRoot:       inv.projectsRoot,
 				Operation:          args[0],
 				Branch:             branch,
 				BranchChosen:       command.Flags().Changed("branch"),
@@ -1335,7 +1335,7 @@ wb worktree create improve-login owner/repository --resume \
 			// steered away from. Marking is best-effort: a checkout WB just
 			// created is not made unusable by a marker it could not write, and
 			// the reason goes to stderr rather than into the result document.
-			markCreatedCheckouts(command, base, results)
+			markCreatedCheckouts(inv, command, base, results)
 			switch format {
 			case "text":
 				for _, result := range results {
@@ -1387,14 +1387,14 @@ wb worktree create improve-login owner/repository --resume \
 // two commands share identical flags, help text, and exit codes by
 // construction rather than by two copies staying in sync; only the command
 // path they resolve under differs ("wb create" vs "wb worktree create").
-func newCreateCmd() *cobra.Command {
-	return newWorktreeCreateCmd()
+func newCreateCmd(inv *invocation) *cobra.Command {
+	return newWorktreeCreateCmd(inv)
 }
 
-func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
+func refreshManagedHooksBeforeWorktreeCreate(inv *invocation, repositories []string) error {
 	canonicalRepositories := make([]string, 0, len(repositories))
 	for _, repository := range repositories {
-		canonical, err := worktrees.CanonicalRepositoryPath(projectsRoot, repository)
+		canonical, err := worktrees.CanonicalRepositoryPath(inv.projectsRoot, repository)
 		if err != nil {
 			return err
 		}
@@ -1402,7 +1402,7 @@ func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
 	}
 	for index, repository := range repositories {
 		canonical := canonicalRepositories[index]
-		_, err := hooks.RefreshManagedShims(canonical, "", hookExecutable(), projectsRoot)
+		_, err := hooks.RefreshManagedShims(canonical, "", hookExecutable(), inv.projectsRoot)
 		if err != nil {
 			return fmt.Errorf("verify hooks for %s before creating a worktree: %w", repository, err)
 		}
@@ -1410,7 +1410,7 @@ func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
 	return nil
 }
 
-func newWorktreeGuardCmd() *cobra.Command {
+func newWorktreeGuardCmd(inv *invocation) *cobra.Command {
 	var base, format, admission string
 	var quiet, published bool
 	command := &cobra.Command{
@@ -1465,7 +1465,7 @@ unverified, never assumed published. Run it after every push.`,
 				path = args[0]
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
-				ProjectsRoot:     projectsRoot,
+				ProjectsRoot:     inv.projectsRoot,
 				Base:             base,
 				Admission:        worktrees.AdmissionMode(admission),
 				CheckFreshness:   true,
@@ -1554,7 +1554,7 @@ func formatCanonicalFreshness(freshness *worktrees.CanonicalFreshness) string {
 // newWorktreeSetCmd is the human-facing remedy the admission gate names. It
 // deliberately records a prompt rather than setting a bypass flag: the act of
 // unblocking a commit is itself the record of who directed it.
-func newWorktreeSetCmd() *cobra.Command {
+func newWorktreeSetCmd(inv *invocation) *cobra.Command {
 	var prompt, promptFile, runtime, model, cli, provider string
 	command := &cobra.Command{
 		Use:   "set [worktree-path]",
@@ -1576,7 +1576,7 @@ instruction.`,
 				return err
 			}
 			result, err := worktrees.LogSteer(command.Context(), worktrees.LogSteerOptions{
-				ProjectsRoot: projectsRoot, Worktree: path, Body: body,
+				ProjectsRoot: inv.projectsRoot, Worktree: path, Body: body,
 				Source: worktrees.PromptSourceHuman, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
 			})
 			if err != nil {
@@ -1615,7 +1615,7 @@ func readPromptBody(prompt, promptFile string) ([]byte, error) {
 	return []byte(prompt), nil
 }
 
-func newWorktreeBackfillCmd() *cobra.Command {
+func newWorktreeBackfillCmd(inv *invocation) *cobra.Command {
 	var base, format string
 	var apply bool
 	command := &cobra.Command{
@@ -1640,7 +1640,7 @@ The default is a dry run.`,
 				return err
 			}
 			results, err := worktrees.Backfill(command.Context(), worktrees.BackfillOptions{
-				ProjectsRoot: projectsRoot, Base: base, Apply: apply,
+				ProjectsRoot: inv.projectsRoot, Base: base, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -1733,7 +1733,7 @@ adoption is a mutation: --mode agent requires a live registered session, while
 			defer releaseAdmission()
 			initiator, _ := command.Flags().GetString("initiator")
 			results, err := worktrees.Adopt(command.Context(), worktrees.AdoptOptions{
-				ProjectsRoot: projectsRoot, Base: base, Path: path, Initiator: initiator,
+				ProjectsRoot: inv.projectsRoot, Base: base, Path: path, Initiator: initiator,
 				AllExternal: allExternal, Filter: inv.filterFlag, Apply: apply,
 			})
 			if err != nil {
@@ -1787,7 +1787,7 @@ func renderAdopt(out io.Writer, results []worktrees.AdoptResult, apply bool) err
 	return nil
 }
 
-func newWorktreeOrphansCmd() *cobra.Command {
+func newWorktreeOrphansCmd(inv *invocation) *cobra.Command {
 	var base, format, only string
 	var staleDays int
 	command := &cobra.Command{
@@ -1812,7 +1812,7 @@ This command never mutates anything.`,
 				return err
 			}
 			report, err := worktrees.Orphans(command.Context(), worktrees.OrphanOptions{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Base:         base,
 				StaleAfter:   time.Duration(staleDays) * 24 * time.Hour,
 			})
@@ -1971,7 +1971,7 @@ joined into this command.`,
 				task = args[0]
 			}
 			outcome, err := worktrees.ListWithDiagnostics(command.Context(), worktrees.ListOptions{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Task:         task,
 				Base:         base,
 				Filter:       inv.filterFlag,
@@ -2049,7 +2049,7 @@ wb worktree summary improve-login --github --format json`,
 				return err
 			}
 			outcome, err := worktrees.ListWithDiagnostics(command.Context(), worktrees.ListOptions{
-				ProjectsRoot: projectsRoot,
+				ProjectsRoot: inv.projectsRoot,
 				Task:         args[0],
 				Base:         base,
 				Filter:       inv.filterFlag,
@@ -2233,7 +2233,7 @@ required to remove anything.`,
 			}
 			if retireShells {
 				outcome, err := worktrees.RetireTaskShells(command.Context(), worktrees.RetireShellsOptions{
-					ProjectsRoot: projectsRoot,
+					ProjectsRoot: inv.projectsRoot,
 					Filter:       inv.filterFlag,
 					Apply:        apply,
 				})
@@ -2255,7 +2255,7 @@ required to remove anything.`,
 				outcomes := make([]worktrees.RetiredStageRecoveryOutcome, 0, len(args))
 				for _, task := range args {
 					outcome, err := worktrees.RecoverRetiredStages(command.Context(), worktrees.RetiredStageRecoveryOptions{
-						ProjectsRoot: projectsRoot, Task: task, Apply: apply,
+						ProjectsRoot: inv.projectsRoot, Task: task, Apply: apply,
 					})
 					if err != nil {
 						return err
@@ -2302,7 +2302,7 @@ required to remove anything.`,
 			progress := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
-				ProjectsRoot:      projectsRoot,
+				ProjectsRoot:      inv.projectsRoot,
 				Tasks:             tasks,
 				Base:              base,
 				Filter:            inv.filterFlag,
@@ -2381,7 +2381,7 @@ required to remove anything.`,
 						shouldRelease = true
 					}
 					if shouldRelease {
-						result := tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
+						result := tryAutoRelease(defaultRemoteDeps(), inv.projectsRoot, task, remoteClaimWriter(command))
 						if result.Leaked() {
 							leakedReleases = append(leakedReleases, task)
 						}
@@ -2550,7 +2550,7 @@ for an explicit audit record.`,
 			}
 			defer releaseAdmission()
 			outcome, err := worktrees.Rename(command.Context(), worktrees.RenameOptions{
-				ProjectsRoot:       projectsRoot,
+				ProjectsRoot:       inv.projectsRoot,
 				OldTask:            args[0],
 				NewTask:            args[1],
 				Filter:             inv.filterFlag,
@@ -2582,7 +2582,7 @@ for an explicit audit record.`,
 			// marker it inherited from the old effort is now wrong about all
 			// three. Rewrite it before anything reads it.
 			if apply {
-				markRenamedCheckouts(command, base, outcome.Results)
+				markRenamedCheckouts(inv, command, base, outcome.Results)
 			}
 			switch format {
 			case "text":

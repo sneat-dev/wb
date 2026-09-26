@@ -20,8 +20,8 @@ import (
 // exactly as it is for the many direct orchestrate callers and tests that
 // never populate LaneGuardRequest at all. WB does not invent an owner for a
 // caller that never declared one.
-func landingLaneOwner(command string) landinglane.Owner {
-	directory, err := sessionDirForRead()
+func landingLaneOwner(inv *invocation, command string) landinglane.Owner {
+	directory, err := sessionDirForRead(inv)
 	if err != nil {
 		return landinglane.Owner{}
 	}
@@ -41,9 +41,9 @@ func landingLaneOwner(command string) landinglane.Owner {
 // landingLaneGuardRequest builds the LaneGuardRequest for one landing
 // command from the resolved session owner and the shared
 // --take-over-lane/--lane-reason override flags.
-func landingLaneGuardRequest(command, reason string, takeOver bool) orchestrate.LaneGuardRequest {
+func landingLaneGuardRequest(inv *invocation, command, reason string, takeOver bool) orchestrate.LaneGuardRequest {
 	return orchestrate.LaneGuardRequest{
-		Owner:          landingLaneOwner(command),
+		Owner:          landingLaneOwner(inv, command),
 		TakeOver:       takeOver,
 		TakeoverReason: reason,
 	}
@@ -57,15 +57,15 @@ func landingLaneGuardRequest(command, reason string, takeOver bool) orchestrate.
 // carries no repository/target (an error returned before either was known)
 // or this process never resolved a live session — the lane it might still
 // hold then clears itself once its heartbeat goes stale.
-func releaseWorktreeMergeLane(receipt orchestrate.WorktreeMergeReceipt) {
+func releaseWorktreeMergeLane(inv *invocation, receipt orchestrate.WorktreeMergeReceipt) {
 	if receipt.Repository == "" || receipt.Target == "" || !orchestrate.WorktreeMergeLaneReleasable(receipt.Status) {
 		return
 	}
-	owner := landingLaneOwner("")
+	owner := landingLaneOwner(inv, "")
 	if owner.WBSessionID == "" {
 		return
 	}
-	home, err := wbhome.Root(projectsRoot)
+	home, err := wbhome.Root(inv.projectsRoot)
 	if err != nil {
 		return
 	}
