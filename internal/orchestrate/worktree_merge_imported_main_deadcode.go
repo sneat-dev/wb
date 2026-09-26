@@ -88,7 +88,7 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, ca
 	if err != nil {
 		return quality.VerificationReport{}, err
 	}
-	defer os.RemoveAll(temporary)
+	defer func() { _ = os.RemoveAll(temporary) }()
 	archivePath := filepath.Join(temporary, "main.tar")
 	if _, _, err := runCommand(ctx, timeout, retry, candidateWorktree, "git", "archive", "--format=tar", "--output="+archivePath, importedSHA); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("archive imported main %s: %w", importedSHA, err)
