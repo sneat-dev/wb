@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
 )
@@ -173,6 +174,103 @@ func TestWorktreeMergeSavedReceiptPassesReuseAndPublishGuards(t *testing.T) {
 	if err := requireWorktreeMergePublishedValidation(loaded, worktreeMergeValidationPlan{}); err != nil {
 		t.Fatalf("loaded receipt publish guard rejected exact validation: %v", err)
 	}
+}
+
+func TestWorktreeMergeSavedImportedMainReceiptReusesAndPublishesWithCleanTarget(t *testing.T) {
+	repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin := importedMainReceiptFixture(t)
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const command = worktreeMergeDeadcodeCommand
+	target := quality.VerificationReport{Repository: "sneat-dev/wb", Path: "git:" + targetSHA, Revision: targetSHA, WorkspaceClean: true, Status: quality.StatusPassed,
+		Results: []quality.VerificationEntry{{Language: "go", Module: ".", Check: quality.CheckLint, Command: command, Status: quality.StatusPassed}}}
+	candidate := deadcodeFailureReport(command, "candidate inherited main deadcode", "main.B")
+	candidate.Repository, candidate.Path, candidate.Revision, candidate.WorkspaceClean = "sneat-dev/wb", "git:"+candidateSHA, candidateSHA, true
+	parent := deadcodeFailureReport(command, "imported main deadcode", "main.B")
+	parent.Repository, parent.Path, parent.Revision, parent.WorkspaceClean = "sneat-dev/wb", "git:"+importedSHA, importedSHA, true
+	receipt := WorktreeMergeReceipt{
+		Status: WorktreeMergePrepared, Repository: "sneat-dev/wb", Target: "cov/integration", TargetSHA: targetSHA,
+		Candidate:          WorktreeMergeCandidate{SHA: candidateSHA, Worktree: repository},
+		BaselineValidation: target, Validation: candidate,
+		ImportedMainDeadcode: &WorktreeMergeImportedMainDeadcode{
+			CandidateSHA: candidateSHA, TargetSHA: targetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: importedSHA, Validation: parent,
+		},
+	}
+	identity, ok := worktreeMergeValidationIdentity(receipt)
+	if !ok {
+		t.Fatal("candidate validation identity was not fingerprintable")
+	}
+	receipt.ValidationIdentity = &identity
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded WorktreeMergeReceipt
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if reusable, err := preparedValidationStillValidContext(ctx, loaded, worktreeMergeValidationPlan{}, 10*time.Second, 0, 15*time.Second); err != nil || !reusable {
+		t.Fatalf("loaded imported receipt reuse = (%t, %v)", reusable, err)
+	}
+	if err := requireWorktreeMergePublishedValidationContext(ctx, loaded, worktreeMergeValidationPlan{}, 10*time.Second, 0, 15*time.Second); err != nil {
+		t.Fatalf("loaded imported receipt publish guard rejected evidence: %v", err)
+	}
+}
+
+func importedMainReceiptFixture(t *testing.T) (repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin string) {
+	t.Helper()
+	root := t.TempDir()
+	repository = filepath.Join(root, "repo")
+	remote := filepath.Join(root, "origin.git")
+	fakeBin = filepath.Join(root, "bin")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitMergeGraphTest(t, root, "init", "--bare", remote)
+	gitMergeGraphTest(t, repository, "init", "-b", "main")
+	gitMergeGraphTest(t, repository, "config", "user.email", "test@example.invalid")
+	gitMergeGraphTest(t, repository, "config", "user.name", "WB test")
+	writeFile := func(name, content string) {
+		t.Helper()
+		path := filepath.Join(repository, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitMergeGraphTest(t, repository, "add", name)
+	}
+	commit := func(message string) string {
+		t.Helper()
+		gitMergeGraphTest(t, repository, "commit", "-m", message)
+		return gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
+	}
+	writeFile("go.mod", "module example.test/wbtest\n\ngo 1.24.0\n")
+	writeFile(".wb/quality.yaml", "version: 1\ngo_lint:\n  commands:\n    - [go, run, ./cmd/wb, deadcode]\n")
+	commit("base")
+	gitMergeGraphTest(t, repository, "checkout", "-b", "integration")
+	writeFile("target.go", "package main\n")
+	targetSHA = commit("target")
+	gitMergeGraphTest(t, repository, "checkout", "main")
+	writeFile("main.go", "package main\n")
+	importedSHA = commit("imported main")
+	gitMergeGraphTest(t, repository, "remote", "add", "origin", remote)
+	gitMergeGraphTest(t, repository, "push", "origin", "main")
+	gitMergeGraphTest(t, repository, "checkout", "integration")
+	gitMergeGraphTest(t, repository, "merge", "--no-ff", "main", "-m", "import main")
+	mergeSHA = gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
+	writeFile("fix.go", "package main\n")
+	candidateSHA = commit("linear validation fix")
+	output := "New unreachable functions (1):\n  main.go:1: main.B\nerror: 1 function(s) are unreachable from main and are not in .wb/deadcode-baseline.txt; wire them up, delete them, or record them with --update-baseline\nexit status 1\n"
+	goScript := "#!/bin/sh\nprintf '%s' '" + strings.ReplaceAll(output, "'", "'\\''") + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(goScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin
 }
 
 func TestWorktreeMergeImportedMainDeadcodeReceiptRoundTrips(t *testing.T) {

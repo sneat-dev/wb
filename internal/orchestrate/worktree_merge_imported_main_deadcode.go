@@ -85,6 +85,9 @@ func worktreeMergeImportedMainGraph(ctx context.Context, repository, candidate, 
 }
 
 func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, candidateWorktree, importedSHA string, timeout time.Duration, retry int, checkTimeout time.Duration) (quality.VerificationReport, error) {
+	if checkTimeout <= 0 || checkTimeout > 2*time.Minute {
+		checkTimeout = 2 * time.Minute
+	}
 	temporary, err := os.MkdirTemp("", "wb-worktree-merge-main-deadcode-*")
 	if err != nil {
 		return quality.VerificationReport{}, err
@@ -168,7 +171,7 @@ func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt Workt
 	if receiptCheckTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt); receiptCheckTimeout > 0 {
 		checkTimeout = receiptCheckTimeout
 	}
-	if err := revalidateImportedMainDeadcodeEvidence(remoteCtx, receipt, evidence, timeout, retry, checkTimeout); err != nil {
+	if err := revalidateImportedMainDeadcodeEvidence(ctx, receipt, evidence, timeout, retry, checkTimeout); err != nil {
 		return err
 	}
 	remote, _, err := runCommand(remoteCtx, ioTimeout, retry, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
@@ -183,9 +186,6 @@ func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt Workt
 }
 
 func revalidateImportedMainDeadcodeEvidence(ctx context.Context, receipt WorktreeMergeReceipt, evidence *WorktreeMergeImportedMainDeadcode, timeout time.Duration, retry int, checkTimeout time.Duration) error {
-	if checkTimeout <= 0 || checkTimeout > 30*time.Second {
-		checkTimeout = 30 * time.Second
-	}
 	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, receipt.Repository, receipt.Candidate.Worktree, evidence.ImportedSHA, timeout, retry, checkTimeout)
 	if err != nil {
 		return err

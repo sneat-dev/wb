@@ -3912,10 +3912,9 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 		return false, nil
 	}
 	if receipt.Validation.Status == quality.StatusFailed {
-		if receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status != quality.StatusFailed {
-			return false, nil
-		}
-		if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+		baselineAccepted := receipt.BaselineValidation.Status == quality.StatusFailed ||
+			(receipt.BaselineValidation.Status == quality.StatusPassed && receipt.ImportedMainDeadcode != nil)
+		if receipt.BaselineValidation.Revision != receipt.TargetSHA || !baselineAccepted {
 			return false, nil
 		}
 	}
