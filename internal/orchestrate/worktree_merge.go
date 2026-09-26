@@ -231,27 +231,28 @@ type WorktreeMergeHostLoadAdmission struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                         `json:"schema_version"`
-	ID                    string                      `json:"id"`
-	Lane                  string                      `json:"lane"`
-	Phase                 WorktreeMergePhase          `json:"phase"`
-	Status                WorktreeMergeStatus         `json:"status"`
-	Repository            string                      `json:"repository"`
-	Target                string                      `json:"target"`
-	TargetSHA             string                      `json:"target_sha"`
-	Sources               []WorktreeMergeSource       `json:"sources"`
-	Candidate             WorktreeMergeCandidate      `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision  `json:"route,omitempty"`
-	PullRequest           string                      `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                      `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                      `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                      `json:"landing_sha,omitempty"`
-	CanonicalSync         string                      `json:"canonical_sync,omitempty"`
-	LocalSync             string                      `json:"local_sync,omitempty"`
-	Validation            quality.VerificationReport  `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport  `json:"baseline_validation,omitempty"`
+	SchemaVersion         int                                `json:"schema_version"`
+	ID                    string                             `json:"id"`
+	Lane                  string                             `json:"lane"`
+	Phase                 WorktreeMergePhase                 `json:"phase"`
+	Status                WorktreeMergeStatus                `json:"status"`
+	Repository            string                             `json:"repository"`
+	Target                string                             `json:"target"`
+	TargetSHA             string                             `json:"target_sha"`
+	Sources               []WorktreeMergeSource              `json:"sources"`
+	Candidate             WorktreeMergeCandidate             `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt        `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt        `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision         `json:"route,omitempty"`
+	PullRequest           string                             `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                             `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                             `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                             `json:"landing_sha,omitempty"`
+	CanonicalSync         string                             `json:"canonical_sync,omitempty"`
+	LocalSync             string                             `json:"local_sync,omitempty"`
+	Validation            quality.VerificationReport         `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport         `json:"baseline_validation,omitempty"`
+	ImportedMainDeadcode  *WorktreeMergeImportedMainDeadcode `json:"imported_main_deadcode,omitempty"`
 	// ValidationDeferral is set exactly when local validation was skipped for
 	// the pull-request route rather than run. See
 	// WorktreeMergeValidationDeferral.
@@ -3698,6 +3699,7 @@ func applyOrDeferWorktreeMergeValidation(ctx context.Context, receipt *WorktreeM
 }
 
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration, reporter progress.Reporter) error {
+	receipt.ImportedMainDeadcode = nil
 	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
 		Timeout: timeout, Retry: retry, CheckTimeout: checkTimeout, ShardAttemptTimeout: shardAttemptTimeout,
 		Progress: reportWorktreeMergeQualityProgress(reporter),
@@ -3740,7 +3742,15 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	}
 	receipt.BaselineValidation = baseline
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
-	if err := worktreeMergeValidationRegression(baseline, receipt.Validation); err != nil {
+	receipt.ImportedMainDeadcode = nil
+	if hasWorktreeMergeDeadcodeFailure(receipt.Validation) {
+		parentEvidence, parentErr := worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
+		if parentErr != nil {
+			return fmt.Errorf("attest imported main deadcode baseline: %w", parentErr)
+		}
+		receipt.ImportedMainDeadcode = parentEvidence
+	}
+	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 		return err
 	}
 	return nil
@@ -3823,6 +3833,9 @@ func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMerg
 // this function, on an already-landed target commit, and is unaffected by
 // it.
 func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) error {
+	if err := recheckWorktreeMergeImportedMainDeadcode(receipt); err != nil {
+		return fmt.Errorf("recheck imported main deadcode attestation before publish: %w", err)
+	}
 	// Finding B1 (sneat-dev/wb#591): an exact PR-route deferral, or the
 	// already-published carve-out below it, must never authorize a publish
 	// on a route this call did NOT resolve as the pull-request route.
@@ -3868,6 +3881,9 @@ func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt, plan 
 // deferral is reusable only when THIS call's plan also permits deferring,
 // never merely because an earlier call recorded one.
 func preparedValidationStillValid(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) (bool, error) {
+	if err := recheckWorktreeMergeImportedMainDeadcode(receipt); err != nil {
+		return false, err
+	}
 	if deferral := receipt.ValidationDeferral; plan.Defer && receipt.Status == WorktreeMergePrepared && deferral != nil &&
 		receipt.Route.Route == WorktreeMergeRoutePullRequest && deferral.Route == WorktreeMergeRoutePullRequest &&
 		deferral.CandidateSHA == receipt.Candidate.SHA && receipt.Validation.Status == quality.StatusSkipped &&
@@ -4087,6 +4103,10 @@ func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *f
 }
 
 func worktreeMergeValidationRegression(baseline, candidate quality.VerificationReport) error {
+	return worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, nil)
+}
+
+func worktreeMergeValidationRegressionWithImportedMain(baseline, candidate quality.VerificationReport, imported *WorktreeMergeImportedMainDeadcode) error {
 	baselineFailures := failedWorktreeMergeVerificationEntries(baseline)
 	candidateFailures := failedWorktreeMergeVerificationEntries(candidate)
 	if candidate.Status == quality.StatusFailed && len(candidateFailures) == 0 {
@@ -4095,7 +4115,7 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
 		if candidateFailure.Deadcode != nil {
-			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) {
+			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) || matchImportedMainDeadcodeFailure(baselineFailures, candidateFailure, imported) {
 				continue
 			}
 			return fmt.Errorf("candidate validation introduced or changed deadcode failure: %s", candidateFailure.Command)
@@ -4124,6 +4144,51 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 		}
 	}
 	return nil
+}
+
+func hasWorktreeMergeDeadcodeFailure(report quality.VerificationReport) bool {
+	for _, entry := range report.Results {
+		if entry.Deadcode != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func matchImportedMainDeadcodeFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry, imported *WorktreeMergeImportedMainDeadcode) bool {
+	if imported == nil || candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != worktreeMergeDeadcodeCommand || !candidate.Deadcode.Valid() {
+		return false
+	}
+	for _, previous := range baseline {
+		if previous.Language != candidate.Language || previous.Module != candidate.Module || previous.Check != candidate.Check || previous.Command != candidate.Command {
+			continue
+		}
+		known := make(map[string]bool)
+		if previous.Status == quality.StatusFailed {
+			if !previous.Deadcode.Valid() {
+				return false
+			}
+			for _, id := range previous.Deadcode.Identities {
+				known[id] = true
+			}
+		} else if previous.Status != quality.StatusPassed || previous.Deadcode != nil {
+			return false
+		}
+		parent, valid := importedMainDeadcodeIdentities(imported.Validation, candidate.Check, candidate.Command, candidate.Module)
+		if !valid {
+			return false
+		}
+		for id := range parent {
+			known[id] = true
+		}
+		for _, id := range candidate.Deadcode.Identities {
+			if !known[id] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // matchDeadcodeBaselineFailure compares complete function identities, not the
