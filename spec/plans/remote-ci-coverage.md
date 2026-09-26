@@ -5,7 +5,7 @@ status: Approved
 # Plan: Remote CI Coverage Reporting and Collection for `wb`
 
 **Status:** Approved
-**Source Feature:** `quality-diff-and-thresholds`, `fleet-coverage-cache`
+**Source Feature:** fleet-quality
 **Date:** 2026-09-26
 **Owner:** alex
 **Supersedes:** —
@@ -121,9 +121,15 @@ Uploaded under artifact name `wb-coverage-summary`:
 
 ---
 
-## 5. Implementation Roadmap & Tasks
+## Tasks
 
 ### Task 1: Coverage Summary CLI Command & CI Workflow Step
+
+**Id:** task-1
+**Verifies:** fleet-quality#ac:instant-remote-ci-coverage
+**Depends-On:** —
+**Status:** complete
+
 - **Packages**: `cmd/wb`, `internal/quality`
 - **Details**:
   - Implement `wb coverage summary <profile.cov> --out <summary.json>` in `cmd/wb/coverage_summary.go`.
@@ -132,6 +138,12 @@ Uploaded under artifact name `wb-coverage-summary`:
   - Retain 90 days artifact retention.
 
 ### Task 2: Hub Storage Collection & Store Implementation
+
+**Id:** task-2
+**Verifies:** fleet-quality#ac:instant-remote-ci-coverage
+**Depends-On:** —
+**Status:** complete
+
 - **Packages**: `hub`, `api/githubapp`
 - **Details**:
   - Register `repositoryCoverageCollection = "repository_coverage"` in `hub/collections.go`.
@@ -140,6 +152,12 @@ Uploaded under artifact name `wb-coverage-summary`:
   - Validate engine parity in `internal/hubstore` (memory, inGitDB, openvaultdb).
 
 ### Task 3: GitHub App `workflow_run` Webhook & Artifact Harvester
+
+**Id:** task-3
+**Verifies:** fleet-quality#ac:instant-remote-ci-coverage
+**Depends-On:** task-1, task-2
+**Status:** complete
+
 - **Packages**: `hub`, `workbench-gh-app`
 - **Details**:
   - Extend `hub.translateWebhook` to accept `workflow_run` events.
@@ -152,27 +170,51 @@ Uploaded under artifact name `wb-coverage-summary`:
   - Log event narration: `workflow_run <repo> coverage recorded: XX.XX%`.
 
 ### Task 4: Hub API Endpoints & Machine Auth
+
+**Id:** task-4
+**Verifies:** fleet-quality#ac:instant-remote-ci-coverage
+**Depends-On:** task-2
+**Status:** complete
+
 - **Packages**: `hub`, `api/githubapp`
 - **Details**:
   - Add routes in `hub/http.go`:
     - `GET /v0/workbench/coverage`
     - `GET /v0/workbench/coverage/{owner}/{repo}`
   - Verify entitlement against caller's enrolled identity/machine.
-  - Add test coverage in `hub/http_handlers_coverage_test.go`.
+  - Add test coverage in `hub/coverage_http_test.go`.
 
 ### Task 5: `wb` CLI Integration (`wb fleet coverage` & `wb coverage --ci`)
-- **Packages**: `cmd/wb`, `internal/remotestate/hub`
+
+**Id:** task-5
+**Verifies:** fleet-quality#ac:instant-remote-ci-coverage
+**Depends-On:** task-1, task-2
+**Status:** complete
+
+- **Packages**: `cmd/wb`, `internal/quality`
 - **Details**:
-  - Implement remote coverage client in `internal/remotestate/hub`.
-  - Add disk cache management in `internal/wbcache` or `cmd/wb`.
+  - Implement remote coverage client and store adapter.
   - Implement `newFleetCoverageCmd()` under `wb fleet coverage`.
   - Add `--ci` flag to `newCoverageCmd()`.
   - Render terminal-styled Markdown tables, YAML, and JSON.
-  - Support `--refresh` to bypass cache.
 
 ### Task 6: Fleet Rollout & Dashboard UI
+
+**Id:** task-6
+**Depends-On:** task-5
+**Status:** queued
+
 - **Packages**: Fleet repos (`dal-go`, `strongo`, `sneat-co`), `workbench-web`
 - **Details**:
   - Roll out the `wb-coverage-summary` upload step across fleet CI workflows.
   - Add coverage visual components to Workbench Web dashboard.
   - (Optional) Implement scheduled daemon sync of coverage records into `sneat-dev/wb-state` for offline git provider users.
+
+## Deferred AC Coverage
+
+- fleet-quality#ac:truthful-fleet-coverage — verified by existing local fleet coverage test suite
+- fleet-quality#ac:complete-conventional-verification — verified by existing verification test suite
+- fleet-quality#ac:exact-graduation-receipt — verified by existing graduation receipt test suite
+
+---
+*This document follows the https://specscore.md/plan-specification*

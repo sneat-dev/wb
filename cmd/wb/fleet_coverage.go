@@ -115,7 +115,7 @@ func runCICoverage(cmd *cobra.Command, path string, options qualityOptions) erro
 		return err
 	}
 	if closer != nil {
-		defer closer.Close()
+		defer func() { _ = closer.Close() }()
 	}
 
 	out := cmd.OutOrStdout()
