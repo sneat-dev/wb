@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -778,6 +780,9 @@ func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
 	options.KeepCommits = []string{fixture.commitSHAs[0]}
 	options.Reason = "the first commit must remain independently bisectable"
 	options.BuildCommand = []string{"sh", "-c", "exit 0"}
+	buildRun := runnertest.New(t)
+	buildRun.ExpectArgv(options.BuildCommand, runner.Result{}, nil)
+	options.run = buildRun
 
 	result, err := LandPullRequest(context.Background(), options)
 	if err != nil {
@@ -785,6 +790,9 @@ func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
 	}
 	if result.Outcome != LandSuccess {
 		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if buildRun.CallCount() != 1 {
+		t.Fatalf("build calls = %d, want 1", buildRun.CallCount())
 	}
 	if result.HeadSHA == fixture.headSHA {
 		t.Fatalf("head was not rewritten: %s", result.HeadSHA)
