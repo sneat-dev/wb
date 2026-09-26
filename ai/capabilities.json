@@ -1716,6 +1716,7 @@
                 "--baseline-file",
                 "--baseline-timeout",
                 "--changed",
+                "--ci",
                 "--coverage-profile",
                 "--fleet",
                 "--format",
@@ -1898,6 +1899,66 @@
         }
       },
       "notes": "go-ci.yml's coverage job runs this on every push to main and uploads its output as the wb-coverage-baseline artifact; wb coverage --changed --baseline-file reads it back for pull requests."
+    },
+    {
+      "id": "wb.coverage.summary",
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage summary",
+              "flags": [
+                "--module",
+                "--out",
+                "--ref",
+                "--repo",
+                "--sha",
+                "--workflow-run-id",
+                "--workflow-run-url"
+              ],
+              "modes": [
+                "Parses an already-measured Go coverage profile into the standardized JSON coverage summary artifact uploaded by CI workflows on push to main."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage summary --help",
+              "contains": [
+                "--module",
+                "--out"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Published by CI workflows and harvested by Workbench GitHub App; no operator skill needed."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/coverage_summary_test.go",
+              "name": "TestCoverageSummaryCmd",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Parses coverage profile into wb-coverage-summary artifact on push to main for remote harvesting."
     },
     {
       "id": "wb.create",
@@ -4644,6 +4705,63 @@
         }
       },
       "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
+    },
+    {
+      "id": "wb.fleet.coverage",
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet coverage",
+              "flags": [
+                "--format",
+                "--match",
+                "--regex",
+                "--report-dir"
+              ],
+              "modes": [
+                "Inspects latest test coverage across the fleet without running tests locally by querying the central or local coverage store."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet coverage --help",
+              "contains": [
+                "--format",
+                "--match"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Fleet coverage reporting is a read-only query command."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/fleet_coverage_test.go",
+              "name": "TestFleetCoverageCmd_Populated",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Queries the DALgo coverage store for latest harvested CI coverage across the fleet without running local test suites."
     },
     {
       "id": "wb.fleet.default-branch",
