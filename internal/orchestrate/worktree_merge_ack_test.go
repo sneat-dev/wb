@@ -2557,3 +2557,46 @@ func TestAcknowledgeCleanedDirectPostTargetCIFailureUsesExactTerminalProofs(t *t
 		t.Fatalf("rewound remote target error = %v", err)
 	}
 }
+
+func TestCleanedLandedFailureAncestryRejectsIndependentlyIntegratedRoots(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		sourceClaimBase bool
+		want            string
+	}{
+		{name: "source is separately integrated", want: "does not contain receipted source"},
+		{name: "source claim base is separately integrated", sourceClaimBase: true, want: "does not contain immutable claim base"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			base := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "origin/main"))
+			source := createMergeSource(t, fixture, "ancestry-source", "feature/ancestry-source", "source.txt", "source\n")
+			candidate := createMergeSource(t, fixture, "ancestry-candidate", "feature/ancestry-candidate", "candidate.txt", "candidate\n")
+			claimBase := base
+			mergeBranches := []string{source.Branch, candidate.Branch}
+			if test.sourceClaimBase {
+				separateBase := createMergeSource(t, fixture, "ancestry-claim-base", "feature/ancestry-claim-base", "claim-base.txt", "claim base\n")
+				claimBase = strings.TrimSpace(runEngineGit(t, separateBase.WorktreeDir, "rev-parse", "HEAD"))
+				mergeBranches = append(mergeBranches, separateBase.Branch)
+			}
+
+			targetWorktree := filepath.Join(t.TempDir(), "target")
+			targetBranch := "test/ancestry-target"
+			runEngineGit(t, fixture.canonical, "worktree", "add", "-b", targetBranch, targetWorktree, base)
+			for _, branch := range mergeBranches {
+				runEngineGit(t, targetWorktree, "merge", "--no-edit", branch)
+			}
+			runEngineGit(t, fixture.canonical, "push", "--force", "origin", targetBranch+":main")
+
+			receipt := WorktreeMergeReceipt{
+				TargetSHA: base,
+				Candidate: WorktreeMergeCandidate{Task: "ancestry-candidate", SHA: strings.TrimSpace(runEngineGit(t, candidate.WorktreeDir, "rev-parse", "HEAD"))},
+				Sources:   []WorktreeMergeSource{{Task: "ancestry-source", SHA: strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))}},
+			}
+			claimBases := map[string]string{"ancestry-candidate": base, "ancestry-source": claimBase}
+			if err := validateCleanedLandedFailureAncestry(context.Background(), fixture.canonical, receipt, claimBases); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("independently integrated ancestry error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

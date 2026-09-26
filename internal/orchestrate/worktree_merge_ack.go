@@ -1230,6 +1230,9 @@ func acknowledgeCleanedDirectPostTargetFailure(ctx context.Context, options Work
 			return WorktreeMergeLandedFailureAcknowledgement{}, ancestorErr
 		}
 	}
+	if err := validateCleanedLandedFailureAncestry(ctx, canonical, receipt, claimBases); err != nil {
+		return WorktreeMergeLandedFailureAcknowledgement{}, err
+	}
 	ack := WorktreeMergeLandedFailureAcknowledgement{
 		SchemaVersion: worktreeMergeLandedFailureAcknowledgementSchemaVersion, Status: "landed_failure_acknowledged",
 		ReceiptPath: receiptPath, ReceiptID: receipt.ID, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
@@ -1256,6 +1259,42 @@ func acknowledgeCleanedDirectPostTargetFailure(ctx context.Context, options Work
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	return ack, nil
+}
+
+func validateCleanedLandedFailureAncestry(ctx context.Context, canonical string, receipt WorktreeMergeReceipt, claimBases map[string]string) error {
+	candidateRoots := []struct {
+		sha, description string
+	}{
+		{receipt.TargetSHA, "immutable receipt target"},
+		{claimBases[receipt.Candidate.Task], "immutable candidate claim base"},
+	}
+	for _, root := range candidateRoots {
+		contains, err := isMergeAncestor(ctx, canonical, root.sha, receipt.Candidate.SHA)
+		if err != nil {
+			return fmt.Errorf("verify candidate ancestry for %s: %w", root.description, err)
+		}
+		if !contains {
+			return fmt.Errorf("candidate %s does not contain %s %s", receipt.Candidate.SHA, root.description, root.sha)
+		}
+	}
+	for _, source := range receipt.Sources {
+		baseSHA := claimBases[source.Task]
+		containsBase, err := isMergeAncestor(ctx, canonical, baseSHA, source.SHA)
+		if err != nil {
+			return fmt.Errorf("verify receipted source %s claim-base ancestry: %w", source.Task, err)
+		}
+		if !containsBase {
+			return fmt.Errorf("receipted source %s at %s does not contain immutable claim base %s", source.Task, source.SHA, baseSHA)
+		}
+		containsSource, err := isMergeAncestor(ctx, canonical, source.SHA, receipt.Candidate.SHA)
+		if err != nil {
+			return fmt.Errorf("verify candidate ancestry for receipted source %s: %w", source.Task, err)
+		}
+		if !containsSource {
+			return fmt.Errorf("candidate %s does not contain receipted source %s at %s", receipt.Candidate.SHA, source.Task, source.SHA)
+		}
+	}
+	return nil
 }
 
 // SupersedeValidationFailedWorktreeMerge proves that a clean replacement
