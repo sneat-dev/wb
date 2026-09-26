@@ -110,6 +110,71 @@ func TestWorktreeMergeDeadcodeUnionIsBoundedToAttestedImportedMain(t *testing.T)
 	}
 }
 
+func TestWorktreeMergeDeadcodeUnionAcceptsImportedIdentityWithCleanTarget(t *testing.T) {
+	const command = worktreeMergeDeadcodeCommand
+	baseline := quality.VerificationReport{Status: quality.StatusPassed, Results: []quality.VerificationEntry{{
+		Language: "go", Module: ".", Check: quality.CheckLint, Command: command, Status: quality.StatusPassed,
+	}}}
+	imported := &WorktreeMergeImportedMainDeadcode{Validation: deadcodeFailureReport(command, "main", "main.B")}
+	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, deadcodeFailureReport(command, "candidate", "main.B"), imported); err != nil {
+		t.Fatalf("imported identity rejected with clean target: %v", err)
+	}
+	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, deadcodeFailureReport(command, "candidate-only", "candidate.C"), imported); err == nil {
+		t.Fatal("candidate-only identity accepted with clean target")
+	}
+}
+
+func TestWorktreeMergeValidationDoesNotAttestWhenTargetAlreadyCoversDeadcode(t *testing.T) {
+	const command = worktreeMergeDeadcodeCommand
+	baseline := deadcodeFailureReport(command, "target", "target.A", "target.B")
+	candidate := deadcodeFailureReport(command, "candidate", "target.B")
+	attestCalls := 0
+	evidence, err := worktreeMergeValidationWithImportedMainAttestation(baseline, candidate, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		attestCalls++
+		return nil, nil
+	})
+	if err != nil || evidence != nil || attestCalls != 0 {
+		t.Fatalf("target-covered deadcode result = (%+v, %v), attest calls %d", evidence, err, attestCalls)
+	}
+
+	candidate.Results = append(candidate.Results, quality.VerificationEntry{Language: "go", Module: ".", Check: quality.CheckBuild, Command: "go build ./...", Status: quality.StatusFailed, Detail: "new build failure"})
+	if _, err := worktreeMergeValidationWithImportedMainAttestation(baseline, candidate, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		attestCalls++
+		return nil, nil
+	}); err == nil || attestCalls != 0 {
+		t.Fatalf("non-deadcode regression result = %v, attest calls %d", err, attestCalls)
+	}
+}
+
+func TestWorktreeMergeSavedReceiptPassesReuseAndPublishGuards(t *testing.T) {
+	const candidateSHA = "candidate-sha"
+	receipt := WorktreeMergeReceipt{
+		Status:     WorktreeMergePrepared,
+		TargetSHA:  "target-sha",
+		Candidate:  WorktreeMergeCandidate{SHA: candidateSHA, Worktree: t.TempDir()},
+		Validation: quality.VerificationReport{Revision: candidateSHA, WorkspaceClean: true, Status: quality.StatusPassed},
+	}
+	identity, ok := worktreeMergeValidationIdentity(receipt)
+	if !ok {
+		t.Fatal("prepared validation identity was not fingerprintable")
+	}
+	receipt.ValidationIdentity = &identity
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded WorktreeMergeReceipt
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if reusable, err := preparedValidationStillValid(loaded, worktreeMergeValidationPlan{}); err != nil || !reusable {
+		t.Fatalf("loaded receipt reuse = (%t, %v)", reusable, err)
+	}
+	if err := requireWorktreeMergePublishedValidation(loaded, worktreeMergeValidationPlan{}); err != nil {
+		t.Fatalf("loaded receipt publish guard rejected exact validation: %v", err)
+	}
+}
+
 func TestWorktreeMergeImportedMainDeadcodeReceiptRoundTrips(t *testing.T) {
 	evidence := WorktreeMergeImportedMainDeadcode{
 		CandidateSHA: "candidate", TargetSHA: "target", MergeSHA: "merge", ImportedSHA: "main", OriginMainSHA: "main",

@@ -1606,7 +1606,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 		}
 		receipt.Route = plan.Route
-		reusable, identityErr := preparedValidationStillValid(receipt, plan)
+		checkTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt)
+		reusable, identityErr := preparedValidationStillValidContext(ctx, receipt, plan, options.Timeout, options.Retry, checkTimeout)
 		if identityErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
 		}
@@ -1753,7 +1754,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
 	}
-	if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+	checkTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt)
+	if err := requireWorktreeMergePublishedValidationContext(ctx, receipt, plan, options.Timeout, options.Retry, checkTimeout); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
 	if options.StopBeforeMerge && receipt.PullRequest != "" {
@@ -3743,14 +3745,14 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	receipt.BaselineValidation = baseline
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	receipt.ImportedMainDeadcode = nil
-	if hasWorktreeMergeDeadcodeFailure(receipt.Validation) {
-		parentEvidence, parentErr := worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
-		if parentErr != nil {
-			return fmt.Errorf("attest imported main deadcode baseline: %w", parentErr)
-		}
-		receipt.ImportedMainDeadcode = parentEvidence
+	parentEvidence, regressionErr := worktreeMergeValidationWithImportedMainAttestation(baseline, receipt.Validation, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
+	})
+	if regressionErr != nil {
+		return regressionErr
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+	receipt.ImportedMainDeadcode = parentEvidence
+	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
 		return err
 	}
 	return nil
@@ -3833,8 +3835,15 @@ func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMerg
 // this function, on an already-landed target commit, and is unaffected by
 // it.
 func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) error {
-	if err := recheckWorktreeMergeImportedMainDeadcode(receipt); err != nil {
+	return requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0)
+}
+
+func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan, timeout time.Duration, retry int, checkTimeout time.Duration) error {
+	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return fmt.Errorf("recheck imported main deadcode attestation before publish: %w", err)
+	}
+	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+		return fmt.Errorf("recheck candidate deadcode regression before publish: %w", err)
 	}
 	// Finding B1 (sneat-dev/wb#591): an exact PR-route deferral, or the
 	// already-published carve-out below it, must never authorize a publish
@@ -3881,8 +3890,15 @@ func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt, plan 
 // deferral is reusable only when THIS call's plan also permits deferring,
 // never merely because an earlier call recorded one.
 func preparedValidationStillValid(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) (bool, error) {
-	if err := recheckWorktreeMergeImportedMainDeadcode(receipt); err != nil {
+	return preparedValidationStillValidContext(context.Background(), receipt, plan, 0, 0, 0)
+}
+
+func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan, timeout time.Duration, retry int, checkTimeout time.Duration) (bool, error) {
+	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return false, err
+	}
+	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+		return false, nil
 	}
 	if deferral := receipt.ValidationDeferral; plan.Defer && receipt.Status == WorktreeMergePrepared && deferral != nil &&
 		receipt.Route.Route == WorktreeMergeRoutePullRequest && deferral.Route == WorktreeMergeRoutePullRequest &&
@@ -3899,7 +3915,7 @@ func preparedValidationStillValid(receipt WorktreeMergeReceipt, plan worktreeMer
 		if receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status != quality.StatusFailed {
 			return false, nil
 		}
-		if err := worktreeMergeValidationRegression(receipt.BaselineValidation, receipt.Validation); err != nil {
+		if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 			return false, nil
 		}
 	}
@@ -4115,7 +4131,7 @@ func worktreeMergeValidationRegressionWithImportedMain(baseline, candidate quali
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
 		if candidateFailure.Deadcode != nil {
-			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) || matchImportedMainDeadcodeFailure(baselineFailures, candidateFailure, imported) {
+			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) || matchImportedMainDeadcodeFailure(baseline.Results, candidateFailure, imported) {
 				continue
 			}
 			return fmt.Errorf("candidate validation introduced or changed deadcode failure: %s", candidateFailure.Command)
@@ -4155,40 +4171,91 @@ func hasWorktreeMergeDeadcodeFailure(report quality.VerificationReport) bool {
 	return false
 }
 
+func worktreeMergeNonDeadcodeRegression(baseline, candidate quality.VerificationReport) error {
+	withoutDeadcode := func(report quality.VerificationReport) quality.VerificationReport {
+		results := make([]quality.VerificationEntry, 0, len(report.Results))
+		for _, entry := range report.Results {
+			if entry.Deadcode == nil {
+				results = append(results, entry)
+			}
+		}
+		report.Results = results
+		return report
+	}
+	baseline, candidate = withoutDeadcode(baseline), withoutDeadcode(candidate)
+	if candidate.Status == quality.StatusFailed && len(failedWorktreeMergeVerificationEntries(candidate)) == 0 {
+		candidate.Status = quality.StatusPassed
+	}
+	return worktreeMergeValidationRegression(baseline, candidate)
+}
+
+func worktreeMergeValidationWithImportedMainAttestation(baseline, candidate quality.VerificationReport, attest func() (*WorktreeMergeImportedMainDeadcode, error)) (*WorktreeMergeImportedMainDeadcode, error) {
+	targetErr := worktreeMergeValidationRegression(baseline, candidate)
+	if targetErr == nil {
+		return nil, nil
+	}
+	if !hasWorktreeMergeDeadcodeFailure(candidate) || worktreeMergeNonDeadcodeRegression(baseline, candidate) != nil {
+		return nil, targetErr
+	}
+	evidence, err := attest()
+	if err != nil {
+		return nil, fmt.Errorf("attest imported main deadcode baseline: %w", err)
+	}
+	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, evidence); err != nil {
+		return evidence, err
+	}
+	return evidence, nil
+}
+
 func matchImportedMainDeadcodeFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry, imported *WorktreeMergeImportedMainDeadcode) bool {
 	if imported == nil || candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != worktreeMergeDeadcodeCommand || !candidate.Deadcode.Valid() {
 		return false
 	}
-	for _, previous := range baseline {
-		if previous.Language != candidate.Language || previous.Module != candidate.Module || previous.Check != candidate.Check || previous.Command != candidate.Command {
+	target, valid := worktreeMergeDeadcodeIdentitySet(baseline, candidate.Language, candidate.Check, candidate.Command, candidate.Module)
+	if !valid {
+		return false
+	}
+	parent, valid := importedMainDeadcodeIdentities(imported.Validation, candidate.Check, candidate.Command, candidate.Module)
+	if !valid {
+		return false
+	}
+	for id := range parent {
+		target[id] = true
+	}
+	for _, id := range candidate.Deadcode.Identities {
+		if !target[id] {
+			return false
+		}
+	}
+	return true
+}
+
+func worktreeMergeDeadcodeIdentitySet(entries []quality.VerificationEntry, language string, check quality.Check, command, module string) (map[string]bool, bool) {
+	var matching *quality.VerificationEntry
+	for index := range entries {
+		entry := &entries[index]
+		if entry.Language != language || entry.Check != check || entry.Command != command || entry.Module != module {
 			continue
 		}
-		known := make(map[string]bool)
-		if previous.Status == quality.StatusFailed {
-			if !previous.Deadcode.Valid() {
-				return false
-			}
-			for _, id := range previous.Deadcode.Identities {
-				known[id] = true
-			}
-		} else if previous.Status != quality.StatusPassed || previous.Deadcode != nil {
-			return false
+		if matching != nil {
+			return nil, false
 		}
-		parent, valid := importedMainDeadcodeIdentities(imported.Validation, candidate.Check, candidate.Command, candidate.Module)
-		if !valid {
-			return false
-		}
-		for id := range parent {
-			known[id] = true
-		}
-		for _, id := range candidate.Deadcode.Identities {
-			if !known[id] {
-				return false
-			}
-		}
-		return true
+		matching = entry
 	}
-	return false
+	if matching == nil {
+		return nil, false
+	}
+	if matching.Status == quality.StatusPassed && matching.Deadcode == nil {
+		return map[string]bool{}, true
+	}
+	if matching.Status != quality.StatusFailed || !matching.Deadcode.Valid() {
+		return nil, false
+	}
+	identities := make(map[string]bool, len(matching.Deadcode.Identities))
+	for _, identity := range matching.Deadcode.Identities {
+		identities[identity] = true
+	}
+	return identities, true
 }
 
 // matchDeadcodeBaselineFailure compares complete function identities, not the
