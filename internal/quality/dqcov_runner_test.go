@@ -304,7 +304,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	t.Run("no failures writes no manifest", func(t *testing.T) {
 		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "ok", profilePath: "p"}}, []goCoverageJobResult{{output: "fine", attempts: 1}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "ok", profilePath: "p"}, goCoverageJobResult{output: "fine", attempts: 1}); err != nil {
 			t.Fatal(err)
 		}
 		manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
@@ -316,7 +316,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	t.Run("empty failure output records the error", func(t *testing.T) {
 		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("exit status 1")}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("exit status 1")}); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := os.ReadFile(filepath.Join(directory, "coverage-raw-"+coverageDiagnosticStem(repository, module)+"-1.log"))
@@ -332,7 +332,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "file")
 		writeQualityFile(t, blocker, "x")
-		err := writeCoverageDiagnostics(filepath.Join(blocker, "reports"), repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("boom")}})
+		err := newCoverageDiagnosticsSink(filepath.Join(blocker, "reports"), repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("boom")})
 		if err == nil {
 			t.Fatal("an unwritable diagnostics directory was accepted")
 		}
@@ -345,7 +345,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(directory, "coverage-raw-"+stem+"-1.log"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding raw artifact path was accepted")
 		}
@@ -358,7 +358,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding manifest path was accepted")
 		}

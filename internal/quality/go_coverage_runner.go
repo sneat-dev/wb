@@ -398,19 +398,6 @@ func writeCoverageDiagnosticFileAtomically(path string, data []byte) (err error)
 	return nil
 }
 
-func writeCoverageDiagnostics(directory, repository, module string, jobs []goCoverageJob, results []goCoverageJobResult) error {
-	sink := newCoverageDiagnosticsSink(directory, repository, module)
-	for index, result := range results {
-		if result.err == nil {
-			continue
-		}
-		if err := sink.persist(index, jobs[index], result); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func coverageDiagnosticStem(repository, module string) string {
 	digest := sha256.Sum256([]byte(repository + "\x00" + module))
 	return hex.EncodeToString(digest[:])[:16]
