@@ -233,6 +233,7 @@ func TestWtLogCovValidateRemovedTerminalWorkLogs(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // wtLogCovRemovedTerminalHome calls t.Setenv for its private WB home.
 func TestReadRemovedTerminalWorkLogClaimBaseUsesExactSealedEvidence(t *testing.T) {
 	_, projectsRoot, expectation, _ := wtLogCovRemovedTerminalHome(t)
 	base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, expectation)

@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+//nolint:paralleltest // t.Setenv isolates WB home and cannot run with t.Parallel.
 func TestFindTerminalCleanupProofUsesLatestExactAppliedReceipt(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
@@ -84,6 +85,7 @@ func TestFindTerminalCleanupProofUsesLatestExactAppliedReceipt(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // t.Setenv isolates WB home and cannot run with t.Parallel.
 func TestFindTerminalCleanupProofRejectsAmbiguousIdentityAndSymlink(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
