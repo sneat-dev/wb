@@ -313,6 +313,29 @@ func TestWebhookWithCoverageHarvester(t *testing.T) {
 	if !harvested {
 		t.Error("expected CoverageHarvester to be called")
 	}
+
+	// 2. Harvester returns error (covers line 528 narration)
+	mockHarvesterErr := mockCoverageHarvester{
+		harvest: func(ctx context.Context, delivery WebhookDelivery) error {
+			return errors.New("harvest failure")
+		},
+	}
+	handlerErr := NewHandler(HandlerOptions{
+		WebhookSecret:     secret,
+		Coverage:          store,
+		CoverageHarvester: mockHarvesterErr,
+		RepositoryEvents:  repoEvents,
+	})
+	reqErr := httptest.NewRequest(http.MethodPost, WebhookPath, bytes.NewReader(payload))
+	reqErr.Header.Set("X-GitHub-Delivery", "deliv-12346")
+	reqErr.Header.Set("X-GitHub-Event", "workflow_run")
+	reqErr.Header.Set("X-Hub-Signature-256", sig)
+
+	recErr := httptest.NewRecorder()
+	handlerErr.ServeHTTP(recErr, reqErr)
+	if recErr.Code != http.StatusAccepted {
+		t.Fatalf("status with harvest error = %d, want %d", recErr.Code, http.StatusAccepted)
+	}
 }
 
 type mockCoverageHarvester struct {
