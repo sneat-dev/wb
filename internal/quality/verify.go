@@ -504,7 +504,7 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	checkCtx := ctx
 	cancel := func() {}
 	if options.CheckTimeout > 0 {
-		checkCtx, cancel = context.WithTimeout(ctx, options.CheckTimeout)
+		checkCtx, cancel = context.WithTimeoutCause(ctx, options.CheckTimeout, errLogicalCheckTimeout)
 	}
 	defer cancel()
 	var output string
