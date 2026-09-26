@@ -56,6 +56,14 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 The Workbench Hub MUST subscribe to `workflow_run.completed` GitHub webhook events on default branches, download the `wb-coverage-summary` artifact using the GitHub App token, and persist the coverage record to the repository coverage store.
 
+#### REQ: fleet-metrics-web-dashboard
+
+The Workbench daemon/hub server MUST serve an interactive web dashboard at `/metrics` (and redirect `/coverage` to `/metrics?type=test_coverage`) displaying test coverage and registered fleet metrics across repositories. For test coverage, the dashboard MUST display per-repository status, statements, covered statements, and an expandable hierarchical breakdown by Go package.
+
+#### REQ: generic-repository-metrics
+
+The Workbench Hub MUST provide a generalized repository metrics model and API (`/v0/workbench/metrics`) capable of storing and querying arbitrary multi-dimensional repository measurements with scalar summaries, units, threshold rules, and dimensional breakdowns (e.g. packages, days, authors) using a DALgo document store.
+
 ### Verification
 
 #### REQ: conventional-go-checks
@@ -175,6 +183,14 @@ without emitting a graduation receipt.
 **Given** a repository coverage summary artifact published by GitHub Actions on push/merge to default branch and harvested by Workbench Hub into the coverage store
 **When** `wb coverage [repo] --ci` or `wb fleet coverage` is executed
 **Then** latest test coverage statements and percentage are reported instantaneously (<100ms) without executing local `go test` runs.
+
+### AC: fleet-metrics-web-dashboard
+
+**Requirements:** fleet-quality#req:fleet-metrics-web-dashboard, fleet-quality#req:generic-repository-metrics
+
+**Given** a running Workbench server (`wb daemon serve` or `wb hub`) with harvested repository coverage records or published metrics
+**When** a user navigates to `/metrics` or `/coverage`
+**Then** the server serves a responsive HTML page displaying each repository's primary metric with visual health indicators, and allows expanding a repository to inspect its dimensional breakdown (such as Go packages for coverage).
 
 ## Open Questions
 

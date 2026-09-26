@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -50,7 +51,7 @@ func newDashboardCmd(inv *invocation) *cobra.Command {
 }
 
 func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDependencies) *cobra.Command {
-	var local, jsonOut bool
+	var local, metricsFlag, coverageFlag, jsonOut bool
 	var format string
 	command := &cobra.Command{
 		Use:   "dashboard",
@@ -62,6 +63,9 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 				return usageError(err.Error())
 			}
 			target, scope := hostedDashboardURL, "hosted"
+			if metricsFlag || coverageFlag {
+				local = true
+			}
 			if local {
 				var warning string
 				target, warning, err = deps.localURL(command.Context(), inv.projectsRoot)
@@ -72,6 +76,13 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", warning)
 				}
 				scope = "local"
+				if metricsFlag {
+					target = strings.TrimSuffix(target, "/") + "/metrics"
+					scope = "metrics"
+				} else if coverageFlag {
+					target = strings.TrimSuffix(target, "/") + "/coverage"
+					scope = "coverage"
+				}
 			}
 			result := dashboardOpenResult{URL: target, Scope: scope}
 			if format == "text" && !inv.nonInteractive {
@@ -84,6 +95,8 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 		},
 	}
 	command.Flags().BoolVar(&local, "local", false, "open this machine's loopback daemon dashboard")
+	command.Flags().BoolVar(&metricsFlag, "metrics", false, "open this machine's fleet metrics dashboard")
+	command.Flags().BoolVar(&coverageFlag, "coverage", false, "open this machine's fleet coverage dashboard")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
