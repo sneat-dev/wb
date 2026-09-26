@@ -4331,7 +4331,6 @@ func normalizeGoCoverageCommand(command string) string {
 func goCoverageFailureIdentities(detail string) map[string]struct{} {
 	const (
 		failureIndexHeader = "WB coverage failure index:\n"
-		rawOutputHeader    = "WB coverage raw output\n"
 	)
 	identities := make(map[string]struct{})
 	indexStart := strings.Index(detail, failureIndexHeader)
@@ -4340,9 +4339,12 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 	}
 	index := detail[indexStart+len(failureIndexHeader):]
 	rawOutput := ""
-	if raw := strings.Index(index, rawOutputHeader); raw >= 0 {
-		rawOutput = index[raw+len(rawOutputHeader):]
-		index = index[:raw]
+	for _, header := range []string{"WB coverage raw output:\n", "WB coverage raw output\n"} {
+		if raw := strings.Index(index, header); raw >= 0 {
+			rawOutput = index[raw+len(header):]
+			index = index[:raw]
+			break
+		}
 	}
 	// A test-binary timeout kills the group wherever it happens to be, so the
 	// test it names is incidental: the same pre-existing timeout names a
@@ -4365,12 +4367,40 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 		if placement == "" || testName == "" {
 			continue
 		}
-		if _, ok := timedOut[placement]; ok {
+		stableTimeout, hasSource := goCoverageTimeoutFailureIdentity(testName)
+		if hasSource {
+			// Elapsed time is diagnostic data; the timeout source is part of
+			// the failure identity and must survive raw-output timeout folding.
+			testName = stableTimeout
+		} else if _, ok := timedOut[placement]; ok {
 			testName = goCoverageTimeoutIdentity
 		}
 		identities[placement+"\x00"+testName] = struct{}{}
 	}
 	return identities
+}
+
+func goCoverageTimeoutFailureIdentity(detail string) (string, bool) {
+	if !strings.HasSuffix(detail, ")") {
+		return "", false
+	}
+	start := strings.LastIndex(detail, " (")
+	if start <= 0 {
+		return "", false
+	}
+	cause, elapsed, ok := strings.Cut(strings.TrimSuffix(detail[start+2:], ")"), "; elapsed ")
+	if !ok {
+		return "", false
+	}
+	switch cause {
+	case "attempt timeout", "check timeout", "caller timeout", "caller-cancelled cancellation":
+	default:
+		return "", false
+	}
+	if _, err := time.ParseDuration(elapsed); err != nil {
+		return "", false
+	}
+	return detail[:start] + " (" + cause + ")", true
 }
 
 // goCoverageTimedOutPlacements reports which check placements recorded a

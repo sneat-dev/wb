@@ -436,6 +436,39 @@ func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t
 	}
 }
 
+func TestWorktreeMergeValidationRegressionComparesTimeoutSourceWithoutElapsedTime(t *testing.T) {
+	t.Parallel()
+	const header = "WB coverage failure index:\n"
+	const attempt = "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.254192833s)\n"
+	const named = "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.254170416s)\n"
+	const raw = "WB coverage raw output:\n[unsharded packages]\ntimed out after 8m0s\n[github.com/sneat-dev/wb/internal/orchestrate shard 1/4]\ntimed out after 8m0s\n"
+	report := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test -coverprofile … ./...", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := report(header + attempt + named + raw)
+	for _, tc := range []struct {
+		name      string
+		detail    string
+		wantError bool
+	}{
+		{name: "elapsed differs", detail: header + "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.252630334s)\n- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.252606292s)\n" + raw},
+		{name: "timeout source changes", detail: header + "- [unsharded packages] command failed without a named Go test (check timeout; elapsed 8m0.252630334s)\n" + named + raw, wantError: true},
+		{name: "named timeout source changes", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (check timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
+		{name: "new named test fails", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestNew (attempt timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
+		{name: "new job fails", detail: header + attempt + named + "- [github.com/sneat-dev/wb/internal/worktrees shard 2/4] command failed without a named Go test (attempt timeout; elapsed 8m0.1s)\n" + raw, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := worktreeMergeValidationRegression(baseline, report(tc.detail))
+			if (err != nil) != tc.wantError {
+				t.Fatalf("regression error = %v, want error=%t", err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
 	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationReport {
