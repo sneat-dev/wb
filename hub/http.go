@@ -30,6 +30,7 @@ const (
 	installationContinuationPath   = APIPrefix + "/github/installations/"
 	installationOpenerOrigin       = "https://sneat.work"
 	CoveragePath                   = APIPrefix + "/coverage"
+	MetricsPath                    = APIPrefix + "/metrics"
 )
 
 type HandlerOptions struct {
@@ -41,6 +42,7 @@ type HandlerOptions struct {
 	RepositoryEvents  *RepositoryEventService
 	Status            *StatusService
 	Coverage          RepositoryCoverageStore
+	Metrics           RepositoryMetricsStore
 	CoverageHarvester CoverageHarvester
 	Projection        ProjectionProcessor
 	WebhookSecret     []byte
@@ -86,6 +88,10 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux.HandleFunc("GET "+CoveragePath, handler.listCoverage)
 	mux.HandleFunc("POST "+CoveragePath, handler.saveCoverage)
 	mux.HandleFunc("GET "+CoveragePath+"/{owner}/{repo}", handler.getCoverage)
+	mux.HandleFunc("GET "+MetricsPath+"/types", handler.listMetricTypes)
+	mux.HandleFunc("GET "+MetricsPath, handler.listMetrics)
+	mux.HandleFunc("POST "+MetricsPath, handler.saveMetric)
+	mux.HandleFunc("GET "+MetricsPath+"/{owner}/{repo}", handler.getMetric)
 	return cors(options.AllowedOrigin, mux)
 }
 

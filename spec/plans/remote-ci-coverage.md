@@ -215,6 +215,7 @@ Uploaded under artifact name `wb-coverage-summary`:
 - fleet-quality#ac:truthful-fleet-coverage — verified by existing local fleet coverage test suite
 - fleet-quality#ac:complete-conventional-verification — verified by existing verification test suite
 - fleet-quality#ac:exact-graduation-receipt — verified by existing graduation receipt test suite
+- fleet-quality#ac:fleet-metrics-web-dashboard — verified by fleet-metrics-web plan
 
 ---
 *This document follows the https://specscore.md/plan-specification*

@@ -2799,13 +2799,17 @@
             {
               "path": "wb dashboard",
               "flags": [
+                "--coverage",
                 "--format",
                 "--json",
-                "--local"
+                "--local",
+                "--metrics"
               ],
               "modes": [
                 "Opens the hosted cross-machine dashboard in the platform browser by default.",
                 "--local starts or reuses the loopback daemon and opens its local dashboard.",
+                "--metrics opens the fleet metrics and quality dashboard.",
+                "--coverage opens the fleet test coverage view.",
                 "JSON and non-interactive invocations return the resolved URL without launching a browser."
               ]
             }
@@ -2819,9 +2823,11 @@
               "command": "wb dashboard --help",
               "contains": [
                 "hosted cross-machine",
+                "--coverage",
                 "--format",
                 "--json",
-                "--local"
+                "--local",
+                "--metrics"
               ]
             }
           ],

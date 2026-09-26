@@ -164,6 +164,8 @@ func NewHandler(options Options) http.Handler {
 	server := &service{options: options}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.index)
+	mux.HandleFunc("GET /metrics", server.metrics)
+	mux.HandleFunc("GET /coverage", server.coverageRedirect)
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("GET /api/v1/overview", server.overview)
 	mux.HandleFunc("GET /api/v1/log", server.log)
@@ -216,6 +218,15 @@ func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler 
 func (server *service) index(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = writer.Write([]byte(indexHTML))
+}
+
+func (server *service) metrics(writer http.ResponseWriter, _ *http.Request) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = writer.Write([]byte(metricsHTML))
+}
+
+func (server *service) coverageRedirect(writer http.ResponseWriter, request *http.Request) {
+	http.Redirect(writer, request, "/metrics?type=test_coverage", http.StatusFound)
 }
 
 func (server *service) health(writer http.ResponseWriter, request *http.Request) {
