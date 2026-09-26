@@ -7831,6 +7831,76 @@
       "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with bounded retries and a >=30s per-attempt timeout; only an authoritative failure or exhausted retries reaches the caller, naming the last cause plus the exact resumable `wb pr land` invocation, with `github_read_retries` recorded on the evidence when recovery happened."
     },
     {
+      "id": "wb.pr.update",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr update",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Uses GitHub update-branch with expected_head_sha to merge the observed target into an open same-repository PR head and persists exact before, after, and target SHAs",
+                "Returns a receipt-backed no-op when the head already contains the target; never arms auto-merge, waits for CI, lands the PR, or cleans up",
+                "Fast-forwards only a clean active WB-claimed local checkout; no local checkout is optional, while an existing dirty or unowned checkout is left untouched and reported as partial"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr update --help",
+              "contains": [
+                "Bring one open pull request's head up to date",
+                "GitHub update-branch",
+                "never waits for CI"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "# Land a pull request with wb pr land",
+              "examples": [
+                "wb pr update <owner/repository#number>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_update_test.go",
+              "name": "TestUpdatePullRequestPinsHeadProvesMergeAndRecordsBeforeLocalSync",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/pr_update_test.go",
+              "name": "TestUpdatePullRequestReturnsReceiptBackedNoOpWithoutMutation",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This is an update-only target-to-feature operation. A later wb pr land remains a separate explicit action."
+    },
+    {
       "id": "wb.remote.claim",
       "feature_refs": [
         "spec/features/remote-claims/README.md"

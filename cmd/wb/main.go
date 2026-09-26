@@ -271,7 +271,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
 		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree land": true, "land": true,
-		"pr land": true, "pr create": true,
+		"pr land": true, "pr create": true, "pr update": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge acknowledge-retired-prepare-candidate": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
