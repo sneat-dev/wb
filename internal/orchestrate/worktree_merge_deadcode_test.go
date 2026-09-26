@@ -168,10 +168,10 @@ func TestWorktreeMergeSavedReceiptPassesReuseAndPublishGuards(t *testing.T) {
 	if err := json.Unmarshal(raw, &loaded); err != nil {
 		t.Fatal(err)
 	}
-	if reusable, err := preparedValidationStillValid(loaded, worktreeMergeValidationPlan{}); err != nil || !reusable {
+	if reusable, err := preparedValidationStillValidContext(context.Background(), loaded, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil || !reusable {
 		t.Fatalf("loaded receipt reuse = (%t, %v)", reusable, err)
 	}
-	if err := requireWorktreeMergePublishedValidation(loaded, worktreeMergeValidationPlan{}); err != nil {
+	if err := requireWorktreeMergePublishedValidationContext(context.Background(), loaded, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil {
 		t.Fatalf("loaded receipt publish guard rejected exact validation: %v", err)
 	}
 }

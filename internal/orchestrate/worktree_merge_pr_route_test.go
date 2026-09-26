@@ -276,7 +276,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("PR-route deferral was refused: %v", err)
 		}
 	})
@@ -287,7 +287,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("a route this call resolved as direct was authorized to publish by a stale PR-route deferral")
 		}
 	})
@@ -299,7 +299,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("already-published carve-out fired for a call resolved as direct")
 		}
 	})
@@ -311,7 +311,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("already-published carve-out was refused on the PR route: %v", err)
 		}
 	})
@@ -323,7 +323,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed, Revision: receipt.Candidate.SHA}
 		receipt.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("genuinely validated exact identity was refused: %v", err)
 		}
 	})
@@ -339,7 +339,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("a stale deferral was accepted even though this call's plan forbids deferring")
 		}
 	})
@@ -362,17 +362,17 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 		},
 	}
 	plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-	reusable, err := preparedValidationStillValid(receipt, plan)
+	reusable, err := preparedValidationStillValidContext(context.Background(), receipt, plan, 0, 0, 0)
 	if err != nil || !reusable {
-		t.Fatalf("preparedValidationStillValid(deferred receipt) = (%t, %v), want (true, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), deferred receipt) = (%t, %v, 0, 0, 0), want (true, nil)", reusable, err)
 	}
 
 	// A deferral for a different candidate SHA (stale) must not be reused.
 	stale := receipt
 	stale.Candidate.SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	reusable, err = preparedValidationStillValid(stale, plan)
+	reusable, err = preparedValidationStillValidContext(context.Background(), stale, plan, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(stale deferred receipt) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), stale deferred receipt) = (%t, %v, 0, 0, 0), want (false, nil)", reusable, err)
 	}
 
 	// A deferral recorded under a route this call did not resolve as pr must
@@ -380,18 +380,18 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 	direct := receipt
 	direct.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRouteDirect}
 	directPlan := worktreeMergeValidationPlan{Route: direct.Route, Defer: false}
-	reusable, err = preparedValidationStillValid(direct, directPlan)
+	reusable, err = preparedValidationStillValidContext(context.Background(), direct, directPlan, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(direct-route call, PR deferral) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), direct-route call, PR deferral, 0, 0, 0) = (%t, %v), want (false, nil)", reusable, err)
 	}
 
 	// Finding X1: even on the PR route with a matching candidate SHA, a
 	// deferral must not be reused when THIS call's own plan forbids
 	// deferring (--allow-unfenced or --validate-locally on the resume).
 	noLongerDeferring := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-	reusable, err = preparedValidationStillValid(receipt, noLongerDeferring)
+	reusable, err = preparedValidationStillValidContext(context.Background(), receipt, noLongerDeferring, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(X1: plan.Defer=false) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), X1: plan.Defer=false) = (%t, %v, 0, 0, 0), want (false, nil)", reusable, err)
 	}
 }
 

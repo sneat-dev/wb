@@ -3834,10 +3834,6 @@ func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMerg
 // pr-land-syncs-and-main-reuses-exact-validation) operates entirely outside
 // this function, on an already-landed target commit, and is unaffected by
 // it.
-func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) error {
-	return requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0)
-}
-
 func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan, timeout time.Duration, retry int, checkTimeout time.Duration) error {
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return fmt.Errorf("recheck imported main deadcode attestation before publish: %w", err)
@@ -3885,14 +3881,10 @@ func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt
 	)
 }
 
-// preparedValidationStillValid's plan parameter is THIS call's freshly
+// preparedValidationStillValidContext's plan parameter is THIS call's freshly
 // resolved validation plan (finding X1): a prepared receipt's recorded
 // deferral is reusable only when THIS call's plan also permits deferring,
 // never merely because an earlier call recorded one.
-func preparedValidationStillValid(receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan) (bool, error) {
-	return preparedValidationStillValidContext(context.Background(), receipt, plan, 0, 0, 0)
-}
-
 func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMergeReceipt, plan worktreeMergeValidationPlan, timeout time.Duration, retry int, checkTimeout time.Duration) (bool, error) {
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return false, err
