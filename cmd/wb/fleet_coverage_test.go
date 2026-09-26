@@ -459,7 +459,7 @@ func TestResolveRepositorySlug(t *testing.T) {
 		t.Fatal(err)
 	}
 	orig := defaultCoverageDeps
-	defer func() { defaultCoverageDeps = orig }()
+	t.Cleanup(func() { defaultCoverageDeps = orig })
 
 	defaultCoverageDeps.originURL = func(path string) (string, error) {
 		return "https://github.com/sneat-co/myrepo.git", nil

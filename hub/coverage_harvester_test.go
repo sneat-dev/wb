@@ -246,7 +246,7 @@ func TestHTTPArtifactDownloader(t *testing.T) {
 
 		http.NotFound(w, r)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	downloader := HTTPArtifactDownloader{
 		Client:     server.Client(),
@@ -497,7 +497,7 @@ func TestHTTPArtifactDownloader_Errors(t *testing.T) {
 	server500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}))
-	defer server500.Close()
+	t.Cleanup(server500.Close)
 
 	d500 := HTTPArtifactDownloader{
 		APIBaseURL: server500.URL,
@@ -511,7 +511,7 @@ func TestHTTPArtifactDownloader_Errors(t *testing.T) {
 	serverBadJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "bad-json")
 	}))
-	defer serverBadJSON.Close()
+	t.Cleanup(serverBadJSON.Close)
 
 	dBadJSON := HTTPArtifactDownloader{
 		APIBaseURL: serverBadJSON.URL,
@@ -529,7 +529,7 @@ func TestHTTPArtifactDownloader_Errors(t *testing.T) {
 		}
 		http.Error(w, "download error", http.StatusBadGateway)
 	}))
-	defer serverDownload500.Close()
+	t.Cleanup(serverDownload500.Close)
 
 	dDownload500 := HTTPArtifactDownloader{
 		APIBaseURL: serverDownload500.URL,
@@ -557,7 +557,7 @@ func TestHTTPArtifactDownloader_Errors(t *testing.T) {
 		// Redirect to dead address
 		http.Redirect(w, r, "http://127.0.0.1:0/dead", http.StatusFound)
 	}))
-	defer redirectServer.Close()
+	t.Cleanup(redirectServer.Close)
 
 	dDownloadNetErr := HTTPArtifactDownloader{
 		APIBaseURL: redirectServer.URL,
@@ -592,7 +592,7 @@ func TestHTTPArtifactDownloader_Errors(t *testing.T) {
 			_ = conn.Close()
 		}
 	}))
-	defer bodyErrServer.Close()
+	t.Cleanup(bodyErrServer.Close)
 
 	dBodyErr := HTTPArtifactDownloader{
 		APIBaseURL: bodyErrServer.URL,
