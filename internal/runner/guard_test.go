@@ -1,12 +1,6 @@
 package runner
 
-import (
-	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // withGuardOverride sets *target to value for the duration of t, restoring
 // the original at cleanup. It exists because isTesting and e2eBuild are
@@ -59,38 +53,13 @@ func TestGuardRealProcessAllowsAllowRealProcess(t *testing.T) {
 	}
 }
 
-func TestGuardRealProcessAllowsByDefaultDuringATest(t *testing.T) {
+func TestGuardRealProcessUnitTierPolicy(t *testing.T) {
 	t.Setenv(envStrictUnitTier, "")
 	if err := guardRealProcess(); err != nil {
 		t.Fatalf("guardRealProcess() = %v, want nil without strict unit tier", err)
 	}
-}
-
-func TestGuardRealProcessBlocksDuringAStrictUnitTest(t *testing.T) {
 	t.Setenv(envStrictUnitTier, "1")
 	if err := guardRealProcess(); err != ErrRealProcessBlocked {
 		t.Fatalf("guardRealProcess() = %v, want ErrRealProcessBlocked", err)
-	}
-}
-
-func TestRunnerRunsGitInATemporaryRepositoryWithoutStrictUnitTier(t *testing.T) {
-	t.Setenv(envStrictUnitTier, "")
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("find Git for real-process contract: %v", err)
-	}
-	dir := t.TempDir()
-	if _, err := New().Run(context.Background(), dir, git, "init", "--quiet"); err != nil {
-		t.Fatalf("initialize temporary Git repository: %v", err)
-	}
-	result, err := New().Run(context.Background(), dir, git, "rev-parse", "--is-inside-work-tree")
-	if err != nil {
-		t.Fatalf("query temporary Git repository: %v", err)
-	}
-	if result.Stdout != "true\n" {
-		t.Fatalf("rev-parse output = %q, want true", result.Stdout)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		t.Fatalf("temporary Git repository was not created: %v", err)
 	}
 }

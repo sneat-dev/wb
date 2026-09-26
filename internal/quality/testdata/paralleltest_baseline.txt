@@ -1809,7 +1809,7 @@ internal/runner::TestGuardRealProcessAllowsAnE2EBuild	serial pending case-by-cas
 internal/runner::TestGuardRealProcessAllowsOutsideATestBinary	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestGuardRealProcessAllowsTheHelperProcessObserveMarker	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/runner::TestGuardRealProcessAllowsTheHelperProcessReexecMarker	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/runner::TestGuardRealProcessBlocksByDefaultDuringATest	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/runner::TestGuardRealProcessUnitTierPolicy	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/runner::TestRealDetachBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealDetachReturnsAnErrorForAProgramThatDoesNotExist	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/runner::TestRealDetachStartsAProcessAndReportsItsPid	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
