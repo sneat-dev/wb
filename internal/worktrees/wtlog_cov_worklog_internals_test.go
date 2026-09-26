@@ -233,6 +233,24 @@ func TestWtLogCovValidateRemovedTerminalWorkLogs(t *testing.T) {
 	}
 }
 
+func TestReadRemovedTerminalWorkLogClaimBaseUsesExactSealedEvidence(t *testing.T) {
+	_, projectsRoot, expectation, _ := wtLogCovRemovedTerminalHome(t)
+	base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, expectation)
+	if err != nil || base != strings.Repeat("a", 40) {
+		t.Fatalf("read exact removed claim base = %q, %v", base, err)
+	}
+	wrongHead := expectation
+	wrongHead.FinalCommit = "different-commit"
+	if base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, wrongHead); err == nil || base != "" {
+		t.Fatalf("mismatched terminal head returned base %q, %v", base, err)
+	}
+	invalid := expectation
+	invalid.Branch = ""
+	if base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, invalid); err == nil || base != "" {
+		t.Fatalf("incomplete expectation returned base %q, %v", base, err)
+	}
+}
+
 func TestWtLogCovPreApplyRenameReservationHelpers(t *testing.T) {
 	home := t.TempDir()
 	effort, run := "task", "run"
