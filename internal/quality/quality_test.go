@@ -1821,7 +1821,7 @@ func TestBetaBlocks(t *testing.T) {
 			})
 		}
 	}
-	_, _, runErr := runShardedCoverageWithDiagnosticsAndProgressOptions(ctx, module, filepath.Join(t.TempDir(), "coverage.out"), []string{"./serial"}, 2, diagnosticsDir, "example/interrupted", 0, 0, reporter)
+	_, _, runErr := runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx, module, filepath.Join(t.TempDir(), "coverage.out"), []string{"./serial"}, 2, diagnosticsDir, "example/interrupted", 0, 0, 0, reporter)
 	if runErr == nil {
 		t.Fatal("sharded coverage succeeded despite failed first shard and cancelled second shard")
 	}
