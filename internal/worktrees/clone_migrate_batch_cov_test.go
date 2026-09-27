@@ -121,3 +121,32 @@ func TestGitOperationInProgressFindsEachPrivateMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestCloneMoveRegistrationAndIntentSelection(t *testing.T) {
+	fixture := newGitFixture(t)
+	ctx := context.Background()
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/linked", linked)
+	paths, err := registeredWorktreePaths(ctx, fixture.canonical)
+	if err != nil || len(paths) != 1 || paths[0] != linked {
+		t.Fatalf("registered linked checkouts = (%#v, %v)", paths, err)
+	}
+	if err := VerifyClonePlacement(ctx, fixture.canonical, []string{linked}); err != nil {
+		t.Fatalf("linked checkout is valid: %v", err)
+	}
+	unknown := filepath.Join(t.TempDir(), "not-registered")
+	if err := VerifyClonePlacement(ctx, fixture.canonical, []string{unknown}); err == nil || !strings.Contains(err.Error(), "does not list") {
+		t.Fatalf("unregistered checkout error = %v", err)
+	}
+	status, informational, err := ReconcileClonePlacement(ctx, fixture.canonical, "", false)
+	if err != nil || status != "verified" || len(informational) != 0 {
+		t.Fatalf("healthy reconciliation = (%q, %#v, %v)", status, informational, err)
+	}
+	entries, err := RecordCloneMoveRelocationIntents(fixture.projectsRoot, []CloneMoveWorktree{
+		{Source: linked, Destination: linked},
+		{Source: filepath.Join(t.TempDir(), "unclaimed"), Destination: filepath.Join(t.TempDir(), "elsewhere")},
+	}, time.Now())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("unchanged/unclaimed relocation intents = (%#v, %v)", entries, err)
+	}
+}

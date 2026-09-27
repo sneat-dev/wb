@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T) {
@@ -115,5 +117,53 @@ func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 				t.Fatalf("apply result = %#v, want %q", result, tc.want)
 			}
 		})
+	}
+}
+
+func TestOpenPullRequestUsingBranchAsBaseDistinguishesMatchingAndFailedQueries(t *testing.T) {
+	bin := t.TempDir()
+	script := filepath.Join(bin, "gh")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeScript := func(body string) {
+		t.Helper()
+		if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	writeScript("printf '%s\\n' '[{\"number\":17,\"url\":\"https://example.test/pr/17\",\"state\":\"open\",\"base\":{\"ref\":\"feature/old\"},\"head\":{\"sha\":\"abc\"}}]'\n")
+	pull, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old")
+	if err != nil || pull == nil || pull.Number != 17 || pull.Base != "feature/old" {
+		t.Fatalf("matching base pull = (%#v, %v)", pull, err)
+	}
+	pull, err = openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/other")
+	if err != nil || pull != nil {
+		t.Fatalf("unmatched base pull = (%#v, %v)", pull, err)
+	}
+	writeScript("printf 'not-json\\n'\n")
+	if _, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old"); err == nil || !strings.Contains(err.Error(), "decode open pull requests") {
+		t.Fatalf("invalid JSON error = %v", err)
+	}
+	writeScript("echo unavailable >&2\nexit 7\n")
+	if _, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old"); err == nil || !strings.Contains(err.Error(), "query open pull requests") {
+		t.Fatalf("failed query error = %v", err)
+	}
+}
+
+func TestQuarantinePlanRejectsExistingRetiredDestination(t *testing.T) {
+	fixture := newGitFixture(t)
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	destination := retiredBranchDestination(now, "feature/old", sha)
+	gitTest(t, fixture.canonical, "branch", destination)
+	result := planBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha, Reason: "old"}, now)
+	if result.Outcome != "refused" || !strings.Contains(result.Error, "destination already exists") {
+		t.Fatalf("destination collision plan = %#v", result)
 	}
 }
