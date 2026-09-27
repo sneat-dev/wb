@@ -237,9 +237,26 @@ func quarantineRepositoryPaths(root string, requests []BranchQuarantineRequest) 
 	return paths, nil
 }
 
+// branchQuarantinePlanOps keeps the safety decisions testable without starting
+// git or gh. The production entry point always supplies the real operations.
+type branchQuarantinePlanOps struct {
+	git          func(context.Context, string, ...string) (string, error)
+	checkedOut   func(context.Context, string) (map[string]bool, string)
+	inUse        func(context.Context, string, string) (map[string]string, string)
+	pullRequests func(context.Context, string, string, string) ([]githubPullRequest, error)
+	openBasePull func(context.Context, string, string, string) (*PullRequest, error)
+}
+
 func planBranchQuarantine(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time) BranchQuarantineResult {
+	return planBranchQuarantineWithOps(ctx, projectsRoot, path, request, now, branchQuarantinePlanOps{
+		git: git, checkedOut: checkedOutLocalBranches, inUse: branchInUseIndex,
+		pullRequests: githubPullRequests, openBasePull: openPullRequestUsingBranchAsBase,
+	})
+}
+
+func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time, ops branchQuarantinePlanOps) BranchQuarantineResult {
 	result := BranchQuarantineResult{BranchQuarantineRequest: request, Outcome: "refused"}
-	source, err := git(ctx, path, "rev-parse", "--verify", "refs/heads/"+request.Ref+"^{commit}")
+	source, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+request.Ref+"^{commit}")
 	if err != nil {
 		result.Error = "source ref unavailable: " + err.Error()
 		return result
@@ -250,12 +267,12 @@ func planBranchQuarantine(ctx context.Context, projectsRoot, path string, reques
 		return result
 	}
 	result.SHA = source
-	head, _ := git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ := ops.git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
 	if isProtectedBranch(request.Ref, "main", strings.TrimSpace(head)) {
 		result.Error = "source is protected or the canonical current branch"
 		return result
 	}
-	checked, diagnostic := checkedOutLocalBranches(ctx, path)
+	checked, diagnostic := ops.checkedOut(ctx, path)
 	if diagnostic != "" {
 		result.Error = diagnostic
 		return result
@@ -264,14 +281,14 @@ func planBranchQuarantine(ctx context.Context, projectsRoot, path string, reques
 		result.Error = "source is checked out in a linked worktree"
 		return result
 	}
-	if inUse, diagnostic := branchInUseIndex(ctx, projectsRoot, ""); diagnostic != "" {
+	if inUse, diagnostic := ops.inUse(ctx, projectsRoot, ""); diagnostic != "" {
 		result.Error = diagnostic
 		return result
 	} else if _, claimed := inUse[branchInUseKey(request.Repository, request.Ref)]; claimed {
 		result.Error = "source is claimed by a live WB work log"
 		return result
 	}
-	pulls, err := githubPullRequests(ctx, path, request.Repository, source)
+	pulls, err := ops.pullRequests(ctx, path, request.Repository, source)
 	if err != nil {
 		result.Error = "cannot prove pull-request safety: " + err.Error()
 		return result
@@ -280,7 +297,7 @@ func planBranchQuarantine(ctx context.Context, projectsRoot, path string, reques
 		result.Error = "source is head of open pull request " + open.URL
 		return result
 	}
-	if open, err := openPullRequestUsingBranchAsBase(ctx, path, request.Repository, request.Ref); err != nil {
+	if open, err := ops.openBasePull(ctx, path, request.Repository, request.Ref); err != nil {
 		result.Error = "cannot prove pull-request base safety: " + err.Error()
 		return result
 	} else if open != nil {
@@ -288,7 +305,7 @@ func planBranchQuarantine(ctx context.Context, projectsRoot, path string, reques
 		return result
 	}
 	result.Destination = retiredBranchDestination(now, request.Ref, source)
-	if _, err := git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Destination); err == nil {
+	if _, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Destination); err == nil {
 		result.Error = "destination already exists"
 		return result
 	}

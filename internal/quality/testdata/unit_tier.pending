@@ -281,7 +281,7 @@ internal/worktrees/branch_reconciliation_test.go	30	task-18
 internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
 # Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
-internal/worktrees/branches_quarantine_batch_cov_test.go	31	task-18
+internal/worktrees/branches_quarantine_batch_cov_test.go	23	task-18
 internal/worktrees/branches_receipted_test.go	19	task-18
 internal/worktrees/branches_test.go	115	task-18
 internal/worktrees/canonical_policy_test.go	9	task-18
