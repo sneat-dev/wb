@@ -280,6 +280,8 @@ internal/worktrees/branch_config_test.go	10	task-18
 internal/worktrees/branch_reconciliation_test.go	30	task-18
 internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
+# Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
+internal/worktrees/branches_quarantine_batch_cov_test.go	30	task-18
 internal/worktrees/branches_receipted_test.go	19	task-18
 internal/worktrees/branches_test.go	115	task-18
 internal/worktrees/canonical_policy_test.go	9	task-18
@@ -289,6 +291,8 @@ internal/worktrees/cleanup_fleet_resilience_test.go	3	task-18
 internal/worktrees/cleanup_link_source_test.go	2	task-18
 internal/worktrees/cleanup_parallel_apply_test.go	12	task-18
 internal/worktrees/cleanup_remote_retirement_test.go	2	task-18
+# Reviewed clone migration fixtures require a real checkout to prove destination safety.
+internal/worktrees/clone_migrate_batch_cov_test.go	2	task-18
 internal/worktrees/clone_migrate_relocation_test.go	13	task-18
 internal/worktrees/create_stampede_test.go	1	task-18
 internal/worktrees/custody_test.go	2	task-18
