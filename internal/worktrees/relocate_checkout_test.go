@@ -135,6 +135,68 @@ func TestRelocateCheckoutRefusesWhenTaskLockHeld(t *testing.T) {
 	}
 }
 
+func TestRelocateCheckoutRefusesUnclaimedAndBusyCheckouts(t *testing.T) {
+	fixture := newGitFixture(t)
+	unmanaged := filepath.Join(fixture.projectsRoot, "unmanaged-relocation")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "unmanaged-relocation", unmanaged)
+	destination := filepath.Join(t.TempDir(), "destination")
+	options := RelocateCheckoutOptions{ProjectsRoot: fixture.projectsRoot, CanonicalDir: fixture.canonical, Source: unmanaged, Destination: destination, To: "shared", Apply: true}
+	result, err := RelocateCheckout(context.Background(), options)
+	if err != nil || result.Eligible || result.Applied || !strings.Contains(result.Reason, "Work Log claim is not corroborated") {
+		t.Fatalf("unclaimed checkout = (%#v, %v)", result, err)
+	}
+	if _, err := os.Stat(unmanaged); err != nil {
+		t.Fatalf("unclaimed checkout moved: %v", err)
+	}
+
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "busy-relocation", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Source = created[0].WorktreeDir
+	gitDir := gitTestOutput(t, options.Source, "rev-parse", "--absolute-git-dir")
+	marker := filepath.Join(gitDir, "MERGE_HEAD")
+	if err := os.WriteFile(marker, []byte(strings.Repeat("0", 40)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = RelocateCheckout(context.Background(), options)
+	if err != nil || result.Eligible || result.Applied || !strings.Contains(result.Reason, "merge is in progress") {
+		t.Fatalf("busy checkout = (%#v, %v)", result, err)
+	}
+	if _, err := os.Stat(options.Source); err != nil {
+		t.Fatalf("busy checkout moved: %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination created despite refusal: %v", err)
+	}
+}
+
+func TestRelocateCheckoutPlanKeepsSourceAndWritesNoReceipt(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "plan-relocation", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := created[0].WorktreeDir
+	destination := filepath.Join(fixture.canonical, ".worktrees", "plan-relocation-destination")
+	result, err := RelocateCheckout(context.Background(), RelocateCheckoutOptions{
+		ProjectsRoot: fixture.projectsRoot, CanonicalDir: fixture.canonical, Source: source, Destination: destination, To: "local",
+	})
+	if err != nil || !result.Eligible || result.Applied || result.ReceiptPath != "" {
+		t.Fatalf("relocation plan = (%#v, %v)", result, err)
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("plan moved source: %v", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("plan created destination: %v", err)
+	}
+}
+
 func TestRelocateCheckoutApplyMovesExactCheckoutAndRecordsReceipt(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
