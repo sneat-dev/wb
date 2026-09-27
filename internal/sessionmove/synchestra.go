@@ -65,18 +65,18 @@ func (s Store) SaveSynchestraDispatch(identity SynchestraDispatch) (SynchestraDi
 	if err := validateSynchestraDispatch(identity, request, digest, route); err != nil {
 		return SynchestraDispatch{}, false, err
 	}
-	raw, err := marshalJSON(identity)
+	raw, err := s.marshal(identity)
 	if err != nil {
 		return SynchestraDispatch{}, false, err
 	}
 	if len(raw) > maxSynchestraDispatchBytes {
 		return SynchestraDispatch{}, false, fmt.Errorf("synchestra dispatch identity exceeds %d bytes", maxSynchestraDispatchBytes)
 	}
-	created, err := publishImmutableAt(handoff, synchestraDispatchFileName, raw, 0o600, nil)
+	created, err := s.publish(handoff, synchestraDispatchFileName, raw, 0o600)
 	if err != nil {
 		return SynchestraDispatch{}, false, fmt.Errorf("publish immutable synchestra dispatch identity: %w", err)
 	}
-	existingRaw, err := readImmutableAt(handoff, synchestraDispatchFileName, maxSynchestraDispatchBytes, "synchestra dispatch identity")
+	existingRaw, err := s.read(handoff, synchestraDispatchFileName, maxSynchestraDispatchBytes, "synchestra dispatch identity")
 	if err != nil {
 		return SynchestraDispatch{}, false, err
 	}
