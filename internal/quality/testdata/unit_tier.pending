@@ -277,6 +277,8 @@ internal/worktrees/active_claims_test.go	2	task-18
 internal/worktrees/adopt_test.go	10	task-18
 internal/worktrees/backlog_retiring_remote_test.go	11	task-18
 internal/worktrees/branch_config_test.go	10	task-18
+# These four helper calls use an injected fake runner; the static detector cannot follow context values.
+internal/worktrees/branch_retirement_evidence_test.go	4	task-18
 internal/worktrees/branch_reconciliation_test.go	30	task-18
 internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
@@ -322,7 +324,9 @@ internal/worktrees/relocate_test.go	1	task-18
 internal/worktrees/rename_test.go	27	task-18
 internal/worktrees/repository_relocate_test.go	42	task-18
 internal/worktrees/residue_test.go	5	task-18
-internal/worktrees/retire_test.go	81	task-18
+# Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.
+internal/worktrees/retire_preflight_behavior_test.go	4	task-18
+internal/worktrees/retire_test.go	82	task-18
 internal/worktrees/retired_prepare_candidate_ack_test.go	15	task-18
 internal/worktrees/session_checkpoint_test.go	32	task-18
 internal/worktrees/session_custody_test.go	2	task-18
