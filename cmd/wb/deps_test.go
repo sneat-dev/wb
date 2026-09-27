@@ -13,7 +13,6 @@ import (
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/npmrelease"
 	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/spf13/cobra"
 )
@@ -262,7 +261,6 @@ func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
 }
 
 func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
-	runnertest.AllowRealProcess(t) // real git fixtures via npmPublicationTestRepository/scratchGit
 	projectsRoot := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")

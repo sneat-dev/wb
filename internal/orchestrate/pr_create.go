@@ -874,7 +874,7 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		return nil, nil, fmt.Errorf("--commit-staged/--commit-all/--add require -m/--message")
 	}
 	if len(options.Add) > 0 {
-		paths, pathErr := resolveAddPaths(ctx, worktree, options.Add)
+		paths, pathErr := resolveAddPaths(ctx, options.resolveRunner(), worktree, options.Add)
 		if pathErr != nil {
 			return &createRefusal{
 				code:    CreateRefusalInvalidPath,
@@ -1078,7 +1078,7 @@ func leftoverAfterStagedCommit(lines []string) []string {
 // worktree's own `git status` still reports, which is how a deleted tracked
 // file is named without existing on disk any more. It returns each path
 // relative to worktree, using forward slashes, in the order named.
-func resolveAddPaths(ctx context.Context, worktree string, raw []string) ([]string, error) {
+func resolveAddPaths(ctx context.Context, run runner.Runner, worktree string, raw []string) ([]string, error) {
 	absWorktree, err := filepath.Abs(worktree)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %s: %w", worktree, err)
@@ -1104,8 +1104,11 @@ func resolveAddPaths(ctx context.Context, worktree string, raw []string) ([]stri
 		}
 		rel = filepath.ToSlash(rel)
 		if _, statErr := os.Stat(absPath); statErr != nil {
-			statusOutput, _, gitErr := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "status", "--porcelain", "--", rel)
-			if gitErr != nil || strings.TrimSpace(statusOutput) == "" {
+			statusOutput, _, gitErr := runCommand(ctx, run, 0, 0, worktree, "git", "status", "--porcelain", "--", rel)
+			if gitErr != nil {
+				return nil, fmt.Errorf("inspect --add path %s: %w", path, gitErr)
+			}
+			if strings.TrimSpace(statusOutput) == "" {
 				missing = append(missing, path)
 				continue
 			}

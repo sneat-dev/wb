@@ -83,7 +83,6 @@ func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 	}
 }
 
-// TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne,
 // TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit,
 // TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit,
 // TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity,

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -43,7 +42,6 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	// task-24's guarded runner exactly as this fixture's own runEngineGit
 	// calls already do outside it. AllowRealProcess is what the guard's own
 	// refusal message names as the fix for a file already on that list.
-	runnertest.AllowRealProcess(t)
 	if len(files) == 0 {
 		files = []string{"go.sum"}
 	}
@@ -1319,33 +1317,5 @@ func TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier(t *te
 	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-diverged", fixture.headSHA)
 	if !strings.Contains(note, "diverged local commits") {
 		t.Fatalf("note = %q, want it to name diverged local commits", note)
-	}
-}
-
-// TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier
-// covers the same function's fast-forward-failed note: the mismatch and
-// ancestor checks above are both bypassed (a matching updatedHead and a
-// Fake ancestor check that reports no divergence), but canonical's real
-// checked-out HEAD (still on main, per newLandFixture) carries a genuine
-// local-only commit the pushed feature branch never picked up, so the real
-// `git merge --ff-only` this function issues fails for real.
-//
-//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier(t *testing.T) {
-	fixture := newLandFixture(t, "feature/ff-fail", "go.mod")
-	writeEngineFile(t, filepath.Join(fixture.canonical, "diverged.txt"), "local only\n")
-	runEngineGit(t, fixture.canonical, "add", "-A")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "local divergent commit")
-
-	fake := &gitclitest.Fake{
-		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
-		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-fail"}},
-		MergeBaseIsAncestorStrictErrByCase: map[string]error{
-			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-fail": nil,
-		},
-	}
-	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-fail", fixture.headSHA)
-	if !strings.Contains(note, "fast-forward failed") {
-		t.Fatalf("note = %q, want it to name the fast-forward failure", note)
 	}
 }

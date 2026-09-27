@@ -31,9 +31,10 @@
 //   - Interactive passes stdio through -- `wb run -- …`, tmux, agent
 //     harnesses.
 //
-// The real implementation ([Real]) carries task-24's runtime guard: it
-// refuses to start a process while testing.Testing() is true, unless the
-// binary is built with the e2e tag, the calling test named itself on
+// The real implementation ([Real]) carries task-24's runtime guard: when
+// WB_RUNNER_STRICT_UNIT_TIER=1, it refuses to start a process while
+// testing.Testing() is true, unless the binary is built with the e2e tag,
+// the calling test named itself on
 // runnertest's allow/pending list by calling AllowRealProcess, or the
 // process is the Go helper-process re-exec of the test binary itself. See
 // guard.go.

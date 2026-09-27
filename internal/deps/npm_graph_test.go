@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -210,7 +209,6 @@ func seedNpmGraphRepository(t *testing.T, root, githubDir, name string, files ma
 	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
 	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
 	// so every caller needs the escape hatch once, here.
-	runnertest.AllowRealProcess(t)
 	seed := filepath.Join(root, name+"-seed")
 	remote := filepath.Join(root, name+".git")
 	canonical := filepath.Join(githubDir, "sneat-co", name)

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -20,7 +19,6 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
 	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
 	// so every caller needs the escape hatch once, here.
-	runnertest.AllowRealProcess(t)
 	seed := filepath.Join(fixture, "seed-"+name)
 	remote := filepath.Join(fixture, "remote-"+name+".git")
 	canonical := filepath.Join(fixture, "projects", "acme", name)
@@ -51,7 +49,7 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 // this repository is fully discovered at its actual default branch instead
 // of merely being excused from failing the campaign.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -101,7 +99,7 @@ func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *t
 // this fallback exists to fix (7 master-default fleet repositories: e.g.
 // strongo/gamp, trakhimenok/badger).
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphFallsBackToDefaultBranchForGoRepositoryWithoutBaseRef(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -154,7 +152,7 @@ func deleteOriginHeadSymref(t *testing.T, canonical string) {
 // a symref that `git clone` happened to cache; it must refresh it from
 // origin when absent.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -194,7 +192,7 @@ func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T
 // fallback substitutes a known-good alternative; it is never license to swallow
 // a repository WB genuinely cannot read.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -238,7 +236,7 @@ func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testi
 // whole fleet. It is skipped with a warning naming the exact file and
 // repository instead.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -280,7 +278,7 @@ func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
 // safely assume irrelevance about a repository's own module declaration the
 // way it can about a nested generator template.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphFailsForUnparseableRootGoMod(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -320,7 +318,6 @@ func seedUnreadableCanonicalRepository(t *testing.T, fixture, name string, files
 	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
 	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
 	// so every caller needs the escape hatch once, here.
-	runnertest.AllowRealProcess(t)
 	canonical := filepath.Join(fixture, "projects", "acme", name)
 	for path, body := range files {
 		writeTestFile(t, filepath.Join(canonical, path), body)
@@ -342,7 +339,7 @@ func seedUnreadableCanonicalRepository(t *testing.T, fixture, name string, files
 // 'origin' remote configured — even though that repository has a go.mod and
 // would otherwise be a hard blocker.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -380,7 +377,7 @@ func TestBuildGraphSkipsUnreadableCloneEvenWithGoManifest(t *testing.T) {
 // TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON is the npm
 // ecosystem's half of the same regression.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestBuildGraphSkipsUnreadableNpmCloneEvenWithPackageJSON(t *testing.T) {
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{

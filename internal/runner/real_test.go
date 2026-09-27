@@ -238,6 +238,7 @@ func TestRealRunWithInputReportsNonZeroExitStatus(t *testing.T) {
 }
 
 func TestRealRunWithInputBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if _, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("RunWithInput() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
@@ -302,6 +303,7 @@ func TestRealRunOptsWritesStdinAndHonorsWaitDelay(t *testing.T) {
 }
 
 func TestRealRunOptsBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if _, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{}, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("RunOpts() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
@@ -395,24 +397,28 @@ func TestRealInteractiveReportsNonZeroExitStatus(t *testing.T) {
 }
 
 func TestRealRunBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if _, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("Run() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealStartBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if _, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("Start() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealDetachBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if _, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("Detach() err = %v, want runner.ErrRealProcessBlocked", err)
 	}
 }
 
 func TestRealInteractiveBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
 	if err := runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
 		t.Fatalf("Interactive() err = %v, want runner.ErrRealProcessBlocked", err)
 	}

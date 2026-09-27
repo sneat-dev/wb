@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -408,9 +407,8 @@ func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *tes
 // pins the floor: a repository whose origin has no resolvable ref at all
 // must still fail loudly rather than silently resolving to nothing.
 //
-//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runEngineGit(t, root, "init", "--bare", remote)
@@ -503,7 +501,6 @@ func TestNormalizePublicationImplicationsAndValidation(t *testing.T) {
 }
 
 func TestWaitAndMergeRequiresStableProducerAwareExactHeadReceipt(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -614,7 +611,6 @@ exit 2
 }
 
 func TestWaitAndMergeLeavesPullRequestUnmergedWhenProtectedMergeRejectsLateTargetAdvance(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -704,7 +700,6 @@ func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	// (spec/plans/coverage-to-100 task-17): production's defaultRunner is
 	// task-24's guarded runner.Real, so every test in this file needs the
 	// escape hatch once, here, rather than repeating it per test.
-	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
 	// this, a call that passes no root would resolve to the developer's real

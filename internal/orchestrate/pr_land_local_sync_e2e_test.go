@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -181,5 +182,33 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	head := strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "HEAD"))
 	if head == bogusHead {
 		t.Fatal("worktree HEAD was moved onto the bogus updated head")
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier
+// covers the same function's fast-forward-failed note: the mismatch and
+// ancestor checks above are both bypassed (a matching updatedHead and a
+// Fake ancestor check that reports no divergence), but canonical's real
+// checked-out HEAD (still on main, per newLandFixture) carries a genuine
+// local-only commit the pushed feature branch never picked up, so the real
+// `git merge --ff-only` this function issues fails for real.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-fail", "go.mod")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "diverged.txt"), "local only\n")
+	runEngineGit(t, fixture.canonical, "add", "-A")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "local divergent commit")
+
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-fail"}},
+		MergeBaseIsAncestorStrictErrByCase: map[string]error{
+			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-fail": nil,
+		},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-fail", fixture.headSHA)
+	if !strings.Contains(note, "fast-forward failed") {
+		t.Fatalf("note = %q, want it to name the fast-forward failure", note)
 	}
 }

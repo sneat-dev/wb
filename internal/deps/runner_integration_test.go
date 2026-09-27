@@ -9,14 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	fixture := t.TempDir()
 	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
 	// this, a call that passes no root would resolve to the developer's real
@@ -139,7 +137,6 @@ func newManagedGitHubActionsFixture(t *testing.T, canonicalWorkflow string) mana
 	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
 	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
 	// so every caller needs the escape hatch once, here.
-	runnertest.AllowRealProcess(t)
 	root := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
 	seed := filepath.Join(root, "seed")
@@ -228,7 +225,6 @@ func TestDependencyPullRequestBodiesReportValidationAuthorityTruthfully(t *testi
 }
 
 func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	fixture := t.TempDir()
 	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
 	// this, a call that passes no root would resolve to the developer's real
@@ -267,7 +263,6 @@ func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 }
 
 func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	fixture := t.TempDir()
 	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
 	// this, a call that passes no root would resolve to the developer's real

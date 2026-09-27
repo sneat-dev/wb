@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -30,7 +29,6 @@ func orchCovInstallGH(t *testing.T, script string) orchCovGHState {
 	// this fixture's own fake `gh` on PATH, not a real one. One
 	// AllowRealProcess here covers every test that installs its script
 	// through this helper.
-	runnertest.AllowRealProcess(t)
 	state := filepath.Join(t.TempDir(), "state")
 	if err := os.MkdirAll(state, 0o755); err != nil {
 		t.Fatal(err)

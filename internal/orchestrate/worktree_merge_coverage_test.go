@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestOrchCovConservativeWorktreeMergePRRoute(t *testing.T) {
@@ -305,9 +304,8 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 	}
 }
 
-//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovWorktreeMergeCandidateAbsorbedProvesTreeEquality(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	dir := orchCovGitRepo(t)
 	base := strings.TrimSpace(runEngineGit(t, dir, "rev-parse", "HEAD"))
 
@@ -438,9 +436,8 @@ func TestOrchCovCanRefreshWorktreeMergeReceiptRequiresAnAdditiveAdvance(t *testi
 	}
 }
 
-//nolint:paralleltest // calls runnertest.AllowRealProcess, which Go's testing package forbids combined with t.Parallel
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovVerifyWorktreeMergeTargetRefusesUnusableInput(t *testing.T) {
-	runnertest.AllowRealProcess(t)
 	dir := orchCovGitRepo(t)
 	head := strings.TrimSpace(runEngineGit(t, dir, "rev-parse", "HEAD"))
 	if _, err := verifyWorktreeMergeTarget(context.Background(), "acme/app", dir, "  ", time.Minute, 0, 0, 0); err == nil ||

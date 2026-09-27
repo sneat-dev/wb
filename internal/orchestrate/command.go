@@ -30,16 +30,9 @@ import (
 // unmodified inherited environment (matching os/exec.Cmd's own default
 // when Env is nil), which is the right default for a generic runner but
 // not byte-identical to what this specific call site did before migrating
-// (coverage-to-100 rule 1).
-//
-// run.RunOpts reports stdout and stderr separately, unlike the
-// exec.CommandContext().CombinedOutput() this replaced; output concatenates
-// them in that order, the same approximation pr_land_keep.go's buildAt
-// already uses for a non-git-port runner call. Every command this package
-// runs through runCommand writes its meaningful result to only one of the
-// two streams (its argv-derived value to stdout on success, its diagnostic
-// text to stderr on failure), so the concatenation reproduces the same
-// bytes CombinedOutput returned for every existing call site.
+// (coverage-to-100 rule 1). CaptureCombined preserves the former
+// exec.CommandContext().CombinedOutput() ordering when a child writes to
+// both stdout and stderr.
 func runCommand(ctx context.Context, run runner.Runner, timeout time.Duration, retry int, dir, name string, args ...string) (string, int, error) {
 	attempts := 0
 	for {
@@ -49,8 +42,8 @@ func runCommand(ctx context.Context, run runner.Runner, timeout time.Duration, r
 		if timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, timeout)
 		}
-		result, err := run.RunOpts(attemptCtx, dir, runner.RunOptions{Env: console.Env()}, name, args...)
-		output := result.Stdout + result.Stderr
+		result, err := run.RunOpts(attemptCtx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, name, args...)
+		output := result.CombinedOutput
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {

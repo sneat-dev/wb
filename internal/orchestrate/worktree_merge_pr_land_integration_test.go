@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -38,7 +37,6 @@ func installWorktreeMergeEngineGH(t *testing.T, fixture engineFixture, candidate
 	// gitcli/runner adapters and so starts a real process through
 	// task-24's guarded runner exactly as this fixture's own runEngineGit
 	// calls already do outside it.
-	runnertest.AllowRealProcess(t)
 	// The fake GitHub commits directly in the remote (update-branch merges,
 	// "GitHub merges while WB is away"), so the bare remote needs a git
 	// identity of its own: a CI runner has no global one to fall back on.

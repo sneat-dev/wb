@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -40,7 +39,6 @@ func newFetchCacheFixture(t *testing.T) fetchCacheFixture {
 	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
 	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
 	// so every caller needs the escape hatch once, here.
-	runnertest.AllowRealProcess(t)
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

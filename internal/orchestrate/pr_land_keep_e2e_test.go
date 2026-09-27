@@ -18,7 +18,7 @@ import (
 	"testing"
 )
 
-func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
+func TestOrchE2EBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 	t.Parallel()
 	if refusal := buildAt(context.Background(), defaultRunner, t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, []string{"sh", "-c", "exit 0"}); refusal != nil {
 		t.Fatalf("passing build refusal = %+v", refusal)
