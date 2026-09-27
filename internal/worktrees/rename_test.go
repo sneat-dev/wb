@@ -274,6 +274,8 @@ exec "$WB_TEST_RENAME_GIT" "$@"
 // A valid descriptor set must reach the final exec boundary; making that
 // executable non-runnable lets the helper report the failure and flush its
 // pre-exec coverage through the child-test harness.
+//
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestSecureRenameHelperReportsExecFailureWithAuthorizedDescriptors(t *testing.T) {
 	fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
 	defer canonical.close()

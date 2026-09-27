@@ -196,6 +196,7 @@ func TestDirectCIPullRequestMustStillMatchExactLandedHead(t *testing.T) {
 }
 
 func TestDirectCIInputsRejectWorkflowChangesButAllowProductChanges(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()

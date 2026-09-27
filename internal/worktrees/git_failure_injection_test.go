@@ -169,6 +169,7 @@ func TestInjectedGitRunnerKeepsReadOnlyMemoAndCombinedDiagnostics(t *testing.T) 
 }
 
 func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		failCall  int
@@ -191,6 +192,7 @@ func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			projectsRoot := t.TempDir()
 			canonical := filepath.Join(projectsRoot, "acme", "app")
 			if tc.badPath {
@@ -227,6 +229,7 @@ func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
 }
 
 func TestLifecycleInspectionStopsAtInvalidGitState(t *testing.T) {
+	t.Parallel()
 	const head = "0123456789abcdef0123456789abcdef01234567"
 	cases := []struct {
 		name      string
@@ -249,6 +252,7 @@ func TestLifecycleInspectionStopsAtInvalidGitState(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			worktree := filepath.Join(t.TempDir(), "feature")
 			fake := runnertest.New(t)
 			fake.ExpectArgv([]string{"git", "-C", worktree, "branch", "--show-current"},

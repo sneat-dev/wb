@@ -130,6 +130,7 @@ func TestRetireEmptyUnscopedLocalStageDoesNotClaimReplacementRemoval(t *testing.
 }
 
 func TestRetireEmptyUnscopedLocalStageRevalidatesPlannedIdentity(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name   string
 		change func(t *testing.T, root, stage string) string
@@ -158,6 +159,7 @@ func TestRetireEmptyUnscopedLocalStageRevalidatesPlannedIdentity(t *testing.T) {
 		}, "without following links"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			stage := filepath.Join(root, testRetiredStage)
 			if err := os.Mkdir(stage, 0o700); err != nil {
@@ -187,6 +189,7 @@ func TestRetireEmptyUnscopedLocalStageRevalidatesPlannedIdentity(t *testing.T) {
 }
 
 func TestRetireEmptyUnscopedLocalStagePreservesIsolatedStageChangedBeforeRemoval(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stage := filepath.Join(root, testRetiredStage)
 	if err := os.Mkdir(stage, 0o700); err != nil {
