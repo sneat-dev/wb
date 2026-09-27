@@ -143,3 +143,57 @@ func TestDefaultBranchPagesAtDesiredClassifiesObservedSource(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultBranchAutomaticPagesResumeRequiresFreshRemoteProof(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	for _, test := range []struct{ name, mode, want string }{
+		{"no matching receipt", "no record", "no automatic Pages transition record"},
+		{"old ref remains", "old ref", "old source ref still exists"},
+		{"old ref state unknown", "old ref error", "could not prove the old source ref is absent"},
+		{"Pages source unavailable", "Pages error", "could not read Pages source"},
+		{"Pages source malformed", "Pages malformed", "does not prove the automatic transition"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			oldRead := defaultBranchRead
+			t.Cleanup(func() { defaultBranchRead = oldRead })
+			reads := 0
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				reads++
+				switch endpoint {
+				case "repos/acme/app/git/ref/heads/master":
+					if test.mode == "old ref" {
+						return []byte(`{"ref":"refs/heads/master"}`), nil
+					}
+					if test.mode == "old ref error" {
+						return nil, errors.New("HTTP 503")
+					}
+					return nil, errors.New("HTTP 404")
+				case "repos/acme/app/pages":
+					if test.mode == "Pages error" {
+						return nil, errors.New("HTTP 503")
+					}
+					if test.mode == "Pages malformed" {
+						return []byte("{"), nil
+					}
+					return []byte(`{"build_type":"legacy","source":{"branch":"main","path":"/"}}`), nil
+				default:
+					t.Fatalf("unexpected automatic Pages endpoint %q", endpoint)
+					return nil, nil
+				}
+			}
+			previous := defaultBranchRepository{Repository: "acme/app", RepositoryID: 1, ObservedDefault: "master", VerifiedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Disposition: "error", Error: "Pages source changed after planning; WB will not overwrite it", RenameAccepted: true, PagesBefore: &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "prepared", Actions: []string{"renamed master to main", "verified default branch and head"}}
+			if test.mode == "no record" {
+				previous.Repository = "other/app"
+			}
+			prior := &defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{previous}}
+			current := defaultBranchRepository{Repository: "acme/app", RepositoryID: 1, ObservedDefault: "main", Desired: "main", OldHead: sha, Disposition: "compliant"}
+			source, head, reason := defaultBranchPagesAutomaticResume(context.Background(), prior, current)
+			if source != "" || head != "" || !strings.Contains(reason, test.want) {
+				t.Fatalf("automatic resume %q = source=%q head=%q reason=%q reads=%d", test.mode, source, head, reason, reads)
+			}
+			if test.mode == "no record" && reads != 0 {
+				t.Fatalf("unmatched receipt reached remote: %d reads", reads)
+			}
+		})
+	}
+}

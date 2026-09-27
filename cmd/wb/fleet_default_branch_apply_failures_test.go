@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,6 +12,143 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
+
+func TestDefaultBranchCLIRejectsUnsafeArchiveAndPagesFlagCombinations(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	for _, test := range []struct {
+		name, want string
+		args       []string
+	}{
+		{"restore requires apply", "--restore-archive-from requires --apply", []string{"--restore-archive-from", "receipt.json"}},
+		{"restore requires digest", "--restore-archive-sha256", []string{"--apply", "--repo", "acme/app", "--restore-archive-from", "receipt.json"}},
+		{"orphan restore digest", "--restore-archive-sha256 requires", []string{"--restore-archive-sha256", digest}},
+		{"restore excludes migration flags", "requires exactly one --repo", []string{"--apply", "--repo", "acme/app", "--restore-archive-from", "receipt.json", "--restore-archive-sha256", digest, "--branch", "main"}},
+		{"Pages migration excludes archived transition", "--migrate-pages-source does not support archived", []string{"--repo", "acme/app", "--migrate-pages-source", "--temporarily-unarchive"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := newRootCmd()
+			var stdout, stderr bytes.Buffer
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			command.SetArgs(append([]string{"fleet", "default-branch"}, test.args...))
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.want) || stdout.Len() != 0 {
+				t.Fatalf("unsafe args %q: stdout=%q stderr=%q err=%v, want %q", test.args, stdout.String(), stderr.String(), err, test.want)
+			}
+		})
+	}
+}
+
+func TestRunDefaultBranchRejectsInvalidInputsBeforeRemoteInspection(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		prepare    func(*testing.T) (*invocation, defaultBranchOptions)
+	}{
+		{
+			name: "invalid policy", want: "parse WB config",
+			prepare: func(t *testing.T) (*invocation, defaultBranchOptions) {
+				path := filepath.Join(t.TempDir(), "policy.yaml")
+				if err := os.WriteFile(path, []byte("default_branch: ["), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				defaultBranchConfigPath = func() string { return path }
+				return &invocation{}, defaultBranchOptions{repositories: []string{"acme/app"}, parallel: 1}
+			},
+		},
+		{
+			name: "invalid recovery receipt", want: "read --reconcile-from report",
+			prepare: func(t *testing.T) (*invocation, defaultBranchOptions) {
+				return &invocation{}, defaultBranchOptions{reconcileFrom: filepath.Join(t.TempDir(), "missing.json"), reconcileSHA256: strings.Repeat("a", 64), repositories: []string{"acme/app"}, parallel: 1}
+			},
+		},
+		{
+			name: "invalid repository scope", want: "invalid --repo",
+			prepare: func(t *testing.T) (*invocation, defaultBranchOptions) {
+				return &invocation{}, defaultBranchOptions{repositories: []string{"not-a-repository"}, parallel: 1}
+			},
+		},
+		{
+			name: "unreadable local clone root", want: "scan local canonical clones",
+			prepare: func(t *testing.T) (*invocation, defaultBranchOptions) {
+				path := filepath.Join(t.TempDir(), "not-a-directory")
+				if err := os.WriteFile(path, []byte("file"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return &invocation{projectsRoot: path}, defaultBranchOptions{repositories: []string{"acme/app"}, parallel: 1}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			oldConfig, oldRead := defaultBranchConfigPath, defaultBranchRead
+			t.Cleanup(func() { defaultBranchConfigPath, defaultBranchRead = oldConfig, oldRead })
+			defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+			defaultBranchRead = func(context.Context, string) ([]byte, error) {
+				t.Fatal("remote inspection reached after invalid preflight input")
+				return nil, nil
+			}
+			inv, options := test.prepare(t)
+			report, err := runDefaultBranch(context.Background(), inv, options, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), test.want) || len(report.Repositories) != 0 {
+				t.Fatalf("invalid %s: report=%+v err=%v, want %q", test.name, report, err, test.want)
+			}
+		})
+	}
+}
+
+func TestDefaultBranchCLIReportsRemoteFailureAndWriterFailure(t *testing.T) {
+	oldConfig, oldRead := defaultBranchConfigPath, defaultBranchRead
+	t.Cleanup(func() { defaultBranchConfigPath, defaultBranchRead = oldConfig, oldRead })
+	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+	reads := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		reads++
+		if endpoint != "repos/acme/app" {
+			t.Fatalf("unexpected remote read %q", endpoint)
+		}
+		return nil, errors.New("injected metadata failure")
+	}
+	for _, test := range []struct {
+		name string
+		args []string
+		out  *bytes.Buffer
+		want string
+	}{
+		{name: "text", out: new(bytes.Buffer), want: "default-branch findings remain"},
+		{name: "json", args: []string{"--json"}, out: new(bytes.Buffer), want: "default-branch findings remain"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := newRootCmd()
+			command.SetOut(test.out)
+			command.SetErr(&bytes.Buffer{})
+			command.SetArgs(append([]string{"--projects-root", t.TempDir(), "fleet", "default-branch", "--repo", "acme/app", "--branch", "main", "--parallel", "1"}, test.args...))
+			err := command.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(test.out.String(), "acme/app") || !strings.Contains(test.out.String(), "injected metadata failure") {
+				t.Fatalf("command output=%q err=%v, want report and %q", test.out.String(), err, test.want)
+			}
+		})
+	}
+	if reads != 2 {
+		t.Fatalf("remote metadata reads=%d, want one per command", reads)
+	}
+	for _, format := range []string{"text", "json"} {
+		t.Run("writer failure "+format, func(t *testing.T) {
+			command := newRootCmd()
+			writer := &defaultBranchFailWriter{failAt: 1}
+			command.SetOut(writer)
+			command.SetErr(&bytes.Buffer{})
+			args := []string{"--projects-root", t.TempDir(), "fleet", "default-branch", "--repo", "acme/app", "--branch", "main", "--parallel", "1"}
+			if format == "json" {
+				args = append(args, "--json")
+			}
+			command.SetArgs(args)
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "output unavailable") || writer.writes != 1 {
+				t.Fatalf("writer failure: writes=%d err=%v", writer.writes, err)
+			}
+		})
+	}
+	if reads != 4 {
+		t.Fatalf("remote metadata reads=%d, want one per command", reads)
+	}
+}
 
 func TestDefaultBranchApplyRefusesFreshComplianceAndInterruptedVisibility(t *testing.T) {
 	for _, test := range []struct {
