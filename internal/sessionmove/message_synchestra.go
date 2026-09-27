@@ -37,10 +37,7 @@ func (s Store) SaveOutgoingMessageSynchestraDispatchUnderLock(lock *ExecutionLoc
 	if err := validateMessageSynchestraDispatch(identity, requestDigest, state, route); err != nil {
 		return MessageSynchestraDispatch{}, false, err
 	}
-	raw, err := marshalJSON(identity)
-	if err != nil {
-		return MessageSynchestraDispatch{}, false, err
-	}
+	raw, _ := marshalJSON(identity)
 	created, err := publishImmutableAt(directory, messageSynchestraDispatchFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessageSynchestraDispatch{}, false, err

@@ -65,10 +65,7 @@ func (s Store) SaveSynchestraDispatch(identity SynchestraDispatch) (SynchestraDi
 	if err := validateSynchestraDispatch(identity, request, digest, route); err != nil {
 		return SynchestraDispatch{}, false, err
 	}
-	raw, err := marshalJSON(identity)
-	if err != nil {
-		return SynchestraDispatch{}, false, err
-	}
+	raw, _ := marshalJSON(identity)
 	if len(raw) > maxSynchestraDispatchBytes {
 		return SynchestraDispatch{}, false, fmt.Errorf("synchestra dispatch identity exceeds %d bytes", maxSynchestraDispatchBytes)
 	}

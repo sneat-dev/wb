@@ -189,10 +189,7 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 	if err != nil {
 		return state, err
 	}
-	canonical, err := EncodeMessage(message)
-	if err != nil {
-		return state, err
-	}
+	canonical, _ := EncodeMessage(message)
 	if !bytes.Equal(raw, canonical) {
 		return state, fmt.Errorf("session message must use WB's canonical JSON encoding")
 	}
@@ -236,10 +233,7 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 		SchemaVersion: MessageRecordSchemaVersion, Direction: direction, MessageID: message.MessageID,
 		MessageDigest: DigestBytes(raw), HandoffID: handoffID, RecordedAt: recordedAt.UTC(),
 	}
-	recordRaw, err := marshalJSON(record)
-	if err != nil {
-		return state, err
-	}
+	recordRaw, _ := marshalJSON(record)
 	if _, err := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); err != nil {
 		return state, fmt.Errorf("persist session message record: %w", err)
 	}
@@ -304,10 +298,7 @@ func (s Store) ResumeOutgoingMessageUnderLock(lock *ExecutionLock, handoffID str
 			SchemaVersion: MessageRecordSchemaVersion, Direction: MessageDirectionOutgoing,
 			MessageID: message.MessageID, MessageDigest: DigestBytes(raw), HandoffID: handoffID, RecordedAt: message.SentAt.UTC(),
 		}
-		recordRaw, marshalErr := marshalJSON(record)
-		if marshalErr != nil {
-			return MessageState{}, marshalErr
-		}
+		recordRaw, _ := marshalJSON(record)
 		if _, publishErr := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); publishErr != nil {
 			return MessageState{}, fmt.Errorf("repair outgoing session message record: %w", publishErr)
 		}
@@ -368,10 +359,7 @@ func (s Store) SaveIncomingPasteIntentUnderLock(lock *ExecutionLock, handoffID s
 	if err := validatePasteIntent(intent, state); err != nil {
 		return MessagePasteIntent{}, false, err
 	}
-	raw, err := marshalJSON(intent)
-	if err != nil {
-		return MessagePasteIntent{}, false, err
-	}
+	raw, _ := marshalJSON(intent)
 	created, err := publishImmutableAt(directory, messageIntentFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessagePasteIntent{}, false, err
@@ -429,10 +417,7 @@ func (s Store) saveMessageReceiptUnderLock(lock *ExecutionLock, handoffID string
 			return MessageReceipt{}, false, fmt.Errorf("%w: incoming message receipt does not match its durable record and paste intent", ErrHandoffConflict)
 		}
 	}
-	raw, err := EncodeMessageReceipt(receipt)
-	if err != nil {
-		return MessageReceipt{}, false, err
-	}
+	raw, _ := EncodeMessageReceipt(receipt)
 	created, err := publishImmutableAt(directory, messageReceiptFileName, raw, 0o600, nil)
 	if err != nil {
 		return MessageReceipt{}, false, err

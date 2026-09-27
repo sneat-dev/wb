@@ -204,10 +204,7 @@ func saveReceiptAt(handoff *os.File, request Request, digest Digest, receipt Rec
 	if err := ValidateReceiptForRequest(receipt, request, digest); err != nil {
 		return Receipt{}, false, err
 	}
-	raw, err := EncodeReceipt(receipt)
-	if err != nil {
-		return Receipt{}, false, err
-	}
+	raw, _ := EncodeReceipt(receipt)
 	if len(raw) > maxReceiptBytes {
 		return Receipt{}, false, fmt.Errorf("session move receipt exceeds %d bytes", maxReceiptBytes)
 	}
@@ -298,10 +295,7 @@ func appendEventAt(handoff *os.File, handoffID string, digest Digest, event Hand
 			return HandoffEvent{}, err
 		}
 		event.Sequence = next
-		raw, err := marshalJSON(event)
-		if err != nil {
-			return HandoffEvent{}, err
-		}
+		raw, _ := marshalJSON(event)
 		if len(raw) > maxEventBytes {
 			return HandoffEvent{}, fmt.Errorf("handoff event exceeds %d bytes", maxEventBytes)
 		}
