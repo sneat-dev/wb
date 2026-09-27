@@ -646,14 +646,32 @@ func readImmutableAt(directory *os.File, name string, limit int64, label string)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-"+strings.ReplaceAll(label, " ", "-"))
 	defer func() { _ = file.Close() }()
+	return readImmutableFile(file, limit, label, immutableReadOps{
+		fstat: unix.Fstat,
+		readAll: func(reader io.Reader) ([]byte, error) {
+			return io.ReadAll(reader)
+		},
+		seek: file.Seek,
+	})
+}
+
+// immutableReadOps keeps the verifier's observable filesystem failures
+// deterministic in tests. Production always uses the direct descriptor calls.
+type immutableReadOps struct {
+	fstat   func(int, *unix.Stat_t) error
+	readAll func(io.Reader) ([]byte, error)
+	seek    func(int64, int) (int64, error)
+}
+
+func readImmutableFile(file *os.File, limit int64, label string, ops immutableReadOps) ([]byte, error) {
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	if err := ops.fstat(int(file.Fd()), &stat); err != nil {
 		return nil, fmt.Errorf("inspect %s: %w", label, err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Nlink != 1 || stat.Size < 0 || stat.Size > limit {
 		return nil, fmt.Errorf("%s is not one single-link bounded regular mode 0600 file", label)
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	raw, err := ops.readAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
@@ -663,15 +681,15 @@ func readImmutableAt(directory *os.File, name string, limit int64, label string)
 	if int64(len(raw)) != stat.Size {
 		return nil, fmt.Errorf("%s size changed while it was read", label)
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if _, err := ops.seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewind %s: %w", label, err)
 	}
-	verification, err := io.ReadAll(io.LimitReader(file, limit+1))
+	verification, err := ops.readAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("verify %s: %w", label, err)
 	}
 	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil {
+	if err := ops.fstat(int(file.Fd()), &after); err != nil {
 		return nil, fmt.Errorf("reinspect %s: %w", label, err)
 	}
 	if after.Dev != stat.Dev || after.Ino != stat.Ino || after.Mode != stat.Mode || after.Nlink != stat.Nlink ||
@@ -695,6 +713,10 @@ func readImmutableAt(directory *os.File, name string, limit int64, label string)
 // tests match on, and the same-inode identity verification against a
 // racing publisher.
 func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.FileMode, inj *filewrite.Injector) (bool, error) {
+	return publishImmutableAtWithRandom(directory, name, raw, mode, inj, rand.Read)
+}
+
+func publishImmutableAtWithRandom(directory *os.File, name string, raw []byte, mode os.FileMode, inj *filewrite.Injector, read func([]byte) (int, error)) (bool, error) {
 	if directory == nil {
 		return false, fmt.Errorf("immutable publication directory authority is required")
 	}
@@ -702,7 +724,7 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 		return false, fmt.Errorf("immutable publication name %q must be one base name", name)
 	}
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
+	if _, err := read(random[:]); err != nil {
 		return false, fmt.Errorf("generate immutable temporary name: %w", err)
 	}
 	temporaryName := ".pending-" + hex.EncodeToString(random[:])

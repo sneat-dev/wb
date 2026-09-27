@@ -1,10 +1,14 @@
 package sessionmove
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestSmCovReadAdmittedRequestFileRejectsClosedAndNonRegularDescriptors(t *testing.T) {
@@ -134,5 +138,115 @@ func TestSmCovOpenRootReportsCreateFailureBelowARegularFile(t *testing.T) {
 		t.Fatal("openRoot created a directory below a regular file")
 	} else if !strings.Contains(err.Error(), "create handoff store root") {
 		t.Fatalf("openRoot create failure = %v", err)
+	}
+}
+
+func TestSmCovReadImmutableFileReportsDeterministicIOFailures(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "artifact")
+	if err := os.WriteFile(path, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		t.Fatal(err)
+	}
+	base := func() immutableReadOps {
+		return immutableReadOps{
+			fstat:   func(_ int, got *unix.Stat_t) error { *got = stat; return nil },
+			readAll: func(reader io.Reader) ([]byte, error) { return io.ReadAll(reader) },
+			seek:    file.Seek,
+		}
+	}
+	tests := []struct {
+		name string
+		ops  func() immutableReadOps
+		want string
+	}{
+		{"initial stat", func() immutableReadOps {
+			ops := base()
+			ops.fstat = func(int, *unix.Stat_t) error { return errors.New("fstat failed") }
+			return ops
+		}, "inspect artifact"},
+		{"initial read", func() immutableReadOps {
+			ops := base()
+			ops.readAll = func(io.Reader) ([]byte, error) { return nil, errors.New("read failed") }
+			return ops
+		}, "read artifact"},
+		{"rewind", func() immutableReadOps {
+			ops := base()
+			ops.seek = func(int64, int) (int64, error) { return 0, errors.New("seek failed") }
+			return ops
+		}, "rewind artifact"},
+		{"verification read", func() immutableReadOps {
+			ops := base()
+			calls := 0
+			ops.readAll = func(reader io.Reader) ([]byte, error) {
+				calls++
+				if calls == 2 {
+					return nil, errors.New("verify failed")
+				}
+				return io.ReadAll(reader)
+			}
+			return ops
+		}, "verify artifact"},
+		{"reinspect", func() immutableReadOps {
+			ops := base()
+			calls := 0
+			ops.fstat = func(_ int, got *unix.Stat_t) error {
+				calls++
+				if calls == 2 {
+					return errors.New("reinspect failed")
+				}
+				*got = stat
+				return nil
+			}
+			return ops
+		}, "reinspect artifact"},
+		{"changed", func() immutableReadOps {
+			ops := base()
+			calls := 0
+			ops.fstat = func(_ int, got *unix.Stat_t) error {
+				calls++
+				*got = stat
+				if calls == 2 {
+					got.Size++
+				}
+				return nil
+			}
+			return ops
+		}, "changed while it was verified"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := file.Seek(0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readImmutableFile(file, 32, "artifact", test.ops()); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("readImmutableFile error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSmCovPublishImmutableReportsEntropyFailure(t *testing.T) {
+	t.Parallel()
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	if _, err := publishImmutableAtWithRandom(directory, "artifact", []byte("body"), 0o600, nil, func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	}); err == nil || !strings.Contains(err.Error(), "entropy unavailable") {
+		t.Fatalf("publishImmutableAtWithRandom error = %v", err)
 	}
 }
