@@ -150,3 +150,25 @@ func TestCloneMoveRegistrationAndIntentSelection(t *testing.T) {
 		t.Fatalf("unchanged/unclaimed relocation intents = (%#v, %v)", entries, err)
 	}
 }
+
+func TestCloneMoveRefusesExistingDestinationWithoutMovingSource(t *testing.T) {
+	fixture := newGitFixture(t)
+	destination := filepath.Join(t.TempDir(), "destination")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanCloneMove(context.Background(), fixture.canonical, destination)
+	if err != nil || plan.Source != fixture.canonical || plan.Destination != destination {
+		t.Fatalf("clone move plan = (%#v, %v)", plan, err)
+	}
+	_, err = ApplyCloneMove(context.Background(), fixture.canonical, destination)
+	if err == nil || !strings.Contains(err.Error(), "move canonical clone") {
+		t.Fatalf("existing destination error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.canonical, ".git")); err != nil {
+		t.Fatalf("source clone was changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("existing destination was overwritten: %v", err)
+	}
+}

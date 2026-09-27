@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,5 +210,69 @@ func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	}
 	if !gitRefExists(fixture.canonical, "refs/heads/feature/old") {
 		t.Fatal("source changed despite destination collision")
+	}
+}
+
+func TestBranchQuarantineManifestRefusesFlattenedDestinationCollision(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/a-b")
+	gitTest(t, fixture.canonical, "branch", "feature/a/b")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "main")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manifest := BranchQuarantineManifest{Entries: []BranchQuarantineRequest{
+		{Repository: "acme/app", Ref: "feature/a-b", SHA: sha, Reason: "old"},
+		{Repository: "acme/app", Ref: "feature/a/b", SHA: sha, Reason: "old"},
+	}}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := BranchQuarantine(context.Background(), BranchQuarantineOptions{
+		ProjectsRoot: fixture.projectsRoot, Manifest: path,
+		Now: func() time.Time { return time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC) },
+	})
+	if err != nil || len(outcome.Results) != 2 {
+		t.Fatalf("collision plan = (%#v, %v)", outcome, err)
+	}
+	for _, result := range outcome.Results {
+		if result.Outcome != "refused" || !strings.Contains(result.Error, "destinations collide") {
+			t.Fatalf("colliding result = %#v", result)
+		}
+		if !gitRefExists(fixture.canonical, "refs/heads/"+result.Ref) {
+			t.Fatalf("source %s changed during planning", result.Ref)
+		}
+	}
+}
+
+func TestBranchQuarantineRejectsReusedReportDirectoryBeforeChangingRef(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	reportDir := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(reportDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := BranchQuarantine(context.Background(), BranchQuarantineOptions{
+		ProjectsRoot: fixture.projectsRoot, Repository: "acme/app", Branch: "feature/old", SHA: sha,
+		Reason: "old", Apply: true, ReportDir: reportDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserve exclusive quarantine report directory") {
+		t.Fatalf("reused report directory outcome = (%#v, %v)", outcome, err)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/feature/old") {
+		t.Fatal("source changed before report directory was reserved")
 	}
 }
