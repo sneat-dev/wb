@@ -101,6 +101,51 @@ func TestLogVerbsSteerCheckpointRefreshFinalize(t *testing.T) {
 	}
 }
 
+func TestLogRefreshResolvesEarlierFetchFailureWithoutHidingIntegrateConflict(t *testing.T) {
+	now := time.Now().UTC()
+	failure := LocalWorkLogEvent{Version: 1, Seq: 0, ID: "failed-fetch", Type: LocalEventRefreshNeed, At: now, Conflict: "fetch_failed", Target: &LocalTargetEvidence{Ref: "origin/main"}}
+	success := LocalWorkLogEvent{Version: 1, Seq: 1, ID: "fetched-target", Type: LocalEventRefresh, At: now.Add(time.Second), Target: &LocalTargetEvidence{Ref: "origin/main", SHA: strings.Repeat("a", 40)}}
+	projection, err := rebuildLocalProjection([]LocalWorkLogEvent{failure, success})
+	if err != nil || projection.Conflict != "" || projection.LastTarget == nil || projection.LastTarget.SHA != success.Target.SHA {
+		t.Fatalf("successful refresh left stale fetch failure: projection=%#v err=%v", projection, err)
+	}
+	projection, err = rebuildLocalProjection([]LocalWorkLogEvent{success, failure})
+	if err != nil || projection.Conflict != "fetch_failed" {
+		t.Fatalf("latest fetch failure disappeared: projection=%#v err=%v", projection, err)
+	}
+	integration := LocalWorkLogEvent{Version: 1, Seq: 1, ID: "merge-conflict", Type: LocalEventIntegrate, At: now.Add(time.Second), Conflict: "integrate_conflict", Target: success.Target}
+	success.Seq = 2
+	projection, err = rebuildLocalProjection([]LocalWorkLogEvent{failure, integration, success})
+	if err != nil || projection.Conflict != "integrate_conflict" {
+		t.Fatalf("successful refresh hid merge conflict: projection=%#v err=%v", projection, err)
+	}
+}
+
+func TestLogIntegrateAfterRecoveredFetchFailure(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "log-fetch-recovered", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if _, _, err := appendLocalEvent(worktree, LocalWorkLogEvent{Type: LocalEventRefreshNeed, Conflict: "fetch_failed", Target: &LocalTargetEvidence{Ref: "origin/main"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LogCheckpoint(context.Background(), LogCheckpointOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Message: "clean checkpoint"}); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := LogRefresh(context.Background(), LogRefreshOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main"})
+	if err != nil || refreshed.Projection == nil || refreshed.Projection.Conflict != "" || refreshed.Projection.LastTarget == nil || refreshed.Projection.LastTarget.SHA == "" {
+		t.Fatalf("recovered refresh = %#v, err=%v", refreshed, err)
+	}
+	integrated, err := LogIntegrate(context.Background(), LogIntegrateOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main", Strategy: "merge"})
+	if err != nil || !integrated.Applied || integrated.Projection == nil || integrated.Projection.Conflict != "" {
+		t.Fatalf("integrate after recovered fetch = %#v, err=%v", integrated, err)
+	}
+}
+
 // TestLogFinalizeReportRecordsTerminalEvidenceAndListFilters proves the
 // wb worktree log finalize --report journey at the library level: the report
 // body lands under WB_HOME (never inside the worktree/source Git), the sealed
