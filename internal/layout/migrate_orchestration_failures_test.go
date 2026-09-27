@@ -79,12 +79,13 @@ func TestMigrateApplyManifestFailuresPreserveOutcome(t *testing.T) {
 			case "clone-write", "relocation-write":
 				deps.writeManifest = func(string, *migrationManifest) error { return boom }
 			}
-			if mode == "relocation-write" {
+			switch mode {
+			case "relocation-write":
 				deps.relocate = func(_ context.Context, _ string, _ []MigrateClone, _ bool, _ time.Time, persist func(*MigrateClone) error, _ migrateInclude) error {
 					clone := &MigrateClone{Repository: "acme/repo"}
 					return persist(clone)
 				}
-			} else if mode == "relocation-after-clone" {
+			case "relocation-after-clone":
 				deps.relocate = func(context.Context, string, []MigrateClone, bool, time.Time, func(*MigrateClone) error, migrateInclude) error {
 					return boom
 				}
