@@ -37,7 +37,9 @@ func failingMarshal() *storeOps {
 }
 
 func TestCourierStoresPropagatePublicationPipelineErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("route marshal", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		store.ops = failingMarshal()
 		route := Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -48,6 +50,7 @@ func TestCourierStoresPropagatePublicationPipelineErrors(t *testing.T) {
 	})
 	for _, failure := range []string{"route replay read", "synchestra marshal", "synchestra publish", "synchestra read"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, _ := admittedRouteRequest(t, false)
 			route := Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
 				Courier: CourierSynchestra, Synchestra: &SynchestraConfig{Runner: "runner-1"}}
@@ -79,8 +82,10 @@ func TestCourierStoresPropagatePublicationPipelineErrors(t *testing.T) {
 }
 
 func TestMessageStoresPropagatePublicationPipelineErrors(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"payload publish", "payload read", "record publish"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, false, time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC))
 			switch failure {
 			case "payload publish":
@@ -98,6 +103,7 @@ func TestMessageStoresPropagatePublicationPipelineErrors(t *testing.T) {
 	}
 	for _, failure := range []string{"intent publish", "intent read", "receipt publish", "receipt read"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, true, time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC))
 			intent := fixture.smCovMsgDefaultIntent()
 			switch failure {
@@ -132,8 +138,10 @@ func TestMessageStoresPropagatePublicationPipelineErrors(t *testing.T) {
 }
 
 func TestMessageSynchestraStorePropagatesPublicationPipelineErrors(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"marshal", "publish", "read"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 			t.Cleanup(func() { _ = lock.Close() })
 			identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -153,8 +161,10 @@ func TestMessageSynchestraStorePropagatesPublicationPipelineErrors(t *testing.T)
 }
 
 func TestSuccessorAddressStorePropagatesPublicationPipelineErrors(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"marshal", "publish", "read", "retain root", "load retain root", "durable encode", "supplied encode"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, _ := admittedRouteRequest(t, false)
 			route := Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
 				Courier: CourierSynchestra, Synchestra: &SynchestraConfig{Runner: "runner-1"}}
@@ -216,8 +226,10 @@ func TestSuccessorAddressStorePropagatesPublicationPipelineErrors(t *testing.T) 
 }
 
 func TestOutgoingMessageRepairPropagatesEncodingAndPublishFailures(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"marshal", "publish"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 			path := filepath.Join(fixture.smCovMsgEntryDir(MessageDirectionOutgoing, fixture.message.MessageID), messagePayloadFileName)
 			smCovMsgWrite(t, path, fixture.messageRaw, 0o600)
@@ -253,8 +265,10 @@ func TestSuccessorAddressValidationRefusesInvalidNestedCourier(t *testing.T) {
 }
 
 func TestRetainedRequestRaceRefusesChangedDurableBytes(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"before retain validation", "before retain changed", "readmit malformed", "readmit changed"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovNewLockFixture(t)
 			lock := fixture.smCovAcquire(t)
 			t.Cleanup(func() { _ = lock.Close() })
@@ -293,7 +307,9 @@ func TestRetainedRequestRaceRefusesChangedDurableBytes(t *testing.T) {
 }
 
 func TestReceiptAndEventPublishBoundaryPropagatesRaceAndWriteFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("receipt unlinked after publication", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		handoff, err := fixture.store.openHandoff(fixture.request.HandoffID, false)
 		if err != nil {
@@ -315,6 +331,7 @@ func TestReceiptAndEventPublishBoundaryPropagatesRaceAndWriteFailures(t *testing
 		}
 	})
 	t.Run("event publisher failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		handoff, err := fixture.store.openHandoff(fixture.request.HandoffID, false)
 		if err != nil {
@@ -330,8 +347,10 @@ func TestReceiptAndEventPublishBoundaryPropagatesRaceAndWriteFailures(t *testing
 }
 
 func TestPendingPublicationRepairPropagatesEachFilesystemFailure(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"initial stat", "scan open", "directory read", "pending unlink", "directory sync", "final stat"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			path := t.TempDir()
 			finalPath := filepath.Join(path, "artifact")
 			if err := os.WriteFile(finalPath, []byte("exact"), 0o600); err != nil {
@@ -385,8 +404,10 @@ func TestPendingPublicationRepairPropagatesEachFilesystemFailure(t *testing.T) {
 }
 
 func TestImmutablePublisherReportsPublishedDescriptorFailures(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"fstat", "close"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			directory, err := os.Open(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -415,7 +436,9 @@ func TestImmutablePublisherReportsPublishedDescriptorFailures(t *testing.T) {
 }
 
 func TestLocalResolversAndCanonicalEncoderPropagateFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("execution lock root resolution", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock, err := fixture.store.acquireExecutionLockWithDeps(context.Background(), fixture.request.HandoffID, fixture.digest,
 			unix.Fchmod, unix.Flock, unix.Fstat, func(string) (string, error) { return "", errStoreStep })
@@ -428,6 +451,7 @@ func TestLocalResolversAndCanonicalEncoderPropagateFailures(t *testing.T) {
 		}
 	})
 	t.Run("store root resolution", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		root, err := store.openRootWithAbs(false, func(string) (string, error) { return "", errStoreStep })
 		if root != nil {
@@ -439,6 +463,7 @@ func TestLocalResolversAndCanonicalEncoderPropagateFailures(t *testing.T) {
 		}
 	})
 	t.Run("canonical message encoder", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC))
 		fixture.store.ops = &storeOps{encodeMessage: func(Message) ([]byte, error) { return nil, errStoreStep }}
 		if _, err := fixture.store.AdmitIncomingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.incomingRecordedAt); !errors.Is(err, errStoreStep) {
