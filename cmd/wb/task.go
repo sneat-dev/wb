@@ -117,20 +117,21 @@ func newTaskOffloadCmdWithDeps(inv *invocation, deps taskOffloadDependencies, pa
 			if err != nil {
 				return err
 			}
-			workLog, err := worktrees.PrepareWorkLogOptions(inv.projectsRoot, args[0], worktrees.WorkLogOptions{
+			workLog := worktrees.WorkLogOptions{
 				OriginalPrompt:        originalPrompt,
 				RequireOriginalPrompt: true,
 				TaskSummary:           "offload " + args[0],
 				Model:                 "unknown",
-			})
-			if err != nil {
-				return err
 			}
 			if originalPrompt == "-" {
 				workLog, err = workLog.WithOriginalPromptFromStdin(body)
 				if err != nil {
 					return err
 				}
+			}
+			workLog, err = worktrees.PrepareWorkLogOptions(inv.projectsRoot, args[0], workLog)
+			if err != nil {
+				return err
 			}
 			results, err := deps.create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot: inv.projectsRoot, Operation: args[0], WorkLog: workLog, SessionRequired: true,
