@@ -15,6 +15,7 @@ func withCanonicalGitInterceptor(ctx context.Context, intercept canonicalGitInte
 	return context.WithValue(ctx, canonicalGitInterceptorKey{}, intercept)
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestCreateRefusesCanonicalGitFailuresBeforePublication(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -38,6 +39,7 @@ func TestCreateRefusesCanonicalGitFailuresBeforePublication(t *testing.T) {
 		}},
 	}
 	for _, tc := range cases {
+		//nolint:paralleltest // newGitFixture calls t.Setenv inside each isolated subtest
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newGitFixture(t)
 			configureFixtureSharedWorktrees(t, fixture)
@@ -63,6 +65,7 @@ func TestCreateRefusesCanonicalGitFailuresBeforePublication(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestCanonicalGitInterceptorRechecksDescriptorsAfterInjectedCall(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonical, err := openCanonicalRepository(fixture.canonical)
@@ -82,6 +85,7 @@ func TestCanonicalGitInterceptorRechecksDescriptorsAfterInjectedCall(t *testing.
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestCanonicalGitInterceptorCannotBypassInitialAuthorization(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonical, err := openCanonicalRepository(fixture.canonical)

@@ -136,6 +136,7 @@ func TestRelocateCheckoutRefusesWhenTaskLockHeld(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestRelocateCheckoutRefusesUnclaimedAndBusyCheckouts(t *testing.T) {
 	fixture := newGitFixture(t)
 	unmanaged := filepath.Join(fixture.projectsRoot, "unmanaged-relocation")
@@ -174,6 +175,7 @@ func TestRelocateCheckoutRefusesUnclaimedAndBusyCheckouts(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestRelocateCheckoutPlanKeepsSourceAndWritesNoReceipt(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{

@@ -10,6 +10,7 @@ import (
 )
 
 func TestMigrationFailureIncludesRelocationOutcome(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"skipped", "failed"} {
 		report := MigrateReport{Clones: []MigrateClone{{Status: "done", Relocations: []MigrateRelocation{{Status: status}}}}}
 		if !MigrateFailed(report) {
@@ -19,6 +20,7 @@ func TestMigrationFailureIncludesRelocationOutcome(t *testing.T) {
 }
 
 func TestMigrationManifestHelpersPreservePartialOutcome(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	manifest := &migrationManifest{Clones: []manifestClone{
 		{Repository: "one/a", Source: "/legacy/a", Destination: "/host/a"},
@@ -40,6 +42,7 @@ func TestMigrationManifestHelpersPreservePartialOutcome(t *testing.T) {
 }
 
 func TestMigrationManifestReadAndWriteErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "manifest.json")
 	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
@@ -63,6 +66,7 @@ func TestMigrationManifestReadAndWriteErrors(t *testing.T) {
 }
 
 func TestMigrationUndoPlansAndReportsManifestStates(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	id := "20260927T120000Z-test"
 	path := filepath.Join(root, ".wb", migrationsDirName, id, "manifest.json")
@@ -92,6 +96,7 @@ func TestMigrationUndoPlansAndReportsManifestStates(t *testing.T) {
 }
 
 func TestMigrationUndoRefusesChangedCloneState(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	id := "20260927T120000Z-refusal"
 	path := filepath.Join(root, ".wb", migrationsDirName, id, "manifest.json")
@@ -114,6 +119,7 @@ func TestMigrationUndoRefusesChangedCloneState(t *testing.T) {
 }
 
 func TestMigrationUndoLeavesCloneWhenRelocationCannotReverse(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	id := "20260927T120000Z-relocation-refusal"
 	path := filepath.Join(root, ".wb", migrationsDirName, id, "manifest.json")
@@ -147,6 +153,7 @@ func TestMigrationUndoLeavesCloneWhenRelocationCannotReverse(t *testing.T) {
 }
 
 func TestMigrationIDRejectsEmptyAndTraversalSegments(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{"", ".", "..", "a/b", `a\b`} {
 		if err := validateMigrationID(id); err == nil {
 			t.Errorf("id %q unexpectedly accepted", id)
@@ -155,6 +162,7 @@ func TestMigrationIDRejectsEmptyAndTraversalSegments(t *testing.T) {
 }
 
 func TestEmptyRelocationDirectoryCleanupStopsAtNonemptyTask(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, ".worktrees", "task")
 	destination := filepath.Join(taskDir, "github.com", "acme", "repo")
@@ -173,6 +181,7 @@ func TestEmptyRelocationDirectoryCleanupStopsAtNonemptyTask(t *testing.T) {
 }
 
 func TestRemoveEmptyLegacyOwnerReportsInspectionAndNonemptyDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if removed, reason := removeEmptyLegacyOwner(filepath.Join(root, "missing")); removed || !strings.Contains(reason, "cannot inspect") {
 		t.Fatalf("missing owner = (%v, %q)", removed, reason)

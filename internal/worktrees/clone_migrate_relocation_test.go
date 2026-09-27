@@ -96,6 +96,7 @@ func TestCloneMoveRelocationLetsClaimResolveAfterMove(t *testing.T) {
 }
 
 func TestReconcileClonePlacementRepairsManuallyMovedNestedWorktree(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	legacy := filepath.Join(projectsRoot, "acme", "app")
 	if err := os.MkdirAll(legacy, 0o755); err != nil {
