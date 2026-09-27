@@ -896,7 +896,7 @@ var repairPendingLinkAtBeforeOpenPending = func(*os.File, string) {}
 
 func repairPendingLinkAt(directory *os.File, finalName string) error {
 	return repairPendingLinkAtWithOps(directory, finalName, repairOps{
-		open: unix.Openat, fstat: unix.Fstat,
+		open: openatWithIntFlags, fstat: unix.Fstat,
 		readDir: func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) },
 		unlink:  unix.Unlinkat, fsync: unix.Fsync,
 	})

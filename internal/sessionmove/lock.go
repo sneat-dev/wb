@@ -297,7 +297,7 @@ func (s Store) acquireExecutionLockWithDeps(ctx context.Context, handoffID strin
 // exclusively gives every loser an unambiguous signal to reopen the winner's
 // inode; WB never unlinks this file.
 func openExecutionLockAt(handoffFD int) (int, error) {
-	return openExecutionLockAtWithOpen(handoffFD, unix.Openat)
+	return openExecutionLockAtWithOpen(handoffFD, openatWithIntFlags)
 }
 
 func openExecutionLockAtWithOpen(handoffFD int, openat func(int, string, int, uint32) (int, error)) (int, error) {

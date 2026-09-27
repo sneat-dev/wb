@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 func TestSmCovReadAdmittedRequestFileRejectsClosedAndNonRegularDescriptors(t *testing.T) {
