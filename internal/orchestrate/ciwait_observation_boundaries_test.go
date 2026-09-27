@@ -202,18 +202,22 @@ func TestExactCommitWaitNamesChecksThatCannotYetAuthorizeLanding(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
-		change func(*commitChecksWaitOps)
+		change func(*PullRequestWaitOptions, *commitChecksWaitOps)
 		want   string
 	}{
-		{"required producer absent", func(ops *commitChecksWaitOps) {
+		{"required producer absent", func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
 			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
 				return []RequiredRemoteCheck{{Name: "build"}, {Name: "security"}}, "ruleset", "strict", "", ""
 			}
 		}, "security"},
-		{"no checks registered", func(ops *commitChecksWaitOps) {
+		{"no checks registered", func(options *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			options.PullRequest = "7"
 			ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return nil, false, "" }
+			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				return nil, "ruleset", "strict", "", ""
+			}
 		}, "no GitHub checks have registered"},
-		{"producer still running", func(ops *commitChecksWaitOps) {
+		{"producer still running", func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
 			ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
 				return []RemoteCheck{{Name: "check-run:build", Bucket: "pending"}}, true, ""
 			}
@@ -223,7 +227,7 @@ func TestExactCommitWaitNamesChecksThatCannotYetAuthorizeLanding(t *testing.T) {
 			t.Parallel()
 			options, ops := exactWaitFixture()
 			options.Slice, options.CheckPollInterval = time.Second, 5*time.Millisecond
-			tc.change(&ops)
+			tc.change(&options, &ops)
 			result, err := waitForCommitChecksWith(context.Background(), options, ops)
 			if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, tc.want) {
 				t.Fatalf("result=%+v error=%v, want pending reason %q", result, err, tc.want)
@@ -316,6 +320,49 @@ func TestExactCommitWaitRefusesLateAuthorityAndIdentityLoss(t *testing.T) {
 			result, err := waitForCommitChecksWith(context.Background(), options, ops)
 			if err != nil || result.Status != tc.status || !strings.Contains(result.Reason, tc.want) {
 				t.Fatalf("result=%+v error=%v, want %s reason %q", result, err, tc.status, tc.want)
+			}
+		})
+	}
+}
+
+func TestExactCommitWaitExplainsEachTerminalReceiptMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*PullRequestWaitOptions, *commitChecksWaitOps)
+		want   string
+	}{
+		{"fenced PR", func(options *PullRequestWaitOptions, _ *commitChecksWaitOps) {
+			options.PullRequest = "7"
+		}, "server-side target freshness was enforced"},
+		{"unfenced PR with unavailable policy", func(options *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			options.PullRequest, options.AllowUnfenced = "7", true
+			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				return []RequiredRemoteCheck{{Name: "build"}}, "ruleset", "", "policy unavailable", ""
+			}
+		}, "policy authority was unavailable under explicit --allow-unfenced"},
+		{"empty direct-target policy", func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return nil, false, "" }
+			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				return nil, "ruleset", "", "", ""
+			}
+		}, "enumerated as empty"},
+		{"unfenced validation PR", func(options *PullRequestWaitOptions, _ *commitChecksWaitOps) {
+			options.PullRequest, options.AllowUnfenced = "7", true
+		}, "validation-only publication"},
+		{"direct target with unavailable policy", func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				return []RequiredRemoteCheck{{Name: "build"}}, "ruleset", "", "policy unavailable", ""
+			}
+		}, "policy authority was unavailable under explicit --allow-unfenced"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			tc.change(&options, &ops)
+			result, err := waitForCommitChecksWith(context.Background(), options, ops)
+			if err != nil || result.Status != PullRequestWaitPassed || !strings.Contains(result.Reason, tc.want) {
+				t.Fatalf("result=%+v error=%v, want passed reason containing %q", result, err, tc.want)
 			}
 		})
 	}
