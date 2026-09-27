@@ -250,3 +250,23 @@ func TestSmCovPublishImmutableReportsEntropyFailure(t *testing.T) {
 		t.Fatalf("publishImmutableAtWithRandom error = %v", err)
 	}
 }
+
+func TestSmCovRetainedAuthorityReportsDescriptorDupFailure(t *testing.T) {
+	t.Parallel()
+	fixture := smCovNewLockFixture(t)
+	lock := fixture.smCovAcquire(t)
+	defer func() { _ = lock.Close() }()
+	fail := func(int) (int, error) { return -1, errors.New("descriptor exhausted") }
+	if retained, err := lock.retainHandoffForStore(fixture.root, fixture.request, fixture.digest, fail); err == nil {
+		_ = retained.Close()
+		t.Fatal("retainHandoffForStore accepted a failed descriptor duplicate")
+	} else if !strings.Contains(err.Error(), "descriptor exhausted") {
+		t.Fatalf("retainHandoffForStore error = %v", err)
+	}
+	if retained, err := lock.retainStoreRootForStore(fixture.root, fixture.request, fixture.digest, fail); err == nil {
+		_ = retained.Close()
+		t.Fatal("retainStoreRootForStore accepted a failed descriptor duplicate")
+	} else if !strings.Contains(err.Error(), "descriptor exhausted") {
+		t.Fatalf("retainStoreRootForStore error = %v", err)
+	}
+}

@@ -132,6 +132,10 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 // cannot split reads, locks, and immutable publications across directories.
 // The caller owns the returned file.
 func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	return lock.retainHandoffForStore(expectedRoot, request, digest, unix.Dup)
+}
+
+func (lock *ExecutionLock) retainHandoffForStore(expectedRoot string, request Request, digest Digest, dup func(int) (int, error)) (*os.File, error) {
 	if !lock.HeldForStore(expectedRoot, request, digest) {
 		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff directory")
 	}
@@ -140,7 +144,7 @@ func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Re
 	if lock.handoff == nil {
 		return nil, fmt.Errorf("execution lock handoff directory is closed")
 	}
-	fd, err := unix.Dup(int(lock.handoff.Fd()))
+	fd, err := dup(int(lock.handoff.Fd()))
 	if err != nil {
 		return nil, fmt.Errorf("duplicate admitted handoff directory: %w", err)
 	}
@@ -153,6 +157,10 @@ func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Re
 // retained with this admitted handoff. It is used for indexes whose key spans
 // handoff aggregates while the held execution fence supplies authority.
 func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	return lock.retainStoreRootForStore(expectedRoot, request, digest, unix.Dup)
+}
+
+func (lock *ExecutionLock) retainStoreRootForStore(expectedRoot string, request Request, digest Digest, dup func(int) (int, error)) (*os.File, error) {
 	if !lock.HeldForStore(expectedRoot, request, digest) {
 		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff store root")
 	}
@@ -161,7 +169,7 @@ func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request 
 	if lock.root == nil {
 		return nil, fmt.Errorf("execution lock store root is closed")
 	}
-	fd, err := unix.Dup(int(lock.root.Fd()))
+	fd, err := dup(int(lock.root.Fd()))
 	if err != nil {
 		return nil, fmt.Errorf("duplicate admitted handoff store root: %w", err)
 	}
