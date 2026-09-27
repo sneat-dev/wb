@@ -8,6 +8,7 @@ import (
 )
 
 func TestPreApplyRenameReservationKeepsExactPromptAndTerminalHistory(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if found, err := findPreApplyRenameReservations(home, "destination"); err != nil || len(found) != 0 {
 		t.Fatalf("missing Work Log unexpectedly has reservations: %+v, %v", found, err)
@@ -50,6 +51,7 @@ func TestPreApplyRenameReservationKeepsExactPromptAndTerminalHistory(t *testing.
 }
 
 func TestPreApplyRenameReservationDoesNotAuthorizeClaimedRun(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	options, err := (WorkLogOptions{EffortID: "destination", RunID: "run", Model: "unknown"}).WithOriginalPromptFromStdin([]byte("rename request\n"))
 	if err != nil {

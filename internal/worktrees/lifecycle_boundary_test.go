@@ -12,6 +12,7 @@ import (
 )
 
 func TestCleanupOptionsRequireExactTaskScopeForSensitiveActions(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	base := CleanupOptions{ProjectsRoot: projects, Task: "task"}
 	valid, err := normalizeCleanupOptions(base)
@@ -37,6 +38,7 @@ func TestCleanupOptionsRequireExactTaskScopeForSensitiveActions(t *testing.T) {
 		{"supersession needs one task", func(o *CleanupOptions) { o.Task = ""; o.AllMerged = true; o.SupersededBy = "receipt.json" }, "one explicit task"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			options := base
 			test.edit(&options)
 			if _, err := normalizeCleanupOptions(options); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -60,6 +62,7 @@ func TestCleanupOptionsRequireExactTaskScopeForSensitiveActions(t *testing.T) {
 }
 
 func TestInventoryWalkClassifiesForeignDebrisAndReservedStagesWithoutGit(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	root := filepath.Join(projects, ".wb", "worktrees")
 	paths := []string{
@@ -124,6 +127,7 @@ func TestInventoryWalkClassifiesForeignDebrisAndReservedStagesWithoutGit(t *test
 	}
 }
 
+//nolint:paralleltest // Subtests share one open cleanup task descriptor and lock.
 func TestCleanupHandleOpensOnlyAuthorizedHierarchy(t *testing.T) {
 	task := newHostLevelCleanupTaskFixture(t)
 	root := task.taskPath
@@ -153,6 +157,7 @@ func TestCleanupHandleOpensOnlyAuthorizedHierarchy(t *testing.T) {
 		{filepath.Join(root, "github.com", "acme", "missing"), "open cleanup worktree"},
 		{filepath.Join(root, "github.com", "acme", "app", "nested"), "unsupported hierarchy"},
 	} {
+		//nolint:paralleltest // Every case uses the same cleanup task descriptor.
 		t.Run(test.path, func(t *testing.T) {
 			if _, err := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: test.path}}); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("hierarchy %s error = %v, want %q", test.path, err, test.want)
@@ -180,6 +185,7 @@ func TestCleanupHandleOpensOnlyAuthorizedHierarchy(t *testing.T) {
 }
 
 func TestRetiredStageClaimSkipsForeignAndOccupiedEntries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	occupied := filepath.Join(root, ".wb-retired-stage-aa-occupied")
 	if err := os.Mkdir(occupied, 0o700); err != nil {
@@ -226,6 +232,7 @@ func TestRetiredStageClaimSkipsForeignAndOccupiedEntries(t *testing.T) {
 }
 
 func TestAdoptedRegistrationRemovalPreservesSiblingAndRejectsRedirect(t *testing.T) {
+	t.Parallel()
 	task := newHostLevelCleanupTaskFixture(t)
 	owner := filepath.Join(task.taskPath, "acme")
 	for _, repo := range []string{"app", "lib"} {

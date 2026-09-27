@@ -11,6 +11,8 @@ import (
 
 // The removed-worktree path has no live checkout to consult. Every file in its
 // immutable evidence chain must therefore be checked before returning a base.
+//
+//nolint:paralleltest // The removed-terminal fixture sets process-wide WB state variables.
 func TestRemovedTerminalEvidenceRejectsCorruptFilesWithoutCheckout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -46,6 +48,7 @@ func TestRemovedTerminalEvidenceRejectsCorruptFilesWithoutCheckout(t *testing.T)
 			editTerminalEvidenceJSON(t, terminalOutboxPath(home, id), "disposition", "parked")
 		}, "outbox does not corroborate"},
 	} {
+		//nolint:paralleltest // Each fixture changes process-wide WB state variables.
 		t.Run(tc.name, func(t *testing.T) {
 			home, _, expectation, claimID := wtLogCovRemovedTerminalHome(t)
 			tc.edit(t, home, claimID)
@@ -93,6 +96,7 @@ func editTerminalEvidenceJSON(t *testing.T, path, field string, value any) {
 	writeTerminalEvidenceFile(t, path, content)
 }
 
+//nolint:paralleltest // The removed-terminal fixture sets process-wide WB state variables.
 func TestExecutionIdentityCorrectionRejectsBrokenPrivateEvidence(t *testing.T) {
 	model := "unknown"
 	for _, tc := range []struct {
@@ -129,6 +133,7 @@ func TestExecutionIdentityCorrectionRejectsBrokenPrivateEvidence(t *testing.T) {
 			writeTerminalEvidenceFile(t, filepath.Join(corrections, "review-event.json"), encoded)
 		}, "different immutable evidence"},
 	} {
+		//nolint:paralleltest // Each fixture changes process-wide WB state variables.
 		t.Run(tc.name, func(t *testing.T) {
 			home, projects, _, id := wtLogCovRemovedTerminalHome(t)
 			tc.edit(t, home, id)

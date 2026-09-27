@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+//nolint:paralleltest // newGitFixture sets process-wide Git and WB environment variables.
 func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
@@ -60,6 +61,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 		{"landing tree differs", func(p *MergeReceiptCleanupProof, _ *ListResult) { p.LandingSHA = other }, "does not equal"},
 		{"landing not on target", func(_ *MergeReceiptCleanupProof, e *ListResult) { e.RemoteTargetSHA = base }, "not contained"},
 	} {
+		//nolint:paralleltest // Subtests share the fixture's environment and canonical Git checkout.
 		t.Run(test.name, func(t *testing.T) {
 			p, e := proof, originalEntry
 			test.edit(&p, &e)
@@ -88,6 +90,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 }
 
 func TestCleanupClassificationScopesOnlyProvenForeignArtifacts(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	results := []CleanupResult{
 		{ListResult: ListResult{Task: "one", WorktreesRoot: root, Repository: "acme/app"}, Eligible: true},
@@ -127,6 +130,7 @@ func TestCleanupClassificationScopesOnlyProvenForeignArtifacts(t *testing.T) {
 }
 
 func TestCleanupLiveDescendantBlocksOnlyParentEffort(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, name := range []string{"parent", "parent.child", "other", ".wb-stage-active"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
@@ -145,6 +149,7 @@ func TestCleanupLiveDescendantBlocksOnlyParentEffort(t *testing.T) {
 }
 
 func TestCleanupErrorClassifiersRejectGenericFailures(t *testing.T) {
+	t.Parallel()
 	for _, message := range []string{"bad object deadbeef", "unknown revision", "not a valid commit name", "could not get object info"} {
 		if !isUnfetchedGitObjectError(errors.New(message)) {
 			t.Fatalf("unfetched object not recognized: %q", message)
@@ -163,6 +168,7 @@ func TestCleanupErrorClassifiersRejectGenericFailures(t *testing.T) {
 }
 
 func TestCleanupTaskSelectionAndApplyKeepLocalAndSharedTasksDistinct(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	shared := filepath.Join(t.TempDir(), "shared")
 	localRoot := filepath.Join(home, "worktrees")
@@ -206,6 +212,7 @@ func TestCleanupTaskSelectionAndApplyKeepLocalAndSharedTasksDistinct(t *testing.
 }
 
 func TestLikelyTaskWorktreePathRecognizesSupportedDepthsOnly(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "store")
 	predicted := filepath.Join(root, "task", "github.com", "acme", "app")
 	for _, path := range []string{
@@ -226,6 +233,7 @@ func TestLikelyTaskWorktreePathRecognizesSupportedDepthsOnly(t *testing.T) {
 }
 
 func TestSecureStageNameClassificationKeepsLocalStagesTaskBound(t *testing.T) {
+	t.Parallel()
 	active := taskBoundLocalStagePrefix("task") + "1234"
 	retired := taskBoundLocalRetiredStagePrefix("task") + "1234"
 	if !isTaskBoundLocalStageCheckout(filepath.Join("/tmp", active, "checkout"), "task") ||
@@ -241,6 +249,7 @@ func TestSecureStageNameClassificationKeepsLocalStagesTaskBound(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Subtests use one prompt path that the parent later rewrites.
 func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "request.txt")
@@ -273,6 +282,7 @@ func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing
 		{"missing file", WorkLogOptions{OriginalPrompt: filepath.Join(root, "absent")}, "open original prompt"},
 		{"directory", WorkLogOptions{OriginalPrompt: root}, "regular file"},
 	} {
+		//nolint:paralleltest // The parent reuses and rewrites the shared prompt path after these cases.
 		t.Run(test.name, func(t *testing.T) {
 			if err := snapshotOriginalPrompt(&test.options); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("snapshot error = %v, want %q", err, test.want)
@@ -302,6 +312,7 @@ func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing
 }
 
 func TestWorkLogClaimExtensionUsesExactArchivedPrompt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := t.TempDir()
 	gitTest(t, worktree, "init")
@@ -341,6 +352,7 @@ func TestWorkLogClaimExtensionUsesExactArchivedPrompt(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Subtests share the checkout path that the parent later replaces.
 func TestCleanupWorktreeHandlesRejectSymlinksAndPathReplacement(t *testing.T) {
 	root := t.TempDir()
 	checkout := filepath.Join(root, "checkout")
@@ -357,6 +369,7 @@ func TestCleanupWorktreeHandlesRejectSymlinksAndPathReplacement(t *testing.T) {
 		}},
 		{"local", func(path string) (*cleanupWorktreeHandle, error) { return openCanonicalLocalCleanupWorktree(nil, path) }},
 	} {
+		//nolint:paralleltest // All cases use one checkout path that the parent later renames.
 		t.Run(opener.name, func(t *testing.T) {
 			handle, err := opener.open(checkout)
 			if err != nil {
@@ -399,6 +412,7 @@ func TestCleanupWorktreeHandlesRejectSymlinksAndPathReplacement(t *testing.T) {
 }
 
 func TestRecordedWorktreeBaseUsesValidatedImmutableManifest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	worktree := t.TempDir()
 	gitTest(t, worktree, "init")
@@ -429,6 +443,7 @@ func TestRecordedWorktreeBaseUsesValidatedImmutableManifest(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture and this test set process-wide WB configuration variables.
 func TestFleetInventoryRecoversClaimedCheckoutAfterSharedRootChanges(t *testing.T) {
 	fixture := newGitFixture(t)
 	configHome := t.TempDir()
@@ -466,6 +481,7 @@ func TestFleetInventoryRecoversClaimedCheckoutAfterSharedRootChanges(t *testing.
 }
 
 func TestCreateRecoveryPreservesPreexistingCheckoutWhenClaimFails(t *testing.T) {
+	t.Parallel()
 	result := CreateResult{Repository: "acme/app", WorktreeDir: filepath.Join(t.TempDir(), "checkout"), Branch: "task"}
 	if err := os.Mkdir(result.WorktreeDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -488,6 +504,7 @@ func TestCreateRecoveryPreservesPreexistingCheckoutWhenClaimFails(t *testing.T) 
 }
 
 func TestLegacySingletonClaimMigrationRecordsLostRepositoryCardinality(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	runDir, runPath, err := openWorkLogRun(home, "task", "run", true)
 	if err != nil {

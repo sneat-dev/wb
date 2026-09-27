@@ -9,6 +9,7 @@ import (
 )
 
 func TestCreateFailureReturnsExactRecoveryCoordinatesWhenReceiptAndRollbackFail(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	home := filepath.Join(projects, ".wb")
 	canonical := filepath.Join(projects, "acme", "app")
