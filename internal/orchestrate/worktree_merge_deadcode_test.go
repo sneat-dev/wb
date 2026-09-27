@@ -359,6 +359,40 @@ func importedMainReceiptFixture(t *testing.T) (repository, targetSHA, importedSH
 	return repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin
 }
 
+func TestValidateWorktreeMergeCandidateContinuesForAttestedImportedMainDeadcode(t *testing.T) {
+	repository, targetSHA, _, _, candidateSHA, fakeBin := importedMainReceiptFixture(t)
+	const deadcodeOutput = "New unreachable functions (1):\n  main.go:1: main.B\nerror: 1 function(s) are unreachable from main and are not in .wb/deadcode-baseline.txt; wire them up, delete them, or record them with --update-baseline\nexit status 1\n"
+	script := "#!/bin/sh\ncase \"$1\" in\n" +
+		"run) if [ -f main.go ]; then printf '%s' '" + strings.ReplaceAll(deadcodeOutput, "'", "'\\''") + "'; exit 1; fi ;;\n" +
+		"test) : > \"$WB_TEST_MARKER\" ;;\n" +
+		"esac\nexit 0\n"
+	if err := testenv.WriteExecutableFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "candidate-test-ran")
+	t.Setenv("WB_TEST_MARKER", marker)
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
+	receipt := WorktreeMergeReceipt{Repository: "sneat-dev/wb", TargetSHA: targetSHA,
+		Candidate: WorktreeMergeCandidate{SHA: candidateSHA, Worktree: repository}}
+	if err := validateWorktreeMergeCandidate(context.Background(), &receipt, 10*time.Second, 0, 0, 0, nil); err != nil {
+		t.Fatalf("imported main deadcode rejected before full validation: %v, candidate %+v baseline %+v", err, receipt.Validation, receipt.BaselineValidation)
+	}
+	if receipt.ImportedMainDeadcode == nil || receipt.BaselineValidation.Revision != targetSHA {
+		t.Fatalf("full imported-main comparison missing: %+v", receipt)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("candidate tests did not run after imported-main deadcode attestation: %v", err)
+	}
+	checkedTests := false
+	for _, entry := range receipt.Validation.Results {
+		checkedTests = checkedTests || entry.Check == quality.CheckTest
+	}
+	if !checkedTests {
+		t.Fatalf("candidate test result missing after imported-main deadcode attestation: %+v", receipt.Validation)
+	}
+}
+
 func TestWorktreeMergeImportedMainDeadcodeReceiptRoundTrips(t *testing.T) {
 	t.Parallel()
 	evidence := WorktreeMergeImportedMainDeadcode{

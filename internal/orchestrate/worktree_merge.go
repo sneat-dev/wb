@@ -3830,6 +3830,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	lint := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree, []quality.Check{quality.CheckLint}, runOptions)
 	lint.Revision = receipt.Candidate.SHA
 	lint.WorkspaceClean = true
+	var earlyImportedMain *WorktreeMergeImportedMainDeadcode
 	if lint.Status == quality.StatusFailed {
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
 		baselineLint, baselineErr := verifyWorktreeMergeTargetChecks(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry, checkTimeout, shardAttemptTimeout, []quality.Check{quality.CheckLint})
@@ -3837,7 +3838,11 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 			return fmt.Errorf("capture exact target lint baseline after candidate failure: %w", baselineErr)
 		}
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baselineLint.Status))
-		if regressionErr := worktreeMergeValidationRegression(baselineLint, lint); regressionErr != nil {
+		var regressionErr error
+		earlyImportedMain, regressionErr = worktreeMergeValidationWithImportedMainAttestation(baselineLint, lint, func() (*WorktreeMergeImportedMainDeadcode, error) {
+			return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
+		})
+		if regressionErr != nil {
 			receipt.Validation = lint
 			receipt.BaselineValidation = baselineLint
 			return regressionErr
@@ -3874,6 +3879,9 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	receipt.ImportedMainDeadcode = nil
 	parentEvidence, regressionErr := worktreeMergeValidationWithImportedMainAttestation(baseline, receipt.Validation, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		if earlyImportedMain != nil {
+			return earlyImportedMain, nil
+		}
 		return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
 	})
 	if regressionErr != nil {
