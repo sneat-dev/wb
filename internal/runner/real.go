@@ -44,7 +44,8 @@ func (Real) Run(ctx context.Context, dir, name string, args ...string) (Result, 
 	return withoutSpuriousWaitDelay(command, result, runErr)
 }
 
-// RunWithInput is Run with input written to the child's stdin.
+// RunWithInput writes input to the child's stdin and inherits the parent
+// environment. Use RunOpts to supply both input and a custom environment.
 func (Real) RunWithInput(ctx context.Context, dir string, input []byte, name string, args ...string) (Result, error) {
 	if err := guardRealProcess(); err != nil {
 		return Result{}, err

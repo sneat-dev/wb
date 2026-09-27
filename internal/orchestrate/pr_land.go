@@ -1015,7 +1015,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
-	if deleted, deleteErr := deleteRemoteBranch(ctx, canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
+	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
 		return result, deleteErr
 	} else {
 		result.BranchDeleted = deleted
@@ -1337,7 +1337,7 @@ func commitIsOnBranch(ctx context.Context, repository, commit, branch string) (b
 // repository's to delete — and treats an already-absent ref as success,
 // because GitHub's own "automatically delete head branches" setting may have
 // removed it first.
-func deleteRemoteBranch(ctx context.Context, canonical, repository string, view, landed PullRequestView, expectedHeadSHA string) (bool, error) {
+func deleteRemoteBranch(ctx context.Context, run runner.Runner, canonical, repository string, view, landed PullRequestView, expectedHeadSHA string) (bool, error) {
 	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, repository) {
 		return false, nil
 	}
@@ -1353,22 +1353,15 @@ func deleteRemoteBranch(ctx context.Context, canonical, repository string, view,
 	if expected == "" {
 		return false, fmt.Errorf("refuse to delete branch %s without the merged pull request head SHA", ref)
 	}
-	// deleteRemoteBranch sits on every successful landing's happy path (not
-	// only the dedicated keep-commits/delete-branch tests), so migrating
-	// this call onto this package's Git port -- unlike this file's other one
-	// (finalizeLandedPullRequest's FetchRefs, reached only when the landing
-	// tracked kept-commit SHAs) -- would require moving most of
-	// pr_land_test.go's suite behind the e2e tag as well. That is judged out
-	// of scope for this migration PR (task-17); this call keeps running
-	// through the package's existing retrying runCommand (command.go),
-	// which is real but unguarded, exactly as it did before this PR.
-	remoteURLRaw, _, remoteErr := runCommand(ctx, defaultRunner, 0, 0, canonical, "git", "remote", "get-url", "--push", "origin")
+	// Keep the existing retry behavior for resolving origin. Both this
+	// command and the lease-checked deletion use the injected runner.
+	remoteURLRaw, _, remoteErr := runCommand(ctx, run, 0, 0, canonical, "git", "remote", "get-url", "--push", "origin")
 	if remoteErr != nil {
 		return false, fmt.Errorf("resolve origin before deleting branch %s: %w", ref, remoteErr)
 	}
 	remoteURL := strings.TrimSpace(remoteURLRaw)
 	remoteRef := "refs/heads/" + ref
-	_, deleteErr := runGitPushDeleteWithLease(ctx, canonical, remoteURL, remoteRef, expected)
+	_, deleteErr := runGitPushDeleteWithLease(ctx, run, canonical, remoteURL, remoteRef, expected)
 	if deleteErr != nil {
 		check := githubExecute(ctx, "", "api", "repos/"+repository+"/git/ref/heads/"+ref)
 		if check.Err != nil && branchAlreadyGone(check.Stdout, check.Stderr) {

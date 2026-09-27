@@ -129,7 +129,6 @@ var UnitTierGitHelperNames = map[string]bool{
 	"ComputeBaselineAtRef":           true, // internal/quality/ratchet.go
 	"resolveRefSHA":                  true, // internal/quality/ratchet.go
 	"ConfigureGitAutoMaintenanceOff": true, // internal/testenv/testenv.go
-	"runGitPushDeleteWithLease":      true, // internal/orchestrate/pr_land_keep.go
 	"commitPatchIDs":                 true, // internal/worktrees/patchid.go
 	"isAncestor":                     true, // internal/worktrees/lifecycle.go
 	"localBranchExists":              true, // internal/worktrees/worktrees.go

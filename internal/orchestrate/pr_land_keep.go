@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -266,14 +265,12 @@ func lastLines(output string, count int) string {
 // of the process arguments and every returned error. The temporary remote is
 // configured only in the child process environment, while the command and
 // diagnostics expose a stable non-secret name.
-func runGitPushDeleteWithLease(ctx context.Context, dir, remoteURL, remoteRef, expected string) (string, error) {
-	remoteName, err := unusedTemporaryGitRemoteName(ctx, dir)
+func runGitPushDeleteWithLease(ctx context.Context, run runner.Runner, dir, remoteURL, remoteRef, expected string) (string, error) {
+	remoteName, err := unusedTemporaryGitRemoteName(ctx, run, dir)
 	if err != nil {
 		return "", err
 	}
 	args := []string{"push", "--force-with-lease=" + remoteRef + ":" + expected, remoteName, ":" + remoteRef}
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = dir
 	env := console.Env()
 	configCount := 0
 	for index := len(env) - 1; index >= 0; index-- {
@@ -284,43 +281,51 @@ func runGitPushDeleteWithLease(ctx context.Context, dir, remoteURL, remoteRef, e
 			break
 		}
 	}
-	command.Env = append(env,
+	env = append(env,
 		"GIT_CONFIG_COUNT="+strconv.Itoa(configCount+1),
 		"GIT_CONFIG_KEY_"+strconv.Itoa(configCount)+"=remote."+remoteName+".url",
 		"GIT_CONFIG_VALUE_"+strconv.Itoa(configCount)+"="+remoteURL,
 	)
-	output, err := command.CombinedOutput()
-	detail := strings.TrimSpace(strings.ReplaceAll(string(output), remoteURL, "<redacted-origin-push-url>"))
+	result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: env, CaptureCombined: true}, "git", args...)
+	output := result.CombinedOutput
+	if output == "" {
+		output = result.Stdout + result.Stderr
+	}
+	redact := func(value string) string {
+		if remoteURL == "" {
+			return value
+		}
+		return strings.ReplaceAll(value, remoteURL, "<redacted-origin-push-url>")
+	}
+	detail := strings.TrimSpace(redact(output))
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, detail)
+		return "", fmt.Errorf("git %s: %s: %s", strings.Join(args, " "), redact(err.Error()), detail)
 	}
 	return detail, nil
 }
 
-// unusedTemporaryGitRemoteName is reached from runGitPushDeleteWithLease,
-// which every successful landing's deleteRemoteBranch calls -- the same
-// broad-blast-radius reason pr_land.go's resolveOriginPushURL comment gives
-// for not migrating that neighbouring call onto this package's Git port in this PR
-// (task-17). It keeps its direct exec.CommandContext call rather than
-// routing through the guarded runner.
-func unusedTemporaryGitRemoteName(ctx context.Context, dir string) (string, error) {
+// unusedTemporaryGitRemoteName checks the candidate name through the same
+// injected runner as the push, without exposing the remote URL to argv.
+func unusedTemporaryGitRemoteName(ctx context.Context, run runner.Runner, dir string) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		entropy := make([]byte, 16)
 		if _, err := rand.Read(entropy); err != nil {
 			return "", fmt.Errorf("generate temporary Git remote name: %w", err)
 		}
 		name := "wb-landing-" + hex.EncodeToString(entropy)
-		command := exec.CommandContext(ctx, "git", "config", "--get-regexp", "^remote\\."+name+"\\.")
-		command.Dir = dir
-		command.Env = console.Env()
-		output, err := command.CombinedOutput()
+		result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true},
+			"git", "config", "--get-regexp", "^remote\\."+name+"\\.")
+		output := result.CombinedOutput
+		if output == "" {
+			output = result.Stdout + result.Stderr
+		}
 		if err == nil {
 			continue
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && strings.TrimSpace(string(output)) == "" {
+		if result.ExitCode == 1 && strings.TrimSpace(output) == "" {
 			return name, nil
 		}
-		return "", fmt.Errorf("check temporary Git remote name: %v: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("check temporary Git remote name: %v: %s", err, strings.TrimSpace(output))
 	}
 	return "", fmt.Errorf("could not allocate an unused temporary Git remote name")
 }

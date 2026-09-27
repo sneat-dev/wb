@@ -3,6 +3,7 @@ package gitcli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/runner"
@@ -40,6 +41,37 @@ func TestClientCurrentBranchWrapsAFailureAsGitError(t *testing.T) {
 	}
 	if got := gitErr.Error(); got == "" {
 		t.Fatal("GitError.Error() returned an empty string")
+	}
+}
+
+func TestClientCherryPickPreservesCombinedFailureDiagnostics(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	want := "Auto-merging conflict.txt\nCONFLICT (content): Merge conflict in conflict.txt\nerror: could not apply abc123\n"
+	fake.ExpectArgv([]string{"git", "cherry-pick", "abc123"}, runner.Result{
+		CombinedOutput: want,
+	}, errors.New("exit status 1"))
+
+	err := New(fake).CherryPick(context.Background(), "/repo", "abc123")
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) || !strings.Contains(err.Error(), want[:len(want)-1]) {
+		t.Fatalf("cherry-pick error = %v, want combined conflict output", err)
+	}
+	if calls := fake.Calls(); len(calls) != 1 || calls[0].Op != "RunOpts" || !calls[0].Opts.CaptureCombined {
+		t.Fatalf("runner calls = %+v, want combined capture", calls)
+	}
+}
+
+func TestClientCherryPickPreservesSplitStreamFailureDiagnostics(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "cherry-pick", "abc123"}, runner.Result{
+		Stdout: "CONFLICT (content): Merge conflict in conflict.txt\n",
+		Stderr: "error: could not apply abc123\n",
+	}, errors.New("exit status 1"))
+	err := New(fake).CherryPick(context.Background(), "/repo", "abc123")
+	if err == nil || !strings.Contains(err.Error(), "conflict.txt") || !strings.Contains(err.Error(), "could not apply") {
+		t.Fatalf("cherry-pick error = %v, want both streams", err)
 	}
 }
 

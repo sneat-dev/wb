@@ -63,7 +63,8 @@ type RunOptions struct {
 	CaptureCombined bool
 	// Env overrides the child's environment. Nil inherits the calling
 	// process's own environment, matching os/exec.Cmd's own default when
-	// Env is left nil -- the same default Run and RunWithInput use.
+	// Env is left nil. RunWithInput does the same; Real.Run supplies
+	// console.Env() instead.
 	Env []string
 	// Stdin is written to the child's stdin before its output is read, like
 	// RunWithInput's input. Nil/empty gives the child no stdin (the same as

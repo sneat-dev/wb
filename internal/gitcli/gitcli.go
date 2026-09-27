@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
@@ -52,33 +53,50 @@ func New(r runner.Runner) Client {
 	return Client{Runner: r}
 }
 
-// GitError wraps a failed git invocation with the argv that failed and the
-// stderr git printed, so a caller's error message names the actual command
-// rather than a generic "exit status 1".
+// GitError wraps a failed git invocation with the argv and output git printed,
+// so a caller's error message names the command and its failure details.
 type GitError struct {
 	Argv   []string
+	Output string
 	Stderr string
 	Err    error
 }
 
 func (e *GitError) Error() string {
-	stderr := strings.TrimSpace(e.Stderr)
-	if stderr == "" {
+	output := strings.TrimSpace(e.Output)
+	if output == "" {
+		output = strings.TrimSpace(e.Stderr)
+	}
+	if output == "" {
 		return fmt.Sprintf("git %s: %v", strings.Join(e.Argv, " "), e.Err)
 	}
-	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.Argv, " "), e.Err, stderr)
+	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.Argv, " "), e.Err, output)
 }
 
 func (e *GitError) Unwrap() error { return e.Err }
 
-// run executes git with args in dir and returns trimmed stdout, wrapping any
-// failure in a *GitError that names the argv and carries git's stderr.
-func (c Client) run(ctx context.Context, dir string, args ...string) (string, error) {
-	result, err := c.Runner.Run(ctx, dir, "git", args...)
-	if err != nil {
-		return "", &GitError{Argv: args, Stderr: result.Stderr, Err: err}
+func gitError(args []string, result runner.Result, err error) *GitError {
+	output := result.CombinedOutput
+	if output == "" {
+		// A custom runner may return separate streams even when asked for
+		// combined capture. Preserve both in its failure diagnostic.
+		output = result.Stdout + result.Stderr
 	}
-	return strings.TrimSpace(result.Stdout), nil
+	return &GitError{Argv: args, Output: output, Stderr: result.Stderr, Err: err}
+}
+
+// run executes git with args in dir, preserving CombinedOutput's stream
+// ordering for both successful output and failure diagnostics.
+func (c Client) run(ctx context.Context, dir string, args ...string) (string, error) {
+	result, err := c.Runner.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, "git", args...)
+	if err != nil {
+		return "", gitError(args, result, err)
+	}
+	output := result.CombinedOutput
+	if output == "" {
+		output = result.Stdout + result.Stderr
+	}
+	return strings.TrimSpace(output), nil
 }
 
 // CurrentBranch reports the checked-out branch of dir.
@@ -107,7 +125,7 @@ func (c Client) IsAncestor(ctx context.Context, dir, ancestor, descendant string
 		return false, nil
 	}
 	argv := []string{"merge-base", "--is-ancestor", ancestor, descendant}
-	return false, &GitError{Argv: argv, Stderr: result.Stderr, Err: errors.Join(errIsAncestorAmbiguous, err)}
+	return false, gitError(argv, result, errors.Join(errIsAncestorAmbiguous, err))
 }
 
 // Fetch refreshes remote in dir.
@@ -127,10 +145,9 @@ func (c Client) runVoid(ctx context.Context, dir string, args ...string) error {
 // byte, the exec.CommandContext call it replaces, so migrating a call site
 // onto it changes nothing observable. Every one of orchestrate's git values
 // that a caller actually reads (a SHA, a branch name, a tree id) comes from a
-// git subcommand that only ever writes that value to stdout on success, so
-// c.run's stdout-only success return already matches what the former
-// CombinedOutput()-based call returned; only the failure path's formatting
-// needed the byte-identical proof (gitcli_test.go).
+// git subcommand that only ever writes that value to stdout on success.
+// c.run preserves the former CombinedOutput behavior on both success and
+// failure; gitcli_test.go covers the failure diagnostics.
 
 // WorktreeRemoveForce removes worktree from dir's repository, discarding any
 // modification it holds.
@@ -255,7 +272,7 @@ func (c Client) CommitObjectExists(ctx context.Context, dir, sha string) (bool, 
 	}
 	if errors.Is(err, runner.ErrRealProcessBlocked) {
 		args := []string{"cat-file", "-e", sha + "^{commit}"}
-		return false, &GitError{Argv: args, Stderr: result.Stderr, Err: err}
+		return false, gitError(args, result, err)
 	}
 	return false, nil
 }
@@ -273,5 +290,5 @@ func (c Client) ConfigRegexpMatches(ctx context.Context, dir, pattern string) (b
 		return false, nil
 	}
 	args := []string{"config", "--get-regexp", pattern}
-	return false, &GitError{Argv: args, Stderr: result.Stderr, Err: err}
+	return false, gitError(args, result, err)
 }

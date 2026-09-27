@@ -242,7 +242,8 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranc
 	if refusal == nil || refusal.code != LandRefusalMergeRejected {
 		t.Fatalf("conflicting kept commit refusal = %+v (head %q)", refusal, head)
 	}
-	if !strings.Contains(refusal.reason, "does not replay cleanly onto the base") {
+	if !strings.Contains(refusal.reason, "does not replay cleanly onto the base") ||
+		!strings.Contains(refusal.reason, "a.txt") {
 		t.Fatalf("conflicting kept commit reason = %q", refusal.reason)
 	}
 	published := strings.TrimSpace(runEngineGit(t, fixture.root,
