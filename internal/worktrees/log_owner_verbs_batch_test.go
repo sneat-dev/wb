@@ -44,6 +44,9 @@ func TestLogVerbsKeepPromptBodiesPrivateAndLocalReceiptsExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(shown.Prompts) != 2 || shown.Prompts[1].Name != steered.Prompt || shown.Prompts[1].Source != PromptSourceHuman {
+		t.Fatalf("show omitted the recorded steering prompt: %#v", shown.Prompts)
+	}
 	for _, prompt := range shown.Prompts {
 		if prompt.Body != "" {
 			t.Fatalf("show leaked body: %#v", prompt)
