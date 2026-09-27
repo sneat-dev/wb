@@ -103,7 +103,7 @@ func TestAdmittedRequestDescriptorRejectsOversizeCorruptionAndDigestDrift(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = file.Close() }()
+			t.Cleanup(func() { _ = file.Close() })
 			if _, err := readAdmittedRequestFile(file, fixture.request.HandoffID, fixture.digest); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("admitted request error = %v, want %q", err, test.want)
 			}
@@ -132,7 +132,7 @@ func TestAdmittedRequestDescriptorPropagatesSeekReadAndBoundFailures(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = file.Close() }()
+			t.Cleanup(func() { _ = file.Close() })
 			if _, err := readAdmittedRequestFileWithIO(file, fixture.request.HandoffID, fixture.digest, test.seek, test.read); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("readAdmittedRequestFileWithIO error = %v, want %q", err, test.want)
 			}
@@ -204,7 +204,7 @@ func TestExecutionLockRetriesAfterOneContentionTimer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	if calls != 2 || !lock.HeldForStore(fixture.root, fixture.request, fixture.digest) {
 		t.Fatalf("contention retry = %d flock calls and held=%t, want two calls and authority", calls, lock.HeldForStore(fixture.root, fixture.request, fixture.digest))
 	}
@@ -231,7 +231,7 @@ func TestSecureDirectoryOpenersReportDescriptorInspectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = root.Close() }()
+	t.Cleanup(func() { _ = root.Close() })
 	failStat := func(int, *unix.Stat_t) error { return syscall.EIO }
 	for _, which := range []string{"message", "successors", "events"} {
 		t.Run(which, func(t *testing.T) {
@@ -260,7 +260,7 @@ func TestRetainAuthorityRejectsRevokedAndChangedBindings(t *testing.T) {
 	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	wrong := DigestBytes([]byte("other request"))
 	if retained, err := lock.RetainHandoffForStore(fixture.root, fixture.request, wrong); err == nil {
 		_ = retained.Close()
@@ -321,7 +321,7 @@ func TestDurablePublicationReportsDirectoryPermissionFailures(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer func() { _ = lock.Close() }()
+				t.Cleanup(func() { _ = lock.Close() })
 			}
 			if which == "event" {
 				if err := os.Mkdir(filepath.Join(handoffPath, eventsDirName), 0o700); err != nil {
@@ -405,7 +405,7 @@ func TestEventAndSuccessorAddressPreserveTimestampEncodingErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	receipt.StartedAt = badTime
 	if _, _, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, receipt); err == nil || !strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
 		t.Fatalf("SaveSuccessorAddressUnderLock with unencodable receipt = %v", err)
@@ -419,7 +419,7 @@ func TestEventAndStateRejectWrongAggregateIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 	otherDigest := DigestBytes([]byte("other request"))
 	if _, err := fixture.store.AppendEvent(fixture.request.HandoffID, otherDigest, HandoffEvent{Phase: PhaseOffered, At: time.Now()}); !errors.Is(err, ErrHandoffConflict) {
 		t.Fatalf("AppendEvent with wrong request digest = %v", err)
@@ -452,7 +452,7 @@ func TestEventStorageRejectsUnwritableAndUnsafeDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 	makeDirectoryReadOnly(t, handoffPath)
 	if events, err := openEventsAt(handoff, true); err == nil || !strings.Contains(err.Error(), "create handoff events directory") {
 		_ = events.Close()
@@ -472,7 +472,7 @@ func TestEventStorageRejectsUnwritableAndUnsafeDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = otherHandoff.Close() }()
+	t.Cleanup(func() { _ = otherHandoff.Close() })
 	if err := os.WriteFile(filepath.Join(smCovHandoffDir(other), eventsDirName), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestLoadEventsPropagatesDirectoryEnumerationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 	events, err := openEventsAt(handoff, true)
 	if err != nil {
 		t.Fatal(err)
@@ -508,7 +508,7 @@ func TestImmutablePublicationReportsFailureToRemovePreparedName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = authority.Close() }()
+	t.Cleanup(func() { _ = authority.Close() })
 	t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
 	injection := &filewrite.Injector{
 		Step: filewrite.StepLink,

@@ -83,10 +83,7 @@ func (s Store) SaveRoute(route Route) (Route, bool, error) {
 	if err != nil {
 		return Route{}, false, err
 	}
-	if len(raw) > maxRouteBytes {
-		return Route{}, false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
-	}
-	created, err := s.publish(handoff, routeFileName, raw, 0o600)
+	created, err := s.publishRouteImmutableAt(handoff, raw)
 	if err != nil {
 		return Route{}, false, err
 	}
@@ -472,9 +469,9 @@ func readRouteFileAt(directory *os.File, name string, maximum int64, description
 	return readImmutableAt(directory, name, maximum, description)
 }
 
-func publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
+func (s Store) publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
 	if len(raw) > maxRouteBytes {
 		return false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
 	}
-	return publishImmutableAt(directory, routeFileName, raw, 0o600, nil)
+	return s.publish(directory, routeFileName, raw, 0o600)
 }

@@ -30,7 +30,7 @@ func TestSmCovReadAdmittedRequestFileRejectsClosedAndNonRegularDescriptors(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if _, err := readAdmittedRequestFile(directory, fixture.request.HandoffID, fixture.digest); err == nil || !strings.Contains(err.Error(), "bounded immutable file") {
 		t.Fatalf("directory request descriptor error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestSmCovSecureDirectoriesRejectUnsafeExistingModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parent.Close() }()
+	t.Cleanup(func() { _ = parent.Close() })
 	for _, name := range []string{"unsafe-message", successorAddressesDirName} {
 		path := filepath.Join(root, name)
 		if err := os.Mkdir(path, 0o755); err != nil {
@@ -70,7 +70,7 @@ func TestSmCovReadImmutableRejectsMutableAndOversizedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = authority.Close() }()
+	t.Cleanup(func() { _ = authority.Close() })
 
 	mutable := filepath.Join(dir, "mutable")
 	if err := os.WriteFile(mutable, []byte("body"), 0o644); err != nil {
@@ -119,7 +119,7 @@ func TestSmCovOpenEventsAtRejectsUnsafeExistingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 	if events, err := openEventsAt(handoff, false); err == nil {
 		_ = events.Close()
 		t.Fatal("openEventsAt accepted mode 0755")
@@ -154,7 +154,7 @@ func TestSmCovReadImmutableFileReportsDeterministicIOFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestSmCovPublishImmutableReportsEntropyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if _, err := publishImmutableAtWithRandom(directory, "artifact", []byte("body"), 0o600, nil, func([]byte) (int, error) {
 		return 0, errors.New("entropy unavailable")
 	}); err == nil || !strings.Contains(err.Error(), "entropy unavailable") {
@@ -265,7 +265,7 @@ func TestSmCovRetainedAuthorityReportsDescriptorDupFailure(t *testing.T) {
 	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	fail := func(int) (int, error) { return -1, errors.New("descriptor exhausted") }
 	if retained, err := lock.retainHandoffForStore(fixture.root, fixture.request, fixture.digest, fail); err == nil {
 		_ = retained.Close()

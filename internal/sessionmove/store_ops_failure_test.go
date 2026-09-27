@@ -100,11 +100,12 @@ func TestMessageStoresPropagatePublicationPipelineErrors(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			fixture := smCovMsgNewFixture(t, true, true, time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC))
 			intent := fixture.smCovMsgDefaultIntent()
-			if failure == "intent publish" {
+			switch failure {
+			case "intent publish":
 				fixture.store.ops = failingPublish(messageIntentFileName)
-			} else if failure == "intent read" {
+			case "intent read":
 				fixture.store.ops = failingRead(messageIntentFileName)
-			} else {
+			case "receipt publish", "receipt read":
 				fixture.smCovMsgSaveIntent(t, intent)
 				if failure == "receipt publish" {
 					fixture.store.ops = failingPublish(messageReceiptFileName)
@@ -134,7 +135,7 @@ func TestMessageSynchestraStorePropagatesPublicationPipelineErrors(t *testing.T)
 	for _, failure := range []string{"marshal", "publish", "read"} {
 		t.Run(failure, func(t *testing.T) {
 			store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
-			defer func() { _ = lock.Close() }()
+			t.Cleanup(func() { _ = lock.Close() })
 			identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
 			switch failure {
 			case "marshal":
@@ -168,7 +169,7 @@ func TestSuccessorAddressStorePropagatesPublicationPipelineErrors(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = lock.Close() }()
+			t.Cleanup(func() { _ = lock.Close() })
 			switch failure {
 			case "marshal":
 				store.ops = failingMarshal()
@@ -256,7 +257,7 @@ func TestRetainedRequestRaceRefusesChangedDurableBytes(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			fixture := smCovNewLockFixture(t)
 			lock := fixture.smCovAcquire(t)
-			defer func() { _ = lock.Close() }()
+			t.Cleanup(func() { _ = lock.Close() })
 			requestPath := filepath.Join(smCovHandoffDir(fixture), requestFileName)
 			change := func() {
 				var raw []byte
@@ -298,7 +299,7 @@ func TestReceiptAndEventPublishBoundaryPropagatesRaceAndWriteFailures(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = handoff.Close() }()
+		t.Cleanup(func() { _ = handoff.Close() })
 		publish := func(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
 			created, err := publishImmutableAt(directory, name, raw, mode, nil)
 			if err != nil {
@@ -319,7 +320,7 @@ func TestReceiptAndEventPublishBoundaryPropagatesRaceAndWriteFailures(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = handoff.Close() }()
+		t.Cleanup(func() { _ = handoff.Close() })
 		publish := func(*os.File, string, []byte, os.FileMode) (bool, error) { return false, errStoreStep }
 		_, err = appendEventAtWithPublish(handoff, fixture.request.HandoffID, fixture.digest, HandoffEvent{Phase: PhaseOffered, At: time.Now()}, publish)
 		if !errors.Is(err, errStoreStep) {
@@ -344,7 +345,7 @@ func TestPendingPublicationRepairPropagatesEachFilesystemFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = directory.Close() }()
+			t.Cleanup(func() { _ = directory.Close() })
 			ops := repairOps{
 				open: unix.Openat, fstat: unix.Fstat,
 				readDir: func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) },
@@ -390,7 +391,7 @@ func TestImmutablePublisherReportsPublishedDescriptorFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = directory.Close() }()
+			t.Cleanup(func() { _ = directory.Close() })
 			ops := publishOps{fstat: unix.Fstat, close: (*os.File).Close}
 			if failure == "fstat" {
 				ops.fstat = func(int, *unix.Stat_t) error { return errStoreStep }
@@ -462,7 +463,7 @@ func TestCorroborationPreservesCanonicalMarshalFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 	route.SchemaVersion = RouteSchemaVersion
 	address := successorAddressFor(request, digest, receipt, route)
 	raw, err := marshalJSON(address)
