@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +200,15 @@ func TestRelocateCheckoutPlanKeepsSourceAndWritesNoReceipt(t *testing.T) {
 
 func TestRelocateCheckoutApplyMovesExactCheckoutAndRecordsReceipt(t *testing.T) {
 	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "worktrees.yaml"), []byte("version: 1\nworktrees:\n  root: "+sharedRoot+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "direct-checkout-move",
 		WorkLog: WorkLogOptions{Model: "unknown"},
@@ -208,6 +218,9 @@ func TestRelocateCheckoutApplyMovesExactCheckoutAndRecordsReceipt(t *testing.T) 
 	}
 	source := created[0].WorktreeDir
 	destination := filepath.Join(fixture.canonical, ".worktrees", "direct-checkout-move")
+	if !strings.HasPrefix(source, sharedRoot+string(filepath.Separator)) || source == destination {
+		t.Fatalf("created checkout %q is not in the configured shared root", source)
+	}
 	result, err := RelocateCheckout(context.Background(), RelocateCheckoutOptions{
 		ProjectsRoot: fixture.projectsRoot, CanonicalDir: fixture.canonical,
 		Source: source, Destination: destination, To: "local", Apply: true,
@@ -225,8 +238,21 @@ func TestRelocateCheckoutApplyMovesExactCheckoutAndRecordsReceipt(t *testing.T) 
 	if err != nil || claim.Task != "direct-checkout-move" || claim.Repository != "acme/app" {
 		t.Fatalf("claim after exact move = (%#v, %v)", claim, err)
 	}
-	if _, err := os.Stat(result.ReceiptPath); err != nil {
+	content, err := os.ReadFile(result.ReceiptPath)
+	if err != nil {
 		t.Fatalf("relocation receipt is not durable: %v", err)
+	}
+	var receipt workLogRelocationReceipt
+	if err := json.Unmarshal(content, &receipt); err != nil {
+		t.Fatalf("relocation receipt is not valid JSON: %v", err)
+	}
+	if receipt.Source != source || receipt.Destination != destination {
+		t.Fatalf("receipt describes %q -> %q, want %q -> %q", receipt.Source, receipt.Destination, source, destination)
+	}
+	if receipt.Type != workLogRelocationType || receipt.To != "local" ||
+		receipt.DestinationRoot != filepath.Join(fixture.canonical, ".worktrees") ||
+		receipt.DestinationRelative != "direct-checkout-move" {
+		t.Fatalf("receipt placement = %#v", receipt)
 	}
 }
 
