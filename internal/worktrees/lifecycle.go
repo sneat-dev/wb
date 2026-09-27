@@ -719,25 +719,9 @@ func ValidateTerminalCleanupReports(paths []string, repository string, expectedT
 			return fmt.Errorf("terminal cleanup report path %q is not one unique absolute path", path)
 		}
 		seenPaths[path] = true
-		info, err := os.Lstat(path)
+		report, err := readCleanupReportFile(path)
 		if err != nil {
-			return fmt.Errorf("stat terminal cleanup report %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("terminal cleanup report %s is not a regular file", path)
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read terminal cleanup report %s: %w", path, err)
-		}
-		decoder := json.NewDecoder(bytes.NewReader(contents))
-		decoder.DisallowUnknownFields()
-		var report cleanupReport
-		if err := decoder.Decode(&report); err != nil {
-			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
-		}
-		if err := requireJSONEOF(decoder); err != nil {
-			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+			return err
 		}
 		if report.GeneratedAt.IsZero() || (!previous.IsZero() && !report.GeneratedAt.After(previous)) {
 			return fmt.Errorf("terminal cleanup report %s has non-monotonic generated_at", path)

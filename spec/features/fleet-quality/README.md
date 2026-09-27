@@ -44,6 +44,26 @@ Fleet selection MUST apply the existing substring `--filter`, an optional `--mat
 
 Fleet coverage MUST aggregate Go coverage by covered statements divided by all instrumented statements, not by averaging module percentages. A repository without a Go module is skipped; a failing test or malformed profile is failed.
 
+#### REQ: remote-ci-coverage-reporting
+
+`wb coverage --ci` and `wb fleet coverage` MUST inspect latest test coverage reports without running local tests. `wb coverage --ci` queries the latest recorded CI coverage for the specified repository (or the repository containing the current working directory). `wb fleet coverage` inspects and aggregates coverage across all repositories in the fleet coverage store. When `--minimum` is passed, coverage below the threshold MUST return a non-zero exit code.
+
+#### REQ: coverage-summary-artifact
+
+`wb coverage summary` MUST parse a Go coverage profile and emit a standardized JSON summary (`wb-coverage-summary`) suitable for build artifact publication and remote collection.
+
+#### REQ: hub-coverage-harvester
+
+The Workbench Hub MUST subscribe to `workflow_run.completed` GitHub webhook events on default branches, download the `wb-coverage-summary` artifact using the GitHub App token, and persist the coverage record to the repository coverage store.
+
+#### REQ: fleet-metrics-web-dashboard
+
+The Workbench daemon/hub server MUST serve an interactive web dashboard at `/metrics` (and redirect `/coverage` to `/metrics?type=test_coverage`) displaying test coverage and registered fleet metrics across repositories. For test coverage, the dashboard MUST display per-repository status, statements, covered statements, and an expandable hierarchical breakdown by Go package.
+
+#### REQ: generic-repository-metrics
+
+The Workbench Hub MUST provide a generalized repository metrics model and API (`/v0/workbench/metrics`) capable of storing and querying arbitrary multi-dimensional repository measurements with scalar summaries, units, threshold rules, and dimensional breakdowns (e.g. packages, days, authors) using a DALgo document store.
+
 ### Verification
 
 #### REQ: conventional-go-checks
@@ -155,6 +175,22 @@ campaign cleanup evidence for one repository and commit
 that exact identity. If any component names another revision, reports a failed
 mechanism, or leaves a worktree or source branch behind, the command refuses
 without emitting a graduation receipt.
+
+### AC: instant-remote-ci-coverage
+
+**Requirements:** fleet-quality#req:remote-ci-coverage-reporting, fleet-quality#req:coverage-summary-artifact, fleet-quality#req:hub-coverage-harvester
+
+**Given** a repository coverage summary artifact published by GitHub Actions on push/merge to default branch and harvested by Workbench Hub into the coverage store
+**When** `wb coverage [repo] --ci` or `wb fleet coverage` is executed
+**Then** latest test coverage statements and percentage are reported instantaneously (<100ms) without executing local `go test` runs.
+
+### AC: fleet-metrics-web-dashboard
+
+**Requirements:** fleet-quality#req:fleet-metrics-web-dashboard, fleet-quality#req:generic-repository-metrics
+
+**Given** a running Workbench server (`wb daemon serve` or `wb hub`) with harvested repository coverage records or published metrics
+**When** a user navigates to `/metrics` or `/coverage`
+**Then** the server serves a responsive HTML page displaying each repository's primary metric with visual health indicators, and allows expanding a repository to inspect its dimensional breakdown (such as Go packages for coverage).
 
 ## Open Questions
 

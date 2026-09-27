@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-// TestAliveRejectsNonPositivePIDsWithoutConsultingTheOS covers Alive's guard
-// branch (registry.go:75-77): a non-positive PID is never live, and the
+// TestAliveRejectsNonPositivePIDsWithoutConsultingTheOS covers DefaultAlive's
+// guard branch (registry.go:75-77): a non-positive PID is never live, and the
 // function must return that without delegating to session.ProcessAlive.
 func TestAliveRejectsNonPositivePIDsWithoutConsultingTheOS(t *testing.T) {
 	t.Parallel()
 	for _, pid := range []int{0, -1, -42} {
-		if Alive(pid) {
-			t.Errorf("Alive(%d) = true, want false for a non-positive pid", pid)
+		if DefaultAlive(pid) {
+			t.Errorf("DefaultAlive(%d) = true, want false for a non-positive pid", pid)
 		}
 	}
 }
@@ -26,8 +26,8 @@ func TestAliveRejectsNonPositivePIDsWithoutConsultingTheOS(t *testing.T) {
 // this observes the real delegation rather than a stub.
 func TestAliveDelegatesToProcessAliveForAPositivePID(t *testing.T) {
 	t.Parallel()
-	if !Alive(os.Getpid()) {
-		t.Fatalf("Alive(%d) = false, want true for the running test process", os.Getpid())
+	if !DefaultAlive(os.Getpid()) {
+		t.Fatalf("DefaultAlive(%d) = false, want true for the running test process", os.Getpid())
 	}
 }
 
@@ -82,7 +82,7 @@ func TestListFailsWhenTheRegistryRootIsNotADirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, directory), []byte("not a dir"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := List(home); err == nil {
+	if _, err := List(home, Options{}); err == nil {
 		t.Fatal("List(home) with a non-directory registry root = nil error, want one")
 	} else if !strings.Contains(err.Error(), "read wait registry") {
 		t.Fatalf("List error = %q, want it to name the read-registry step", err.Error())
@@ -104,11 +104,10 @@ func TestListSkipsAnEntryItCannotRead(t *testing.T) {
 	if err := os.Symlink(danglingTarget, filepath.Join(dir(home), "dangling.json")); err != nil {
 		t.Skipf("symlinks unavailable in this environment: %v", err)
 	}
-	fixedAlive(t, true)
 	if _, err := Register(home, Record{ID: "real", PID: 1, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	records, err := List(home)
+	records, err := List(home, fixedAlive(true))
 	if err != nil {
 		t.Fatalf("List with an unreadable entry present failed entirely: %v", err)
 	}
@@ -127,7 +126,7 @@ func TestPruneSurfacesAListFailureRatherThanReportingZero(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, directory), []byte("not a dir"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := Prune(home)
+	removed, err := Prune(home, Options{})
 	if err == nil {
 		t.Fatal("Prune(home) with an unreadable registry = nil error, want one")
 	}

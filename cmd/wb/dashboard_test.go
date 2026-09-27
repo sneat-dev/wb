@@ -114,3 +114,41 @@ func TestDashboardLocalPrintsAProvenanceWarningToStderr(t *testing.T) {
 		t.Fatalf("stderr = %q, want the warning printed", stderr.String())
 	}
 }
+
+func TestDashboardMetricsAndCoverageFlags(t *testing.T) {
+	var opened string
+	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
+		open: func(target string) error { opened = target; return nil },
+		localURL: func(_ context.Context, _ string) (string, string, error) {
+			return "http://127.0.0.1:9000/", "", nil
+		},
+	})
+	command.SetArgs([]string{"--metrics"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if opened != "http://127.0.0.1:9000/metrics" {
+		t.Fatalf("opened = %q, want http://127.0.0.1:9000/metrics", opened)
+	}
+
+	command = newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
+		open: func(target string) error { opened = target; return nil },
+		localURL: func(_ context.Context, _ string) (string, string, error) {
+			return "http://127.0.0.1:9000/", "", nil
+		},
+	})
+	command.SetArgs([]string{"--coverage"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if opened != "http://127.0.0.1:9000/coverage" {
+		t.Fatalf("opened = %q, want http://127.0.0.1:9000/coverage", opened)
+	}
+}
+
+func TestNewDashboardCmd(t *testing.T) {
+	cmd := newDashboardCmd(&invocation{})
+	if cmd == nil || cmd.Use != "dashboard" {
+		t.Fatalf("expected dashboard command, got %v", cmd)
+	}
+}

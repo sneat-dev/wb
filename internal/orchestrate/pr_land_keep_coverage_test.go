@@ -2,9 +2,14 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 // orchCovSourceCommits reads the commits a landing would carry, in the order
@@ -89,6 +94,35 @@ func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 // a function that now runs real git through orchestrateGit/orchestrateRunner
 // (internal/runner), which task-24's runtime guard blocks outside the e2e
 // tier.
+
+func TestOrchCovBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	build := []string{"go", "build", "./..."}
+	run := runnertest.New(t)
+	run.ExpectArgv(build, runner.Result{}, nil)
+	run.ExpectArgv(build, runner.Result{CombinedOutput: "compile exploded\n"}, errors.New("exit status 1"))
+	if refusal := buildAt(context.Background(), run, worktree, SourceCommit{SHA: "0123456789abcdef"}, build); refusal != nil {
+		t.Fatalf("passing build refusal = %+v", refusal)
+	}
+	refusal := buildAt(context.Background(), run, worktree,
+		SourceCommit{SHA: "0123456789abcdef", Subject: "add the thing"},
+		build)
+	if refusal == nil || refusal.code != LandRefusalKeepDoesNotBuild {
+		t.Fatalf("failing build refusal = %+v", refusal)
+	}
+	if !strings.Contains(refusal.reason, "add the thing") || !strings.Contains(refusal.reason, "compile exploded") {
+		t.Fatalf("failing build refusal = %+v", refusal)
+	}
+	if !strings.Contains(refusal.command, "0123456789ab") {
+		t.Fatalf("failing build refusal command = %q", refusal.command)
+	}
+	for _, call := range run.Calls() {
+		if call.Op != "RunOpts" || call.Dir != worktree || !call.Opts.CaptureCombined || strings.Join(call.Opts.Env, "\x00") != strings.Join(console.Env(), "\x00") {
+			t.Fatalf("build runner call = %+v", call)
+		}
+	}
+}
 
 func TestOrchCovDefaultBuildCommandRecognisesOnlyGo(t *testing.T) {
 	t.Parallel()

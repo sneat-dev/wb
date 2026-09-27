@@ -115,7 +115,7 @@ func attributeSessionWaits(rows []sessionRow, projectsRoot string, errOut io.Wri
 	if err != nil {
 		return
 	}
-	records, err := waitregistry.List(home)
+	records, err := waitregistry.List(home, waitregistry.Options{})
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "derive outstanding waits: %v\n", err)
 		return

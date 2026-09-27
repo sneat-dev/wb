@@ -7,21 +7,23 @@ import (
 	"time"
 )
 
-func fixedAlive(t *testing.T, live bool) {
-	t.Helper()
-	previous := Alive
-	Alive = func(int) bool { return live }
-	t.Cleanup(func() { Alive = previous })
+// fixedAlive returns an Options whose Alive check ignores the pid and always
+// answers live. It is a value, not a package mutation: callers pass it to
+// List/Prune, so parallel tests deciding different liveness never race on
+// shared state.
+func fixedAlive(live bool) Options {
+	return Options{Alive: func(int) bool { return live }}
 }
 
 func TestRegisterMakesTheWaitVisibleAndReleaseRemovesIt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
-	fixedAlive(t, true)
+	opts := fixedAlive(true)
 	release, err := Register(home, Record{ID: "a", PID: 42, Kind: "pr", Targets: []string{"acme/app#1"}, Until: "checks-settled", StartedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	records, err := List(home)
+	records, err := List(home, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +34,7 @@ func TestRegisterMakesTheWaitVisibleAndReleaseRemovesIt(t *testing.T) {
 		t.Error("a live waiter was reported stale")
 	}
 	release()
-	records, err = List(home)
+	records, err = List(home, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +54,13 @@ func TestRegisterStampsProvenanceFromEnv(t *testing.T) {
 	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_4")
 
 	home := t.TempDir()
-	fixedAlive(t, true)
+	opts := fixedAlive(true)
 	release, err := Register(home, Record{ID: "b", PID: 42, Kind: "pr", Targets: []string{"acme/app#2"}, Until: "checks-settled", StartedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(release)
-	records, err := List(home)
+	records, err := List(home, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,15 +75,14 @@ func TestRegisterStampsProvenanceFromEnv(t *testing.T) {
 }
 
 func TestListReportsADeadWaiterRatherThanHidingIt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
-	fixedAlive(t, true)
 	if _, err := Register(home, Record{ID: "b", PID: 7, Kind: "pr", Targets: []string{"acme/app#2"}, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	// The waiter is killed without releasing: this is the case worth seeing,
 	// because the session is now quiet with nothing watching for it.
-	fixedAlive(t, false)
-	records, err := List(home)
+	records, err := List(home, fixedAlive(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,12 +92,12 @@ func TestListReportsADeadWaiterRatherThanHidingIt(t *testing.T) {
 }
 
 func TestListNeverDeletesAndPruneRemovesOnlyStale(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
-	fixedAlive(t, false)
 	if _, err := Register(home, Record{ID: "dead", PID: 7, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := List(home); err != nil {
+	if _, err := List(home, fixedAlive(false)); err != nil {
 		t.Fatal(err)
 	}
 	// Listing must not have removed it: seeing a dead waiter cannot be a
@@ -104,25 +105,44 @@ func TestListNeverDeletesAndPruneRemovesOnlyStale(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, directory, "dead.json")); err != nil {
 		t.Fatalf("List deleted a stale record: %v", err)
 	}
-	fixedAlive(t, true)
 	if _, err := Register(home, Record{ID: "live", PID: 8, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	// Only the dead one goes.
-	Alive = func(pid int) bool { return pid == 8 }
-	removed, err := Prune(home)
+	onlyEightIsAlive := Options{Alive: func(pid int) bool { return pid == 8 }}
+	removed, err := Prune(home, onlyEightIsAlive)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if removed != 1 {
 		t.Errorf("pruned %d, want 1", removed)
 	}
-	records, err := List(home)
+	records, err := List(home, onlyEightIsAlive)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(records) != 1 || records[0].ID != "live" {
 		t.Errorf("prune removed the wrong record: %+v", records)
+	}
+}
+
+// TestListDefaultsToTheRealLivenessCheckWhenNoneIsInjected covers the
+// production path: Options{} (no injected Alive, exactly what cmd/wb passes)
+// must fall back to DefaultAlive rather than treating every record as dead.
+// The test process's own PID is a real, already-running process, so this
+// starts nothing new.
+func TestListDefaultsToTheRealLivenessCheckWhenNoneIsInjected(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Register(home, Record{ID: "self", PID: os.Getpid(), StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := List(home, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Stale {
+		t.Fatalf("List(home, Options{}) = %+v, want the running test process reported live", records)
 	}
 }
 
@@ -135,7 +155,7 @@ func TestRegisterRefusesARecordWithNoIdentity(t *testing.T) {
 
 func TestListIsEmptyRatherThanFailingBeforeAnyWait(t *testing.T) {
 	t.Parallel()
-	records, err := List(t.TempDir())
+	records, err := List(t.TempDir(), Options{})
 	if err != nil {
 		t.Fatalf("listing before any wait failed: %v", err)
 	}
@@ -159,7 +179,7 @@ func TestListIgnoresJunkInTheRegistry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	records, err := List(home)
+	records, err := List(home, Options{})
 	if err != nil {
 		t.Fatalf("junk in the registry broke listing: %v", err)
 	}

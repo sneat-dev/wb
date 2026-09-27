@@ -96,6 +96,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
 | `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
+| `pr update` | yes | rejected | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |

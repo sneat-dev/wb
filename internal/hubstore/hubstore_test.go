@@ -205,6 +205,25 @@ func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
 	if err != nil || len(after.Events) != 0 {
 		t.Fatalf("Poll after acknowledge = %+v, %v", after, err)
 	}
+
+	coverageStore := hub.NewRepositoryCoverageStore(store)
+	coverageRecord := hub.StoredRepositoryCoverage{
+		Repository: "sneat-dev/wb",
+		SHA:        strings.Repeat("a", 40),
+		Statements: 1000,
+		Covered:    850,
+		Percentage: 85.0,
+	}
+	if err := coverageStore.SaveCoverage(ctx, coverageRecord); err != nil {
+		t.Fatalf("SaveCoverage on inGitDB: %v", err)
+	}
+	gotCoverage, found, err := coverageStore.GetCoverage(ctx, "sneat-dev/wb")
+	if err != nil || !found {
+		t.Fatalf("GetCoverage on inGitDB = %+v, %v, %v", gotCoverage, found, err)
+	}
+	if gotCoverage.Statements != 1000 || gotCoverage.Covered != 850 {
+		t.Fatalf("GetCoverage on inGitDB statements mismatch = %+v", gotCoverage)
+	}
 }
 
 func TestInGitDBEngineRefusesAnEmptyPathAndAnUnusableDirectory(t *testing.T) {

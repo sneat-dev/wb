@@ -13,7 +13,7 @@ const indexHTML = `<!doctype html>
   </style>
 </head>
 <body><main>
-  <header><div><h1>WB operations</h1><div class="sub">Worktrees, governed command cost, and machine health</div></div><div id="machine" class="machine">Connecting…</div></header>
+  <header><div><h1>WB operations</h1><div class="sub">Worktrees, governed command cost, and machine health</div><nav style="display:flex;gap:12px;margin-top:10px;font-size:13px"><a href="/" style="color:var(--ink);font-weight:600;text-decoration:none">Operations</a><span>·</span><a href="/metrics" style="color:var(--accent);text-decoration:none">Metrics &amp; Coverage</a></nav></div><div id="machine" class="machine">Connecting…</div></header>
   <div id="error" class="error"></div>
   <section class="cards">
     <div class="card"><div class="label">Worktrees</div><div id="worktrees" class="value">—</div></div>

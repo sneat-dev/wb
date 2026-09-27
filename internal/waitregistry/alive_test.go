@@ -11,18 +11,18 @@ import (
 func TestAliveNonPositivePID(t *testing.T) {
 	t.Parallel()
 
-	if Alive(0) {
-		t.Fatalf("Alive(0) = true, want false")
+	if DefaultAlive(0) {
+		t.Fatalf("DefaultAlive(0) = true, want false")
 	}
-	if Alive(-1) {
-		t.Fatalf("Alive(-1) = true, want false")
+	if DefaultAlive(-1) {
+		t.Fatalf("DefaultAlive(-1) = true, want false")
 	}
 }
 
 func TestAliveDelegatesForPositivePID(t *testing.T) {
 	t.Parallel()
 
-	if !Alive(os.Getpid()) {
-		t.Fatalf("Alive(os.Getpid()) = false, want true")
+	if !DefaultAlive(os.Getpid()) {
+		t.Fatalf("DefaultAlive(os.Getpid()) = false, want true")
 	}
 }

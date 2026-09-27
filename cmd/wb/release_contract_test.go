@@ -260,6 +260,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	assert("Windows validation commands", workflowContractTestCommands(t, windows), []string{
 		"go build ./...",
+		"go vet ./...",
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
 		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
 		"go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'",

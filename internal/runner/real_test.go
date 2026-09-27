@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -80,6 +82,116 @@ func TestRealRunReportsAStartFailureWithZeroExitCode(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, want 0 for a start failure (never reached a process exit)", result.ExitCode)
+	}
+}
+
+// TestRunnerHelperProcessLeavesAGrandchildHoldingItsStdio is the child half
+// of TestRealRunReturnsSuccessWhenOnlyAGrandchildKeepsThePipeOpen and its
+// non-zero-exit sibling below: it starts a grandchild that inherits its own
+// stdout/stderr -- the same fds runner.Real's Run captured via a pipe --
+// and lets that grandchild sleep well past WaitDelay, then this process
+// itself exits immediately with WB_RUNNER_EXIT. This reproduces an ssh
+// ControlPersist master (started by `git ls-remote`/`fetch` over ssh) or a
+// credential helper that outlives a successful child while still holding
+// its inherited stdout/stderr open.
+func TestRunnerHelperProcessLeavesAGrandchildHoldingItsStdio(t *testing.T) {
+	t.Parallel()
+	sleepMS := os.Getenv("WB_RUNNER_GRANDCHILD_SLEEP_MS")
+	if sleepMS == "" {
+		return
+	}
+	grandchild := exec.Command(os.Args[0], "-test.run=^TestRunnerHelperProcessSleepsInheritingStdio$") //nolint:gosec // helper-process fixture re-running this same test binary
+	grandchild.Env = append(os.Environ(), "WB_RUNNER_SLEEP_MS="+sleepMS)
+	grandchild.Stdout = os.Stdout
+	grandchild.Stderr = os.Stderr
+	if err := grandchild.Start(); err != nil {
+		os.Exit(9)
+	}
+	// Deliberately not waited on: the grandchild outliving this process,
+	// while still holding its inherited stdout/stderr open, is exactly the
+	// scenario under test.
+	code, _ := strconv.Atoi(os.Getenv("WB_RUNNER_EXIT"))
+	os.Exit(code)
+}
+
+// TestRunnerHelperProcessSleepsInheritingStdio is the grandchild half of the
+// same scenario: it holds whatever stdout/stderr fds it inherited open for
+// WB_RUNNER_SLEEP_MS -- long enough to outlast WaitDelay -- then exits on
+// its own. No parent test ever waits on it; it is bounded by its own sleep
+// only, never used as synchronization.
+func TestRunnerHelperProcessSleepsInheritingStdio(t *testing.T) {
+	t.Parallel()
+	ms, err := strconv.Atoi(os.Getenv("WB_RUNNER_SLEEP_MS"))
+	if err != nil {
+		return
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+// TestRealRunReturnsSuccessWhenOnlyAGrandchildKeepsThePipeOpen covers
+// runner/real.go's withoutSpuriousWaitDelay: internal/process sets
+// WaitDelay (250ms) on every non-interactive child (command_unix.go), so
+// when the direct child exits 0 but a grandchild it started keeps stdout
+// open past that delay, Cmd.Wait forces the pipe closed and returns the
+// bare exec.ErrWaitDelay sentinel even though the child's own captured
+// output is already complete. Before the fix, Run propagated that as a
+// failure for a child that actually succeeded; the assertion on elapsed
+// time proves the call returns around WaitDelay rather than blocking for
+// the grandchild's full (much longer) sleep.
+func TestRealRunReturnsSuccessWhenOnlyAGrandchildKeepsThePipeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WaitDelay is only set on darwin/linux (internal/process/command_unix.go); Windows has no forced pipe-close to race")
+	}
+	runnertest.AllowRealProcess(t)
+	// The grandchild's sleep is deliberately much longer than WaitDelay
+	// (250ms): the bound below only needs it to still be sleeping when Run
+	// returns, with headroom for -race's slower subprocess startup, not to
+	// double as a synchronization primitive.
+	t.Setenv("WB_RUNNER_GRANDCHILD_SLEEP_MS", "4000")
+	t.Setenv("WB_RUNNER_EXIT", "0")
+
+	start := time.Now()
+	result, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], "-test.run=^TestRunnerHelperProcessLeavesAGrandchildHoldingItsStdio$")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Run: %v, want nil -- the child itself exited 0 and only a grandchild kept stdout open", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Run took %s, want it to return well before the grandchild's 4s sleep (bounded by WaitDelay plus subprocess startup, not the full sleep)", elapsed)
+	}
+}
+
+// TestRealRunKeepsTheErrorWhenTheChildExitsNonZeroWhileAGrandchildKeepsThePipeOpen
+// is TestRealRunReturnsSuccessWhenOnlyAGrandchildKeepsThePipeOpen's
+// non-zero-exit sibling: os/exec's Cmd.Wait only surfaces the bare
+// exec.ErrWaitDelay sentinel when the process's own exit already succeeded
+// (a non-zero exit becomes *exec.ExitError before the I/O goroutines are
+// ever consulted), so this must keep reporting the child's real failure
+// even though the same grandchild is still holding the pipe open.
+func TestRealRunKeepsTheErrorWhenTheChildExitsNonZeroWhileAGrandchildKeepsThePipeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WaitDelay is only set on darwin/linux (internal/process/command_unix.go); Windows has no forced pipe-close to race")
+	}
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_GRANDCHILD_SLEEP_MS", "4000")
+	t.Setenv("WB_RUNNER_EXIT", "7")
+
+	start := time.Now()
+	result, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], "-test.run=^TestRunnerHelperProcessLeavesAGrandchildHoldingItsStdio$")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("want an error for a non-zero exit even though a grandchild kept the pipe open")
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", result.ExitCode)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Run took %s, want it to return well before the grandchild's 4s sleep", elapsed)
 	}
 }
 

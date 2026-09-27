@@ -321,6 +321,9 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	peersSource := hubPeerReadSource{trust: peerTrust, queuedWork: hub.NewQueuedWorkStore(store)}
 	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
 
+	coverageStore := hub.NewRepositoryCoverageStore(store)
+	metricsStore := hub.NewRepositoryMetricsStore(store, coverageStore)
+
 	handler := hub.NewHandler(hub.HandlerOptions{
 		ViewerResolver: fixedViewerResolver{viewer: viewer},
 		MachineBearer:  hub.NewPeerAwareBearerResolver(hub.NewMachineBearerResolver(resolver, pepper), peerTrust),
@@ -332,6 +335,8 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		},
 		Status:        status,
 		Installations: webhook.Installations(),
+		Coverage:      coverageStore,
+		Metrics:       metricsStore,
 		WebhookSecret: webhook.WebhookSecret(),
 		// Projection stays unset: the hosted instance projects deliveries into
 		// its own dashboard read model, which a loopback hub reads from the

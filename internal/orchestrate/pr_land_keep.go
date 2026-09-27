@@ -231,13 +231,12 @@ func buildAt(ctx context.Context, run runner.Runner, worktree string, source Sou
 			command: "wb pr land … --keep-commits … --reason \"…\" --build-command \"<the repository's build>\"",
 		}
 	}
-	result, err := run.Run(ctx, worktree, command[0], command[1:]...)
+	result, err := run.RunOpts(ctx, worktree, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, command[0], command[1:]...)
 	if err != nil {
-		output := result.Stdout + result.Stderr
 		return &landRefusal{
 			code: LandRefusalKeepDoesNotBuild,
 			reason: "kept commit " + shortMergeRevision(source.SHA) + " (" + source.Subject + ") does not build: " +
-				strings.TrimSpace(lastLines(output, 5)),
+				strings.TrimSpace(lastLines(result.CombinedOutput, 5)),
 			command: "wb pr land --keep-commits <a smaller set that excludes " + shortMergeRevision(source.SHA) + "> --reason \"…\"",
 		}
 	}
