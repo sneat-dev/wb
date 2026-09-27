@@ -339,6 +339,9 @@ func TestLandWorktreeMergePullRequestRouteDelegatesToTheSharedEngine(t *testing.
 	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
 
 	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	// This end-to-end path starts several real git and gh processes while
+	// checking the same head twice; allow those reads to finish under load.
+	options.Timeout = 15 * time.Second
 	options.Cleanup = true
 	landed, err := ResumeWorktreeMerge(context.Background(), options)
 	if err != nil {
