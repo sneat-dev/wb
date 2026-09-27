@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/pathguard"
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -2160,6 +2161,14 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitWithExtraFiles(ctx, dir, nil, args...)
 }
 
+type gitRunnerContextKey struct{}
+
+// withGitRunner lets lifecycle tests fail a selected ordinary Git call without
+// replacing descriptor-bearing canonical and secure helper operations.
+func withGitRunner(ctx context.Context, commandRunner runner.Runner) context.Context {
+	return context.WithValue(ctx, gitRunnerContextKey{}, commandRunner)
+}
+
 // canonicalOwnerDirectories lists the {owner} directories under projectsRoot,
 // reading through a literal forge host level when the first-level entry is one
 // and taking every other first-level directory as the legacy {owner} level.
@@ -2195,17 +2204,22 @@ func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, a
 			}
 		}
 	}
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	command.Env = console.Env()
-	command.ExtraFiles = extraFiles
-	// Killing git is not enough to unblock CombinedOutput: git's own child (ssh,
-	// for a remote operation) inherits the output pipes and can hold them open
-	// long after its parent is gone, which is exactly what an aborted fleet
-	// sweep left behind — a dead wb, a reaped git, and an ssh still running.
-	// WaitDelay force-closes those descriptors shortly after cancellation so a
-	// deadline actually ends the call.
-	command.WaitDelay = gitCancellationGraceDelay
-	output, err := command.CombinedOutput()
+	var output []byte
+	var err error
+	if commandRunner, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok && extraFiles == nil {
+		result, runErr := commandRunner.RunOpts(ctx, dir, runner.RunOptions{
+			CaptureCombined: true, Env: console.Env(), WaitDelay: gitCancellationGraceDelay,
+		}, "git", append([]string{"-C", dir}, args...)...)
+		output, err = []byte(result.CombinedOutput), runErr
+	} else {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		command.Env = console.Env()
+		command.ExtraFiles = extraFiles
+		// A Git child can keep output pipes open after Git exits. Bound that wait
+		// after cancellation so a stalled remote cannot hold the caller forever.
+		command.WaitDelay = gitCancellationGraceDelay
+		output, err = command.CombinedOutput()
+	}
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -2236,6 +2250,16 @@ func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...s
 	return trimSecureGitOutput(output), nil
 }
 
+type canonicalGitInterceptor func(context.Context, []string, func() ([]byte, error)) ([]byte, error)
+type canonicalGitInterceptorKey struct{}
+
+// withCanonicalGitInterceptor lets tests fail one authorized canonical Git
+// operation while allowing every other call to use the retained-FD helper.
+// It is scoped to the invocation's context, so parallel work is independent.
+func withCanonicalGitInterceptor(ctx context.Context, intercept canonicalGitInterceptor) context.Context {
+	return context.WithValue(ctx, canonicalGitInterceptorKey{}, intercept)
+}
+
 // gitCanonicalBytes returns Git stdout without trimming or mixing in stderr.
 // Callers that authenticate blob contents need the byte-exact stream, while
 // the canonical helper still supplies the same retained-descriptor authority.
@@ -2243,30 +2267,40 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 	if err := canonical.authorizeForGit(); err != nil {
 		return nil, err
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("locate WB canonical Git helper: %w", err)
-	}
-	gitExecutable, err := trustedGitExecutable()
-	if err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-	command.Env = secureHelperEnvironment(ctx)
-	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
-	output, err := command.Output()
-	if err != nil {
-		detail := ""
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			detail = strings.TrimSpace(string(exitErr.Stderr))
+	runSecure := func() ([]byte, error) {
+		executable, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("locate WB canonical Git helper: %w", err)
 		}
-		if detail == "" {
-			detail = err.Error()
+		gitExecutable, err := trustedGitExecutable()
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
+		command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
+		command.Env = secureHelperEnvironment(ctx)
+		command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+		output, err := command.Output()
+		if err != nil {
+			detail := ""
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				detail = strings.TrimSpace(string(exitErr.Stderr))
+			}
+			if detail == "" {
+				detail = err.Error()
+			}
+			return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
+		}
+		return output, nil
 	}
-	return output, nil
+	if intercept, ok := ctx.Value(canonicalGitInterceptorKey{}).(canonicalGitInterceptor); ok && intercept != nil {
+		output, runErr := intercept(ctx, append([]string(nil), args...), runSecure)
+		if validationErr := canonical.validate(); validationErr != nil {
+			return nil, errors.Join(runErr, validationErr)
+		}
+		return output, runErr
+	}
+	return runSecure()
 }
 
 // gitCanonicalPolicyBytes reads an exact repository policy blob through the

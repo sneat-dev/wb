@@ -146,6 +146,96 @@ func TestLogIntegrateAfterRecoveredFetchFailure(t *testing.T) {
 	}
 }
 
+func TestLogHandoffRecordsOfferBeforeTransferringClaim(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "handoff-offer",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	before, err := readWorkLogProjection(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := LogHandoff(context.Background(), LogHandoffOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+		Summary: " hand over the current feature ", NextAction: "review the patch",
+		Successor: "next-session", HandoffID: "handoff-1", TargetMachine: "machine-b",
+		BundleCommit: created[0].BaseSHA, SourceWorkLogReference: "source-log",
+		PredecessorWBSessionID: "prior-session", SourceMachine: "machine-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer.Applied || offer.Event == nil || offer.Event.Type != LocalEventHandoff ||
+		offer.Event.Message != "hand over the current feature" || offer.Event.NextAction != "review the patch" ||
+		offer.Event.Git == nil || offer.Event.Git.Head == "" || offer.Event.Extra["apply"] != false ||
+		offer.Event.Extra["handoff_id"] != "handoff-1" || offer.Event.Extra["target_machine"] != "machine-b" ||
+		offer.Event.Extra["bundle_commit"] != created[0].BaseSHA ||
+		offer.Event.Extra["source_work_log_reference"] != "source-log" ||
+		offer.Event.Extra["predecessor_wb_session_id"] != "prior-session" ||
+		offer.Event.Extra["source_machine"] != "machine-a" {
+		t.Fatalf("handoff offer lost journal evidence: %#v", offer)
+	}
+	if current, err := readWorkLogProjection(worktree); err != nil || current != before {
+		t.Fatalf("unapplied handoff changed claim: before=%#v after=%#v err=%v", before, current, err)
+	}
+	applied, err := LogHandoff(context.Background(), LogHandoffOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Summary: "successor accepted",
+		Successor: "next-session", Model: "unknown", Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || applied.Event == nil || applied.Event.Extra["apply"] != true {
+		t.Fatalf("applied handoff = %#v", applied)
+	}
+	after, err := readWorkLogProjection(worktree)
+	if err != nil || after.ClaimID == before.ClaimID || after.Lifecycle != "active" {
+		t.Fatalf("handoff successor claim = %#v, err=%v; prior=%#v", after, err, before)
+	}
+}
+
+func TestObserveUsageRequiresProvenanceAndTotalsProvidedTokens(t *testing.T) {
+	input, output := int64(13), int64(7)
+	cost := 0.25
+	if usage, err := observeUsage("", nil, nil, nil, "", ""); err != nil || usage != nil {
+		t.Fatalf("absent usage = (%#v, %v), want no observation", usage, err)
+	}
+	if _, err := observeUsage("", &input, nil, nil, "", ""); err == nil || !strings.Contains(err.Error(), "--usage-discriminator") {
+		t.Fatalf("tokens without provenance = %v", err)
+	}
+	if _, err := observeUsage("unknown", nil, nil, nil, "", ""); err == nil || !strings.Contains(err.Error(), "usage discriminator") {
+		t.Fatalf("unknown provenance = %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		input *int64
+		out   *int64
+		want  int64
+	}{
+		{"input only", &input, nil, input},
+		{"output only", nil, &output, output},
+		{"both", &input, &output, input + output},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage, err := observeUsage(" provider_reported ", tc.input, tc.out, &cost, " USD ", " receipt-1 ")
+			if err != nil || usage == nil || usage.TotalTokens == nil || *usage.TotalTokens != tc.want ||
+				usage.Discriminator != "provider_reported" || usage.Currency != "USD" || usage.ProviderRef != "receipt-1" ||
+				usage.EstimatedCost == nil || *usage.EstimatedCost != cost {
+				t.Fatalf("usage observation = (%#v, %v), want %d token total with provenance", usage, err, tc.want)
+			}
+		})
+	}
+	usage, err := observeUsage("unavailable", nil, nil, nil, "", "")
+	if err != nil || usage == nil || usage.TotalTokens != nil {
+		t.Fatalf("unavailable token observation = (%#v, %v), want no invented total", usage, err)
+	}
+}
+
 // TestLogFinalizeReportRecordsTerminalEvidenceAndListFilters proves the
 // wb worktree log finalize --report journey at the library level: the report
 // body lands under WB_HOME (never inside the worktree/source Git), the sealed

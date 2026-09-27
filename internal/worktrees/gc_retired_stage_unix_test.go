@@ -129,6 +129,84 @@ func TestRetireEmptyUnscopedLocalStageDoesNotClaimReplacementRemoval(t *testing.
 	}
 }
 
+func TestRetireEmptyUnscopedLocalStageRevalidatesPlannedIdentity(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		change func(t *testing.T, root, stage string) string
+		want   string
+	}{
+		{"wrong parent", func(t *testing.T, root, stage string) string {
+			return filepath.Join(root, "other", testRetiredStage)
+		}, "exact canonical-local identity"},
+		{"wrong name", func(t *testing.T, root, stage string) string {
+			return filepath.Join(root, "ordinary-stage")
+		}, "exact canonical-local identity"},
+		{"missing stage", func(t *testing.T, root, stage string) string {
+			if err := os.Remove(stage); err != nil {
+				t.Fatal(err)
+			}
+			return stage
+		}, "already absent"},
+		{"symlink stage", func(t *testing.T, root, stage string) string {
+			if err := os.Remove(stage); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(t.TempDir(), stage); err != nil {
+				t.Fatal(err)
+			}
+			return stage
+		}, "without following links"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			stage := filepath.Join(root, testRetiredStage)
+			if err := os.Mkdir(stage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := scenario.change(t, root, stage)
+			artifacts := []LifecycleArtifact{{WorktreesRoot: root, Path: path, Kind: lifecycleArtifactKindStage, State: "quarantined", Disposition: dispositionEmptyUnscopedLocalRetiredStage, Eligible: true}}
+			retireEmptyUnscopedLocalStages(artifacts)
+			got := artifacts[0]
+			if !strings.Contains(got.Reason, scenario.want) {
+				t.Fatalf("result = %#v", got)
+			}
+			if scenario.name == "missing stage" {
+				if !got.Applied || got.Disposition != dispositionRetiredEmptyUnscopedLocalStage {
+					t.Fatalf("absent stage result = %#v", got)
+				}
+			} else if got.Applied || got.Eligible {
+				t.Fatalf("unsafe stage was retired: %#v", got)
+			}
+			if scenario.name != "missing stage" {
+				if _, err := os.Lstat(stage); err != nil {
+					t.Fatalf("original stage changed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestRetireEmptyUnscopedLocalStagePreservesIsolatedStageChangedBeforeRemoval(t *testing.T) {
+	root := t.TempDir()
+	stage := filepath.Join(root, testRetiredStage)
+	if err := os.Mkdir(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []LifecycleArtifact{{WorktreesRoot: root, Path: stage, Kind: lifecycleArtifactKindStage, State: "quarantined", Disposition: dispositionEmptyUnscopedLocalRetiredStage, Eligible: true}}
+	retireEmptyUnscopedLocalStagesWithHooks(artifacts, nil, func(name string) {
+		if err := os.WriteFile(filepath.Join(root, name, "new-evidence"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	got := artifacts[0]
+	if got.Applied || got.Eligible || !strings.Contains(got.Reason, "remove isolated empty retired") || got.ArchivePath == "" {
+		t.Fatalf("changed isolated stage = %#v", got)
+	}
+	if data, err := os.ReadFile(filepath.Join(got.ArchivePath, "new-evidence")); err != nil || string(data) != "keep" {
+		t.Fatalf("isolation lost new evidence: %q, %v", data, err)
+	}
+}
+
 func gcArtifactAtPath(t *testing.T, outcome GCOutcome, path string) LifecycleArtifact {
 	t.Helper()
 	for _, artifact := range outcome.Artifacts {
