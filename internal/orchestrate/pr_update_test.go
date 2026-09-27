@@ -188,6 +188,31 @@ func TestUpdatePullRequestNoOpRecordsUnverifiedRead(t *testing.T) {
 	}
 }
 
+func TestUpdatePullRequestRejectsDriftedOrIncompletePRIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*PullRequestView)
+	}{
+		{"locked", func(view *PullRequestView) { view.Locked = true }},
+		{"foreign head repository", func(view *PullRequestView) { view.Head.Repo.FullName = "other/app" }},
+		{"missing base repository", func(view *PullRequestView) { view.Base.Repo = nil }},
+		{"missing head SHA", func(view *PullRequestView) { view.Head.SHA = "" }},
+		{"same head and base branch", func(view *PullRequestView) { view.Head.Ref = "main" }},
+		{"target branch drift", func(view *PullRequestView) { view.Base.Ref = "release" }},
+		{"head branch drift", func(view *PullRequestView) { view.Head.Ref = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			view := prUpdateView(t, "head")
+			tc.change(&view)
+			if err := validatePullRequestUpdateView(view, "acme/app", "7", "main", "feature"); err == nil {
+				t.Fatalf("untrusted view accepted: %+v", view)
+			}
+		})
+	}
+}
+
 func prUpdateView(t *testing.T, head string) PullRequestView {
 	t.Helper()
 	var view PullRequestView
