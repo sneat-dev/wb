@@ -5,6 +5,9 @@
 # review: deleting dead code or wiring it up removes its line.
 #
 # Regenerate with: wb deadcode --update-baseline
+# The 17 gitclitest.Fake entries below implement the production Git ports and
+# their adapter contract tests. This test-support package is built without
+# test roots, so main-package reachability cannot see its test-only callers.
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.ClaimDelivery
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.CommitDeliveryAndWakeup
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.HasDelivery
@@ -83,6 +86,23 @@ github.com/sneat-dev/wb/internal/deps.DriftFailed
 github.com/sneat-dev/wb/internal/deps.RepositoryReportFromResult
 github.com/sneat-dev/wb/internal/diskusage.Measure
 github.com/sneat-dev/wb/internal/fleetsync.RunMeta.Complete
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchSetUpstreamTo
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchShowCurrent
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPick
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPickNoCommit
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitNoVerify
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitObjectExists
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ConfigRegexpMatches
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.FetchRefs
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeBaseIsAncestorStrict
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeTreeWriteTree
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.PushForceWithLeaseHead
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RemotePushURL
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RevListReverseRange
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ShowTreeFormat
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.StatusPorcelain
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeAddDetached
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeRemoveForce
 github.com/sneat-dev/wb/internal/gitops.UnpushedCommits
 github.com/sneat-dev/wb/internal/hooks.AppendEvent
 github.com/sneat-dev/wb/internal/hooks.Classification.IsPublication

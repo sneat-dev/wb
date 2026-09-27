@@ -44,6 +44,11 @@ func runCommand(ctx context.Context, run runner.Runner, timeout time.Duration, r
 		}
 		result, err := run.RunOpts(attemptCtx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, name, args...)
 		output := result.CombinedOutput
+		if output == "" {
+			// A custom runner may return separate streams despite the
+			// combined-capture request. Preserve their diagnostics too.
+			output = result.Stdout + result.Stderr
+		}
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {
