@@ -98,10 +98,14 @@ func TestQuarantinePlanRejectsMovedProtectedAndCheckedOutRefs(t *testing.T) {
 	if protected.Outcome != "refused" || !strings.Contains(protected.Error, "protected") {
 		t.Fatalf("protected plan = %#v", protected)
 	}
-	gitTest(t, fixture.canonical, "checkout", "-b", "feature/in-use")
+	linked := filepath.Join(t.TempDir(), "feature-in-use")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/in-use", linked, "main")
+	if head := gitTestOutput(t, fixture.canonical, "branch", "--show-current"); head != "main" {
+		t.Fatalf("canonical current branch = %q, want main", head)
+	}
 	checked := planBranchQuarantine(ctx, fixture.projectsRoot, fixture.canonical, BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/in-use", Reason: "old"}, now)
-	if checked.Outcome != "refused" || !strings.Contains(checked.Error, "protected") {
-		t.Fatalf("current branch plan = %#v", checked)
+	if checked.Outcome != "refused" || !strings.Contains(checked.Error, "source is checked out in a linked worktree") {
+		t.Fatalf("linked checkout plan = %#v", checked)
 	}
 }
 
