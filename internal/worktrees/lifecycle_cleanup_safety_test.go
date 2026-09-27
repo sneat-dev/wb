@@ -510,7 +510,7 @@ func TestLegacySingletonClaimMigrationRecordsLostRepositoryCardinality(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	legacy := legacyWorkLogClaim{Version: 1, EffortID: "task", RunID: "run", Task: "task",
 		Repository: "acme/app", Worktree: "/tmp/app", Branch: "task", Base: "main", BaseSHA: "base",
 		RecordedAt: time.Now().UTC(), PromptArchive: filepath.Join(runPath, "original-prompt.txt")}

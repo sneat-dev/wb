@@ -209,7 +209,7 @@ func TestRetiredStageClaimSkipsForeignAndOccupiedEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parent.Close() }()
+	t.Cleanup(func() { _ = parent.Close() })
 	name, claimed, err := claimRetiredStageDirectory(parent, ".wb-stage-", ".wb-retired-stage-")
 	if err != nil || !claimed || !strings.HasPrefix(name, ".wb-stage-") {
 		t.Fatalf("empty generic stage not reclaimed: name=%q claimed=%t err=%v", name, claimed, err)
