@@ -13,6 +13,8 @@ import (
 // These cases exercise the second evidence read made under the lane lock. The
 // caller may have inspected a valid repair plan before any of these inputs
 // changed, but must refuse to create a candidate after the change.
+//
+//nolint:paralleltest // publishedForwardRepairFixture calls t.Setenv through newEngineFixture
 func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -98,6 +100,7 @@ func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) 
 			wantErr: "remote target drifted",
 		},
 	} {
+		//nolint:paralleltest // each subtest builds a fixture that calls t.Setenv
 		t.Run(test.name, func(t *testing.T) {
 			fixture, receipt, _, options := publishedForwardRepairFixture(t)
 			sources, repository, canonical, err := inspectPublishedForwardRepairSources(context.Background(), options.ProjectsRoot, options.Sources, receipt.Target)
@@ -116,6 +119,7 @@ func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // selfSupersessionFixture calls t.Setenv through newEngineFixture
 func TestPublishedForwardRepairRevalidationBindsExistingCorrection(t *testing.T) {
 	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
 	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)

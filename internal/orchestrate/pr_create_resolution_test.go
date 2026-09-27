@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // newCreateFixture calls t.Setenv for its projects root
 func TestResolvePullRequestCreateWorktreeFindsAnExactPathOrTask(t *testing.T) {
 	fixture := newCreateFixture(t)
 	const task = "resolve-pr-task"

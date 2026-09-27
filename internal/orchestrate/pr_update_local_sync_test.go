@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // newEngineFixture calls t.Setenv for its projects root
 func TestPullRequestUpdateSyncsOnlyAnActiveClaimedWorktreeAtTheExactHead(t *testing.T) {
 	fixture := newEngineFixture(t)
 	options := PullRequestUpdateOptions{ProjectsRoot: fixture.githubDir, Repository: fixture.repository.Slug, PullRequest: "7"}

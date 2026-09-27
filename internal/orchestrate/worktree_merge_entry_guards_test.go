@@ -30,6 +30,7 @@ func TestPrepareWorktreeMergeRejectsMissingInputsBeforeCreatingCandidate(t *test
 	}
 }
 
+//nolint:paralleltest // orchCovMergeReceiptFixture calls t.Setenv through newEngineFixture
 func TestLandWorktreeMergeRefusesUnsafeEarlyRequestsWithoutMutation(t *testing.T) {
 	fixture, original, _ := orchCovMergeReceiptFixture(t)
 	for _, tc := range []struct {
@@ -40,6 +41,7 @@ func TestLandWorktreeMergeRefusesUnsafeEarlyRequestsWithoutMutation(t *testing.T
 		{"direct stop before merge", WorktreeMergeLandOptions{StopBeforeMerge: true, Route: WorktreeMergeRouteDirect}, "requires the pull-request route"},
 		{"cleanup before landing", WorktreeMergeLandOptions{StopBeforeMerge: true, Route: WorktreeMergeRoutePullRequest, Cleanup: true}, "cannot clean managed assets"},
 	} {
+		//nolint:paralleltest // the parent fixture changes process environment with t.Setenv
 		t.Run(tc.name, func(t *testing.T) {
 			options := tc.options
 			options.ProjectsRoot, options.Receipt = fixture.githubDir, original.ReceiptPath
