@@ -189,7 +189,11 @@ func TestInterruptedReceiveStageParsingAndAmbiguity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer operation.Close()
+	t.Cleanup(func() {
+		if err := operation.Close(); err != nil {
+			t.Errorf("close receive operation directory: %v", err)
+		}
+	})
 	if err := requireOnlyInterruptedSessionStage(operation, stage); err == nil {
 		t.Fatal("accepted missing stage")
 	}
@@ -278,8 +282,12 @@ func TestPrivateWorkLogDirectoriesValidateIdentityAndCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child.Close()
-	run.Close()
+	if err := child.Close(); err != nil {
+		t.Fatalf("close private reports directory: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close private run directory: %v", err)
+	}
 	if _, err := openWorkLogOutbox(home, "bad/effort", true); err == nil {
 		t.Fatal("accepted unsafe outbox effort")
 	}
@@ -287,7 +295,9 @@ func TestPrivateWorkLogDirectoriesValidateIdentityAndCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outbox.Close()
+	if err := outbox.Close(); err != nil {
+		t.Fatalf("close private outbox directory: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(home, "worklogs", "effort", "outbox")); err != nil {
 		t.Fatal(err)
 	}

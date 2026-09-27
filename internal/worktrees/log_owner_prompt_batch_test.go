@@ -31,7 +31,9 @@ func TestPreparedWorkLogPromptRejectsChangedRunArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run.Close()
+	if err := run.Close(); err != nil {
+		t.Fatalf("close private run before verifying its archive: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(path, "original-prompt.txt"), []byte("original request\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +124,11 @@ func TestPromptArchiveReservationValidatesImmutableBytesAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer run.Close()
+	t.Cleanup(func() {
+		if err := run.Close(); err != nil {
+			t.Errorf("close prompt reservation run: %v", err)
+		}
+	})
 	if err := validateReservationPrompt(run, options.originalPromptDigest); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +163,11 @@ func TestUnclaimedPromptReservationDetectsClaimAndRunEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer run.Close()
+	t.Cleanup(func() {
+		if err := run.Close(); err != nil {
+			t.Errorf("close unclaimed prompt run: %v", err)
+		}
+	})
 	if hasWorkLogClaimsOrTerminals(run) || legacyUnclaimedPromptReservation(run) {
 		t.Fatal("empty run has evidence")
 	}
@@ -174,7 +184,9 @@ func TestUnclaimedPromptReservationDetectsClaimAndRunEvidence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "claims", "claim.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	claims.Close()
+	if err := claims.Close(); err != nil {
+		t.Fatalf("close private claims directory before reading it: %v", err)
+	}
 	if !hasWorkLogClaimsOrTerminals(run) {
 		t.Fatal("claim was not detected")
 	}
