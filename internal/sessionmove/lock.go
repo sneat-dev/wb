@@ -91,10 +91,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-authority-root-check")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return false
-	}
 	defer func() { _ = root.Close() }()
 	if !sameFile(lock.root, root) {
 		return false
@@ -104,10 +100,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	handoff := os.NewFile(uintptr(handoffFD), "wb-session-receive-authority-handoff-check")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		return false
-	}
 	defer func() { _ = handoff.Close() }()
 	if !sameFile(lock.handoff, handoff) {
 		return false
@@ -117,10 +109,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	requestFile := os.NewFile(uintptr(requestFD), "wb-session-receive-authority-request-check")
-	if requestFile == nil {
-		_ = unix.Close(requestFD)
-		return false
-	}
 	defer func() { _ = requestFile.Close() }()
 	if !sameFile(lock.requestFile, requestFile) {
 		return false
@@ -134,10 +122,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	file := os.NewFile(uintptr(fileFD), "wb-session-receive-authority-lock-check")
-	if file == nil {
-		_ = unix.Close(fileFD)
-		return false
-	}
 	defer func() { _ = file.Close() }()
 	return sameFile(lock.file, file)
 }
@@ -162,10 +146,6 @@ func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Re
 	}
 	unix.CloseOnExec(fd)
 	file := os.NewFile(uintptr(fd), "wb-session-retained-handoff-authority")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap retained handoff directory")
-	}
 	return file, nil
 }
 
@@ -187,10 +167,6 @@ func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request 
 	}
 	unix.CloseOnExec(fd)
 	file := os.NewFile(uintptr(fd), "wb-session-retained-store-root-authority")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap retained handoff store root")
-	}
 	return file, nil
 }
 
@@ -223,21 +199,12 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 		return nil, fmt.Errorf("open admitted handoff store root: %w", err)
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-store-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap admitted handoff store root")
-	}
 	handoffFD, err := unix.Openat(rootFD, handoffID, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("open admitted handoff execution directory: %w", err)
 	}
 	handoff := os.NewFile(uintptr(handoffFD), "wb-session-receive-handoff")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap admitted handoff execution directory")
-	}
 	request, requestFile, err := admittedRequestAt(handoff, handoffID, digest)
 	if err != nil {
 		_ = handoff.Close()
@@ -252,13 +219,6 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 		return nil, fmt.Errorf("open handoff execution lock: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-receive-lock")
-	if file == nil {
-		_ = unix.Close(fd)
-		_ = requestFile.Close()
-		_ = handoff.Close()
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap handoff execution lock")
-	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		_ = file.Close()
@@ -340,10 +300,6 @@ func admittedRequestAt(handoff *os.File, handoffID string, digest Digest) (Reque
 		return Request{}, nil, fmt.Errorf("open admitted handoff request: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-receive-admitted-request")
-	if file == nil {
-		_ = unix.Close(fd)
-		return Request{}, nil, fmt.Errorf("wrap admitted handoff request")
-	}
 	request, err := readAdmittedRequestFile(file, handoffID, digest)
 	if err != nil {
 		_ = file.Close()

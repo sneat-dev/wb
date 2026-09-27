@@ -78,8 +78,12 @@ type MessageState struct {
 // NewMessageID returns a caller-owned identity that can be persisted before
 // courier use and supplied to the explicit retry path after ambiguity.
 func NewMessageID() (string, error) {
+	return newMessageID(rand.Read)
+}
+
+func newMessageID(read func([]byte) (int, error)) (string, error) {
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
+	if _, err := read(random[:]); err != nil {
 		return "", fmt.Errorf("generate session message ID: %w", err)
 	}
 	return "message-" + hex.EncodeToString(random[:]), nil
@@ -599,10 +603,6 @@ func openSecureDirectoryAt(parent *os.File, name string, create bool, label stri
 		return nil, fmt.Errorf("open %s directory: %w", label, err)
 	}
 	directory := os.NewFile(uintptr(fd), "wb-session-"+strings.ReplaceAll(label, " ", "-"))
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap %s directory", label)
-	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Nlink < 1 {
 		_ = directory.Close()

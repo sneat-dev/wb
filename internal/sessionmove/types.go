@@ -53,8 +53,12 @@ type Digest string
 // handover filename and the private aggregate directory. It is deliberately
 // independent of either endpoint session ID.
 func NewHandoffID() (string, error) {
+	return newHandoffID(rand.Read)
+}
+
+func newHandoffID(read func([]byte) (int, error)) (string, error) {
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
+	if _, err := read(random[:]); err != nil {
 		return "", fmt.Errorf("generate session handoff ID: %w", err)
 	}
 	return fmt.Sprintf("handoff-%x", random[:]), nil

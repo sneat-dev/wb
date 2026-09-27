@@ -360,10 +360,6 @@ func openSuccessorAddressesAt(root *os.File, create bool) (*os.File, error) {
 		return nil, fmt.Errorf("open successor addresses directory: %w", err)
 	}
 	directory := os.NewFile(uintptr(fd), "wb-session-successor-addresses")
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap successor addresses directory")
-	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
 		_ = directory.Close()

@@ -402,10 +402,6 @@ func openHandoffAtRoot(root *os.File, handoffID string) (*os.File, error) {
 		return nil, fmt.Errorf("open handoff directory: %w", err)
 	}
 	handoff := os.NewFile(uintptr(handoffFD), "wb-session-store-handoff")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		return nil, fmt.Errorf("wrap handoff directory")
-	}
 	return handoff, nil
 }
 
@@ -428,10 +424,6 @@ func (s Store) openRoot(create bool) (*os.File, error) {
 		return nil, fmt.Errorf("open handoff store root: %w", err)
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-session-store-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap handoff store root")
-	}
 	return root, nil
 }
 
@@ -546,10 +538,6 @@ func openEventsAt(handoff *os.File, create bool) (*os.File, error) {
 		return nil, fmt.Errorf("open handoff events directory: %w", err)
 	}
 	events := os.NewFile(uintptr(fd), "wb-session-handoff-events")
-	if events == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap handoff events directory")
-	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
 		_ = events.Close()
@@ -663,10 +651,6 @@ func readImmutableAt(directory *os.File, name string, limit int64, label string)
 		return nil, fmt.Errorf("open %s: %w", label, err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-"+strings.ReplaceAll(label, " ", "-"))
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap %s", label)
-	}
 	defer func() { _ = file.Close() }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
@@ -733,11 +717,6 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 		return false, fmt.Errorf("create immutable temporary file: %w", err)
 	}
 	temporary := os.NewFile(uintptr(fd), "wb-session-immutable-temporary")
-	if temporary == nil {
-		_ = unix.Close(fd)
-		_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
-		return false, fmt.Errorf("wrap immutable temporary file")
-	}
 	removeTemporary := true
 	defer func() {
 		_ = temporary.Close()
@@ -771,10 +750,6 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 			return false, fmt.Errorf("open published immutable file: %w", err)
 		}
 		published := os.NewFile(uintptr(publishedFD), "wb-session-published-immutable")
-		if published == nil {
-			_ = unix.Close(publishedFD)
-			return false, fmt.Errorf("wrap published immutable file")
-		}
 		var publishedStat unix.Stat_t
 		statErr := unix.Fstat(publishedFD, &publishedStat)
 		same := sameFile(temporary, published)
@@ -815,10 +790,6 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 		return err
 	}
 	final := os.NewFile(uintptr(finalFD), "wb-session-interrupted-publication-final")
-	if final == nil {
-		_ = unix.Close(finalFD)
-		return fmt.Errorf("wrap final immutable file")
-	}
 	defer func() { _ = final.Close() }()
 	var before unix.Stat_t
 	if err := unix.Fstat(finalFD, &before); err != nil {
@@ -832,10 +803,6 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 		return err
 	}
 	scan := os.NewFile(uintptr(scanFD), "wb-session-interrupted-publication-scan")
-	if scan == nil {
-		_ = unix.Close(scanFD)
-		return fmt.Errorf("wrap immutable publication directory scan")
-	}
 	entries, readErr := scan.ReadDir(-1)
 	_ = scan.Close()
 	if readErr != nil {
@@ -855,10 +822,6 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 			return err
 		}
 		pending := os.NewFile(uintptr(pendingFD), "wb-session-interrupted-publication-pending")
-		if pending == nil {
-			_ = unix.Close(pendingFD)
-			return fmt.Errorf("wrap immutable pending file")
-		}
 		same := sameFile(final, pending)
 		_ = pending.Close()
 		if !same {
