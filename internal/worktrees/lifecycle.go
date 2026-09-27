@@ -23,6 +23,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -4252,9 +4253,12 @@ func isAncestor(ctx context.Context, repository, ancestor, descendant string) (b
 			return cached == "true", nil
 		}
 	}
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository}, args...)...)
-	command.Env = console.Env()
-	err := command.Run()
+	var commandRunner runner.Runner = runner.Real{}
+	if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
+		commandRunner = injected
+	}
+	// Keep the process cwd inherited; -C selects the repository as before.
+	result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", append([]string{"-C", repository}, args...)...)
 	remember := func(verdict bool) {
 		if memo != nil && ctx.Err() == nil {
 			if verdict {
@@ -4268,8 +4272,7 @@ func isAncestor(ctx context.Context, repository, ancestor, descendant string) (b
 		remember(true)
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if result.ExitCode == 1 && ctx.Err() == nil {
 		remember(false)
 		return false, nil
 	}
@@ -5045,23 +5048,21 @@ func contentContained(ctx context.Context, repository, head, commit string) (boo
 // objects are written. A conflicted merge is a normal negative containment
 // answer, not an error.
 func mergeResultTree(ctx context.Context, repository, ours, theirs string) (string, bool, error) {
-	command := exec.CommandContext(
-		ctx, "git", "-C", repository, "merge-tree", "--write-tree", "--no-messages", "--end-of-options", ours, theirs,
-	)
-	command.Env = console.Env()
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	var commandRunner runner.Runner = runner.Real{}
+	if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
+		commandRunner = injected
+	}
+	// Keep the process cwd inherited; -C selects the repository as before.
+	result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", "-C", repository, "merge-tree", "--write-tree", "--no-messages", "--end-of-options", ours, theirs)
+	if err != nil {
+		if result.ExitCode == 1 && ctx.Err() == nil {
 			return "", false, nil
 		}
 		return "", false, fmt.Errorf(
-			"merge %s into %s in %s: %w: %s", theirs, ours, repository, err, strings.TrimSpace(stderr.String()),
+			"merge %s into %s in %s: %w: %s", theirs, ours, repository, err, strings.TrimSpace(result.Stderr),
 		)
 	}
-	tree, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
+	tree, _, _ := strings.Cut(strings.TrimSpace(result.Stdout), "\n")
 	tree = strings.TrimSpace(tree)
 	if !isGitObjectID(tree) {
 		return "", false, fmt.Errorf("merge %s into %s in %s produced invalid tree %q", theirs, ours, repository, tree)
