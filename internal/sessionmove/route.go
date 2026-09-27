@@ -79,7 +79,10 @@ func (s Store) SaveRoute(route Route) (Route, bool, error) {
 	if err := validateCourierRoute(route); err != nil {
 		return Route{}, false, err
 	}
-	raw, _ := marshalJSON(route)
+	raw, err := marshalJSON(route)
+	if err != nil {
+		return Route{}, false, err
+	}
 	created, err := publishRouteImmutableAt(handoff, raw)
 	if err != nil {
 		return Route{}, false, err
@@ -140,8 +143,14 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 	if durableReceipt == nil {
 		return SuccessorAddress{}, false, fmt.Errorf("successor address requires a durable completion receipt")
 	}
-	durableRaw, _ := EncodeReceipt(*durableReceipt)
-	suppliedRaw, _ := EncodeReceipt(receipt)
+	durableRaw, err := EncodeReceipt(*durableReceipt)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	suppliedRaw, err := EncodeReceipt(receipt)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
 	if !bytes.Equal(durableRaw, suppliedRaw) {
 		return SuccessorAddress{}, false, fmt.Errorf("%w: successor address receipt differs from durable completion receipt", ErrHandoffConflict)
 	}
@@ -163,7 +172,10 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 	if err := validateSuccessorAddress(address, receipt.SuccessorWBSessionID); err != nil {
 		return SuccessorAddress{}, false, err
 	}
-	raw, _ := marshalJSON(address)
+	raw, err := marshalJSON(address)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
 	if len(raw) > maxSuccessorAddressBytes {
 		return SuccessorAddress{}, false, fmt.Errorf("successor address exceeds %d bytes", maxSuccessorAddressBytes)
 	}
@@ -268,7 +280,10 @@ func corroborateSuccessorAddressAt(handoff *os.File, request Request, digest Dig
 	if err != nil {
 		return SuccessorAddress{}, err
 	}
-	expectedRaw, _ := marshalJSON(successorAddressFor(request, digest, *receipt, route))
+	expectedRaw, err := marshalJSON(successorAddressFor(request, digest, *receipt, route))
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
 	if !bytes.Equal(raw, expectedRaw) {
 		return SuccessorAddress{}, fmt.Errorf("%w: successor address does not match exact request, receipt, and route", ErrHandoffConflict)
 	}

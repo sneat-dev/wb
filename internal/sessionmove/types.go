@@ -181,8 +181,14 @@ func ParseWorkLogReference(value string) (WorkLogReference, error) {
 	if err := validateID("work log effort", parts[0]); err != nil {
 		return WorkLogReference{}, err
 	}
+	if parts[0] == "." || parts[0] == ".." {
+		return WorkLogReference{}, fmt.Errorf("work log effort %q is not a safe path segment", parts[0])
+	}
 	if err := validateID("work log run", parts[1]); err != nil {
 		return WorkLogReference{}, err
+	}
+	if parts[1] == "." || parts[1] == ".." {
+		return WorkLogReference{}, fmt.Errorf("work log run %q is not a safe path segment", parts[1])
 	}
 	if !workLogClaimID.MatchString(parts[2]) {
 		return WorkLogReference{}, fmt.Errorf("work log claim %q must contain exactly 64 lowercase hex characters", parts[2])
@@ -254,9 +260,14 @@ func ExpectedTargetWorkLogReference(request Request, requestDigest Digest) (Work
 	if err := requestDigest.validate(); err != nil {
 		return WorkLogReference{}, fmt.Errorf("request digest: %w", err)
 	}
-	// request.validate above already validates both of these inputs.
-	source, _ := ParseWorkLogReference(request.WorkLogReference)
-	claimID, _ := ExternalHandoffClaimID(requestDigest, request.SuccessorWBSessionID)
+	source, err := ParseWorkLogReference(request.WorkLogReference)
+	if err != nil {
+		return WorkLogReference{}, fmt.Errorf("work_log_reference: %w", err)
+	}
+	claimID, err := ExternalHandoffClaimID(requestDigest, request.SuccessorWBSessionID)
+	if err != nil {
+		return WorkLogReference{}, err
+	}
 	return WorkLogReference{EffortID: source.EffortID, RunID: source.RunID, ClaimID: claimID}, nil
 }
 
