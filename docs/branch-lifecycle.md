@@ -2,7 +2,7 @@
 
 Use the branch name in `--base` or `--target` deliberately. In the examples below, `cov/integration` is the current campaign target; substitute the target of your own work. Integrating a target **into** a feature worktree updates that feature's history; merely fetching it leaves the feature unchanged. Landing a feature **onto** a target changes the remote target. These are different operations.
 
-This is a command reference, not an end-to-end verified runbook. The command forms were checked against installed `wb ... --help` and the implementation. The complete example below was **not executed** as a sequence for this documentation change. In particular, `wb worktree log integrate` was verified from help and source, but was not exercised in this campaign. Use the receipt and exact remote checks described below before calling any landing complete.
+This is a command reference, not an end-to-end verified runbook. The command forms were checked against installed `wb ... --help` and the implementation. On 2026-09-27, `wb worktree log refresh` followed by `wb worktree log integrate --strategy merge` was exercised on five clean campaign worktrees against the exact `cov/integration` head. The complete example below was **not executed** as one sequence for this documentation change. Use the receipt and exact remote checks described below before calling any landing complete.
 
 | Need | Command | Direction and result |
 | --- | --- | --- |
