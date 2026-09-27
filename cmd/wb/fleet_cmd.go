@@ -329,7 +329,7 @@ func fleetLayoutRollup(projects string) (fleetLayoutStats, error) {
 }
 
 func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRemoteStats, error) {
-	repositories, err := fleet(projects, filter, func() []string { return fleetOwners(nil) })
+	repositories, err := fleetRemoteRepositories(projects, filter, func() []string { return fleetOwners(nil) })
 	if err != nil {
 		return fleetRemoteStats{}, err
 	}
@@ -351,7 +351,7 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 		// Always dry-run here, so pruneArchived=true only classifies what
 		// wb sync --prune-archived would do; nothing is ever deleted by a
 		// fleet status/overview pass.
-		result := fleetsync.Sync(context.Background(), repository, projects, true, true)
+		result := fleetRemoteSync(context.Background(), repository, projects, true, true)
 		switch result.Status {
 		case fleetsync.Cloned:
 			stats.WouldClone++
@@ -420,7 +420,7 @@ func fleetInventory(projects, filter string, options qualityOptions) (fleetInven
 }
 
 func fleetWorktreeRollup(projects, filter string, options qualityOptions) (fleetWorktreeStats, error) {
-	results, err := worktrees.List(context.Background(), worktrees.ListOptions{
+	results, err := fleetWorktreeList(context.Background(), worktrees.ListOptions{
 		ProjectsRoot: projects,
 		Filter:       filter,
 	})
@@ -625,3 +625,7 @@ func pluralSuffix(count int) string {
 	}
 	return "s"
 }
+
+var fleetRemoteRepositories = fleet
+var fleetRemoteSync = fleetsync.Sync
+var fleetWorktreeList = worktrees.List
