@@ -204,17 +204,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// this observation WB may still need branch-policy or freshness receipts;
 		// publishing this event keeps a slow authority lookup from looking hung.
 		reportPullRequestWaitProgress(options, observations, result, 0)
-		failed := false
-		for _, check := range checks {
-			switch check.Bucket {
-			case "pass", "skipping":
-			case "fail", "cancel":
-				failed = true
-			default:
-				pending = true
-			}
-		}
-		if failed {
+		if options.ExpectedActionChecks == nil && failedObservedChecks(checks, &pending) {
 			failedResult := failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled")
 			failedResult.FailureDetails = failedCheckDetails(sliceCtx, options.Repository, checks)
 			reportPullRequestWaitProgress(options, observations, failedResult, 0)
@@ -240,6 +230,17 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		result.RequiredChecksAuthority = authority
 		result.TargetFreshnessAuthority = freshnessAuthority
 		result.PolicyAuthorityUnavailable = policyUnavailable
+		if options.ExpectedActionChecks != nil {
+			checks = relevantExpectedActionChecks(checks, options.ExpectedActionChecks, requiredChecks)
+			result.Checks = checks
+			pending = false
+			if failedObservedChecks(checks, &pending) {
+				failedResult := failedCommitWaitResult(result, "observed required or expected GitHub checks failed or were cancelled")
+				failedResult.FailureDetails = failedCheckDetails(sliceCtx, options.Repository, checks)
+				reportPullRequestWaitProgress(options, observations, failedResult, 0)
+				return failedResult, nil
+			}
+		}
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
@@ -583,6 +584,45 @@ func remoteCheckExecuted(check RemoteCheck) bool {
 // sneat-dev/wb#591's red-team follow-up reverted the round-2 strict mode,
 // which broke on real-world skip patterns — see remoteCheckExecuted's own
 // comment for what replaced it).
+func failedObservedChecks(checks []RemoteCheck, pending *bool) bool {
+	failed := false
+	for _, check := range checks {
+		switch check.Bucket {
+		case "pass", "skipping":
+		case "fail", "cancel":
+			failed = true
+		default:
+			*pending = true
+		}
+	}
+	return failed
+}
+
+// Explicit direct-CI deferral waits on its named PR run and checks actually
+// required by target policy. Other workflows on the same SHA are diagnostic
+// noise: they cannot invalidate or stall this specific validation contract.
+func relevantExpectedActionChecks(checks []RemoteCheck, expected *ExpectedActionChecks, required []RequiredRemoteCheck) []RemoteCheck {
+	relevant := make([]RemoteCheck, 0, len(checks))
+	for _, check := range checks {
+		selectedRun := check.WorkflowID == expected.WorkflowID && check.WorkflowEvent == expected.Event &&
+			check.WorkflowRunID > 0 && check.PullRequestNumber == expected.PullRequestNumber && check.PullRequestBase == expected.PullRequestBase
+		if selectedRun || checkMatchesRequiredPolicy(check, required) {
+			relevant = append(relevant, check)
+		}
+	}
+	return relevant
+}
+
+func checkMatchesRequiredPolicy(check RemoteCheck, required []RequiredRemoteCheck) bool {
+	name := strings.TrimPrefix(strings.TrimPrefix(check.Name, "check-run:"), "status:")
+	for _, expectation := range required {
+		if name == expectation.Name && (expectation.IntegrationID == 0 || check.AppID == expectation.IntegrationID) {
+			return true
+		}
+	}
+	return false
+}
+
 func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck) []string {
 	observed := make(map[string][]RemoteCheck, len(checks))
 	for _, check := range checks {
