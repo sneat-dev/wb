@@ -53,6 +53,10 @@ type RunOptions struct {
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.
 	GoLintCommands [][]string
+	// PriorNodeInstallReport permits a later phase over the same repository
+	// path to reuse only successful locked Node installs from an earlier phase.
+	// A missing or failed install still runs before the later checks.
+	PriorNodeInstallReport *VerificationReport
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
@@ -185,7 +189,9 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			}
 			if hasScript && node.Locked {
 				command := nodeInstallCommand(node.PackageManager)
-				report.Results = append(report.Results, runVerification(ctx, options, "node", node.Module, checkInstall, node.Path, command...))
+				if !priorNodeInstallPassed(options.PriorNodeInstallReport, repository, path, node.Module, command) {
+					report.Results = append(report.Results, runVerification(ctx, options, "node", node.Module, checkInstall, node.Path, command...))
+				}
 			}
 			for _, check := range checks {
 				if check == CheckSpec {
@@ -234,6 +240,19 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	return report
+}
+
+func priorNodeInstallPassed(previous *VerificationReport, repository, path, module string, command []string) bool {
+	if previous == nil || previous.Repository != repository || previous.Path != path {
+		return false
+	}
+	for _, entry := range previous.Results {
+		if entry.Language == "node" && entry.Module == module && entry.Check == checkInstall &&
+			entry.Command == strings.Join(command, " ") && entry.Status == StatusPassed {
+			return true
+		}
+	}
+	return false
 }
 
 func containsCheck(checks []Check, want Check) bool {

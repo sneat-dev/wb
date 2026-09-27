@@ -3848,6 +3848,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 			return regressionErr
 		}
 	}
+	runOptions.PriorNodeInstallReport = &lint
 	rest := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
 		[]quality.Check{quality.CheckTest, quality.CheckBuild, quality.CheckSpec}, runOptions)
 	receipt.Validation = combineWorktreeMergeValidationReports(lint, rest)
