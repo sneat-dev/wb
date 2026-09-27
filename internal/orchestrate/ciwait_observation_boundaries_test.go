@@ -8,7 +8,7 @@ import (
 )
 
 func exactWaitFixture() (PullRequestWaitOptions, commitChecksWaitOps) {
-	options := PullRequestWaitOptions{Repository: "acme/app", Target: "main", Head: "head", Slice: 100 * time.Millisecond, CheckPollInterval: 10 * time.Millisecond, StableRereadDelay: time.Millisecond}
+	options := PullRequestWaitOptions{Repository: "acme/app", Target: "main", Head: "head", Slice: 5 * time.Second, CheckPollInterval: 10 * time.Millisecond, StableRereadDelay: time.Millisecond}
 	ops := commitChecksWaitOps{
 		pullRequestIdentity: func(context.Context, string, string) (string, string, string) { return "head", "main", "" },
 		targetHead:          func(context.Context, string, string) (string, string) { return "head", "" },
@@ -199,7 +199,7 @@ func TestExactCommitWaitNamesChecksThatCannotYetAuthorizeLanding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			options, ops := exactWaitFixture()
-			options.Slice, options.CheckPollInterval = 25*time.Millisecond, 5*time.Millisecond
+			options.Slice, options.CheckPollInterval = time.Second, 5*time.Millisecond
 			tc.change(&ops)
 			result, err := waitForCommitChecksWith(context.Background(), options, ops)
 			if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, tc.want) {
