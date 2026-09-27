@@ -24,6 +24,29 @@ func exactWaitFixture() (PullRequestWaitOptions, commitChecksWaitOps) {
 	return options, ops
 }
 
+func TestExactCommitWaitRejectsInvalidObservationWindow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*PullRequestWaitOptions)
+		want   string
+	}{
+		{"missing exact identity", func(options *PullRequestWaitOptions) { options.Head = " " }, "repository, target, and exact head are required"},
+		{"nonpositive interval", func(options *PullRequestWaitOptions) { options.CheckPollInterval = 0 }, "check poll interval must be positive"},
+		{"interval consumes slice", func(options *PullRequestWaitOptions) { options.CheckPollInterval = options.Slice }, "shorter than the foreground slice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			tc.change(&options)
+			result, err := waitForCommitChecksWith(context.Background(), options, ops)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || result.Status != "" {
+				t.Fatalf("result=%+v error=%v, want error containing %q", result, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestExactCommitWaitRefusesDriftAndUnreadableObservations(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -268,6 +291,20 @@ func TestExactCommitWaitRefusesLateAuthorityAndIdentityLoss(t *testing.T) {
 			}
 			ops.containsTarget = func(context.Context, string, string, string) (bool, string) { return false, "" }
 		}, PullRequestWaitFailed, "does not contain exact landed head"},
+		{"final descendant ancestry read fails", false, func(options *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			options.AllowTargetDescendant = true
+			calls := 0
+			ops.targetHead = func(context.Context, string, string) (string, string) {
+				calls++
+				if calls >= 3 {
+					return "other", ""
+				}
+				return "head", ""
+			}
+			ops.containsTarget = func(context.Context, string, string, string) (bool, string) {
+				return false, "final ancestry read failed"
+			}
+		}, PullRequestWaitFailed, "final ancestry read failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

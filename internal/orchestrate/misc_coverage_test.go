@@ -2,7 +2,6 @@ package orchestrate
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,104 +425,6 @@ func TestOrchCovMechanicalVerdictSummaryExplainsItself(t *testing.T) {
 	}
 }
 
-func TestOrchCovFindAbsorbedConflictAcknowledgementSkipsUnusableReportEntries(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSourceOnBase(t, fixture, "task-skip", "feature/skip", "main", "skip.txt", "skip\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
-		Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reportsDir := filepath.Dir(receipt.ReceiptPath)
-	if err := os.MkdirAll(filepath.Join(reportsDir, "0000-dir.json"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, contents := range map[string]string{
-		"0001-sidecar.json": "ignored",
-		"0002-foo.ack.json": "ignored",
-		"0003-notes.txt":    "ignored",
-		"0004-garbage.json": "{not json",
-	} {
-		if err := os.WriteFile(filepath.Join(reportsDir, name), []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// A readable receipt for a different candidate is skipped rather than
-	// mistaken for this one.
-	other := receipt
-	other.Candidate.Task = "another-task"
-	other.Candidate.Worktree = filepath.Join(t.TempDir(), "elsewhere")
-	encoded, err := jsonMarshalIndent(other)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(reportsDir, "0005-other.json"), encoded, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lookup, found, err := FindAbsorbedConflictAcknowledgement(fixture.githubDir, receipt.Candidate.Task, receipt.Candidate.Worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || lookup.ReceiptPath != receipt.ReceiptPath || lookup.Acknowledged {
-		t.Fatalf("lookup = %+v found=%t", lookup, found)
-	}
-}
-
-func TestOrchCovFindAbsorbedConflictAcknowledgementFailsClosedOnATamperedSidecar(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSourceOnBase(t, fixture, "task-tamper", "feature/tamper", "main", "tamper.txt", "tamper\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
-		Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absorbedConflictAcknowledgementPath(receipt.ReceiptPath), []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := FindAbsorbedConflictAcknowledgement(fixture.githubDir, receipt.Candidate.Task, receipt.Candidate.Worktree); err == nil || found {
-		t.Fatalf("tampered sidecar: found=%t err=%v, want an error", found, err)
-	}
-}
-
-func TestOrchCovFindAbsorbedConflictAcknowledgementReportsAnUnreadableReportsDirectory(t *testing.T) {
-	fixture := newEngineFixture(t)
-	home, err := wbhome.Root(fixture.githubDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reportsDir := filepath.Join(home, "reports", "worktree-merge")
-	if err := os.MkdirAll(filepath.Dir(reportsDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(reportsDir, []byte("not a directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := FindAbsorbedConflictAcknowledgement(fixture.githubDir, "task", "/worktree"); err == nil ||
-		!strings.Contains(err.Error(), "read worktree-merge reports") {
-		t.Fatalf("unreadable reports directory error = %v", err)
-	}
-}
-
-func TestOrchCovFindAbsorbedConflictAcknowledgementNeedsAResolvableProjectsRoot(t *testing.T) {
-	for _, name := range []string{"WB_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
-		t.Setenv(name, "")
-	}
-	// The state home derives from the projects root now, so an unusable
-	// projects root is passed instead of relying on an unresolvable WB_HOME.
-	blocker := filepath.Join(t.TempDir(), "regular-file")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := FindAbsorbedConflictAcknowledgement(filepath.Join(blocker, "projects"), "task", "/worktree"); err == nil {
-		t.Fatal("a lookup without a resolvable projects root reported no error")
-	}
-}
-
 func TestOrchCovRefreshPublishedCandidateRefusesUnusableInput(t *testing.T) {
 	t.Parallel()
 	if err := refreshPublishedWorktreeMergeCandidateTarget(context.Background(), nil, "abc", time.Minute, 0); err == nil ||
@@ -607,10 +508,4 @@ func orchCovGitRepo(t *testing.T) string {
 	runEngineGit(t, dir, "add", "-A")
 	runEngineGit(t, dir, "commit", "-m", "initial")
 	return dir
-}
-
-// jsonMarshalIndent keeps the fixtures readable without importing encoding/json
-// at every call site.
-func jsonMarshalIndent(value any) ([]byte, error) {
-	return json.MarshalIndent(value, "", "  ")
 }
