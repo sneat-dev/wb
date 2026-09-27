@@ -359,6 +359,7 @@ func importedMainReceiptFixture(t *testing.T) (repository, targetSHA, importedSH
 	return repository, targetSHA, importedSHA, mergeSHA, candidateSHA, fakeBin
 }
 
+//nolint:paralleltest // importedMainReceiptFixture changes the process environment with t.Setenv
 func TestValidateWorktreeMergeCandidateContinuesForAttestedImportedMainDeadcode(t *testing.T) {
 	repository, targetSHA, _, _, candidateSHA, fakeBin := importedMainReceiptFixture(t)
 	const deadcodeOutput = "New unreachable functions (1):\n  main.go:1: main.B\nerror: 1 function(s) are unreachable from main and are not in .wb/deadcode-baseline.txt; wire them up, delete them, or record them with --update-baseline\nexit status 1\n"

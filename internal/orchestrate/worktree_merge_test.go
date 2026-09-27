@@ -231,6 +231,7 @@ func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T
 	}
 }
 
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
 func TestValidateWorktreeMergeCandidateStopsBeforeTestsForNewLintFailure(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
@@ -262,6 +263,7 @@ func TestValidateWorktreeMergeCandidateStopsBeforeTestsForNewLintFailure(t *test
 	}
 }
 
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
 func TestValidateWorktreeMergeCandidateContinuesAfterInheritedLintFailure(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
@@ -290,6 +292,7 @@ func TestValidateWorktreeMergeCandidateContinuesAfterInheritedLintFailure(t *tes
 }
 
 func TestWorktreeMergeLintEvidenceIgnoresCachedTestFailure(t *testing.T) {
+	t.Parallel()
 	report := worktreeMergeLintEvidence(quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
 		{Check: quality.CheckLint, Status: quality.StatusPassed},
 		{Check: quality.CheckTest, Status: quality.StatusFailed, Detail: "target test failure"},
