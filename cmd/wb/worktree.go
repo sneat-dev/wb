@@ -33,6 +33,9 @@ func remoteClaimWriter(cmd *cobra.Command) io.Writer {
 	return cmd.ErrOrStderr()
 }
 
+var relocateWorktrees = worktrees.Relocate
+var recoverRetiredStages = worktrees.RecoverRetiredStages
+
 func newWorktreeCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "worktree",
@@ -145,7 +148,7 @@ keeps stdout machine-readable; progress and diagnostics use stderr.`,
 					}
 				}
 			}()
-			outcome, err := worktrees.Relocate(command.Context(), worktrees.RelocateOptions{
+			outcome, err := relocateWorktrees(command.Context(), worktrees.RelocateOptions{
 				ProjectsRoot: inv.projectsRoot, Task: args[0], Filter: inv.filterFlag, To: to, Apply: apply,
 			})
 			if err != nil {
@@ -2254,7 +2257,7 @@ required to remove anything.`,
 			if recoverStages {
 				outcomes := make([]worktrees.RetiredStageRecoveryOutcome, 0, len(args))
 				for _, task := range args {
-					outcome, err := worktrees.RecoverRetiredStages(command.Context(), worktrees.RetiredStageRecoveryOptions{
+					outcome, err := recoverRetiredStages(command.Context(), worktrees.RetiredStageRecoveryOptions{
 						ProjectsRoot: inv.projectsRoot, Task: task, Apply: apply,
 					})
 					if err != nil {
