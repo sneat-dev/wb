@@ -2163,12 +2163,6 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 
 type gitRunnerContextKey struct{}
 
-// withGitRunner lets lifecycle tests fail a selected ordinary Git call without
-// replacing descriptor-bearing canonical and secure helper operations.
-func withGitRunner(ctx context.Context, commandRunner runner.Runner) context.Context {
-	return context.WithValue(ctx, gitRunnerContextKey{}, commandRunner)
-}
-
 // canonicalOwnerDirectories lists the {owner} directories under projectsRoot,
 // reading through a literal forge host level when the first-level entry is one
 // and taking every other first-level directory as the legacy {owner} level.
@@ -2252,13 +2246,6 @@ func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...s
 
 type canonicalGitInterceptor func(context.Context, []string, func() ([]byte, error)) ([]byte, error)
 type canonicalGitInterceptorKey struct{}
-
-// withCanonicalGitInterceptor lets tests fail one authorized canonical Git
-// operation while allowing every other call to use the retained-FD helper.
-// It is scoped to the invocation's context, so parallel work is independent.
-func withCanonicalGitInterceptor(ctx context.Context, intercept canonicalGitInterceptor) context.Context {
-	return context.WithValue(ctx, canonicalGitInterceptorKey{}, intercept)
-}
 
 // gitCanonicalBytes returns Git stdout without trimming or mixing in stderr.
 // Callers that authenticate blob contents need the byte-exact stream, while
