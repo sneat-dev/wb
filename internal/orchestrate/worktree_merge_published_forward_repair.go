@@ -488,10 +488,12 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 }
 
 func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSelfSupersessionCorrection, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, receiptHash, claimHash, supersessionHash string) error {
+	// The corrected replacement has its own recorded claim base. It may be
+	// based on the current target, after the failed candidate's original base.
 	if correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash || correction.ImmutableClaimSHA256 != claimHash ||
 		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash ||
 		correction.OriginalCandidate != receipt.Candidate || correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA ||
-		correction.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
+		correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
 		return errors.New("correction does not retain immutable receipt, claim, supersession, candidate, base, or target evidence")
 	}
 	if correction.CorrectedReplacement.SHA == "" || correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" {

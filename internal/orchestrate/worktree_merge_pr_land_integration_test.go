@@ -315,7 +315,9 @@ func (gh *wmEngineGH) ghLog(t *testing.T) string {
 func wmEngineLandOptions(fixture engineFixture, receiptPath string) WorktreeMergeLandOptions {
 	return WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		// Successful paths need two exact-head observations across real git
+		// and gh processes. Leave enough time for both on a loaded CI host.
+		Timeout: 15 * time.Second, CheckPollInterval: time.Millisecond,
 	}
 }
 
