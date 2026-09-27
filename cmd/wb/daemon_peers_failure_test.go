@@ -48,6 +48,12 @@ type peerAdminErrorReader struct{}
 func (peerAdminErrorReader) Read([]byte) (int, error) { return 0, errors.New("response read failed") }
 func (peerAdminErrorReader) Close() error             { return nil }
 
+type peerAdminRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f peerAdminRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func peerAdminHTTPResponse(status int, statusText string, body io.ReadCloser) *http.Response {
 	return &http.Response{StatusCode: status, Status: statusText, Header: make(http.Header), Body: body}
 }
@@ -70,7 +76,7 @@ func TestPeerAdminClientReportsEncodingURLTransportAndBodyFailures(t *testing.T)
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transportCalled := false
-			client := &peerAdminClient{httpClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client := &peerAdminClient{httpClient: &http.Client{Transport: peerAdminRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				transportCalled = true
 				if test.transport == nil {
 					t.Fatal("invalid request reached transport")
@@ -101,7 +107,7 @@ func TestPeerAdminClientPreservesDaemonRefusalsAndDecodingErrors(t *testing.T) {
 		{name: "successful malformed response", status: http.StatusOK, statusText: "200 OK", body: "{oops", response: &map[string]string{}, want: "decode daemon response"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			client := &peerAdminClient{httpClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client := &peerAdminClient{httpClient: &http.Client{Transport: peerAdminRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				if request.Method != http.MethodPost || request.Header.Get("Content-Type") != "application/json" {
 					t.Errorf("request = %s %s, content type %q", request.Method, request.URL, request.Header.Get("Content-Type"))
 				}
@@ -119,7 +125,7 @@ func TestPeerAdminClientPreservesDaemonRefusalsAndDecodingErrors(t *testing.T) {
 			}
 		})
 	}
-	client := &peerAdminClient{httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := &peerAdminClient{httpClient: &http.Client{Transport: peerAdminRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return peerAdminHTTPResponse(http.StatusOK, "200 OK", io.NopCloser(strings.NewReader("not JSON"))), nil
 	})}}
 	if err := client.call(context.Background(), peersRPCPrefix+"block", map[string]string{"peer": "laptop"}, nil); err != nil {
