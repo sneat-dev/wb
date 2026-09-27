@@ -10,6 +10,7 @@ import (
 )
 
 func TestCloneMovePathAndPointerRefusals(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	legacy := filepath.Join(root, "legacy")
 	current := filepath.Join(root, "current")
@@ -27,6 +28,7 @@ func TestCloneMovePathAndPointerRefusals(t *testing.T) {
 		{"missing destination", filepath.Join(legacy, "absent"), legacy, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := rebaseUnderNewClone(tc.path, tc.old, current)
 			if got != tc.want || ok != tc.ok {
 				t.Fatalf("rebaseUnderNewClone = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
@@ -62,6 +64,7 @@ func TestCloneMovePathAndPointerRefusals(t *testing.T) {
 }
 
 func TestCloneMoveMissingCloneAndRegistration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	missing := filepath.Join(t.TempDir(), "missing")
 	if _, err := PlanCloneMove(ctx, missing, filepath.Join(t.TempDir(), "new")); err == nil {
@@ -87,6 +90,7 @@ func TestCloneMoveMissingCloneAndRegistration(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for its isolated Git repository.
 func TestGitOperationInProgressFindsEachPrivateMarker(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
@@ -102,6 +106,7 @@ func TestGitOperationInProgressFindsEachPrivateMarker(t *testing.T) {
 		{"rebase-apply", "a rebase is in progress"},
 		{"index.lock", "an index lock is held"},
 	} {
+		//nolint:paralleltest // Marker cases mutate the same private Git directory and must not overlap.
 		t.Run(tc.marker, func(t *testing.T) {
 			path := filepath.Join(gitDir, tc.marker)
 			if strings.HasPrefix(tc.marker, "rebase-") {
@@ -122,6 +127,7 @@ func TestGitOperationInProgressFindsEachPrivateMarker(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for its isolated Git repository.
 func TestCloneMoveRegistrationAndIntentSelection(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
@@ -151,6 +157,7 @@ func TestCloneMoveRegistrationAndIntentSelection(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for its isolated Git repository.
 func TestCloneMoveRefusesExistingDestinationWithoutMovingSource(t *testing.T) {
 	fixture := newGitFixture(t)
 	destination := filepath.Join(t.TempDir(), "destination")

@@ -13,6 +13,7 @@ import (
 )
 
 func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	requests, err := validateQuarantineRequests([]BranchQuarantineRequest{
 		{Repository: " zeta/app ", Ref: " feature/b ", SHA: " " + sha + " ", Reason: " old "},
@@ -39,6 +40,7 @@ func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T)
 		{"reason", BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/a"}, "reason"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := validateQuarantineRequests([]BranchQuarantineRequest{tc.request})
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.want)) {
 				t.Fatalf("validation error = %v, want %q", err, tc.want)
@@ -47,6 +49,7 @@ func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT while discovering repositories.
 func TestQuarantineRepositoryDiscoveryAndDigestFailures(t *testing.T) {
 	fixture := newGitFixture(t)
 	paths, err := quarantineRepositoryPaths(fixture.projectsRoot, []BranchQuarantineRequest{{Repository: "acme/app"}})
@@ -77,6 +80,7 @@ func TestQuarantineRepositoryDiscoveryAndDigestFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for Git and WB state.
 func TestQuarantinePlanRejectsMovedProtectedAndCheckedOutRefs(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
@@ -101,6 +105,7 @@ func TestQuarantinePlanRejectsMovedProtectedAndCheckedOutRefs(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for Git and WB state.
 func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
@@ -111,6 +116,7 @@ func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 		{"moved", "feature/old", strings.Repeat("a", 40), "source moved"},
 		{"protected", "main", head, "protected"},
 	} {
+		//nolint:paralleltest // Subtests share the fixture's process environment and canonical checkout.
 		t.Run(tc.name, func(t *testing.T) {
 			result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: tc.ref, SHA: tc.sha}, Destination: "retired/test", Outcome: "planned"}
 			applyBranchQuarantine(ctx, fixture.projectsRoot, fixture.canonical, &result)
@@ -121,6 +127,7 @@ func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // t.Setenv replaces PATH so every query invokes this test's private gh executable.
 func TestOpenPullRequestUsingBranchAsBaseDistinguishesMatchingAndFailedQueries(t *testing.T) {
 	bin := t.TempDir()
 	script := filepath.Join(bin, "gh")
@@ -151,6 +158,7 @@ func TestOpenPullRequestUsingBranchAsBaseDistinguishesMatchingAndFailedQueries(t
 	}
 }
 
+//nolint:paralleltest // newGitFixture and t.Setenv change the process Git and gh environment.
 func TestQuarantinePlanRejectsExistingRetiredDestination(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
@@ -169,6 +177,7 @@ func TestQuarantinePlanRejectsExistingRetiredDestination(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // t.Setenv switches PATH and gh responses while this test checks each safety verdict.
 func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/old")
@@ -186,6 +195,7 @@ func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
 		{"open head", `[{"number":19,"html_url":"https://example.test/pull/19","state":"open","base":{"ref":"main"},"head":{"ref":"feature/old","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "head of open pull request"},
 		{"open base", `[{"number":20,"html_url":"https://example.test/pull/20","state":"open","base":{"ref":"feature/old"},"head":{"ref":"other","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "base of open pull request"},
 	} {
+		//nolint:paralleltest // Each case changes the gh response through process environment variables.
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("WB_TEST_GH_BODY", tc.body)
 			t.Setenv("WB_TEST_GH_EXIT", tc.exit)
@@ -197,6 +207,7 @@ func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for its checkout.
 func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/old")
@@ -213,6 +224,7 @@ func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture and t.Setenv change the process Git and gh environment.
 func TestBranchQuarantineManifestRefusesFlattenedDestinationCollision(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/a-b")
@@ -252,6 +264,7 @@ func TestBranchQuarantineManifestRefusesFlattenedDestinationCollision(t *testing
 	}
 }
 
+//nolint:paralleltest // newGitFixture and t.Setenv change the process Git and gh environment.
 func TestBranchQuarantineRejectsReusedReportDirectoryBeforeChangingRef(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/old")
