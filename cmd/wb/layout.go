@@ -191,7 +191,7 @@ with --undo is a usage error, since undo does not accept new inclusions.`,
 			if err := requireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
 				return err
 			}
-			report, err := layout.Migrate(cmd.Context(), inv.projectsRoot, layout.MigrateOptions{
+			report, err := migrateLayout(cmd.Context(), inv.projectsRoot, layout.MigrateOptions{
 				Repositories:       args,
 				Apply:              apply,
 				ClonesOnly:         clonesOnly,
@@ -329,3 +329,5 @@ func writeLayoutCleanReports(directory string, report layout.CleanReport) error 
 	}
 	return os.WriteFile(filepath.Join(directory, "layout-clean.json"), append(raw, '\n'), 0o644)
 }
+
+var migrateLayout = layout.Migrate

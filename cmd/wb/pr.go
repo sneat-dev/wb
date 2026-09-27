@@ -44,7 +44,7 @@ merges the pull request into its target, or cleans up the worktree.`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
-			result, updateErr := orchestrate.UpdatePullRequest(command.Context(), orchestrate.PullRequestUpdateOptions{
+			result, updateErr := updatePullRequest(command.Context(), orchestrate.PullRequestUpdateOptions{
 				Repository: repository, PullRequest: number, ProjectsRoot: inv.projectsRoot,
 			})
 			if result.ReceiptPath != "" {
@@ -411,3 +411,5 @@ func landingEventLog(inv *invocation, repository string) (streams.EventAppender,
 // name no stream can take: stream names are validated as path segments and
 // cannot contain a dot.
 const fleetEventLogName = ".fleet"
+
+var updatePullRequest = orchestrate.UpdatePullRequest
