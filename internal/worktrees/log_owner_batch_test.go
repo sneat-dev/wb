@@ -9,6 +9,7 @@ import (
 )
 
 func TestSessionReceiveTaskPathRequiresExactRepositorySuffixAndOperation(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "session-transfer", "github.com", "acme", "app")
 	if got, ok := sessionReceiveTaskPath(path, "session-transfer", "github.com/acme/app"); !ok || got != filepath.Dir(filepath.Dir(filepath.Dir(path))) {
 		t.Fatalf("exact task path = %q, %v", got, ok)
@@ -25,6 +26,7 @@ func TestSessionReceiveTaskPathRequiresExactRepositorySuffixAndOperation(t *test
 }
 
 func TestLoadOriginalPromptRejectsUnsafeArchiveAndPreservesJournalPriority(t *testing.T) {
+	t.Parallel()
 	claim := workLogClaim{PromptArchive: "../outside"}
 	journal := []PromptRecord{{Name: "0000-start.md", SHA256: "digest", Body: "from journal"}}
 	got, err := loadOriginalPrompt("", claim, journal)
@@ -44,6 +46,7 @@ func TestLoadOriginalPromptRejectsUnsafeArchiveAndPreservesJournalPriority(t *te
 }
 
 func TestParsePromptFileRejectsMalformedFrontmatter(t *testing.T) {
+	t.Parallel()
 	for _, content := range []string{"plain prompt", "---\nsource: human\n"} {
 		if _, _, err := parsePromptFile([]byte(content)); err == nil {
 			t.Fatalf("accepted malformed prompt %q", content)
@@ -56,6 +59,7 @@ func TestParsePromptFileRejectsMalformedFrontmatter(t *testing.T) {
 }
 
 func TestListPromptRecordsRejectsOrdinalMismatchAndGap(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if records, err := listPromptRecords(root, true); err != nil || len(records) != 0 {
 		t.Fatalf("missing journal = %#v, %v", records, err)
@@ -85,6 +89,7 @@ func TestListPromptRecordsRejectsOrdinalMismatchAndGap(t *testing.T) {
 }
 
 func TestCopyDirCopiesNestedContentsAndReportsMissingSource(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	src, dst := filepath.Join(root, "source"), filepath.Join(root, "archive")
 	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o700); err != nil {
@@ -106,6 +111,7 @@ func TestCopyDirCopiesNestedContentsAndReportsMissingSource(t *testing.T) {
 }
 
 func TestProjectionReadersAndRemovalKeepLegacySeparate(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if _, err := readWorkLogProjectionForReadOnlyClaim(root); !errors.Is(err, errWorkLogProjectionNotFound) {
 		t.Fatalf("missing projection = %v", err)
@@ -149,6 +155,7 @@ func TestProjectionReadersAndRemovalKeepLegacySeparate(t *testing.T) {
 }
 
 func TestCloneParentRelativePreservesLegacyAndHostedAddresses(t *testing.T) {
+	t.Parallel()
 	if got := cloneParentRelative("", "acme"); got != "acme" {
 		t.Fatalf("legacy parent = %q", got)
 	}
@@ -158,6 +165,7 @@ func TestCloneParentRelativePreservesLegacyAndHostedAddresses(t *testing.T) {
 }
 
 func TestInterruptedReceiveStageParsingAndAmbiguity(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stage := ".wb-stage-0123456789abcdef0123456789abcdef"
 	if !validInterruptedSessionStageName(stage) {
@@ -210,6 +218,7 @@ func TestInterruptedReceiveStageParsingAndAmbiguity(t *testing.T) {
 }
 
 func TestFinalizeReportPrivateRoundTripAndValidation(t *testing.T) {
+	t.Parallel()
 	if _, err := finalizeReportFileName("bad/task", "acme/app"); err == nil {
 		t.Fatal("accepted unsafe task")
 	}
@@ -244,6 +253,7 @@ func TestFinalizeReportPrivateRoundTripAndValidation(t *testing.T) {
 }
 
 func TestPrivateWorkLogDirectoriesValidateIdentityAndCreation(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, _, err := openWorkLogRun(home, "bad/effort", "run", true); err == nil {
 		t.Fatal("accepted unsafe effort")
@@ -284,6 +294,7 @@ func TestPrivateWorkLogDirectoriesValidateIdentityAndCreation(t *testing.T) {
 }
 
 func TestRemovedTerminalWorkLogEntryPointsFailClosed(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRemovedTerminalWorkLogs(t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Fatalf("empty validation = %v", err)
 	}
@@ -292,6 +303,7 @@ func TestRemovedTerminalWorkLogEntryPointsFailClosed(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to scope WB and Git configuration for its subprocesses.
 func TestOptionalClaimFenceRequiresAnActiveClaimWhenRequested(t *testing.T) {
 	fixture := newGitFixture(t)
 	if _, err := withOptionalClaimFence(fixture.projectsRoot, fixture.canonical, true); err == nil || !strings.Contains(err.Error(), "active Work Log claim required") {

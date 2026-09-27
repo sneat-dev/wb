@@ -9,6 +9,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to scope WB and Git configuration for its subprocesses.
 func TestLogVerbsKeepPromptBodiesPrivateAndLocalReceiptsExplicit(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -95,6 +96,7 @@ func TestLogVerbsKeepPromptBodiesPrivateAndLocalReceiptsExplicit(t *testing.T) {
 }
 
 func TestSessionReceiveEntryPointsRejectIncompleteAuthorityAndEscapingPath(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	projects := t.TempDir()
 	request := sessionmove.Request{}
