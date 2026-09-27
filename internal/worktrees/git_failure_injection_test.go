@@ -3,6 +3,8 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -157,5 +159,120 @@ func TestInjectedGitRunnerKeepsReadOnlyMemoAndCombinedDiagnostics(t *testing.T) 
 	}
 	if got := fake.CallCount(); got != 2 {
 		t.Fatalf("mutating Git call count = %d, want second external call", got)
+	}
+}
+
+func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
+	cases := []struct {
+		name      string
+		failCall  int
+		branch    string
+		status    string
+		badPath   bool
+		want      string
+		wantCalls int
+	}{
+		{"root query fails", 1, "main", "", false, "guard Git failure", 1},
+		{"Git directory query fails", 2, "main", "", false, "guard Git failure", 2},
+		{"common directory query fails", 3, "main", "", false, "guard Git failure", 3},
+		{"branch query fails", 4, "main", "", false, "guard Git failure", 4},
+		{"detached canonical HEAD", 0, "", "", false, "detached HEAD is not allowed", 4},
+		{"invalid canonical placement", 0, "main", "", true, "canonical clone", 4},
+		{"feature branch in canonical clone", 0, "feature", "", false, "must stay on", 4},
+		{"status query fails", 5, "main", "", false, "guard Git failure", 5},
+		{"dirty canonical clone", 0, "main", " M file", false, "has local changes", 5},
+		{"clean canonical clone", 0, "main", "", false, "", 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectsRoot := t.TempDir()
+			canonical := filepath.Join(projectsRoot, "acme", "app")
+			if tc.badPath {
+				canonical = filepath.Join(projectsRoot, "app")
+			}
+			gitDirectory := filepath.Join(canonical, ".git")
+			fake := runnertest.New(t)
+			fake.ExpectArgv([]string{"git", "-C", canonical, "rev-parse", "--show-toplevel"},
+				runner.Result{CombinedOutput: canonical + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", canonical, "rev-parse", "--absolute-git-dir"},
+				runner.Result{CombinedOutput: gitDirectory + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", canonical, "rev-parse", "--path-format=absolute", "--git-common-dir"},
+				runner.Result{CombinedOutput: gitDirectory + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", canonical, "branch", "--show-current"},
+				runner.Result{CombinedOutput: tc.branch + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", canonical, "status", "--porcelain=v1"},
+				runner.Result{CombinedOutput: tc.status}, nil)
+			if tc.failCall > 0 {
+				fake.FailCall(tc.failCall, errors.New("guard Git failure"))
+			}
+			got, err := Guard(withGitRunner(context.Background(), fake), canonical, GuardOptions{ProjectsRoot: projectsRoot, Base: "main"})
+			if tc.want == "" {
+				if err != nil || got.Kind != "canonical" || got.Branch != "main" {
+					t.Fatalf("Guard clean canonical clone = (%#v, %v)", got, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) || got != (GuardResult{}) {
+				t.Fatalf("Guard %s = (%#v, %v), want empty result and %q", tc.name, got, err, tc.want)
+			}
+			if seen := fake.CallCount(); seen != tc.wantCalls {
+				t.Fatalf("Guard %s made %d Git calls, want %d", tc.name, seen, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestLifecycleInspectionStopsAtInvalidGitState(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	cases := []struct {
+		name      string
+		failCall  int
+		branch    string
+		status    string
+		last      string
+		want      string
+		wantCalls int
+	}{
+		{"branch query fails", 1, "feature", "", "2026-09-27T08:00:00Z", "inspection Git failure", 1},
+		{"detached worktree", 0, "", "", "2026-09-27T08:00:00Z", "not on a feature branch", 1},
+		{"protected base branch", 0, "main", "", "2026-09-27T08:00:00Z", "not on a feature branch", 1},
+		{"HEAD query fails", 2, "feature", "", "2026-09-27T08:00:00Z", "inspection Git failure", 2},
+		{"status query fails", 3, "feature", "", "2026-09-27T08:00:00Z", "inspection Git failure", 3},
+		{"commit time query fails", 4, "feature", "", "2026-09-27T08:00:00Z", "inspection Git failure", 4},
+		{"invalid commit time", 0, "feature", "", "not-a-time", "parse last commit time", 4},
+		{"dirty feature branch", 0, "feature", " M file", "2026-09-27T08:00:00Z", "", 4},
+		{"clean feature branch", 0, "feature", "", "2026-09-27T08:00:00Z", "", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			worktree := filepath.Join(t.TempDir(), "feature")
+			fake := runnertest.New(t)
+			fake.ExpectArgv([]string{"git", "-C", worktree, "branch", "--show-current"},
+				runner.Result{CombinedOutput: tc.branch + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", worktree, "rev-parse", "HEAD"},
+				runner.Result{CombinedOutput: head + "\n"}, nil)
+			fake.ExpectArgv([]string{"git", "-C", worktree, "status", "--porcelain=v1"},
+				runner.Result{CombinedOutput: tc.status}, nil)
+			fake.ExpectArgv([]string{"git", "-C", worktree, "show", "-s", "--format=%cI", "HEAD"},
+				runner.Result{CombinedOutput: tc.last + "\n"}, nil)
+			if tc.failCall > 0 {
+				fake.FailCall(tc.failCall, errors.New("inspection Git failure"))
+			}
+			inspection := lifecycleInspection{
+				ctx: withGitRunner(context.Background(), fake), worktree: worktree,
+				canonical: filepath.Join(t.TempDir(), "canonical"),
+				slug:      "acme/app", task: "feature", base: "main", withGitHub: true,
+			}
+			err := inspection.inspectState()
+			if tc.want == "" {
+				if err != nil || inspection.result.Branch != "feature" || inspection.result.HeadSHA != head ||
+					inspection.result.Clean != (tc.status == "") || inspection.result.LastCommit.IsZero() {
+					t.Fatalf("inspectState = (%#v, %v), want populated feature state", inspection.result, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) || !reflect.DeepEqual(inspection.result, ListResult{}) {
+				t.Fatalf("inspectState %s = (%#v, %v), want empty result and %q", tc.name, inspection.result, err, tc.want)
+			}
+			if seen := fake.CallCount(); seen != tc.wantCalls {
+				t.Fatalf("inspectState %s made %d Git calls, want %d", tc.name, seen, tc.wantCalls)
+			}
+		})
 	}
 }
