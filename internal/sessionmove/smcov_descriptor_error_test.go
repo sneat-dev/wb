@@ -236,6 +236,7 @@ func TestSmCovReadImmutableFileReportsDeterministicIOFailures(t *testing.T) {
 		}, "size changed while it was read"},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // cases share one file descriptor and rewind it before each injected read
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
 				t.Fatal(err)
