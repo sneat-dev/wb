@@ -75,7 +75,7 @@ func TestDqCovNewValidationCacheKeyFingerprintsPolicyAndModules(t *testing.T) {
 		writeQualityFile(t, filepath.Join(root, pruned, "go.mod"), "module example.test/pruned\n")
 	}
 	checks := []Check{CheckTest, CheckLint}
-	key, err := NewValidationCacheKey("example/key", "revision-1", root, "wb-revision", checks, nil)
+	key, err := NewValidationCacheKey("example/key", "revision-1", root, "wb-revision", checks, nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(root, repositoryQualityConfigPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil, RunOptions{}); err == nil {
 			t.Fatal("an unreadable policy path was accepted")
 		}
 	})
@@ -129,7 +129,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		dqCovChmod(t, denied, 0)
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil, RunOptions{}); err == nil {
 			t.Fatal("an unreadable subtree was accepted")
 		}
 	})
@@ -140,7 +140,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 		if err := os.Symlink(filepath.Join(root, "absent-go.mod"), filepath.Join(root, "go.mod")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil, RunOptions{}); err == nil {
 			t.Fatal("a dangling module manifest was accepted")
 		}
 	})
