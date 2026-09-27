@@ -135,6 +135,39 @@ func TestRelocateCheckoutRefusesWhenTaskLockHeld(t *testing.T) {
 	}
 }
 
+func TestRelocateCheckoutApplyMovesExactCheckoutAndRecordsReceipt(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "direct-checkout-move",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := created[0].WorktreeDir
+	destination := filepath.Join(fixture.canonical, ".worktrees", "direct-checkout-move")
+	result, err := RelocateCheckout(context.Background(), RelocateCheckoutOptions{
+		ProjectsRoot: fixture.projectsRoot, CanonicalDir: fixture.canonical,
+		Source: source, Destination: destination, To: "local", Apply: true,
+	})
+	if err != nil || !result.Eligible || !result.Applied || !result.Repaired || result.ReceiptPath == "" {
+		t.Fatalf("direct checkout relocation = (%#v, %v), want repaired, receipted move", result, err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after exact move: %v", err)
+	}
+	if err := VerifyClonePlacement(context.Background(), fixture.canonical, []string{destination}); err != nil {
+		t.Fatalf("moved checkout is not registered and usable: %v", err)
+	}
+	claim, _, _, err := activeWorkLogClaim(fixture.home, destination)
+	if err != nil || claim.Task != "direct-checkout-move" || claim.Repository != "acme/app" {
+		t.Fatalf("claim after exact move = (%#v, %v)", claim, err)
+	}
+	if _, err := os.Stat(result.ReceiptPath); err != nil {
+		t.Fatalf("relocation receipt is not durable: %v", err)
+	}
+}
+
 // TestReverseRelocationRefusesWhenDestinationAlreadyExists covers
 // ReverseRelocation's own pre-move guard: it must never overwrite whatever
 // already occupies the restoration path.
