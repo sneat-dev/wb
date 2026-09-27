@@ -114,17 +114,28 @@ func TestRunWorktreeMergePrePushGateInjectedHonoursInjectedFailures(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
+			scratchPattern := filepath.Join(os.TempDir(), "wb-worktree-merge-pre-push-*.txt")
+			before, err := filepath.Glob(scratchPattern)
+			if err != nil {
+				t.Fatal(err)
+			}
+			existing := make(map[string]bool, len(before))
+			for _, path := range before {
+				existing[path] = true
+			}
 			inj := &filewrite.Injector{Step: step, Err: errBoomPR9}
 			gate, err := runWorktreeMergePrePushGateInjected(context.Background(), source.WorktreeDir, head, "refs/heads/gated-"+string(step), 5*time.Second, 0, inj)
 			if gate != nil || !errors.Is(err, errBoomPR9) {
 				t.Fatalf("runWorktreeMergePrePushGateInjected(%s failure) = (%v, %v), want (nil, errBoomPR9)", step, gate, err)
 			}
-			matches, globErr := filepath.Glob(filepath.Join(os.TempDir(), "wb-worktree-merge-pre-push-*.txt"))
+			matches, globErr := filepath.Glob(scratchPattern)
 			if globErr != nil {
 				t.Fatal(globErr)
 			}
-			if len(matches) != 0 {
-				t.Fatalf("leftover pre-push gate input(s) after an injected %s failure: %v", step, matches)
+			for _, path := range matches {
+				if !existing[path] {
+					t.Fatalf("new pre-push gate input left after an injected %s failure: %s", step, path)
+				}
 			}
 		})
 	}
