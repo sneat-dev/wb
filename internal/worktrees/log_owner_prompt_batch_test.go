@@ -12,6 +12,7 @@ import (
 )
 
 func TestPreparedWorkLogPromptRejectsChangedRunArchive(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	prompt := filepath.Join(t.TempDir(), "request.txt")
 	if err := os.WriteFile(prompt, []byte("original request\n"), 0o600); err != nil {
@@ -46,6 +47,7 @@ func TestPreparedWorkLogPromptRejectsChangedRunArchive(t *testing.T) {
 }
 
 func TestSnapshotOriginalPromptRequiresRegularNonemptyFile(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, prompt string
 		require      bool
@@ -56,6 +58,7 @@ func TestSnapshotOriginalPromptRequiresRegularNonemptyFile(t *testing.T) {
 		{"directory", t.TempDir(), false, "regular file"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			options := WorkLogOptions{OriginalPrompt: tc.prompt, RequireOriginalPrompt: tc.require}
 			if err := snapshotOriginalPrompt(&options); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("snapshot error = %v", err)
@@ -83,6 +86,7 @@ func TestSnapshotOriginalPromptRequiresRegularNonemptyFile(t *testing.T) {
 }
 
 func TestNormalizeWorkLogOptionsRejectsUnsafeIdentifiers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		task    string
 		options WorkLogOptions
@@ -102,6 +106,7 @@ func TestNormalizeWorkLogOptionsRejectsUnsafeIdentifiers(t *testing.T) {
 }
 
 func TestPromptArchiveReservationValidatesImmutableBytesAndIndex(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	options, err := (WorkLogOptions{EffortID: "campaign", RunID: "run-a", Model: "unknown"}).WithOriginalPromptFromStdin([]byte("stable prompt\n"))
 	if err != nil {
@@ -146,6 +151,7 @@ func TestPromptArchiveReservationValidatesImmutableBytesAndIndex(t *testing.T) {
 }
 
 func TestUnclaimedPromptReservationDetectsClaimAndRunEvidence(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	run, path, err := openWorkLogRun(home, "campaign", "run-a", true)
 	if err != nil {
@@ -181,6 +187,7 @@ func TestUnclaimedPromptReservationDetectsClaimAndRunEvidence(t *testing.T) {
 }
 
 func TestCountLegacyWorkLogProjectionsMatchesExactRun(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write := func(dir, filename, effort, run string) {
 		t.Helper()
@@ -204,6 +211,7 @@ func TestCountLegacyWorkLogProjectionsMatchesExactRun(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to scope WB and Git configuration for its subprocesses.
 func TestActiveClaimReadersPreserveImmutableIdentity(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
