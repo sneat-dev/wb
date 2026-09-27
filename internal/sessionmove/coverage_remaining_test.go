@@ -50,8 +50,10 @@ func TestProtocolHelpersPreserveCanonicalIdentity(t *testing.T) {
 }
 
 func TestExecutionLockCloseJoinsDescriptorFailuresAndRevokesAuthority(t *testing.T) {
+	t.Parallel()
 	for _, which := range []string{"lock", "request", "handoff", "root"} {
 		t.Run(which, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovNewLockFixture(t)
 			lock := fixture.smCovAcquire(t)
 			var file *os.File
@@ -94,6 +96,7 @@ func TestAdmittedRequestDescriptorRejectsOversizeCorruptionAndDigestDrift(t *tes
 		{"different bytes", append(append([]byte(nil), fixture.raw...), ' '), "digest"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			directory := t.TempDir()
 			path := filepath.Join(directory, requestFileName)
 			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
@@ -128,6 +131,7 @@ func TestAdmittedRequestDescriptorPropagatesSeekReadAndBoundFailures(t *testing.
 		}, "exceeds"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			file, err := os.Open(path)
 			if err != nil {
 				t.Fatal(err)
@@ -165,8 +169,10 @@ func TestStableExecutionLockCreationReportsRepeatedFirstWriterRaces(t *testing.T
 }
 
 func TestExecutionLockRetainRefusesClosureBetweenProofAndDuplicate(t *testing.T) {
+	t.Parallel()
 	for _, which := range []string{"handoff", "root"} {
 		t.Run(which, func(t *testing.T) {
+			t.Parallel()
 			fixture := smCovNewLockFixture(t)
 			lock := fixture.smCovAcquire(t)
 			lock.afterProof = func() {
@@ -235,6 +241,7 @@ func TestSecureDirectoryOpenersReportDescriptorInspectionFailure(t *testing.T) {
 	failStat := func(int, *unix.Stat_t) error { return syscall.EIO }
 	for _, which := range []string{"message", "successors", "events"} {
 		t.Run(which, func(t *testing.T) {
+			t.Parallel()
 			var directory *os.File
 			var err error
 			switch which {
@@ -284,9 +291,11 @@ func TestRetainAuthorityRejectsRevokedAndChangedBindings(t *testing.T) {
 }
 
 func TestDurablePublicationReportsDirectoryPermissionFailures(t *testing.T) {
+	t.Parallel()
 	// Each case retains a readable directory descriptor while removing write
 	// permission. The immutable publisher must report the syscall failure.
 	t.Run("admitted request", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		raw, err := EncodeRequest(request)
 		if err != nil {
@@ -304,6 +313,7 @@ func TestDurablePublicationReportsDirectoryPermissionFailures(t *testing.T) {
 	})
 	for _, which := range []string{"receipt", "event", "private handover"} {
 		t.Run(which, func(t *testing.T) {
+			t.Parallel()
 			request := validRequestWithInlineHandover("exact private continuation")
 			raw, err := EncodeRequest(request)
 			if err != nil {
@@ -317,9 +327,10 @@ func TestDurablePublicationReportsDirectoryPermissionFailures(t *testing.T) {
 			handoffPath := filepath.Join(store.Root, request.HandoffID)
 			var lock *ExecutionLock
 			if which == "private handover" {
-				lock, err = store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
-				if err != nil {
-					t.Fatal(err)
+				var lockErr error
+				lock, lockErr = store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+				if lockErr != nil {
+					t.Fatal(lockErr)
 				}
 				t.Cleanup(func() { _ = lock.Close() })
 			}
@@ -358,6 +369,7 @@ func makeDirectoryReadOnly(t *testing.T, path string) {
 }
 
 func TestCourierIdentityPublicationPreservesFilesystemFailure(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	handoffPath := filepath.Join(store.Root, request.HandoffID)
 	route := Route{
@@ -385,6 +397,7 @@ func TestCourierIdentityPublicationPreservesFilesystemFailure(t *testing.T) {
 }
 
 func TestEventAndSuccessorAddressPreserveTimestampEncodingErrors(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	badTime := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := store.AppendEvent(request.HandoffID, digest, HandoffEvent{Phase: PhaseOffered, At: badTime}); err == nil || !strings.Contains(err.Error(), wantYearOutOfRangeSubstring) {
@@ -503,6 +516,7 @@ func TestLoadEventsPropagatesDirectoryEnumerationFailure(t *testing.T) {
 }
 
 func TestImmutablePublicationReportsFailureToRemovePreparedName(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	authority, err := os.Open(directory)
 	if err != nil {
