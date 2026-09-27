@@ -83,6 +83,9 @@ func (s Store) SaveRoute(route Route) (Route, bool, error) {
 	if err != nil {
 		return Route{}, false, err
 	}
+	if len(raw) > maxRouteBytes {
+		return Route{}, false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
+	}
 	created, err := s.publish(handoff, routeFileName, raw, 0o600)
 	if err != nil {
 		return Route{}, false, err
