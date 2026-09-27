@@ -249,22 +249,38 @@ func RepositoryFromPullRequestURL(pullRequestURL string) (string, error) {
 // merge. The result is deliberately bounded — it is the failure, not a copy of
 // the run's output.
 func PullRequestFailureDetails(ctx context.Context, repository, selector string) ([]CIFailureDetail, error) {
-	view, err := ReadPullRequest(ctx, repository, selector)
+	return pullRequestFailureDetailsWith(ctx, repository, selector, productionPullRequestCheckOps())
+}
+
+type pullRequestCheckOps struct {
+	read     func(context.Context, string, string) (PullRequestView, error)
+	runs     func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string)
+	statuses func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string)
+	required func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string)
+	details  func(context.Context, string, []RemoteCheck) []CIFailureDetail
+}
+
+func productionPullRequestCheckOps() pullRequestCheckOps {
+	return pullRequestCheckOps{ReadPullRequest, commitCheckRuns, commitStatuses, targetBranchRequiredChecks, failedCheckDetails}
+}
+
+func pullRequestFailureDetailsWith(ctx context.Context, repository, selector string, ops pullRequestCheckOps) ([]CIFailureDetail, error) {
+	view, err := ops.read(ctx, repository, selector)
 	if err != nil {
 		return nil, err
 	}
 	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
-	runs, _, reason := commitCheckRuns(ctx, options)
+	runs, _, reason := ops.runs(ctx, options)
 	if reason != "" {
 		return nil, fmt.Errorf("%s", reason)
 	}
-	statuses, _, reason := commitStatuses(ctx, options)
+	statuses, _, reason := ops.statuses(ctx, options)
 	if reason != "" {
 		return nil, fmt.Errorf("%s", reason)
 	}
 	observed := append(append([]RemoteCheck{}, runs...), statuses...)
 	sortRemoteChecks(observed)
-	return failedCheckDetails(ctx, repository, observed), nil
+	return ops.details(ctx, repository, observed), nil
 }
 
 // UnsatisfiedRequiredChecks names the checks a pull request's target branch
@@ -281,11 +297,15 @@ func PullRequestFailureDetails(ctx context.Context, repository, selector string)
 // A name is reported when no observation matches it, and also when a ruleset
 // pins it to one GitHub App and the matching producer did not report it.
 func UnsatisfiedRequiredChecks(ctx context.Context, repository, selector string) ([]string, error) {
-	view, err := ReadPullRequest(ctx, repository, selector)
+	return unsatisfiedRequiredChecksWith(ctx, repository, selector, productionPullRequestCheckOps())
+}
+
+func unsatisfiedRequiredChecksWith(ctx context.Context, repository, selector string, ops pullRequestCheckOps) ([]string, error) {
+	view, err := ops.read(ctx, repository, selector)
 	if err != nil {
 		return nil, err
 	}
-	required, _, reason := targetBranchRequiredChecks(ctx, repository, view.Base.Ref, false)
+	required, _, reason := ops.required(ctx, repository, view.Base.Ref, false)
 	if reason != "" {
 		return nil, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
 	}
@@ -293,11 +313,11 @@ func UnsatisfiedRequiredChecks(ctx context.Context, repository, selector string)
 		return nil, nil
 	}
 	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
-	runs, _, reason := commitCheckRuns(ctx, options)
+	runs, _, reason := ops.runs(ctx, options)
 	if reason != "" {
 		return nil, fmt.Errorf("%s", reason)
 	}
-	statuses, _, reason := commitStatuses(ctx, options)
+	statuses, _, reason := ops.statuses(ctx, options)
 	if reason != "" {
 		return nil, fmt.Errorf("%s", reason)
 	}

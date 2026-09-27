@@ -1072,7 +1072,8 @@ func TestCreateAddRefusesANonexistentPath(t *testing.T) {
 func TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "add-dir-secret-task", "feature/add-dir-secret", "main")
-	writeEngineFile(t, filepath.Join(worktree, "config", ".env"), "SECRET=1\n")
+	// A case-insensitive filesystem cannot retain .env and .ENV separately.
+	// The uppercase spelling alone proves the staged-path check folds case.
 	writeEngineFile(t, filepath.Join(worktree, "config", ".ENV"), "SECRET=2\n")
 	writeEngineFile(t, filepath.Join(worktree, "config", "secret key.pem"), "-----BEGIN-----\n")
 	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
@@ -1085,7 +1086,7 @@ func TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace(t *test
 	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalSecretPath {
 		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
 	}
-	for _, want := range []string{"config/.env", "config/.ENV", "config/secret key.pem"} {
+	for _, want := range []string{"config/.ENV", "config/secret key.pem"} {
 		if !strings.Contains(result.Reason, want) {
 			t.Fatalf("reason = %q, want it to name %q", result.Reason, want)
 		}

@@ -3,11 +3,215 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// The server update is a sequence of separately observed identities. A failed
+// observation must leave a durable unverified receipt and must not sync a
+// checkout whose head WB has not proved.
+func TestUpdatePullRequestRecordsEachUnverifiedServerAdvance(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		change     func(*pullRequestUpdateOps)
+		wantReason string
+	}{
+		{"intent write", func(ops *pullRequestUpdateOps) {
+			ops.persist = func(PullRequestUpdateResult) error { return errors.New("disk full") }
+		}, "record PR update intent"},
+		{"server refusal", func(ops *pullRequestUpdateOps) {
+			ops.update = func(context.Context, string, string, string) (string, string) { return "", "permission denied" }
+		}, "permission denied"},
+		{"server returns old head", func(ops *pullRequestUpdateOps) {
+			ops.update = func(context.Context, string, string, string) (string, string) { return "old", "" }
+		}, "distinct exact head"},
+		{"updated head cannot be reread", func(ops *pullRequestUpdateOps) {
+			reads := 0
+			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+				reads++
+				if reads == 1 {
+					return prUpdateView(t, "old"), nil
+				}
+				return PullRequestView{}, errors.New("read failed")
+			}
+		}, "re-read updated PR"},
+		{"updated head changed", func(ops *pullRequestUpdateOps) {
+			reads := 0
+			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+				reads++
+				if reads == 1 {
+					return prUpdateView(t, "old"), nil
+				}
+				return prUpdateView(t, "foreign"), nil
+			}
+		}, "identity/head changed"},
+		{"parents unreadable", func(ops *pullRequestUpdateOps) {
+			ops.parents = func(context.Context, string, string) ([]string, error) { return nil, errors.New("parents unavailable") }
+		}, "merge parents are unverified"},
+		{"target parent missing", func(ops *pullRequestUpdateOps) {
+			ops.parents = func(context.Context, string, string) ([]string, error) { return []string{"old", ""}, nil }
+		}, "merge parents are unverified"},
+		{"target parent comparison failed", func(ops *pullRequestUpdateOps) {
+			calls := 0
+			ops.contains = func(context.Context, string, string, string) (bool, string) {
+				calls++
+				if calls == 1 {
+					return false, ""
+				}
+				return false, "compare failed"
+			}
+		}, "target parent does not contain"},
+		{"merge tree differs", func(ops *pullRequestUpdateOps) {
+			ops.proveTree = func(context.Context, PullRequestUpdateOptions, string, string, string, string, string) (bool, error) {
+				return false, nil
+			}
+		}, "merge tree could not be proved"},
+		{"current target unreadable", func(ops *pullRequestUpdateOps) {
+			calls := 0
+			ops.target = func(context.Context, string, string) (string, string) {
+				calls++
+				if calls == 1 {
+					return "target", ""
+				}
+				return "", "read failed"
+			}
+		}, "re-read current target"},
+		{"current target missing", func(ops *pullRequestUpdateOps) {
+			calls := 0
+			ops.target = func(context.Context, string, string) (string, string) {
+				calls++
+				if calls == 1 {
+					return "target", ""
+				}
+				return "", ""
+			}
+		}, "current target returned no SHA"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			options, ops, saved := prUpdateFake(t)
+			reads := 0
+			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+				reads++
+				if reads == 1 {
+					return prUpdateView(t, "old"), nil
+				}
+				return prUpdateView(t, "new"), nil
+			}
+			ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
+				t.Fatal("unverified head reached local checkout")
+				return ""
+			}
+			tc.change(&ops)
+			result, err := updatePullRequestWith(context.Background(), options, ops)
+			if err == nil || !strings.Contains(err.Error(), tc.wantReason) {
+				t.Fatalf("error = %v, want %q", err, tc.wantReason)
+			}
+			if tc.name != "intent write" && (result.Status != "unverified" || len(*saved) < 2 || (*saved)[len(*saved)-1].Status != "unverified") {
+				t.Fatalf("unverified advance not retained: result=%+v saved=%+v", result, *saved)
+			}
+		})
+	}
+}
+
+func TestUpdatePullRequestRejectsInvalidPreflightWithoutWritingReceipt(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		change     func(*PullRequestUpdateOptions, *pullRequestUpdateOps)
+		wantReason string
+	}{
+		{"invalid number", func(options *PullRequestUpdateOptions, _ *pullRequestUpdateOps) { options.PullRequest = "07" }, "positive decimal"},
+		{"PR read failed", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.read = func(context.Context, string, string) (PullRequestView, error) {
+				return PullRequestView{}, errors.New("PR unavailable")
+			}
+		}, "PR unavailable"},
+		{"closed PR", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.read = func(context.Context, string, string) (PullRequestView, error) {
+				view := prUpdateView(t, "old")
+				view.State = "closed"
+				return view, nil
+			}
+		}, "not the expected open"},
+		{"target read failed", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.target = func(context.Context, string, string) (string, string) { return "", "target unavailable" }
+		}, "target unavailable"},
+		{"target omitted SHA", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.target = func(context.Context, string, string) (string, string) { return "", "" }
+		}, "returned no SHA"},
+		{"comparison failed", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.contains = func(context.Context, string, string, string) (bool, string) { return false, "comparison unavailable" }
+		}, "comparison unavailable"},
+		{"receipt path failed", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
+			ops.newReceipt = func(PullRequestUpdateOptions) (string, error) { return "", errors.New("cannot create receipt") }
+		}, "cannot create receipt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			options, ops, saved := prUpdateFake(t)
+			tc.change(&options, &ops)
+			_, err := updatePullRequestWith(context.Background(), options, ops)
+			if err == nil || !strings.Contains(err.Error(), tc.wantReason) || len(*saved) != 0 {
+				t.Fatalf("error = %v, receipts = %+v; want %q and no receipt", err, *saved, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestUpdatePullRequestNoOpRecordsUnverifiedRead(t *testing.T) {
+	t.Parallel()
+	options, ops, saved := prUpdateFake(t)
+	ops.contains = func(context.Context, string, string, string) (bool, string) { return true, "" }
+	reads := 0
+	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+		reads++
+		if reads == 1 {
+			return prUpdateView(t, "old"), nil
+		}
+		return PullRequestView{}, errors.New("PR reread unavailable")
+	}
+	ops.target = func(context.Context, string, string) (string, string) { return "target", "" }
+	ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
+		t.Fatal("unverified no-op reached local checkout")
+		return ""
+	}
+	result, err := updatePullRequestWith(context.Background(), options, ops)
+	if err != nil || result.Status != "unverified" || !strings.Contains(result.Reason, "PR reread unavailable") || len(*saved) != 1 {
+		t.Fatalf("result=%+v error=%v receipts=%+v", result, err, *saved)
+	}
+}
+
+func TestUpdatePullRequestRejectsDriftedOrIncompletePRIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*PullRequestView)
+	}{
+		{"locked", func(view *PullRequestView) { view.Locked = true }},
+		{"foreign head repository", func(view *PullRequestView) { view.Head.Repo.FullName = "other/app" }},
+		{"missing base repository", func(view *PullRequestView) { view.Base.Repo = nil }},
+		{"missing head SHA", func(view *PullRequestView) { view.Head.SHA = "" }},
+		{"same head and base branch", func(view *PullRequestView) { view.Head.Ref = "main" }},
+		{"target branch drift", func(view *PullRequestView) { view.Base.Ref = "release" }},
+		{"head branch drift", func(view *PullRequestView) { view.Head.Ref = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			view := prUpdateView(t, "head")
+			tc.change(&view)
+			if err := validatePullRequestUpdateView(view, "acme/app", "7", "main", "feature"); err == nil {
+				t.Fatalf("untrusted view accepted: %+v", view)
+			}
+		})
+	}
+}
 
 func prUpdateView(t *testing.T, head string) PullRequestView {
 	t.Helper()
