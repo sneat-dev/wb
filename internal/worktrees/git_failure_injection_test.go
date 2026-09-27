@@ -12,6 +12,12 @@ import (
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
+// withGitRunner lets lifecycle tests fail a selected ordinary Git call without
+// replacing descriptor-bearing canonical and secure helper operations.
+func withGitRunner(ctx context.Context, commandRunner runner.Runner) context.Context {
+	return context.WithValue(ctx, gitRunnerContextKey{}, commandRunner)
+}
+
 func TestFetchRemoteTargetHeadReportsEachGitFailureAndDeletesItsPrivateRef(t *testing.T) {
 	t.Parallel()
 	const head = "0123456789abcdef0123456789abcdef01234567"

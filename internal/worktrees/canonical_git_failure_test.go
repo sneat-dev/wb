@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+// withCanonicalGitInterceptor lets tests fail one authorized canonical Git
+// operation while allowing every other call to use the retained-FD helper.
+// It is scoped to the invocation's context, so parallel work is independent.
+func withCanonicalGitInterceptor(ctx context.Context, intercept canonicalGitInterceptor) context.Context {
+	return context.WithValue(ctx, canonicalGitInterceptorKey{}, intercept)
+}
+
 func TestCreateRefusesCanonicalGitFailuresBeforePublication(t *testing.T) {
 	cases := []struct {
 		name  string
