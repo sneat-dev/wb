@@ -305,6 +305,7 @@ internal/worktrees/host_level_test.go	8	task-18
 internal/worktrees/issue69_stacked_target_test.go	9	task-18
 internal/worktrees/journal_test.go	11	task-18
 internal/worktrees/lifecycle_backlog_detached_test.go	1	task-18
+internal/worktrees/lifecycle_cleanup_safety_test.go	8	task-18
 internal/worktrees/lifecycle_filter_performance_test.go	3	task-18
 internal/worktrees/lifecycle_integration_test.go	263	task-18
 internal/worktrees/lifecycle_rebased_terminal_test.go	18	task-18
