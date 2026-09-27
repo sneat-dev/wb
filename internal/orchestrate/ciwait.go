@@ -101,6 +101,9 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	if options.CheckPollInterval >= options.Slice {
 		return PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the foreground slice so a terminal snapshot can be reread")
 	}
+	if expected := options.ExpectedActionChecks; expected != nil && (expected.WorkflowID <= 0 || expected.Event == "" || expected.PullRequestNumber <= 0 || expected.PullRequestBase == "" || len(expected.Names) == 0) {
+		return PullRequestWaitResult{}, fmt.Errorf("expected Actions checks require a workflow ID, event, and at least one job")
+	}
 	result := PullRequestWaitResult{
 		Repository:         options.Repository,
 		PullRequest:        options.PullRequest,
@@ -217,6 +220,13 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			reportPullRequestWaitProgress(options, observations, failedResult, 0)
 			return failedResult, nil
 		}
+		missingExpected, rejectedExpected := expectedActionCheckState(checks, options.ExpectedActionChecks)
+		if len(rejectedExpected) > 0 {
+			return failedCommitWaitResult(result, "expected CI jobs did not execute successfully: "+strings.Join(rejectedExpected, ", ")), nil
+		}
+		if len(missingExpected) > 0 {
+			pending = true
+		}
 
 		requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason := requiredChecksReceipt(sliceCtx, options, &policyCache)
 		if authorityReason != "" {
@@ -271,7 +281,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// and found empty are different receipts.
 		noApplicableChecks := len(checks) == 0 && len(requiredChecks) == 0 &&
 			(options.PullRequest == "" || options.AllowUnfenced)
-		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
+		terminal := !pending && len(missingRequired) == 0 && len(missingExpected) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
 			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
 			if fingerprint == stableFingerprint {
@@ -288,6 +298,8 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			switch {
 			case len(missingRequired) > 0:
 				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
+			case len(missingExpected) > 0:
+				result.Reason = "expected Actions jobs have not registered for the exact head: " + strings.Join(missingExpected, ", ")
 			case len(checks) == 0:
 				result.Reason = "no GitHub checks have registered for the exact head"
 			default:
@@ -599,6 +611,34 @@ func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck)
 		}
 	}
 	return missing
+}
+
+// expectedActionCheckState is stricter than branch protection: local-suite
+// deferral needs proof that named jobs actually ran in the intended workflow.
+// A status context or a same-named job from another Actions run is not proof.
+func expectedActionCheckState(checks []RemoteCheck, expected *ExpectedActionChecks) (missing, rejected []string) {
+	if expected == nil {
+		return nil, nil
+	}
+	for _, name := range expected.Names {
+		found := false
+		for _, check := range checks {
+			if check.Name != "check-run:"+name || check.WorkflowID != expected.WorkflowID || check.WorkflowEvent != expected.Event || check.WorkflowRunID <= 0 ||
+				check.PullRequestNumber != expected.PullRequestNumber || check.PullRequestBase != expected.PullRequestBase {
+				continue
+			}
+			found = true
+			if check.Bucket == "pending" {
+				missing = append(missing, name)
+			} else if check.Bucket != "pass" || check.Conclusion != "success" {
+				rejected = append(rejected, name+" ("+check.Conclusion+")")
+			}
+		}
+		if !found {
+			missing = append(missing, name)
+		}
+	}
+	return missing, rejected
 }
 
 // skippedOrNeutralRequiredChecks reports the names of every required check
@@ -914,12 +954,16 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
 	pending := false
 	for _, check := range response.CheckRuns {
+		var actionsRun githubActionsRun
 		if strings.EqualFold(check.App.Slug, "github-actions") {
 			if check.ID <= 0 || check.CheckSuite.ID <= 0 {
 				return nil, false, fmt.Sprintf("GitHub Actions check run %q omitted a positive check-run or check-suite ID", check.Name)
 			}
 			run, ok := actionsBySuite[check.CheckSuite.ID]
 			if !ok {
+				if options.ExpectedActionChecks != nil {
+					continue // unrelated PR run excluded from this explicit contract
+				}
 				return nil, false, fmt.Sprintf("GitHub Actions check run %q names suite %d, which the exact-head workflow-run receipt omitted", check.Name, check.CheckSuite.ID)
 			}
 			identity := run.identity()
@@ -930,10 +974,18 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			if run.ID != latest.ID {
 				continue
 			}
+			actionsRun = run
 			observedActionsRuns[identity]++
 		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
-		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
+		observed := RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID}
+		if options.ExpectedActionChecks != nil {
+			observed.WorkflowID, observed.WorkflowRunID, observed.WorkflowEvent = actionsRun.WorkflowID, actionsRun.ID, actionsRun.Event
+			if runIncludesPullRequest(actionsRun, options.ExpectedActionChecks.PullRequestNumber, options.ExpectedActionChecks.PullRequestBase) {
+				observed.PullRequestNumber, observed.PullRequestBase = options.ExpectedActionChecks.PullRequestNumber, options.ExpectedActionChecks.PullRequestBase
+			}
+		}
+		checks = append(checks, observed)
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -943,12 +995,16 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 		if observedActionsRuns[run.identity()] > 0 && (bucket == "pass" || bucket == "skipping" || bucket == "fail" || bucket == "cancel") {
 			continue
 		}
-		checks = append(checks, RemoteCheck{
+		observed := RemoteCheck{
 			Name:       fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
 			Bucket:     bucket,
 			Conclusion: run.Conclusion,
 			Link:       run.HTMLURL,
-		})
+		}
+		if options.ExpectedActionChecks != nil {
+			observed.WorkflowID, observed.WorkflowRunID, observed.WorkflowEvent = run.WorkflowID, run.ID, run.Event
+		}
+		checks = append(checks, observed)
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -974,6 +1030,10 @@ func githubActionsRunsForHead(ctx context.Context, options PullRequestWaitOption
 	for _, run := range response.WorkflowRuns {
 		if run.ID <= 0 || run.WorkflowID <= 0 || run.CheckSuiteID <= 0 || run.CreatedAt.IsZero() || strings.TrimSpace(run.Event) == "" {
 			return nil, nil, fmt.Sprintf("GitHub Actions returned a malformed exact-head workflow-run identity for %s", options.Head)
+		}
+		if expected := options.ExpectedActionChecks; expected != nil && run.WorkflowID == expected.WorkflowID && run.Event == expected.Event &&
+			(run.HeadSHA != options.Head || run.HeadBranch != options.Target || !runIncludesPullRequest(run, expected.PullRequestNumber, expected.PullRequestBase)) {
+			continue // another PR's run on the same SHA cannot satisfy this wait
 		}
 		if previous, ok := bySuite[run.CheckSuiteID]; ok && previous.ID != run.ID {
 			return nil, nil, fmt.Sprintf("GitHub Actions suite %d maps to conflicting workflow runs %d and %d", run.CheckSuiteID, previous.ID, run.ID)
@@ -1137,8 +1197,16 @@ type githubActionsRunsResponse struct {
 }
 
 type githubActionsRun struct {
-	ID           int64     `json:"id"`
-	WorkflowID   int64     `json:"workflow_id"`
+	ID           int64  `json:"id"`
+	WorkflowID   int64  `json:"workflow_id"`
+	HeadSHA      string `json:"head_sha"`
+	HeadBranch   string `json:"head_branch"`
+	PullRequests []struct {
+		Number int `json:"number"`
+		Base   struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	} `json:"pull_requests"`
 	RunAttempt   int       `json:"run_attempt"`
 	Event        string    `json:"event"`
 	Status       string    `json:"status"`
