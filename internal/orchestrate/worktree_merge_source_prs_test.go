@@ -254,7 +254,7 @@ func TestReconcileAbsorbedSourcePullRequestsSkipsBatchPRAndDuplicateAssociations
 	receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", PullRequest: "https://github.com/acme/app/pull/9", LandingSHA: "landed"}
 	persisted := 0
 	err := reconcileAbsorbedSourcePullRequestsWith(context.Background(), &receipt, []string{source, source}, remote, func(WorktreeMergeReceipt) error { persisted++; return nil })
-	if err != nil || len(receipt.SourcePullRequests) != 1 || receipt.SourcePullRequests[0].Number != 7 || receipt.SourcePullRequests[0].Outcome != "already_closed" || remote.posted[7] != 0 || remote.closed[7] != 0 || persisted != 1 {
+	if err != nil || len(receipt.SourcePullRequests) != 1 || receipt.SourcePullRequests[0].Number != 7 || receipt.SourcePullRequests[0].Outcome != "already_closed" || remote.posted[7] != 0 || remote.closed[7] != 0 || persisted != 2 {
 		t.Fatalf("receipt=%+v posted=%v closed=%v persisted=%d error=%v", receipt.SourcePullRequests, remote.posted, remote.closed, persisted, err)
 	}
 }
