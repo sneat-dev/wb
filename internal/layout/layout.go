@@ -313,8 +313,12 @@ func badHostFinding(root, ownerPath, owner string, hosts map[string]bool) Findin
 }
 
 func inspectTopLevel(ctx context.Context, root, path, name string) []Finding {
+	return inspectTopLevelWithOrigin(ctx, root, path, name, OriginAddress)
+}
+
+func inspectTopLevelWithOrigin(ctx context.Context, root, path, name string, origin func(context.Context, string) (repopath.Address, error)) []Finding {
 	finding := Finding{Path: path, Kind: KindTopLevel, PathSlug: name}
-	address, err := OriginAddress(ctx, path)
+	address, err := origin(ctx, path)
 	if err != nil {
 		finding.Kind = KindNoOrigin
 		finding.Reason = "top-level checkout under projects root without a usable origin remote"
@@ -450,10 +454,14 @@ func isCanonicalGitDir(path string) bool {
 }
 
 func absoluteRoot(projectsRoot string) (string, error) {
+	return absoluteRootWithAbs(projectsRoot, filepath.Abs)
+}
+
+func absoluteRootWithAbs(projectsRoot string, abs func(string) (string, error)) (string, error) {
 	if strings.TrimSpace(projectsRoot) == "" {
 		return "", fmt.Errorf("projects root is required")
 	}
-	absolute, err := filepath.Abs(projectsRoot)
+	absolute, err := abs(projectsRoot)
 	if err != nil {
 		return "", err
 	}
@@ -468,11 +476,15 @@ func absoluteRoot(projectsRoot string) (string, error) {
 }
 
 func removeContainedPath(root, target string) error {
-	absRoot, err := filepath.Abs(root)
+	return removeContainedPathWithAbs(root, target, filepath.Abs)
+}
+
+func removeContainedPathWithAbs(root, target string, abs func(string) (string, error)) error {
+	absRoot, err := abs(root)
 	if err != nil {
 		return err
 	}
-	absTarget, err := filepath.Abs(target)
+	absTarget, err := abs(target)
 	if err != nil {
 		return err
 	}
@@ -498,7 +510,11 @@ func OriginAddress(ctx context.Context, path string) (repopath.Address, error) {
 	if err != nil {
 		return repopath.Address{}, err
 	}
-	parsed, err := gitremote.Parse(strings.TrimSpace(string(output)))
+	return originAddressFromRaw(strings.TrimSpace(string(output)), gitremote.Parse)
+}
+
+func originAddressFromRaw(raw string, parse func(string) (gitremote.Remote, error)) (repopath.Address, error) {
+	parsed, err := parse(raw)
 	if err != nil {
 		return repopath.Address{}, fmt.Errorf("origin remote does not identify a repository: %w", err)
 	}

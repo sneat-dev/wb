@@ -97,11 +97,15 @@ func (*UndoIncludeFlagsError) Error() string {
 // resolveMigrateInclude validates IncludeTasks against every live Work Log
 // claim Migrate can see across every resolved home, before anything moves.
 func resolveMigrateInclude(root string, options MigrateOptions) (migrateInclude, error) {
+	return resolveMigrateIncludeWithClaims(root, options, worktrees.ListActiveClaimSummaries)
+}
+
+func resolveMigrateIncludeWithClaims(root string, options MigrateOptions, list func(string, string) ([]worktrees.ActiveClaimSummary, error)) (migrateInclude, error) {
 	include := migrateInclude{tasks: map[string]bool{}, allActive: options.IncludeActiveTasks}
 	if len(options.IncludeTasks) == 0 {
 		return include, nil
 	}
-	claims, err := worktrees.ListActiveClaimSummaries(root, "")
+	claims, err := list(root, "")
 	if err != nil {
 		return migrateInclude{}, err
 	}
@@ -281,6 +285,29 @@ func Migrate(ctx context.Context, projectsRoot string, options MigrateOptions) (
 }
 
 func migrateApply(ctx context.Context, root string, options MigrateOptions) (MigrateReport, error) {
+	return migrateApplyWithDeps(ctx, root, options, defaultMigrateApplyDeps())
+}
+
+type migrateApplyDeps struct {
+	owners         func(string) ([]repopath.Owner, []string)
+	readDir        func(string) ([]os.DirEntry, error)
+	reconcile      func(context.Context, string, string, bool) (string, []string, error)
+	plan           func(context.Context, string, string, string, string, migrateInclude) MigrateClone
+	createManifest func(string, []MigrateClone, time.Time) (*migrationManifest, string, error)
+	writeManifest  func(string, *migrationManifest) error
+	applyClone     func(context.Context, string, *MigrateClone, time.Time, migrateInclude)
+	relocate       func(context.Context, string, []MigrateClone, bool, time.Time, func(*MigrateClone) error, migrateInclude) error
+}
+
+func defaultMigrateApplyDeps() migrateApplyDeps {
+	return migrateApplyDeps{
+		owners: repopath.Owners, readDir: os.ReadDir, reconcile: worktrees.ReconcileClonePlacement,
+		plan: planLegacyClone, createManifest: createMigrationManifest, writeManifest: writeManifest,
+		applyClone: applyOneClone, relocate: relocateClones,
+	}
+}
+
+func migrateApplyWithDeps(ctx context.Context, root string, options MigrateOptions, deps migrateApplyDeps) (MigrateReport, error) {
 	report := MigrateReport{
 		SchemaVersion: 1,
 		ProjectsRoot:  root,
@@ -305,7 +332,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		defer lock.release()
 	}
 	wanted := repositorySet(options.Repositories)
-	owners, _ := repopath.Owners(root)
+	owners, _ := deps.owners(root)
 
 	// Clones already at the host level are done and untouched, whether or not
 	// this run migrates anything else: an interrupted or repeated run must
@@ -315,7 +342,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		if owner.Host == "" {
 			continue
 		}
-		repositories, readErr := os.ReadDir(owner.Path)
+		repositories, readErr := deps.readDir(owner.Path)
 		if readErr != nil {
 			continue
 		}
@@ -339,7 +366,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			// nested worktree that moved along with an earlier, unrepaired
 			// rename.
 			legacyClonePath := filepath.Join(root, owner.Name, entry.Name())
-			status, informational, reconcileErr := worktrees.ReconcileClonePlacement(ctx, path, legacyClonePath, options.Apply)
+			status, informational, reconcileErr := deps.reconcile(ctx, path, legacyClonePath, options.Apply)
 			switch {
 			case reconcileErr != nil:
 				clone.Status = "failed"
@@ -387,7 +414,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		if owner.Host != "" {
 			continue
 		}
-		repositories, readErr := os.ReadDir(owner.Path)
+		repositories, readErr := deps.readDir(owner.Path)
 		if readErr != nil {
 			continue
 		}
@@ -412,7 +439,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 	var manifestPath string
 	planned := make([]MigrateClone, 0, len(candidates))
 	for _, cand := range candidates {
-		clone := planLegacyClone(ctx, root, cand.path, cand.ownerName, cand.repoName, include)
+		clone := deps.plan(ctx, root, cand.path, cand.ownerName, cand.repoName, include)
 		planned = append(planned, clone)
 	}
 
@@ -425,7 +452,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		}
 		if len(eligible) > 0 {
 			var writeErr error
-			manifest, manifestPath, writeErr = createMigrationManifest(root, eligible, options.Now())
+			manifest, manifestPath, writeErr = deps.createManifest(root, eligible, options.Now())
 			if writeErr != nil {
 				return MigrateReport{}, writeErr
 			}
@@ -437,10 +464,10 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 				continue
 			}
 			now := options.Now()
-			applyOneClone(ctx, root, &planned[index], now, include)
+			deps.applyClone(ctx, root, &planned[index], now, include)
 			if manifest != nil {
 				updateManifestClone(manifest, planned[index], now)
-				if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				if writeErr := deps.writeManifest(manifestPath, manifest); writeErr != nil {
 					// The manifest is the durable audit/undo record; a run
 					// that cannot keep it up to date must stop rather than
 					// keep moving clones it can no longer account for. What
@@ -470,19 +497,19 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			}
 			if manifest == nil {
 				var writeErr error
-				manifest, manifestPath, writeErr = createMigrationManifest(root, nil, options.Now())
+				manifest, manifestPath, writeErr = deps.createManifest(root, nil, options.Now())
 				if writeErr != nil {
 					return writeErr
 				}
 			}
 			setManifestCloneRelocations(manifest, *clone)
-			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			if writeErr := deps.writeManifest(manifestPath, manifest); writeErr != nil {
 				return fmt.Errorf("record migration manifest relocation for %s: %w", clone.Repository, writeErr)
 			}
 			report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
 			return nil
 		}
-		if err := relocateClones(ctx, root, report.Clones, options.Apply, options.Now(), persist, include); err != nil {
+		if err := deps.relocate(ctx, root, report.Clones, options.Apply, options.Now(), persist, include); err != nil {
 			if manifest != nil {
 				report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
 			}
@@ -543,9 +570,13 @@ func busyProcessUnsupportedNote() string {
 // Feature names, returning it either "planned" (eligible to migrate) or
 // "skipped" with the reason.
 func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string, include migrateInclude) MigrateClone {
+	return planLegacyCloneWithDeps(ctx, root, path, ownerName, repoName, include, OriginAddress, worktrees.PlanCloneMove)
+}
+
+func planLegacyCloneWithDeps(ctx context.Context, root, path, ownerName, repoName string, include migrateInclude, origin func(context.Context, string) (repopath.Address, error), planMove func(context.Context, string, string) (worktrees.CloneMoveResult, error)) MigrateClone {
 	slug := ownerName + "/" + repoName
 	clone := MigrateClone{Repository: slug, Source: path}
-	address, err := OriginAddress(ctx, path)
+	address, err := origin(ctx, path)
 	if err != nil {
 		clone.Status = "skipped"
 		clone.Reason = "no usable origin remote: " + err.Error()
@@ -568,7 +599,7 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Reason = "destination already exists: " + destination
 		return clone
 	}
-	plan, err := worktrees.PlanCloneMove(ctx, path, destination)
+	plan, err := planMove(ctx, path, destination)
 	if err != nil {
 		clone.Status = "skipped"
 		clone.Reason = "cannot enumerate linked worktrees: " + err.Error()
@@ -629,19 +660,23 @@ func includedTasksReason(tasks []string) string {
 // nor a genuine refusal): a clone is planned only because of those
 // inclusions, and the caller names them.
 func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string, include migrateInclude) (reason string, includedTasks []string) {
-	if reason, err := worktrees.GitOperationInProgress(ctx, clonePath); err != nil {
+	return refuseCloneWithDeps(ctx, root, slug, clonePath, worktreePaths, include, worktrees.GitOperationInProgress, liveClaimReason, worktrees.BusyProcessCheckSupported, worktrees.BusyProcessReason)
+}
+
+func refuseCloneWithDeps(ctx context.Context, root, slug, clonePath string, worktreePaths []string, include migrateInclude, gitOperation func(context.Context, string) (string, error), claims func(string, string, migrateInclude) (string, []string), busySupported bool, busyReason func([]string) string) (reason string, includedTasks []string) {
+	if reason, err := gitOperation(ctx, clonePath); err != nil {
 		return "cannot inspect Git state: " + err.Error(), nil
 	} else if reason != "" {
 		return reason, nil
 	}
 	for _, worktree := range worktreePaths {
-		if reason, err := worktrees.GitOperationInProgress(ctx, worktree); err != nil {
+		if reason, err := gitOperation(ctx, worktree); err != nil {
 			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error(), nil
 		} else if reason != "" {
 			return "linked worktree " + worktree + ": " + reason, nil
 		}
 	}
-	claimReason, claimIncludedTasks := liveClaimReason(root, slug, include)
+	claimReason, claimIncludedTasks := claims(root, slug, include)
 	if claimReason != "" {
 		return claimReason, nil
 	}
@@ -657,8 +692,8 @@ func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePath
 	// call applyOneClone already makes for every active claim a moved
 	// worktree carries.
 	paths := append([]string{clonePath}, worktreePaths...)
-	if worktrees.BusyProcessCheckSupported {
-		if busy := worktrees.BusyProcessReason(paths); busy != "" {
+	if busySupported {
+		if busy := busyReason(paths); busy != "" {
 			return busy, nil
 		}
 	}
@@ -670,7 +705,11 @@ func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePath
 // every included task's name instead of a refusal: a clone with two active
 // claims where only one is included still refuses on the other.
 func liveClaimReason(root, slug string, include migrateInclude) (reason string, includedTasks []string) {
-	claims, err := worktrees.ListActiveClaimSummaries(root, "")
+	return liveClaimReasonWithList(root, slug, include, worktrees.ListActiveClaimSummaries)
+}
+
+func liveClaimReasonWithList(root, slug string, include migrateInclude, list func(string, string) ([]worktrees.ActiveClaimSummary, error)) (reason string, includedTasks []string) {
+	claims, err := list(root, "")
 	if err != nil {
 		return "", nil
 	}
@@ -691,13 +730,39 @@ func liveClaimReason(root, slug string, include migrateInclude) (reason string, 
 	return "", includedTasks
 }
 
+type cloneMoveDeps struct {
+	plan   func(context.Context, string, string) (worktrees.CloneMoveResult, error)
+	refuse func(context.Context, string, string, string, []string, migrateInclude) (string, []string)
+	intent func(string, []worktrees.CloneMoveWorktree, time.Time) (func(time.Time) error, error)
+	apply  func(context.Context, string, string) (worktrees.CloneMoveResult, error)
+}
+
+func defaultCloneMoveDeps() cloneMoveDeps {
+	return cloneMoveDeps{
+		plan:   worktrees.PlanCloneMove,
+		refuse: refuseClone,
+		intent: func(root string, moves []worktrees.CloneMoveWorktree, now time.Time) (func(time.Time) error, error) {
+			pending, err := worktrees.RecordCloneMoveRelocationIntents(root, moves, now)
+			if err != nil {
+				return nil, err
+			}
+			return func(at time.Time) error { return worktrees.FinalizeCloneMoveRelocationReceipts(pending, at) }, nil
+		},
+		apply: worktrees.ApplyCloneMove,
+	}
+}
+
 func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now time.Time, include migrateInclude) {
+	applyOneCloneWithDeps(ctx, root, clone, now, include, defaultCloneMoveDeps())
+}
+
+func applyOneCloneWithDeps(ctx context.Context, root string, clone *MigrateClone, now time.Time, include migrateInclude, deps cloneMoveDeps) {
 	// Re-derive the worktree list and remote immediately before moving,
 	// rather than trusting the plan computed earlier in this run: a legacy
 	// worktree could have been added, removed, or re-registered since. This
 	// also gives RecordCloneMoveRelocationIntents the current HeadSHA per
 	// worktree, which MigrateWorktree does not carry.
-	plan, err := worktrees.PlanCloneMove(ctx, clone.Source, clone.Destination)
+	plan, err := deps.plan(ctx, clone.Source, clone.Destination)
 	if err != nil {
 		clone.Status = "failed"
 		clone.Reason = "cannot re-verify linked worktrees immediately before move: " + err.Error()
@@ -712,7 +777,7 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	// Re-run every refusal check immediately before moving, not only at plan
 	// time: a claim, a Git operation, or a parked session can all appear in
 	// the time between planning the whole run and reaching this one clone.
-	reason, includedTasks := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths, include)
+	reason, includedTasks := deps.refuse(ctx, root, clone.Repository, clone.Source, worktreePaths, include)
 	if reason != "" {
 		clone.Status = "skipped"
 		clone.Reason = "refused immediately before move: " + reason
@@ -723,19 +788,19 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	// honour exactly the inclusions that were still in effect at the moment
 	// this clone actually moved.
 	clone.IncludedTasks = includedTasks
-	pending, intentErr := worktrees.RecordCloneMoveRelocationIntents(root, plan.Worktrees, now)
+	finalize, intentErr := deps.intent(root, plan.Worktrees, now)
 	if intentErr != nil {
 		clone.Status = "failed"
 		clone.Reason = intentErr.Error()
 		return
 	}
-	result, err := worktrees.ApplyCloneMove(ctx, clone.Source, clone.Destination)
+	result, err := deps.apply(ctx, clone.Source, clone.Destination)
 	if err != nil {
 		clone.Status = "failed"
 		clone.Reason = err.Error()
 		return
 	}
-	if err := worktrees.FinalizeCloneMoveRelocationReceipts(pending, now); err != nil {
+	if err := finalize(now); err != nil {
 		// The clone has already moved and been verified; a claim's location
 		// resolution falling back to its frozen path is the only consequence
 		// of a receipt failure here, so this is reported, not treated as a
@@ -788,6 +853,10 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 // is never relocated. An active task's checkout is left in place with the
 // finding "active task — relocate after it finishes".
 func relocateClones(ctx context.Context, root string, clones []MigrateClone, apply bool, now time.Time, persist func(*MigrateClone) error, include migrateInclude) error {
+	return relocateClonesWithDeps(ctx, root, clones, apply, now, persist, include, worktrees.ResolveUserWorktreePlacement, relocateOneCheckout)
+}
+
+func relocateClonesWithDeps(ctx context.Context, root string, clones []MigrateClone, apply bool, now time.Time, persist func(*MigrateClone) error, include migrateInclude, resolve func(string, string) (worktrees.WorktreePlacement, error), relocate func(context.Context, string, string, string, string, worktrees.WorktreePlacement, bool, time.Time, migrateInclude) MigrateRelocation) error {
 	for index := range clones {
 		clone := &clones[index]
 		switch clone.Status {
@@ -798,7 +867,7 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 		if len(clone.Worktrees) == 0 || clone.Destination == "" {
 			continue
 		}
-		placement, placementErr := worktrees.ResolveUserWorktreePlacement(root, clone.Destination)
+		placement, placementErr := resolve(root, clone.Destination)
 		if placementErr != nil || placement.RepositoryLocal {
 			continue
 		}
@@ -808,7 +877,7 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 			if moved {
 				matchPath = worktree.Destination
 			}
-			relocation := relocateOneCheckout(ctx, root, clone.Destination, clone.Repository, matchPath, placement, apply, now, include)
+			relocation := relocate(ctx, root, clone.Destination, clone.Repository, matchPath, placement, apply, now, include)
 			if relocation == (MigrateRelocation{}) {
 				// Already at its store-mode placement: nothing to record.
 				continue
@@ -828,8 +897,24 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 // of exactly one checkout path. It returns the zero MigrateRelocation when
 // the checkout is already at its store-mode placement — the caller does not
 // record or persist that case.
+type checkoutRelocateDeps struct {
+	identify func(string, string) (string, bool, bool, error)
+	path     func(worktrees.WorktreePlacement, string, string) (string, error)
+	relocate func(context.Context, worktrees.RelocateCheckoutOptions) (worktrees.RelocateCheckoutResult, error)
+}
+
 func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, checkoutPath string, placement worktrees.WorktreePlacement, apply bool, now time.Time, include migrateInclude) MigrateRelocation {
-	task, active, ok, err := worktrees.IdentifyManagedCheckout(root, checkoutPath)
+	return relocateOneCheckoutWithDeps(ctx, root, canonicalDir, repository, checkoutPath, placement, apply, now, include, checkoutRelocateDeps{
+		identify: worktrees.IdentifyManagedCheckout,
+		path: func(placement worktrees.WorktreePlacement, task, repository string) (string, error) {
+			return placement.Path(task, repository)
+		},
+		relocate: worktrees.RelocateCheckout,
+	})
+}
+
+func relocateOneCheckoutWithDeps(ctx context.Context, root, canonicalDir, repository, checkoutPath string, placement worktrees.WorktreePlacement, apply bool, now time.Time, include migrateInclude, deps checkoutRelocateDeps) MigrateRelocation {
+	task, active, ok, err := deps.identify(root, checkoutPath)
 	if err != nil {
 		return MigrateRelocation{Source: checkoutPath, Status: "skipped", Reason: "cannot resolve Work Log claim: " + err.Error()}
 	}
@@ -856,7 +941,7 @@ func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, ch
 		// until the task finishes. This is a finding, not a failure.
 		return MigrateRelocation{Task: task, Source: checkoutPath, Status: "skipped", Reason: "active task — relocate after it finishes"}
 	}
-	destination, destErr := placement.Path(task, repository)
+	destination, destErr := deps.path(placement, task, repository)
 	if destErr != nil {
 		return MigrateRelocation{
 			Task: task, Source: checkoutPath, Status: "skipped",
@@ -867,7 +952,7 @@ func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, ch
 		return MigrateRelocation{}
 	}
 	relocation := MigrateRelocation{Task: task, Source: checkoutPath, Destination: destination}
-	outcome, relocateErr := worktrees.RelocateCheckout(ctx, worktrees.RelocateCheckoutOptions{
+	outcome, relocateErr := deps.relocate(ctx, worktrees.RelocateCheckoutOptions{
 		ProjectsRoot: root, CanonicalDir: canonicalDir, Source: checkoutPath, Destination: destination,
 		To: "shared", Apply: apply, Now: func() time.Time { return now },
 	})
@@ -943,6 +1028,10 @@ func regenerateMarkers(root, path string) {
 // the caller to report — the Feature requires every kept legacy owner
 // directory to be named, not silently left out of the report.
 func removeEmptyLegacyOwner(ownerPath string) (removed bool, reason string) {
+	return removeEmptyLegacyOwnerWithRemove(ownerPath, os.Remove)
+}
+
+func removeEmptyLegacyOwnerWithRemove(ownerPath string, remove func(string) error) (removed bool, reason string) {
 	entries, err := os.ReadDir(ownerPath)
 	if err != nil {
 		return false, "cannot inspect legacy owner directory: " + err.Error()
@@ -954,7 +1043,7 @@ func removeEmptyLegacyOwner(ownerPath string) (removed bool, reason string) {
 		}
 		return false, "not empty; still holds " + strings.Join(names, ", ")
 	}
-	if err := os.Remove(ownerPath); err != nil {
+	if err := remove(ownerPath); err != nil {
 		return false, "could not remove empty legacy owner directory: " + err.Error()
 	}
 	return true, ""
@@ -983,7 +1072,22 @@ func removeEmptyRelocationDirectories(root, task, destination string) {
 	}
 }
 
+type undoDeps struct {
+	lock    func(string) (*migrationLock, error)
+	refuse  func(context.Context, string, string, string, []string, migrateInclude) (string, []string)
+	reverse func(context.Context, string, string, string, string, time.Time) error
+	apply   func(context.Context, string, string) (worktrees.CloneMoveResult, error)
+	write   func(string, *migrationManifest) error
+}
+
 func migrateUndo(ctx context.Context, root string, options MigrateOptions) (MigrateReport, error) {
+	return migrateUndoWithDeps(ctx, root, options, undoDeps{
+		lock: acquireMigrationLock, refuse: refuseClone, reverse: worktrees.ReverseRelocation,
+		apply: worktrees.ApplyCloneMove, write: writeManifest,
+	})
+}
+
+func migrateUndoWithDeps(ctx context.Context, root string, options MigrateOptions, deps undoDeps) (MigrateReport, error) {
 	if err := validateMigrationID(options.UndoID); err != nil {
 		return MigrateReport{}, err
 	}
@@ -996,7 +1100,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 	}
 	var lock *migrationLock
 	if options.Apply {
-		acquired, lockErr := acquireMigrationLock(root)
+		acquired, lockErr := deps.lock(root)
 		if lockErr != nil {
 			return MigrateReport{}, lockErr
 		}
@@ -1031,13 +1135,13 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 					clone.Relocations = append(clone.Relocations, migReloc)
 					continue
 				}
-				if reason, _ := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
+				if reason, _ := deps.refuse(ctx, root, entry.Repository, reloc.Destination, nil, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
 					migReloc.Status, migReloc.Reason = "skipped", "refused immediately before relocation reversal: "+reason
 					clone.Relocations = append(clone.Relocations, migReloc)
 					relocationsOK = false
 					continue
 				}
-				if err := worktrees.ReverseRelocation(ctx, root, entry.Destination, reloc.Destination, reloc.Source, options.Now()); err != nil {
+				if err := deps.reverse(ctx, root, entry.Destination, reloc.Destination, reloc.Source, options.Now()); err != nil {
 					migReloc.Status, migReloc.Reason = "failed", err.Error()
 					clone.Relocations = append(clone.Relocations, migReloc)
 					relocationsOK = false
@@ -1058,7 +1162,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 			clone.Status = "skipped"
 			clone.Reason = "one or more relocations could not be reversed; clone move left in place"
 			report.Clones = append(report.Clones, clone)
-			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			if writeErr := deps.write(manifestPath, manifest); writeErr != nil {
 				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
 				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
 			}
@@ -1069,7 +1173,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 			// (entry.Status != "done") never reaches one of the writeManifest
 			// calls further down, and its relocation reversals still need to
 			// survive an interruption exactly like a clone move's does.
-			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			if writeErr := deps.write(manifestPath, manifest); writeErr != nil {
 				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
 				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
 			}
@@ -1107,21 +1211,21 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		for _, worktree := range entry.Worktrees {
 			currentWorktreePaths = append(currentWorktreePaths, worktree.Destination)
 		}
-		if reason, _ := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
+		if reason, _ := deps.refuse(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
 			clone.Status = "skipped"
 			clone.Reason = "refused immediately before move back: " + reason
 			report.Clones = append(report.Clones, clone)
-			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			if writeErr := deps.write(manifestPath, manifest); writeErr != nil {
 				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
 				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
 			}
 			continue
 		}
-		if _, err := worktrees.ApplyCloneMove(ctx, entry.Destination, entry.Source); err != nil {
+		if _, err := deps.apply(ctx, entry.Destination, entry.Source); err != nil {
 			clone.Status = "failed"
 			clone.Reason = err.Error()
 			report.Clones = append(report.Clones, clone)
-			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			if writeErr := deps.write(manifestPath, manifest); writeErr != nil {
 				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
 				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
 			}
@@ -1150,7 +1254,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		// as the forward apply does: an interrupted undo run must leave a
 		// manifest that already reflects every clone it finished, not only
 		// what a final write at the very end would have captured.
-		if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+		if writeErr := deps.write(manifestPath, manifest); writeErr != nil {
 			report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
 			return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
 		}
@@ -1195,9 +1299,6 @@ func validateMigrationID(id string) error {
 	if strings.ContainsAny(id, "/\\") {
 		return fmt.Errorf("invalid migration id %q: must be a single path segment", id)
 	}
-	if clean := filepath.Clean(id); clean != id {
-		return fmt.Errorf("invalid migration id %q", id)
-	}
 	return nil
 }
 
@@ -1219,11 +1320,15 @@ func repositorySet(repositories []string) repoFilter {
 }
 
 func createMigrationManifest(root string, clones []MigrateClone, now time.Time) (*migrationManifest, string, error) {
+	return createMigrationManifestWithDeps(root, clones, now, newMigrationID, writeManifest)
+}
+
+func createMigrationManifestWithDeps(root string, clones []MigrateClone, now time.Time, newID func(time.Time) (string, error), write func(string, *migrationManifest) error) (*migrationManifest, string, error) {
 	home, err := wbhome.EnsureRoot(root)
 	if err != nil {
 		return nil, "", err
 	}
-	id, err := newMigrationID(now)
+	id, err := newID(now)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1241,7 +1346,7 @@ func createMigrationManifest(root string, clones []MigrateClone, now time.Time) 
 		manifest.Clones = append(manifest.Clones, entry)
 	}
 	path := filepath.Join(directory, "manifest.json")
-	if err := writeManifest(path, manifest); err != nil {
+	if err := write(path, manifest); err != nil {
 		return nil, "", err
 	}
 	return manifest, path, nil
@@ -1303,8 +1408,12 @@ func readManifest(path string) (*migrationManifest, error) {
 }
 
 func newMigrationID(now time.Time) (string, error) {
+	return newMigrationIDWithRead(now, rand.Read)
+}
+
+func newMigrationIDWithRead(now time.Time, read func([]byte) (int, error)) (string, error) {
 	suffix := make([]byte, 4)
-	if _, err := rand.Read(suffix); err != nil {
+	if _, err := read(suffix); err != nil {
 		return "", err
 	}
 	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(suffix), nil
