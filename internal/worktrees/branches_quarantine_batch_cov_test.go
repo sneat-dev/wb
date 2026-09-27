@@ -167,3 +167,47 @@ func TestQuarantinePlanRejectsExistingRetiredDestination(t *testing.T) {
 		t.Fatalf("destination collision plan = %#v", result)
 	}
 }
+
+func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '%s\\n' \"$WB_TEST_GH_BODY\"\nexit \"${WB_TEST_GH_EXIT:-0}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	request := BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha, Reason: "old"}
+	for _, tc := range []struct{ name, body, exit, want string }{
+		{"query failed", "unavailable", "7", "cannot prove pull-request safety"},
+		{"invalid response", "not-json", "0", "cannot prove pull-request safety"},
+		{"open head", `[{"number":19,"html_url":"https://example.test/pull/19","state":"open","base":{"ref":"main"},"head":{"ref":"feature/old","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "head of open pull request"},
+		{"open base", `[{"number":20,"html_url":"https://example.test/pull/20","state":"open","base":{"ref":"feature/old"},"head":{"ref":"other","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "base of open pull request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WB_TEST_GH_BODY", tc.body)
+			t.Setenv("WB_TEST_GH_EXIT", tc.exit)
+			result := planBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, request, now)
+			if result.Outcome != "refused" || !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("pull request safety plan = %#v, want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	destination := retiredBranchDestination(time.Now(), "feature/old", sha)
+	gitTest(t, fixture.canonical, "branch", destination)
+	result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha}, Destination: destination, Outcome: "planned"}
+	applyBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, &result)
+	if result.Outcome != "failed" || !strings.Contains(result.Error, "destination appeared") {
+		t.Fatalf("destination collision apply = %#v", result)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/feature/old") {
+		t.Fatal("source changed despite destination collision")
+	}
+}
