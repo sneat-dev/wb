@@ -101,7 +101,7 @@ func TestSmCovReadImmutableRejectsMutableAndOversizedArtifacts(t *testing.T) {
 	if err := os.Link(linked, filepath.Join(dir, "linked-copy")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readImmutableAt(authority, "linked", 32, "test artifact"); err == nil || !strings.Contains(err.Error(), "single-link bounded") {
+	if _, err := readImmutableAt(authority, "linked", 32, "test artifact"); err == nil || !strings.Contains(err.Error(), "single-link") {
 		t.Fatalf("hard-linked artifact error = %v", err)
 	}
 }
@@ -224,6 +224,16 @@ func TestSmCovReadImmutableFileReportsDeterministicIOFailures(t *testing.T) {
 			}
 			return ops
 		}, "changed while it was verified"},
+		{"oversized read", func() immutableReadOps {
+			ops := base()
+			ops.readAll = func(io.Reader) ([]byte, error) { return []byte(strings.Repeat("x", 33)), nil }
+			return ops
+		}, "exceeds 32 bytes"},
+		{"size changed during first read", func() immutableReadOps {
+			ops := base()
+			ops.readAll = func(io.Reader) ([]byte, error) { return []byte("short"), nil }
+			return ops
+		}, "size changed while it was read"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

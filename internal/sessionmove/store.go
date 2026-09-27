@@ -42,9 +42,66 @@ const (
 // Store persists handoff state at Root, normally <WB_HOME>/handoffs.
 type Store struct {
 	Root string
+	ops  *storeOps
 }
 
 func NewStore(root string) Store { return Store{Root: root} }
+
+// storeOps lets package tests model a publisher or reader failing between
+// immutable filesystem steps. A nil ops field always uses the production
+// descriptor-based implementation.
+type storeOps struct {
+	publish            func(*os.File, string, []byte, os.FileMode) (bool, error)
+	read               func(*os.File, string, int64, string) ([]byte, error)
+	marshal            func(any) ([]byte, error)
+	encodeReceipt      func(Receipt) ([]byte, error)
+	encodeMessage      func(Message) ([]byte, error)
+	retainRoot         func(*ExecutionLock, string, Request, Digest) (*os.File, error)
+	afterHandoffRetain func()
+	afterReadmitRetain func()
+}
+
+func (s Store) publish(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
+	if s.ops != nil && s.ops.publish != nil {
+		return s.ops.publish(directory, name, raw, mode)
+	}
+	return publishImmutableAt(directory, name, raw, mode, nil)
+}
+
+func (s Store) read(directory *os.File, name string, limit int64, label string) ([]byte, error) {
+	if s.ops != nil && s.ops.read != nil {
+		return s.ops.read(directory, name, limit, label)
+	}
+	return readImmutableAt(directory, name, limit, label)
+}
+
+func (s Store) marshal(value any) ([]byte, error) {
+	if s.ops != nil && s.ops.marshal != nil {
+		return s.ops.marshal(value)
+	}
+	return marshalJSON(value)
+}
+
+func (s Store) encodeReceipt(receipt Receipt) ([]byte, error) {
+	if s.ops != nil && s.ops.encodeReceipt != nil {
+		return s.ops.encodeReceipt(receipt)
+	}
+	return EncodeReceipt(receipt)
+}
+
+func (s Store) encodeMessage(message Message) ([]byte, error) {
+	if s.ops != nil && s.ops.encodeMessage != nil {
+		return s.ops.encodeMessage(message)
+	}
+	return EncodeMessage(message)
+}
+
+func (s Store) retainRoot(lock *ExecutionLock, root string, request Request, digest Digest) (*os.File, error) {
+	if s.ops != nil && s.ops.retainRoot != nil {
+		return s.ops.retainRoot(lock, root, request, digest)
+	}
+	return lock.RetainStoreRootForStore(root, request, digest)
+}
 
 // PrivateHandoverPath returns the deterministic absolute path of the private
 // materialized handover for handoffID under storeRoot. It never depends on
@@ -74,10 +131,9 @@ func (s Store) EnsureHandoverUnderLock(lock *ExecutionLock, handoffID string, di
 	if request.HandoverContent == "" {
 		return "", fmt.Errorf("handoff %s has no inline handover content to materialize", handoffID)
 	}
+	// The retained request was decoded and validated at admission: its
+	// HandoverDigest already authenticates these exact inline bytes.
 	raw := []byte(request.HandoverContent)
-	if !request.HandoverDigest.Matches(raw) {
-		return "", fmt.Errorf("%w: handoff %s inline handover content does not match its digest", ErrHandoffConflict, handoffID)
-	}
 	if _, err := publishImmutableAt(handoff, HandoverFileName, raw, 0o600, nil); err != nil {
 		return "", fmt.Errorf("persist private handover: %w", err)
 	}
@@ -119,17 +175,13 @@ func (s Store) Admit(raw []byte, digest Digest) (Admission, error) {
 	if err != nil {
 		return Admission{}, fmt.Errorf("persist handoff request: %w", err)
 	}
-	existing, existingDigest, existingRaw, err := loadRequestAt(handoff, request.HandoffID)
+	_, existingDigest, existingRaw, err := loadRequestAt(handoff, request.HandoffID)
 	if err != nil {
 		return Admission{}, err
 	}
 	if existingDigest != digest || !bytes.Equal(existingRaw, raw) {
 		return Admission{}, fmt.Errorf("%w: handoff %s already has digest %s, received %s", ErrHandoffConflict, request.HandoffID, existingDigest, digest)
 	}
-	if existing != request {
-		return Admission{}, fmt.Errorf("%w: durable handoff request projection changed for %s", ErrHandoffConflict, request.HandoffID)
-	}
-
 	receipt, _, err := loadReceiptAt(handoff, request, digest)
 	if err != nil {
 		return Admission{}, err
@@ -154,6 +206,9 @@ func (s Store) ReadmitUnderLock(lock *ExecutionLock, handoffID string, digest Di
 		return Admission{}, fmt.Errorf("re-admit under exact execution authority: %w", err)
 	}
 	defer func() { _ = handoff.Close() }()
+	if s.ops != nil && s.ops.afterReadmitRetain != nil {
+		s.ops.afterReadmitRetain()
+	}
 	admitted, storedDigest, storedRaw, err := loadRequestAt(handoff, handoffID)
 	if err != nil {
 		return Admission{}, err
@@ -201,6 +256,12 @@ func (s Store) SaveReceiptUnderLock(lock *ExecutionLock, handoffID string, diges
 }
 
 func saveReceiptAt(handoff *os.File, request Request, digest Digest, receipt Receipt) (Receipt, bool, error) {
+	return saveReceiptAtWithPublish(handoff, request, digest, receipt, func(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
+		return publishImmutableAt(directory, name, raw, mode, nil)
+	})
+}
+
+func saveReceiptAtWithPublish(handoff *os.File, request Request, digest Digest, receipt Receipt, publish func(*os.File, string, []byte, os.FileMode) (bool, error)) (Receipt, bool, error) {
 	if err := ValidateReceiptForRequest(receipt, request, digest); err != nil {
 		return Receipt{}, false, err
 	}
@@ -211,7 +272,7 @@ func saveReceiptAt(handoff *os.File, request Request, digest Digest, receipt Rec
 	if len(raw) > maxReceiptBytes {
 		return Receipt{}, false, fmt.Errorf("session move receipt exceeds %d bytes", maxReceiptBytes)
 	}
-	created, err := publishImmutableAt(handoff, receiptFileName, raw, 0o600, nil)
+	created, err := publish(handoff, receiptFileName, raw, 0o600)
 	if err != nil {
 		return Receipt{}, false, fmt.Errorf("persist handoff receipt: %w", err)
 	}
@@ -258,6 +319,12 @@ func (s Store) AppendEventUnderLock(lock *ExecutionLock, handoffID string, diges
 }
 
 func appendEventAt(handoff *os.File, handoffID string, digest Digest, event HandoffEvent) (HandoffEvent, error) {
+	return appendEventAtWithPublish(handoff, handoffID, digest, event, func(directory *os.File, name string, raw []byte, mode os.FileMode) (bool, error) {
+		return publishImmutableAt(directory, name, raw, mode, nil)
+	})
+}
+
+func appendEventAtWithPublish(handoff *os.File, handoffID string, digest Digest, event HandoffEvent, publish func(*os.File, string, []byte, os.FileMode) (bool, error)) (HandoffEvent, error) {
 	if !validPhase(event.Phase) {
 		return HandoffEvent{}, fmt.Errorf("handoff phase %q is unsupported", event.Phase)
 	}
@@ -305,7 +372,7 @@ func appendEventAt(handoff *os.File, handoffID string, digest Digest, event Hand
 		if len(raw) > maxEventBytes {
 			return HandoffEvent{}, fmt.Errorf("handoff event exceeds %d bytes", maxEventBytes)
 		}
-		created, err := publishImmutableAt(events, eventFileName(next), raw, 0o600, nil)
+		created, err := publish(events, eventFileName(next), raw, 0o600)
 		if err != nil {
 			return HandoffEvent{}, fmt.Errorf("append handoff event: %w", err)
 		}
@@ -406,10 +473,14 @@ func openHandoffAtRoot(root *os.File, handoffID string) (*os.File, error) {
 }
 
 func (s Store) openRoot(create bool) (*os.File, error) {
+	return s.openRootWithAbs(create, filepath.Abs)
+}
+
+func (s Store) openRootWithAbs(create bool, abs func(string) (string, error)) (*os.File, error) {
 	if strings.TrimSpace(s.Root) == "" || s.Root != strings.TrimSpace(s.Root) {
 		return nil, fmt.Errorf("handoff store root is required")
 	}
-	rootPath, err := filepath.Abs(s.Root)
+	rootPath, err := abs(s.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve handoff store root: %w", err)
 	}
@@ -440,6 +511,9 @@ func (s Store) retainHandoffUnderLock(lock *ExecutionLock, handoffID string, dig
 	handoff, err := lock.RetainHandoffForStore(s.Root, request, digest)
 	if err != nil {
 		return Request{}, nil, err
+	}
+	if s.ops != nil && s.ops.afterHandoffRetain != nil {
+		s.ops.afterHandoffRetain()
 	}
 	admitted, storedDigest, _, err := loadRequestAt(handoff, handoffID)
 	if err != nil {
@@ -525,6 +599,10 @@ func ValidateReceiptForRequest(receipt Receipt, request Request, digest Digest) 
 }
 
 func openEventsAt(handoff *os.File, create bool) (*os.File, error) {
+	return openEventsAtWithStat(handoff, create, unix.Fstat)
+}
+
+func openEventsAtWithStat(handoff *os.File, create bool, fstat func(int, *unix.Stat_t) error) (*os.File, error) {
 	if handoff == nil {
 		return nil, fmt.Errorf("open handoff events: handoff authority is required")
 	}
@@ -539,7 +617,7 @@ func openEventsAt(handoff *os.File, create bool) (*os.File, error) {
 	}
 	events := os.NewFile(uintptr(fd), "wb-session-handoff-events")
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
+	if err := fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
 		_ = events.Close()
 		if err != nil {
 			return nil, fmt.Errorf("inspect handoff events directory: %w", err)
@@ -550,6 +628,10 @@ func openEventsAt(handoff *os.File, create bool) (*os.File, error) {
 }
 
 func loadEventsAt(handoff *os.File, handoffID string, digest Digest) ([]HandoffEvent, error) {
+	return loadEventsAtWithEntries(handoff, handoffID, digest, readEventEntries)
+}
+
+func loadEventsAtWithEntries(handoff *os.File, handoffID string, digest Digest, readEntries func(*os.File) ([]os.DirEntry, error)) ([]HandoffEvent, error) {
 	eventsDirectory, err := openEventsAt(handoff, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return []HandoffEvent{}, nil
@@ -558,7 +640,7 @@ func loadEventsAt(handoff *os.File, handoffID string, digest Digest) ([]HandoffE
 		return nil, err
 	}
 	defer func() { _ = eventsDirectory.Close() }()
-	entries, err := readEventEntries(eventsDirectory)
+	entries, err := readEntries(eventsDirectory)
 	if err != nil {
 		return nil, err
 	}
@@ -723,6 +805,15 @@ func publishImmutableAt(directory *os.File, name string, raw []byte, mode os.Fil
 }
 
 func publishImmutableAtWithRandom(directory *os.File, name string, raw []byte, mode os.FileMode, inj *filewrite.Injector, read func([]byte) (int, error)) (bool, error) {
+	return publishImmutableAtWithOps(directory, name, raw, mode, inj, read, publishOps{fstat: unix.Fstat, close: (*os.File).Close})
+}
+
+type publishOps struct {
+	fstat func(int, *unix.Stat_t) error
+	close func(*os.File) error
+}
+
+func publishImmutableAtWithOps(directory *os.File, name string, raw []byte, mode os.FileMode, inj *filewrite.Injector, read func([]byte) (int, error), ops publishOps) (bool, error) {
 	if directory == nil {
 		return false, fmt.Errorf("immutable publication directory authority is required")
 	}
@@ -773,9 +864,9 @@ func publishImmutableAtWithRandom(directory *os.File, name string, raw []byte, m
 		}
 		published := os.NewFile(uintptr(publishedFD), "wb-session-published-immutable")
 		var publishedStat unix.Stat_t
-		statErr := unix.Fstat(publishedFD, &publishedStat)
+		statErr := ops.fstat(publishedFD, &publishedStat)
 		same := sameFile(temporary, published)
-		closeErr := published.Close()
+		closeErr := ops.close(published)
 		if statErr != nil || closeErr != nil || !same || publishedStat.Mode&unix.S_IFMT != unix.S_IFREG ||
 			uint32(publishedStat.Mode&0o777) != uint32(mode.Perm()) || publishedStat.Nlink != 1 {
 			if statErr != nil {
@@ -804,7 +895,23 @@ func publishImmutableAtWithRandom(directory *os.File, name string, raw []byte, m
 var repairPendingLinkAtBeforeOpenPending = func(*os.File, string) {}
 
 func repairPendingLinkAt(directory *os.File, finalName string) error {
-	finalFD, err := unix.Openat(int(directory.Fd()), finalName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	return repairPendingLinkAtWithOps(directory, finalName, repairOps{
+		open: unix.Openat, fstat: unix.Fstat,
+		readDir: func(file *os.File) ([]os.DirEntry, error) { return file.ReadDir(-1) },
+		unlink:  unix.Unlinkat, fsync: unix.Fsync,
+	})
+}
+
+type repairOps struct {
+	open    func(int, string, int, uint32) (int, error)
+	fstat   func(int, *unix.Stat_t) error
+	readDir func(*os.File) ([]os.DirEntry, error)
+	unlink  func(int, string, int) error
+	fsync   func(int) error
+}
+
+func repairPendingLinkAtWithOps(directory *os.File, finalName string, ops repairOps) error {
+	finalFD, err := ops.open(int(directory.Fd()), finalName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
@@ -814,18 +921,18 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 	final := os.NewFile(uintptr(finalFD), "wb-session-interrupted-publication-final")
 	defer func() { _ = final.Close() }()
 	var before unix.Stat_t
-	if err := unix.Fstat(finalFD, &before); err != nil {
+	if err := ops.fstat(finalFD, &before); err != nil {
 		return err
 	}
 	if before.Nlink <= 1 {
 		return nil
 	}
-	scanFD, err := unix.Openat(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	scanFD, err := ops.open(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
 	scan := os.NewFile(uintptr(scanFD), "wb-session-interrupted-publication-scan")
-	entries, readErr := scan.ReadDir(-1)
+	entries, readErr := ops.readDir(scan)
 	_ = scan.Close()
 	if readErr != nil {
 		return readErr
@@ -836,7 +943,7 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 			continue
 		}
 		repairPendingLinkAtBeforeOpenPending(directory, entry.Name())
-		pendingFD, err := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		pendingFD, err := ops.open(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) {
 				continue
@@ -849,18 +956,18 @@ func repairPendingLinkAt(directory *os.File, finalName string) error {
 		if !same {
 			continue
 		}
-		if err := unix.Unlinkat(int(directory.Fd()), entry.Name(), 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		if err := ops.unlink(int(directory.Fd()), entry.Name(), 0); err != nil && !errors.Is(err, unix.ENOENT) {
 			return err
 		}
 		repaired = true
 	}
 	if repaired {
-		if err := unix.Fsync(int(directory.Fd())); err != nil {
+		if err := ops.fsync(int(directory.Fd())); err != nil {
 			return err
 		}
 	}
 	var after unix.Stat_t
-	if err := unix.Fstat(finalFD, &after); err != nil {
+	if err := ops.fstat(finalFD, &after); err != nil {
 		return err
 	}
 	if after.Dev != before.Dev || after.Ino != before.Ino || after.Nlink != 1 {

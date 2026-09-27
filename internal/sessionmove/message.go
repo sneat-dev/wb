@@ -189,7 +189,7 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 	if err != nil {
 		return state, err
 	}
-	canonical, err := EncodeMessage(message)
+	canonical, err := s.encodeMessage(message)
 	if err != nil {
 		return state, err
 	}
@@ -221,11 +221,11 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 		return state, err
 	}
 	defer func() { _ = directory.Close() }()
-	created, err := publishImmutableAt(directory, messagePayloadFileName, raw, 0o600, nil)
+	created, err := s.publish(directory, messagePayloadFileName, raw, 0o600)
 	if err != nil {
 		return state, fmt.Errorf("persist exact session message: %w", err)
 	}
-	existingRaw, err := readImmutableAt(directory, messagePayloadFileName, maxMessageBytes, "durable session message")
+	existingRaw, err := s.read(directory, messagePayloadFileName, maxMessageBytes, "durable session message")
 	if err != nil {
 		return state, err
 	}
@@ -236,11 +236,11 @@ func (s Store) admitMessageUnderLock(lock *ExecutionLock, handoffID string, requ
 		SchemaVersion: MessageRecordSchemaVersion, Direction: direction, MessageID: message.MessageID,
 		MessageDigest: DigestBytes(raw), HandoffID: handoffID, RecordedAt: recordedAt.UTC(),
 	}
-	recordRaw, err := marshalJSON(record)
+	recordRaw, err := s.marshal(record)
 	if err != nil {
 		return state, err
 	}
-	if _, err := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); err != nil {
+	if _, err := s.publish(directory, messageRecordFileName, recordRaw, 0o600); err != nil {
 		return state, fmt.Errorf("persist session message record: %w", err)
 	}
 	state, err = loadMessageStateAt(directory, request, direction, message.MessageID, handoffReceipt)
@@ -304,11 +304,11 @@ func (s Store) ResumeOutgoingMessageUnderLock(lock *ExecutionLock, handoffID str
 			SchemaVersion: MessageRecordSchemaVersion, Direction: MessageDirectionOutgoing,
 			MessageID: message.MessageID, MessageDigest: DigestBytes(raw), HandoffID: handoffID, RecordedAt: message.SentAt.UTC(),
 		}
-		recordRaw, marshalErr := marshalJSON(record)
+		recordRaw, marshalErr := s.marshal(record)
 		if marshalErr != nil {
 			return MessageState{}, marshalErr
 		}
-		if _, publishErr := publishImmutableAt(directory, messageRecordFileName, recordRaw, 0o600, nil); publishErr != nil {
+		if _, publishErr := s.publish(directory, messageRecordFileName, recordRaw, 0o600); publishErr != nil {
 			return MessageState{}, fmt.Errorf("repair outgoing session message record: %w", publishErr)
 		}
 	} else if err != nil {
@@ -368,15 +368,15 @@ func (s Store) SaveIncomingPasteIntentUnderLock(lock *ExecutionLock, handoffID s
 	if err := validatePasteIntent(intent, state); err != nil {
 		return MessagePasteIntent{}, false, err
 	}
-	raw, err := marshalJSON(intent)
+	raw, err := s.marshal(intent)
 	if err != nil {
 		return MessagePasteIntent{}, false, err
 	}
-	created, err := publishImmutableAt(directory, messageIntentFileName, raw, 0o600, nil)
+	created, err := s.publish(directory, messageIntentFileName, raw, 0o600)
 	if err != nil {
 		return MessagePasteIntent{}, false, err
 	}
-	existingRaw, err := readImmutableAt(directory, messageIntentFileName, maxMessageIntentBytes, "message paste intent")
+	existingRaw, err := s.read(directory, messageIntentFileName, maxMessageIntentBytes, "message paste intent")
 	if err != nil {
 		return MessagePasteIntent{}, false, err
 	}
@@ -433,11 +433,11 @@ func (s Store) saveMessageReceiptUnderLock(lock *ExecutionLock, handoffID string
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}
-	created, err := publishImmutableAt(directory, messageReceiptFileName, raw, 0o600, nil)
+	created, err := s.publish(directory, messageReceiptFileName, raw, 0o600)
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}
-	existingRaw, err := readImmutableAt(directory, messageReceiptFileName, maxMessageReceiptBytes, "message receipt")
+	existingRaw, err := s.read(directory, messageReceiptFileName, maxMessageReceiptBytes, "message receipt")
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}
@@ -593,6 +593,10 @@ func openMessageEntryAt(handoff *os.File, direction MessageDirection, messageID 
 }
 
 func openSecureDirectoryAt(parent *os.File, name string, create bool, label string) (*os.File, error) {
+	return openSecureDirectoryAtWithStat(parent, name, create, label, unix.Fstat)
+}
+
+func openSecureDirectoryAtWithStat(parent *os.File, name string, create bool, label string, fstat func(int, *unix.Stat_t) error) (*os.File, error) {
 	if create {
 		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 			return nil, fmt.Errorf("create %s directory: %w", label, err)
@@ -604,7 +608,7 @@ func openSecureDirectoryAt(parent *os.File, name string, create bool, label stri
 	}
 	directory := os.NewFile(uintptr(fd), "wb-session-"+strings.ReplaceAll(label, " ", "-"))
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Nlink < 1 {
+	if err := fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Nlink < 1 {
 		_ = directory.Close()
 		if err != nil {
 			return nil, fmt.Errorf("inspect %s directory: %w", label, err)

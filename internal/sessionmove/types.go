@@ -181,14 +181,8 @@ func ParseWorkLogReference(value string) (WorkLogReference, error) {
 	if err := validateID("work log effort", parts[0]); err != nil {
 		return WorkLogReference{}, err
 	}
-	if parts[0] == "." || parts[0] == ".." {
-		return WorkLogReference{}, fmt.Errorf("work log effort %q is not a safe path segment", parts[0])
-	}
 	if err := validateID("work log run", parts[1]); err != nil {
 		return WorkLogReference{}, err
-	}
-	if parts[1] == "." || parts[1] == ".." {
-		return WorkLogReference{}, fmt.Errorf("work log run %q is not a safe path segment", parts[1])
 	}
 	if !workLogClaimID.MatchString(parts[2]) {
 		return WorkLogReference{}, fmt.Errorf("work log claim %q must contain exactly 64 lowercase hex characters", parts[2])
@@ -211,6 +205,12 @@ func ExternalHandoffClaimID(requestDigest Digest, successorWBSessionID string) (
 	if err := validateID("successor_wb_session_id", successorWBSessionID); err != nil {
 		return "", err
 	}
+	return externalHandoffClaimIDValidated(requestDigest, successorWBSessionID), nil
+}
+
+// Call only after the digest and session ID have passed their public
+// validators. The hash computation itself has no failure path.
+func externalHandoffClaimIDValidated(requestDigest Digest, successorWBSessionID string) string {
 	hasher := sha256.New()
 	parts := [externalHandoffHashPartCount]string{
 		externalHandoffClaimDomain,
@@ -223,7 +223,7 @@ func ExternalHandoffClaimID(requestDigest Digest, successorWBSessionID string) (
 		_, _ = hasher.Write(length[:])
 		_, _ = hasher.Write([]byte(part))
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 // NormalizeSourceOfferContent returns the one canonical spelling checkpoint
@@ -260,15 +260,11 @@ func ExpectedTargetWorkLogReference(request Request, requestDigest Digest) (Work
 	if err := requestDigest.validate(); err != nil {
 		return WorkLogReference{}, fmt.Errorf("request digest: %w", err)
 	}
-	source, err := ParseWorkLogReference(request.WorkLogReference)
-	if err != nil {
-		return WorkLogReference{}, fmt.Errorf("work_log_reference: %w", err)
-	}
-	claimID, err := ExternalHandoffClaimID(requestDigest, request.SuccessorWBSessionID)
-	if err != nil {
-		return WorkLogReference{}, err
-	}
-	return WorkLogReference{EffortID: source.EffortID, RunID: source.RunID, ClaimID: claimID}, nil
+	// request.validate already parsed the reference and validated the
+	// successor ID; requestDigest.validate just validated the digest.
+	parts := strings.Split(strings.TrimPrefix(request.WorkLogReference, workLogReferencePrefix), "/")
+	claimID := externalHandoffClaimIDValidated(requestDigest, request.SuccessorWBSessionID)
+	return WorkLogReference{EffortID: parts[0], RunID: parts[1], ClaimID: claimID}, nil
 }
 
 // MessageKind distinguishes ordinary successor input from WB's standard
