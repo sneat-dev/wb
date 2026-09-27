@@ -56,7 +56,7 @@ func resolveWorktreeMergeDirectCIContract(ctx context.Context, repository, targe
 		return nil, fmt.Errorf("decode Go CI workflow: %w", err)
 	}
 	if workflow.ID <= 0 || workflow.Name != "Go CI" || workflow.Path != ".github/workflows/go-ci.yml" || workflow.State != "active" {
-		return nil, fmt.Errorf("Go CI workflow identity is not active and exact")
+		return nil, fmt.Errorf("go CI workflow identity is not active and exact")
 	}
 	_, priorRuns, reason := githubActionsRunsForHead(ctx, PullRequestWaitOptions{Repository: repository, Target: target, Head: remoteHead})
 	if reason != "" {
@@ -67,7 +67,7 @@ func resolveWorktreeMergeDirectCIContract(ctx context.Context, repository, targe
 			return &worktreeMergeDirectCIContract{PullRequest: pullRequest, PullRequestNumber: view.Number, Base: view.Base.Ref, WorkflowID: workflow.ID}, nil
 		}
 	}
-	return nil, fmt.Errorf("Go CI has no pull_request run for exact current %s head %s", target, remoteHead)
+	return nil, fmt.Errorf("go CI has no pull_request run for exact current %s head %s", target, remoteHead)
 }
 
 func runIncludesPullRequest(run githubActionsRun, number int, base string) bool {

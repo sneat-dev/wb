@@ -580,7 +580,7 @@ func rebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection,
 				projection.Lifecycle = "handoff"
 			}
 		}
-		if projection.Conflict == "" && event.Conflict != "" && !(event.Conflict == "fetch_failed" && resolvedFetchFailure) {
+		if projection.Conflict == "" && event.Conflict != "" && (event.Conflict != "fetch_failed" || !resolvedFetchFailure) {
 			projection.Conflict = event.Conflict
 		}
 	}
