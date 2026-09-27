@@ -101,6 +101,56 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 			t.Fatalf("verification progress event %d state = %s, want %s", index, event.State, want)
 		}
 	}
+
+	// Merge validation runs lint before test/build. A successful install in the
+	// lint phase serves the same locked scope for the later phase.
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest, CheckBuild}, RunOptions{PriorNodeInstallReport: &lint})
+	if lint.Status != StatusPassed || later.Status != StatusPassed {
+		t.Fatalf("phased verification: lint=%+v later=%+v", lint, later)
+	}
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun lint\nrun test\nrun build"; got != want {
+		t.Fatalf("phased commands = %q, want %q", got, want)
+	}
+
+	// A lint phase with no Node script has no install evidence to reuse.
+	writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x","build":"x"}}`)
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest}, RunOptions{PriorNodeInstallReport: &lint})
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun test"; got != want || later.Status != StatusPassed {
+		t.Fatalf("missing-lint-script commands = %q, later=%+v; want %q", got, later, want)
+	}
+
+	// A failed lint-phase install must be retried before later checks.
+	writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"lint":"x","test":"x","build":"x"}}`)
+	failedOnce := filepath.Join(repository, "install-failed-once")
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\nif [ \"$1\" = install ] && [ ! -f \""+failedOnce+"\" ]; then : > \""+failedOnce+"\"; exit 1; fi\n")
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest}, RunOptions{PriorNodeInstallReport: &lint})
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun lint\ninstall --frozen-lockfile\nrun test"; got != want || lint.Status != StatusFailed || later.Status != StatusPassed {
+		t.Fatalf("failed-install commands = %q, lint=%+v later=%+v; want %q", got, lint, later, want)
+	}
 }
 
 func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {

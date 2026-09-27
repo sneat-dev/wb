@@ -12,11 +12,12 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
-const validationCacheSchema = 2
+const validationCacheSchema = 3
 
 // ValidationCacheKey identifies the exact inputs that make a verification
 // report reusable. Checks remain ordered because the order is part of the
@@ -32,7 +33,11 @@ type ValidationCacheKey struct {
 	// ValidatorSHAs binds cached evidence to the executable bytes that produced
 	// it. In particular, SpecScore's rules can change between installed
 	// versions while the repository and WB revision remain identical.
-	ValidatorSHAs map[string]string `json:"validator_shas,omitempty"`
+	ValidatorSHAs       map[string]string `json:"validator_shas,omitempty"`
+	Timeout             time.Duration     `json:"timeout"`
+	Retry               int               `json:"retry"`
+	CheckTimeout        time.Duration     `json:"check_timeout"`
+	ShardAttemptTimeout time.Duration     `json:"shard_attempt_timeout"`
 }
 
 type validationCacheRecord struct {
@@ -44,20 +49,22 @@ type validationCacheRecord struct {
 
 // NewValidationCacheKey fingerprints repository-local policy, module manifests,
 // and the executable digests used by external validators. The caller supplies
-// the exact target revision and WB revision, and passes nil validatorSHAs when
-// no external validator participates.
+// the exact target revision, WB revision, and effective command limits, and
+// passes nil validatorSHAs when no external validator participates.
 //
 // One constructor rather than two: the original signature was kept alongside a
 // WithValidators variant that delegated to it, and `wb deadcode` immediately
 // reported the original as unreachable once the only caller moved. A dead
 // wrapper beside a live near-identical function is a reliable way to have the
 // wrong one called later.
-func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string) (ValidationCacheKey, error) {
+func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string, options RunOptions) (ValidationCacheKey, error) {
 	key := ValidationCacheKey{
 		Repository: repository, TargetRevision: targetRevision,
 		Checks: append([]Check(nil), checks...), WBRevision: wbRevision,
 		GoToolchain:   runtime.Version(),
 		ValidatorSHAs: cloneStringMap(validatorSHAs),
+		Timeout:       options.Timeout, Retry: options.Retry,
+		CheckTimeout: options.CheckTimeout, ShardAttemptTimeout: options.ShardAttemptTimeout,
 	}
 	for _, name := range []string{repositoryQualityConfigPath} {
 		path := filepath.Join(root, name)

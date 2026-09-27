@@ -85,6 +85,7 @@ func TestDirectCIWaitIgnoresUnrelatedSameSHAWorkflows(t *testing.T) {
 }
 
 func TestDirectCIWaitRetainsOtherRequiredTargetChecks(t *testing.T) {
+	t.Parallel()
 	expected := &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: directCIGoChecks}
 	checks := []RemoteCheck{
 		{Name: "check-run:Tests and coverage (8 shards)", Bucket: "pass", WorkflowID: 300, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 17, PullRequestBase: "main", AppID: 15368},
@@ -123,6 +124,7 @@ func TestDirectCIDeferralNeedsExactOpenHeadPRAndPriorWorkflow(t *testing.T) {
 }
 
 func TestDirectCIExpectedJobsRequireExecutedMatchingWorkflow(t *testing.T) {
+	t.Parallel()
 	expected := &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: directCIGoChecks}
 	good := []RemoteCheck{
 		{Name: "check-run:Required checks passed", Bucket: "pass", Conclusion: "success", WorkflowID: 300, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 17, PullRequestBase: "main"},
@@ -143,6 +145,7 @@ func TestDirectCIExpectedJobsRequireExecutedMatchingWorkflow(t *testing.T) {
 		{name: "neutral", checks: []RemoteCheck{{Name: good[0].Name, Bucket: "pass", Conclusion: "neutral", WorkflowID: 300, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 17, PullRequestBase: "main"}}, wantRejected: "Required checks passed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			missing, rejected := expectedActionCheckState(test.checks, expected)
 			if test.wantMissing != "" && !strings.Contains(strings.Join(missing, ","), test.wantMissing) {
 				t.Fatalf("missing=%v, want %s", missing, test.wantMissing)
@@ -155,6 +158,7 @@ func TestDirectCIExpectedJobsRequireExecutedMatchingWorkflow(t *testing.T) {
 }
 
 func TestDirectCIDeferralPublishGuardRequiresFreshPlanAndExactCandidate(t *testing.T) {
+	t.Parallel()
 	receipt := WorktreeMergeReceipt{Status: WorktreeMergePrepared, Route: WorktreeMergeRouteDecision{Route: WorktreeMergeRouteDirect}, Candidate: WorktreeMergeCandidate{SHA: directCITestHead},
 		Validation:         quality.VerificationReport{Status: quality.StatusSkipped, Revision: directCITestHead},
 		ValidationDeferral: &WorktreeMergeValidationDeferral{Route: WorktreeMergeRouteDirect, CandidateSHA: directCITestHead, DirectCIPullRequest: "17", DirectCIPullRequestNumber: 17, DirectCIBase: "main", DirectCIWorkflowID: 300}}
@@ -192,6 +196,7 @@ func TestDirectCIPullRequestMustStillMatchExactLandedHead(t *testing.T) {
 }
 
 func TestDirectCIInputsRejectWorkflowChangesButAllowProductChanges(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()

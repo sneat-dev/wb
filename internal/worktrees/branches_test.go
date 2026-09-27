@@ -385,6 +385,7 @@ func TestQuarantineManifestRequiresExactIdentityAndReason(t *testing.T) {
 }
 
 func TestQuarantineRequestsKeepsManifestAndSingleEntryContractsDistinct(t *testing.T) {
+	t.Parallel()
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	manifestPath := filepath.Join(t.TempDir(), "quarantine.json")
 	writeManifest := func(entries []BranchQuarantineRequest) {

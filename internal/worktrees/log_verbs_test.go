@@ -102,6 +102,7 @@ func TestLogVerbsSteerCheckpointRefreshFinalize(t *testing.T) {
 }
 
 func TestLogRefreshResolvesEarlierFetchFailureWithoutHidingIntegrateConflict(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	failure := LocalWorkLogEvent{Version: 1, Seq: 0, ID: "failed-fetch", Type: LocalEventRefreshNeed, At: now, Conflict: "fetch_failed", Target: &LocalTargetEvidence{Ref: "origin/main"}}
 	success := LocalWorkLogEvent{Version: 1, Seq: 1, ID: "fetched-target", Type: LocalEventRefresh, At: now.Add(time.Second), Target: &LocalTargetEvidence{Ref: "origin/main", SHA: strings.Repeat("a", 40)}}
@@ -121,6 +122,7 @@ func TestLogRefreshResolvesEarlierFetchFailureWithoutHidingIntegrateConflict(t *
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestLogIntegrateAfterRecoveredFetchFailure(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -146,6 +148,7 @@ func TestLogIntegrateAfterRecoveredFetchFailure(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture calls t.Setenv while constructing an isolated real-Git fixture
 func TestLogHandoffRecordsOfferBeforeTransferringClaim(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -200,6 +203,7 @@ func TestLogHandoffRecordsOfferBeforeTransferringClaim(t *testing.T) {
 }
 
 func TestObserveUsageRequiresProvenanceAndTotalsProvidedTokens(t *testing.T) {
+	t.Parallel()
 	input, output := int64(13), int64(7)
 	cost := 0.25
 	if usage, err := observeUsage("", nil, nil, nil, "", ""); err != nil || usage != nil {
@@ -222,6 +226,7 @@ func TestObserveUsageRequiresProvenanceAndTotalsProvidedTokens(t *testing.T) {
 		{"both", &input, &output, input + output},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			usage, err := observeUsage(" provider_reported ", tc.input, tc.out, &cost, " USD ", " receipt-1 ")
 			if err != nil || usage == nil || usage.TotalTokens == nil || *usage.TotalTokens != tc.want ||
 				usage.Discriminator != "provider_reported" || usage.Currency != "USD" || usage.ProviderRef != "receipt-1" ||

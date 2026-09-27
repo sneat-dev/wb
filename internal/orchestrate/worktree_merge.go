@@ -3827,9 +3827,31 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		runOptions.CoverageDiagnosticsDir = filepath.Join(receipt.ReceiptPath+".diagnostics", receipt.Candidate.SHA)
 		runOptions.CoverageDiagnosticsRepository = receipt.Repository
 	}
-	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
-		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		runOptions)
+	lint := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree, []quality.Check{quality.CheckLint}, runOptions)
+	lint.Revision = receipt.Candidate.SHA
+	lint.WorkspaceClean = true
+	var earlyImportedMain *WorktreeMergeImportedMainDeadcode
+	if lint.Status == quality.StatusFailed {
+		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
+		baselineLint, baselineErr := verifyWorktreeMergeTargetChecks(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry, checkTimeout, shardAttemptTimeout, []quality.Check{quality.CheckLint})
+		if baselineErr != nil {
+			return fmt.Errorf("capture exact target lint baseline after candidate failure: %w", baselineErr)
+		}
+		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baselineLint.Status))
+		var regressionErr error
+		earlyImportedMain, regressionErr = worktreeMergeValidationWithImportedMainAttestation(baselineLint, lint, func() (*WorktreeMergeImportedMainDeadcode, error) {
+			return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
+		})
+		if regressionErr != nil {
+			receipt.Validation = lint
+			receipt.BaselineValidation = baselineLint
+			return regressionErr
+		}
+	}
+	runOptions.PriorNodeInstallReport = &lint
+	rest := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
+		[]quality.Check{quality.CheckTest, quality.CheckBuild, quality.CheckSpec}, runOptions)
+	receipt.Validation = combineWorktreeMergeValidationReports(lint, rest)
 	receipt.Validation.Revision = receipt.Candidate.SHA
 	receipt.Validation.WorkspaceClean = true
 	identity, identityOK := worktreeMergeValidationIdentity(*receipt)
@@ -3858,6 +3880,9 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	receipt.ImportedMainDeadcode = nil
 	parentEvidence, regressionErr := worktreeMergeValidationWithImportedMainAttestation(baseline, receipt.Validation, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		if earlyImportedMain != nil {
+			return earlyImportedMain, nil
+		}
 		return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
 	})
 	if regressionErr != nil {
@@ -3868,6 +3893,16 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return err
 	}
 	return nil
+}
+
+func combineWorktreeMergeValidationReports(first, second quality.VerificationReport) quality.VerificationReport {
+	first.Results = append(first.Results, second.Results...)
+	if first.Status == quality.StatusFailed || second.Status == quality.StatusFailed {
+		first.Status = quality.StatusFailed
+	} else if first.Status == quality.StatusPassed || second.Status == quality.StatusPassed {
+		first.Status = quality.StatusPassed
+	}
+	return first
 }
 
 func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMergeValidationIdentity, bool) {
@@ -4055,6 +4090,11 @@ func fileSHA256(path string) (string, error) {
 // keeps the baseline tied to receipt.TargetSHA even while a candidate is being
 // rebased for target drift.
 func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, targetSHA string, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration) (quality.VerificationReport, error) {
+	return verifyWorktreeMergeTargetChecks(ctx, repository, repositoryDir, targetSHA, timeout, retry, checkTimeout, shardAttemptTimeout,
+		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec})
+}
+
+func verifyWorktreeMergeTargetChecks(ctx context.Context, repository, repositoryDir, targetSHA string, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration, checks []quality.Check) (quality.VerificationReport, error) {
 	targetSHA = strings.TrimSpace(targetSHA)
 	if targetSHA == "" {
 		return quality.VerificationReport{}, errors.New("target SHA is required for validation baseline")
@@ -4084,8 +4124,7 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
 	}
-	checks := []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}
-	cacheKey, err := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), checks, validationCacheValidatorSHAs(checks))
+	cacheKey, err := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), checks, validationCacheValidatorSHAs(checks), runOptions)
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("fingerprint target validation baseline: %w", err)
 	}
@@ -4093,7 +4132,20 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("resolve WB validation cache: %w", err)
 	}
-	if cached, ok, cacheErr := quality.LoadValidationCache(quality.ValidationCacheDir(filepath.Join(cacheRoot, ".wb")), cacheKey); cacheErr != nil {
+	cacheDir := quality.ValidationCacheDir(filepath.Join(cacheRoot, ".wb"))
+	if len(checks) == 1 && checks[0] == quality.CheckLint {
+		fullChecks := []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}
+		fullKey, keyErr := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), fullChecks, validationCacheValidatorSHAs(fullChecks), runOptions)
+		if keyErr != nil {
+			return quality.VerificationReport{}, fmt.Errorf("fingerprint full target validation baseline: %w", keyErr)
+		}
+		if cached, ok, cacheErr := quality.LoadValidationCache(cacheDir, fullKey); cacheErr != nil {
+			return quality.VerificationReport{}, fmt.Errorf("read full target validation baseline cache: %w", cacheErr)
+		} else if ok {
+			return worktreeMergeLintEvidence(cached), nil
+		}
+	}
+	if cached, ok, cacheErr := quality.LoadValidationCache(cacheDir, cacheKey); cacheErr != nil {
 		return quality.VerificationReport{}, fmt.Errorf("read target validation baseline cache: %w", cacheErr)
 	} else if ok {
 		return cached, nil
@@ -4105,11 +4157,29 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	report.Revision = targetSHA
 	report.WorkspaceClean = true
 	if report.Status != quality.StatusSkipped {
-		if cacheErr := quality.SaveValidationCache(quality.ValidationCacheDir(filepath.Join(cacheRoot, ".wb")), cacheKey, report); cacheErr != nil {
+		if cacheErr := quality.SaveValidationCache(cacheDir, cacheKey, report); cacheErr != nil {
 			return quality.VerificationReport{}, fmt.Errorf("save target validation baseline cache: %w", cacheErr)
 		}
 	}
 	return report, nil
+}
+
+func worktreeMergeLintEvidence(report quality.VerificationReport) quality.VerificationReport {
+	entries := make([]quality.VerificationEntry, 0, len(report.Results))
+	report.Status = quality.StatusSkipped
+	for _, entry := range report.Results {
+		if entry.Check != quality.CheckLint && entry.Check != "install" && entry.Check != "" {
+			continue
+		}
+		entries = append(entries, entry)
+		if entry.Status == quality.StatusFailed {
+			report.Status = quality.StatusFailed
+		} else if report.Status == quality.StatusSkipped && entry.Status == quality.StatusPassed {
+			report.Status = quality.StatusPassed
+		}
+	}
+	report.Results = entries
+	return report
 }
 
 // validationCacheValidatorSHAs prevents a baseline report from being reused

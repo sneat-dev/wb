@@ -231,6 +231,77 @@ func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T
 	}
 }
 
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
+func TestValidateWorktreeMergeCandidateStopsBeforeTestsForNewLintFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, ".wb", "quality.yaml"), "version: 1\ngo_lint:\n  commands:\n    - [sh, -c, 'test ! -f lint-fail']\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", ".wb/quality.yaml")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed passing lint")
+	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	writeEngineFile(t, filepath.Join(fixture.canonical, "lint-fail"), "candidate lint regression\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "candidate_test.go"), "package app\nimport (\"os\"; \"testing\")\nfunc TestMain(m *testing.M) { _ = os.WriteFile(os.Getenv(\"WB_TEST_MARKER\"), []byte(\"ran\"), 0600); os.Exit(m.Run()) }\n")
+	runEngineGit(t, fixture.canonical, "add", "lint-fail", "candidate_test.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: introduce lint failure")
+	marker := filepath.Join(t.TempDir(), "candidate-test-ran")
+	t.Setenv("WB_TEST_MARKER", marker)
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
+	receipt := WorktreeMergeReceipt{Repository: fixture.repository.Slug, TargetSHA: target}
+	receipt.Candidate.Worktree = fixture.canonical
+	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	err := validateWorktreeMergeCandidate(context.Background(), &receipt, time.Minute, 0, 0, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "introduced or changed failure") {
+		t.Fatalf("candidate lint regression = %v, report %+v", err, receipt.Validation)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("candidate test ran before lint regression was rejected: %v", statErr)
+	}
+	for _, entry := range receipt.Validation.Results {
+		if entry.Check == quality.CheckTest {
+			t.Fatalf("test result recorded after early lint rejection: %+v", receipt.Validation)
+		}
+	}
+}
+
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
+func TestValidateWorktreeMergeCandidateContinuesAfterInheritedLintFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, ".wb", "quality.yaml"), "version: 1\ngo_lint:\n  commands:\n    - [sh, -c, 'echo inherited-lint-failure; exit 1']\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", ".wb/quality.yaml")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed failing lint")
+	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	writeEngineFile(t, filepath.Join(fixture.canonical, "candidate_test.go"), "package app\nimport (\"os\"; \"testing\")\nfunc TestMain(m *testing.M) { _ = os.WriteFile(os.Getenv(\"WB_TEST_MARKER\"), []byte(\"ran\"), 0600); os.Exit(m.Run()) }\n")
+	runEngineGit(t, fixture.canonical, "add", "candidate_test.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add candidate test")
+	marker := filepath.Join(t.TempDir(), "candidate-test-ran")
+	t.Setenv("WB_TEST_MARKER", marker)
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
+	receipt := WorktreeMergeReceipt{Repository: fixture.repository.Slug, TargetSHA: target}
+	receipt.Candidate.Worktree = fixture.canonical
+	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	if err := validateWorktreeMergeCandidate(context.Background(), &receipt, time.Minute, 0, 0, 0, nil); err != nil {
+		t.Fatalf("inherited lint failure blocked full validation: %v, report %+v", err, receipt.Validation)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("candidate test did not run after inherited lint failure: %v", err)
+	}
+	if receipt.BaselineValidation.Status != quality.StatusFailed || receipt.Validation.Status != quality.StatusFailed {
+		t.Fatalf("full baseline comparison missing: baseline %+v candidate %+v", receipt.BaselineValidation, receipt.Validation)
+	}
+}
+
+func TestWorktreeMergeLintEvidenceIgnoresCachedTestFailure(t *testing.T) {
+	t.Parallel()
+	report := worktreeMergeLintEvidence(quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
+		{Check: quality.CheckLint, Status: quality.StatusPassed},
+		{Check: quality.CheckTest, Status: quality.StatusFailed, Detail: "target test failure"},
+	}})
+	if report.Status != quality.StatusPassed || len(report.Results) != 1 || report.Results[0].Check != quality.CheckLint {
+		t.Fatalf("full cache lint projection = %+v", report)
+	}
+}
+
 func TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
