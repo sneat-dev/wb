@@ -132,10 +132,14 @@ type WorktreeMergeTargetRefresh struct {
 // preparedValidationStillValid, hostLoadCheckSkippable) requires an exact
 // match. See sneat-dev/wb#591.
 type WorktreeMergeValidationDeferral struct {
-	Route        WorktreeMergeRoute `json:"route"`
-	CandidateSHA string             `json:"candidate_sha"`
-	Reason       string             `json:"reason"`
-	RecordedAt   time.Time          `json:"recorded_at"`
+	Route                     WorktreeMergeRoute `json:"route"`
+	CandidateSHA              string             `json:"candidate_sha"`
+	Reason                    string             `json:"reason"`
+	RecordedAt                time.Time          `json:"recorded_at"`
+	DirectCIPullRequest       string             `json:"direct_ci_pull_request,omitempty"`
+	DirectCIPullRequestNumber int                `json:"direct_ci_pull_request_number,omitempty"`
+	DirectCIBase              string             `json:"direct_ci_base,omitempty"`
+	DirectCIWorkflowID        int64              `json:"direct_ci_workflow_id,omitempty"`
 }
 
 // WorktreeMergeFindingDeferredValidationCheckSkipped is the finding code
@@ -330,6 +334,9 @@ type WorktreeMergeLandOptions struct {
 	// otherwise be eligible for a validation deferral. See
 	// worktreeMergeValidationDeferralEligible and sneat-dev/wb#591.
 	ValidateLocally bool
+	// DirectCIPullRequest explicitly opts a direct target push into the
+	// existing open head PR's exact Go CI in place of local validation.
+	DirectCIPullRequest string
 	// PrepareTimeout bounds recovery of an interrupted preparing receipt.
 	// It does not apply after the candidate has reached prepared state.
 	PrepareTimeout time.Duration
@@ -417,7 +424,8 @@ type WorktreeMergePrepareOptions struct {
 	Route WorktreeMergeRoute
 	// ValidateLocally forces local candidate validation during prepare even
 	// when the pull-request route would otherwise be eligible to defer it.
-	ValidateLocally bool
+	ValidateLocally     bool
+	DirectCIPullRequest string
 	// PrepareTimeout bounds one prepare invocation. Zero leaves preparation
 	// unbounded apart from the existing command timeout.
 	PrepareTimeout time.Duration
@@ -1035,7 +1043,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	// authoritative required-check policy is eligible to defer it (M7: "the
 	// standalone prepare also counts", sneat-dev/wb#591).
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally, false)
+	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally, false, options.DirectCIPullRequest)
 	if planErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 	}
@@ -1239,7 +1247,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if recovered {
 			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 			if planErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 			}
@@ -1280,7 +1288,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 		if planErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 		}
@@ -1337,7 +1345,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 		if planErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 		}
@@ -1378,7 +1386,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("advanced conflict candidate %s is %s without a completed exact validation", receipt.Candidate.SHA, receipt.Status))
 		}
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 		if planErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 		}
@@ -1478,7 +1486,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.LandingSHA != "" {
-		if receipt.Checks.Status != PullRequestWaitPassed {
+		if receipt.Checks.Status != PullRequestWaitPassed || receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect {
 			reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(receipt.LandingSHA))
 			postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", receipt.LandingSHA, true)
 			receipt.Checks = postChecks
@@ -1589,7 +1597,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_refreshed_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 			if planErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 			}
@@ -1630,7 +1638,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_rebased_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 			if planErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 			}
@@ -1646,7 +1654,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		// recognize a matching PR-route deferral from an earlier call in this
 		// same receipt's history, without waiting for the later route
 		// resolution/publish guard below.
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 		if planErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 		}
@@ -1672,7 +1680,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	// re-querying GitHub: every validation site in this call and this
 	// publish/landing guard must observe the same decision (M7, B1:
 	// sneat-dev/wb#591).
-	plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+	plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 	if planErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 	}
@@ -1745,7 +1753,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced)
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 			if planErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 			}
@@ -1843,6 +1851,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 
 	serverLanding := receipt.Candidate.SHA
 	if decision.Route == WorktreeMergeRouteDirect {
+		if plan.DirectCI != nil {
+			if err := verifyWorktreeMergeDirectCIPullRequest(ctx, receipt, *plan.DirectCI, receipt.TargetSHA); err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct CI pull request changed before push: %w", err))
+			}
+		}
 		remoteRef := "refs/heads/" + receipt.Target
 		reportWorktreeMergeProgress(options.Progress, "pre_push_gate", progress.Started, remoteRef)
 		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
@@ -1934,6 +1947,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			err = fmt.Errorf("exact remote target %s does not contain server landing %s", landing, serverLanding)
 		}
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	}
+	if receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect && landing != receipt.Candidate.SHA {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct CI deferral requires exact remote target %s, found %s", receipt.Candidate.SHA, landing))
 	}
 	receipt.LandingSHA = landing
 	reportWorktreeMergeProgress(options.Progress, "verify_remote_landing", progress.Completed, receipt.Target+"@"+shortMergeRevision(landing))
@@ -2505,6 +2521,12 @@ func applyRecordedWorktreeMergeRouteBeforeFirstResolve(receipt *WorktreeMergeRec
 	if receipt.Route.Requested != "" && (options.Route == "" || options.Route == WorktreeMergeRouteAuto) {
 		options.Route = receipt.Route.Requested
 	}
+	if options.DirectCIPullRequest == "" && !options.ValidateLocally && receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect {
+		options.DirectCIPullRequest = receipt.ValidationDeferral.DirectCIPullRequest
+		if options.Route == "" || options.Route == WorktreeMergeRouteAuto {
+			options.Route = WorktreeMergeRouteDirect
+		}
+	}
 }
 
 // retainWorktreeMergeLandIntent makes a combined command's requested landing
@@ -2538,6 +2560,9 @@ func retainWorktreeMergeLandIntent(receipt *WorktreeMergeReceipt, options *Workt
 	}
 	if allowUnfenced {
 		resumeArgs = append(resumeArgs, "--allow-unfenced")
+	}
+	if options.DirectCIPullRequest != "" {
+		resumeArgs = append(resumeArgs, "--defer-direct-ci-pr", options.DirectCIPullRequest)
 	}
 	resumeArgs = append(resumeArgs, "--on-failure", onFailure)
 	changed := receipt.Route.Requested != requestedRoute || receipt.Cleanup != cleanup || receipt.AllowUnfenced != allowUnfenced || receipt.OnFailure != onFailure ||
@@ -2894,7 +2919,7 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	// this still-live session. See startLandingLaneHeartbeat. A no-op when
 	// options.Lane was never populated (no guard running for this call).
 	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane.Owner.WBSessionID, 0)
-	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+	waitOptions := PullRequestWaitOptions{
 		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
 		// --allow-unfenced is durable because a private repository can expose
 		// neither PR nor post-target branch-policy authority. Both phases still
@@ -2902,13 +2927,31 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 		AllowUnfenced: options.AllowUnfenced,
 		Slice:         slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
 		OperationProgress: options.Progress,
-	})
+	}
+	var directCI *worktreeMergeDirectCIContract
+	if deferral := receipt.ValidationDeferral; pullRequest == "" && deferral != nil && deferral.Route == WorktreeMergeRouteDirect {
+		if deferral.CandidateSHA != head || deferral.DirectCIPullRequest == "" || deferral.DirectCIPullRequestNumber <= 0 || deferral.DirectCIBase == "" || deferral.DirectCIWorkflowID <= 0 {
+			stopLaneHeartbeat()
+			return PullRequestWaitResult{Status: PullRequestWaitFailed}, fmt.Errorf("direct CI deferral is not pinned to exact landed head %s", head)
+		}
+		directCI = &worktreeMergeDirectCIContract{PullRequest: deferral.DirectCIPullRequest, PullRequestNumber: deferral.DirectCIPullRequestNumber, Base: deferral.DirectCIBase, WorkflowID: deferral.DirectCIWorkflowID}
+		waitOptions.AllowTargetDescendant = false
+		waitOptions.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: directCI.WorkflowID, Event: "pull_request", PullRequestNumber: directCI.PullRequestNumber, PullRequestBase: directCI.Base, Names: directCIGoChecks}
+	}
+	result, err := WaitForCommitChecks(ctx, waitOptions)
 	stopLaneHeartbeat()
 	if err != nil {
 		return result, err
 	}
 	switch result.Status {
 	case PullRequestWaitPassed:
+		if directCI != nil {
+			if err := verifyWorktreeMergeDirectCIPullRequest(ctx, receipt, *directCI, head); err != nil {
+				result.Status = PullRequestWaitFailed
+				result.Reason = "direct CI pull request identity changed: " + err.Error()
+				return result, fmt.Errorf("%s", result.Reason)
+			}
+		}
 		return result, nil
 	case PullRequestWaitPending:
 		return result, fmt.Errorf("exact-head checks remain pending: %s; resume with wb worktree merge resume %s", result.Reason, receipt.ReceiptPath)
@@ -3595,9 +3638,10 @@ func prepareWorktreeMergeRevertInjected(ctx context.Context, projectsRoot, input
 // route later resolved as "direct" within a different call — see red-team
 // finding B1 (sneat-dev/wb#591).
 type worktreeMergeValidationPlan struct {
-	Route  WorktreeMergeRouteDecision
-	Defer  bool
-	Reason string
+	Route    WorktreeMergeRouteDecision
+	Defer    bool
+	Reason   string
+	DirectCI *worktreeMergeDirectCIContract
 }
 
 // resolveWorktreeMergeValidationPlan resolves the merge route once and
@@ -3616,9 +3660,9 @@ type worktreeMergeValidationPlanHolder struct {
 	err      error
 }
 
-func (h *worktreeMergeValidationPlanHolder) resolve(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool) (worktreeMergeValidationPlan, error) {
+func (h *worktreeMergeValidationPlanHolder) resolve(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (worktreeMergeValidationPlan, error) {
 	if !h.resolved {
-		h.plan, h.err = resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced)
+		h.plan, h.err = resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced, directCIPullRequest...)
 		h.resolved = true
 	}
 	return h.plan, h.err
@@ -3629,12 +3673,24 @@ func (h *worktreeMergeValidationPlanHolder) resolve(ctx context.Context, reposit
 // tells ciwait it may accept an unfenced or unreadable policy as a merge
 // gate, which is exactly the authoritative-fence guarantee deferral relies
 // on, so a call made with either flag must always validate locally.
-func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool) (worktreeMergeValidationPlan, error) {
+func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (worktreeMergeValidationPlan, error) {
 	decision, err := ResolveWorktreeMergeRoute(ctx, repository, target, requestedRoute)
 	if err != nil {
 		return worktreeMergeValidationPlan{}, err
 	}
 	plan := worktreeMergeValidationPlan{Route: decision}
+	if len(directCIPullRequest) > 0 && strings.TrimSpace(directCIPullRequest[0]) != "" {
+		if requestedRoute != WorktreeMergeRouteDirect || decision.Route != WorktreeMergeRouteDirect || validateLocally || allowUnfenced {
+			return plan, fmt.Errorf("direct CI deferral requires --route direct without --validate-locally or --allow-unfenced")
+		}
+		contract, contractErr := resolveWorktreeMergeDirectCIContract(ctx, repository, target, directCIPullRequest[0])
+		if contractErr != nil {
+			return plan, fmt.Errorf("direct CI deferral cannot prove open head PR and workflow: %w", contractErr)
+		}
+		plan.Defer, plan.DirectCI = true, contract
+		plan.Reason = fmt.Sprintf("exact Go CI on open head PR %s into %s will validate the direct target SHA", contract.PullRequest, contract.Base)
+		return plan, nil
+	}
 	if validateLocally || allowUnfenced || decision.Route != WorktreeMergeRoutePullRequest {
 		return plan, nil
 	}
@@ -3655,7 +3711,7 @@ func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target 
 // sneat-dev/wb#591 round 3 red-team follow-up: the combined `wb worktree
 // land`/`wb land` used to check host load before it could know validation
 // would be deferred).
-func PeekWorktreeMergeValidationDeferral(ctx context.Context, projectsRoot string, sources []string, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool) (bool, error) {
+func PeekWorktreeMergeValidationDeferral(ctx context.Context, projectsRoot string, sources []string, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (bool, error) {
 	projectsRoot, err := filepath.Abs(strings.TrimSpace(projectsRoot))
 	if err != nil || strings.TrimSpace(projectsRoot) == "" {
 		return false, fmt.Errorf("projects root is required")
@@ -3678,7 +3734,7 @@ func PeekWorktreeMergeValidationDeferral(ctx context.Context, projectsRoot strin
 	if err != nil {
 		return false, err
 	}
-	plan, err := resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced)
+	plan, err := resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced, directCIPullRequest...)
 	if err != nil {
 		return false, err
 	}
@@ -3731,6 +3787,11 @@ func applyOrDeferWorktreeMergeValidation(ctx context.Context, receipt *WorktreeM
 		receipt.ValidationDeferral = nil
 		return validateWorktreeMergeCandidate(ctx, receipt, timeout, retry, checkTimeout, shardAttemptTimeout, reporter)
 	}
+	if plan.DirectCI != nil {
+		if err := verifyWorktreeMergeDirectCIInputs(ctx, *receipt); err != nil {
+			return err
+		}
+	}
 	receipt.Validation = quality.VerificationReport{
 		Repository: receipt.Repository, Path: "git:" + receipt.Candidate.SHA, Revision: receipt.Candidate.SHA,
 		WorkspaceClean: true, Status: quality.StatusSkipped,
@@ -3740,6 +3801,12 @@ func applyOrDeferWorktreeMergeValidation(ctx context.Context, receipt *WorktreeM
 	receipt.ValidationIdentity = nil
 	receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{
 		Route: plan.Route.Route, CandidateSHA: receipt.Candidate.SHA, Reason: plan.Reason, RecordedAt: time.Now().UTC(),
+	}
+	if plan.DirectCI != nil {
+		receipt.ValidationDeferral.DirectCIPullRequest = plan.DirectCI.PullRequest
+		receipt.ValidationDeferral.DirectCIPullRequestNumber = plan.DirectCI.PullRequestNumber
+		receipt.ValidationDeferral.DirectCIBase = plan.DirectCI.Base
+		receipt.ValidationDeferral.DirectCIWorkflowID = plan.DirectCI.WorkflowID
 	}
 	reportWorktreeMergeProgress(reporter, "validate_candidate", progress.Completed, "skipped: "+plan.Reason)
 	return nil
@@ -3914,6 +3981,14 @@ func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt
 			return nil
 		}
 	}
+	if receipt.Route.Route == WorktreeMergeRouteDirect && plan.Defer && plan.DirectCI != nil {
+		if deferral := receipt.ValidationDeferral; deferral != nil && deferral.Route == WorktreeMergeRouteDirect &&
+			deferral.CandidateSHA == receipt.Candidate.SHA && deferral.DirectCIPullRequest == plan.DirectCI.PullRequest && deferral.DirectCIPullRequestNumber == plan.DirectCI.PullRequestNumber &&
+			deferral.DirectCIBase == plan.DirectCI.Base && deferral.DirectCIWorkflowID == plan.DirectCI.WorkflowID &&
+			receipt.Validation.Status == quality.StatusSkipped && receipt.Validation.Revision == receipt.Candidate.SHA {
+			return nil
+		}
+	}
 	identity := receipt.ValidationIdentity
 	if receipt.Status != WorktreeMergeValidationFailed &&
 		receipt.Validation.Revision == receipt.Candidate.SHA &&
@@ -3941,6 +4016,13 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 		receipt.Route.Route == WorktreeMergeRoutePullRequest && deferral.Route == WorktreeMergeRoutePullRequest &&
 		deferral.CandidateSHA == receipt.Candidate.SHA && receipt.Validation.Status == quality.StatusSkipped &&
 		receipt.Validation.Revision == receipt.Candidate.SHA {
+		return true, nil
+	}
+	if deferral := receipt.ValidationDeferral; plan.Defer && plan.DirectCI != nil && receipt.Status == WorktreeMergePrepared && deferral != nil &&
+		(receipt.Route.Route == "" || receipt.Route.Route == WorktreeMergeRouteDirect) && deferral.Route == WorktreeMergeRouteDirect &&
+		deferral.CandidateSHA == receipt.Candidate.SHA && deferral.DirectCIPullRequest == plan.DirectCI.PullRequest && deferral.DirectCIPullRequestNumber == plan.DirectCI.PullRequestNumber &&
+		deferral.DirectCIBase == plan.DirectCI.Base && deferral.DirectCIWorkflowID == plan.DirectCI.WorkflowID &&
+		receipt.Validation.Status == quality.StatusSkipped && receipt.Validation.Revision == receipt.Candidate.SHA {
 		return true, nil
 	}
 	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||

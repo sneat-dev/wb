@@ -26,6 +26,7 @@ type worktreeMergeFlags struct {
 	stopBeforeMerge                        bool
 	allowSaturatedHost                     bool
 	validateLocally                        bool
+	directCIPullRequest                    string
 	timeout                                time.Duration
 	prepareTimeout                         time.Duration
 	checkTimeout                           time.Duration
@@ -352,7 +353,7 @@ func runCombinedWorktreeMerge(inv *invocation, command *cobra.Command, args []st
 	// sneat-dev/wb#591 round 3 red-team follow-up).
 	var admission *orchestrate.WorktreeMergeHostLoadAdmission
 	var requireAdmission func() (*orchestrate.WorktreeMergeHostLoadAdmission, error)
-	deferred, peekErr := orchestrate.PeekWorktreeMergeValidationDeferral(command.Context(), inv.projectsRoot, args, flags.target, orchestrate.WorktreeMergeRoute(flags.route), flags.validateLocally, flags.allowUnfenced)
+	deferred, peekErr := orchestrate.PeekWorktreeMergeValidationDeferral(command.Context(), inv.projectsRoot, args, flags.target, orchestrate.WorktreeMergeRoute(flags.route), flags.validateLocally, flags.allowUnfenced, flags.directCIPullRequest)
 	if peekErr != nil || !deferred {
 		var err error
 		admission, err = checkHostLoadAdmission(*flags)
@@ -486,7 +487,7 @@ func newWorktreeMergePrepareCmd(inv *invocation) *cobra.Command {
 			}
 			// Minor 13 (sneat-dev/wb#591 round 3 red-team follow-up): see
 			// worktreeMergePrepareForcesLocalValidation.
-			if worktreeMergePrepareForcesLocalValidation(flags.route) {
+			if worktreeMergePrepareForcesLocalValidation(flags.route) && flags.directCIPullRequest == "" {
 				flags.validateLocally = true
 			}
 			admission, err := checkHostLoadAdmission(flags)
@@ -1304,6 +1305,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
 	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: 2x runtime.NumCPU()); the check is disabled automatically in CI (CI=true/GITHUB_ACTIONS=true) and can be disabled or overridden with WB_ADMISSION_LOAD_FLOOR (0 disables, a positive number sets the floor)")
 	command.Flags().BoolVar(&flags.validateLocally, "validate-locally", false, "always run local candidate validation, even when the pull-request route's authoritative, non-empty, server-fenced required-check policy would otherwise defer it to CI")
+	command.Flags().StringVar(&flags.directCIPullRequest, "defer-direct-ci-pr", "", "for --route direct, defer local validation only when this open target-head PR's exact Go CI aggregate and coverage jobs can be proved after the push")
 	addLandingLaneTakeoverFlag(command, &flags.takeOverLane)
 	command.Flags().StringVar(&flags.laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
 }
@@ -1326,6 +1328,9 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.stopBeforeMerge && flags.cleanup {
 		return fmt.Errorf("--stop-before-merge cannot be combined with --cleanup")
 	}
+	if flags.directCIPullRequest != "" && (orchestrate.WorktreeMergeRoute(flags.route) != orchestrate.WorktreeMergeRouteDirect || flags.validateLocally || flags.allowUnfenced) {
+		return fmt.Errorf("--defer-direct-ci-pr requires --route direct and cannot combine with --validate-locally or --allow-unfenced")
+	}
 	if flags.retry < 0 || flags.timeout <= 0 || flags.prepareTimeout < 0 || flags.checkTimeout < 0 || flags.shardAttemptTimeout < 0 {
 		return fmt.Errorf("--timeout must be positive; --prepare-timeout, --check-timeout, and --shard-attempt-timeout must not be negative; --retry must not be negative")
 	}
@@ -1341,15 +1346,15 @@ func prepareMergeOptions(inv *invocation, flags worktreeMergeFlags, sources []st
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
 		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission,
 		RequireHostLoadAdmission: requireAdmission,
-		Route:                    orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally,
+		Route:                    orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally, DirectCIPullRequest: flags.directCIPullRequest,
 		Lane: landingLaneGuardRequest(inv, "wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 
 func landMergeOptions(inv *invocation, flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, errOut io.Writer) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: inv.projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, AllowUnfenced: flags.allowUnfenced, OnFailure: flags.onFailure,
-		ValidateLocally: flags.validateLocally,
-		Timeout:         flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
+		ValidateLocally: flags.validateLocally, DirectCIPullRequest: flags.directCIPullRequest,
+		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            landingLaneGuardRequest(inv, "wb worktree merge land", flags.laneReason, flags.takeOverLane),
 		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission, CheckoutUpdated: lifecycleCheckoutUpdated(errOut)}
@@ -1383,8 +1388,18 @@ func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt, validateLo
 	if receipt.Status == orchestrate.WorktreeMergeComplete {
 		return true
 	}
-	if validateLocally || allowUnfenced || requestedRoute == orchestrate.WorktreeMergeRouteDirect {
+	if validateLocally || allowUnfenced {
 		return false
+	}
+	if requestedRoute == "" || requestedRoute == orchestrate.WorktreeMergeRouteAuto {
+		if receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == orchestrate.WorktreeMergeRouteDirect {
+			requestedRoute = orchestrate.WorktreeMergeRouteDirect
+		}
+	}
+	if requestedRoute == orchestrate.WorktreeMergeRouteDirect {
+		deferral := receipt.ValidationDeferral
+		return deferral != nil && deferral.Route == orchestrate.WorktreeMergeRouteDirect && deferral.CandidateSHA == receipt.Candidate.SHA &&
+			deferral.DirectCIPullRequest != "" && receipt.Validation.Status == quality.StatusSkipped
 	}
 	if strings.TrimSpace(receipt.PullRequest) == "" || receipt.Candidate.SHA == "" {
 		return false

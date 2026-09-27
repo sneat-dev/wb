@@ -556,8 +556,12 @@ func rebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection,
 	projection.LastMessage = last.Message
 	projection.LastNextAction = last.NextAction
 	projection.UpdatedAt = last.At
+	resolvedFetchFailure := false
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
+		if (event.Type == LocalEventRefresh || event.Type == LocalEventRefreshNeed) && event.Conflict == "" && event.Target != nil && event.Target.SHA != "" {
+			resolvedFetchFailure = true
+		}
 		switch event.Type {
 		case LocalEventCheckpoint:
 			if projection.LastCheckpoint == nil && event.Git != nil {
@@ -576,7 +580,7 @@ func rebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection,
 				projection.Lifecycle = "handoff"
 			}
 		}
-		if projection.Conflict == "" && event.Conflict != "" {
+		if projection.Conflict == "" && event.Conflict != "" && (event.Conflict != "fetch_failed" || !resolvedFetchFailure) {
 			projection.Conflict = event.Conflict
 		}
 	}

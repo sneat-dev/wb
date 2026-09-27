@@ -2035,7 +2035,13 @@ func validatePreservedLandedFailureAcknowledgementSource(ctx context.Context, pr
 	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, "", true)
 }
 
-func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool) error {
+func validatePreservedLandedFailureAcknowledgementSourceWithHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) (string, error) {
+	var head string
+	err := validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, "", true, &head)
+	return head, err
+}
+
+func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool, validatedHead ...*string) error {
 	if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 		return errors.New("receipt contains an incomplete source identity")
 	}
@@ -2080,6 +2086,9 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Repository != receipt.Repository || view.Claim.Task != source.Task ||
 		filepath.Clean(view.Claim.Worktree) != filepath.Clean(source.Worktree) || view.Claim.Branch != source.Branch {
 		return fmt.Errorf("receipted source %s has no matching active Work Log claim", source.Worktree)
+	}
+	if len(validatedHead) > 0 && validatedHead[0] != nil {
+		*validatedHead[0] = head
 	}
 	return nil
 }

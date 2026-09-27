@@ -152,8 +152,13 @@ type AppliedFileReporter[T any] interface {
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
 type RemoteCheck struct {
-	Name   string `json:"name" yaml:"name"`
-	Bucket string `json:"bucket" yaml:"bucket"`
+	Name              string `json:"name" yaml:"name"`
+	Bucket            string `json:"bucket" yaml:"bucket"`
+	WorkflowID        int64  `json:"workflow_id,omitempty" yaml:"workflow_id,omitempty"`
+	WorkflowRunID     int64  `json:"workflow_run_id,omitempty" yaml:"workflow_run_id,omitempty"`
+	WorkflowEvent     string `json:"workflow_event,omitempty" yaml:"workflow_event,omitempty"`
+	PullRequestNumber int    `json:"pull_request_number,omitempty" yaml:"pull_request_number,omitempty"`
+	PullRequestBase   string `json:"pull_request_base,omitempty" yaml:"pull_request_base,omitempty"`
 	// Conclusion is the raw GitHub check-run/workflow-run conclusion (e.g.
 	// "success", "skipped", "neutral", "failure"), kept alongside Bucket so a
 	// strict deferral-satisfaction check (sneat-dev/wb#591 red-team finding
@@ -209,6 +214,9 @@ type PullRequestWaitOptions struct {
 	PullRequest string
 	Target      string
 	Head        string
+	// ExpectedActionChecks makes an opt-in CI wait require executed jobs from
+	// one exact GitHub Actions workflow and event, even on an unprotected target.
+	ExpectedActionChecks *ExpectedActionChecks
 	// AllowTargetDescendant is only for post-landing target CI: the exact
 	// landed Head must remain an ancestor of the observed target. Pre-landing
 	// candidate and pull-request waits retain exact target-head freshness.
@@ -229,6 +237,14 @@ type PullRequestWaitOptions struct {
 	// callers must use the returned result as the authoritative receipt.
 	Progress          func(PullRequestWaitProgress)
 	OperationProgress progress.Reporter
+}
+
+type ExpectedActionChecks struct {
+	WorkflowID        int64
+	Event             string
+	PullRequestNumber int
+	PullRequestBase   string
+	Names             []string
 }
 
 // PullRequestWaitProgress is one completed observation inside a bounded wait.

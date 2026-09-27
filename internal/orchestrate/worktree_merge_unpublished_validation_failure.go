@@ -124,21 +124,12 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	}
 	preservedSources := make([]WorktreeMergeSource, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
-		if receipt.Status == WorktreeMergePreparing {
-			err = validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source)
-		} else {
-			err = validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, "")
-		}
-		if err != nil {
-			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove preserved source: %w", err)
+		preservedSHA, validationErr := validatePreservedLandedFailureAcknowledgementSourceWithHead(ctx, options.ProjectsRoot, receipt, source)
+		if validationErr != nil {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove preserved source: %w", validationErr)
 		}
 		preserved := source
-		if receipt.Status == WorktreeMergePreparing {
-			preserved.SHA, err = mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
-			if err != nil {
-				return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("record preserved source HEAD: %w", err)
-			}
-		}
+		preserved.SHA = preservedSHA
 		preservedSources = append(preservedSources, preserved)
 	}
 	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
@@ -308,7 +299,7 @@ func readUnpublishedValidationFailureAcknowledgement(path string, receipt Worktr
 	if receipt.Status == WorktreeMergePreparing && ack.CandidateCleanupBacklog == "" {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s lacks discarded candidate cleanup evidence", path)
 	}
-	if receipt.Status == WorktreeMergePreparing && len(ack.PreservedSources) != len(receipt.Sources) {
+	if len(ack.PreservedSources) != len(receipt.Sources) {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s lacks preserved descendant source evidence", path)
 	}
 	return ack, nil
