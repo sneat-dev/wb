@@ -2,8 +2,10 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 )
 
 func TestConfigClaimsCoverageBatchPlacementPaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	root := t.TempDir()
 	if _, err := (WorktreePlacement{Root: root, relative: "../escape"}).Path("task", "acme/app"); err == nil {
@@ -68,6 +71,7 @@ func TestConfigClaimsCoverageBatchPlacementPaths(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // mutates XDG_CONFIG_HOME for machine-local policy discovery.
 func TestConfigClaimsCoverageBatchUserConfig(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -115,6 +119,7 @@ func TestConfigClaimsCoverageBatchUserConfig(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // mutates XDG_CONFIG_HOME for machine-local policy discovery.
 func TestConfigClaimsCoverageBatchBrokenUserConfig(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -137,6 +142,7 @@ func TestConfigClaimsCoverageBatchBrokenUserConfig(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // mutates HOME and XDG_CONFIG_HOME for default-path discovery.
 func TestConfigClaimsCoverageBatchDefaultHomeConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -155,6 +161,7 @@ func TestConfigClaimsCoverageBatchDefaultHomeConfig(t *testing.T) {
 }
 
 func TestConfigClaimsCoverageBatchConfigFileFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing.yaml")
 	if _, found, err := loadBranchConfigFile(missing); err != nil || found {
@@ -190,6 +197,7 @@ func TestConfigClaimsCoverageBatchConfigFileFailures(t *testing.T) {
 		"bad second doc":   "version: 1\n---\n- [unterminated\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, _, err := parseBranchConfig(name, []byte(contents)); err == nil {
 				t.Fatalf("invalid config %q was accepted", name)
 			}
@@ -197,11 +205,46 @@ func TestConfigClaimsCoverageBatchConfigFileFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // mutates XDG_CONFIG_HOME while exercising layered repository policy.
 func TestConfigClaimsCoverageBatchRepositoryPolicy(t *testing.T) {
-	ctx := context.Background()
-	fixture := newGitFixture(t)
-	canonical := mustOpenCanonical(t, fixture.canonical)
-	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	projectsRoot := t.TempDir()
+	canonicalPath := filepath.Join(projectsRoot, "acme", "app")
+	if err := os.MkdirAll(filepath.Join(canonicalPath, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := openCanonicalRepository(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(canonical.close)
+
+	head := strings.Repeat("a", 40)
+	blob := strings.Repeat("b", 40)
+	policyKind := "absent"
+	var policy []byte
+	ctx := withCanonicalGitInterceptor(context.Background(), func(_ context.Context, args []string, _ func() ([]byte, error)) ([]byte, error) {
+		switch args[0] {
+		case "ls-tree":
+			if args[2] == strings.Repeat("f", 40) {
+				return nil, errors.New("missing revision")
+			}
+			switch policyKind {
+			case "absent":
+				return nil, nil
+			case "symlink":
+				return []byte("120000 blob " + blob + "\t.wb/worktrees.yaml\n"), nil
+			default:
+				return []byte("100644 blob " + blob + "\t.wb/worktrees.yaml\n"), nil
+			}
+		case "cat-file":
+			return []byte(strconv.Itoa(len(policy)) + "\n"), nil
+		case "show":
+			return append([]byte(nil), policy...), nil
+		default:
+			return nil, errors.New("unexpected policy query")
+		}
+	})
 	if contents, found, err := repositoryBranchConfigAt(ctx, canonical, head); err != nil || found || contents != nil {
 		t.Fatalf("absent repository config = %q/%t/%v", contents, found, err)
 	}
@@ -214,21 +257,14 @@ func TestConfigClaimsCoverageBatchRepositoryPolicy(t *testing.T) {
 	if _, _, err := validatedRepositoryBranchConfig(ctx, canonical, strings.Repeat("f", 40), "user-config.yaml"); err == nil {
 		t.Fatal("shared repository policy validator accepted a missing revision")
 	}
-	placement, err := ResolveWorktreePlacement(ctx, fixture.projectsRoot, fixture.canonical, head)
+	placement, err := ResolveWorktreePlacement(ctx, projectsRoot, canonicalPath, head)
 	if err != nil || placement.Root == "" {
 		t.Fatalf("resolved worktree placement = %#v/%v", placement, err)
 	}
 
-	policyPath := filepath.Join(fixture.canonical, ".wb", "worktrees.yaml")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(policyPath, []byte("version: 1\nworktrees:\n  root: /tmp/forbidden\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", ".wb/worktrees.yaml")
-	gitTest(t, fixture.canonical, "commit", "-m", "add forbidden repository placement")
-	policyCommit := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	policyKind = "regular"
+	policy = []byte("version: 1\nworktrees:\n  root: /tmp/forbidden\n")
+	policyCommit := strings.Repeat("c", 40)
 	contents, found, err := repositoryBranchConfigAt(ctx, canonical, policyCommit)
 	if err != nil || !found || !strings.Contains(string(contents), "forbidden") {
 		t.Fatalf("repository policy = %q/%t/%v", contents, found, err)
@@ -236,19 +272,15 @@ func TestConfigClaimsCoverageBatchRepositoryPolicy(t *testing.T) {
 	if _, err := configuredBranchPrefix(ctx, canonical, policyCommit); err == nil {
 		t.Fatal("repository placement override influenced branch policy")
 	}
-	if _, err := configuredWorktreePlacement(ctx, fixture.projectsRoot, canonical, policyCommit); err == nil {
+	if _, err := configuredWorktreePlacement(ctx, projectsRoot, canonical, policyCommit); err == nil {
 		t.Fatal("repository placement override was accepted")
 	}
 	if _, _, err := validatedRepositoryBranchConfig(ctx, canonical, policyCommit, "user-config.yaml"); err == nil {
 		t.Fatal("shared repository policy validator accepted a placement override")
 	}
 
-	if err := os.WriteFile(policyPath, []byte("version: 1\nworktrees:\n  branch_prefix: repo/\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", ".wb/worktrees.yaml")
-	gitTest(t, fixture.canonical, "commit", "-m", "configure repository branch prefix")
-	prefixCommit := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	policy = []byte("version: 1\nworktrees:\n  branch_prefix: repo/\n")
+	prefixCommit := strings.Repeat("d", 40)
 	config, found, err := validatedRepositoryBranchConfig(ctx, canonical, prefixCommit, "user-config.yaml")
 	if err != nil || !found || config.Worktrees.BranchPrefix == nil || *config.Worktrees.BranchPrefix != "repo/" {
 		t.Fatalf("validated repository config = %#v/%t/%v", config, found, err)
@@ -257,34 +289,22 @@ func TestConfigClaimsCoverageBatchRepositoryPolicy(t *testing.T) {
 		t.Fatalf("repository branch prefix = %q/%v", prefix, err)
 	}
 
-	if err := os.Remove(policyPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../README.md", policyPath); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", ".wb/worktrees.yaml")
-	gitTest(t, fixture.canonical, "commit", "-m", "replace policy with symlink")
-	symlinkCommit := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	policyKind = "symlink"
+	symlinkCommit := strings.Repeat("e", 40)
 	if _, _, err := repositoryBranchConfigAt(ctx, canonical, symlinkCommit); err == nil {
 		t.Fatal("repository symlink policy was accepted")
 	}
 
-	if err := os.Remove(policyPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(policyPath, []byte("version: [malformed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", ".wb/worktrees.yaml")
-	gitTest(t, fixture.canonical, "commit", "-m", "add malformed repository policy")
-	malformedCommit := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	policyKind = "regular"
+	policy = []byte("version: [malformed\n")
+	malformedCommit := strings.Repeat("9", 40)
 	if _, _, err := validatedRepositoryBranchConfig(ctx, canonical, malformedCommit, "user-config.yaml"); err == nil {
 		t.Fatal("shared repository policy validator accepted malformed YAML")
 	}
 }
 
 func TestConfigClaimsCoverageBatchActiveClaimFilesystem(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := walkActiveWorkLogClaims(home, func(*os.File, string, workLogClaim) {
 		t.Fatal("visitor called for empty home")

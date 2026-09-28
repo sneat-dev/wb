@@ -2255,6 +2255,18 @@ type canonicalGitInterceptorKey struct{}
 // Callers that authenticate blob contents need the byte-exact stream, while
 // the canonical helper still supplies the same retained-descriptor authority.
 func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args ...string) ([]byte, error) {
+	return runCanonicalGitBytes(ctx, canonical, SecureCanonicalGitHelperArgument, "canonical Git", func() []string {
+		return secureHelperEnvironment(ctx)
+	}, args...)
+}
+
+func runCanonicalGitBytes(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	helperArgument, errorPrefix string,
+	environment func() []string,
+	args ...string,
+) ([]byte, error) {
 	if err := canonical.authorizeForGit(); err != nil {
 		return nil, err
 	}
@@ -2267,8 +2279,8 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 		if err != nil {
 			return nil, err
 		}
-		command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-		command.Env = secureHelperEnvironment(ctx)
+		command := exec.CommandContext(ctx, executable, append([]string{helperArgument, canonical.path, gitExecutable}, args...)...)
+		command.Env = environment()
 		command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 		output, err := command.Output()
 		if err != nil {
@@ -2280,7 +2292,7 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 			if detail == "" {
 				detail = err.Error()
 			}
-			return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
+			return nil, fmt.Errorf("%s %s: %s", errorPrefix, strings.Join(args, " "), detail)
 		}
 		return output, nil
 	}
@@ -2302,36 +2314,7 @@ func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository
 	if !canonicalPolicyGitArgumentsAllowed(args) {
 		return nil, fmt.Errorf("unsupported canonical policy Git query")
 	}
-	if err := canonical.authorizeForGit(); err != nil {
-		return nil, err
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	gitExecutable, err := trustedGitExecutable()
-	if err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalPolicyGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-	command.Env = console.Env()
-	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
-	output, err := command.Output()
-	if validateErr := canonical.validate(); validateErr != nil {
-		return nil, validateErr
-	}
-	if err != nil {
-		detail := ""
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			detail = strings.TrimSpace(string(exitErr.Stderr))
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("canonical policy Git %s: %s", strings.Join(args, " "), detail)
-	}
-	return output, nil
+	return runCanonicalGitBytes(ctx, canonical, SecureCanonicalPolicyGitHelperArgument, "canonical policy Git", console.Env, args...)
 }
 
 // init makes every package-owned descriptor helper available from any Go binary

@@ -77,9 +77,9 @@ var ExecSiteGitHelperNames = map[string]bool{
 // exempt). The shared runSecureGitHelper tail has a narrower exception below.
 var execSiteAllowedFunctionNames = map[string]bool{
 	"setHooksPathAt": true, "RunSecureHooksGitHelper": true,
-	"gitCanonicalBytes": true, "RunSecureCanonicalGitHelper": true,
-	"gitCanonicalPolicyBytes": true, "RunSecureCanonicalPolicyGitHelper": true,
-	"runSecureStageHelper": true, "RunSecureStageGitHelper": true,
+	"runCanonicalGitBytes": true, "RunSecureCanonicalGitHelper": true,
+	"RunSecureCanonicalPolicyGitHelper": true,
+	"runSecureStageHelper":              true, "RunSecureStageGitHelper": true,
 	"runSecureStageCanonicalGitHelper": true, "RunSecureStageCanonicalGitHelper": true,
 	"runSecureRenameGitBytesWithHeldWorktree": true, "RunSecureRenameGitHelper": true,
 	"runSecureCleanupGitHelper": true, "RunSecureCleanupGitHelper": true,

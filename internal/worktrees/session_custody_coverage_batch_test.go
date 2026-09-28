@@ -19,6 +19,7 @@ import (
 // uncovered block before running the focused suite. Keep the cheap guards in
 // one test: they prove malformed authority is rejected before Git or disk I/O.
 func TestSessionCustodyCoverageBatchPublicGuards(t *testing.T) {
+	t.Parallel()
 	if _, err := PrepareExternalSessionWorkLog(context.Background(), ExternalSessionWorkLogPrepareOptions{}); err == nil {
 		t.Fatal("empty external target preparation was accepted")
 	}
@@ -47,6 +48,7 @@ func TestSessionCustodyCoverageBatchPublicGuards(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // the session receive fixture mutates WB home and XDG environment variables.
 func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 	fixture := newExternalTargetFixture(t)
 	if err := ensureExternalHandoverPrompt(
@@ -74,6 +76,7 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 			options.Request.CreatedAt = time.Time{}
 		},
 	} {
+		//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 		t.Run(name, func(t *testing.T) {
 			options := fixture.options
 			mutate(&options)
@@ -178,6 +181,7 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // the session receive fixture mutates WB home and XDG environment variables.
 func TestSessionCustodyCoverageBatchExternalSourceBranches(t *testing.T) {
 	fixture := newExternalSourceFixture(t)
 	forged := externalSourceOfferEvent(fixture.base.request, fixture.digest)
@@ -218,6 +222,7 @@ func TestSessionCustodyCoverageBatchExternalSourceBranches(t *testing.T) {
 }
 
 func TestSessionCustodyCoverageBatchFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := validateExternalSourceOffer(missing, sessionmove.Request{}, ""); err == nil {
 		t.Fatal("missing source worktree was accepted")
@@ -276,7 +281,9 @@ func TestSessionCustodyCoverageBatchFilesystemFailures(t *testing.T) {
 }
 
 func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
+	t.Parallel()
 	t.Run("claim read and write errors", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Mkdir(filepath.Join(root, "claims"), 0o700); err != nil {
 			t.Fatal(err)
@@ -301,6 +308,7 @@ func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
 	evidence := &workLogExternalHandoffEvidence{Version: externalHandoffEvidenceVersion}
 
 	t.Run("missing terminal", func(t *testing.T) {
+		t.Parallel()
 		runDir, err := os.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -313,6 +321,7 @@ func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
 	})
 
 	t.Run("corrupt terminal", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Mkdir(filepath.Join(root, "terminals"), 0o700); err != nil {
 			t.Fatal(err)
@@ -331,6 +340,7 @@ func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
 	})
 
 	t.Run("conflicting and matching terminal", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		runDir, err := os.Open(root)
 		if err != nil {
@@ -367,6 +377,7 @@ func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
 }
 
 func TestSessionCustodyCoverageBatchModelsAndParkedBranches(t *testing.T) {
+	t.Parallel()
 	if got := externalReceiptModel(workLogClaim{Model: "unknown", ModelProvenance: modelProvenanceUnknown}); got != "" {
 		t.Fatalf("unknown receipt model = %q", got)
 	}
@@ -460,6 +471,7 @@ func TestSessionCustodyCoverageBatchModelsAndParkedBranches(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			options := ParkedSessionWorkLogPrepareOptions{
 				Request: request, RequestDigest: digest, Member: member, ReceivedAt: request.CreatedAt,
 				Session: record, AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1,

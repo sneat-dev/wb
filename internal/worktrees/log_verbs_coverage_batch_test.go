@@ -30,6 +30,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 	}
 	worktree := created[0].WorktreeDir
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("claim fence", func(t *testing.T) {
 		fence, err := withOptionalClaimFence(fixture.projectsRoot, worktree, true)
 		if err != nil {
@@ -46,6 +47,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("init steer show", func(t *testing.T) {
 		first, err := LogInit(ctx, LogInitOptions{
 			ProjectsRoot: fixture.projectsRoot,
@@ -77,6 +79,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("checkpoint helpers", func(t *testing.T) {
 		input := int64(1)
 		if _, err := LogCheckpoint(ctx, LogCheckpointOptions{
@@ -116,6 +119,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("refresh integrate handoff", func(t *testing.T) {
 		dirty := filepath.Join(worktree, "dirty.txt")
 		if err := os.WriteFile(dirty, []byte("dirty\n"), 0o600); err != nil {
@@ -146,6 +150,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("recover helpers", func(t *testing.T) {
 		if _, err := LogRecover(ctx, LogRecoverOptions{
 			ProjectsRoot:   fixture.projectsRoot,
@@ -177,6 +182,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("finalize sync and view", func(t *testing.T) {
 		if _, err := LogFinalize(ctx, LogFinalizeOptions{
 			ProjectsRoot: fixture.projectsRoot,
@@ -217,6 +223,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("archive and copy", func(t *testing.T) {
 		archiveRoot := newJournalWorktree(t)
 		manifest := newCreatedManifest("archive-batch")
@@ -252,6 +259,7 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("cleanup receipt readers", func(t *testing.T) {
 		root := t.TempDir()
 		validPath := filepath.Join(root, "cleanup.json")

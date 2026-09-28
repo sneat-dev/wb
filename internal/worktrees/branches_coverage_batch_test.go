@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
 func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	valid, err := normalizeBranchListOptions(BranchListOptions{
 		ProjectsRoot: root, Base: " ", Filter: " needle ", Repository: " acme/app ",
@@ -35,6 +38,7 @@ func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
 		"name":       func(options *BranchListOptions) { options.Name = "[" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			options := BranchListOptions{ProjectsRoot: root, Base: "main", Scope: BranchScopeLocal}
 			mutate(&options)
 			if _, err := normalizeBranchListOptions(options); err == nil {
@@ -45,6 +49,7 @@ func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
 }
 
 func TestBranchesCoverageBatchPureInventory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	root := t.TempDir()
 	now := time.Unix(1_000, 0).UTC()
@@ -142,6 +147,7 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 }
 
 func TestBranchesCoverageBatchGitFailureSurfaces(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	missing := filepath.Join(t.TempDir(), "missing")
 	repository := discover.Repo{Org: "acme", Name: "app", Path: missing}
@@ -173,21 +179,33 @@ func TestBranchesCoverageBatchGitFailureSurfaces(t *testing.T) {
 }
 
 func TestBranchesCoverageBatchSharedCommitDecoration(t *testing.T) {
-	fixture := newGitFixture(t)
-	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	t.Parallel()
+	const repository = "/fixture/repository"
+	head := strings.Repeat("a", 40)
+	fake := runnertest.New(t)
+	expect := func() {
+		fake.ExpectArgv(
+			[]string{"git", "-C", repository, "show", "-s", "--format=%H%x1f%an%x1f%s%x1e", head},
+			runner.Result{CombinedOutput: head + "\x1fWB Test\x1fseed commit\x1e"}, nil,
+		)
+	}
+	expect()
 	entries := []BranchEntry{{SHA: head}, {SHA: head}}
-	decorateBranchCommits(context.Background(), fixture.canonical, entries)
+	ctx := withGitRunner(context.Background(), fake)
+	decorateBranchCommits(ctx, repository, entries)
 	if entries[0].Author == "" || entries[0].Title == "" || entries[1].Author != entries[0].Author || entries[1].Title != entries[0].Title {
 		t.Fatalf("batch decoration = %#v", entries)
 	}
+	expect()
 	single := BranchEntry{SHA: head}
-	decorateBranchCommit(context.Background(), fixture.canonical, &single)
+	decorateBranchCommit(ctx, repository, &single)
 	if single.Author != entries[0].Author || single.Title != entries[0].Title {
 		t.Fatalf("single decoration = %#v, batch = %#v", single, entries[0])
 	}
 }
 
 func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repository := discover.Repo{Org: "acme", Name: "app", Path: filepath.Join(t.TempDir(), "missing")}
 	sha := strings.Repeat("a", 40)
