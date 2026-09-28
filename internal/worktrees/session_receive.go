@@ -424,6 +424,7 @@ type sessionReceiveState struct {
 	// These optional hooks are local to one receive and let tests fault the
 	// narrow boundaries after all descriptor and Git checks have succeeded.
 	closeInterruptedRoot   func(*os.File) error
+	afterTargetStagedAdd   func() error
 	afterTargetPublication func(string)
 }
 
@@ -715,7 +716,8 @@ func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
 		nil, // afterPublishedAuthorization
 		nil, // afterRegistrationLockAcquired
 		nil, // afterRepair
-		nil, // afterStagedAdd
+		nil, // beforeStagedWorktreeOpen
+		state.afterTargetStagedAdd,
 		nil, // beforeRepair
 		&publication,
 	); err != nil {

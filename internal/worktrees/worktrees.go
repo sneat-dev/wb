@@ -129,8 +129,11 @@ type CreateOptions struct {
 	// afterStagedWorktreeAdd and beforeWorktreeRepair are test-only failure
 	// seams. They model Git reporting an error after checkout creation, so the
 	// rollback invariants are exercised without platform-specific hook tricks.
-	afterStagedWorktreeAdd func() error
-	beforeWorktreeRepair   func() error
+	// beforeStagedWorktreeOpen targets the narrower interval after Git returns
+	// but before WB retains the checkout descriptor.
+	beforeStagedWorktreeOpen func()
+	afterStagedWorktreeAdd   func() error
+	beforeWorktreeRepair     func() error
 	// afterWorkLogClaim and afterWorkLogProjection inject failures after the
 	// corresponding durable publication boundary. They prove that a Git
 	// checkout published successfully immediately before a Work Log failure is
@@ -900,6 +903,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterPublishedWorktreeAuthorization,
 				normalized.afterRepositoryRegistrationLockAcquired,
 				normalized.afterWorktreeRepair,
+				normalized.beforeStagedWorktreeOpen,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
 				&publication,
@@ -2758,6 +2762,7 @@ func addWorktreeAtSecureDestination(
 	afterPublishedAuthorization func(),
 	afterRegistrationLockAcquired func(),
 	afterRepair func(),
+	beforeStagedWorktreeOpen func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
 	publication **createdWorktreePublication,
@@ -2887,6 +2892,9 @@ func addWorktreeAtSecureDestination(
 	addErr := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists)
 	if addErr != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", addErr), "", nil)
+	}
+	if beforeStagedWorktreeOpen != nil {
+		beforeStagedWorktreeOpen()
 	}
 	checkoutDirectory, err := openDirectoryAtNoFollow(int(stageDirectory.Fd()), "checkout", "wb-worktree-staged-checkout",
 		"open staged worktree checkout", "wrap staged worktree checkout")
