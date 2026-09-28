@@ -725,11 +725,7 @@ func sourceRepositoryRoots(ctx context.Context, sourcePath string) ([]string, er
 		return nil, err
 	}
 	var roots []string
-	for _, line := range strings.Split(output, "\n") {
-		root, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, root := range worktreePathsFromPorcelain(output) {
 		absoluteRoot, err := filepath.Abs(root)
 		if err != nil {
 			return nil, err

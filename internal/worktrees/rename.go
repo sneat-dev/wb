@@ -1455,11 +1455,7 @@ func verifyWorktreeRegistered(ctx context.Context, canonicalDir, oldPath, newPat
 		return fmt.Errorf("verify worktree registration: %w", err)
 	}
 	found := false
-	for _, line := range strings.Split(output, "\n") {
-		path, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, path := range worktreePathsFromPorcelain(output) {
 		switch filepath.Clean(path) {
 		case filepath.Clean(newPath):
 			found = true

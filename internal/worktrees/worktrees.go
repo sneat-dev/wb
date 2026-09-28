@@ -1152,9 +1152,8 @@ func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository
 		return "", fmt.Errorf("list registered worktrees for resume: %w", err)
 	}
 	candidates := map[string]bool{filepath.Clean(predicted): true}
-	for _, line := range strings.Split(registered, "\n") {
-		path, found := strings.CutPrefix(line, "worktree ")
-		if !found || !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
+	for _, path := range worktreePathsFromPorcelain(registered) {
+		if !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
 			continue
 		}
 		candidates[filepath.Clean(path)] = true
@@ -3764,6 +3763,8 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 	return moved, err
 }
 
+var errRetirementNameCollision = errors.New("create collision-free directory retirement name")
+
 func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
 		retired := prefix + randomHexToken(16)
@@ -3779,7 +3780,7 @@ func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.Fi
 		}
 		return moved, retired, nil
 	}
-	return nil, "", fmt.Errorf("create collision-free directory retirement name")
+	return nil, "", errRetirementNameCollision
 }
 
 type secureDirectoryIdentity struct {
@@ -4132,22 +4133,27 @@ func rollbackPublishedCreate(ctx context.Context, canonical *canonicalRepository
 }
 
 func quarantineSecureStageCheckout(stageDirectory, checkoutDirectory *os.File) error {
-	for attempt := 0; attempt < 16; attempt++ {
-		name := ".wb-retired-checkout-" + randomHexToken(16)
-		moved, err := moveExpectedDirectoryNoReplace(stageDirectory, "checkout", stageDirectory, name, checkoutDirectory, nil)
-		if errors.Is(err, unix.EEXIST) {
-			continue
-		}
-		if err != nil {
-			if moved != nil {
-				_ = moved.Close()
-			}
-			return fmt.Errorf("quarantine staged checkout: %w", err)
-		}
-		_ = moved.Close()
-		return nil
+	moved, _, err := quarantineDirectoryEntryNamed(stageDirectory, "checkout", checkoutDirectory, ".wb-retired-checkout-")
+	if errors.Is(err, errRetirementNameCollision) {
+		return fmt.Errorf("create collision-free staged checkout quarantine name")
 	}
-	return fmt.Errorf("create collision-free staged checkout quarantine name")
+	if err != nil {
+		return fmt.Errorf("quarantine staged checkout: %w", err)
+	}
+	_ = moved.Close()
+	return nil
+}
+
+// worktreePathsFromPorcelain returns Git's path records unchanged. Callers own
+// any cleaning, validation, or filtering appropriate to their operation.
+func worktreePathsFromPorcelain(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		if path, found := strings.CutPrefix(line, "worktree "); found {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func registeredWorktreePathsCanonical(ctx context.Context, canonical *canonicalRepository) (map[string]bool, error) {
@@ -4156,10 +4162,8 @@ func registeredWorktreePathsCanonical(ctx context.Context, canonical *canonicalR
 		return nil, fmt.Errorf("list worktree registrations: %w", err)
 	}
 	paths := map[string]bool{}
-	for _, line := range strings.Split(output, "\n") {
-		if path, found := strings.CutPrefix(line, "worktree "); found {
-			paths[filepath.Clean(path)] = true
-		}
+	for _, path := range worktreePathsFromPorcelain(output) {
+		paths[filepath.Clean(path)] = true
 	}
 	return paths, nil
 }

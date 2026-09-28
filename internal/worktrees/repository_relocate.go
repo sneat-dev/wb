@@ -452,11 +452,7 @@ func repositoryRelocateWorktrees(ctx context.Context, source, destination string
 		return nil, err
 	}
 	var entries []repositoryRelocateWorktree
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "worktree ") {
-			continue
-		}
-		path := strings.TrimPrefix(line, "worktree ")
+	for _, path := range worktreePathsFromPorcelain(out) {
 		mapped := path
 		if path == source || strings.HasPrefix(path, source+string(os.PathSeparator)) {
 			relative, relErr := filepath.Rel(source, path)
