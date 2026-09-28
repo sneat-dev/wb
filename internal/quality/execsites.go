@@ -70,10 +70,11 @@ var ExecSiteGitHelperNames = map[string]bool{
 // their launchers named in task-8's "Allow-list: the fd-inheriting secure
 // git helpers" table: they must keep calling exec.Command/exec.CommandContext
 // directly because they rely on fd inheritance, both before and after
-// task-11 splits each into a thin shim plus a testable core. A call inside a
-// function whose own name is in this set is never flagged, regardless of
-// which pattern it would otherwise match; a call to one of these functions
-// from elsewhere is unaffected (only their own bodies are exempt).
+// task-11 splits each into a thin shim plus a testable core.
+// A call inside a function whose own name is in this set is never flagged,
+// regardless of which pattern it would otherwise match; a call to one of
+// these functions from elsewhere is unaffected (only their own bodies are
+// exempt). The shared runSecureGitHelper tail has a narrower exception below.
 var execSiteAllowedFunctionNames = map[string]bool{
 	"setHooksPathAt": true, "RunSecureHooksGitHelper": true,
 	"gitCanonicalBytes": true, "RunSecureCanonicalGitHelper": true,
@@ -235,12 +236,13 @@ func execSiteTopLevelFuncLitNames(file *ast.File) map[*ast.FuncLit]string {
 // exempt value (a value copy, so sibling subtrees never see each other's
 // state) without an explicit push/pop stack.
 type execSiteVisitor struct {
-	fset     *token.FileSet
-	aliases  map[string]string
-	rel      string
-	litNames map[*ast.FuncLit]string
-	exempt   bool
-	out      *[]ExecSiteMatch
+	fset          *token.FileSet
+	aliases       map[string]string
+	rel           string
+	litNames      map[*ast.FuncLit]string
+	exempt        bool
+	secureGitTail bool
+	out           *[]ExecSiteMatch
 }
 
 func (v *execSiteVisitor) Visit(n ast.Node) ast.Visitor {
@@ -251,9 +253,11 @@ func (v *execSiteVisitor) Visit(n ast.Node) ast.Visitor {
 		}
 		child := *v
 		child.exempt = execSiteAllowedFunctionNames[node.Name.Name]
+		child.secureGitTail = v.rel == "internal/worktrees/git_capability.go" && node.Recv == nil && node.Name.Name == "runSecureGitHelper"
 		return &child
 	case *ast.FuncLit:
 		child := *v
+		child.secureGitTail = false
 		if name, named := v.litNames[node]; named {
 			child.exempt = execSiteAllowedFunctionNames[name]
 		}
@@ -261,6 +265,12 @@ func (v *execSiteVisitor) Visit(n ast.Node) ast.Visitor {
 	case *ast.CallExpr:
 		if !v.exempt {
 			if match, ok := classifyExecSiteCall(node, v.aliases); ok {
+				// This one child helper must install its filesystem capability
+				// before Git replaces the current process. Do not exempt any
+				// other call or same-named function in another file.
+				if call, direct := node.Fun.(*ast.Ident); v.secureGitTail && direct && call.Name == "runGitWithFilesystemCapability" {
+					return v
+				}
 				match.File = v.rel
 				match.Line = v.fset.Position(node.Pos()).Line
 				*v.out = append(*v.out, match)
