@@ -1188,22 +1188,40 @@ func ensureExternalHandoverPrompt(worktree string, at time.Time, record session.
 }
 
 func expectedExternalClaimID(claim workLogClaim) (string, error) {
+	evidence, err := validateExternalSuccessorClaimLineage(claim, externalSuccessorClaimPolicy{label: "external"})
+	if err != nil {
+		return "", err
+	}
+	return sessionmove.ExternalHandoffClaimID(sessionmove.Digest(evidence.RequestDigest), claim.AgentID)
+}
+
+type externalSuccessorClaimPolicy struct {
+	label         string
+	protocol      string
+	requireMember bool
+}
+
+// validateExternalSuccessorClaimLineage owns the common immutable lineage
+// contract shared by direct external handoffs and parked-session members.
+// The caller retains only the protocol-specific deterministic claim formula.
+func validateExternalSuccessorClaimLineage(claim workLogClaim, policy externalSuccessorClaimPolicy) (*workLogExternalHandoffEvidence, error) {
 	evidence := claim.ExternalHandoff
 	if evidence == nil || evidence.Version != externalHandoffEvidenceVersion || evidence.HandoffID == "" ||
 		evidence.PredecessorWBSessionID == "" || evidence.SuccessorWBSessionID != claim.AgentID ||
 		evidence.SourceWorkLogReference == "" || evidence.TargetWorkLogReference == "" ||
-		evidence.SuccessorTmuxName != "wb-session-"+claim.AgentID {
-		return "", fmt.Errorf("private external successor claim metadata is invalid")
+		evidence.SuccessorTmuxName != "wb-session-"+claim.AgentID ||
+		(policy.protocol != "" && evidence.Protocol != policy.protocol) || (policy.requireMember && evidence.MemberID == "") {
+		return nil, fmt.Errorf("private %s successor claim metadata is invalid", policy.label)
 	}
 	source, err := sessionmove.ParseWorkLogReference(evidence.SourceWorkLogReference)
 	if err != nil || source.EffortID != claim.EffortID || source.RunID != claim.RunID || source.ClaimID != claim.ParentClaimID {
-		return "", fmt.Errorf("private external source Work Log lineage is invalid")
+		return nil, fmt.Errorf("private %s source Work Log lineage is invalid", policy.label)
 	}
 	target, err := sessionmove.ParseWorkLogReference(evidence.TargetWorkLogReference)
 	if err != nil || target.EffortID != claim.EffortID || target.RunID != claim.RunID || target.ClaimID != claim.ClaimID {
-		return "", fmt.Errorf("private external target Work Log lineage is invalid")
+		return nil, fmt.Errorf("private %s target Work Log lineage is invalid", policy.label)
 	}
-	return sessionmove.ExternalHandoffClaimID(sessionmove.Digest(evidence.RequestDigest), claim.AgentID)
+	return evidence, nil
 }
 
 // requestHandoverBytes returns the exact bytes source or target must

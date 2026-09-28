@@ -173,23 +173,14 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 }
 
 func expectedParkedSessionClaimID(claim workLogClaim) (string, error) {
-	evidence := claim.ExternalHandoff
-	if evidence == nil || evidence.Version != externalHandoffEvidenceVersion || evidence.Protocol != "parked_session_resume" ||
-		evidence.HandoffID == "" || evidence.MemberID == "" || evidence.PredecessorWBSessionID == "" ||
-		evidence.SuccessorWBSessionID != claim.AgentID || evidence.SourceWorkLogReference == "" ||
-		evidence.TargetWorkLogReference == "" || evidence.SuccessorTmuxName != "wb-session-"+claim.AgentID {
-		return "", fmt.Errorf("private parked successor claim metadata is invalid")
-	}
-	source, err := sessionmove.ParseWorkLogReference(evidence.SourceWorkLogReference)
-	if err != nil || source.EffortID != claim.EffortID || source.RunID != claim.RunID || source.ClaimID != claim.ParentClaimID {
-		return "", fmt.Errorf("private parked source Work Log lineage is invalid")
-	}
-	target, err := sessionmove.ParseWorkLogReference(evidence.TargetWorkLogReference)
-	if err != nil || target.EffortID != claim.EffortID || target.RunID != claim.RunID || target.ClaimID != claim.ClaimID {
-		return "", fmt.Errorf("private parked target Work Log lineage is invalid")
+	evidence, err := validateExternalSuccessorClaimLineage(claim, externalSuccessorClaimPolicy{
+		label: "parked", protocol: "parked_session_resume", requireMember: true,
+	})
+	if err != nil {
+		return "", err
 	}
 	return sessionpark.TargetWorkLogClaimID(sessionmove.Digest(evidence.RequestDigest), claim.AgentID,
-		evidence.MemberID, claim.Repository, source.ClaimID)
+		evidence.MemberID, claim.Repository, claim.ParentClaimID)
 }
 
 type ParkedTargetCompletionOptions struct {
