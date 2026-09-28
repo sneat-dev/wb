@@ -768,15 +768,32 @@ func mustAtoi(value string) int {
 	return result
 }
 
+type npmDependencyManifest struct {
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+}
+
+func (manifest npmDependencyManifest) directDependencies(field string) (map[string]string, bool) {
+	switch field {
+	case "dependencies":
+		return manifest.Dependencies, true
+	case "devDependencies":
+		return manifest.DevDependencies, true
+	case "peerDependencies":
+		return manifest.PeerDependencies, true
+	case "optionalDependencies":
+		return manifest.OptionalDependencies, true
+	default:
+		return nil, false
+	}
+}
+
 func validateDependencyManifest(delta SupersessionDependencyDelta, contents []byte, expectedVersion string, exact bool) string {
 	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
 	case "npm":
-		var manifest struct {
-			Dependencies         map[string]string `json:"dependencies"`
-			DevDependencies      map[string]string `json:"devDependencies"`
-			PeerDependencies     map[string]string `json:"peerDependencies"`
-			OptionalDependencies map[string]string `json:"optionalDependencies"`
-		}
+		var manifest npmDependencyManifest
 		if err := json.Unmarshal(contents, &manifest); err != nil {
 			return fmt.Sprintf("cannot parse npm manifest %q: %v", delta.Manifest, err)
 		}
@@ -784,17 +801,8 @@ func validateDependencyManifest(delta SupersessionDependencyDelta, contents []by
 		if len(parts) != 2 || parts[0] == "" || parts[1] != delta.Package {
 			return fmt.Sprintf("npm selector %q is not the exact direct package selector for %q", delta.Selector, delta.Package)
 		}
-		var dependencies map[string]string
-		switch parts[0] {
-		case "dependencies":
-			dependencies = manifest.Dependencies
-		case "devDependencies":
-			dependencies = manifest.DevDependencies
-		case "peerDependencies":
-			dependencies = manifest.PeerDependencies
-		case "optionalDependencies":
-			dependencies = manifest.OptionalDependencies
-		default:
+		dependencies, direct := manifest.directDependencies(parts[0])
+		if !direct {
 			return fmt.Sprintf("npm selector %q is not a direct dependency field", delta.Selector)
 		}
 		value, ok := dependencies[delta.Package]
@@ -833,12 +841,7 @@ func validateDependencyManifest(delta SupersessionDependencyDelta, contents []by
 func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte) (string, bool, error) {
 	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
 	case "npm":
-		var manifest struct {
-			Dependencies         map[string]string `json:"dependencies"`
-			DevDependencies      map[string]string `json:"devDependencies"`
-			PeerDependencies     map[string]string `json:"peerDependencies"`
-			OptionalDependencies map[string]string `json:"optionalDependencies"`
-		}
+		var manifest npmDependencyManifest
 		if err := json.Unmarshal(contents, &manifest); err != nil {
 			return "", false, err
 		}
@@ -846,17 +849,8 @@ func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte)
 		if len(parts) != 2 || parts[1] != delta.Package {
 			return "", false, nil
 		}
-		var dependencies map[string]string
-		switch parts[0] {
-		case "dependencies":
-			dependencies = manifest.Dependencies
-		case "devDependencies":
-			dependencies = manifest.DevDependencies
-		case "peerDependencies":
-			dependencies = manifest.PeerDependencies
-		case "optionalDependencies":
-			dependencies = manifest.OptionalDependencies
-		default:
+		dependencies, direct := manifest.directDependencies(parts[0])
+		if !direct {
 			return "", false, nil
 		}
 		value, found := dependencies[delta.Package]

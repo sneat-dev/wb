@@ -257,6 +257,15 @@ func TestWtLogCovValidateDependencyManifestGo(t *testing.T) {
 	if rejection := validateDependencyManifest(delta, manifest, "v1.2.3", true); rejection != "" {
 		t.Fatalf("exact Go requirement rejected: %s", rejection)
 	}
+	// Validation examines every require entry; the value accessor intentionally
+	// reports the first one. Keep those distinct contracts when sharing parsers.
+	duplicates := []byte("module example.com/app\n\ngo 1.21\n\nrequire example.com/nx v1.2.3\nrequire example.com/nx v1.2.4\n")
+	if rejection := validateDependencyManifest(delta, duplicates, "v1.2.3", true); !strings.Contains(rejection, "v1.2.4") {
+		t.Fatalf("later duplicate Go requirement was ignored: %q", rejection)
+	}
+	if value, found, err := dependencyManifestValue(delta, duplicates); err != nil || !found || value != "v1.2.3" {
+		t.Fatalf("first Go requirement value = %q, found=%t, err=%v", value, found, err)
+	}
 	if rejection := validateDependencyManifest(delta, manifest, "v1.2.4", true); !strings.Contains(rejection, "want") {
 		t.Fatalf("mismatched Go requirement rejection = %q", rejection)
 	}
