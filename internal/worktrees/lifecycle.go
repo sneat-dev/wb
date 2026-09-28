@@ -2988,13 +2988,14 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 		defer func() { _ = artifactArchive.Close() }()
 	}
 	defer closeCleanupLifecycleArtifacts(artifactHandles)
-	for _, index := range entry.resultIndices {
+	// Each call owns one member's descriptors until it returns to this task transaction.
+	applyCleanupWorktree := func(index int) error {
 		worktree, err := openCleanupWorktree(task, run.outcome.Results[index])
 		if err != nil {
 			return err
 		}
+		defer worktree.close()
 		if err := worktree.validate(); err != nil {
-			worktree.close()
 			return err
 		}
 		refreshed, err := inspectLifecycleWorktree(
@@ -3012,51 +3013,34 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 			cleanupInspectPolicy(run.normalized),
 		)
 		if err != nil {
-			worktree.close()
 			return err
 		}
 		if err := applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &refreshed); err != nil {
-			worktree.close()
 			return fmt.Errorf("cleanup receipt proof for %s: %w", refreshed.Repository, err)
 		}
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &refreshed); err != nil {
-			worktree.close()
 			return fmt.Errorf("cleanup absorbed-conflict acknowledgement proof for %s: %w", refreshed.Repository, err)
 		}
 		if err := applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed); err != nil {
-			worktree.close()
 			return fmt.Errorf("supersession receipt for %s: %w", refreshed.Repository, err)
 		}
 		if err := worktree.validate(); err != nil {
-			worktree.close()
 			return err
 		}
 		eligible, reason := cleanupEligibility(refreshed, run.normalized, run.now)
 		if !eligible {
-			worktree.close()
 			return fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
 		}
 		if refreshed.HeadSHA != run.outcome.Results[index].HeadSHA {
-			worktree.close()
 			return fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository)
 		}
 		run.outcome.Results[index].ListResult = refreshed
 		canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
 		if err != nil {
-			worktree.close()
 			return fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err)
 		}
-		canonicalClosed := false
-		closeCanonical := func() {
-			if canonicalClosed {
-				return
-			}
-			canonicalClosed = true
-			canonical.close()
-		}
+		defer canonical.close()
 		if err := canonical.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
 			return fmt.Errorf("cleanup canonical repository changed before Git operations: %w", err)
 		}
 		if run.normalized.beforeCleanupWorktreeRemoval != nil {
@@ -3068,14 +3052,10 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 		// last possible point; any substitution conservatively aborts before Git
 		// can remove a checkout or its registration.
 		if err := worktree.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if err := preflightWorkLogSeal(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
 			if recoveryErr := recordLegacyRepositoryRelocationForCleanup(run.ctx, run.resolution.Write.Home, run.normalized.ProjectsRoot, refreshed, run.normalized.beforeLegacyRelocationReceipt); recoveryErr != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)
 			}
 		}
@@ -3089,22 +3069,16 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 			sealErr = sealWorkLogForCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA)
 		}
 		if sealErr != nil {
-			closeCanonical()
-			worktree.close()
 			return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
 		}
 		backlogRecord := newLifecycleBacklogRecord(run.normalized.ProjectsRoot, refreshed, "removed")
 		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageSealed); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		pendingLifecycleBacklogs++
 		run.outcome.Results[index].BacklogID = backlogRecord.ID
 		if run.normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
 			if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRetiringRemote); err != nil {
-				closeCanonical()
-				worktree.close()
 				return err
 			}
 			// Every authorization and the network call itself sit inside one
@@ -3137,33 +3111,23 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 				return nil
 			}()
 			if deleteErr != nil {
-				closeCanonical()
-				worktree.close()
 				return deleteErr
 			}
 			run.outcome.Results[index].RemoteDeleted = true
 			if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemoteRetired); err != nil {
-				closeCanonical()
-				worktree.close()
 				return err
 			}
 		}
 		if err := worktree.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if run.normalized.afterCleanupGitAuthorization != nil {
 			run.normalized.afterCleanupGitAuthorization("remove worktree")
 		}
 		if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemovingWorktree); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if removeErr := runSecureCleanupGitHelper(run.ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); removeErr != nil {
@@ -3173,59 +3137,41 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 			// this was before deciding whether the task is finishable.
 			residue, residueErr := worktreeRemovalLeftResidue(run.ctx, canonical, refreshed.WorktreeDir)
 			if residueErr != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("remove worktree %s: %w; inspect its registration afterwards: %v", refreshed.WorktreeDir, removeErr, residueErr)
 			}
 			if !residue {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, removeErr)
 			}
 			if run.normalized.beforeCleanupResidueRemoval != nil {
 				if err := run.normalized.beforeCleanupResidueRemoval(refreshed.WorktreeDir); err != nil {
-					closeCanonical()
-					worktree.close()
 					return err
 				}
 			}
 			removed, repairErr := removeUnregisteredWorktreeResidue(worktree, refreshed.WorktreeDir)
 			if repairErr != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("remove worktree %s: %w; %v", refreshed.WorktreeDir, removeErr, repairErr)
 			}
 			run.outcome.Results[index].WorktreeResidueRemoved = removed
 		}
 		run.outcome.Results[index].WorktreeGone = true
 		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageWorktreeRemoved); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if run.normalized.afterCleanupWorktreeRemoval != nil {
 			if err := run.normalized.afterCleanupWorktreeRemoval(refreshed.WorktreeDir); err != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("after worktree removal for %s: %w", refreshed.Repository, err)
 			}
 		}
 		if err := task.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if run.normalized.afterCleanupGitAuthorization != nil {
 			run.normalized.afterCleanupGitAuthorization("delete local branch")
 		}
 		if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		// A detached checkout has no branch ref of its own: a review
@@ -3235,39 +3181,33 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 		// something that was never created.
 		if refreshed.Branch != "" {
 			if err := runSecureCleanupGitHelper(run.ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
 			}
 			run.outcome.Results[index].BranchDeleted = true
 		}
 		if err := worktree.removeEmptyParent(run.normalized.afterCleanupParentAuthorization, run.normalized.afterCleanupOwnerRetirement); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		if refreshed.External {
 			owner, repository, splitErr := splitRepository(refreshed.Repository)
 			if splitErr != nil {
-				closeCanonical()
-				worktree.close()
 				return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
 			}
 			if err := removeAdoptedRegistration(task, owner, repository); err != nil {
-				closeCanonical()
-				worktree.close()
 				return err
 			}
 		}
 		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageComplete); err != nil {
-			closeCanonical()
-			worktree.close()
 			return err
 		}
 		pendingLifecycleBacklogs--
-		worktree.close()
-		closeCanonical()
 		run.outcome.Results[index].Applied = true
+		return nil
+	}
+	for _, index := range entry.resultIndices {
+		if err := applyCleanupWorktree(index); err != nil {
+			return err
+		}
 	}
 	if err := archiveCleanupLifecycleArtifacts(task, artifactArchive, artifactArchivePath, artifactHandles, run.outcome.Artifacts); err != nil {
 		return err
