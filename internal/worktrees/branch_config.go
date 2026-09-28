@@ -386,22 +386,12 @@ func configuredBranchPrefix(ctx context.Context, canonical *canonicalRepository,
 	if canonical == nil || !isGitObjectID(baseRevision) {
 		return "", fmt.Errorf("branch policy requires a fetched canonical target-base revision")
 	}
-	contents, found, err := repositoryBranchConfigAt(ctx, canonical, baseRevision)
+	config, found, err := validatedRepositoryBranchConfig(ctx, canonical, baseRevision, globalPath)
 	if err != nil {
 		return "", err
 	}
 	if !found {
 		return prefix, nil
-	}
-	config, _, err := parseBranchConfig(".wb/worktrees.yaml at "+baseRevision, contents)
-	if err != nil {
-		return "", err
-	}
-	// A repository may spell branches, not place checkouts. Reject its attempt
-	// to select the store mode or root here too, so no caller that reads
-	// repository policy — branch naming included — can pass one through.
-	if violation := repositoryPlacementPolicy(config, baseRevision, globalPath); violation != nil {
-		return "", violation
 	}
 	if config.Worktrees.BranchPrefix != nil {
 		prefix = *config.Worktrees.BranchPrefix
@@ -426,6 +416,25 @@ func repositoryPlacementPolicy(config branchConfigFile, baseRevision, userConfig
 	return nil
 }
 
+// validatedRepositoryBranchConfig is the single repository-policy admission
+// path for both branch spelling and worktree placement. Repository policy may
+// choose a branch prefix, but machine-local store and retirement settings are
+// rejected before either caller can act on the document.
+func validatedRepositoryBranchConfig(ctx context.Context, canonical *canonicalRepository, baseRevision, userConfigPath string) (branchConfigFile, bool, error) {
+	contents, found, err := repositoryBranchConfigAt(ctx, canonical, baseRevision)
+	if err != nil || !found {
+		return branchConfigFile{}, found, err
+	}
+	config, _, err := parseBranchConfig(".wb/worktrees.yaml at "+baseRevision, contents)
+	if err != nil {
+		return branchConfigFile{}, false, err
+	}
+	if violation := repositoryPlacementPolicy(config, baseRevision, userConfigPath); violation != nil {
+		return branchConfigFile{}, false, violation
+	}
+	return config, true, nil
+}
+
 // configuredWorktreePlacement reads the machine-local placement setting. A
 // repository is allowed to choose branch spelling, but it must never redirect
 // filesystem writes on a developer's machine: a repository-tracked
@@ -439,18 +448,8 @@ func configuredWorktreePlacement(ctx context.Context, projectsRoot string, canon
 	if err != nil {
 		return worktreePlacement{}, err
 	}
-	contents, found, err := repositoryBranchConfigAt(ctx, canonical, baseRevision)
-	if err != nil {
+	if _, _, err := validatedRepositoryBranchConfig(ctx, canonical, baseRevision, userConfigPath); err != nil {
 		return worktreePlacement{}, err
-	}
-	if found {
-		config, _, parseErr := parseBranchConfig(".wb/worktrees.yaml at "+baseRevision, contents)
-		if parseErr != nil {
-			return worktreePlacement{}, parseErr
-		}
-		if violation := repositoryPlacementPolicy(config, baseRevision, userConfigPath); violation != nil {
-			return worktreePlacement{}, violation
-		}
 	}
 	placement, err := ResolveUserWorktreePlacement(projectsRoot, canonical.path)
 	if err != nil {
