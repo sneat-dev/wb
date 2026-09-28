@@ -270,18 +270,9 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 
 func installTransferredPullRequestFixture(t *testing.T, branch, head string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := "#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\nprintf '%s\\n' \"$WB_TEST_TRANSFERRED_PULL\"\n"
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload := `[{"number":8,"html_url":"https://github.com/newco/renamed/pull/8","state":"closed","merged_at":"` + mergedAt.Format(time.RFC3339) + `","head":{"ref":"` + branch + `","sha":"` + head + `"},"base":{"ref":"main","sha":""},"merge_commit_sha":""}]`
-	t.Setenv("WB_TEST_TRANSFERRED_PULL", payload)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, payload, "")
 }
-
 func TestRelocateRepositoryReturnsResumableCleanupPending(t *testing.T) {
 	fixture := newGitFixture(t)
 	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
