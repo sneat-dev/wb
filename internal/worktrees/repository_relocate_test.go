@@ -13,18 +13,51 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+type repositoryTransferFixture struct {
+	*gitFixture
+	oldRemote   string
+	newRemote   string
+	destination string
+}
+
+func newRepositoryTransferFixture(t *testing.T) repositoryTransferFixture {
+	t.Helper()
+	git := newGitFixture(t)
+	remoteRoot := filepath.Join(filepath.Dir(git.projectsRoot), "remotes")
+	fixture := repositoryTransferFixture{gitFixture: git,
+		oldRemote:   filepath.Join(remoteRoot, "acme", "app.git"),
+		newRemote:   filepath.Join(remoteRoot, "newco", "renamed.git"),
+		destination: filepath.Join(git.projectsRoot, "newco", "renamed")}
+	if err := os.MkdirAll(filepath.Dir(fixture.oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(git.remote, fixture.oldRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, git.canonical, "remote", "set-url", "origin", fixture.oldRemote)
+	return fixture
+}
+
+func (fixture repositoryTransferFixture) moveRemote(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(fixture.newRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.oldRemote, fixture.newRemote); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture repositoryTransferFixture) cloneDestination(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(fixture.destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(fixture.destination), "clone", fixture.newRemote, fixture.destination)
+}
+
 func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *testing.T) {
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	fixture := newRepositoryTransferFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "transfer-live", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
@@ -43,20 +76,11 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	featureHead := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
 	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
 	gitTest(t, fixture.canonical, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
-	preexistingDestination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
-	if err := os.MkdirAll(filepath.Dir(preexistingDestination), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, filepath.Dir(preexistingDestination), "clone", newRemote, preexistingDestination)
+	fixture.moveRemote(t)
+	fixture.cloneDestination(t)
 
 	options := RepositoryRelocateOptions{ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
-		DestinationRepository: "newco/renamed", RemoteURL: newRemote, DefaultBranch: "main"}
+		DestinationRepository: "newco/renamed", RemoteURL: fixture.newRemote, DefaultBranch: "main"}
 	plan, err := RelocateRepository(context.Background(), options)
 	if err != nil || !plan.Eligible || plan.Applied {
 		t.Fatalf("relocation plan = %#v, err=%v", plan, err)
@@ -96,7 +120,7 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	}
 	for _, push := range []bool{false, true} {
 		urls, err := exactOriginURLs(context.Background(), destination, push)
-		if err != nil || len(urls) != 1 || urls[0] != newRemote {
+		if err != nil || len(urls) != 1 || urls[0] != fixture.newRemote {
 			t.Fatalf("origin push=%t URLs=%v err=%v", push, urls, err)
 		}
 	}
@@ -124,17 +148,7 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 // the new repository. Cleanup must first prove this exact head landed, then
 // append the missing evidence without rewriting that claim.
 func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	fixture := newRepositoryTransferFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "legacy-transfer-cleanup", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
@@ -157,12 +171,7 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 	head := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
 	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
 
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
+	fixture.moveRemote(t)
 	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		t.Fatal(err)
@@ -171,8 +180,8 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	movedWorktree := filepath.Join(destination, ".worktrees", "legacy-transfer-cleanup")
-	gitTest(t, destination, "remote", "set-url", "origin", newRemote)
-	gitTest(t, destination, "remote", "set-url", "--push", "origin", newRemote)
+	gitTest(t, destination, "remote", "set-url", "origin", fixture.newRemote)
+	gitTest(t, destination, "remote", "set-url", "--push", "origin", fixture.newRemote)
 	gitTest(t, destination, "worktree", "repair", movedWorktree)
 	// The old pointer is the other observed failure mode: planning must inspect
 	// it without migrating or deleting it. Only apply may make that projection
@@ -274,32 +283,13 @@ func installTransferredPullRequestFixture(t *testing.T, branch, head string, mer
 	installPullRequestResponses(t, payload, "")
 }
 func TestRelocateRepositoryReturnsResumableCleanupPending(t *testing.T) {
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	fixture := newRepositoryTransferFixture(t)
+	fixture.moveRemote(t)
+	fixture.cloneDestination(t)
 
 	forced := errors.New("forced retirement interruption")
 	options := RepositoryRelocateOptions{ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
-		DestinationRepository: "newco/renamed", RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+		DestinationRepository: "newco/renamed", RemoteURL: fixture.newRemote, DefaultBranch: "main", Apply: true,
 		beforeReplacementRetirement: func() error { return forced }}
 	result, err := RelocateRepository(context.Background(), options)
 	if err != nil || !result.Applied || !result.CleanupPending || result.RecoveryCommand == "" {
@@ -371,31 +361,12 @@ func TestRecoverRepositoryTransferCleanupRecordsRestoredDestination(t *testing.T
 }
 
 func TestRelocateRepositoryRecoversEvidenceAfterReplacementAlreadyRetired(t *testing.T) {
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	fixture := newRepositoryTransferFixture(t)
+	fixture.moveRemote(t)
+	fixture.cloneDestination(t)
 
 	options := RepositoryRelocateOptions{ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
-		DestinationRepository: "newco/renamed", RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+		DestinationRepository: "newco/renamed", RemoteURL: fixture.newRemote, DefaultBranch: "main", Apply: true,
 		beforeReplacementCleanupCompleted: func() error { return errors.New("forced evidence interruption") }}
 	result, err := RelocateRepository(context.Background(), options)
 	if err != nil || !result.Applied || !result.CleanupPending || !strings.Contains(result.Reason, "evidence_pending") {
@@ -443,33 +414,18 @@ func TestRelocateRepositoryRefusesDirtyOrOccupiedDestination(t *testing.T) {
 }
 
 func TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerifiesOrigin(t *testing.T) {
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	fixture := newRepositoryTransferFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "transfer-receipt-recovery", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
+	fixture.moveRemote(t)
 	forced := errors.New("forced Work Log completion interruption")
 	options := RepositoryRelocateOptions{
 		ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed",
-		RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+		RemoteURL: fixture.newRemote, DefaultBranch: "main", Apply: true,
 		beforeWorkLogCompletion: func(string) error { return forced },
 	}
 	if _, err := RelocateRepository(context.Background(), options); !errors.Is(err, forced) {
@@ -486,8 +442,8 @@ func TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerif
 	if _, err := FinalizeRepositoryTransferWorkLogs(context.Background(), options); err == nil || !strings.Contains(err.Error(), "does not identify") {
 		t.Fatalf("mismatched-origin recovery error = %v", err)
 	}
-	gitTest(t, destination, "remote", "set-url", "origin", newRemote)
-	gitTest(t, destination, "remote", "set-url", "--push", "origin", newRemote)
+	gitTest(t, destination, "remote", "set-url", "origin", fixture.newRemote)
+	gitTest(t, destination, "remote", "set-url", "--push", "origin", fixture.newRemote)
 	receipts, err := FinalizeRepositoryTransferWorkLogs(context.Background(), options)
 	if err != nil || len(receipts) != 1 {
 		t.Fatalf("receipt recovery = %v, %v", receipts, err)
@@ -510,17 +466,8 @@ type twoClaimTransferFixture struct {
 
 func newTwoClaimTransferFixture(t *testing.T) twoClaimTransferFixture {
 	t.Helper()
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	transfer := newRepositoryTransferFixture(t)
+	fixture := transfer.gitFixture
 	var second CreateResult
 	for index, task := range []string{"transfer-first", "transfer-second"} {
 		results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -533,22 +480,13 @@ func newTwoClaimTransferFixture(t *testing.T) twoClaimTransferFixture {
 			second = results[0]
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	transfer.moveRemote(t)
+	transfer.cloneDestination(t)
 	return twoClaimTransferFixture{
-		git: fixture, second: second, destination: destination,
+		git: fixture, second: second, destination: transfer.destination,
 		options: RepositoryRelocateOptions{
 			ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
-			DestinationRepository: "newco/renamed", RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+			DestinationRepository: "newco/renamed", RemoteURL: transfer.newRemote, DefaultBranch: "main", Apply: true,
 		},
 	}
 }
@@ -667,30 +605,11 @@ func TestRelocateRepositoryRefusesCustomDestinationRef(t *testing.T) {
 
 func newRepositoryTransferCollisionFixture(t *testing.T) (RepositoryRelocateOptions, string, string) {
 	t.Helper()
-	fixture := newGitFixture(t)
-	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
-	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
-	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
-	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(fixture.remote, oldRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
-	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(oldRemote, newRemote); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	fixture := newRepositoryTransferFixture(t)
+	fixture.moveRemote(t)
+	fixture.cloneDestination(t)
 	return RepositoryRelocateOptions{
 		ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed",
-		RemoteURL: newRemote, DefaultBranch: "main",
-	}, destination, newRemote
+		RemoteURL: fixture.newRemote, DefaultBranch: "main",
+	}, fixture.destination, fixture.newRemote
 }
