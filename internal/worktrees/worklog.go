@@ -3313,24 +3313,9 @@ func corroborateRelocatedClaim(worktree, finalCommit string, projection workLogP
 	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
 		return fmt.Errorf("work-log projection does not match immutable active claim")
 	}
-	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
-		return err
-	}
-	branch, err := git(context.Background(), worktree, "branch", "--show-current")
-	if err != nil {
-		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
-	}
-	if branch != "" && branch != claim.Branch {
+	return corroborateClaimGit(worktree, finalCommit, projection, claim, func(branch string) error {
 		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
-	}
-	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
-	if err != nil || head != finalCommit {
-		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
-	}
-	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
-		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
-	}
-	return nil
+	})
 }
 
 func corroborateClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
@@ -3340,6 +3325,21 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
 		return fmt.Errorf("private work-log claim identity/path mismatch")
 	}
+	return corroborateClaimGit(worktree, finalCommit, projection, claim, func(branch string) error {
+		// #183: the proven recovery is renaming the live branch back to the
+		// claim name. Landing evidence is commit-based (see the shared
+		// HEAD/base checks below and Cleanup's PR-containment proof), so a
+		// PR already opened from the renamed branch still proves out once the
+		// name matches again — this is a pure message change, not a relaxed
+		// check.
+		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
+	})
+}
+
+// corroborateClaimGit checks the proof shared by ordinary and relocated claims.
+// The caller supplies only its branch-mismatch diagnostic; a detached checkout
+// remains valid when its HEAD and claimed base still corroborate.
+func corroborateClaimGit(worktree, finalCommit string, projection workLogProjection, claim workLogClaim, branchMismatch func(string) error) error {
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
 		return err
 	}
@@ -3349,18 +3349,9 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	// A detached checkout has no branch to match. The claim records the branch
 	// the worktree was created on, and a review checkout leaves it behind by
-	// construction; refusing on the absent name asked an operator to
-	// `git branch -m` a HEAD that is not on a branch, which is not a recovery
-	// at all. The commit checks below are the whole proof in that case, and
-	// they are commit-based exactly as the landing rule requires.
+	// construction. HEAD and base checks below provide the commit proof.
 	if branch != "" && branch != claim.Branch {
-		// #183: the proven recovery is renaming the live branch back to the
-		// claim name. Landing evidence is commit-based (see corroborateClaim's
-		// own HEAD/base checks below and Cleanup's PR-containment proof), so a
-		// PR already opened from the renamed branch still proves out once the
-		// name matches again — this is a pure message change, not a relaxed
-		// check.
-		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
+		return branchMismatch(branch)
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
 	if err != nil || head != finalCommit {
