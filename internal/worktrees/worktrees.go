@@ -2477,18 +2477,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		return 1
 	}
 	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: root}}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[1], args[2:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
+	return runSecureGitHelper("wb secure canonical helper", args[0], writeRoots, args[1], args[2:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
 }
 
 // gitEnvironmentWithHeldGitDir makes Git use the inherited `.git` descriptor
@@ -3304,18 +3293,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
 		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[2], gitArgs, gitEnvironmentWithHeldGitDir(stagePath))
+	return runSecureGitHelper("wb secure staged canonical helper", args[1], writeRoots, args[2], gitArgs, gitEnvironmentWithHeldGitDir(stagePath))
 }
 
 func verifySecureStageContainment(trustedOperationRoot string) int {

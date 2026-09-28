@@ -5875,18 +5875,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		}
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[3], args[6:], gitEnvironmentWithHeldGitDirAndWorkTree(filepath.Join(args[0], ".git"), args[0]))
+	return runSecureGitHelper("wb secure cleanup helper", args[0], writeRoots, args[3], args[6:], gitEnvironmentWithHeldGitDirAndWorkTree(filepath.Join(args[0], ".git"), args[0]))
 }
 
 func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanupWorktreeHandle, error) {

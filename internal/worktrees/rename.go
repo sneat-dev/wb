@@ -221,18 +221,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	// ordinary commits. Its hooks need the same narrowly held runtime roots as
 	// cleanup's Git helper; otherwise a healthy managed hook can be denied by
 	// the filesystem capability before the source is preserved.
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[4], args[5:], gitEnvironmentWithHeldLinkedWorktreeGitDir(adminPath, commonPath))
+	return runSecureGitHelper("wb secure rename helper", args[0], writeRoots, args[4], args[5:], gitEnvironmentWithHeldLinkedWorktreeGitDir(adminPath, commonPath))
 }
 
 func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File) (*linkedWorktreeGitDir, error) {
