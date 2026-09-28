@@ -146,6 +146,8 @@ The founder introduced the explicit rule during the final Retire batch: every pr
 | Branch diff integrity | `git diff --check` passed | No whitespace errors in the committed diff |
 | Object integrity | `git fsck --no-dangling HEAD` passed | Local commit graph and referenced objects are readable |
 | Combined branch adversarial review | 0 blockers, 0 majors, 0 minors; land=yes | Separate Sol High reviewer inspected `becfcbc3..7159b133`, prioritizing descriptor ownership, claims/receipts, session state, cleanup, Git helpers, relocation ordering, and assertions |
+| Stale-receipt recovery focused tests | Passed in 30.807 seconds | When a missing candidate worktree has a recorded SHA, it is accepted only if that SHA is an ancestor of the freshly fetched target; both extracted helpers are 100% covered |
+| Stale-receipt recovery vet and quality guards | Passed | `go vet ./internal/orchestrate`, unit-tier inventory, parallel-test guard, gofmt, and `git diff --check` are green |
 
 A separate package attempt in `/private/tmp/wb-refactor-worktrees-checkpoint.log` failed after 900.314 seconds while waiting on a child process in a supersession test. A later full checkpoint completed successfully, but the failed attempt is material process evidence: the full package loop is too expensive to use after every small edit, and real-process tests remain a runtime and flake risk.
 
@@ -173,7 +175,7 @@ A separate package attempt in `/private/tmp/wb-refactor-worktrees-checkpoint.log
 ## Risks and limits
 
 - This is a package campaign, not a repository-wide 100% result. No current repo-wide coverage percentage was measured for this branch.
-- The final full profile is from exact source head `7159b133`; the report-only commit that follows does not change Go source or tests.
+- The final full `internal/worktrees` profile is from exact source head `7159b133`. A later `internal/orchestrate` recovery change is outside that package and has its own focused test, coverage, vet, quality-guard, and review receipts.
 - The final Retire batch is committed and independently approved. Its refactored production function is 100%; earlier commits predate the explicit per-refactor 100% rule and do not have a retained changed-function inventory.
 - The older baseline is represented by two complete artifacts that differ by two covered statements, so comparisons correctly use a range rather than a single reproducible number.
 - The report compares against the locally available `origin/main`. Refresh the remote and re-evaluate the merge base before final review and merge.
@@ -190,6 +192,12 @@ A separate package attempt in `/private/tmp/wb-refactor-worktrees-checkpoint.log
 5. **Add nested-repository hygiene detection.** Teach an existing WB audit or guard to report ignored directories containing `.git`, with an explicit allowlist for registered linked worktree roots. This would have exposed the accidental `wb/wb` clone without changing the executable ignore rule.
 6. **Reconcile the checked-in plan with the active workflow.** Record that the large single-package tranche used one branch, one owner, a strict 20-function minimum, and infrequent full-package runs. Preserve multi-agent pattern sweeps only where files do not overlap and the measured gain justifies coordination cost.
 7. **Enforce 100% only after the worklist is empty.** Once every package profile is verified at 100%, enable the hard regression gate described in `spec/plans/coverage-to-100/README.md`. The gate should report function and source-block regressions and use the same command locally and in CI.
+
+## Landing-recovery tooling change
+
+The accumulated branch exposed a WB lifecycle gap before landing: an old unpublished `prepare/conflict` receipt still owned the `sneat-dev/wb` `main` lane after both receipted worktrees and their local branches were gone, even though its recorded candidate commit was already an ancestor of current `main`. Existing recovery refused solely because the missing candidate had a non-empty recorded SHA.
+
+The branch now permits the audited `acknowledge-absorbed-conflict` path for this case only after fetching the target and proving that exact candidate SHA is its ancestor. Existing checks still require the source worktrees to be absent, the candidate branch to remain unpublished, and every source to be content-absorbed. When the candidate worktree is missing, its local branch and every source local branch must also be absent. An unavailable or uncontained candidate SHA refuses closed. The two refactored helpers reached 100% focused coverage.
 
 ## Landing record
 

@@ -188,7 +188,7 @@ internal/orchestrate/pr_land_test.go	28	task-17
 internal/orchestrate/pr_land_update_branch_test.go	4	task-17
 internal/orchestrate/pr_update_local_sync_test.go	2	task-17
 internal/orchestrate/worktree_merge_absorbed_conflict_go_test.go	17	task-17
-internal/orchestrate/worktree_merge_absorbed_conflict_test.go	53	task-17
+internal/orchestrate/worktree_merge_absorbed_conflict_test.go	65	task-17
 # Reviewed real-Git receipts: the added eight calls construct and rewind isolated remotes to prove cleaned-landing ancestry.
 internal/orchestrate/worktree_merge_ack_test.go	169	task-17
 internal/orchestrate/worktree_merge_adopt_published_test.go	16	task-17
