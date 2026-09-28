@@ -218,7 +218,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	return runSecureGitHelper("wb secure rename helper", args[0], writeRoots, args[4], args[5:], gitEnvironmentWithHeldLinkedWorktreeGitDir(adminPath, commonPath))
 }
 
-func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File) (*linkedWorktreeGitDir, error) {
+func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File, afterRetention ...func()) (*linkedWorktreeGitDir, error) {
 	if canonical == nil || canonical.common == nil || worktree == nil {
 		return nil, fmt.Errorf("linked worktree Git descriptors are unavailable")
 	}
@@ -227,10 +227,6 @@ func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File)
 		return nil, fmt.Errorf("open worktree .git file without following links: %w", err)
 	}
 	gitFile := os.NewFile(uintptr(gitFileFD), "wb-linked-worktree-gitfile")
-	if gitFile == nil {
-		_ = unix.Close(gitFileFD)
-		return nil, fmt.Errorf("wrap linked worktree .git file")
-	}
 	linked := &linkedWorktreeGitDir{gitFile: gitFile}
 	defer func() {
 		if linked != nil {
@@ -246,22 +242,17 @@ func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File)
 		return nil, fmt.Errorf("open canonical linked-worktree metadata root: %w", err)
 	}
 	adminRoot := os.NewFile(uintptr(adminRootFD), "wb-linked-worktree-admin-root")
-	if adminRoot == nil {
-		_ = unix.Close(adminRootFD)
-		return nil, fmt.Errorf("wrap canonical linked-worktree metadata root")
-	}
 	linked.adminRoot = adminRoot
 	adminFD, err := unix.Openat(int(adminRoot.Fd()), adminName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open linked-worktree Git directory: %w", err)
 	}
 	admin := os.NewFile(uintptr(adminFD), "wb-linked-worktree-admin")
-	if admin == nil {
-		_ = unix.Close(adminFD)
-		return nil, fmt.Errorf("wrap linked-worktree Git directory")
-	}
 	linked.admin = admin
 	linked.adminName = adminName
+	if len(afterRetention) > 0 && afterRetention[0] != nil {
+		afterRetention[0]()
+	}
 	if !regularFileEntryStillMatches(worktree, ".git", gitFile) ||
 		!directoryEntryStillMatches(canonical.common, "worktrees", adminRoot) ||
 		!directoryEntryStillMatches(adminRoot, adminName, admin) {
@@ -272,7 +263,7 @@ func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File)
 	return retained, nil
 }
 
-func linkedWorktreeGitFileAdminName(canonical *canonicalRepository, gitFile *os.File) (string, error) {
+func linkedWorktreeGitFileAdminName(canonical *canonicalRepository, gitFile *os.File, afterStat ...func()) (string, error) {
 	if canonical == nil || canonical.path == "" || gitFile == nil {
 		return "", fmt.Errorf("linked worktree Gitfile descriptors are unavailable")
 	}
@@ -282,6 +273,9 @@ func linkedWorktreeGitFileAdminName(canonical *canonicalRepository, gitFile *os.
 	}
 	if !info.Mode().IsRegular() || info.Size() > maxLinkedWorktreeGitFileSize {
 		return "", fmt.Errorf("linked worktree .git must be a regular file no larger than %d bytes", maxLinkedWorktreeGitFileSize)
+	}
+	if len(afterStat) > 0 && afterStat[0] != nil {
+		afterStat[0]()
 	}
 	if _, err := gitFile.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("rewind linked worktree .git file: %w", err)
@@ -320,10 +314,6 @@ func regularFileEntryStillMatches(parent *os.File, name string, expected *os.Fil
 		return false
 	}
 	candidate := os.NewFile(uintptr(fd), "wb-regular-entry-check")
-	if candidate == nil {
-		_ = unix.Close(fd)
-		return false
-	}
 	defer func() { _ = candidate.Close() }()
 	expectedInfo, expectedErr := expected.Stat()
 	actualInfo, actualErr := candidate.Stat()
@@ -345,15 +335,19 @@ func gitEnvironmentWithHeldLinkedWorktreeGitDir(adminDirectory, commonDirectory 
 // because Darwin Git rejects fdescfs repository directories, while the held
 // descriptors keep the authorized identities alive for the duration of Git.
 func retainDescriptorsAcrossGitExec(files ...*os.File) error {
+	return retainDescriptorsAcrossGitExecWith(unix.FcntlInt, files...)
+}
+
+func retainDescriptorsAcrossGitExecWith(fcntl func(uintptr, int, int) (int, error), files ...*os.File) error {
 	for _, file := range files {
 		if file == nil {
 			return fmt.Errorf("missing inherited descriptor")
 		}
-		flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFD, 0)
+		flags, err := fcntl(file.Fd(), unix.F_GETFD, 0)
 		if err != nil {
 			return err
 		}
-		if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
+		if _, err := fcntl(file.Fd(), unix.F_SETFD, flags&^unix.FD_CLOEXEC); err != nil {
 			return err
 		}
 	}
@@ -420,6 +414,9 @@ type RenameOptions struct {
 	Apply     bool
 	ReportDir string
 	Now       func() time.Time
+	// absoluteReportDir is a test-only filesystem seam for path-resolution
+	// failures that otherwise require changing the process working directory.
+	absoluteReportDir func(string) (string, error)
 	// beforeRenamePreflight is a test-only seam between the initial plan's
 	// fetched target-base snapshot and the final locked preflight. It proves a
 	// moved target cannot apply stale branch policy or collision checks.
@@ -1402,7 +1399,18 @@ func moveWorktree(
 // namespace move. A post-authorization substitution is detected by the
 // helper's post-move identity proof and restored when doing so cannot clobber
 // another actor's entry.
+type moveRenameDirectoryHooks struct {
+	beforeIdentityCheck func()
+	beforeAuthorization func()
+	afterAuthorization  func()
+	afterMove           func()
+}
+
 func moveRenameDirectory(oldPath, newPath string, afterAuthorization func()) (*os.File, error) {
+	return moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{afterAuthorization: afterAuthorization})
+}
+
+func moveRenameDirectoryWithHooks(oldPath, newPath string, hooks moveRenameDirectoryHooks) (*os.File, error) {
 	oldParent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(oldPath), false)
 	if err != nil {
 		return nil, err
@@ -1425,20 +1433,26 @@ func moveRenameDirectory(oldPath, newPath string, afterAuthorization func()) (*o
 	}()
 	oldParentPath := filepath.Dir(oldPath)
 	newParentPath := filepath.Dir(newPath)
+	if hooks.beforeIdentityCheck != nil {
+		hooks.beforeIdentityCheck()
+	}
 	if !directoryStillMatches(oldParentPath, oldParent) || !directoryStillMatches(newParentPath, newParent) {
 		return nil, fmt.Errorf("rename parent changed before descriptor-relative move")
 	}
 	moved, err := moveExpectedDirectoryNoReplaceAuthorized(oldParent, filepath.Base(oldPath), newParent, filepath.Base(newPath), oldDirectory, func() error {
+		if hooks.beforeAuthorization != nil {
+			hooks.beforeAuthorization()
+		}
 		if !directoryStillMatches(oldParentPath, oldParent) || !directoryStillMatches(newParentPath, newParent) ||
 			!directoryEntryStillMatches(oldParent, filepath.Base(oldPath), oldDirectory) {
 			return fmt.Errorf("rename path changed before descriptor-relative move")
 		}
-		if afterAuthorization != nil {
-			afterAuthorization()
+		if hooks.afterAuthorization != nil {
+			hooks.afterAuthorization()
 		}
 		return nil
-	})
-	if moved == nil && err != nil && directoryEntryStillMatches(newParent, filepath.Base(newPath), oldDirectory) {
+	}, hooks.afterMove)
+	if moved == nil && err != nil && directoryStillMatches(newPath, oldDirectory) {
 		// The namespace move succeeded but the shared helper could not wrap its
 		// destination descriptor. Preserve the original retained descriptor so
 		// the caller still records Moved and rolls back from the correct endpoint.
@@ -1568,7 +1582,11 @@ func normalizeRenameOptions(options RenameOptions) (RenameOptions, error) {
 		options.Now = time.Now
 	}
 	if options.ReportDir != "" {
-		options.ReportDir, err = filepath.Abs(options.ReportDir)
+		absoluteReportDir := options.absoluteReportDir
+		if absoluteReportDir == nil {
+			absoluteReportDir = filepath.Abs
+		}
+		options.ReportDir, err = absoluteReportDir(options.ReportDir)
 		if err != nil {
 			return RenameOptions{}, fmt.Errorf("resolve rename report directory: %w", err)
 		}

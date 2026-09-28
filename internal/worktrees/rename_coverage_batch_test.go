@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const renameCoverageHead = "0123456789abcdef0123456789abcdef01234567"
@@ -73,6 +74,9 @@ func TestRenameCoverageLinkedGitDescriptors(t *testing.T) {
 	if _, err := openLinkedWorktreeGitDir(canonical, worktree); err == nil || !strings.Contains(err.Error(), "open worktree .git") {
 		t.Fatalf("missing .git error = %v", err)
 	}
+	if _, err := linkedWorktreeGitFileAdminName(nil, nil); err == nil || !strings.Contains(err.Error(), "descriptors are unavailable") {
+		t.Fatalf("nil linked gitfile error = %v", err)
+	}
 
 	adminName := "coverage-admin"
 	gitFilePath := filepath.Join(worktreePath, ".git")
@@ -99,6 +103,50 @@ func TestRenameCoverageLinkedGitDescriptors(t *testing.T) {
 		t.Fatalf("linked descriptors = %#v", linked)
 	}
 	linked.close()
+}
+
+func TestRenameCoverageLinkedGitDescriptorSubstitution(t *testing.T) {
+	t.Parallel()
+
+	canonicalPath, canonical := newRenameCoverageCanonical(t)
+	worktreePath := t.TempDir()
+	worktree := wtLifeCovOpenDirectory(t, worktreePath)
+	adminName := "coverage-admin"
+	adminRoot := filepath.Join(canonicalPath, ".git", "worktrees")
+	adminPath := filepath.Join(adminRoot, adminName)
+	if err := os.MkdirAll(adminPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitFilePath := filepath.Join(worktreePath, ".git")
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: "+adminPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	linked, err := openLinkedWorktreeGitDir(canonical, worktree, func() {
+		if renameErr := os.Rename(gitFilePath, gitFilePath+".held"); renameErr != nil {
+			t.Fatal(renameErr)
+		}
+		if writeErr := os.WriteFile(gitFilePath, []byte("replacement"), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	})
+	if linked != nil || err == nil || !strings.Contains(err.Error(), "metadata changed") {
+		t.Fatalf("substituted linked metadata = %#v, %v", linked, err)
+	}
+}
+
+func TestRenameCoverageLinkedGitDescriptorRejectsUnsafeGitFile(t *testing.T) {
+	t.Parallel()
+
+	_, canonical := newRenameCoverageCanonical(t)
+	worktreePath := t.TempDir()
+	worktree := wtLifeCovOpenDirectory(t, worktreePath)
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: relative\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if linked, err := openLinkedWorktreeGitDir(canonical, worktree); linked != nil || err == nil || !strings.Contains(err.Error(), "unsafe gitdir") {
+		t.Fatalf("unsafe linked gitfile = %#v, %v", linked, err)
+	}
 }
 
 func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
@@ -144,6 +192,60 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	defer writeOnly.Close()
 	if _, err := linkedWorktreeGitFileAdminName(canonical, writeOnly); err == nil || !strings.Contains(err.Error(), "read linked worktree") {
 		t.Fatalf("write-only gitfile error = %v", err)
+	}
+
+	unsafePath := filepath.Join(t.TempDir(), ".git")
+	if err := os.WriteFile(unsafePath, []byte("gitdir: relative\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsafe, err := os.Open(unsafePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsafe.Close()
+	if _, err := linkedWorktreeGitFileAdminName(canonical, unsafe); err == nil || !strings.Contains(err.Error(), "unsafe gitdir") {
+		t.Fatalf("unsafe gitfile error = %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), ".git")
+	if err := os.WriteFile(outsidePath, []byte("gitdir: "+filepath.Join(t.TempDir(), "admin")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := os.Open(outsidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outside.Close()
+	if _, err := linkedWorktreeGitFileAdminName(canonical, outside); err == nil || !strings.Contains(err.Error(), "points outside") {
+		t.Fatalf("outside gitfile error = %v", err)
+	}
+
+	closedAfterStatPath := filepath.Join(t.TempDir(), ".git")
+	if err := os.WriteFile(closedAfterStatPath, []byte("gitdir: "+filepath.Join(canonicalPath, ".git", "worktrees", "admin")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	closedAfterStat, err := os.Open(closedAfterStatPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := linkedWorktreeGitFileAdminName(canonical, closedAfterStat, func() { _ = closedAfterStat.Close() }); err == nil || !strings.Contains(err.Error(), "rewind linked worktree") {
+		t.Fatalf("closed-after-stat gitfile error = %v", err)
+	}
+
+	growingPath := filepath.Join(t.TempDir(), ".git")
+	if err := os.WriteFile(growingPath, []byte("gitdir: "+filepath.Join(canonicalPath, ".git", "worktrees", "admin")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	growing, err := os.Open(growingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer growing.Close()
+	if _, err := linkedWorktreeGitFileAdminName(canonical, growing, func() {
+		if writeErr := os.WriteFile(growingPath, make([]byte, maxLinkedWorktreeGitFileSize+1), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("growing gitfile error = %v", err)
 	}
 }
 
@@ -200,6 +302,31 @@ func TestRenameCoverageRegularFileIdentityAndDescriptorRetention(t *testing.T) {
 	defer open.Close()
 	if err := retainDescriptorsAcrossGitExec(open); err != nil {
 		t.Fatalf("retain open descriptor: %v", err)
+	}
+	wantSetError := errors.New("set descriptor flags")
+	calls := 0
+	if err := retainDescriptorsAcrossGitExecWith(func(uintptr, int, int) (int, error) {
+		calls++
+		if calls == 2 {
+			return 0, wantSetError
+		}
+		return unix.FD_CLOEXEC, nil
+	}, open); !errors.Is(err, wantSetError) {
+		t.Fatalf("set descriptor flags error = %v", err)
+	}
+}
+
+func TestRenameCoverageNormalizeReportPathFailure(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("resolve report path")
+	_, err := normalizeRenameOptions(RenameOptions{
+		ProjectsRoot: t.TempDir(), OldTask: "old-task", NewTask: "new-task", Base: "main",
+		ReportDir: "relative", WorkLog: WorkLogOptions{Model: "unknown"},
+		absoluteReportDir: func(string) (string, error) { return "", want },
+	})
+	if !errors.Is(err, want) || !strings.Contains(err.Error(), "resolve rename report directory") {
+		t.Fatalf("report path error = %v", err)
 	}
 }
 
@@ -406,6 +533,94 @@ func TestRenameCoverageMoveDirectoryOpenFailures(t *testing.T) {
 	}
 }
 
+func TestRenameCoverageMoveDirectoryRaceStages(t *testing.T) {
+	t.Parallel()
+
+	newPaths := func(t *testing.T) (string, string, string, string) {
+		t.Helper()
+		root := t.TempDir()
+		oldParent := filepath.Join(root, "old-parent")
+		newParent := filepath.Join(root, "new-parent")
+		oldPath := filepath.Join(oldParent, "old")
+		newPath := filepath.Join(newParent, "new")
+		if err := os.MkdirAll(oldPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(newParent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return oldParent, newParent, oldPath, newPath
+	}
+
+	t.Run("parent substitution", func(t *testing.T) {
+		t.Parallel()
+		oldParent, _, oldPath, newPath := newPaths(t)
+		moved, err := moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{beforeIdentityCheck: func() {
+			if renameErr := os.Rename(oldParent, oldParent+"-held"); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if mkdirErr := os.Mkdir(oldParent, 0o755); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		}})
+		if moved != nil || err == nil || !strings.Contains(err.Error(), "parent changed") {
+			t.Fatalf("parent substitution = %v, %v", moved, err)
+		}
+	})
+
+	t.Run("source substitution", func(t *testing.T) {
+		t.Parallel()
+		_, _, oldPath, newPath := newPaths(t)
+		moved, err := moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{beforeAuthorization: func() {
+			if renameErr := os.Rename(oldPath, oldPath+"-held"); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if mkdirErr := os.Mkdir(oldPath, 0o755); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		}})
+		if moved != nil || err == nil || !strings.Contains(err.Error(), "rename path changed") {
+			t.Fatalf("source substitution = %v, %v", moved, err)
+		}
+	})
+
+	t.Run("unopenable moved destination", func(t *testing.T) {
+		t.Parallel()
+		_, _, oldPath, newPath := newPaths(t)
+		moved, err := moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{afterMove: func() {
+			if chmodErr := os.Chmod(newPath, 0); chmodErr != nil {
+				t.Fatal(chmodErr)
+			}
+		}})
+		if err == nil || moved == nil {
+			t.Fatalf("unopenable moved destination = %v, %v", moved, err)
+		}
+		_ = moved.Close()
+	})
+
+	t.Run("destination collision", func(t *testing.T) {
+		t.Parallel()
+		_, _, oldPath, newPath := newPaths(t)
+		if err := os.Mkdir(newPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		moved, err := moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{})
+		if moved != nil || !errors.Is(err, os.ErrExist) {
+			t.Fatalf("destination collision = %v, %v", moved, err)
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		_, _, oldPath, newPath := newPaths(t)
+		moved, err := moveRenameDirectoryWithHooks(oldPath, newPath, moveRenameDirectoryHooks{})
+		if err != nil || moved == nil {
+			t.Fatalf("successful directory move = %v, %v", moved, err)
+		}
+		_ = moved.Close()
+	})
+}
+
 func TestRenameCoverageVerifyRegistrationOutcomes(t *testing.T) {
 	t.Parallel()
 
@@ -467,10 +682,35 @@ func TestRenameCoverageVerifyRegistrationOutcomes(t *testing.T) {
 	}
 }
 
+func TestRenameCoverageVerifyRegistrationDetectsLateReplacement(t *testing.T) {
+	t.Parallel()
+
+	oldPath := filepath.Join(t.TempDir(), "old")
+	newPath := t.TempDir()
+	expected := wtLifeCovOpenDirectory(t, newPath)
+	canonicalPath, _ := newRenameCoverageCanonical(t)
+	ctx := withCanonicalGitInterceptor(t.Context(), func(context.Context, []string, func() ([]byte, error)) ([]byte, error) {
+		if err := os.Rename(newPath, newPath+"-held"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(newPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return []byte("worktree " + newPath + "\n"), nil
+	})
+	if err := verifyWorktreeRegistered(ctx, canonicalPath, oldPath, newPath, expected); err == nil ||
+		!strings.Contains(err.Error(), "identity changed during") {
+		t.Fatalf("late replacement error = %v", err)
+	}
+}
+
 func TestRenameCoverageDeleteOldBranchOutcomes(t *testing.T) {
 	t.Parallel()
 
 	canonicalPath, canonical := newRenameCoverageCanonical(t)
+	if deleted, reason, err := deleteOldBranchIfSafe(t.Context(), canonical, "old", "head", "old", "main", false); err != nil || deleted || !strings.Contains(reason, "unchanged") {
+		t.Fatalf("unchanged branch deletion = (%t, %q, %v)", deleted, reason, err)
+	}
 
 	failedAncestor := runnertest.New(t)
 	failedAncestor.Expect(func(call runnertest.Call) bool {
@@ -500,6 +740,54 @@ func TestRenameCoverageDeleteOldBranchOutcomes(t *testing.T) {
 	})
 	if deleted, reason, err := deleteOldBranchIfSafe(ctx, canonical, "old", "origin/main", "new", "main", false); err != nil || !deleted || reason != "" {
 		t.Fatalf("merged branch deletion = (%t, %q, %v)", deleted, reason, err)
+	}
+}
+
+func TestRenameCoveragePreserveCacheNormalization(t *testing.T) {
+	t.Parallel()
+
+	if paths, err := normalizePreserveCachePaths(nil); err != nil || paths != nil {
+		t.Fatalf("nil cache paths = %#v, %v", paths, err)
+	}
+	paths, err := normalizePreserveCachePaths([]string{" node_modules ", "cache/data", "node_modules"})
+	if err != nil || len(paths) != 2 || paths[0] != "cache/data" || paths[1] != "node_modules" {
+		t.Fatalf("normalized cache paths = %#v, %v", paths, err)
+	}
+	for _, path := range []string{"", "/absolute", "double//slash", "cache/../secret"} {
+		if _, err := normalizePreserveCachePaths([]string{path}); err == nil {
+			t.Fatalf("unsafe cache path %q accepted", path)
+		}
+	}
+}
+
+func TestRenameCoverageSharedPhysicalDestination(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	plan := &renamePlan{
+		destinationRoot: root,
+		result:          RenameResult{NewWorktreeDir: filepath.Join(root, "new-task", "github.com", "acme", "app")},
+	}
+	if err := preflightRenamePhysicalDestination(t.Context(), "new-task", plan); err != nil {
+		t.Fatalf("preflight shared destination: %v", err)
+	}
+	if err := prepareRenamePhysicalDestination(t.Context(), "new-task", plan); err != nil {
+		t.Fatalf("prepare shared destination: %v", err)
+	}
+	if err := os.Mkdir(plan.result.NewWorktreeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareRenamePhysicalDestination(t.Context(), "new-task", plan); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("occupied shared destination error = %v", err)
+	}
+
+	blockedRoot := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blockedRoot, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &renamePlan{destinationRoot: blockedRoot, result: RenameResult{NewWorktreeDir: filepath.Join(blockedRoot, "new-task", "app")}}
+	if err := preflightRenamePhysicalDestination(t.Context(), "new-task", blocked); err == nil || !strings.Contains(err.Error(), "open shared rename destination root") {
+		t.Fatalf("blocked shared preflight error = %v", err)
 	}
 }
 
