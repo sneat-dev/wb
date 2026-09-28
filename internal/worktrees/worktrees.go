@@ -3348,18 +3348,16 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 }
 
 // openDirectoryAtNoFollow returns one owned child directory handle. The
-// caller supplies exact open/wrap diagnostics and retains responsibility for
+// caller supplies exact open diagnostics and retains responsibility for
 // path identity checks and the returned handle's lifetime.
-func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, wrapMessage string) (*os.File, error) {
+func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, _ string) (*os.File, error) {
 	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", openContext, err)
 	}
+	// A successful openat returns a nonnegative descriptor. NewFile cannot
+	// return nil for that descriptor, so there is no second failure path here.
 	directory := os.NewFile(uintptr(fd), descriptorName)
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New(wrapMessage)
-	}
 	return directory, nil
 }
 
@@ -3776,9 +3774,20 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 var errRetirementNameCollision = errors.New("create collision-free directory retirement name")
 
 func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
+	return quarantineDirectoryEntryNamedWith(parent, name, expected, prefix, randomHexToken, quarantineMoveDirectory)
+}
+
+func quarantineMoveDirectory(from *os.File, fromName string, to *os.File, toName string, expected *os.File, afterAuthorization func()) (*os.File, error) {
+	return moveExpectedDirectoryNoReplace(from, fromName, to, toName, expected, afterAuthorization)
+}
+
+func quarantineDirectoryEntryNamedWith(parent *os.File, name string, expected *os.File, prefix string,
+	token func(int) string,
+	move func(*os.File, string, *os.File, string, *os.File, func()) (*os.File, error),
+) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		retired := prefix + randomHexToken(16)
-		moved, err := moveExpectedDirectoryNoReplace(parent, name, parent, retired, expected, nil)
+		retired := prefix + token(16)
+		moved, err := move(parent, name, parent, retired, expected, nil)
 		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
@@ -4139,7 +4148,14 @@ func rollbackPublishedCreate(ctx context.Context, canonical *canonicalRepository
 }
 
 func quarantineSecureStageCheckout(stageDirectory, checkoutDirectory *os.File) error {
-	moved, _, err := quarantineDirectoryEntryNamed(stageDirectory, "checkout", checkoutDirectory, ".wb-retired-checkout-")
+	return quarantineSecureStageCheckoutWith(stageDirectory, checkoutDirectory, randomHexToken, quarantineMoveDirectory)
+}
+
+func quarantineSecureStageCheckoutWith(stageDirectory, checkoutDirectory *os.File,
+	token func(int) string,
+	move func(*os.File, string, *os.File, string, *os.File, func()) (*os.File, error),
+) error {
+	moved, _, err := quarantineDirectoryEntryNamedWith(stageDirectory, "checkout", checkoutDirectory, ".wb-retired-checkout-", token, move)
 	if errors.Is(err, errRetirementNameCollision) {
 		return fmt.Errorf("create collision-free staged checkout quarantine name")
 	}

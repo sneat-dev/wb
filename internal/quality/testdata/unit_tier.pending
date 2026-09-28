@@ -299,6 +299,8 @@ internal/worktrees/clone_migrate_relocation_test.go	13	task-18
 internal/worktrees/create_stampede_test.go	1	task-18
 internal/worktrees/custody_test.go	2	task-18
 internal/worktrees/fetch_timeout_test.go	4	task-18
+# Three real Git worktree additions establish exact registration conflicts and interrupted recovery states.
+internal/worktrees/failure_boundaries_test.go	3	task-18
 internal/worktrees/gc_test.go	39	task-18
 internal/worktrees/git_failure_injection_test.go	2	task-18
 internal/worktrees/git_query_memo_test.go	15	task-18
