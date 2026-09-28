@@ -6126,9 +6126,6 @@ func writeCleanupReportInjected(
 	recovery *InterruptedLockRecovery,
 	inj *filewrite.Injector,
 ) (string, error) {
-	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
-		return "", fmt.Errorf("create cleanup report directory: %w", err)
-	}
 	report := cleanupReport{
 		GeneratedAt:  generatedAt,
 		Phase:        phase,
@@ -6146,18 +6143,5 @@ func writeCleanupReportInjected(
 	if len(options.Tasks) > 1 {
 		report.Tasks = append([]string(nil), options.Tasks...)
 	}
-	content, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode cleanup report: %w", err)
-	}
-	content = append(content, '\n')
-	path := filepath.Join(options.ReportDir, "cleanup.json")
-	temporary := path + ".tmp"
-	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
-		return "", fmt.Errorf("write cleanup report: %w", err)
-	}
-	if err := filewrite.Rename(temporary, path, inj); err != nil {
-		return "", fmt.Errorf("activate cleanup report: %w", err)
-	}
-	return path, nil
+	return writeLifecycleReportInjected(options.ReportDir, "cleanup", report, inj)
 }

@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1641,9 +1640,6 @@ func writeRenameReportInjected(
 	diagnostics []ListDiagnostic,
 	inj *filewrite.Injector,
 ) (string, error) {
-	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
-		return "", fmt.Errorf("create rename report directory: %w", err)
-	}
 	report := renameReport{
 		GeneratedAt: generatedAt, Phase: phase, OldTask: options.OldTask, NewTask: options.NewTask,
 		Filter: options.Filter, Branch: options.Branch, Base: options.Base,
@@ -1651,18 +1647,5 @@ func writeRenameReportInjected(
 		Force: options.Force, PreserveCachePaths: options.PreserveCachePaths, Apply: options.Apply,
 		Results: results, Diagnostics: diagnostics,
 	}
-	content, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode rename report: %w", err)
-	}
-	content = append(content, '\n')
-	path := filepath.Join(options.ReportDir, "rename.json")
-	temporary := path + ".tmp"
-	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
-		return "", fmt.Errorf("write rename report: %w", err)
-	}
-	if err := filewrite.Rename(temporary, path, inj); err != nil {
-		return "", fmt.Errorf("activate rename report: %w", err)
-	}
-	return path, nil
+	return writeLifecycleReportInjected(options.ReportDir, "rename", report, inj)
 }
