@@ -230,6 +230,32 @@ func TestPrepareExternalSessionWorkLogRepairsEveryPublicationBoundary(t *testing
 	}
 }
 
+func TestPublishPreparedTargetClaimKeepsReplayOnConflict(t *testing.T) {
+	t.Parallel()
+	runDir, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claim := workLogClaim{Version: 2, EffortID: "effort", RunID: "run", ClaimID: "claim", Repository: "acme/app"}
+	if replayed, err := publishPreparedTargetClaim(runDir, claim, "conflict", "publish claim"); err != nil || replayed {
+		t.Fatalf("first publication: replayed=%t err=%v", replayed, err)
+	}
+	if replayed, err := publishPreparedTargetClaim(runDir, claim, "conflict", "publish claim"); err != nil || !replayed {
+		t.Fatalf("matching replay: replayed=%t err=%v", replayed, err)
+	}
+	claim.Repository = "other/app"
+	for _, message := range []string{
+		"immutable external target Work Log claim conflicts with admitted handoff",
+		"immutable parked target Work Log claim conflicts with admitted bundle",
+	} {
+		replayed, err := publishPreparedTargetClaim(runDir, claim, message, "")
+		if !replayed || err == nil || err.Error() != message {
+			t.Fatalf("conflicting replay: replayed=%t err=%v, want %q", replayed, err, message)
+		}
+	}
+}
+
 func TestExternalTargetClaimStableAcrossAttemptsAndCompletionBindsWinner(t *testing.T) {
 	fixture := newExternalTargetFixture(t)
 	first := fixture.options

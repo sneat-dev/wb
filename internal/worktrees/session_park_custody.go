@@ -2,11 +2,8 @@ package worktrees
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -122,35 +119,15 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 		return result, err
 	}
 	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", true)
+	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
+		"immutable parked target Work Log claim conflicts with admitted bundle", "")
 	if err != nil {
 		return result, err
 	}
-	var existing workLogClaim
-	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
-	result.Replayed = readErr == nil
-	if readErr == nil && !reflect.DeepEqual(existing, claim) {
-		_ = claims.Close()
-		return result, fmt.Errorf("immutable parked target Work Log claim conflicts with admitted bundle")
-	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		_ = claims.Close()
-		return result, readErr
-	}
-	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
-		_ = claims.Close()
-		return result, err
-	}
-	_ = claims.Close()
 	if err := ensureWorkLogRunIndex(runDir, claim.EffortID, claim.RunID); err != nil {
 		return result, err
 	}
-	manifest := Manifest{
-		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
-		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-		Model: model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
-	}
+	manifest := preparedTargetManifest(claim, receivedAt, model)
 	if err := ensureExternalManifest(worktree, manifest); err != nil {
 		return result, err
 	}

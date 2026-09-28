@@ -172,26 +172,12 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 		return result, err
 	}
 	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", true)
+	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
+		"immutable external target Work Log claim conflicts with admitted handoff",
+		"publish immutable external target Work Log claim")
 	if err != nil {
 		return result, err
 	}
-	var existing workLogClaim
-	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
-	result.Replayed = readErr == nil
-	if readErr == nil && !reflect.DeepEqual(existing, claim) {
-		_ = claims.Close()
-		return result, fmt.Errorf("immutable external target Work Log claim conflicts with admitted handoff")
-	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		_ = claims.Close()
-		return result, readErr
-	}
-	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
-		_ = claims.Close()
-		return result, fmt.Errorf("publish immutable external target Work Log claim: %w", err)
-	}
-	_ = claims.Close()
 	if options.hooks.afterClaim != nil {
 		if err := options.hooks.afterClaim(); err != nil {
 			return result, err
@@ -205,12 +191,7 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 			return result, err
 		}
 	}
-	manifest := Manifest{
-		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
-		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-		Model: options.Session.Model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
-	}
+	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
 	if err := ensureExternalManifest(worktree, manifest); err != nil {
 		return result, err
 	}
@@ -280,6 +261,41 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	result.WorkLogReference, result.ClaimID = targetReference.String(), claim.ClaimID
 	result.ReceivedEvent, result.OwnerEvent = receivedEvent, ownerEvent
 	return result, nil
+}
+
+// publishPreparedTargetClaim owns the short-lived claims directory handle.
+// The caller retains the claim lock through all later publication stages.
+func publishPreparedTargetClaim(runDir *os.File, claim workLogClaim, conflictMessage, writeErrorContext string) (bool, error) {
+	claims, err := openPrivateChild(runDir, "claims", true)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = claims.Close() }()
+	var existing workLogClaim
+	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
+	replayed := readErr == nil
+	if replayed && !reflect.DeepEqual(existing, claim) {
+		return replayed, errors.New(conflictMessage)
+	}
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return replayed, readErr
+	}
+	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
+		if writeErrorContext != "" {
+			return replayed, fmt.Errorf("%s: %w", writeErrorContext, err)
+		}
+		return replayed, err
+	}
+	return replayed, nil
+}
+
+func preparedTargetManifest(claim workLogClaim, receivedAt time.Time, model string) Manifest {
+	return Manifest{
+		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
+		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
+		Model: model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
+	}
 }
 
 // ExternalTargetCompletionOptions records proof of a live successor before a
