@@ -24,39 +24,12 @@ import (
 // ancestry (S41/PR #467's own check).
 func prepareFinalizedThenRebasedTask(t *testing.T, task string) (fixture *gitFixture, result CreateResult, head1, head2, mergeSHA string, mergedAt time.Time) {
 	t.Helper()
-	fixture = newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result = created[0]
-	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, result.WorktreeDir, "add", "feature.txt")
-	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
-	head1 = gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
-	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
-
-	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
-		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
-		Result: "success", Message: "landed before the rebase", Apply: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	fixture, result, head1 = prepareFinalizedTask(t, task, "landed before the rebase")
 
 	// Advance main with an unrelated commit, then rebase the finalized
 	// branch onto it: same patch content, brand new commit, no longer a
 	// descendant of head1 at all.
-	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", "unrelated.txt")
-	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
-	gitTest(t, fixture.canonical, "push", "origin", "main")
+	advanceFixtureMainWithUnrelatedCommit(t, fixture)
 
 	gitTest(t, result.WorktreeDir, "fetch", "origin", "main")
 	gitTest(t, result.WorktreeDir, "rebase", "origin/main")

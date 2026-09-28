@@ -279,7 +279,7 @@ internal/worktrees/backlog_retiring_remote_test.go	11	task-18
 internal/worktrees/branch_config_test.go	10	task-18
 # These four helper calls use an injected fake runner; the static detector cannot follow context values.
 internal/worktrees/branch_retirement_evidence_test.go	4	task-18
-internal/worktrees/branch_reconciliation_test.go	30	task-18
+internal/worktrees/branch_reconciliation_test.go	28	task-18
 internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
 # Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
@@ -309,8 +309,8 @@ internal/worktrees/journal_test.go	11	task-18
 internal/worktrees/lifecycle_backlog_detached_test.go	1	task-18
 internal/worktrees/lifecycle_cleanup_safety_test.go	8	task-18
 internal/worktrees/lifecycle_filter_performance_test.go	3	task-18
-internal/worktrees/lifecycle_integration_test.go	257	task-18
-internal/worktrees/lifecycle_rebased_terminal_test.go	18	task-18
+internal/worktrees/lifecycle_integration_test.go	255	task-18
+internal/worktrees/lifecycle_rebased_terminal_test.go	11	task-18
 internal/worktrees/lockdiag_test.go	1	task-18
 internal/worktrees/log_verbs_test.go	11	task-18
 internal/worktrees/orphaned_claim_test.go	14	task-18

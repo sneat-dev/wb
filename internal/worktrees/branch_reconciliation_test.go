@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // The fixture deliberately makes the claim branch survive at a different
@@ -397,11 +395,6 @@ func reconciliationBundleRefs(t *testing.T, canonical, home, eventID, kind strin
 
 func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$WB_TEST_OPEN_PULL\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number": 99, "html_url": "https://github.com/acme/app/pull/99", "state": "open",
 		"merged_at": nil, "head": map[string]any{
@@ -413,7 +406,5 @@ func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_OPEN_PULL", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }

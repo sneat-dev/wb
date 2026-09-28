@@ -10,12 +10,14 @@ import (
 
 // installPullRequestResponses answers read-only paginated gh API requests.
 // When matchHead is set, other commit lookups return an empty PR list.
-func installPullRequestResponses(t *testing.T, payload, matchHead string) {
+func installPullRequestResponses(t *testing.T, payload, matchHead string) string {
 	t.Helper()
 	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "gh.log")
 	script := filepath.Join(binDir, "gh")
 	content := `#!/bin/sh
 set -eu
+printf '%s\n' "$*" >> "$WB_TEST_GH_LOG"
 if [ "$1 $2" != "api --paginate" ]; then
     echo "unexpected gh command: $*" >&2
     exit 2
@@ -33,6 +35,8 @@ printf '%s\n' "$WB_TEST_PRS_PAYLOAD"
 	}
 	t.Setenv("WB_TEST_PRS_PAYLOAD", payload)
 	t.Setenv("WB_TEST_PRS_MATCH_HEAD", matchHead)
+	t.Setenv("WB_TEST_GH_LOG", logPath)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
 }
