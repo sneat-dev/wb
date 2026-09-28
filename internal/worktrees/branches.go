@@ -823,19 +823,9 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 }
 
 func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *BranchEntry) {
-	if entry.SHA == "" {
-		return
-	}
-	const separator = "\x1f"
-	output, err := git(ctx, repositoryPath, "show", "-s", "--format=%an%x1f%s", entry.SHA)
-	if err != nil {
-		return
-	}
-	parts := strings.SplitN(output, separator, 2)
-	entry.Author = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
-		entry.Title = strings.TrimSpace(parts[1])
-	}
+	entries := []BranchEntry{*entry}
+	decorateBranchCommits(ctx, repositoryPath, entries)
+	*entry = entries[0]
 }
 
 func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
