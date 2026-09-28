@@ -953,23 +953,7 @@ func openSessionReceiveCanonicalFromHeldRoot(path string, held *os.File) (*canon
 		_ = unix.Close(rootFD)
 		return nil, fmt.Errorf("wrap retained canonical repository root")
 	}
-	gitFD, err := unix.Openat(int(root.Fd()), ".git", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("open canonical Git directory without following links: %w", err)
-	}
-	common := os.NewFile(uintptr(gitFD), "wb-session-receive-canonical-git-directory")
-	if common == nil {
-		_ = unix.Close(gitFD)
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap canonical Git directory")
-	}
-	canonical := &canonicalRepository{path: path, root: root, common: common}
-	if err := canonical.validate(); err != nil {
-		canonical.close()
-		return nil, err
-	}
-	return canonical, nil
+	return openCanonicalRepositoryFromOwnedRoot(path, root, "wb-session-receive-canonical-git-directory")
 }
 
 func recoverInterruptedSessionReceivePublication(

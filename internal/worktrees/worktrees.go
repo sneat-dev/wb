@@ -399,12 +399,18 @@ func openCanonicalRepository(path string) (*canonicalRepository, error) {
 	if err != nil {
 		return nil, err
 	}
+	return openCanonicalRepositoryFromOwnedRoot(path, root, "wb-canonical-git-directory")
+}
+
+// openCanonicalRepositoryFromOwnedRoot takes ownership of root, including on
+// failure. On success the returned canonical repository owns root and common.
+func openCanonicalRepositoryFromOwnedRoot(path string, root *os.File, gitDirectoryName string) (*canonicalRepository, error) {
 	gitFD, err := unix.Openat(int(root.Fd()), ".git", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("open canonical Git directory without following links: %w", err)
 	}
-	common := os.NewFile(uintptr(gitFD), "wb-canonical-git-directory")
+	common := os.NewFile(uintptr(gitFD), gitDirectoryName)
 	if common == nil {
 		_ = unix.Close(gitFD)
 		_ = root.Close()
