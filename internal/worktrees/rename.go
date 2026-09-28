@@ -1337,6 +1337,8 @@ type worktreeMoveHooks struct {
 	afterAuthorization       func()
 	beforeRepair             func() error
 	beforeRegistrationVerify func() error
+	repair                   func(context.Context, string, string, string, *os.File) error
+	verify                   func(context.Context, string, string, string, *os.File) error
 }
 
 // moveWorktree binds every stage to one retained checkout identity. Git's
@@ -1361,18 +1363,21 @@ func moveWorktree(
 	if moveErr != nil {
 		return outcome, fmt.Errorf("descriptor-relative worktree move: %w", moveErr)
 	}
-	if moved == nil {
-		return outcome, fmt.Errorf("descriptor-relative worktree move returned no retained destination")
-	}
 	if hooks.beforeRepair != nil {
 		if err := hooks.beforeRepair(); err != nil {
 			return outcome, fmt.Errorf("before worktree metadata repair: %w", err)
 		}
 	}
-	if repairErr := runSecureRenameGitWithHeldWorktree(
-		ctx, canonicalDir, worktreesRoot, newPath, moved,
-		"worktree", "repair", ".",
-	); repairErr != nil {
+	repair := hooks.repair
+	if repair == nil {
+		repair = func(ctx context.Context, canonicalDir, worktreesRoot, newPath string, moved *os.File) error {
+			return runSecureRenameGitWithHeldWorktree(
+				ctx, canonicalDir, worktreesRoot, newPath, moved,
+				"worktree", "repair", ".",
+			)
+		}
+	}
+	if repairErr := repair(ctx, canonicalDir, worktreesRoot, newPath, moved); repairErr != nil {
 		return outcome, fmt.Errorf("repair Git registration after descriptor-relative worktree move: %w", repairErr)
 	}
 	outcome.Repaired = true
@@ -1381,7 +1386,11 @@ func moveWorktree(
 			return outcome, fmt.Errorf("before worktree registration verification: %w", err)
 		}
 	}
-	if verifyErr := verifyWorktreeRegistered(ctx, canonicalDir, oldPath, newPath, moved); verifyErr != nil {
+	verify := hooks.verify
+	if verify == nil {
+		verify = verifyWorktreeRegistered
+	}
+	if verifyErr := verify(ctx, canonicalDir, oldPath, newPath, moved); verifyErr != nil {
 		return outcome, verifyErr
 	}
 	return outcome, nil
