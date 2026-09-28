@@ -65,6 +65,10 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 		"relative worktree": func(options *ExternalSessionWorkLogPrepareOptions) { options.WorktreeDir = "." },
 		"not git worktree":  func(options *ExternalSessionWorkLogPrepareOptions) { options.WorktreeDir = t.TempDir() },
 		"pinned commit":     func(options *ExternalSessionWorkLogPrepareOptions) { options.PinnedCommit = strings.Repeat("f", 40) },
+		"checkout head": func(options *ExternalSessionWorkLogPrepareOptions) {
+			options.PinnedCommit = strings.Repeat("f", 40)
+			options.Request.BundleCommit = options.PinnedCommit
+		},
 		"target session":    func(options *ExternalSessionWorkLogPrepareOptions) { options.Session.PID = 0 },
 		"attempt":           func(options *ExternalSessionWorkLogPrepareOptions) { options.AttemptID = "bad" },
 		"repository remote": func(options *ExternalSessionWorkLogPrepareOptions) { options.Request.RepositoryRemote = "not-a-remote" },
@@ -87,6 +91,20 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 				t.Fatalf("invalid preparation %q was accepted", name)
 			}
 		})
+	}
+
+	fallback := fixture.options
+	fallback.ReceivedAt = time.Time{}
+	preparedFallback, err := prepareExternalTarget(context.Background(), fallback)
+	if err != nil || !preparedFallback.claim.RecordedAt.Equal(fixture.base.request.CreatedAt.UTC()) {
+		t.Fatalf("created-at fallback = %#v, err=%v", preparedFallback.claim, err)
+	}
+	unknownModel := fixture.options
+	unknownModel.Request.SourceModel = ""
+	unknownModel.Session.Model = ""
+	preparedUnknown, err := prepareExternalTarget(context.Background(), unknownModel)
+	if err != nil || preparedUnknown.claim.Model != "unknown" || preparedUnknown.claim.ModelProvenance != modelProvenanceUnknown {
+		t.Fatalf("unknown-model claim = %#v, err=%v", preparedUnknown.claim, err)
 	}
 
 	prepared, err := PrepareExternalSessionWorkLog(context.Background(), fixture.options)

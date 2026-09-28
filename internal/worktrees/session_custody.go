@@ -86,78 +86,26 @@ type ExternalSessionWorkLogPrepareResult struct {
 	Replayed         bool              `json:"replayed"`
 }
 
+type externalTargetPreparation struct {
+	targetReference string
+	worktree        string
+	handover        []byte
+	claim           workLogClaim
+	manifest        Manifest
+	receivedEvent   LocalWorkLogEvent
+	ownerEvent      LocalWorkLogEvent
+}
+
 // PrepareExternalSessionWorkLog publishes one deterministic external target
 // claim before launcher release. Claim identity excludes attempt/PID/time;
 // each prepared attempt appends its own idempotent owner evidence under it.
 func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionWorkLogPrepareOptions) (ExternalSessionWorkLogPrepareResult, error) {
 	var result ExternalSessionWorkLogPrepareResult
-	request := options.Request
-	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, options.RequestDigest)
-	if err != nil {
-		return result, fmt.Errorf("derive target Work Log reference: %w", err)
-	}
-	sourceReference, err := sessionmove.ParseWorkLogReference(request.WorkLogReference)
+	prepared, err := prepareExternalTarget(ctx, options)
 	if err != nil {
 		return result, err
 	}
-	worktree, err := filepath.Abs(options.WorktreeDir)
-	if err != nil || filepath.Clean(worktree) != worktree || worktree != options.WorktreeDir {
-		return result, fmt.Errorf("external target Work Log requires one clean absolute worktree path")
-	}
-	if options.PinnedCommit != request.BundleCommit {
-		return result, fmt.Errorf("target Work Log pinned commit does not match admitted bundle commit")
-	}
-	if err := validateExternalTargetSession(request, options.Session); err != nil {
-		return result, err
-	}
-	if !validExternalAttempt(options.AttemptID, options.AttemptIndex) {
-		return result, fmt.Errorf("launcher attempt identity is invalid for target owner evidence")
-	}
-	branch, err := git(ctx, worktree, "branch", "--show-current")
-	if err != nil || branch != "wb-session/"+request.HandoffID {
-		return result, fmt.Errorf("target worktree branch %q does not match handoff pin branch", branch)
-	}
-	head, err := git(ctx, worktree, "rev-parse", "HEAD")
-	if err != nil || head != options.PinnedCommit {
-		return result, fmt.Errorf("target worktree HEAD %q does not match pinned commit %q", head, options.PinnedCommit)
-	}
-	remote, err := gitremote.Parse(request.RepositoryRemote)
-	if err != nil {
-		return result, err
-	}
-	handover := options.HandoverBytes
-	if len(handover) == 0 {
-		handover, err = requestHandoverBytes(worktree, request)
-		if err != nil {
-			return result, fmt.Errorf("read admitted handover document: %w", err)
-		}
-	}
-	if !request.HandoverDigest.Matches(handover) {
-		return result, fmt.Errorf("target handover bytes do not match admitted digest")
-	}
-	receivedAt := options.ReceivedAt.UTC()
-	if receivedAt.IsZero() {
-		receivedAt = request.CreatedAt.UTC()
-	}
-	if receivedAt.IsZero() {
-		return result, fmt.Errorf("target received time is required")
-	}
-	evidence := externalHandoffEvidence(request, options.RequestDigest, targetReference.String())
-	model := strings.TrimSpace(options.Session.Model)
-	modelProvenance := modelProvenanceCallerDeclared
-	if model == "" {
-		model = "unknown"
-		modelProvenance = modelProvenanceUnknown
-	}
-	claim := workLogClaim{
-		Version: 2, EffortID: sourceReference.EffortID, RunID: sourceReference.RunID, ClaimID: targetReference.ClaimID,
-		Task: "external session handoff " + request.HandoffID, Repository: remote.Identity.Repository,
-		Worktree: worktree, Branch: branch, Base: request.Branch, BaseSHA: request.SourceWorkCommit,
-		Lifecycle: "active", RecordedAt: receivedAt, Initiator: request.PredecessorWBSessionID,
-		AgentID: request.SuccessorWBSessionID, AgentRuntime: options.Session.Runtime, Model: model,
-		ModelProvenance: modelProvenance, ModelDeclaredBy: request.PredecessorWBSessionID,
-		ParentClaimID: sourceReference.ClaimID, AcquiredVia: "external_handoff", ExternalHandoff: evidence,
-	}
+	claim := prepared.claim
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
 		return result, err
@@ -187,33 +135,17 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 			return result, err
 		}
 	}
-	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
-	if err := ensureExternalManifest(worktree, manifest); err != nil {
+	if err := ensureExternalManifest(prepared.worktree, prepared.manifest); err != nil {
 		return result, err
 	}
-	if err := ensureExternalHandoverPrompt(worktree, receivedAt, options.Session, request.HandoverDigest, handover); err != nil {
+	if err := ensureExternalHandoverPrompt(prepared.worktree, claim.RecordedAt, options.Session, options.Request.HandoverDigest, prepared.handover); err != nil {
 		return result, err
 	}
-	receivedEvent := LocalWorkLogEvent{
-		ID: externalLocalEventID("target-received", options.RequestDigest, ""), Type: LocalEventHandoff, At: receivedAt,
-		Message: "external session handoff received", Result: "received",
-		Extra: externalLocalEventExtra(request, targetReference.String(), "target"),
-	}
-	receivedEvent, _, err = appendLocalEventWithoutCustody(worktree, receivedEvent)
+	prepared.receivedEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.receivedEvent)
 	if err != nil {
 		return result, fmt.Errorf("record target Work Log receipt evidence: %w", err)
 	}
-	owner := OwnerRegistration{
-		Agent: options.Session.Runtime + "/" + options.Session.WBSessionID, Model: options.Session.Model,
-		Effort: claim.EffortID, PID: options.Session.PID, WBVersion: buildinfo.Version(), Command: "session receive", At: options.Session.StartedAt.UTC(),
-	}
-	ownerEvent := LocalWorkLogEvent{
-		ID: externalLocalEventID("target-owner", options.RequestDigest, options.AttemptID), Type: LocalEventOwner,
-		At: owner.At, Message: "successor launcher attempt prepared", Owner: &owner,
-		Extra: map[string]any{"handoff_id": request.HandoffID, "attempt_id": options.AttemptID,
-			"attempt_index": options.AttemptIndex, "target_work_log_reference": targetReference.String()},
-	}
-	ownerEvent, _, err = appendLocalEventWithoutCustody(worktree, ownerEvent)
+	prepared.ownerEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.ownerEvent)
 	if err != nil {
 		return result, fmt.Errorf("record target Work Log attempt owner: %w", err)
 	}
@@ -226,9 +158,7 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	if err != nil {
 		return result, err
 	}
-	public := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: claim.RecordedAt,
-		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
-		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: "active", ExternalHandoff: evidence}
+	public := preparedTargetPublicEvent(claim)
 	err = writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-claimed.json", public, true)
 	_ = outbox.Close()
 	if err != nil {
@@ -242,8 +172,7 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	// The hybrid projection is deliberately the last identity publication;
 	// immediately replay the local cache so this final write cannot leave it
 	// stale or identity-poor.
-	hybrid := workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "active"}
-	if err := writeWorkLogProjection(worktree, hybrid); err != nil {
+	if err := writeWorkLogProjection(prepared.worktree, activeTargetProjection(claim)); err != nil {
 		return result, err
 	}
 	if options.hooks.afterProjection != nil {
@@ -251,12 +180,100 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 			return result, err
 		}
 	}
-	if _, err := repairCurrentLocalProjection(worktree); err != nil {
+	if _, err := repairCurrentLocalProjection(prepared.worktree); err != nil {
 		return result, err
 	}
-	result.WorkLogReference, result.ClaimID = targetReference.String(), claim.ClaimID
-	result.ReceivedEvent, result.OwnerEvent = receivedEvent, ownerEvent
+	result.WorkLogReference, result.ClaimID = prepared.targetReference, claim.ClaimID
+	result.ReceivedEvent, result.OwnerEvent = prepared.receivedEvent, prepared.ownerEvent
 	return result, nil
+}
+
+// prepareExternalTarget validates admitted identity and checkout state before
+// the publication transaction acquires the immutable claim lock.
+func prepareExternalTarget(ctx context.Context, options ExternalSessionWorkLogPrepareOptions) (externalTargetPreparation, error) {
+	var prepared externalTargetPreparation
+	request := options.Request
+	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, options.RequestDigest)
+	if err != nil {
+		return prepared, fmt.Errorf("derive target Work Log reference: %w", err)
+	}
+	// ExpectedTargetWorkLogReference already parsed and validated this source.
+	sourceReference, _ := sessionmove.ParseWorkLogReference(request.WorkLogReference)
+	worktree, err := filepath.Abs(options.WorktreeDir)
+	if err != nil || filepath.Clean(worktree) != worktree || worktree != options.WorktreeDir {
+		return prepared, fmt.Errorf("external target Work Log requires one clean absolute worktree path")
+	}
+	if options.PinnedCommit != request.BundleCommit {
+		return prepared, fmt.Errorf("target Work Log pinned commit does not match admitted bundle commit")
+	}
+	if err := validateExternalTargetSession(request, options.Session); err != nil {
+		return prepared, err
+	}
+	if !validExternalAttempt(options.AttemptID, options.AttemptIndex) {
+		return prepared, fmt.Errorf("launcher attempt identity is invalid for target owner evidence")
+	}
+	branch, err := git(ctx, worktree, "branch", "--show-current")
+	if err != nil || branch != "wb-session/"+request.HandoffID {
+		return prepared, fmt.Errorf("target worktree branch %q does not match handoff pin branch", branch)
+	}
+	head, err := git(ctx, worktree, "rev-parse", "HEAD")
+	if err != nil || head != options.PinnedCommit {
+		return prepared, fmt.Errorf("target worktree HEAD %q does not match pinned commit %q", head, options.PinnedCommit)
+	}
+	remote, err := gitremote.Parse(request.RepositoryRemote)
+	if err != nil {
+		return prepared, err
+	}
+	handover := options.HandoverBytes
+	if len(handover) == 0 {
+		handover, err = requestHandoverBytes(worktree, request)
+		if err != nil {
+			return prepared, fmt.Errorf("read admitted handover document: %w", err)
+		}
+	}
+	if !request.HandoverDigest.Matches(handover) {
+		return prepared, fmt.Errorf("target handover bytes do not match admitted digest")
+	}
+	receivedAt := options.ReceivedAt.UTC()
+	if receivedAt.IsZero() {
+		receivedAt = request.CreatedAt.UTC()
+	}
+	evidence := externalHandoffEvidence(request, options.RequestDigest, targetReference.String())
+	model := strings.TrimSpace(options.Session.Model)
+	modelProvenance := modelProvenanceCallerDeclared
+	if model == "" {
+		model = "unknown"
+		modelProvenance = modelProvenanceUnknown
+	}
+	claim := workLogClaim{
+		Version: 2, EffortID: sourceReference.EffortID, RunID: sourceReference.RunID, ClaimID: targetReference.ClaimID,
+		Task: "external session handoff " + request.HandoffID, Repository: remote.Identity.Repository,
+		Worktree: worktree, Branch: branch, Base: request.Branch, BaseSHA: request.SourceWorkCommit,
+		Lifecycle: "active", RecordedAt: receivedAt, Initiator: request.PredecessorWBSessionID,
+		AgentID: request.SuccessorWBSessionID, AgentRuntime: options.Session.Runtime, Model: model,
+		ModelProvenance: modelProvenance, ModelDeclaredBy: request.PredecessorWBSessionID,
+		ParentClaimID: sourceReference.ClaimID, AcquiredVia: "external_handoff", ExternalHandoff: evidence,
+	}
+	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
+	receivedEvent := LocalWorkLogEvent{
+		ID: externalLocalEventID("target-received", options.RequestDigest, ""), Type: LocalEventHandoff, At: receivedAt,
+		Message: "external session handoff received", Result: "received",
+		Extra: externalLocalEventExtra(request, targetReference.String(), "target"),
+	}
+	owner := OwnerRegistration{
+		Agent: options.Session.Runtime + "/" + options.Session.WBSessionID, Model: options.Session.Model,
+		Effort: claim.EffortID, PID: options.Session.PID, WBVersion: buildinfo.Version(), Command: "session receive", At: options.Session.StartedAt.UTC(),
+	}
+	ownerEvent := LocalWorkLogEvent{
+		ID: externalLocalEventID("target-owner", options.RequestDigest, options.AttemptID), Type: LocalEventOwner,
+		At: owner.At, Message: "successor launcher attempt prepared", Owner: &owner,
+		Extra: map[string]any{"handoff_id": request.HandoffID, "attempt_id": options.AttemptID,
+			"attempt_index": options.AttemptIndex, "target_work_log_reference": targetReference.String()},
+	}
+	return externalTargetPreparation{
+		targetReference: targetReference.String(), worktree: worktree, handover: handover,
+		claim: claim, manifest: manifest, receivedEvent: receivedEvent, ownerEvent: ownerEvent,
+	}, nil
 }
 
 // publishPreparedTargetClaim owns the short-lived claims directory handle.
