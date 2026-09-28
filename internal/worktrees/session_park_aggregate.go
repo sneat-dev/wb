@@ -33,6 +33,24 @@ type parkedSessionCaptureMember struct {
 	branch, head, status, fetchRemote, pushRemote, workLogReference, ownerEventID string
 }
 
+func closeParkedSessionMembers(members []parkedSessionCaptureMember) {
+	for index := len(members) - 1; index >= 0; index-- {
+		member := &members[index]
+		if member.unlock != nil {
+			member.unlock()
+		}
+		if member.journal != nil {
+			_ = member.journal.Close()
+		}
+		if member.worktree != nil {
+			member.worktree.close()
+		}
+		if member.canonical != nil {
+			member.canonical.close()
+		}
+	}
+}
+
 // CaptureParkedSessionAggregate retains every member's descriptor identity and
 // cooperative local Work Log custody lock as one authority. The persistence
 // callback runs while that complete authority remains held; cleanup is always
@@ -59,23 +77,7 @@ func CaptureParkedSessionAggregate(ctx context.Context, projectsRoot string, lis
 		}
 		return members[i].listed.Repository < members[j].listed.Repository
 	})
-	defer func() {
-		for index := len(members) - 1; index >= 0; index-- {
-			member := &members[index]
-			if member.unlock != nil {
-				member.unlock()
-			}
-			if member.journal != nil {
-				_ = member.journal.Close()
-			}
-			if member.worktree != nil {
-				member.worktree.close()
-			}
-			if member.canonical != nil {
-				member.canonical.close()
-			}
-		}
-	}()
+	defer closeParkedSessionMembers(members)
 	for index := range members {
 		if index > 0 && members[index-1].listed.WorktreeDir == members[index].listed.WorktreeDir {
 			return fmt.Errorf("parked session worktree path %q is duplicated", members[index].listed.WorktreeDir)
