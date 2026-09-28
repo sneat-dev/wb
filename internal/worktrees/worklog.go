@@ -2373,6 +2373,39 @@ func readWorkLogFinalizeReportBody(reportPath string) (string, error) {
 	return string(content), nil
 }
 
+// openCheckedCleanupClaim holds the claim fence and run directory until the
+// caller finishes authorizing or publishing the cleanup transition.
+func openCheckedCleanupClaim(home, worktree string, projection workLogProjection) (*lockedWorkLogRun, workLogClaim, error) {
+	var claim workLogClaim
+	runDir, path, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return nil, claim, fmt.Errorf("open private work-log run: %w", err)
+	}
+	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	if err != nil {
+		_ = runDir.Close()
+		return nil, claim, err
+	}
+	locked := &lockedWorkLogRun{directory: runDir, path: path, unlock: claimLock}
+	currentProjection, err := readWorkLogProjection(worktree)
+	if err != nil || currentProjection != projection {
+		locked.close()
+		return nil, claim, fmt.Errorf("work-log projection changed while waiting for claim fence")
+	}
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		locked.close()
+		return nil, claim, err
+	}
+	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
+	_ = claims.Close()
+	if readClaimErr != nil {
+		locked.close()
+		return nil, workLogClaim{}, fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
+	}
+	return locked, claim, nil
+}
+
 func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, report *workLogFinalizeReport) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
@@ -2381,29 +2414,12 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", err)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
@@ -2483,30 +2499,12 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	var claim workLogClaim
-	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
-	_ = claims.Close()
-	if readClaimErr != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
@@ -2574,30 +2572,12 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 // composes safely and a later audit can see both the original landing and
 // the wider final commit that cleanup actually removed.
 func acceptAdvancedCleanupTerminal(home, worktree, finalCommit string, projection workLogProjection) error {
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	var claim workLogClaim
-	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
-	_ = claims.Close()
-	if readClaimErr != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	terminals, err := openPrivateChild(runDir, "terminals", false)
 	if err != nil {
 		return err
