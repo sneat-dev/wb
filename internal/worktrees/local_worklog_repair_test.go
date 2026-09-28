@@ -228,6 +228,33 @@ func TestAppendLocalEventExactReplayRepairsOutboxAndProjection(t *testing.T) {
 	}
 }
 
+func TestRepairCurrentLocalProjectionRestoresDerivedRecords(t *testing.T) {
+	t.Parallel()
+	worktree := custodyWorktree(t)
+	event := LocalWorkLogEvent{ID: "repair-current-projection", Type: LocalEventHandoff,
+		At: time.Date(2026, time.August, 25, 17, 0, 0, 0, time.UTC), Message: "received", Result: "received"}
+	if _, _, err := appendLocalEvent(worktree, event); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(worktree, journalRootDirectory, journalLocalDirectory, worklogDirectory)
+	for _, name := range []string{localWorkLogOutboxName, localWorkLogProjectionName} {
+		if err := os.Remove(filepath.Join(directory, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projection, err := repairCurrentLocalProjection(worktree)
+	if err != nil || projection.LastEventID != event.ID {
+		t.Fatalf("repaired projection=%+v, error=%v", projection, err)
+	}
+	events, err := readLocalEvents(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := countLocalOutbox(worktree); err != nil || count != len(events) {
+		t.Fatalf("repaired outbox count=%d, want %d journal events, error=%v", count, len(events), err)
+	}
+}
+
 func TestAppendLocalEventSameIDDifferentEvidenceConflicts(t *testing.T) {
 	clearIdentity(t)
 	worktree := custodyWorktree(t)

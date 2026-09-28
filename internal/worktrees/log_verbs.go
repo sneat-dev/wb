@@ -64,23 +64,14 @@ func withOptionalClaimFence(projectsRoot, worktree string, require bool) (claimF
 	if err != nil {
 		return claimFence{}, err
 	}
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
-		return claimFence{}, err
-	}
-	unlockOuter := func() { _ = runDir.Close() }
-	lock, err := lockClaim(runDir, claim.ClaimID)
-	if err != nil {
-		unlockOuter()
 		return claimFence{}, err
 	}
 	return claimFence{
-		home:  home,
-		claim: claim,
-		unlock: func() {
-			lock()
-			unlockOuter()
-		},
+		home:   home,
+		claim:  claim,
+		unlock: locked.close,
 	}, nil
 }
 

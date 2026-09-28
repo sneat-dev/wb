@@ -106,7 +106,9 @@ func PlanRetiredArchivePreflight(ctx context.Context, sourceRepository string, i
 		WorkLogExport:     "not_started",
 	}
 	if inspect == nil {
-		inspect = inspectRetiredArchiveRepository
+		inspect = func(ctx context.Context, repository string) (RetiredArchiveInspection, error) {
+			return inspectRetiredArchiveRepository(ctx, repository, githubobserver.Read)
+		}
 	}
 	observed, inspectErr := inspect(ctx, target.Repository)
 	if inspectErr != nil {
@@ -139,8 +141,8 @@ func retiredArchiveMissing(err error) bool {
 	return strings.Contains(message, "404") || strings.Contains(message, "not found")
 }
 
-func inspectRetiredArchiveRepository(ctx context.Context, repository string) (RetiredArchiveInspection, error) {
-	body, err := githubobserver.Read(ctx, "", "api", "repos/"+repository)
+func inspectRetiredArchiveRepository(ctx context.Context, repository string, read func(context.Context, string, ...string) ([]byte, error)) (RetiredArchiveInspection, error) {
+	body, err := read(ctx, "", "api", "repos/"+repository)
 	if err != nil {
 		return RetiredArchiveInspection{}, err
 	}

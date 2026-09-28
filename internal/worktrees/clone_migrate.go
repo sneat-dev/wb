@@ -121,10 +121,8 @@ func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths [
 		return fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
 	}
 	listed := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		if path, ok := strings.CutPrefix(line, "worktree "); ok {
-			listed[filepath.Clean(path)] = true
-		}
+	for _, path := range worktreePathsFromPorcelain(out) {
+		listed[filepath.Clean(path)] = true
 	}
 	commonDir := filepath.Clean(filepath.Join(clonePath, ".git"))
 	for _, path := range worktreePaths {
@@ -280,11 +278,7 @@ func registeredWorktreePaths(ctx context.Context, clonePath string) ([]string, e
 	}
 	self := filepath.Clean(clonePath)
 	var paths []string
-	for _, line := range strings.Split(out, "\n") {
-		path, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, path := range worktreePathsFromPorcelain(out) {
 		if clean := filepath.Clean(path); clean != self {
 			paths = append(paths, clean)
 		}

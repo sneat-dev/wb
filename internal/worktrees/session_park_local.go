@@ -291,16 +291,7 @@ func readWorkLogClaimByReference(home string, reference sessionmove.WorkLogRefer
 		return workLogClaim{}, err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return workLogClaim{}, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, reference.ClaimID+".json", &claim); err != nil {
-		return workLogClaim{}, err
-	}
-	return claim, nil
+	return readWorkLogClaimAt(runDir, reference.ClaimID)
 }
 
 // verifyParkedMemberOriginRemote reports a non-empty reason unless the

@@ -242,6 +242,40 @@ func ordinary() { exec.Command("git", "status") }
 	}
 }
 
+func TestFindExecSiteMatchesExemptsOnlyTheSharedSecureGitTailCall(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "internal", "worktrees", "git_capability.go"), `package worktrees
+
+import "os/exec"
+
+func runSecureGitHelper() {
+	runGitWithFilesystemCapability()
+	exec.Command("git", "status")
+}
+
+func ordinary() { runGitWithFilesystemCapability() }
+
+type other struct{}
+func (other) runSecureGitHelper() { runGitWithFilesystemCapability() }
+`)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+func runSecureGitHelper() { runGitWithFilesystemCapability() }
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 4 ||
+		matches[0].File != "internal/worktrees/git_capability.go" || matches[0].Line != 7 || matches[0].Pattern != ExecSitePatternGitLiteral ||
+		matches[1].File != "internal/worktrees/git_capability.go" || matches[1].Line != 10 || matches[1].Pattern != ExecSitePatternGitHelper ||
+		matches[2].File != "internal/worktrees/git_capability.go" || matches[2].Line != 13 || matches[2].Pattern != ExecSitePatternGitHelper ||
+		matches[3].File != "pkg/thing.go" || matches[3].Line != 3 || matches[3].Pattern != ExecSitePatternGitHelper {
+		t.Fatalf("matches = %+v, want direct exec, ordinary and same-named method calls in target file plus same-named helper in another file", matches)
+	}
+}
+
 // TestFindExecSiteMatchesFindsCallInsideAPackageLevelVarFuncLiteral is
 // review note #764 B2's own reproduction: a package-level `var name =
 // func(...) {...}` is a *ast.GenDecl, not a *ast.FuncDecl, so the detector

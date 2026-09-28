@@ -156,3 +156,16 @@ func TestLoadWorkLogViewWithoutBodiesKeepsHeadersOnly(t *testing.T) {
 		t.Fatalf("info text leaked prompt body:\n%s", text)
 	}
 }
+
+func TestObserveWorkLogGitLeavesFailedStatusUnobserved(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() // No Git repository: all three observations fail.
+	local := observeLocalGit(context.Background(), path)
+	view := observeWorkLogGit(context.Background(), path)
+	if local.StatusSHA != "" || local.Status != "" || local.Dirty {
+		t.Fatalf("failed local Git status was recorded as successful: %+v", local)
+	}
+	if view.Branch != "" || view.Head != "" || view.Status != "" || view.Dirty {
+		t.Fatalf("failed Git observation leaked into work-log view: %+v", view)
+	}
+}

@@ -736,17 +736,11 @@ func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
 		t.Fatalf("receipt name = %q", got)
 	}
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	first, err := relocationOperationID("claim", "/a", "/b", "head", at)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := relocationOperationID("claim", "/a", "/b", "head", at)
 	if !validSafeSegment(first) {
 		t.Fatalf("operation id %q is not a safe segment", first)
 	}
-	second, err := relocationOperationID("claim", "/a", "/b", "head", at)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := relocationOperationID("claim", "/a", "/b", "head", at)
 	if first == second {
 		t.Fatal("operation ids must be unique per call")
 	}

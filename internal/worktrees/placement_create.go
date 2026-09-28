@@ -112,7 +112,7 @@ func CreateWorktreeAtPlacement(
 	if err := addWorktreeAtSecureDestination(
 		ctx, canonical, physicalOperation.Path, physicalOperation.Directory,
 		physicalParent, physicalRepository, branch, base, baseRevision, branchExists,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &publication,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &publication,
 	); err != nil {
 		return nil, err
 	}

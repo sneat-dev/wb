@@ -114,6 +114,9 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
+	if err := verifyMissingAbsorbedConflictCandidate(ctx, gitRoot, receipt, currentTarget); err != nil {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
 	excusedDerivedPaths, derivedPathSet, err := validateAbsorbedConflictDerivedPaths(ctx, gitRoot, currentTarget, options.DerivedPaths)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
@@ -223,9 +226,8 @@ func validateAbsorbedConflictReceipt(receipt WorktreeMergeReceipt, receiptPath s
 	return nil
 }
 
-// absorbedConflictGitRoot uses the preserved candidate when present. A legacy
-// prepare conflict can have no candidate commit and a missing worktree; in
-// that narrow case the canonical clone can resolve the same Git objects. A
+// absorbedConflictGitRoot uses the preserved candidate when present. When its
+// worktree is missing, the canonical clone resolves the same Git objects. A
 // surviving local branch is refused rather than silently losing its work.
 func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (string, error) {
 	info, statErr := os.Stat(receipt.Candidate.Worktree)
@@ -237,9 +239,6 @@ func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt W
 	}
 	if !errors.Is(statErr, os.ErrNotExist) {
 		return "", fmt.Errorf("inspect candidate worktree %s: %w", receipt.Candidate.Worktree, statErr)
-	}
-	if receipt.Candidate.SHA != "" {
-		return "", fmt.Errorf("candidate worktree %s is missing but receipt records candidate SHA %s", receipt.Candidate.Worktree, receipt.Candidate.SHA)
 	}
 	root, err := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
 	if err != nil {
@@ -261,6 +260,23 @@ func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt W
 		}
 	}
 	return root, nil
+}
+
+// verifyMissingAbsorbedConflictCandidate requires a recorded candidate commit
+// to be present in the freshly fetched target before the missing worktree can
+// be acknowledged. An empty SHA is the legacy pre-commit conflict case.
+func verifyMissingAbsorbedConflictCandidate(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt, currentTarget string) error {
+	if gitRoot == receipt.Candidate.Worktree || receipt.Candidate.SHA == "" {
+		return nil
+	}
+	contained, err := isMergeAncestor(ctx, gitRoot, receipt.Candidate.SHA, currentTarget)
+	if err != nil {
+		return fmt.Errorf("verify missing candidate %s is contained in current target %s: %w", receipt.Candidate.SHA, currentTarget, err)
+	}
+	if !contained {
+		return fmt.Errorf("missing candidate %s is not an ancestor of current target %s", receipt.Candidate.SHA, currentTarget)
+	}
+	return nil
 }
 
 // requireAbsorbedConflictCandidateUnpublished checks the remote branch even

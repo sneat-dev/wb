@@ -485,17 +485,13 @@ func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, fr
 			result.Error = "supersession receipt bytes changed after planning; refusing"
 			return false
 		}
-		_, rejection, err := branchSupersessionReceipt(ctx, result.SupersessionReceipt, ListResult{
+		_, rejection := supersessionReceiptForEntry(ctx, result.SupersessionReceipt, ListResult{
 			Repository: result.Repository, Branch: result.Branch, HeadSHA: currentSHA,
 			Base: result.Base, RemoteTargetSHA: freshTarget, CanonicalDir: repositoryPath,
 		})
-		if err != nil || rejection != "" {
+		if rejection != "" {
 			result.Outcome = "failed"
-			if err != nil {
-				result.Error = fmt.Sprintf("recheck supersession receipt: %v", err)
-			} else {
-				result.Error = rejection
-			}
+			result.Error = rejection
 			return false
 		}
 		return true
@@ -725,11 +721,7 @@ func sourceRepositoryRoots(ctx context.Context, sourcePath string) ([]string, er
 		return nil, err
 	}
 	var roots []string
-	for _, line := range strings.Split(output, "\n") {
-		root, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, root := range worktreePathsFromPorcelain(output) {
 		absoluteRoot, err := filepath.Abs(root)
 		if err != nil {
 			return nil, err

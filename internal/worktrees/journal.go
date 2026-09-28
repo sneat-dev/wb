@@ -324,28 +324,7 @@ func openJournalSubdirectory(worktree, name string, create bool) (*os.File, erro
 // local exclude mechanism. It never edits the shared .gitignore, which belongs
 // to the team rather than to this machine.
 func ensureJournalExclude(worktree string) error {
-	gitPath, err := git(context.Background(), worktree, "rev-parse", "--git-path", "info/exclude")
-	if err != nil {
-		return fmt.Errorf("resolve per-worktree exclude: %w", err)
-	}
-	if !filepath.IsAbs(gitPath) {
-		gitPath = filepath.Join(worktree, gitPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(gitPath), 0o700); err != nil {
-		return fmt.Errorf("create per-worktree git info: %w", err)
-	}
-	exclude, err := os.ReadFile(gitPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read per-worktree exclude: %w", err)
-	}
-	if strings.Contains("\n"+string(exclude)+"\n", "\n"+journalExcludeRule+"\n") {
-		return nil
-	}
-	updated := append(exclude, []byte("\n"+journalExcludeRule+"\n")...)
-	if err := writeBytesAtomic(filepath.Dir(gitPath), filepath.Base(gitPath), updated, 0o600); err != nil {
-		return fmt.Errorf("exclude work-log journal: %w", err)
-	}
-	return nil
+	return ensurePerWorktreeGitExclude(worktree, []string{journalExcludeRule}, "exclude work-log journal")
 }
 
 // WriteManifest creates the immutable creation record. It refuses to replace an

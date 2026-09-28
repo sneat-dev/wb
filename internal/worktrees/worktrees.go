@@ -5,7 +5,6 @@ package worktrees
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -130,8 +129,11 @@ type CreateOptions struct {
 	// afterStagedWorktreeAdd and beforeWorktreeRepair are test-only failure
 	// seams. They model Git reporting an error after checkout creation, so the
 	// rollback invariants are exercised without platform-specific hook tricks.
-	afterStagedWorktreeAdd func() error
-	beforeWorktreeRepair   func() error
+	// beforeStagedWorktreeOpen targets the narrower interval after Git returns
+	// but before WB retains the checkout descriptor.
+	beforeStagedWorktreeOpen func()
+	afterStagedWorktreeAdd   func() error
+	beforeWorktreeRepair     func() error
 	// afterWorkLogClaim and afterWorkLogProjection inject failures after the
 	// corresponding durable publication boundary. They prove that a Git
 	// checkout published successfully immediately before a Work Log failure is
@@ -400,12 +402,18 @@ func openCanonicalRepository(path string) (*canonicalRepository, error) {
 	if err != nil {
 		return nil, err
 	}
+	return openCanonicalRepositoryFromOwnedRoot(path, root, "wb-canonical-git-directory")
+}
+
+// openCanonicalRepositoryFromOwnedRoot takes ownership of root, including on
+// failure. On success the returned canonical repository owns root and common.
+func openCanonicalRepositoryFromOwnedRoot(path string, root *os.File, gitDirectoryName string) (*canonicalRepository, error) {
 	gitFD, err := unix.Openat(int(root.Fd()), ".git", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("open canonical Git directory without following links: %w", err)
 	}
-	common := os.NewFile(uintptr(gitFD), "wb-canonical-git-directory")
+	common := os.NewFile(uintptr(gitFD), gitDirectoryName)
 	if common == nil {
 		_ = unix.Close(gitFD)
 		_ = root.Close()
@@ -895,6 +903,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterPublishedWorktreeAuthorization,
 				normalized.afterRepositoryRegistrationLockAcquired,
 				normalized.afterWorktreeRepair,
+				normalized.beforeStagedWorktreeOpen,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
 				&publication,
@@ -1153,9 +1162,8 @@ func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository
 		return "", fmt.Errorf("list registered worktrees for resume: %w", err)
 	}
 	candidates := map[string]bool{filepath.Clean(predicted): true}
-	for _, line := range strings.Split(registered, "\n") {
-		path, found := strings.CutPrefix(line, "worktree ")
-		if !found || !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
+	for _, path := range worktreePathsFromPorcelain(registered) {
+		if !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
 			continue
 		}
 		candidates[filepath.Clean(path)] = true
@@ -1970,11 +1978,7 @@ func fetchOriginBranchToPrivateRef(
 	run originBranchGit,
 	afterFetch func(),
 ) (revision string, resultErr error) {
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", fmt.Errorf("generate private fetch ref for %s/%s: %w", repository, branch, err)
-	}
-	fetchedRef := fmt.Sprintf("refs/wb/fetch-base/%x", token[:])
+	fetchedRef := "refs/wb/fetch-base/" + randomHexToken(16)
 	defer func() {
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
@@ -2382,13 +2386,7 @@ func RunSecureCanonicalPolicyGitHelper(args []string) int {
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-policy-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-policy-git-directory")
-	if root == nil || common == nil {
-		if root != nil {
-			_ = root.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(root, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: inherited canonical descriptors are unavailable")
 		return 1
 	}
@@ -2448,13 +2446,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-git-directory")
-	if root == nil || common == nil {
-		if root != nil {
-			_ = root.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(root, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: inherited canonical descriptors are unavailable")
 		return 1
 	}
@@ -2477,18 +2469,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		return 1
 	}
 	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: root}}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[1], args[2:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
+	return runSecureGitHelper("wb secure canonical helper", args[0], writeRoots, args[1], args[2:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
 }
 
 // gitEnvironmentWithHeldGitDir makes Git use the inherited `.git` descriptor
@@ -2781,6 +2762,7 @@ func addWorktreeAtSecureDestination(
 	afterPublishedAuthorization func(),
 	afterRegistrationLockAcquired func(),
 	afterRepair func(),
+	beforeStagedWorktreeOpen func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
 	publication **createdWorktreePublication,
@@ -2846,14 +2828,10 @@ func addWorktreeAtSecureDestination(
 		afterStageDirectoryCreated()
 	}
 	stageRoot := filepath.Join(operationRoot, stageName)
-	stageFD, err := unix.Openat(operationFD, stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stageDirectory, err := openDirectoryAtNoFollow(operationFD, stageName, "wb-worktree-stage",
+		"open secure worktree staging directory", "wrap secure worktree staging directory")
 	if err != nil {
-		return fmt.Errorf("open secure worktree staging directory: %w", err)
-	}
-	stageDirectory := os.NewFile(uintptr(stageFD), "wb-worktree-stage")
-	if stageDirectory == nil {
-		_ = unix.Close(stageFD)
-		return fmt.Errorf("wrap secure worktree staging directory")
+		return err
 	}
 	defer func() { _ = stageDirectory.Close() }()
 	defer func() {
@@ -2915,14 +2893,13 @@ func addWorktreeAtSecureDestination(
 	if addErr != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", addErr), "", nil)
 	}
-	checkoutFD, err := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return rollback(fmt.Errorf("open staged worktree checkout: %w", err), "", nil)
+	if beforeStagedWorktreeOpen != nil {
+		beforeStagedWorktreeOpen()
 	}
-	checkoutDirectory := os.NewFile(uintptr(checkoutFD), "wb-worktree-staged-checkout")
-	if checkoutDirectory == nil {
-		_ = unix.Close(checkoutFD)
-		return rollback(fmt.Errorf("wrap staged worktree checkout"), "", nil)
+	checkoutDirectory, err := openDirectoryAtNoFollow(int(stageDirectory.Fd()), "checkout", "wb-worktree-staged-checkout",
+		"open staged worktree checkout", "wrap staged worktree checkout")
+	if err != nil {
+		return rollback(err, "", nil)
 	}
 	defer func() { _ = checkoutDirectory.Close() }()
 	if afterStagedAdd != nil {
@@ -3257,16 +3234,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 	stage := os.NewFile(uintptr(3), "wb-worktree-stage")
 	canonical := os.NewFile(uintptr(4), "wb-canonical-root")
 	common := os.NewFile(uintptr(5), "wb-canonical-git-directory")
-	if stage == nil || canonical == nil || common == nil {
-		if stage != nil {
-			_ = stage.Close()
-		}
-		if canonical != nil {
-			_ = canonical.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(stage, canonical, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: inherited descriptors are unavailable")
 		return 1
 	}
@@ -3304,18 +3272,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
 		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[2], gitArgs, gitEnvironmentWithHeldGitDir(stagePath))
+	return runSecureGitHelper("wb secure staged canonical helper", args[1], writeRoots, args[2], gitArgs, gitEnvironmentWithHeldGitDir(stagePath))
 }
 
 func verifySecureStageContainment(trustedOperationRoot string) int {
@@ -3398,6 +3355,20 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 	return openAbsoluteDirectoryNoFollowWith(secureopen.Real{}, path, create)
 }
 
+// openDirectoryAtNoFollow returns one owned child directory handle. The
+// caller supplies exact open diagnostics and retains responsibility for
+// path identity checks and the returned handle's lifetime.
+func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, _ string) (*os.File, error) {
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", openContext, err)
+	}
+	// A successful openat returns a nonnegative descriptor. NewFile cannot
+	// return nil for that descriptor, so there is no second failure path here.
+	directory := os.NewFile(uintptr(fd), descriptorName)
+	return directory, nil
+}
+
 func openAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, create bool) (*os.File, error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
@@ -3468,11 +3439,7 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	}
 	parentFD := int(parent.Fd())
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return "", fmt.Errorf("generate staging directory name: %w", err)
-		}
-		name := fmt.Sprintf(".wb-stage-%x", token[:])
+		name := ".wb-stage-" + randomHexToken(16)
 		if err := unix.Mkdirat(parentFD, name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
@@ -3507,11 +3474,7 @@ func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, err
 		return name, nil
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return "", err
-		}
-		name := activePrefix + fmt.Sprintf("%x", token[:])
+		name := activePrefix + randomHexToken(16)
 		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
@@ -3621,12 +3584,7 @@ func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix str
 			continue
 		}
 		for attempt := 0; attempt < 16; attempt++ {
-			var token [16]byte
-			if _, err := rand.Read(token[:]); err != nil {
-				_ = retired.Close()
-				return "", false, fmt.Errorf("generate reclaimed staging name: %w", err)
-			}
-			name = activePrefix + fmt.Sprintf("%x", token[:])
+			name = activePrefix + randomHexToken(16)
 			moved, moveErr := moveExpectedDirectoryNoReplace(parent, entry.Name(), parent, name, retired, nil)
 			if errors.Is(moveErr, unix.EEXIST) {
 				continue
@@ -3776,14 +3734,10 @@ func moveExpectedDirectoryNoReplaceAuthorized(
 	if len(afterMove) > 0 && afterMove[0] != nil {
 		afterMove[0]()
 	}
-	fd, err := unix.Openat(int(toDirectory.Fd()), toName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	moved, err := openDirectoryAtNoFollow(int(toDirectory.Fd()), toName, "wb-worktree-moved-directory",
+		"open moved directory "+toName, "wrap moved directory "+toName)
 	if err != nil {
-		return nil, fmt.Errorf("open moved directory %s: %w", toName, err)
-	}
-	moved := os.NewFile(uintptr(fd), "wb-worktree-moved-directory")
-	if moved == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap moved directory %s", toName)
+		return nil, err
 	}
 	expectedInfo, expectedErr := expected.Stat()
 	movedInfo, movedErr := moved.Stat()
@@ -3825,14 +3779,23 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 	return moved, err
 }
 
+var errRetirementNameCollision = errors.New("create collision-free directory retirement name")
+
 func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
+	return quarantineDirectoryEntryNamedWith(parent, name, expected, prefix, randomHexToken, quarantineMoveDirectory)
+}
+
+func quarantineMoveDirectory(from *os.File, fromName string, to *os.File, toName string, expected *os.File, afterAuthorization func()) (*os.File, error) {
+	return moveExpectedDirectoryNoReplace(from, fromName, to, toName, expected, afterAuthorization)
+}
+
+func quarantineDirectoryEntryNamedWith(parent *os.File, name string, expected *os.File, prefix string,
+	token func(int) string,
+	move func(*os.File, string, *os.File, string, *os.File, func()) (*os.File, error),
+) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return nil, "", fmt.Errorf("generate directory retirement name: %w", err)
-		}
-		retired := fmt.Sprintf("%s%x", prefix, token[:])
-		moved, err := moveExpectedDirectoryNoReplace(parent, name, parent, retired, expected, nil)
+		retired := prefix + token(16)
+		moved, err := move(parent, name, parent, retired, expected, nil)
 		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
@@ -3844,7 +3807,7 @@ func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.Fi
 		}
 		return moved, retired, nil
 	}
-	return nil, "", fmt.Errorf("create collision-free directory retirement name")
+	return nil, "", errRetirementNameCollision
 }
 
 type secureDirectoryIdentity struct {
@@ -3926,14 +3889,10 @@ func quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.F
 }
 
 func quarantineStageDirectoryAt(operationDirectory *os.File, name string, expected secureDirectoryIdentity) error {
-	fd, err := unix.Openat(int(operationDirectory.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := openDirectoryAtNoFollow(int(operationDirectory.Fd()), name, "wb-worktree-stage-quarantine",
+		"open secure staging directory "+name+" for quarantine", "wrap secure staging directory "+name+" for quarantine")
 	if err != nil {
-		return fmt.Errorf("open secure staging directory %s for quarantine: %w", name, err)
-	}
-	stage := os.NewFile(uintptr(fd), "wb-worktree-stage-quarantine")
-	if stage == nil {
-		_ = unix.Close(fd)
-		return fmt.Errorf("wrap secure staging directory %s for quarantine", name)
+		return err
 	}
 	defer func() { _ = stage.Close() }()
 	actual, err := secureDirectoryIdentityAt(int(operationDirectory.Fd()), name)
@@ -4197,26 +4156,34 @@ func rollbackPublishedCreate(ctx context.Context, canonical *canonicalRepository
 }
 
 func quarantineSecureStageCheckout(stageDirectory, checkoutDirectory *os.File) error {
-	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return fmt.Errorf("generate staged checkout quarantine name: %w", err)
-		}
-		name := fmt.Sprintf(".wb-retired-checkout-%x", token[:])
-		moved, err := moveExpectedDirectoryNoReplace(stageDirectory, "checkout", stageDirectory, name, checkoutDirectory, nil)
-		if errors.Is(err, unix.EEXIST) {
-			continue
-		}
-		if err != nil {
-			if moved != nil {
-				_ = moved.Close()
-			}
-			return fmt.Errorf("quarantine staged checkout: %w", err)
-		}
-		_ = moved.Close()
-		return nil
+	return quarantineSecureStageCheckoutWith(stageDirectory, checkoutDirectory, randomHexToken, quarantineMoveDirectory)
+}
+
+func quarantineSecureStageCheckoutWith(stageDirectory, checkoutDirectory *os.File,
+	token func(int) string,
+	move func(*os.File, string, *os.File, string, *os.File, func()) (*os.File, error),
+) error {
+	moved, _, err := quarantineDirectoryEntryNamedWith(stageDirectory, "checkout", checkoutDirectory, ".wb-retired-checkout-", token, move)
+	if errors.Is(err, errRetirementNameCollision) {
+		return fmt.Errorf("create collision-free staged checkout quarantine name")
 	}
-	return fmt.Errorf("create collision-free staged checkout quarantine name")
+	if err != nil {
+		return fmt.Errorf("quarantine staged checkout: %w", err)
+	}
+	_ = moved.Close()
+	return nil
+}
+
+// worktreePathsFromPorcelain returns Git's path records unchanged. Callers own
+// any cleaning, validation, or filtering appropriate to their operation.
+func worktreePathsFromPorcelain(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		if path, found := strings.CutPrefix(line, "worktree "); found {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func registeredWorktreePathsCanonical(ctx context.Context, canonical *canonicalRepository) (map[string]bool, error) {
@@ -4225,10 +4192,8 @@ func registeredWorktreePathsCanonical(ctx context.Context, canonical *canonicalR
 		return nil, fmt.Errorf("list worktree registrations: %w", err)
 	}
 	paths := map[string]bool{}
-	for _, line := range strings.Split(output, "\n") {
-		if path, found := strings.CutPrefix(line, "worktree "); found {
-			paths[filepath.Clean(path)] = true
-		}
+	for _, path := range worktreePathsFromPorcelain(output) {
+		paths[filepath.Clean(path)] = true
 	}
 	return paths, nil
 }
@@ -4682,11 +4647,7 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 // previous operation finishing late.
 func quarantineLockEntry(directory *os.File, expected managedLockIdentity) error {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return err
-		}
-		name := fmt.Sprintf(".wb-retired-lock-%x", token[:])
+		name := ".wb-retired-lock-" + randomHexToken(16)
 		moved, err := moveExpectedLockNoReplace(directory, ".lock", name, expected)
 		if errors.Is(err, unix.EEXIST) {
 			continue

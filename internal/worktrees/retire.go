@@ -426,13 +426,8 @@ func retireReadClaim(home, worktree string) (workLogClaim, workLogProjection, er
 		return workLogClaim{}, projection, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return workLogClaim{}, projection, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, projection, err
 	}
 	return claim, projection, nil
@@ -607,25 +602,15 @@ func retireValidateRemovedClaim(home string, result RetireResult) error {
 		return err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, result.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, result.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	if claim.Task != result.Task || claim.Repository != result.Repository || claim.Branch != result.Branch || claim.ClaimID != result.ClaimID || claim.EffortID != result.EffortID || claim.RunID != result.RunID || filepath.Clean(claim.Worktree) != filepath.Clean(result.Worktree) {
 		return fmt.Errorf("retirement receipt conflicts with immutable Work Log claim")
 	}
-	terminals, err := openPrivateChild(run, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(run, result.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, result.ClaimID+".json", &terminal); err != nil {
 		return err
 	}
 	if terminal.ClaimID != result.ClaimID || terminal.FinalCommit != result.SourceSHA || terminal.Disposition != "retired" {
@@ -1090,10 +1075,9 @@ func retireCaptureTree(source, destination string, include func(string) bool, ha
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies only source itself and its descendants, so Rel
+		// cannot cross roots or volumes here.
+		relative, _ := filepath.Rel(source, path)
 		if relative == "." {
 			return nil
 		}

@@ -188,7 +188,7 @@ internal/orchestrate/pr_land_test.go	28	task-17
 internal/orchestrate/pr_land_update_branch_test.go	4	task-17
 internal/orchestrate/pr_update_local_sync_test.go	2	task-17
 internal/orchestrate/worktree_merge_absorbed_conflict_go_test.go	17	task-17
-internal/orchestrate/worktree_merge_absorbed_conflict_test.go	53	task-17
+internal/orchestrate/worktree_merge_absorbed_conflict_test.go	65	task-17
 # Reviewed real-Git receipts: the added eight calls construct and rewind isolated remotes to prove cleaned-landing ancestry.
 internal/orchestrate/worktree_merge_ack_test.go	169	task-17
 internal/orchestrate/worktree_merge_adopt_published_test.go	16	task-17
@@ -279,7 +279,7 @@ internal/worktrees/backlog_retiring_remote_test.go	11	task-18
 internal/worktrees/branch_config_test.go	10	task-18
 # These four helper calls use an injected fake runner; the static detector cannot follow context values.
 internal/worktrees/branch_retirement_evidence_test.go	4	task-18
-internal/worktrees/branch_reconciliation_test.go	30	task-18
+internal/worktrees/branch_reconciliation_test.go	28	task-18
 internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
 # Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
@@ -299,6 +299,8 @@ internal/worktrees/clone_migrate_relocation_test.go	13	task-18
 internal/worktrees/create_stampede_test.go	1	task-18
 internal/worktrees/custody_test.go	2	task-18
 internal/worktrees/fetch_timeout_test.go	4	task-18
+# Three real Git worktree additions establish exact registration conflicts and interrupted recovery states.
+internal/worktrees/failure_boundaries_test.go	3	task-18
 internal/worktrees/gc_test.go	39	task-18
 internal/worktrees/git_failure_injection_test.go	2	task-18
 internal/worktrees/git_query_memo_test.go	15	task-18
@@ -309,8 +311,8 @@ internal/worktrees/journal_test.go	11	task-18
 internal/worktrees/lifecycle_backlog_detached_test.go	1	task-18
 internal/worktrees/lifecycle_cleanup_safety_test.go	8	task-18
 internal/worktrees/lifecycle_filter_performance_test.go	3	task-18
-internal/worktrees/lifecycle_integration_test.go	257	task-18
-internal/worktrees/lifecycle_rebased_terminal_test.go	18	task-18
+internal/worktrees/lifecycle_integration_test.go	255	task-18
+internal/worktrees/lifecycle_rebased_terminal_test.go	11	task-18
 internal/worktrees/lockdiag_test.go	1	task-18
 internal/worktrees/log_verbs_test.go	11	task-18
 internal/worktrees/orphaned_claim_test.go	14	task-18
@@ -323,18 +325,20 @@ internal/worktrees/pull_request_fixture_test.go	2	task-18
 internal/worktrees/relocate_checkout_test.go	3	task-18
 internal/worktrees/relocate_test.go	1	task-18
 internal/worktrees/rename_test.go	27	task-18
-internal/worktrees/repository_relocate_test.go	40	task-18
+internal/worktrees/repository_relocate_test.go	38	task-18
 internal/worktrees/residue_test.go	5	task-18
 # Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.
 internal/worktrees/retire_preflight_behavior_test.go	4	task-18
-internal/worktrees/retire_test.go	82	task-18
+# Three direct Git-object helper calls verify missing-object and cancelled-process handling; the other cases use a fake runner.
+internal/worktrees/retire_edge_behavior_test.go	3	task-18
+internal/worktrees/retire_test.go	85	task-18
 internal/worktrees/retired_prepare_candidate_ack_test.go	15	task-18
 internal/worktrees/session_checkpoint_test.go	32	task-18
 internal/worktrees/session_custody_test.go	2	task-18
 internal/worktrees/session_park_aggregate_test.go	2	task-18
 internal/worktrees/session_park_custody_test.go	1	task-18
-internal/worktrees/session_park_local_test.go	23	task-18
-internal/worktrees/session_park_remote_test.go	2	task-18
+internal/worktrees/session_park_fixture_test.go	2	task-18
+internal/worktrees/session_park_local_test.go	15	task-18
 internal/worktrees/session_receive_test.go	49	task-18
 internal/worktrees/stage_recovery_test.go	1	task-18
 internal/worktrees/store_mode_test.go	15	task-18

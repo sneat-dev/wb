@@ -357,6 +357,7 @@ func TestRemovedRetirementResumeRequiresOneMatchingDurableReceipt(t *testing.T) 
 		{name: "no report directory", wantDetail: "no managed checkout or retirement receipt"},
 		{name: "empty report directory", receipts: -1, wantDetail: "exactly one receipt"},
 		{name: "two reports", receipts: 2, allReports: true, wantDetail: "exactly one receipt"},
+		{name: "repository filter selects one report", receipts: 2, wantDetail: "no such file"},
 		{name: "repository mismatch", receipts: 1, change: func(r *RetireResult) { r.Repository = "acme/other" }, wantDetail: "repository mismatch"},
 		{name: "task mismatch", receipts: 1, change: func(r *RetireResult) { r.Task = "other-task" }, wantDetail: "does not authorize removed-checkout resume"},
 		{name: "phase not removed", receipts: 1, change: func(r *RetireResult) { r.Phase = "planned" }, wantDetail: "does not authorize removed-checkout resume"},
@@ -396,9 +397,12 @@ func TestRemovedRetirementResumeRequiresOneMatchingDurableReceipt(t *testing.T) 
 			if tc.allReports {
 				options.Repository = ""
 			}
-			_, err := retireResumeRemoved(context.Background(), home, options)
+			selected, err := retireResumeRemoved(context.Background(), home, options)
 			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) {
 				t.Fatalf("removed-checkout resume error = %v, want %q", err, tc.wantDetail)
+			}
+			if tc.name == "repository filter selects one report" && (selected.Repository != options.Repository || selected.ReportPath != filepath.Join(dir, "acme-app.json")) {
+				t.Fatalf("repository filter selected receipt = %+v", selected)
 			}
 		})
 	}

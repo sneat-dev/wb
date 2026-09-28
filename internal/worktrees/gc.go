@@ -241,9 +241,7 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		// The receipt is verified, never trusted: applySupersessionReceipt
 		// re-reads the bound source and target heads and records a rejection
 		// the classification below turns into a refusal.
-		if err := applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index]); err != nil {
-			return GCOutcome{}, err
-		}
+		applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index])
 	}
 	for _, result := range listed.Results {
 		entry := classifyForGC(result, options, now())

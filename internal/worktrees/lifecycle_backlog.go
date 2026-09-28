@@ -615,16 +615,10 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		return fmt.Errorf("open failed-create Work Log run: %w", err)
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, record.WorkLogClaim)
 	if err != nil {
 		return err
 	}
-	var claim workLogClaim
-	if err := readJSONAt(claims, record.WorkLogClaim+".json", &claim); err != nil {
-		_ = claims.Close()
-		return err
-	}
-	_ = claims.Close()
 	if claim.ClaimID != record.WorkLogClaim || claim.EffortID != record.WorkLogEffort || claim.RunID != record.WorkLogRun ||
 		claim.Task != record.Task || claim.Repository != record.Repository || claim.Worktree != record.WorktreeDir ||
 		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {

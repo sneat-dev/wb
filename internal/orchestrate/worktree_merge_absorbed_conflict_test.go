@@ -168,6 +168,126 @@ func TestAcknowledgeAbsorbedConflictMissingEmptyCandidateUsesCanonicalClone(t *t
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes WB_PROJECTS_ROOT with t.Setenv.
+func TestAcknowledgeAbsorbedConflictMissingRecordedCandidateContainedFreesLane(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSourceOnBase(t, fixture, "task-contained", "feature/contained", "main", "contained.txt", "contained\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Status = WorktreeMergeConflict
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", receipt.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	for _, path := range []string{source.WorktreeDir, receipt.Candidate.Worktree} {
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runEngineGit(t, fixture.canonical, "worktree", "prune")
+	runEngineGit(t, fixture.canonical, "branch", "-D", source.Branch)
+	runEngineGit(t, fixture.canonical, "branch", "-D", receipt.Candidate.Branch)
+
+	ack, err := AcknowledgeAbsorbedConflict(context.Background(), WorktreeMergeAbsorbedConflictAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "candidate commit already landed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.CandidateSHA != receipt.Candidate.SHA || ack.CurrentTargetSHA != receipt.Candidate.SHA || len(ack.SourceProofs) != 1 || ack.SourceProofs[0].Method != "ancestor" {
+		t.Fatalf("contained candidate acknowledgement = %+v", ack)
+	}
+	if acknowledged, err := hasAbsorbedConflictAcknowledgement(receipt); err != nil || !acknowledged {
+		t.Fatalf("acknowledgement did not free lane: acknowledged=%v err=%v", acknowledged, err)
+	}
+	fresh := createMergeSourceOnBase(t, fixture, "task-after-contained", "feature/after-contained", "main", "fresh.txt", "fresh\n")
+	if _, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{fresh.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	}); err != nil {
+		t.Fatalf("prepare after contained candidate acknowledgement: %v", err)
+	}
+}
+
+//nolint:paralleltest // newEngineFixture scopes WB_PROJECTS_ROOT with t.Setenv.
+func TestAcknowledgeAbsorbedConflictMissingRecordedCandidateNotContainedRefuses(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSourceOnBase(t, fixture, "task-uncontained", "feature/uncontained", "main", "absorbed.txt", "absorbed\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Status = WorktreeMergeConflict
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, fixture.canonical+"/absorbed.txt", "absorbed\n")
+	runEngineGit(t, fixture.canonical, "add", "absorbed.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "chore: absorb source independently")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	for _, path := range []string{source.WorktreeDir, receipt.Candidate.Worktree} {
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runEngineGit(t, fixture.canonical, "worktree", "prune")
+	runEngineGit(t, fixture.canonical, "branch", "-D", source.Branch)
+	runEngineGit(t, fixture.canonical, "branch", "-D", receipt.Candidate.Branch)
+
+	_, err = AcknowledgeAbsorbedConflict(context.Background(), WorktreeMergeAbsorbedConflictAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "candidate commit not landed",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not an ancestor of current target") {
+		t.Fatalf("uncontained recorded candidate was not refused: %v", err)
+	}
+	if _, statErr := os.Stat(absorbedConflictAcknowledgementPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("refusal wrote acknowledgement: %v", statErr)
+	}
+}
+
+//nolint:paralleltest // newEngineFixture scopes WB_PROJECTS_ROOT with t.Setenv.
+func TestVerifyMissingAbsorbedConflictCandidateRefusesUnavailableCommit(t *testing.T) {
+	fixture := newEngineFixture(t)
+	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	receipt := WorktreeMergeReceipt{Candidate: WorktreeMergeCandidate{
+		Worktree: fixture.canonical + "/missing-candidate", SHA: strings.Repeat("0", 40),
+	}}
+	if err := verifyMissingAbsorbedConflictCandidate(context.Background(), fixture.canonical, receipt, target); err == nil || !strings.Contains(err.Error(), "verify missing candidate") {
+		t.Fatalf("unavailable candidate commit was not refused: %v", err)
+	}
+}
+
+func TestAbsorbedConflictGitRootRefusesUnsafeCandidateLocations(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	file := root + "/candidate-file"
+	if err := os.WriteFile(file, []byte("candidate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, candidate, repository, want string
+	}{
+		{name: "candidate is a file", candidate: file, repository: "acme/app", want: "not a directory"},
+		{name: "candidate path cannot be inspected", candidate: file + "/child", repository: "acme/app", want: "inspect candidate worktree"},
+		{name: "invalid repository", candidate: root + "/missing", repository: "../bad", want: "resolve canonical clone"},
+		{name: "canonical clone is missing", candidate: root + "/missing", repository: "acme/app", want: "inspect local branch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			receipt := WorktreeMergeReceipt{Repository: tc.repository, Candidate: WorktreeMergeCandidate{Worktree: tc.candidate, Branch: "feature/candidate"}}
+			if _, err := absorbedConflictGitRoot(context.Background(), root, receipt); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unsafe candidate location was not refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestAcknowledgeAbsorbedConflictRefusals(t *testing.T) {
 	t.Run("source worktree still exists", func(t *testing.T) {
 		fixture := newEngineFixture(t)

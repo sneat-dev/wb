@@ -750,9 +750,10 @@ prepare-conflict-replacement or supersede-validation-failed can recover:
 those all require an exact clean receipted source worktree to still exist.
 It never reads or requires a receipted source worktree, never rewrites the
 historical receipt or any Work Log, and never deletes a preserved,
-unpublished candidate worktree. A missing candidate worktree is accepted
-only for an empty candidate SHA and absent local source/candidate branches;
-the candidate branch must also remain unpublished. This is a dry-run by default; --apply
+unpublished candidate worktree. A missing candidate worktree requires absent
+local source/candidate branches; when the receipt records a candidate SHA,
+that exact commit must be an ancestor of the freshly fetched current target.
+The candidate branch must also remain unpublished. This is a dry-run by default; --apply
 requires --actor and --reason and writes only the new acknowledgement
 artifact. A source worktree that still exists, a published or landed
 receipt, an invalid or absent --derived-path, or any path whose content
