@@ -2823,14 +2823,10 @@ func addWorktreeAtSecureDestination(
 		afterStageDirectoryCreated()
 	}
 	stageRoot := filepath.Join(operationRoot, stageName)
-	stageFD, err := unix.Openat(operationFD, stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stageDirectory, err := openDirectoryAtNoFollow(operationFD, stageName, "wb-worktree-stage",
+		"open secure worktree staging directory", "wrap secure worktree staging directory")
 	if err != nil {
-		return fmt.Errorf("open secure worktree staging directory: %w", err)
-	}
-	stageDirectory := os.NewFile(uintptr(stageFD), "wb-worktree-stage")
-	if stageDirectory == nil {
-		_ = unix.Close(stageFD)
-		return fmt.Errorf("wrap secure worktree staging directory")
+		return err
 	}
 	defer func() { _ = stageDirectory.Close() }()
 	defer func() {
@@ -2892,14 +2888,10 @@ func addWorktreeAtSecureDestination(
 	if addErr != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", addErr), "", nil)
 	}
-	checkoutFD, err := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	checkoutDirectory, err := openDirectoryAtNoFollow(int(stageDirectory.Fd()), "checkout", "wb-worktree-staged-checkout",
+		"open staged worktree checkout", "wrap staged worktree checkout")
 	if err != nil {
-		return rollback(fmt.Errorf("open staged worktree checkout: %w", err), "", nil)
-	}
-	checkoutDirectory := os.NewFile(uintptr(checkoutFD), "wb-worktree-staged-checkout")
-	if checkoutDirectory == nil {
-		_ = unix.Close(checkoutFD)
-		return rollback(fmt.Errorf("wrap staged worktree checkout"), "", nil)
+		return rollback(err, "", nil)
 	}
 	defer func() { _ = checkoutDirectory.Close() }()
 	if afterStagedAdd != nil {
@@ -3736,14 +3728,10 @@ func moveExpectedDirectoryNoReplaceAuthorized(
 	if len(afterMove) > 0 && afterMove[0] != nil {
 		afterMove[0]()
 	}
-	fd, err := unix.Openat(int(toDirectory.Fd()), toName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	moved, err := openDirectoryAtNoFollow(int(toDirectory.Fd()), toName, "wb-worktree-moved-directory",
+		"open moved directory "+toName, "wrap moved directory "+toName)
 	if err != nil {
-		return nil, fmt.Errorf("open moved directory %s: %w", toName, err)
-	}
-	moved := os.NewFile(uintptr(fd), "wb-worktree-moved-directory")
-	if moved == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap moved directory %s", toName)
+		return nil, err
 	}
 	expectedInfo, expectedErr := expected.Stat()
 	movedInfo, movedErr := moved.Stat()
@@ -3884,14 +3872,10 @@ func quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.F
 }
 
 func quarantineStageDirectoryAt(operationDirectory *os.File, name string, expected secureDirectoryIdentity) error {
-	fd, err := unix.Openat(int(operationDirectory.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := openDirectoryAtNoFollow(int(operationDirectory.Fd()), name, "wb-worktree-stage-quarantine",
+		"open secure staging directory "+name+" for quarantine", "wrap secure staging directory "+name+" for quarantine")
 	if err != nil {
-		return fmt.Errorf("open secure staging directory %s for quarantine: %w", name, err)
-	}
-	stage := os.NewFile(uintptr(fd), "wb-worktree-stage-quarantine")
-	if stage == nil {
-		_ = unix.Close(fd)
-		return fmt.Errorf("wrap secure staging directory %s for quarantine", name)
+		return err
 	}
 	defer func() { _ = stage.Close() }()
 	actual, err := secureDirectoryIdentityAt(int(operationDirectory.Fd()), name)
