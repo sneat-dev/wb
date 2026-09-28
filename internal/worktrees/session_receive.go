@@ -421,6 +421,10 @@ type sessionReceiveState struct {
 	localRootDirectory *os.File
 	sharedOperation    preparedOperationRoot
 	publication        *createdWorktreePublication
+	// These optional hooks are local to one receive and let tests fault the
+	// narrow boundaries after all descriptor and Git checks have succeeded.
+	closeInterruptedRoot   func(*os.File) error
+	afterTargetPublication func(string)
 }
 
 func (state *sessionReceiveState) close() {
@@ -611,7 +615,11 @@ func (state *sessionReceiveState) reuseRegistered() (SessionReceiveResult, bool,
 			return SessionReceiveResult{}, false, fmt.Errorf("open completed interrupted receive root: %w", openErr)
 		}
 		retireErr := retireCompletedInterruptedSessionStage(state.ctx, registeredOperation, physicalRoot)
-		closeErr := physicalRoot.Close()
+		closeRoot := state.closeInterruptedRoot
+		if closeRoot == nil {
+			closeRoot = (*os.File).Close
+		}
+		closeErr := closeRoot(physicalRoot)
 		if retireErr != nil {
 			return SessionReceiveResult{}, false, retireErr
 		}
@@ -626,7 +634,7 @@ func (state *sessionReceiveState) reuseRegistered() (SessionReceiveResult, bool,
 // The owner closes publication first, then this root, then the operation lock.
 func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
 	spec := state.spec
-	placement, physicalOperationPath, physicalParent, physicalRepository, _, err := sessionReceivePhysicalCoordinates(state.ctx, state.projectsRoot, state.canonical, spec, state.repository)
+	placement, _, physicalParent, physicalRepository, _, err := sessionReceivePhysicalCoordinates(state.ctx, state.projectsRoot, state.canonical, spec, state.repository)
 	if err != nil {
 		return SessionReceiveResult{}, err
 	}
@@ -637,9 +645,8 @@ func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
 			return SessionReceiveResult{}, localRootErr
 		}
 		state.localRootDirectory = localRootDirectory
-		if filepath.Clean(localRoot) != filepath.Clean(physicalOperationPath) {
-			return SessionReceiveResult{}, fmt.Errorf("resolved local session worktree root changed before publish")
-		}
+		// The planned local root and this helper's return both spell
+		// canonical.path/.worktrees; the helper checks its held identity.
 		physicalOperation = preparedOperationRoot{Path: localRoot, Worktrees: localRootDirectory, Directory: localRootDirectory}
 	} else if filepath.Clean(placement.Root) != filepath.Join(state.home, "worktrees") {
 		state.sharedOperation, err = prepareOperationRootAt(placement.Root, state.operationName)
@@ -715,6 +722,9 @@ func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
 		return SessionReceiveResult{}, fmt.Errorf("create pinned target worktree: %w", err)
 	}
 	state.publication = publication
+	if state.afterTargetPublication != nil {
+		state.afterTargetPublication(worktreePath)
+	}
 	if err := verifySessionReceiveReuse(state.ctx, state.canonical, physicalOperation.Path, worktreePath, branch, spec.Commit); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("verify new pinned target worktree: %w", err)
 	}
