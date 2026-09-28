@@ -229,8 +229,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		if err := corroborateProjectionWithPrivateClaim(home, root, projection); err != nil {
 			return LogVerbResult{}, fmt.Errorf("re-corroborate immutable Work Log claim after branch rebind: %w", err)
 		}
-		event, updated, appendErr := appendLocalEvent(root, LocalWorkLogEvent{ID: record.EventID, Type: LocalEventBranchReconciled,
-			Message: record.Reason, Git: ptrLocalGit(observeLocalGit(ctx, root)), Extra: map[string]any{"actor": record.Actor, "live_branch": record.LiveBranch, "claim_branch": record.ClaimBranch, "local_head": record.LocalHead, "remote_head": record.RemoteHead}})
+		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
@@ -243,20 +242,15 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		}
 		return finishBranchReconciliation(recordDir, record, root, event, updated)
 	}
-	if record.Stage == reconciliationStageEvent {
+	if record.Stage == reconciliationStageEvent || record.Stage == reconciliationStageComplete {
 		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
-		return finishBranchReconciliation(recordDir, record, root, event, updated)
-	}
-	if record.Stage == reconciliationStageComplete {
-		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
-		if appendErr != nil {
-			return LogVerbResult{}, appendErr
+		if record.Stage == reconciliationStageEvent {
+			return finishBranchReconciliation(recordDir, record, root, event, updated)
 		}
-		return LogVerbResult{Worktree: root, Verb: "recover", Event: &event, Projection: &updated, Applied: true, ReadyForNormalCleanup: true,
-			Notes: []string{"immutable Work Log claim re-corroborated; ready for normal cleanup"}}, nil
+		return completedBranchReconciliationResult(root, event, updated), nil
 	}
 	return LogVerbResult{}, fmt.Errorf("unknown branch reconciliation stage %q", record.Stage)
 }
@@ -274,8 +268,12 @@ func finishBranchReconciliation(directory *os.File, record branchReconciliationR
 	if err := writeBranchReconciliationRecord(directory, record); err != nil {
 		return LogVerbResult{}, err
 	}
+	return completedBranchReconciliationResult(root, event, projection), nil
+}
+
+func completedBranchReconciliationResult(root string, event LocalWorkLogEvent, projection LocalWorkLogProjection) LogVerbResult {
 	return LogVerbResult{Worktree: root, Verb: "recover", Event: &event, Projection: &projection, Applied: true, ReadyForNormalCleanup: true,
-		Notes: []string{"immutable Work Log claim re-corroborated; ready for normal cleanup"}}, nil
+		Notes: []string{"immutable Work Log claim re-corroborated; ready for normal cleanup"}}
 }
 
 func validateBranchReconciliationOptions(options LogRecoverOptions) error {

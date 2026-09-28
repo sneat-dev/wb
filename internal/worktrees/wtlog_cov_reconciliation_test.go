@@ -123,6 +123,11 @@ func TestWtLogCovReconciliationEventAndProjection(t *testing.T) {
 	if local == nil || local.Version != 1 || local.EffortID != projection.EffortID || local.ClaimID != projection.ClaimID || local.Lifecycle != "active" {
 		t.Fatalf("local projection = %#v", local)
 	}
+	result := completedBranchReconciliationResult("/tmp/worktree", event, *local)
+	if !result.Applied || !result.ReadyForNormalCleanup || result.Worktree != "/tmp/worktree" || result.Verb != "recover" ||
+		result.Event == nil || result.Event.ID != event.ID || result.Projection == nil || result.Projection.ClaimID != local.ClaimID {
+		t.Fatalf("completed reconciliation result = %#v", result)
+	}
 }
 
 func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
