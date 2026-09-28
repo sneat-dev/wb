@@ -22,7 +22,7 @@ func TestLockedWorkLogRunReleasesFenceAndDirectory(t *testing.T) {
 		locked.close()
 		t.Fatal(err)
 	}
-	defer func() { _ = lockFile.Close() }()
+	t.Cleanup(func() { _ = lockFile.Close() })
 	locked.close()
 	if _, err := locked.directory.Stat(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("locked run directory remains open: %v", err)

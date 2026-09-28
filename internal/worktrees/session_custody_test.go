@@ -236,7 +236,7 @@ func TestPublishPreparedTargetClaimKeepsReplayOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	claim := workLogClaim{Version: 2, EffortID: "effort", RunID: "run", ClaimID: "claim", Repository: "acme/app"}
 	if replayed, err := publishPreparedTargetClaim(runDir, claim, "conflict", "publish claim"); err != nil || replayed {
 		t.Fatalf("first publication: replayed=%t err=%v", replayed, err)

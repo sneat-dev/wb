@@ -14,7 +14,7 @@ func TestReadWorkLogRecordsRejectsMissingAndMalformedRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = run.Close() }()
+	t.Cleanup(func() { _ = run.Close() })
 	claimID := strings.Repeat("c", 64)
 	if _, err := readWorkLogClaimAt(run, claimID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing claims directory: %v", err)

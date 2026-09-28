@@ -12,7 +12,7 @@ func TestCloseIncompleteInheritedFilesReleasesOnlyPartialGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = complete.Close() }()
+	t.Cleanup(func() { _ = complete.Close() })
 	if closeIncompleteInheritedFiles(complete) {
 		t.Fatal("complete descriptor group was reported incomplete")
 	}
@@ -24,7 +24,7 @@ func TestCloseIncompleteInheritedFilesReleasesOnlyPartialGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = partial.Close() }()
+	t.Cleanup(func() { _ = partial.Close() })
 	if !closeIncompleteInheritedFiles(nil, partial) {
 		t.Fatal("partial descriptor group was reported complete")
 	}
