@@ -426,13 +426,8 @@ func retireReadClaim(home, worktree string) (workLogClaim, workLogProjection, er
 		return workLogClaim{}, projection, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return workLogClaim{}, projection, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, projection, err
 	}
 	return claim, projection, nil
@@ -607,13 +602,8 @@ func retireValidateRemovedClaim(home string, result RetireResult) error {
 		return err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, result.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, result.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	if claim.Task != result.Task || claim.Repository != result.Repository || claim.Branch != result.Branch || claim.ClaimID != result.ClaimID || claim.EffortID != result.EffortID || claim.RunID != result.RunID || filepath.Clean(claim.Worktree) != filepath.Clean(result.Worktree) {

@@ -3697,6 +3697,19 @@ func readJSONAt(directory *os.File, name string, target any) error {
 	return json.Unmarshal(content, target)
 }
 
+func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return workLogClaim{}, err
+	}
+	defer func() { _ = claims.Close() }()
+	var claim workLogClaim
+	if err := readJSONAt(claims, claimID+".json", &claim); err != nil {
+		return workLogClaim{}, err
+	}
+	return claim, nil
+}
+
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	content, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {

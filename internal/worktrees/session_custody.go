@@ -486,13 +486,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 	}
 	defer locked.close()
 	runDir := locked.directory
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return result, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, sourceReference.ClaimID+".json", &claim)
-	_ = claims.Close()
+	claim, err := readWorkLogClaimAt(runDir, sourceReference.ClaimID)
 	if err != nil {
 		return result, err
 	}
@@ -627,13 +621,7 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	}
 	defer locked.close()
 	runDir := locked.directory
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return result, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, sourceReference.ClaimID+".json", &claim)
-	_ = claims.Close()
+	claim, err := readWorkLogClaimAt(runDir, sourceReference.ClaimID)
 	if err != nil {
 		return result, err
 	}
@@ -1103,14 +1091,7 @@ func loadExternalTargetClaim(projectsRoot string, request sessionmove.Request, d
 	}
 	runDir := locked.directory
 	unlock := locked.close
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		unlock()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, target.ClaimID+".json", &claim)
-	_ = claims.Close()
+	claim, err := readWorkLogClaimAt(runDir, target.ClaimID)
 	if err != nil {
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err

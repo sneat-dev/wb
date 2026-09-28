@@ -312,13 +312,8 @@ func reconciliationClaim(home, worktree string) (workLogProjection, workLogClaim
 		return workLogProjection{}, workLogClaim{}, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogProjection{}, workLogClaim{}, err
 	}
 	if err := corroborateReconciliationClaimShape(worktree, projection, claim); err != nil {

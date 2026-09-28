@@ -411,13 +411,8 @@ func inspectSessionMoveWorkLog(projectsRoot, worktree string, source session.Rec
 		return workLogClaim{}, "", err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return workLogClaim{}, "", err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, "", err
 	}
 	owners, err := ownerViews(worktree)
