@@ -359,18 +359,23 @@ func TestCleanupWorktreeHandlesRejectSymlinksAndPathReplacement(t *testing.T) {
 	if err := os.Mkdir(checkout, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	rootPath := string(filepath.Separator)
 	for _, opener := range []struct {
-		name string
-		open func(string) (*cleanupWorktreeHandle, error)
+		name          string
+		open          func(string) (*cleanupWorktreeHandle, error)
+		wantRootError string
 	}{
-		{"adopted", openAdoptedCleanupWorktree},
+		{"adopted", openAdoptedCleanupWorktree, "adopted worktree path " + rootPath + " has no repository segment to open"},
 		{"relocated", func(path string) (*cleanupWorktreeHandle, error) {
 			return openRelocatedManagedCleanupWorktree(nil, path)
-		}},
-		{"local", func(path string) (*cleanupWorktreeHandle, error) { return openCanonicalLocalCleanupWorktree(nil, path) }},
+		}, "relocated managed worktree path " + rootPath + " has no checkout segment"},
+		{"local", func(path string) (*cleanupWorktreeHandle, error) { return openCanonicalLocalCleanupWorktree(nil, path) }, "canonical local worktree path " + rootPath + " has no task segment"},
 	} {
 		//nolint:paralleltest // All cases use one checkout path that the parent later renames.
 		t.Run(opener.name, func(t *testing.T) {
+			if _, err := opener.open(rootPath); err == nil || err.Error() != opener.wantRootError {
+				t.Fatalf("root path error = %v, want %q", err, opener.wantRootError)
+			}
 			handle, err := opener.open(checkout)
 			if err != nil {
 				t.Fatal(err)

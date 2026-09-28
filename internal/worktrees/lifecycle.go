@@ -6011,63 +6011,11 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 // coordination lock lives in WB_HOME. Its physical parent is retained for
 // Git removal, but is not retired through the logical task descriptor.
 func openRelocatedManagedCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
-	worktreePath = filepath.Clean(worktreePath)
-	parentPath := filepath.Dir(worktreePath)
-	leaf := filepath.Base(worktreePath)
-	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("relocated managed worktree path %s has no checkout segment", worktreePath)
-	}
-	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("open relocated managed worktree parent %s without following links: %w", parentPath, err)
-	}
-	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, ownParent: true}
-	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("open relocated managed worktree %s without following links: %w", worktreePath, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-relocated-managed-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap relocated managed worktree %s", worktreePath)
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	return handle, nil
+	return openAbsoluteCleanupWorktree(task, worktreePath, "relocated managed", "checkout segment")
 }
 
 func openCanonicalLocalCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
-	worktreePath = filepath.Clean(worktreePath)
-	parentPath := filepath.Dir(worktreePath)
-	leaf := filepath.Base(worktreePath)
-	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("canonical local worktree path %s has no task segment", worktreePath)
-	}
-	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("open canonical local worktree parent %s without following links: %w", parentPath, err)
-	}
-	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
-	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("open canonical local worktree %s without following links: %w", worktreePath, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-canonical-local-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap canonical local worktree %s", worktreePath)
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	return handle, nil
+	return openAbsoluteCleanupWorktree(task, worktreePath, "canonical local", "task segment")
 }
 
 // openAdoptedCleanupWorktree opens an adopted external worktree's parent and
@@ -6079,27 +6027,34 @@ func openCanonicalLocalCleanupWorktree(task *cleanupTaskHandle, worktreePath str
 // removeAdoptedRegistration for the WB-owned registration entry that really
 // does get retired once the checkout itself is gone.
 func openAdoptedCleanupWorktree(worktreePath string) (*cleanupWorktreeHandle, error) {
+	return openAbsoluteCleanupWorktree(nil, worktreePath, "adopted", "repository segment to open")
+}
+
+// openAbsoluteCleanupWorktree retains both no-follow descriptors until the
+// caller closes the handle. Only the named callers choose task ownership;
+// none of these paths permits retirement of the checkout's parent directory.
+func openAbsoluteCleanupWorktree(task *cleanupTaskHandle, worktreePath, kind, missingSegment string) (*cleanupWorktreeHandle, error) {
 	worktreePath = filepath.Clean(worktreePath)
 	parentPath := filepath.Dir(worktreePath)
 	leaf := filepath.Base(worktreePath)
 	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("adopted worktree path %s has no repository segment to open", worktreePath)
+		return nil, fmt.Errorf("%s worktree path %s has no %s", kind, worktreePath, missingSegment)
 	}
 	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
 	if err != nil {
-		return nil, fmt.Errorf("open adopted worktree parent %s without following links: %w", parentPath, err)
+		return nil, fmt.Errorf("open %s worktree parent %s without following links: %w", kind, parentPath, err)
 	}
-	handle := &cleanupWorktreeHandle{worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
+	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, ownParent: true}
 	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		handle.close()
-		return nil, fmt.Errorf("open adopted worktree %s without following links: %w", worktreePath, err)
+		return nil, fmt.Errorf("open %s worktree %s without following links: %w", kind, worktreePath, err)
 	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-adopted-worktree")
+	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-"+strings.ReplaceAll(kind, " ", "-")+"-worktree")
 	if handle.worktree == nil {
 		_ = unix.Close(worktreeFD)
 		handle.close()
-		return nil, fmt.Errorf("wrap adopted worktree %s", worktreePath)
+		return nil, fmt.Errorf("wrap %s worktree %s", kind, worktreePath)
 	}
 	if err := handle.validate(); err != nil {
 		handle.close()
