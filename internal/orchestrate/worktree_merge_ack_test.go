@@ -2484,3 +2484,122 @@ func TestAcknowledgeLandedValidationFailureRefusesChangedReceiptedSource(t *test
 		t.Fatalf("changed receipted source acknowledgement error = %v", err)
 	}
 }
+
+//nolint:paralleltest // The real-Git fixture calls t.Setenv to isolate WB_PROJECTS_ROOT and its fake GitHub command.
+func TestAcknowledgeCleanedDirectPostTargetCIFailureUsesExactTerminalProofs(t *testing.T) {
+	fixture, _, receipt, claims := landedTerminalCleanupFixture(t)
+	if receipt.Route.Route != WorktreeMergeRouteDirect || receipt.LandingSHA != receipt.Candidate.SHA {
+		t.Fatalf("fixture route=%q landing=%s candidate=%s; want direct exact landing", receipt.Route.Route, receipt.LandingSHA, receipt.Candidate.SHA)
+	}
+	receipt.Status = WorktreeMergePostTargetCIFailed
+	receipt.Checks.Status = PullRequestWaitFailed
+	receipt.Checks.Head = receipt.LandingSHA
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	externallyTerminalizeMergeCleanup(t, fixture, &receipt)
+	options := WorktreeMergeLandedFailureAcknowledgementOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}
+	ack, err := AcknowledgeLandedMergeFailure(context.Background(), options)
+	if err != nil || ack.ReceiptStatus != WorktreeMergePostTargetCIFailed || ack.CandidateSHA != receipt.Candidate.SHA || ack.ClaimBaseSHA == "" {
+		t.Fatalf("cleaned direct landing dry-run = %+v err=%v", ack, err)
+	}
+	if _, err := os.Stat(ack.AcknowledgementPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run wrote acknowledgement: %v", err)
+	}
+
+	proof, err := worktrees.FindTerminalCleanupProof(fixture.githubDir, receipt.Repository, receipt.Target, receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupBytes, err := os.ReadFile(proof.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(proof.ReportPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeLandedMergeFailure(context.Background(), options); err == nil || !strings.Contains(err.Error(), "terminal cleanup") {
+		t.Fatalf("missing cleanup receipt error = %v", err)
+	}
+	if err := os.WriteFile(proof.ReportPath, cleanupBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	terminalPath := terminalWorkLogPath(claims[receipt.Sources[0].Task])
+	terminalBytes, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(terminalPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeLandedMergeFailure(context.Background(), options); err == nil || !strings.Contains(err.Error(), "removed terminal Work Log") {
+		t.Fatalf("missing terminal Work Log error = %v", err)
+	}
+	if err := os.WriteFile(terminalPath, terminalBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	invalidStatus := receipt
+	invalidStatus.Status = WorktreeMergeLanded
+	if err := persistWorktreeMergeReceipt(invalidStatus); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeLandedMergeFailure(context.Background(), options); err == nil || !strings.Contains(err.Error(), "without an exact landed failed-validation receipt") {
+		t.Fatalf("other receipt status error = %v", err)
+	}
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep the cleanup evidence intact and falsify only fresh remote ancestry.
+	runEngineGit(t, fixture.canonical, "push", "--force", "origin", receipt.TargetSHA+":main")
+	if _, err := AcknowledgeLandedMergeFailure(context.Background(), options); err == nil || !strings.Contains(err.Error(), "does not contain recorded root") {
+		t.Fatalf("rewound remote target error = %v", err)
+	}
+}
+
+//nolint:paralleltest // The real-Git fixture calls t.Setenv; Go forbids parallel tests with process environment changes.
+func TestCleanedLandedFailureAncestryRejectsIndependentlyIntegratedRoots(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		sourceClaimBase bool
+		want            string
+	}{
+		{name: "source is separately integrated", want: "does not contain receipted source"},
+		{name: "source claim base is separately integrated", sourceClaimBase: true, want: "does not contain immutable claim base"},
+	} {
+		//nolint:paralleltest // newEngineFixture calls t.Setenv for this real-Git subtest.
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			base := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "origin/main"))
+			source := createMergeSource(t, fixture, "ancestry-source", "feature/ancestry-source", "source.txt", "source\n")
+			candidate := createMergeSource(t, fixture, "ancestry-candidate", "feature/ancestry-candidate", "candidate.txt", "candidate\n")
+			claimBase := base
+			mergeBranches := []string{source.Branch, candidate.Branch}
+			if test.sourceClaimBase {
+				separateBase := createMergeSource(t, fixture, "ancestry-claim-base", "feature/ancestry-claim-base", "claim-base.txt", "claim base\n")
+				claimBase = strings.TrimSpace(runEngineGit(t, separateBase.WorktreeDir, "rev-parse", "HEAD"))
+				mergeBranches = append(mergeBranches, separateBase.Branch)
+			}
+
+			targetWorktree := filepath.Join(t.TempDir(), "target")
+			targetBranch := "test/ancestry-target"
+			runEngineGit(t, fixture.canonical, "worktree", "add", "-b", targetBranch, targetWorktree, base)
+			for _, branch := range mergeBranches {
+				runEngineGit(t, targetWorktree, "merge", "--no-edit", branch)
+			}
+			runEngineGit(t, fixture.canonical, "push", "--force", "origin", targetBranch+":main")
+
+			receipt := WorktreeMergeReceipt{
+				TargetSHA: base,
+				Candidate: WorktreeMergeCandidate{Task: "ancestry-candidate", SHA: strings.TrimSpace(runEngineGit(t, candidate.WorktreeDir, "rev-parse", "HEAD"))},
+				Sources:   []WorktreeMergeSource{{Task: "ancestry-source", SHA: strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))}},
+			}
+			claimBases := map[string]string{"ancestry-candidate": base, "ancestry-source": claimBase}
+			if err := validateCleanedLandedFailureAncestry(context.Background(), fixture.canonical, receipt, claimBases); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("independently integrated ancestry error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

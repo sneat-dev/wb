@@ -52,7 +52,7 @@ type remoteEnrollResult struct {
 	DaemonRestart bool   `json:"daemon_restart"`
 }
 
-func newRemoteEnrollCmd() *cobra.Command {
+func newRemoteEnrollCmd(inv *invocation) *cobra.Command {
 	var machine, hubURL, tokenFile string
 	var tokenStdin, restartDaemon, jsonOut bool
 	command := &cobra.Command{
@@ -69,7 +69,7 @@ WB command telemetry. From the dashboard, copy the credential and run:
   pbpaste | wb remote enroll --machine studio-mac --token-stdin`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return runRemoteEnroll(command.Context(), defaultRemoteEnrollDeps(), projectsRoot, machine, hubURL, tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout())
+			return runRemoteEnroll(command.Context(), defaultRemoteEnrollDeps(), inv.projectsRoot, machine, hubURL, tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout())
 		},
 	}
 	command.Flags().StringVar(&machine, "machine", "", "unique name for this machine (required)")

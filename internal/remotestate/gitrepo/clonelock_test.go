@@ -25,14 +25,14 @@ func TestAcquireCloneLockSerializesConcurrentHolders(t *testing.T) {
 	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
 
-	first, err := acquireCloneLock(clonePath)
+	first, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	acquired := make(chan struct{})
 	go func() {
-		second, err := acquireCloneLock(clonePath)
+		second, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 		if err != nil {
 			t.Errorf("second acquireCloneLock: %v", err)
 			return
@@ -104,15 +104,20 @@ func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { onFetchRetry = restoreHook })
-	restoreBackoff := fetchRetryBackoff
-	fetchRetryBackoff = time.Millisecond
-	t.Cleanup(func() { fetchRetryBackoff = restoreBackoff })
+	// p.opts.Sleep is the retry-backoff seam (provider.go's Options.Sleep):
+	// recording instead of sleeping keeps this test at full speed while
+	// still proving Fetch waited exactly once, for exactly fetchRetryBackoff.
+	var slept []time.Duration
+	p.opts.Sleep = func(d time.Duration) { slept = append(slept, d) }
 
 	if err := p.Fetch(context.Background()); err != nil {
 		t.Fatalf("Fetch did not recover from a transient dirty index: %v", err)
 	}
 	if fired != 1 {
 		t.Fatalf("onFetchRetry fired %d times, want exactly 1 (one failed attempt before the retry that succeeded)", fired)
+	}
+	if len(slept) != 1 || slept[0] != fetchRetryBackoff {
+		t.Fatalf("Fetch slept %v, want exactly one sleep of %s (the configured backoff)", slept, fetchRetryBackoff)
 	}
 }
 
@@ -140,13 +145,14 @@ func TestFetchExhaustsRetriesOnPersistentFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restoreBackoff := fetchRetryBackoff
-	fetchRetryBackoff = time.Millisecond
-	t.Cleanup(func() { fetchRetryBackoff = restoreBackoff })
 	fired := 0
 	restoreHook := onFetchRetry
 	onFetchRetry = func() { fired++ }
 	t.Cleanup(func() { onFetchRetry = restoreHook })
+	// See TestFetchRetriesTransientFailureThenSucceeds: p.opts.Sleep records
+	// instead of sleeping, so exhausting every retry costs no wall time.
+	var slept []time.Duration
+	p.opts.Sleep = func(d time.Duration) { slept = append(slept, d) }
 
 	err := p.Fetch(context.Background())
 	if err == nil {
@@ -157,6 +163,14 @@ func TestFetchExhaustsRetriesOnPersistentFailure(t *testing.T) {
 	}
 	if fired != fetchRetryAttempts-1 {
 		t.Fatalf("onFetchRetry fired %d times, want %d (once before each retry, never after the last attempt)", fired, fetchRetryAttempts-1)
+	}
+	if len(slept) != fetchRetryAttempts-1 {
+		t.Fatalf("Fetch slept %d times, want %d (once before each retry, never after the last attempt)", len(slept), fetchRetryAttempts-1)
+	}
+	for _, d := range slept {
+		if d != fetchRetryBackoff {
+			t.Fatalf("Fetch slept %v, want every wait to be the configured backoff %s", slept, fetchRetryBackoff)
+		}
 	}
 }
 

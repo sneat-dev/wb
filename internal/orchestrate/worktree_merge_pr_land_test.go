@@ -48,8 +48,9 @@ func TestUpdateBranchMergeTargetParentPicksTheNonPreviousParent(t *testing.T) {
 // reports it as absorbed by this candidate. Advancing TargetSHA the way
 // adoptWorktreeMergeUpdateBranchAdvance does (via updateBranchMergeTargetParent)
 // closes the range and excludes it.
+//
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestAbsorbedSourceHeadsExcludesAnUnrelatedPullRequestOnceTargetSHAAdvances(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	runEngineGit(t, dir, "config", "user.name", "WB Test")

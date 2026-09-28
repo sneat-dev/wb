@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -186,5 +187,73 @@ func TestStopDaemonProcessGuardsAgainstATestBinaryWithoutFakingRunLaunchctl(t *t
 func TestRunLaunchctlTimeoutStaysAboveDaemonStopTimeout(t *testing.T) {
 	if runLaunchctlTimeout <= daemonStopTimeout {
 		t.Fatalf("runLaunchctlTimeout = %s, must be greater than daemonStopTimeout = %s", runLaunchctlTimeout, daemonStopTimeout)
+	}
+}
+
+// TestAwaitLaunchdReadyReturnsTheReportedPID proves the ready-wait loop
+// (startDaemonProcessInjected's launchd-ready poll) sleeps exactly once per
+// still-not-ready check, at exactly the 50ms poll step, and returns the
+// instant lookupPID reports one — on a fake clock, so no real wait is
+// needed to prove the exact call count.
+func TestAwaitLaunchdReadyReturnsTheReportedPID(t *testing.T) {
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	remainingMisses := 3
+	lookupPID := func() (int, bool) {
+		if remainingMisses <= 0 {
+			return 65918, true
+		}
+		remainingMisses--
+		return 0, false
+	}
+
+	pid, ok := awaitLaunchdReady(now, sleep, virtual.Add(time.Hour), lookupPID)
+
+	if !ok || pid != 65918 {
+		t.Fatalf("awaitLaunchdReady = (%d, %t), want (65918, true)", pid, ok)
+	}
+	if len(slept) != 3 {
+		t.Fatalf("awaitLaunchdReady slept %d times, want 3 (once per not-yet-ready check)", len(slept))
+	}
+	for _, d := range slept {
+		if d != 50*time.Millisecond {
+			t.Fatalf("awaitLaunchdReady slept %v, want every wait to be the 50ms poll step", slept)
+		}
+	}
+}
+
+// TestAwaitLaunchdReadyReturnsFalseWhenDeadlinePasses proves the timeout
+// branch: a launch agent that never reports a PID makes awaitLaunchdReady
+// stop polling once now() reaches the deadline, reporting false, never
+// blocking past it.
+func TestAwaitLaunchdReadyReturnsFalseWhenDeadlinePasses(t *testing.T) {
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	deadline := virtual.Add(120 * time.Millisecond)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	lookupPID := func() (int, bool) { return 0, false }
+
+	pid, ok := awaitLaunchdReady(now, sleep, deadline, lookupPID)
+
+	if ok || pid != 0 {
+		t.Fatalf("awaitLaunchdReady = (%d, %t), want (0, false): the launch agent never reported a PID", pid, ok)
+	}
+	wantSleeps := int(120*time.Millisecond/(50*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("awaitLaunchdReady slept %d times, want exactly %d (120ms deadline in 50ms steps)", len(slept), wantSleeps)
+	}
+	for _, d := range slept {
+		if d != 50*time.Millisecond {
+			t.Fatalf("awaitLaunchdReady slept %v, want every wait to be the 50ms poll step", slept)
+		}
 	}
 }

@@ -51,14 +51,14 @@ func TestCwDepsSessionMoveResumeRefusesExtraFlagsAndArguments(t *testing.T) {
 	deps := sessionMoveDependencies{
 		resolveSource: func() (session.Record, bool, error) { return session.Record{}, false, nil },
 	}
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	command.SetArgs([]string{"--resume", "handoff-cwdeps", "--summary", "not allowed"})
 	if err := command.Execute(); err == nil ||
 		!strings.Contains(err.Error(), "--resume accepts only an existing handoff ID") {
 		t.Fatalf("resume with --summary = %v", err)
 	}
-	command = newSessionMoveCmdWithDeps(deps)
+	command = newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	command.SetArgs([]string{"--resume", "handoff-cwdeps", "extra-argument"})
 	if err := command.Execute(); err == nil ||
@@ -373,7 +373,7 @@ func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
 	deps := sessionMoveDependencies{}
 
 	// An incomplete delivery carries no durable receipt.
-	if _, err := acknowledgeSessionMove(ctx, deps, store, source, sessionmove.CourierLoopback, request, digest,
+	if _, err := acknowledgeSessionMove(&invocation{}, ctx, deps, store, source, sessionmove.CourierLoopback, request, digest,
 		sessionreceive.Result{Phase: sessionmove.PhaseReceived}); err == nil ||
 		!strings.Contains(err.Error(), "no durable completion receipt") {
 		t.Fatalf("incomplete delivery = %v", err)
@@ -383,7 +383,7 @@ func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
 	other.HandoffID = "handoff-other"
 	delivery := completedMoveTestDelivery(t, request, raw, true)
 	delivery.Request = other
-	if _, err := acknowledgeSessionMove(ctx, deps, store, source, sessionmove.CourierLoopback, request, digest, delivery); err == nil ||
+	if _, err := acknowledgeSessionMove(&invocation{}, ctx, deps, store, source, sessionmove.CourierLoopback, request, digest, delivery); err == nil ||
 		!strings.Contains(err.Error(), "does not match the exact delivered request") {
 		t.Fatalf("mismatched delivery = %v", err)
 	}
@@ -392,12 +392,12 @@ func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
 	broken := *delivery.Receipt
 	broken.RequestDigest = "not-the-digest"
 	delivery.Receipt = &broken
-	if _, err := acknowledgeSessionMove(ctx, deps, store, source, sessionmove.CourierLoopback, request, digest, delivery); err == nil ||
+	if _, err := acknowledgeSessionMove(&invocation{}, ctx, deps, store, source, sessionmove.CourierLoopback, request, digest, delivery); err == nil ||
 		!strings.Contains(err.Error(), "validate target completion receipt") {
 		t.Fatalf("invalid receipt = %v", err)
 	}
 	// With no acknowledger configured the move is refused rather than sealed.
-	if _, err := acknowledgeSessionMove(ctx, deps, store, source, sessionmove.CourierLoopback, request, digest,
+	if _, err := acknowledgeSessionMove(&invocation{}, ctx, deps, store, source, sessionmove.CourierLoopback, request, digest,
 		completedMoveTestDelivery(t, request, raw, true)); err == nil ||
 		!strings.Contains(err.Error(), "acknowledger is unavailable") {
 		t.Fatalf("nil acknowledger = %v", err)
@@ -415,7 +415,7 @@ func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
 func TestCwDepsDefaultSessionMoveDependencies(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	deps := defaultSessionMoveDependencies()
+	deps := defaultSessionMoveDependencies(&invocation{})
 	if deps.defaultConfigPath == nil || deps.loadConfig == nil || deps.localMachine == nil || deps.resolveSource == nil ||
 		deps.checkpoint == nil || deps.store == nil || deps.newDeliverer == nil || deps.acknowledge == nil {
 		t.Fatal("a default dependency is missing")
@@ -467,7 +467,7 @@ func TestCwDepsDefaultSessionMoveDependencies(t *testing.T) {
 // cwDepsExecSessionMove builds one session move command with the given
 // dependencies and returns its stdout plus the execution error.
 func cwDepsExecSessionMove(deps sessionMoveDependencies, args ...string) (string, error) {
-	command := newSessionMoveCmdWithDeps(deps)
+	command := newSessionMoveCmdWithDeps(&invocation{}, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	var out bytes.Buffer
 	command.SetOut(&out)

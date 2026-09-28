@@ -82,10 +82,6 @@ func TestCwDepsRunRunDryRunClassifiesEveryRepositoryBucket(t *testing.T) {
 	root := cwDepsRunFixture(t)
 	configPath := cwDepsRecipeConfig(t)
 
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
-
 	var code int
 	out, errOut := cwDepsCaptureStderr(t, func() { code = runRun(root, "", []string{"acme"}, configPath, "readme", false, false) })
 	if code != 1 {
@@ -111,9 +107,6 @@ func TestCwDepsRunRunDryRunClassifiesEveryRepositoryBucket(t *testing.T) {
 func TestCwDepsRunRunGatedRecipeSkipsNonApplicableRepositories(t *testing.T) {
 	root := cwDepsRunFixture(t)
 	configPath := cwDepsRecipeConfig(t)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	var code int
 	out := cwCovCaptureStdout(t, func() { code = runRun(root, "", []string{"acme"}, configPath, "gated", false, false) })
@@ -128,9 +121,6 @@ func TestCwDepsRunRunGatedRecipeSkipsNonApplicableRepositories(t *testing.T) {
 func TestCwDepsRunRunReportsInvalidAppliesIfAsAnError(t *testing.T) {
 	root := cwDepsRunFixture(t)
 	configPath := cwDepsRecipeConfig(t)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	var code int
 	out := cwCovCaptureStdout(t, func() { code = runRun(root, "", []string{"acme"}, configPath, "broken", false, false) })
@@ -201,9 +191,6 @@ func TestCwDepsRunRunApplyLandsTheRecipe(t *testing.T) {
 	cwCovFakeGH(t, "acme", nil,
 		`[{"name":"app","isArchived":false,"isFork":false,"sshUrl":"git@example.test:acme/app.git"}]`)
 	configPath := cwDepsRecipeConfig(t)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	var applyCode int
 	out := cwCovCaptureStdout(t, func() {

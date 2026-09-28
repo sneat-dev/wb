@@ -143,29 +143,29 @@ func proveRetiredPrepareCandidate(ctx context.Context, path string, r WorktreeMe
 }
 
 func retiredPrepareCandidateState(ctx context.Context, r WorktreeMergeReceipt) (string, string, error) {
-	status, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "status", "--porcelain")
+	status, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "status", "--porcelain")
 	if err != nil {
 		return "", "", err
 	}
 	if strings.TrimSpace(status) != "" {
 		return "", "", errors.New("candidate worktree has local changes")
 	}
-	branch, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return "", "", fmt.Errorf("read candidate branch: %w", err)
 	}
-	head, err := mergeRevision(ctx, r.Candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, r.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	return strings.TrimSpace(branch), head, nil
 }
 func retiredPrepareRefAbsent(ctx context.Context, root, branch string) (bool, error) {
-	out, _, err := runCommand(ctx, 0, 0, root, "git", "ls-remote", "origin", "refs/heads/"+branch)
+	out, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "ls-remote", "origin", "refs/heads/"+branch)
 	return strings.TrimSpace(out) == "", err
 }
 func retiredPrepareDefaultBranch(ctx context.Context, root string) (string, error) {
-	out, _, err := runCommand(ctx, 0, 0, root, "git", "ls-remote", "--symref", "origin", "HEAD")
+	out, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
 		return "", err
 	}

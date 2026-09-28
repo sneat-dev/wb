@@ -116,7 +116,7 @@ Use --format json for agents and automation.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			report, err := runWorktreeActive(command.Context(), deps, projectsRoot, inv.filterFlag, localOnly, stale)
+			report, err := runWorktreeActive(command.Context(), deps, inv.projectsRoot, inv.filterFlag, localOnly, stale)
 			if err != nil {
 				return err
 			}

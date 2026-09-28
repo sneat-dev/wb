@@ -257,15 +257,15 @@ func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
 	t.Parallel()
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("head with no repository deleted=%t err=%v", deleted, err)
 	}
 	view = orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"fork/app"}},"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("fork head deleted=%t err=%v", deleted, err)
 	}
 	view = orchCovPullRequestView(t, `{"head":{"ref":"main","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("target branch deleted=%t err=%v", deleted, err)
 	}
 }
@@ -280,7 +280,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "1")
 		state.answer(t, "check-stdout", "")
 		state.answer(t, "check-stderr", "Not Found")
-		deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
+		deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
 		}
@@ -308,7 +308,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "1")
 		state.answer(t, "check-stdout", "")
 		state.answer(t, "check-stderr", "gh: HTTP 502 Bad Gateway")
-		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "verify branch candidate is absent") {
 			t.Fatalf("verification error = %v", err)
 		}
@@ -321,7 +321,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "1")
 		state.answer(t, "check-stdout", "")
 		state.answer(t, "check-stderr", "Not Found")
-		deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
+		deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
 		}
@@ -334,7 +334,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "0")
 		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 		state.answer(t, "check-stderr", "")
-		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "delete branch candidate at merged head") {
 			t.Fatalf("refused deletion error = %v", err)
 		}
@@ -347,7 +347,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "0")
 		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 		state.answer(t, "check-stderr", "")
-		_, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
+		_, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err == nil {
 			t.Fatal("credential-bearing push failure succeeded")
 		}
@@ -365,7 +365,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "0")
 		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 		state.answer(t, "check-stderr", "")
-		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "still exists on origin") {
 			t.Fatalf("unverified deletion error = %v", err)
 		}
@@ -378,7 +378,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		state.answer(t, "check-exit", "0")
 		state.answer(t, "check-stdout", `{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`)
 		state.answer(t, "check-stderr", "")
-		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "stale info") {
 			t.Fatalf("advanced branch error = %v", err)
 		}
@@ -420,7 +420,7 @@ func TestDeleteRemoteBranchIgnoresAPreexistingLandingRemote(t *testing.T) {
 	state.answer(t, "check-stderr", "Not Found")
 	view := orchCovPullRequestView(t, fmt.Sprintf(`{"head":{"ref":"candidate","sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`, head))
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
-	deleted, err := deleteRemoteBranch(context.Background(), canonical, "acme/app", view, landed, head)
+	deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, canonical, "acme/app", view, landed, head)
 	if err != nil || !deleted {
 		t.Fatalf("deleted=%t err=%v", deleted, err)
 	}

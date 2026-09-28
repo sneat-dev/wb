@@ -359,6 +359,25 @@ func TestSaveRoutePublishesExactImmutableSSHRouteAndReplays(t *testing.T) {
 	}
 }
 
+func TestSaveRouteRejectsOversizedRouteBeforePublication(t *testing.T) {
+	t.Parallel()
+	request := validRequest()
+	store, digest := smCovRouteAdmit(t, request)
+	route := smCovSynchRunnerRoute(request, digest)
+	route.Synchestra.Runner = strings.Repeat("r", maxRouteBytes)
+	routePath := filepath.Join(store.Root, request.HandoffID, routeFileName)
+
+	if _, replay, err := store.SaveRoute(route); err == nil || replay || !strings.Contains(err.Error(), "courier route exceeds") {
+		t.Fatalf("SaveRoute(oversized) = replay %t, error %v", replay, err)
+	}
+	if _, err := os.Lstat(routePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized route left durable file: %v", err)
+	}
+	if _, err := store.LoadRoute(request.HandoffID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LoadRoute after rejected publication = %v, want no route", err)
+	}
+}
+
 func TestSaveRouteRejectsConflictAndPreservesFirstRoute(t *testing.T) {
 	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)

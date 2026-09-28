@@ -184,16 +184,13 @@ func TestCwDepsStreamWorktreeAdapterCreateAndRemove(t *testing.T) {
 	seeds := t.TempDir()
 	clone := filepath.Join(root, "acme", "app")
 	cwCovCloneWithOrigin(t, seeds, "app", clone)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 
 	// A stream carries a task's provenance, so the Work Log options are the
 	// same ones `wb stream start` prepares.
 	command := cwDepsNewOutCommand(&bytes.Buffer{})
 	command.SetIn(strings.NewReader("the exact task request\n"))
-	workLog, _, err := streamWorkLog(command, "cw-stream", workLogFlags{
+	workLog, _, err := streamWorkLog(&invocation{}, command, "cw-stream", workLogFlags{
 		mode: "manual", initiator: "me@example.com", model: "unknown", originalPrompt: "-",
 	})
 	if err != nil {
@@ -277,9 +274,7 @@ func TestCwDepsStreamWorktreeAdapterCreateAndRemove(t *testing.T) {
 
 func TestCwDepsStreamLeaseAndSessionIdentity(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := t.TempDir()
 
 	// A configured remote section yields the recorded machine and the
 	// resolved login, without publishing anything.
@@ -375,12 +370,10 @@ func TestCwDepsPrintPullRequestLandShapes(t *testing.T) {
 func TestCwDepsLandingEventLogFindsTheOwningStream(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := t.TempDir()
 
 	// Outside every stream the event still belongs to the fleet log.
-	appender, streamName := landingEventLog("acme/app")
+	appender, streamName := landingEventLog(&invocation{projectsRoot: projectsRoot}, "acme/app")
 	if streamName != "" || appender == nil {
 		t.Fatalf("unstreamed landing = %v, %q", appender, streamName)
 	}
@@ -393,7 +386,7 @@ func TestCwDepsLandingEventLogFindsTheOwningStream(t *testing.T) {
 		Members: []streams.Member{cwDepsStreamMember("acme/app", 1, "")}}); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
-	appender, streamName = landingEventLog("acme/app")
+	appender, streamName = landingEventLog(&invocation{projectsRoot: projectsRoot}, "acme/app")
 	if streamName != "cw-stream" || appender == nil {
 		t.Fatalf("streamed landing = %v, %q", appender, streamName)
 	}

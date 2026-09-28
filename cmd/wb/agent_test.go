@@ -21,11 +21,6 @@ func agentTestEnv(t *testing.T) string {
 	home := filepath.Join(root, ".wb")
 	configHome := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", root)
-	// The global is what the in-process remote entry point reads; pin it too so
-	// a test's own root never depends on which test ran first.
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
 	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o700); err != nil {

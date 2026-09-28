@@ -206,6 +206,9 @@ func TestBuildGraphIgnoresDistPackageJSONButKeepsDistinguishedSource(t *testing.
 
 func seedNpmGraphRepository(t *testing.T, root, githubDir, name string, files map[string]string) string {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	seed := filepath.Join(root, name+"-seed")
 	remote := filepath.Join(root, name+".git")
 	canonical := filepath.Join(githubDir, "sneat-co", name)

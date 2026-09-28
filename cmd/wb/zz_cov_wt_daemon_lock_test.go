@@ -20,9 +20,6 @@ func cwWtLockFixture(t *testing.T) (string, daemonController, daemonDependencies
 	t.Helper()
 	root := cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	if err := secureDaemonRuntime(root); err != nil {
@@ -92,9 +89,6 @@ func TestCwWtDaemonStateLockHappyPathAndFailures(t *testing.T) {
 
 	// A runtime directory with the wrong mode is refused.
 	modeRoot := cwWtDaemonRoot(t)
-	previousRoot := projectsRoot
-	projectsRoot = modeRoot
-	defer func() { projectsRoot = previousRoot }()
 	if err := os.MkdirAll(filepath.Join(modeRoot, ".wb", "runtime"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -59,7 +59,7 @@ wb sync --dry-run
 wb sync --org owner-a --org owner-b --parallel 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			owners := requestedSyncOwners(inv, cmd, only)
-			if code := runSync(cmd.Context(), inv, projectsRoot, inv.filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps(), cmd.OutOrStdout(), cmd.ErrOrStderr()); code != 0 {
+			if code := runSync(cmd.Context(), inv, inv.projectsRoot, inv.filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps(), cmd.OutOrStdout(), cmd.ErrOrStderr()); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "sync did not complete; see diagnostics above",

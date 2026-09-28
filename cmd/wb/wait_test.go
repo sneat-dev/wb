@@ -579,9 +579,6 @@ exit 30
 func TestWaitListTellsAQuietSessionApartFromAStoppedOne(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", home)
-	previous := waitregistry.Alive
-	waitregistry.Alive = func(int) bool { return true }
-	t.Cleanup(func() { waitregistry.Alive = previous })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"wait", "list"}, &stdout, &stderr); code != exitOK {
@@ -599,15 +596,18 @@ func TestWaitListReportsAStaleWaiterInJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A PID this large cannot belong to a real process on any platform WB
+	// runs on (Linux's own pid_max tops out at 2^22), so List's real,
+	// uninjected liveness check reports it stale deterministically — no
+	// fake needed, and production wiring (cmd/wb passes waitregistry.
+	// Options{}) is exercised exactly as it runs.
+	const noSuchPID = 1 << 30
 	if _, err := waitregistry.Register(root, waitregistry.Record{
-		ID: "x", PID: 4242, Kind: "pr", Targets: []string{"acme/app#9"},
+		ID: "x", PID: noSuchPID, Kind: "pr", Targets: []string{"acme/app#9"},
 		Until: "checks-settled", StartedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	previous := waitregistry.Alive
-	waitregistry.Alive = func(int) bool { return false }
-	t.Cleanup(func() { waitregistry.Alive = previous })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"wait", "list", "--json"}, &stdout, &stderr); code != exitOK {

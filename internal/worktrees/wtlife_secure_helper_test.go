@@ -75,6 +75,8 @@ func wtLifeCovDispatchSecureHelper(helper string, args []string) int {
 		return RunSecureCanonicalPolicyGitHelper(args)
 	case "stage-canonical":
 		return RunSecureStageCanonicalGitHelper(args)
+	case "rename":
+		return RunSecureRenameGitHelper(args)
 	default:
 		return -1
 	}

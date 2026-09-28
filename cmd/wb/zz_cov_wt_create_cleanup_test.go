@@ -15,7 +15,7 @@ func TestCwWtWorktreeCleanupApplyOnCleanFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup dry run: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestCwWtWorktreeCleanupApplyOnCleanFixture(t *testing.T) {
 
 	// Applying retires the checkout and reports the count; the named-task
 	// release path then runs to completion.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--apply")
 	if err != nil {
 		t.Fatalf("cleanup --apply: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestCwWtWorktreeCleanupApplyJSONWithReportDir(t *testing.T) {
 	}
 	reportDir := filepath.Join(t.TempDir(), "reports")
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--apply", "--format", "json", "--report-dir", reportDir)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--apply", "--format", "json", "--report-dir", reportDir)
 	if err != nil {
 		t.Fatalf("cleanup --apply json: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCwWtWorktreeCleanupTextReportPathLine(t *testing.T) {
 	if err := os.Remove(filepath.Join(worktree, "wip.txt")); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--report-dir", filepath.Join(t.TempDir(), "reports"))
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--report-dir", filepath.Join(t.TempDir(), "reports"))
 	if err != nil {
 		t.Fatalf("cleanup with a report dir: %v", err)
 	}
@@ -86,46 +86,46 @@ func TestCwWtWorktreeCreateCommandValidation(t *testing.T) {
 	cwWtWriteFile(t, prompt, "the exact task request\n")
 
 	// A bad format is refused before anything else.
-	_, _, err := cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--original-prompt-file", prompt, "--format", "yaml")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--original-prompt-file", prompt, "--format", "yaml")
 	if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 		t.Fatalf("create --format yaml = %v", err)
 	}
 	// An unsupported execution mode is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "yolo")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "yolo")
 	if err == nil || !strings.Contains(err.Error(), "unsupported execution mode") {
 		t.Fatalf("create --mode yolo = %v", err)
 	}
 	// Manual mode without an initiator is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "manual")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "manual")
 	if err == nil || !strings.Contains(err.Error(), "--initiator") {
 		t.Fatalf("create --mode manual = %v", err)
 	}
 	// Agent mode without a live registered session is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "agent")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--original-prompt-file", prompt, "--mode", "agent")
 	if err == nil || !strings.Contains(err.Error(), "live registered session") {
 		t.Fatalf("create --mode agent = %v", err)
 	}
 	// A missing prompt file is reported.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--model", "unknown",
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--model", "unknown",
 		"--mode", "manual", "--initiator", "cwWt", "--original-prompt-file", filepath.Join(t.TempDir(), "missing.txt"))
 	if err == nil {
 		t.Fatal("create with a missing prompt file must fail")
 	}
 	// A malformed repository slug is refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "not-a-slug", "--model", "unknown",
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "not-a-slug", "--model", "unknown",
 		"--mode", "manual", "--initiator", "cwWt", "--original-prompt-file", prompt)
 	if err == nil {
 		t.Fatal("create with a malformed repository must fail")
 	}
 	// --branch and --branch-prefix together are refused.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "t", "acme/app", "--model", "unknown",
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "t", "acme/app", "--model", "unknown",
 		"--mode", "manual", "--initiator", "cwWt", "--original-prompt-file", prompt,
 		"--branch", "b", "--branch-prefix", "p")
 	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
 		t.Fatalf("create --branch with --branch-prefix = %v", err)
 	}
 	// The task argument is required.
-	_, _, err = cwCovExec(t, projects, newWorktreeCreateCmd, "--original-prompt-file", prompt)
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "--original-prompt-file", prompt)
 	if err == nil {
 		t.Fatal("create without a task must fail")
 	}
@@ -144,7 +144,7 @@ func TestCwWtWorktreeCreateSucceedsInProcess(t *testing.T) {
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	cwWtWriteFile(t, prompt, "the exact task request\n")
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCreateCmd, "cw-wt-task", "acme/app",
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "cw-wt-task", "acme/app",
 		"--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", prompt, "--summary", "a short summary", "--no-claim")
 	if err != nil {
@@ -169,7 +169,7 @@ func TestCwWtWorktreeCreateJSONAndStdinPromptInProcess(t *testing.T) {
 	cwCovCloneWithOrigin(t, seed, "app", clone)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwWtRunCmd(t, projects, "the exact prompt from stdin\n", newWorktreeCreateCmd,
+	stdout, _, err := cwWtRunCmd(t, projects, "the exact prompt from stdin\n", func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) },
 		"cw-wt-stdin", "acme/app", "--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", "-", "--format", "json", "--no-claim")
 	if err != nil {
@@ -180,7 +180,7 @@ func TestCwWtWorktreeCreateJSONAndStdinPromptInProcess(t *testing.T) {
 	}
 
 	// Whitespace-only stdin is refused.
-	_, _, err = cwWtRunCmd(t, projects, "   \n", newWorktreeCreateCmd,
+	_, _, err = cwWtRunCmd(t, projects, "   \n", func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) },
 		"cw-wt-blank", "acme/app", "--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", "-")
 	if err == nil {
@@ -193,19 +193,16 @@ func TestCwWtRefreshManagedHooksBeforeWorktreeCreate(t *testing.T) {
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
 	cwCovCloneWithOrigin(t, seed, "app", clone)
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
-	if err := refreshManagedHooksBeforeWorktreeCreate([]string{"acme/app"}); err != nil {
+	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"acme/app"}); err != nil {
 		t.Fatalf("refreshManagedHooksBeforeWorktreeCreate: %v", err)
 	}
 	// A malformed slug cannot be resolved to a canonical repository.
-	if err := refreshManagedHooksBeforeWorktreeCreate([]string{"not-a-slug"}); err == nil {
+	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"not-a-slug"}); err == nil {
 		t.Fatal("a malformed repository slug must fail")
 	}
 	// A well-formed but absent repository cannot be resolved either.
-	if err := refreshManagedHooksBeforeWorktreeCreate([]string{"acme/absent"}); err == nil {
+	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"acme/absent"}); err == nil {
 		t.Fatal("an absent canonical repository must fail")
 	}
 }

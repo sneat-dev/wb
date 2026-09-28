@@ -8,7 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 )
 
-func newSessionPruneCmd() *cobra.Command {
+func newSessionPruneCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "prune",
 		Short: "Remove records for sessions whose process has exited",
@@ -19,7 +19,7 @@ misleading anyone — so pruning is housekeeping, not a correctness requirement.
 A live session is never removed.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			directory, err := sessionDir()
+			directory, err := sessionDir(inv)
 			if err != nil {
 				return err
 			}

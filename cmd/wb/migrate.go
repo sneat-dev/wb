@@ -126,7 +126,7 @@ func runHierarchicalMigration(inv *invocation, specPath string, roots []string, 
 	}
 	githubDir := options.githubDir
 	if githubDir == "" {
-		githubDir = projectsRoot
+		githubDir = inv.projectsRoot
 	}
 	if options.cleanup {
 		if len(roots) != 0 {

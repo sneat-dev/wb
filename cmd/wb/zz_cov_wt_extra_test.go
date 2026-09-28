@@ -17,7 +17,7 @@ func TestCwWtWorktreeCorrectIdentityInProcess(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)
 
 	// Read the exact durable claim identity from the fixture's own journal.
-	stdout, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "show", worktree, "--format", "json")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", worktree, "--format", "json")
 	if err != nil {
 		t.Fatalf("log show: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestCwWtWorktreeCorrectIdentityInProcess(t *testing.T) {
 		"--actor", "cwWt-operator", "--reason", "cwWt correction",
 		"--event-id", "cw-wt-correction-1",
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCorrectIdentityCmd, append(args, "--model", "gpt-5", "--cli", "codex", "--provider", "openai")...)
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCorrectIdentityCmd(&invocation{}) }, append(args, "--model", "gpt-5", "--cli", "codex", "--provider", "openai")...)
 	if err != nil {
 		t.Fatalf("correct-identity: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestCwWtWorktreeCorrectIdentityInProcess(t *testing.T) {
 	}
 
 	// The json spelling encodes the same result.
-	stdout, _, err = cwCovExec(t, projects, newWorktreeCorrectIdentityCmd, append(args,
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCorrectIdentityCmd(&invocation{}) }, append(args,
 		"--model", "gpt-5", "--cli=", "--provider=", "--event-id", "cw-wt-correction-2", "--format", "json")...)
 	if err != nil {
 		t.Fatalf("correct-identity json: %v", err)
@@ -72,7 +72,7 @@ func TestCwWtWorktreeCorrectIdentityInProcess(t *testing.T) {
 	}
 
 	// Invalid identifiers are refused by the backend.
-	if _, _, err := cwCovExec(t, projects, newWorktreeCorrectIdentityCmd, "e", "r", "c",
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCorrectIdentityCmd(&invocation{}) }, "e", "r", "c",
 		"--mode", "manual", "--initiator", "cwWt", "--actor", "a", "--reason", "r", "--event-id", "x"); err == nil {
 		t.Fatal("correct-identity with invalid identifiers must fail")
 	}
@@ -83,11 +83,7 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 
 	// A --filter that excludes every repository leaves the task unresolved and
 	// reports it rather than pretending the abort covered it.
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
-
-	command := newWorktreeAbortCmd(&invocation{filterFlag: "no-such-repository"})
+	command := newWorktreeAbortCmd(&invocation{projectsRoot: projects, filterFlag: "no-such-repository"})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out, errOut bytes.Buffer
@@ -107,7 +103,7 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 
 	// The json spelling carries the same excluded rows.
 	out.Reset()
-	command = newWorktreeAbortCmd(&invocation{filterFlag: "no-such-repository"})
+	command = newWorktreeAbortCmd(&invocation{projectsRoot: projects, filterFlag: "no-such-repository"})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetOut(&out)
@@ -137,7 +133,7 @@ func TestCwWtWorktreeCreateDerivesRepositoryFromOrigin(t *testing.T) {
 	// With no repository argument, create derives owner/repository from the
 	// current checkout's origin remote.
 	t.Chdir(clone)
-	stdout, _, err := cwCovExec(t, projects, newWorktreeCreateCmd, "cw-wt-derived",
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) }, "cw-wt-derived",
 		"--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", prompt, "--no-claim")
 	if err != nil {
@@ -156,7 +152,7 @@ func TestCwWtWorktreeCreateDeriveRepositoryFailure(t *testing.T) {
 
 	// A directory with no origin remote cannot supply a repository.
 	t.Chdir(t.TempDir())
-	_, _, err := cwCovExec(t, projects, newWorktreeCreateCmd, "cw-wt-derived",
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{}) }, "cw-wt-derived",
 		"--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", prompt)
 	if err == nil || !strings.Contains(err.Error(), "derive current repository") {
@@ -167,7 +163,7 @@ func TestCwWtWorktreeCreateDeriveRepositoryFailure(t *testing.T) {
 func TestCwWtWorktreeCreateStdinReadFailure(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
-	command := newWorktreeCreateCmd()
+	command := newWorktreeCreateCmd(&invocation{projectsRoot: projects})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetIn(cwWtErrorReader{})
@@ -176,9 +172,6 @@ func TestCwWtWorktreeCreateStdinReadFailure(t *testing.T) {
 	command.SetErr(&out)
 	command.SetArgs([]string{"t", "acme/app", "--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
 		"--original-prompt-file", "-"})
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	defer func() { projectsRoot = previousRoot }()
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "read --original-prompt-file - from stdin") {
 		t.Fatalf("create with a failing stdin = %v", err)
 	}
@@ -198,17 +191,17 @@ func TestCwWtWorktreeRelocateAndGuardUsageErrors(t *testing.T) {
 	}
 
 	// guard's own format validation.
-	if _, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--format", "yaml"); err == nil || !strings.Contains(err.Error(), "unsupported format") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{}) }, clone, "--format", "yaml"); err == nil || !strings.Contains(err.Error(), "unsupported format") {
 		t.Fatalf("guard --format yaml = %v", err)
 	}
 
 	// The single ok: line is the only write on a clean checkout, so a writer
 	// that fails immediately must turn the successful report into an error.
-	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd() },
+	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) },
 		&cwWtFailWriter{Allow: 0}, &bytes.Buffer{}, clone); err == nil {
 		t.Fatal("guard with a failing writer returned nil")
 	}
-	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd() },
+	if err := cwWtExecOut(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) },
 		&cwWtFailWriter{Allow: 0}, &bytes.Buffer{}, clone, "--format", "json"); err == nil {
 		t.Fatal("guard json with a failing writer returned nil")
 	}
@@ -226,7 +219,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli")
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup with residue: %v", err)
 	}
@@ -238,7 +231,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 	}
 
 	// The same residue is a first-class artefact in the json envelope.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup json with residue: %v", err)
 	}
@@ -248,15 +241,17 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 }
 
 func TestCwWtExecOutHelperIsolated(t *testing.T) {
-	// cwWtExecOut points the shared projectsRoot global at the fixture for the
-	// duration of the call.
+	// cwWtExecOut builds and executes the caller's command against the
+	// caller-supplied output streams.
 	testenv.Isolate(t)
+	built := false
 	if err := cwWtExecOut(t, "/tmp/cw-wt-projects", func() *cobra.Command {
-		if projectsRoot != "/tmp/cw-wt-projects" {
-			t.Fatalf("cwWtExecOut did not point projectsRoot at the fixture: %q", projectsRoot)
-		}
+		built = true
 		return &cobra.Command{Use: "noop", RunE: func(*cobra.Command, []string) error { return nil }}
 	}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
+	}
+	if !built {
+		t.Fatal("cwWtExecOut did not invoke the build function")
 	}
 }

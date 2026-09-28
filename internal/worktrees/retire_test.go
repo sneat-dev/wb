@@ -460,6 +460,25 @@ func TestRetireRefusesOpenPRSecretPathAndHookFailure(t *testing.T) {
 			if refs := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retired/*"); refs != "" {
 				t.Fatalf("refusal published retired ref: %s", refs)
 			}
+			if reason == "hook-failure" {
+				if err := os.Remove(filepath.Join(fixture.canonical, ".git", "hooks", "pre-commit")); err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := Retire(context.Background(), RetireOptions{
+					ProjectsRoot: fixture.projectsRoot, Task: "retire-refusal", ArchiveRemote: archive, Apply: true,
+					RemoteOwnership: retireAllowRemoteOwner,
+					Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+						return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+					},
+					OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+				})
+				if err != nil || resumed.Phase != "complete" {
+					t.Fatalf("resume after pre-commit refusal = (%+v, %v)", resumed, err)
+				}
+				if got := gitTestOutput(t, fixture.canonical, "show", resumed.SourceSHA+":change.txt"); got != "content" {
+					t.Fatalf("resumed commit lost pending source change: %q", got)
+				}
+			}
 		})
 	}
 }

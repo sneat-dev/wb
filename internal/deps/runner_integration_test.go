@@ -134,6 +134,9 @@ type managedGitHubActionsFixture struct {
 
 func newManagedGitHubActionsFixture(t *testing.T, canonicalWorkflow string) managedGitHubActionsFixture {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	root := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
 	seed := filepath.Join(root, "seed")

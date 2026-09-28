@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestAnalyzeDriftReportsDivergentFleetVersions(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	api := newBumpRepository(t, root, githubDir, "api", "module example.com/api\n\ngo 1.22\n\nrequire example.com/sdk v1.8.0\n")
@@ -44,8 +44,8 @@ func TestAnalyzeDriftReportsDivergentFleetVersions(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestAnalyzeDriftClassifiesLocalReplace(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	payments := newBumpRepository(t, root, githubDir, "payments", ""+
@@ -74,8 +74,8 @@ func TestAnalyzeDriftClassifiesLocalReplace(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestAnalyzeDriftReportsMajorPathSplit(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	search := newBumpRepository(t, root, githubDir, "search", ""+
@@ -110,8 +110,8 @@ func TestAnalyzeDriftReportsMajorPathSplit(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestAnalyzeDriftFiltersExactDependency(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	app := newBumpRepository(t, root, githubDir, "app", ""+
@@ -134,8 +134,8 @@ func TestAnalyzeDriftFiltersExactDependency(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDriftMarkdownAndReportsAreDeterministic(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repo := newBumpRepository(t, root, githubDir, "lib", "module example.com/lib\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n")

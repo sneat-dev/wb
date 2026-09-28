@@ -154,7 +154,7 @@ wb run --changed --target origin/main -- go vet`,
 				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet || changed || changedTarget != "" {
 					return usageError("--apply, --async, --changed, --config, --history, --idempotency-key, --list, --quiet, and --target cannot be used with --queue")
 				}
-				return printRunQueue(cmd, jsonOut)
+				return printRunQueue(inv, cmd, jsonOut)
 			}
 			if history {
 				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet || changed || changedTarget != "" {
@@ -185,7 +185,7 @@ wb run --changed --target origin/main -- go vet`,
 					if strings.TrimSpace(workerID) == "" {
 						return usageError("--async requires --worker <stable-id>; WB never guesses which sandbox may execute the job")
 					}
-					return submitWorkerOperation(cmd, daemonDeps, strings.TrimSpace(workerID), strings.TrimSpace(idempotencyKey), args)
+					return submitWorkerOperation(inv, cmd, daemonDeps, strings.TrimSpace(workerID), strings.TrimSpace(idempotencyKey), args)
 				}
 				if workerID != "" {
 					return usageError("--worker requires --async command mode")
@@ -193,7 +193,7 @@ wb run --changed --target origin/main -- go vet`,
 				if idempotencyKey != "" {
 					return usageError("--idempotency-key requires --async command mode")
 				}
-				return runExternalCommand(cmd, args, configPath, allowSaturatedHost, quiet)
+				return runExternalCommand(inv, cmd, args, configPath, allowSaturatedHost, quiet)
 			}
 			if async {
 				return usageError("--async requires command mode with run --")
@@ -220,7 +220,7 @@ wb run --changed --target origin/main -- go vet`,
 			if len(args) == 1 {
 				name = args[0]
 			}
-			if code := runRun(projectsRoot, inv.filterFlag, inv.extraOrgs, configPath, name, list, apply); code != 0 {
+			if code := runRun(inv.projectsRoot, inv.filterFlag, inv.extraOrgs, configPath, name, list, apply); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "the recipe reported errors, or drift that --apply would land; see the per-repository lines above",
@@ -284,7 +284,7 @@ func printRunHistory(cmd *cobra.Command, days int, jsonOut bool) error {
 	return nil
 }
 
-func runExternalCommand(cmd *cobra.Command, args []string, configPath string, allowSaturatedHost, quiet bool) error {
+func runExternalCommand(inv *invocation, cmd *cobra.Command, args []string, configPath string, allowSaturatedHost, quiet bool) error {
 	commandStarted := time.Now()
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -310,7 +310,7 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 	}
 	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(args), Worktree: cwd}
 	queueProgress := newRunQueueProgressWithHeartbeat(cmd.ErrOrStderr(), !quiet, configPath, runQueueHeartbeat())
-	lease, units, waited, leaseErr := admitWithQueueVisibility(cmd.Context(), projectsRoot, args, self, queueProgress)
+	lease, units, waited, leaseErr := admitWithQueueVisibility(cmd.Context(), inv.projectsRoot, args, self, queueProgress)
 	admittedAt := time.Now()
 	recorder.RecordAdmission(units, waited)
 	if leaseErr == nil {
@@ -529,8 +529,8 @@ func runQueueSummary(args []string) string {
 	return base
 }
 
-func printRunQueue(cmd *cobra.Command, jsonOut bool) error {
-	listing := runqueue.ListQueue(projectsRoot, runqueue.Budget())
+func printRunQueue(inv *invocation, cmd *cobra.Command, jsonOut bool) error {
+	listing := runqueue.ListQueue(inv.projectsRoot, runqueue.Budget())
 	if jsonOut {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(listing)
 	}

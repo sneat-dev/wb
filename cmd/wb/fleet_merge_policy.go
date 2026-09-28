@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -296,7 +297,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 			resumedActions[repo.Repository] = append([]string(nil), repo.AppliedActions...)
 		}
 	}
-	repos, err := mergePolicyDiscover(projectsRoot, inv.filterFlag, options.owners, options.repositories, options.includeUser)
+	repos, err := mergePolicyDiscover(inv.projectsRoot, inv.filterFlag, options.owners, options.repositories, options.includeUser)
 	if err != nil {
 		return mergePolicyReport{}, err
 	}
@@ -337,7 +338,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 	buildMergePolicyRulesetPlan(ctx, &report)
 	summarizeMergePolicy(&report)
 	if options.apply {
-		path, err := mergePolicyReportPath(options.reportDir)
+		path, err := mergePolicyReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -356,7 +357,7 @@ func runMergePolicy(ctx context.Context, inv *invocation, options mergePolicyOpt
 			return report, err
 		}
 	} else if strings.TrimSpace(options.reportDir) != "" {
-		path, err := mergePolicyReportPath(options.reportDir)
+		path, err := mergePolicyReportPath(inv, options.reportDir)
 		if err != nil {
 			return report, err
 		}
@@ -819,25 +820,26 @@ func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository,
 }
 
 func applyClassicProtectionWithoutLinearHistory(ctx context.Context, endpoint string, body []byte) error {
+	return applyClassicProtectionWithoutLinearHistoryInjected(ctx, endpoint, body, nil)
+}
+
+// applyClassicProtectionWithoutLinearHistoryInjected is
+// applyClassicProtectionWithoutLinearHistory's test seam (task-9 PR-9):
+// every production call site reaches it only through
+// applyClassicProtectionWithoutLinearHistory, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch input file's create/chmod/write/
+// close failure branches deterministically.
+func applyClassicProtectionWithoutLinearHistoryInjected(ctx context.Context, endpoint string, body []byte, inj *filewrite.Injector) error {
 	payload, err := classicProtectionUpdatePayload(body)
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp("", "wb-merge-policy-protection-*.json")
+	name, err := filewrite.CreateScratch("", "wb-merge-policy-protection-*.json", 0o600, payload, inj)
+	if name != "" {
+		defer func() { _ = os.Remove(name) }()
+	}
 	if err != nil {
-		return err
-	}
-	name := temp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(payload); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
 		return err
 	}
 	response := mergePolicyExecute(ctx, "api", "--method", "PUT", endpoint, "--input", name)
@@ -949,6 +951,16 @@ func enabledSettingValue(setting *githubEnabledSetting) *bool {
 func boolPointer(value bool) *bool { return &value }
 
 func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) error {
+	return applySharedRulesetInjected(ctx, change, nil)
+}
+
+// applySharedRulesetInjected is applySharedRuleset's test seam (task-9
+// PR-9): every production call site reaches it only through
+// applySharedRuleset, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch input file's create/chmod/write/close failure branches
+// deterministically.
+func applySharedRulesetInjected(ctx context.Context, change mergePolicyRulesetChange, inj *filewrite.Injector) error {
 	if !strings.EqualFold(change.SourceType, "Repository") {
 		return fmt.Errorf("%s ruleset application is unsupported and audit-only", strings.ToLower(change.SourceType))
 	}
@@ -1004,23 +1016,11 @@ func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) er
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp("", "wb-merge-policy-ruleset-*.json")
+	name, err := filewrite.CreateScratch("", "wb-merge-policy-ruleset-*.json", 0o600, payload, inj)
+	if name != "" {
+		defer func() { _ = os.Remove(name) }()
+	}
 	if err != nil {
-		return err
-	}
-	name := temp.Name()
-	defer func() {
-		_ = os.Remove(name)
-	}()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(payload); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
 		return err
 	}
 	response := mergePolicyExecute(ctx, "api", "--method", "PUT", endpoint, "--input", name)
@@ -1048,10 +1048,10 @@ func summarizeMergePolicy(report *mergePolicyReport) {
 	}
 }
 
-func mergePolicyReportPath(explicit string) (string, error) {
+func mergePolicyReportPath(inv *invocation, explicit string) (string, error) {
 	dir := strings.TrimSpace(explicit)
 	if dir == "" {
-		home, err := wbhome.EnsureRoot(projectsRoot)
+		home, err := wbhome.EnsureRoot(inv.projectsRoot)
 		if err != nil {
 			return "", err
 		}

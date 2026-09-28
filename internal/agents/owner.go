@@ -26,15 +26,13 @@ const OwnerArgument = "--wb-internal-agent-run"
 // records that it was, rather than the writes failing under the harness.
 const maxLogBytes = 128 << 20
 
-// stopGrace is how long a stopped worker has to honour a graceful signal before
-// the stop escalates to a kill. It is a var, not a const, so a test exercising
-// the escalation path can shrink it instead of waiting out the real grace
-// period.
-var stopGrace = 3 * time.Second
+// defaultStopGrace is how long a stopped worker has to honour a graceful
+// signal before the stop escalates to a kill.
+const defaultStopGrace = 3 * time.Second
 
-// stopPollInterval is how often StopRun re-checks whether the worker has
-// exited during the grace period.
-var stopPollInterval = 50 * time.Millisecond
+// defaultStopPollInterval is how often StopRun re-checks whether the worker
+// has exited during the grace period.
+const defaultStopPollInterval = 50 * time.Millisecond
 
 // OwnerDeps are the seams the run owner needs. They are injected so the whole
 // owner can be exercised deterministically against a fake harness.
@@ -45,11 +43,28 @@ type OwnerDeps struct {
 	LookPath func(string) (string, error)
 	// Now is the clock, injected for deterministic tests.
 	Now func() time.Time
+	// Sleep is StopRun's grace-period poll seam, injected for deterministic
+	// tests. A test exercising a worker that ignores termination shrinks
+	// StopGrace/StopPollInterval instead of leaving Sleep real, because that
+	// path genuinely waits on a real OS process; every other test replaces
+	// Sleep with a recorder.
+	Sleep func(time.Duration)
+	// StopGrace and StopPollInterval configure StopRun's escalation wait.
+	// Both are struct fields, not package-level mutable vars, so a test
+	// cannot leave shared package state mutated for another test running in
+	// parallel. StopRun does not default a zero OwnerDeps -- every caller
+	// (production and test) builds on DefaultOwnerDeps, which already
+	// populates every field, so StopRun trusts deps as given.
+	StopGrace        time.Duration
+	StopPollInterval time.Duration
 }
 
 // DefaultOwnerDeps returns the production seams.
 func DefaultOwnerDeps() OwnerDeps {
-	return OwnerDeps{LookPath: exec.LookPath, Now: time.Now}
+	return OwnerDeps{
+		LookPath: exec.LookPath, Now: time.Now, Sleep: time.Sleep,
+		StopGrace: defaultStopGrace, StopPollInterval: defaultStopPollInterval,
+	}
 }
 
 // RunOwner executes one dispatched run to completion and records its terminal
@@ -306,7 +321,7 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 // deliberately: it observes the non-zero exit and records the terminal state,
 // so a stopped run reports a real outcome instead of vanishing into
 // "abandoned".
-func StopRun(store Store, agentID string) (Record, error) {
+func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
 	record, err := store.Load(agentID)
 	if err != nil {
 		return Record{}, err
@@ -326,12 +341,24 @@ func StopRun(store Store, agentID string) (Record, error) {
 	if err := terminateOwner(record.WorkerPID, terminationSignal()); err != nil {
 		return record, err
 	}
-	deadline := time.Now().Add(stopGrace)
-	for processAlive(record.WorkerPID) && time.Now().Before(deadline) {
-		time.Sleep(stopPollInterval)
-	}
-	if processAlive(record.WorkerPID) {
+	deadline := deps.Now().Add(deps.StopGrace)
+	exited := waitForProcessExit(deps.Now, deps.Sleep, deps.StopPollInterval, deadline, func() bool {
+		return processAlive(record.WorkerPID)
+	})
+	if !exited {
 		return record, terminateOwner(record.WorkerPID, killSignal())
 	}
 	return record, nil
+}
+
+// waitForProcessExit polls alive() every pollInterval (via the injected
+// clock/sleep seam, never a direct time.Now/time.Sleep call) until it
+// reports false or now() reaches deadline. It returns false when the
+// deadline passed while alive() was still true — StopRun's signal to
+// escalate to SIGKILL — and true once alive() reports false.
+func waitForProcessExit(now func() time.Time, sleep func(time.Duration), pollInterval time.Duration, deadline time.Time, alive func() bool) bool {
+	for alive() && now().Before(deadline) {
+		sleep(pollInterval)
+	}
+	return !alive()
 }

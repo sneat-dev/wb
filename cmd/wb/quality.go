@@ -95,7 +95,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			if options.changed {
 				return runChangedCoverage(cmd, path, options)
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}
@@ -146,6 +146,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().DurationVar(&options.baselineTimeout, "baseline-timeout", 20*time.Minute, "wall-time budget for measuring the merge base directly when --baseline-file is empty or missing")
 	command.AddCommand(newCoverageBaselineCmd())
 	command.AddCommand(newCoverageSummaryCmd())
+	command.AddCommand(newCoverageWorklistCmd())
 	return command
 }
 
@@ -233,7 +234,7 @@ func newVerifyCmd(inv *invocation) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}
@@ -298,7 +299,7 @@ func newCheckCmd(inv *invocation) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			targets, err := qualityTargets(path, projectsRoot, inv.filterFlag, options)
+			targets, err := qualityTargets(path, inv.projectsRoot, inv.filterFlag, options)
 			if err != nil {
 				return err
 			}

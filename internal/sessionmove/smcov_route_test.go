@@ -1074,7 +1074,7 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = handle.Close() }()
-		if _, err := publishRouteImmutableAt(handle, bytes.Repeat([]byte("x"), maxRouteBytes+1)); err == nil || !strings.Contains(err.Error(), "courier route exceeds") {
+		if _, err := NewStore("").publishRouteImmutableAt(handle, bytes.Repeat([]byte("x"), maxRouteBytes+1)); err == nil || !strings.Contains(err.Error(), "courier route exceeds") {
 			t.Fatalf("publishRouteImmutableAt(oversized) error = %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, routeFileName)); !errors.Is(err, os.ErrNotExist) {
@@ -1091,11 +1091,11 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 		}
 		defer func() { _ = handle.Close() }()
 		raw := []byte("{\n  \"exact\": true\n}\n")
-		created, err := publishRouteImmutableAt(handle, raw)
+		created, err := NewStore("").publishRouteImmutableAt(handle, raw)
 		if err != nil || !created {
 			t.Fatalf("first publishRouteImmutableAt = created %t, error %v", created, err)
 		}
-		created, err = publishRouteImmutableAt(handle, raw)
+		created, err = NewStore("").publishRouteImmutableAt(handle, raw)
 		if err != nil || created {
 			t.Fatalf("second publishRouteImmutableAt = created %t, error %v", created, err)
 		}

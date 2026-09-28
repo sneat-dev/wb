@@ -45,7 +45,13 @@ const cloneLockSuffix = ".lock"
 // (never removed) so two waiters can never lock two different inodes for
 // the same clonePath — the same reasoning as repositoryRegistrationLock and
 // sessionmove's execution lock.
-func acquireCloneLock(clonePath string) (*cloneLock, error) {
+//
+// now and sleep are the clock and retry-backoff seam: every production
+// caller passes time.Now/time.Sleep (via Options.Now/Options.Sleep, see
+// provider.go), and a test passes fakes to exercise the timeout branch
+// without a real wait. Neither is a package-level mutable var, so a test
+// cannot leave a shared clock mutated for another test running in parallel.
+func acquireCloneLock(clonePath string, now func() time.Time, sleep func(time.Duration)) (*cloneLock, error) {
 	lockPath := clonePath + cloneLockSuffix
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create wb-state lock directory: %w", err)
@@ -54,7 +60,7 @@ func acquireCloneLock(clonePath string) (*cloneLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open wb-state clone lock: %w", err)
 	}
-	deadline := time.Now().Add(cloneLockTimeout)
+	deadline := now().Add(cloneLockTimeout)
 	for {
 		lockErr := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if lockErr == nil {
@@ -64,11 +70,11 @@ func acquireCloneLock(clonePath string) (*cloneLock, error) {
 			_ = file.Close()
 			return nil, fmt.Errorf("lock wb-state clone %s: %w", clonePath, lockErr)
 		}
-		if time.Now().After(deadline) {
+		if now().After(deadline) {
 			_ = file.Close()
 			return nil, fmt.Errorf("another WB process held the wb-state clone lock for %s: %s", cloneLockTimeout, lockPath)
 		}
-		time.Sleep(20 * time.Millisecond)
+		sleep(20 * time.Millisecond)
 	}
 }
 

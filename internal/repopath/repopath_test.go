@@ -185,6 +185,38 @@ func TestFromLocalPathRejectsPathsOutsideTheRoot(t *testing.T) {
 	}
 }
 
+func TestParseRelativeRejectsUnsafeOwnerAndRepositorySegments(t *testing.T) {
+	t.Parallel()
+	for _, relative := range []string{
+		"github.com/-acme/app",
+		"github.com/acme/repo?name",
+	} {
+		if _, err := ParseRelative(relative); err == nil || !strings.Contains(err.Error(), "unsafe org or repository segment") {
+			t.Errorf("ParseRelative(%q) error = %v, want unsafe-segment diagnostic", relative, err)
+		}
+	}
+}
+
+func TestFromLocalPathReportsIncompatiblePathForms(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if _, err := FromLocalPath(root, "github.com/acme/app"); err == nil {
+		t.Fatal("an absolute projects root and relative clone path must not produce an address")
+	}
+}
+
+func TestOwnersReportsUnreadableProjectsRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(root, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owners, unreadable := Owners(root)
+	if len(owners) != 0 || len(unreadable) != 1 || !strings.Contains(unreadable[0], root) {
+		t.Fatalf("Owners(file root) = owners %+v, unreadable %+v; want one path-specific diagnostic", owners, unreadable)
+	}
+}
+
 func TestSafeSegmentMatchesRepositoryRules(t *testing.T) {
 	t.Parallel()
 	if SafeSegment(".github", true) != true || SafeSegment(".github", false) != false {

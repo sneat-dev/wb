@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
-func newRemoteStatusCmd() *cobra.Command {
+func newRemoteStatusCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var stale time.Duration
 	var machine string
@@ -26,7 +26,7 @@ local view. Entries that cannot be decoded are rendered as error rows and do
 not change the exit code.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemoteStatus(defaultRemoteDeps(), projectsRoot, stale, machine, jsonOut, os.Stdout, os.Stderr)
+			return runRemoteStatus(defaultRemoteDeps(), inv.projectsRoot, stale, machine, jsonOut, os.Stdout, os.Stderr)
 		},
 	}
 	addJSONFormatFlags(cmd, &jsonOut)

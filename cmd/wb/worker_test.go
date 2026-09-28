@@ -111,9 +111,9 @@ func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := newWorkerConnectCmd(defaultDaemonDependencies())
+	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
 	command.SetContext(context.Background())
-	if err := executeWorkerAssignment(command, client, registration, []string{t.TempDir()}, leased.Msg.Assignment); err != nil {
+	if err := executeWorkerAssignment(&invocation{}, command, client, registration, []string{t.TempDir()}, leased.Msg.Assignment); err != nil {
 		t.Fatal(err)
 	}
 	completed, err := client.GetOperation(context.Background(), connect.NewRequest(&daemonv1.GetOperationRequest{OperationId: operation.Msg.OperationId}))
@@ -126,7 +126,7 @@ func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) 
 }
 
 func TestWorkerConnectHelpExposesStableIdentityRootsAndFormats(t *testing.T) {
-	command := newWorkerConnectCmd(defaultDaemonDependencies())
+	command := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
 	for _, name := range []string{"id", "root", "cpu-capacity", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Fatalf("worker connect help is missing --%s", name)

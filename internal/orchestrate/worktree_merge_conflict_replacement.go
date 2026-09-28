@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -157,7 +158,7 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, state.roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
@@ -241,7 +242,7 @@ func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeC
 	if claimHash != options.ExpectedImmutableClaimSHA256 {
 		return conflictCandidateRefreshState{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return conflictCandidateRefreshState{}, fmt.Errorf("inspect failed candidate publication state: %w", err)
 	}
@@ -290,16 +291,17 @@ func revalidateConflictCandidateRefresh(ctx context.Context, options WorktreeMer
 }
 
 func writeConflictCandidateRefreshPrompt(receipt WorktreeMergeReceipt, target string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-conflict-candidate-refresh-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writeConflictCandidateRefreshPromptInjected(receipt, target, sources, roots, actor, reason, nil)
+}
+
+// writeConflictCandidateRefreshPromptInjected is
+// writeConflictCandidateRefreshPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writeConflictCandidateRefreshPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writeConflictCandidateRefreshPromptInjected(receipt WorktreeMergeReceipt, target string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares one receipt-bound conflict replacement for %s.\nTarget: %s@%s.\n", receipt.ReceiptPath, receipt.Target, target)
 	for _, source := range sources {
@@ -309,13 +311,8 @@ func writeConflictCandidateRefreshPrompt(receipt WorktreeMergeReceipt, target st
 		fmt.Fprintf(&body, "- immutable root %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-conflict-candidate-refresh-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

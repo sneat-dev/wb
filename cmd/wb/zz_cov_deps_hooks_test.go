@@ -219,13 +219,13 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 	initTestRepository(t, filepath.Join(root, "acme", "other"))
 
 	// check before install: unmanaged hooks are findings, not a crash.
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, app)
 	if _, ok := err.(*hooksCheckError); !ok {
 		t.Fatalf("check before install error = %v, want a hooks-check error\n%s", err, stdout)
 	}
 	// --format=json still exits non-zero for findings; the envelope is what
 	// matters, so the error is expected here.
-	jsonOut, _, jsonErr := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app, "--format=json")
+	jsonOut, _, jsonErr := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, app, "--format=json")
 	if _, ok := jsonErr.(*hooksCheckError); !ok {
 		t.Fatalf("check --format=json error = %v\n%s", jsonErr, jsonOut)
 	}
@@ -241,7 +241,7 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 	}
 
 	// install: the shims land and the report names the repository.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, app)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{projectsRoot: root}, false) }, app)
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, stdout)
 	}
@@ -255,22 +255,22 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Errorf("install did not write the managed pre-commit shim under %s: %v", checked.ManagedPath, statErr)
 	}
 	// The same repository now validates clean.
-	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app); err != nil {
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, app); err != nil {
 		t.Fatalf("check after install: %v\n%s", err, stdout)
 	}
 
 	// A repository path with --fleet is refused rather than silently ignored.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, app, "--fleet"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{projectsRoot: root}, false) }, app, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("install --fleet with a path = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, app, "--fleet"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, app, "--fleet"); err == nil ||
 		!strings.Contains(err.Error(), "cannot be used with --fleet") {
 		t.Fatalf("check --fleet with a path = %v", err)
 	}
 
 	// Fleet install processes every local repository and reports the count.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, false) }, "--fleet")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{projectsRoot: root}, false) }, "--fleet")
 	if err != nil {
 		t.Fatalf("fleet install: %v\n%s", err, stdout)
 	}
@@ -278,10 +278,10 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Errorf("fleet install report = %q", stdout)
 	}
 	// Fleet check is then clean, in text and JSON.
-	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, "--fleet"); err != nil {
+	if stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, "--fleet"); err != nil {
 		t.Fatalf("fleet check: %v\n%s", err, stdout)
 	}
-	fleetJSON, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{}) }, "--fleet", "--format=json")
+	fleetJSON, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksCheckCmd(&invocation{projectsRoot: root}) }, "--fleet", "--format=json")
 	if err != nil || !json.Valid([]byte(fleetJSON)) {
 		t.Fatalf("fleet check JSON = %v\n%s", err, fleetJSON)
 	}
@@ -290,18 +290,18 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 		t.Fatalf("fleet results = %+v, %v", fleetResults, err)
 	}
 	// The repair spelling reuses the same installer.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{}, true) }, app)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newHooksInstallCmd(&invocation{projectsRoot: root}, true) }, app)
 	if err != nil || !strings.Contains(stdout, "hooks ready for") {
 		t.Fatalf("repair: %v\n%s", err, stdout)
 	}
 
 	// A hidden hook runner refuses a malformed hook name outright and a
 	// well-formed but unconfigured one without executing anything.
-	if _, _, err := cwCovExec(t, root, newHooksRunCmd, "../evil"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksRunCmd(&invocation{projectsRoot: root}) }, "../evil"); err == nil ||
 		!strings.Contains(err.Error(), "invalid hook name") {
 		t.Fatalf("malformed hook = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newHooksRunCmd, "not-a-real-hook"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newHooksRunCmd(&invocation{projectsRoot: root}) }, "not-a-real-hook"); err == nil ||
 		!strings.Contains(err.Error(), "disabled or not configured") {
 		t.Fatalf("unconfigured hook = %v", err)
 	}

@@ -52,7 +52,7 @@ a terminal; --non-interactive disables it.`,
 				details:   details,
 				options:   options,
 				filter:    inv.filterFlag,
-				projects:  projectsRoot,
+				projects:  inv.projectsRoot,
 				titleKind: statusTitleAuto,
 				progress:  cmd.ErrOrStderr(),
 			})

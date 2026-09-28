@@ -72,12 +72,7 @@ func TestApplyAndCheckHooksFleet(t *testing.T) {
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() {
-		projectsRoot = previousRoot
-	})
-	inv := &invocation{filterFlag: "acme/"}
+	inv := &invocation{projectsRoot: root, filterFlag: "acme/"}
 
 	command := &cobra.Command{}
 	var output bytes.Buffer

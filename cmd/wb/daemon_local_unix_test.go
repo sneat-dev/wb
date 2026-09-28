@@ -81,9 +81,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 	pinDaemonHome(t, root)
 	t.Chdir(root)
 	t.Setenv("WB_DAEMON_CLI_HELPER", "1")
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
 	originalStart := deps.start
@@ -120,7 +118,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 	})
 
 	var submitOutput bytes.Buffer
-	submit := newDaemonOperationSubmitCmd(deps)
+	submit := newDaemonOperationSubmitCmd(&invocation{projectsRoot: projectsRoot}, deps)
 	submit.SetOut(&submitOutput)
 	submit.SetErr(&bytes.Buffer{})
 	submit.SetArgs([]string{"--json", "--", os.Args[0], "-test.run=TestDaemonOperationCLIHelperProcess", "--", "cli"})
@@ -136,7 +134,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 	}
 
 	var waitOutput bytes.Buffer
-	wait := newDaemonOperationWaitCmd(deps)
+	wait := newDaemonOperationWaitCmd(&invocation{projectsRoot: projectsRoot}, deps)
 	wait.SetOut(&waitOutput)
 	wait.SetErr(&bytes.Buffer{})
 	wait.SetArgs([]string{"--json", "--timeout", "10s", submitted.OperationID})

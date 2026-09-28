@@ -36,6 +36,9 @@ type fetchCacheFixture struct {
 
 func newFetchCacheFixture(t *testing.T) fetchCacheFixture {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

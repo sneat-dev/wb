@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -33,6 +35,13 @@ type landFixture struct {
 
 func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	t.Helper()
+	// This file's tests are on internal/quality/testdata/unit_tier.pending
+	// (task-17): every landing under test here reaches PullRequestLandOptions'
+	// git/run seam (pr_land.go), which defaults to production's real
+	// gitcli/runner adapters and so starts a real process through
+	// task-24's guarded runner exactly as this fixture's own runEngineGit
+	// calls already do outside it. AllowRealProcess is what the guard's own
+	// refusal message names as the fix for a file already on that list.
 	if len(files) == 0 {
 		files = []string{"go.sum"}
 	}
@@ -792,7 +801,7 @@ func TestLandKeepCommitsRetiresTheRewrittenRemoteHead(t *testing.T) {
 	if !result.BranchDeleted {
 		t.Fatal("rewritten pull request branch was not retired")
 	}
-	if output, err := runGitAllowFail(fixture.canonical, "ls-remote", "origin", "refs/heads/feature/keep-success"); err != nil {
+	if output, err := runGitAllowFail(defaultRunner, fixture.canonical, "ls-remote", "origin", "refs/heads/feature/keep-success"); err != nil {
 		t.Fatal(err)
 	} else if strings.TrimSpace(output) != "" {
 		t.Fatalf("rewritten remote branch still exists: %s", output)
@@ -1218,5 +1227,95 @@ func TestLandReportsAFindingWhenTheWorktreeCannotBeRetired(t *testing.T) {
 	}
 	if keptResult.Outcome != LandSuccess || !keptResult.Kept {
 		t.Fatalf("--keep result = %#v", keptResult)
+	}
+}
+
+// TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFetch
+// covers worktree_merge_pr_land.go:464-465, the second of
+// verifyUpdateBranchMergeProof's two commitExistsLocally error returns: once
+// the best-effort `git fetch` for a not-yet-local head succeeds, the
+// retried commitExistsLocally call gets exactly the same treatment as the
+// first one (ports_seam_coverage_test.go's B5 test) -- a real command
+// failure must come back as an error, never be folded into headLocal=false.
+// Reaching it needs a real worktree with a real origin remote holding the
+// branch, so the fetch itself (worktree_merge_pr_land.go still calls
+// runCommand directly for it, not through the Git port) actually succeeds;
+// newLandFixture already builds exactly that pair, so this test borrows it
+// instead of standing up its own repo. The gitclitest.Fake standing in for
+// the Git port then answers the two commitExistsLocally calls differently
+// via FailCall, exactly as its doc comment describes for this case.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestVerifyUpdateBranchMergeProofPropagatesACommitExistsLocallyErrorAfterFetch(t *testing.T) {
+	fixture := newLandFixture(t, "feature/proof-retry", "go.mod")
+
+	const headSHA = "abc123headsha"
+	wantErr := errors.New("boom: guarded runner refused to start")
+	fake := &gitclitest.Fake{
+		CommitObjectExistsByCase: map[string]gitclitest.BoolResult{
+			fixture.canonical + "\x00" + headSHA: {Value: false},
+		},
+	}
+	fake.FailCall(2, wantErr)
+
+	proved, err := verifyUpdateBranchMergeProof(context.Background(), fake, defaultRunner, fixture.canonical,
+		"feature/proof-retry", "main", "acme/app", "candidatesha", "targetparentsha", headSHA)
+	if proved {
+		t.Fatalf("proved = true, want false when the retried commitExistsLocally errors")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want it to be (or wrap) %v", err, wantErr)
+	}
+	if got := fake.CallCount(); got != 2 {
+		t.Fatalf("CallCount() = %d, want 2: commitExistsLocally must be called once before the fetch and once after it", got)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedUpdatedHeadUnitTier
+// covers pr_land_local_sync.go's fastForwardWorktreeToUpdatedHead: once the
+// real `git fetch` for branch succeeds, a fetched head that disagrees with
+// the caller's updatedHead must be reported rather than silently
+// fast-forwarded to the wrong commit. This, and the two tests below, regressed
+// to uncovered in the unit tier the same way as this file's proof-retry test
+// above: every one of this function's own unit tests moved to the e2e tier
+// when it started resolving its Git port through orchestrateGit
+// (pr_land_local_sync_test.go), even though the fetch/merge steps
+// (worktree_merge.go's mergeRevision, and the runCommand calls in
+// pr_land_local_sync.go itself) still need a real git repository, which
+// newLandFixture already provides.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedUpdatedHeadUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-mismatch", "go.mod")
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-mismatch"}},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-mismatch", "not-the-real-head")
+	if !strings.Contains(note, "does not match updated head") {
+		t.Fatalf("note = %q, want it to name the fetched/updated head mismatch", note)
+	}
+}
+
+// TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier
+// covers the same function's diverged-local-commits note: the fetched head
+// matches updatedHead (so the mismatch branch above is bypassed), but the
+// injected Fake's MergeBaseIsAncestorStrict reports the ancestor check
+// failed, exactly as a real diverged local HEAD would.
+//
+//nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestFastForwardWorktreeToUpdatedHeadNotesDivergedLocalCommitsUnitTier(t *testing.T) {
+	fixture := newLandFixture(t, "feature/ff-diverged", "go.mod")
+	wantErr := errors.New("boom: merge-base --is-ancestor failed")
+	fake := &gitclitest.Fake{
+		StatusPorcelainByDir:   map[string]gitclitest.Result{fixture.canonical: {Value: ""}},
+		BranchShowCurrentByDir: map[string]gitclitest.Result{fixture.canonical: {Value: "feature/ff-diverged"}},
+		MergeBaseIsAncestorStrictErrByCase: map[string]error{
+			fixture.canonical + "\x00HEAD\x00refs/remotes/origin/feature/ff-diverged": wantErr,
+		},
+	}
+	note := fastForwardWorktreeToUpdatedHead(context.Background(), fake, defaultRunner, fixture.canonical, "feature/ff-diverged", fixture.headSHA)
+	if !strings.Contains(note, "diverged local commits") {
+		t.Fatalf("note = %q, want it to name diverged local commits", note)
 	}
 }

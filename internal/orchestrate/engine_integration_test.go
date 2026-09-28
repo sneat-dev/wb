@@ -19,7 +19,7 @@ import (
 type textHandler struct{}
 
 func (textHandler) Inspect(ctx context.Context, canonical, base string, _ Repository) (Assessment[string], error) {
-	contents, _, err := runCommand(ctx, time.Minute, 0, canonical, "git", "show", base+":dependency.txt")
+	contents, _, err := runCommand(ctx, defaultRunner, time.Minute, 0, canonical, "git", "show", base+":dependency.txt")
 	if err != nil {
 		return Assessment[string]{}, err
 	}
@@ -406,8 +406,9 @@ func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *tes
 // TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve
 // pins the floor: a repository whose origin has no resolvable ref at all
 // must still fail loudly rather than silently resolving to nothing.
+//
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runEngineGit(t, root, "init", "--bare", remote)
@@ -694,6 +695,11 @@ func newEngineFixture(t *testing.T) engineFixture {
 // duplicating the whole fixture.
 func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	t.Helper()
+	// This fixture and every test built on it exercises real git and gh
+	// through the package's own runCommand/mergeRevision seam
+	// (spec/plans/coverage-to-100 task-17): production's defaultRunner is
+	// task-24's guarded runner.Real, so every test in this file needs the
+	// escape hatch once, here, rather than repeating it per test.
 	root := t.TempDir()
 	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
 	// this, a call that passes no root would resolve to the developer's real

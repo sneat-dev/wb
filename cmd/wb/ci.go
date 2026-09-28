@@ -253,7 +253,7 @@ one place this command is not read-only).`,
 			if len(args) == 1 {
 				path = args[0]
 			}
-			code, err := runCIAudit(path, projectsRoot, inv.filterFlag, target, fleetMode, strict, jsonOut)
+			code, err := runCIAudit(path, inv.projectsRoot, inv.filterFlag, target, fleetMode, strict, jsonOut)
 			if err != nil {
 				return err
 			}

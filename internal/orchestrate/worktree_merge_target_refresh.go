@@ -35,9 +35,9 @@ func refreshPublishedWorktreeMergeCandidateTarget(ctx context.Context, receipt *
 	}
 	previousCandidate := receipt.Candidate.SHA
 	previousTarget := receipt.TargetSHA
-	if _, _, mergeErr := runCommand(ctx, timeout, retry, receipt.Candidate.Worktree, "git", "merge", "--no-edit", remoteTarget); mergeErr != nil {
+	if _, _, mergeErr := runCommand(ctx, defaultRunner, timeout, retry, receipt.Candidate.Worktree, "git", "merge", "--no-edit", remoteTarget); mergeErr != nil {
 		conflicts, conflictErr := conflictingWorktreeMergePaths(ctx, receipt.Candidate.Worktree)
-		_, _, _ = runCommand(ctx, timeout, 0, receipt.Candidate.Worktree, "git", "merge", "--abort")
+		_, _, _ = runCommand(ctx, defaultRunner, timeout, 0, receipt.Candidate.Worktree, "git", "merge", "--abort")
 		if conflictErr != nil || len(conflicts) == 0 {
 			return fmt.Errorf(
 				"target advanced to %s and refreshing published candidate %s (PR %s) failed to merge cleanly: %w",
@@ -49,7 +49,7 @@ func refreshPublishedWorktreeMergeCandidateTarget(ctx context.Context, receipt *
 			remoteTarget, previousCandidate, receipt.PullRequest, strings.Join(conflicts, ", "), receipt.Candidate.Worktree, receipt.ReceiptPath,
 		)
 	}
-	newCandidate, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	newCandidate, headErr := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
 	if headErr != nil {
 		return fmt.Errorf("read refreshed candidate head: %w", headErr)
 	}
@@ -69,7 +69,7 @@ func refreshPublishedWorktreeMergeCandidateTarget(ctx context.Context, receipt *
 // failed `git merge` so a refusal or conflict receipt can name them exactly,
 // alongside the recovery command, instead of only echoing git's own output.
 func conflictingWorktreeMergePaths(ctx context.Context, worktree string) ([]string, error) {
-	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "diff", "--name-only", "--diff-filter=U")
+	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "diff", "--name-only", "--diff-filter=U")
 	if err != nil {
 		return nil, err
 	}

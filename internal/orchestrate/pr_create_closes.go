@@ -234,7 +234,7 @@ func applyClosesToAdoptedPullRequest(ctx context.Context, worktree, repository, 
 		return nil
 	}
 	newBody := withClosesPrefix(currentBody, missing)
-	_, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "edit", url, "--repo", repository, "--body", newBody)
+	_, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "edit", url, "--repo", repository, "--body", newBody)
 	return err
 }
 

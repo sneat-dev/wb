@@ -75,8 +75,9 @@ func TestDashboardJSONDoesNotOpenBrowser(t *testing.T) {
 }
 
 func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
+	wantRoot := t.TempDir()
 	var opened, root string
-	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
+	command := newDashboardCmdWithDependencies(&invocation{projectsRoot: wantRoot}, dashboardCommandDependencies{
 		open: func(target string) error { opened = target; return nil },
 		localURL: func(_ context.Context, projectsRoot string) (string, string, error) {
 			root = projectsRoot
@@ -87,8 +88,8 @@ func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if root != projectsRoot || opened != "http://127.0.0.1:9000/" {
-		t.Fatalf("root = %q, opened = %q", root, opened)
+	if root != wantRoot || opened != "http://127.0.0.1:9000/" {
+		t.Fatalf("root = %q, opened = %q, want root = %q", root, opened, wantRoot)
 	}
 }
 

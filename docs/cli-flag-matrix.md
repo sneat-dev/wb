@@ -21,6 +21,13 @@ root, default `.`), `--sha` (the commit the profile was measured at, for
 traceability), and `--out` (the output baseline JSON path, default
 `coverage-baseline.json`).
 
+`coverage worklist <coverage-profile>` (task-25's worklist generator,
+spec/plans/coverage-to-100/README.md) is also command-specific: `--module`
+(the Go module root, default `.`; its go.mod names the module path the
+profile uses, and its source maps blocks to enclosing functions via
+go/ast), `--unit-size` (target statement count per unit, default `300`),
+and `--format` (`text`, the default, or `json`).
+
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
 acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
@@ -89,6 +96,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
 | `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
+| `pr update` | yes | rejected | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |

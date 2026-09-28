@@ -15,9 +15,6 @@ import (
 func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, root)
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	home := filepath.Join(root, ".wb")
 
 	previousRuntimeProcessCheck := sessionRegisterRuntimeProcess
@@ -30,7 +27,7 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 		sessionRegisterRuntimeProcess = previousRuntimeProcessCheck
 		sessionRegisterCurrentPID = previousCurrentPID
 	})
-	command := newSessionRegisterCmd()
+	command := newSessionRegisterCmd(&invocation{})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{
@@ -59,7 +56,7 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 }
 
 func TestSessionRegisterRejectsOwnPID(t *testing.T) {
-	command := newSessionRegisterCmd()
+	command := newSessionRegisterCmd(&invocation{})
 	command.SetArgs([]string{"--pid", strconv.Itoa(os.Getpid()), "--runtime", "codex"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "WB itself") {
 		t.Fatalf("register own PID error = %v, want self-registration rejection", err)
@@ -67,7 +64,7 @@ func TestSessionRegisterRejectsOwnPID(t *testing.T) {
 }
 
 func TestSessionRegisterRejectsImmediateShellPID(t *testing.T) {
-	command := newSessionRegisterCmd()
+	command := newSessionRegisterCmd(&invocation{})
 	command.SetArgs([]string{"--pid", strconv.Itoa(os.Getppid()), "--runtime", "codex"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "intermediate shell") {
 		t.Fatalf("register immediate parent error = %v, want intermediate-shell rejection", err)

@@ -34,10 +34,10 @@ type sessionMessageDependencies struct {
 	send          func(context.Context, sessionmessenger.Options) (sessionmessenger.Result, error)
 }
 
-func defaultSessionMessageDependencies() sessionMessageDependencies {
+func defaultSessionMessageDependencies(inv *invocation) sessionMessageDependencies {
 	return sessionMessageDependencies{
 		resolveSource: func() (session.Record, bool, error) {
-			directory, err := sessionDirForRead()
+			directory, err := sessionDirForRead(inv)
 			if err != nil {
 				return session.Record{}, false, err
 			}
@@ -56,11 +56,11 @@ func defaultSessionMessageDependencies() sessionMessageDependencies {
 	}
 }
 
-func newSessionSendCmd() *cobra.Command {
-	return newSessionSendCmdWithDeps(defaultSessionMessageDependencies())
+func newSessionSendCmd(inv *invocation) *cobra.Command {
+	return newSessionSendCmdWithDeps(inv, defaultSessionMessageDependencies(inv))
 }
 
-func newSessionSendCmdWithDeps(deps sessionMessageDependencies) *cobra.Command {
+func newSessionSendCmdWithDeps(inv *invocation, deps sessionMessageDependencies) *cobra.Command {
 	var message, messageFile, resume, format string
 	command := &cobra.Command{
 		Use:   "send <wb-session-id>",
@@ -83,7 +83,7 @@ func newSessionSendCmdWithDeps(deps sessionMessageDependencies) *cobra.Command {
 					return err
 				}
 			}
-			return runSessionMessage(command, deps, args[0], sessionmove.MessageKindText, body, resume, format, "send")
+			return runSessionMessage(inv, command, deps, args[0], sessionmove.MessageKindText, body, resume, format, "send")
 		},
 	}
 	command.Flags().StringVar(&message, "message", "", "exact message text (bounded to 64 KiB)")
@@ -93,11 +93,11 @@ func newSessionSendCmdWithDeps(deps sessionMessageDependencies) *cobra.Command {
 	return command
 }
 
-func newSessionRequestHandoffCmd() *cobra.Command {
-	return newSessionRequestHandoffCmdWithDeps(defaultSessionMessageDependencies())
+func newSessionRequestHandoffCmd(inv *invocation) *cobra.Command {
+	return newSessionRequestHandoffCmdWithDeps(inv, defaultSessionMessageDependencies(inv))
 }
 
-func newSessionRequestHandoffCmdWithDeps(deps sessionMessageDependencies) *cobra.Command {
+func newSessionRequestHandoffCmdWithDeps(inv *invocation, deps sessionMessageDependencies) *cobra.Command {
 	var resume, format string
 	command := &cobra.Command{
 		Use:     "recall <wb-session-id>",
@@ -105,7 +105,7 @@ func newSessionRequestHandoffCmdWithDeps(deps sessionMessageDependencies) *cobra
 		Short:   "Ask a recorded successor to return control to this predecessor",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runSessionMessage(command, deps, args[0], sessionmove.MessageKindRequestHandoff, "",
+			return runSessionMessage(inv, command, deps, args[0], sessionmove.MessageKindRequestHandoff, "",
 				strings.TrimSpace(resume), format, "recall")
 		},
 	}
@@ -114,9 +114,8 @@ func newSessionRequestHandoffCmdWithDeps(deps sessionMessageDependencies) *cobra
 	return command
 }
 
-func runSessionMessage(command *cobra.Command, deps sessionMessageDependencies, target string, kind sessionmove.MessageKind,
-	body, resume, format, retryVerb string,
-) error {
+func runSessionMessage(inv *invocation, command *cobra.Command, deps sessionMessageDependencies, target string, kind sessionmove.MessageKind,
+	body, resume, format, retryVerb string) error {
 	if err := requireOutputFormat(format, "text", "json"); err != nil {
 		return err
 	}
@@ -131,7 +130,7 @@ func runSessionMessage(command *cobra.Command, deps sessionMessageDependencies, 
 	if !ok {
 		return fmt.Errorf("session messaging requires the live registered predecessor session that owns this process")
 	}
-	store, err := deps.store(projectsRoot)
+	store, err := deps.store(inv.projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -143,7 +142,7 @@ func runSessionMessage(command *cobra.Command, deps sessionMessageDependencies, 
 		}
 	}
 	result, err := deps.send(command.Context(), sessionmessenger.Options{
-		Store: store, ProjectsRoot: projectsRoot, TargetWBSessionID: target, SourceSession: source,
+		Store: store, ProjectsRoot: inv.projectsRoot, TargetWBSessionID: target, SourceSession: source,
 		Kind: kind, Body: body, MessageID: messageID, ResumeMessageID: resume, Now: func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
@@ -172,7 +171,7 @@ type sessionReceiveMessageDependencies struct {
 	receive      func(context.Context, sessionmessage.Options) (sessionmessage.Result, error)
 }
 
-func defaultSessionReceiveMessageDependencies() sessionReceiveMessageDependencies {
+func defaultSessionReceiveMessageDependencies(inv *invocation) sessionReceiveMessageDependencies {
 	return sessionReceiveMessageDependencies{
 		localMachine: func() (string, error) {
 			config, err := remotestate.LoadConfig(wbconfig.DefaultPath())
@@ -188,16 +187,16 @@ func defaultSessionReceiveMessageDependencies() sessionReceiveMessageDependencie
 			}
 			return sessionmove.NewStore(filepath.Join(home, sessionmove.DirName)), nil
 		},
-		sessionDir: sessionDirForRead,
+		sessionDir: func() (string, error) { return sessionDirForRead(inv) },
 		receive:    sessionmessage.Receive,
 	}
 }
 
-func newSessionReceiveMessageCmd() *cobra.Command {
-	return newSessionReceiveMessageCmdWithDeps(defaultSessionReceiveMessageDependencies())
+func newSessionReceiveMessageCmd(inv *invocation) *cobra.Command {
+	return newSessionReceiveMessageCmdWithDeps(inv, defaultSessionReceiveMessageDependencies(inv))
 }
 
-func newSessionReceiveMessageCmdWithDeps(deps sessionReceiveMessageDependencies) *cobra.Command {
+func newSessionReceiveMessageCmdWithDeps(inv *invocation, deps sessionReceiveMessageDependencies) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "receive-message",
@@ -215,7 +214,7 @@ func newSessionReceiveMessageCmdWithDeps(deps sessionReceiveMessageDependencies)
 			if err != nil {
 				return fmt.Errorf("load validated local remote.machine for message receiver: %w", err)
 			}
-			store, err := deps.store(projectsRoot)
+			store, err := deps.store(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -224,7 +223,7 @@ func newSessionReceiveMessageCmdWithDeps(deps sessionReceiveMessageDependencies)
 				return err
 			}
 			result, err := deps.receive(command.Context(), sessionmessage.Options{
-				Store: store, ProjectsRoot: projectsRoot, LocalMachine: machine, SessionDir: sessions, RawMessage: raw,
+				Store: store, ProjectsRoot: inv.projectsRoot, LocalMachine: machine, SessionDir: sessions, RawMessage: raw,
 			})
 			if err != nil {
 				return err

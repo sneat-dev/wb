@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -96,7 +97,7 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
 	}
-	targetTree, err := mergeTreeRevision(ctx, receipt.Candidate.Worktree, currentTarget)
+	targetTree, err := mergeTreeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, currentTarget)
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("read current target tree: %w", err)
 	}
@@ -169,7 +170,7 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	if replacement.Task != task || replacement.Branch != branch || replacementClaim.BaseSHA != currentTarget {
 		return WorktreeMergeValidationFailureSeal{}, errors.New("ancestry seal Work Log does not match the exact task, branch, and fetched target identity")
 	}
-	beforeTree, err := mergeTreeRevision(ctx, replacement.Worktree, replacement.SHA)
+	beforeTree, err := mergeTreeRevision(ctx, defaultRunner, replacement.Worktree, replacement.SHA)
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
 	}
@@ -195,19 +196,19 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	if len(missing) > 0 {
 		args := []string{"merge", "--strategy=ours", "--no-edit", "--message", "chore(wb): seal validation-failure ancestry"}
 		args = append(args, missing...)
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, replacement.Worktree, "git", args...); err != nil {
-			_, _, _ = runCommand(ctx, options.Timeout, 0, replacement.Worktree, "git", "merge", "--abort")
+		if _, _, err := runCommand(ctx, defaultRunner, options.Timeout, options.Retry, replacement.Worktree, "git", args...); err != nil {
+			_, _, _ = runCommand(ctx, defaultRunner, options.Timeout, 0, replacement.Worktree, "git", "merge", "--abort")
 			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("create no-content ancestry seal: %w", err)
 		}
 	}
 	if err := requireCleanMergeWorktree(ctx, replacement.Worktree); err != nil {
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("ancestry seal is not clean: %w", err)
 	}
-	replacement.SHA, err = mergeRevision(ctx, replacement.Worktree, "HEAD")
+	replacement.SHA, err = mergeRevision(ctx, defaultRunner, replacement.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
 	}
-	finalTree, err := mergeTreeRevision(ctx, replacement.Worktree, replacement.SHA)
+	finalTree, err := mergeTreeRevision(ctx, defaultRunner, replacement.Worktree, replacement.SHA)
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
 	}
@@ -269,7 +270,7 @@ func validationFailureSealRoots(claimBase string, receipt WorktreeMergeReceipt, 
 }
 
 func validateValidationFailureSealSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, targetTree string) (string, error) {
-	head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
@@ -283,7 +284,7 @@ func validateValidationFailureSealSource(ctx context.Context, projectsRoot strin
 	if allowedDescendant == "" {
 		return head, nil
 	}
-	sourceTree, err := mergeTreeRevision(ctx, source.Worktree, head)
+	sourceTree, err := mergeTreeRevision(ctx, defaultRunner, source.Worktree, head)
 	if err != nil {
 		return "", fmt.Errorf("read advanced receipted source tree: %w", err)
 	}
@@ -294,20 +295,17 @@ func validateValidationFailureSealSource(ctx context.Context, projectsRoot strin
 }
 
 func writeValidationFailureSealPrompt(receipt WorktreeMergeReceipt, currentTarget, targetTree string, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-validation-failure-seal-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(path)
-		}
-	}()
-	if err = file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return "", err
-	}
+	return writeValidationFailureSealPromptInjected(receipt, currentTarget, targetTree, roots, actor, reason, nil)
+}
+
+// writeValidationFailureSealPromptInjected is
+// writeValidationFailureSealPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writeValidationFailureSealPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writeValidationFailureSealPromptInjected(receipt WorktreeMergeReceipt, currentTarget, targetTree string, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares a no-content ancestry seal for validation-failed receipt %s.\n", receipt.ReceiptPath)
 	fmt.Fprintf(&body, "Repository: %s\nTarget: %s at %s\nRequired tree: %s\n", receipt.Repository, receipt.Target, currentTarget, targetTree)
@@ -315,11 +313,8 @@ func writeValidationFailureSealPrompt(receipt WorktreeMergeReceipt, currentTarge
 		fmt.Fprintf(&body, "- %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err = file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err = file.Close(); err != nil {
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-validation-failure-seal-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

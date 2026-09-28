@@ -19,7 +19,7 @@ func TestDQCovAcquireCloneLockReportsUncreatableLockDirectory(t *testing.T) {
 	}
 	clonePath := filepath.Join(blocker, "wb-state")
 
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err == nil {
 		_ = lock.release()
 		t.Fatal("acquireCloneLock succeeded with an uncreatable lock directory")
@@ -39,7 +39,7 @@ func TestDQCovAcquireCloneLockReportsUnopenableLockFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err == nil {
 		_ = lock.release()
 		t.Fatal("acquireCloneLock succeeded with a directory as the lock file")
@@ -50,15 +50,20 @@ func TestDQCovAcquireCloneLockReportsUnopenableLockFile(t *testing.T) {
 }
 
 // TestDQCovAcquireCloneLockTimesOutAfterDeadline proves a held lock makes a
-// second acquirer wait for the configured deadline and then fail with the
-// held-lock message instead of blocking forever.
+// second acquirer retry until the configured deadline and then fail with
+// the held-lock message instead of blocking forever. The second acquirer
+// gets a fake clock (now/sleep both driven off a virtual clock that sleep
+// advances instantly) so the deadline elapses at full test speed while
+// still exercising the real flock retry loop against the first, real lock;
+// only cloneLockTimeout is shrunk (30ms, in 20ms poll steps) to keep the
+// expected sleep count small and exact.
 func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 	restore := cloneLockTimeout
-	cloneLockTimeout = 30 * time.Millisecond
+	cloneLockTimeout = 60 * time.Millisecond
 	t.Cleanup(func() { cloneLockTimeout = restore })
 
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
-	first, err := acquireCloneLock(clonePath)
+	first, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +73,15 @@ func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 		}
 	}()
 
-	start := time.Now()
-	second, err := acquireCloneLock(clonePath)
+	virtual := time.Now()
+	var slept []time.Duration
+	fakeNow := func() time.Time { return virtual }
+	fakeSleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+
+	second, err := acquireCloneLock(clonePath, fakeNow, fakeSleep)
 	if err == nil {
 		_ = second.release()
 		t.Fatal("second acquireCloneLock succeeded while the first was held")
@@ -77,8 +89,14 @@ func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 	if !strings.Contains(err.Error(), "held the wb-state clone lock") {
 		t.Fatalf("error = %v, want the held-lock message", err)
 	}
-	if time.Since(start) < 30*time.Millisecond {
-		t.Fatalf("second acquire returned after %s, want it to wait out the deadline", time.Since(start))
+	wantSleeps := int(cloneLockTimeout/(20*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("acquireCloneLock slept %d times, want exactly %d (cloneLockTimeout %s in 20ms steps)", len(slept), wantSleeps, cloneLockTimeout)
+	}
+	for _, d := range slept {
+		if d != 20*time.Millisecond {
+			t.Fatalf("acquireCloneLock slept %v, want every wait to be 20ms", slept)
+		}
 	}
 }
 
@@ -102,7 +120,7 @@ func TestDQCovCloneLockReleaseNilAndEmptyIsNoop(t *testing.T) {
 func TestDQCovCloneLockReleaseReportsUnlockFailure(t *testing.T) {
 	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err != nil {
 		t.Fatal(err)
 	}

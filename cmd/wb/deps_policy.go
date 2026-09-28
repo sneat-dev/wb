@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/policy"
 )
 
@@ -43,12 +44,12 @@ func newDepsPolicyCmd(inv *invocation) *cobra.Command {
 		Long:  policyLongHelp,
 	}
 	command.AddCommand(
-		newDepsPolicyCheckCmd(),
-		newDepsPolicyExplainCmd(),
-		newDepsPolicyShowCmd(),
+		newDepsPolicyCheckCmd(inv),
+		newDepsPolicyExplainCmd(inv),
+		newDepsPolicyShowCmd(inv),
 		newDepsPolicyValidateCmd(),
 		newDepsPolicyTestCmd(),
-		newDepsPolicyInitCmd(),
+		newDepsPolicyInitCmd(inv),
 		newDepsPolicyReportCmd(inv),
 		newDepsPolicyDriftCmd(inv),
 		newDepsPolicyImpactCmd(inv),
@@ -69,7 +70,7 @@ func (r resolved) declaredType() string { return r.config.Type }
 
 // resolvePolicy locates the module at or above dir, reads its policy config,
 // and loads the policy that governs it.
-func resolvePolicy(dir, policyFlag string) (resolved, error) {
+func resolvePolicy(inv *invocation, dir, policyFlag string) (resolved, error) {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
 		return resolved{}, usageError(err.Error())
@@ -100,7 +101,7 @@ func resolvePolicy(dir, policyFlag string) (resolved, error) {
 	case policy.SourceURL:
 		path, err = fetchPolicy(source.URL)
 	default:
-		path, err = source.Locate(moduleDir, policySearchRoots())
+		path, err = source.Locate(moduleDir, policySearchRoots(inv))
 	}
 	if err != nil {
 		return resolved{}, usageError(err.Error())
@@ -117,11 +118,11 @@ func resolvePolicy(dir, policyFlag string) (resolved, error) {
 	return resolved{moduleDir: moduleDir, module: module, config: config, loaded: loaded}, nil
 }
 
-func policySearchRoots() []string {
-	if projectsRoot == "" {
+func policySearchRoots(inv *invocation) []string {
+	if inv.projectsRoot == "" {
 		return nil
 	}
-	return []string{projectsRoot}
+	return []string{inv.projectsRoot}
 }
 
 // findModuleDir walks up from dir looking for the go.mod that owns it.
@@ -143,6 +144,15 @@ func findModuleDir(dir string) (string, error) {
 // force is the caller's to decide, and a stale cache would quietly reintroduce
 // the pinning that repositories are not allowed to do.
 func fetchPolicy(url string) (string, error) {
+	return fetchPolicyInjected(url, nil)
+}
+
+// fetchPolicyInjected is fetchPolicy's test seam (task-9 PR-9): every
+// production call site reaches it only through fetchPolicy, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the scratch download file's
+// create/write/close failure branches deterministically.
+func fetchPolicyInjected(url string, inj *filewrite.Injector) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	response, err := client.Get(url)
 	if err != nil {
@@ -152,15 +162,16 @@ func fetchPolicy(url string) (string, error) {
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("fetch policy %s: %s", url, response.Status)
 	}
-	file, err := os.CreateTemp("", "wb-policy-*.yaml")
+	file, err := filewrite.CreateTemp("", "wb-policy-*.yaml", inj)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = file.Close() }()
-	if _, err := io.Copy(file, io.LimitReader(response.Body, 1<<20)); err != nil {
+	name := file.Name()
+	defer func() { _ = filewrite.Close(file, name, inj) }()
+	if _, err := io.Copy(filewrite.Writer(file, name, inj), io.LimitReader(response.Body, 1<<20)); err != nil {
 		return "", err
 	}
-	return file.Name(), nil
+	return name, nil
 }
 
 func usageError(message string) error {
@@ -169,7 +180,7 @@ func usageError(message string) error {
 
 // ---------------------------------------------------------------- check
 
-func newDepsPolicyCheckCmd() *cobra.Command {
+func newDepsPolicyCheckCmd(inv *invocation) *cobra.Command {
 	var policyFlag, typeFlag, formatFlag string
 	var strict bool
 	command := &cobra.Command{
@@ -186,7 +197,7 @@ runs in report mode are printed and counted, and do not affect the exit code.`,
 			if err != nil {
 				return usageError(err.Error())
 			}
-			context, err := resolvePolicy(directoryArg(args), policyFlag)
+			context, err := resolvePolicy(inv, directoryArg(args), policyFlag)
 			if err != nil {
 				return err
 			}
@@ -218,7 +229,7 @@ runs in report mode are printed and counted, and do not affect the exit code.`,
 
 // ---------------------------------------------------------------- explain
 
-func newDepsPolicyExplainCmd() *cobra.Command {
+func newDepsPolicyExplainCmd(inv *invocation) *cobra.Command {
 	var policyFlag, typeFlag string
 	command := &cobra.Command{
 		Use:   "explain <import-path> [directory]",
@@ -232,7 +243,7 @@ first-match-wins, so a broad pattern above a narrow one silently takes every
 path the narrow one was written for.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			context, err := resolvePolicy(directoryArg(args[1:]), policyFlag)
+			context, err := resolvePolicy(inv, directoryArg(args[1:]), policyFlag)
 			if err != nil {
 				return err
 			}
@@ -281,14 +292,14 @@ path the narrow one was written for.`,
 
 // ---------------------------------------------------------------- show
 
-func newDepsPolicyShowCmd() *cobra.Command {
+func newDepsPolicyShowCmd(inv *invocation) *cobra.Command {
 	var policyFlag, typeFlag string
 	command := &cobra.Command{
 		Use:   "show [directory]",
 		Short: "Print the rules this repository is actually held to",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			context, err := resolvePolicy(directoryArg(args), policyFlag)
+			context, err := resolvePolicy(inv, directoryArg(args), policyFlag)
 			if err != nil {
 				return err
 			}
@@ -431,7 +442,7 @@ func orNone(value string) string {
 
 // ---------------------------------------------------------------- init
 
-func newDepsPolicyInitCmd() *cobra.Command {
+func newDepsPolicyInitCmd(inv *invocation) *cobra.Command {
 	var policyFlag string
 	command := &cobra.Command{
 		Use:   "init [directory]",
@@ -444,7 +455,7 @@ than a green tick.`,
 			if policyFlag == "" {
 				return usageError("--policy is required: name the policy that governs this repository")
 			}
-			context, err := resolvePolicy(directoryArg(args), policyFlag)
+			context, err := resolvePolicy(inv, directoryArg(args), policyFlag)
 			if err != nil {
 				return err
 			}

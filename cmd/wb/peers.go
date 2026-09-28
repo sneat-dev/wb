@@ -72,7 +72,7 @@ func defaultPeersDeps() peersDeps {
 	}
 }
 
-func newPeersCmd() *cobra.Command {
+func newPeersCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "peers",
 		Short: "Admit, list and control the daemons this hub or laptop connects to",
@@ -87,19 +87,19 @@ peers, and a laptop dials out to its hub.
   wb peers unblock <peer>             allow a peer back in
   wb peers disconnect <peer>          close a peer's live session only`,
 	}
-	command.AddCommand(newPeersInviteCmd())
-	command.AddCommand(newPeersJoinCmd())
-	command.AddCommand(newPeersListCmd())
-	command.AddCommand(newPeersGetCmd())
-	command.AddCommand(newPeersBlockCmd())
-	command.AddCommand(newPeersUnblockCmd())
-	command.AddCommand(newPeersDisconnectCmd())
+	command.AddCommand(newPeersInviteCmd(inv))
+	command.AddCommand(newPeersJoinCmd(inv))
+	command.AddCommand(newPeersListCmd(inv))
+	command.AddCommand(newPeersGetCmd(inv))
+	command.AddCommand(newPeersBlockCmd(inv))
+	command.AddCommand(newPeersUnblockCmd(inv))
+	command.AddCommand(newPeersDisconnectCmd(inv))
 	return command
 }
 
 // ---------------------------------------------------------------- invite
 
-func newPeersInviteCmd() *cobra.Command {
+func newPeersInviteCmd(inv *invocation) *cobra.Command {
 	var rotate, jsonOut bool
 	var tokenFile string
 	command := &cobra.Command{
@@ -107,7 +107,7 @@ func newPeersInviteCmd() *cobra.Command {
 		Short: "Mint a one-time peer credential on this hub",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersInvite(command.Context(), defaultPeersDeps(), projectsRoot, args[0], rotate, tokenFile, jsonOut, command.OutOrStdout())
+			return runPeersInvite(command.Context(), defaultPeersDeps(), inv.projectsRoot, args[0], rotate, tokenFile, jsonOut, command.OutOrStdout())
 		},
 	}
 	command.Flags().BoolVar(&rotate, "rotate", false, "reissue the credential for an existing peer name")
@@ -256,14 +256,14 @@ func writeOneTimeTokenInjected(path, token string, inj *filewrite.Injector) erro
 
 // ---------------------------------------------------------------- block / unblock / disconnect
 
-func newPeersBlockCmd() *cobra.Command {
+func newPeersBlockCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	command := &cobra.Command{
 		Use:   "block <peer>",
 		Short: "Refuse a peer's sessions and HTTP calls, keeping its history",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersTrustChange(command.Context(), defaultPeersDeps(), projectsRoot, peersRPCPrefix+"block", "Blocked", args[0], jsonOut, command.OutOrStdout())
+			return runPeersTrustChange(command.Context(), defaultPeersDeps(), inv.projectsRoot, peersRPCPrefix+"block", "Blocked", args[0], jsonOut, command.OutOrStdout())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
@@ -271,14 +271,14 @@ func newPeersBlockCmd() *cobra.Command {
 	return command
 }
 
-func newPeersUnblockCmd() *cobra.Command {
+func newPeersUnblockCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	command := &cobra.Command{
 		Use:   "unblock <peer>",
 		Short: "Allow a blocked peer's sessions again",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersTrustChange(command.Context(), defaultPeersDeps(), projectsRoot, peersRPCPrefix+"unblock", "Unblocked", args[0], jsonOut, command.OutOrStdout())
+			return runPeersTrustChange(command.Context(), defaultPeersDeps(), inv.projectsRoot, peersRPCPrefix+"unblock", "Unblocked", args[0], jsonOut, command.OutOrStdout())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
@@ -308,14 +308,14 @@ func runPeersTrustChange(ctx context.Context, deps peersDeps, projectsRoot, path
 	return err
 }
 
-func newPeersDisconnectCmd() *cobra.Command {
+func newPeersDisconnectCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	command := &cobra.Command{
 		Use:   "disconnect <peer>",
 		Short: "Close a peer's live session only; it stays trusted and reconnects itself",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersDisconnect(command.Context(), defaultPeersDeps(), projectsRoot, args[0], jsonOut, command.OutOrStdout())
+			return runPeersDisconnect(command.Context(), defaultPeersDeps(), inv.projectsRoot, args[0], jsonOut, command.OutOrStdout())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
@@ -344,14 +344,14 @@ func runPeersDisconnect(ctx context.Context, deps peersDeps, projectsRoot, peer 
 
 // ---------------------------------------------------------------- list / get
 
-func newPeersListCmd() *cobra.Command {
+func newPeersListCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List every peer, plus the upstream hub when this machine has joined one",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return runPeersList(command.Context(), defaultPeersDeps(), projectsRoot, jsonOut, command.OutOrStdout(), command.ErrOrStderr())
+			return runPeersList(command.Context(), defaultPeersDeps(), inv.projectsRoot, jsonOut, command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
@@ -359,14 +359,14 @@ func newPeersListCmd() *cobra.Command {
 	return command
 }
 
-func newPeersGetCmd() *cobra.Command {
+func newPeersGetCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	command := &cobra.Command{
 		Use:   "get <peer>",
 		Short: "Show one peer's full record",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersGet(command.Context(), defaultPeersDeps(), projectsRoot, args[0], jsonOut, command.OutOrStdout())
+			return runPeersGet(command.Context(), defaultPeersDeps(), inv.projectsRoot, args[0], jsonOut, command.OutOrStdout())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)

@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
-func newRemoteClaimCmd() *cobra.Command {
+func newRemoteClaimCmd(inv *invocation) *cobra.Command {
 	var note string
 	var takeOver, force, jsonOut bool
 	var stale time.Duration
@@ -27,7 +27,7 @@ gone stale (see --stale), or --force, which replaces any claim, stale or
 fresh, loudly.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRemoteClaim(defaultRemoteDeps(), projectsRoot, args[0], note, takeOver, force, jsonOut, stale, os.Stdout)
+			return runRemoteClaim(defaultRemoteDeps(), inv.projectsRoot, args[0], note, takeOver, force, jsonOut, stale, os.Stdout)
 		},
 	}
 	cmd.Flags().StringVar(&note, "note", "", "free-form note stored with the claim")

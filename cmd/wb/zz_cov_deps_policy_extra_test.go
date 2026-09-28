@@ -55,27 +55,24 @@ func TestCwDepsResolvePolicyRefusesAnUnfetchableURLSource(t *testing.T) {
 	cwCovWriteFile(t, filepath.Join(module, "go.mod"), "module github.com/acme/app/backend\n\ngo 1.26\n")
 	// An https policy source takes the fetch branch; an unreachable one is a
 	// usage error naming the fetch, never a silent fallback to no policy.
-	_, err := resolvePolicy(module, "https://127.0.0.1:1/policy.yaml")
+	_, err := resolvePolicy(&invocation{}, module, "https://127.0.0.1:1/policy.yaml")
 	if exitCodeOfSafe(err) != exitUsage || !strings.Contains(err.Error(), "fetch policy") {
 		t.Fatalf("unfetchable policy source = %v", err)
 	}
 	// An http source is refused before any request is attempted, because a
 	// policy fetched in the clear is not the policy a repository agreed to.
-	if _, err := resolvePolicy(module, "http://example.test/policy.yaml"); exitCodeOfSafe(err) != exitUsage ||
+	if _, err := resolvePolicy(&invocation{}, module, "http://example.test/policy.yaml"); exitCodeOfSafe(err) != exitUsage ||
 		!strings.Contains(err.Error(), "must use https") {
 		t.Fatalf("insecure policy source = %v", err)
 	}
 }
 
 func TestCwDepsPolicySearchRootsAndModuleDir(t *testing.T) {
-	previousRoot := projectsRoot
-	projectsRoot = ""
-	t.Cleanup(func() { projectsRoot = previousRoot })
-	if roots := policySearchRoots(); roots != nil {
+	if roots := policySearchRoots(&invocation{}); roots != nil {
 		t.Errorf("policySearchRoots with no projects root = %v, want nil", roots)
 	}
-	projectsRoot = t.TempDir()
-	if roots := policySearchRoots(); len(roots) != 1 || roots[0] != projectsRoot {
+	projectsRoot := t.TempDir()
+	if roots := policySearchRoots(&invocation{projectsRoot: projectsRoot}); len(roots) != 1 || roots[0] != projectsRoot {
 		t.Errorf("policySearchRoots = %v", roots)
 	}
 

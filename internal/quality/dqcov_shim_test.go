@@ -14,7 +14,8 @@ import (
 // without touching a real Go toolchain or compiling anything:
 //
 //   - `go list -f {{.ImportPath}} <pattern>` prints $DQCOV_GO_LIST_MAIN when the
-//     pattern is "./..." and $DQCOV_GO_LIST_OTHER otherwise;
+//     pattern is "./..." and $DQCOV_GO_LIST_OTHER otherwise; the sentinel
+//     @pattern makes the latter echo the requested package;
 //   - `go test <pkg> -list ...` prints $DQCOV_GO_TEST_LIST;
 //   - `go test ... -coverprofile=<path>` writes a merged-profile fixture to the
 //     requested profile path when $DQCOV_GO_WRITE_PROFILE is set, using
@@ -51,7 +52,7 @@ case "$1" in
   list)
     if [ -n "$DQCOV_GO_LIST_STDERR" ]; then printf '%s\n' "$DQCOV_GO_LIST_STDERR" >&2; fi
     if [ -n "$DQCOV_GO_LIST_FAIL" ]; then exit 1; fi
-    if [ "$last" = "./..." ]; then printf '%s\n' "$DQCOV_GO_LIST_MAIN"; else printf '%s\n' "$DQCOV_GO_LIST_OTHER"; fi
+    if [ "$last" = "./..." ]; then printf '%s\n' "$DQCOV_GO_LIST_MAIN"; elif [ "$DQCOV_GO_LIST_OTHER" = "@pattern" ]; then printf '%s\n' "$last"; else printf '%s\n' "$DQCOV_GO_LIST_OTHER"; fi
     exit 0
     ;;
   test)

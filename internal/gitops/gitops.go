@@ -229,6 +229,15 @@ func lastLine(s string) string {
 // machine and errors on another. Refusing is the only safe answer; the caller
 // classifies the refusal.
 func Pull(repoPath string) error {
+	return pull(repoPath, time.Sleep)
+}
+
+// pull is Pull's retry-backoff seam: sleep is a function parameter, not a
+// package-level mutable var, so a test can inject a recorder without ever
+// leaving shared package state mutated for another test running in
+// parallel. Pull always passes time.Sleep; a same-package test calls pull
+// directly with a recorder to exercise every retry at full speed.
+func pull(repoPath string, sleep func(time.Duration)) error {
 	const attempts = 5
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -241,15 +250,11 @@ func Pull(repoPath string) error {
 			// occasionally close one of them under load. Exponential backoff,
 			// staggered per checkout, gives the connection burst time to clear
 			// without hiding real Git refusals.
-			pullSleep(pullRetryDelay(repoPath, attempt))
+			sleep(pullRetryDelay(repoPath, attempt))
 		}
 	}
 	return err
 }
-
-// pullSleep is the retry-backoff seam. Tests replace it with a recorder so
-// Pull's retry loop runs at full speed while still exercising every attempt.
-var pullSleep = time.Sleep
 
 func pullRetryDelay(repoPath string, attempt int) time.Duration {
 	hash := fnv.New32a()

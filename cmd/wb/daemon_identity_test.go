@@ -286,7 +286,7 @@ func TestServeDashboardNamesTheEndpointItCouldNotBind(t *testing.T) {
 	address := held.Addr().String()
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 
-	err = serveDashboard(&cobra.Command{}, deps, address, store, "owner-token", true, false)
+	err = serveDashboard(&invocation{}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
 	if err == nil {
 		t.Fatal("serving on a held endpoint must fail")
 	}

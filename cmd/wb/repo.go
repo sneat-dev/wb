@@ -16,20 +16,20 @@ func newRepoCmd(inv *invocation) *cobra.Command {
 	command.AddCommand(newRepoStatusCmd(inv))
 	command.AddCommand(newRepoIgnoreCmd())
 	command.AddCommand(newRepoInitRemoteCmd())
-	command.AddCommand(newRepoTransferCmd())
+	command.AddCommand(newRepoTransferCmd(inv))
 	return command
 }
 
-func newRepoTransferCmd() *cobra.Command {
+func newRepoTransferCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "transfer",
 		Short: "Inspect or recover a repository transfer",
 	}
-	command.AddCommand(newRepoTransferCleanupCmd())
+	command.AddCommand(newRepoTransferCleanupCmd(inv))
 	return command
 }
 
-func newRepoTransferCleanupCmd() *cobra.Command {
+func newRepoTransferCleanupCmd(inv *invocation) *cobra.Command {
 	var receipt string
 	var apply bool
 	var jsonOut bool
@@ -42,7 +42,7 @@ func newRepoTransferCleanupCmd() *cobra.Command {
 				return usageError("--receipt is required")
 			}
 			result, err := worktrees.RecoverRepositoryTransferCleanup(command.Context(), worktrees.RepositoryTransferCleanupOptions{
-				ProjectsRoot: projectsRoot, ReceiptPath: receipt, Apply: apply,
+				ProjectsRoot: inv.projectsRoot, ReceiptPath: receipt, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -103,7 +103,7 @@ not scan the projects-root fleet.`,
 				details:   details,
 				options:   options,
 				filter:    "",
-				projects:  projectsRoot,
+				projects:  inv.projectsRoot,
 				titleKind: statusTitleRepo,
 				progress:  cmd.ErrOrStderr(),
 			})

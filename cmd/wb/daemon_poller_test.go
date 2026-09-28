@@ -163,10 +163,6 @@ func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
 			},
 		}, nil
 	}
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
-
 	status := newDaemonController(deps, root).status(t, "127.0.0.1:8765")
 	if !status.Polling || status.PollInterval != "20m0s" || status.RepositoriesPolled != 7 {
 		t.Fatalf("hub status = %+v", status)
@@ -335,12 +331,12 @@ func (noEntitlements) IdentityHasRepositoryEntitlement(context.Context, string, 
 // surface: `wb daemon serve` takes it, and `wb daemon start` must not, so the
 // detached daemon's log keeps every line.
 func TestDaemonServeAcceptsQuietAndStartNeverPassesIt(t *testing.T) {
-	serve := newDaemonServeCmd(defaultDaemonDependencies())
+	root := daemonTestRoot(t)
+	serve := newDaemonServeCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
 	if serve.Flags().Lookup("quiet") == nil {
 		t.Fatal("wb daemon serve has no --quiet")
 	}
 
-	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	var launched []string
 	previousStart := deps.start
@@ -348,9 +344,6 @@ func TestDaemonServeAcceptsQuietAndStartNeverPassesIt(t *testing.T) {
 		launched = append([]string(nil), args...)
 		return previousStart(executable, args, logPath)
 	}
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	_, _ = newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen)
 	for _, argument := range launched {
 		if argument == "--quiet" {
@@ -372,9 +365,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
+	projectsRoot := root
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
@@ -390,7 +381,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	command.SetErr(&stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // TestRepairPendingLinkAtSkipsAPendingNameACompetingRepairAlreadyRemoved

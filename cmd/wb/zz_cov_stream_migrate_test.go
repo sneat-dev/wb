@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +82,7 @@ func TestCwCovPrintStreamSyncRendersEveryRowShape(t *testing.T) {
 		},
 	}
 
-	command := newStreamSyncCmd()
+	command := newStreamSyncCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	// The rich result carries a conflicting agent rebase, so reporting it is a
@@ -137,7 +139,7 @@ func TestCwCovPrintStreamSyncRendersEveryRowShape(t *testing.T) {
 }
 
 func TestCwCovPrintBatchRendersCulpritAndScanLimit(t *testing.T) {
-	command := newStreamSyncCmd()
+	command := newStreamSyncCmd(&invocation{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	batch := streamsync.BatchResult{
@@ -267,21 +269,20 @@ jobs:
 
 func TestCwCovStreamSyncCommandUsageRefusals(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("WB_HOME", t.TempDir())
 
-	stdout, _, err := cwCovExec(t, root, newStreamSyncCmd, "cw-cov", "--library", "no-version")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "cw-cov", "--library", "no-version")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("bad --library exit = %d\n%s", code, stdout)
 	}
 	if !strings.Contains(err.Error(), "must be <name>@<version>") {
 		t.Errorf("bad --library error = %v", err)
 	}
-	if _, _, err := cwCovExec(t, root, newStreamSyncCmd, "cw-cov", "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "cw-cov", "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("bad --format error = %v", err)
 	}
 	// A stream that does not exist is an error, never a silent no-op.
-	if _, _, err := cwCovExec(t, root, newStreamSyncCmd, "absent-stream"); err == nil {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newStreamSyncCmd(testInvocation(t, root)) }, "absent-stream"); err == nil {
 		t.Fatal("syncing an unknown stream must fail")
 	}
 }
@@ -571,6 +572,49 @@ func TestCwCovRunHierarchicalMigrationRefusalsAndCleanup(t *testing.T) {
 	}
 }
 
+// --github-dir defaults to --projects-root when the flag is omitted; every
+// other hierarchical-migration test above passes --github-dir explicitly, so
+// this is the only one that exercises the fallback itself.
+func TestCwCovRunHierarchicalMigrationDefaultsGithubDirToProjectsRoot(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "migration.hcl")
+	if err := os.WriteFile(specPath, []byte(cwCovMigrationSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	code := cwCovCaptureStdoutInt(t, func() int {
+		return runHierarchicalMigration(&invocation{projectsRoot: projectsRoot}, specPath, nil, hierarchicalMigrationOptions{format: "json"})
+	})
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (hierarchical requires exactly one source root)", code)
+	}
+}
+
+// TestCwCovRunHierarchicalMigrationDefaultedGithubDirActuallyResolvesUnderProjectsRoot
+// gives the defaulting a positive, root-dependent assertion (mutation M18,
+// sneat-dev/wb#760 review B5): the test above never supplies a source root,
+// so it exits before githubDir is used for anything observable and a
+// dropped/empty projectsRoot (githubDir = "") would exit 2 there too. With
+// exactly one (unusable) source root, execution reaches
+// wbhome.EnsureRoot(githubDir) before the campaign itself fails, so the
+// resulting ".wb" directory's location is direct proof of which root
+// --github-dir actually defaulted to.
+func TestCwCovRunHierarchicalMigrationDefaultedGithubDirActuallyResolvesUnderProjectsRoot(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "migration.hcl")
+	if err := os.WriteFile(specPath, []byte(cwCovMigrationSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	source := cwCovMigrationSource(t)
+	var stderr bytes.Buffer
+	_ = cwCovCaptureStdoutInt(t, func() int {
+		return runHierarchicalMigration(&invocation{projectsRoot: projectsRoot}, specPath, []string{source},
+			hierarchicalMigrationOptions{format: "json", progressOut: &stderr})
+	})
+	if _, err := os.Stat(filepath.Join(projectsRoot, ".wb")); err != nil {
+		t.Fatalf("--github-dir defaulted somewhere other than projectsRoot: %v (stderr=%s)", err, stderr.String())
+	}
+}
+
 // TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration
 // proves that "wb migrate --hierarchical" reaches runHierarchicalMigration
 // through the real command tree, not just through direct unit calls.
@@ -595,12 +639,24 @@ func TestCwCovMigrateCommandHierarchicalFlagDispatchesToHierarchicalMigration(t 
 
 func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
 	// A checkout that is not a repository has no identity; the hook dispatch
-	// must warn and return rather than fail the caller's update.
+	// must warn and return rather than fail the caller's update. The
+	// dispatch func is a fake: lifecycleCheckoutUpdated must never reach the
+	// real lifecyclehooks.Dispatch (and so never the real config/state/
+	// receipt paths or the real detached-worker launcher) from a test
+	// binary (#620).
 	var out bytes.Buffer
-	handler := lifecycleCheckoutUpdated(&out)
+	var dispatchCalls int
+	dispatch := func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error) {
+		dispatchCalls++
+		return lifecyclehooks.Report{}, nil
+	}
+	handler := lifecycleCheckoutUpdatedWith(&out, dispatch)
 	handler(t.Context(), orchestrate.CheckoutUpdate{Checkout: filepath.Join(t.TempDir(), "absent")})
 	if !strings.Contains(out.String(), "lifecycle hooks were not dispatched") {
 		t.Fatalf("missing-identity warning = %q", out.String())
+	}
+	if dispatchCalls != 0 {
+		t.Fatalf("dispatch calls = %d, want 0: an unidentifiable checkout must return before dispatching", dispatchCalls)
 	}
 
 	// A real repository is identified and the dispatch runs; with no hooks
@@ -620,12 +676,27 @@ func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
 		t.Fatalf("fixture identity = (%q, %v), want github.com/acme/app", identity, identityErr)
 	}
 	out.Reset()
-	t.Setenv("WB_HOME", t.TempDir())
 	handler(t.Context(), orchestrate.CheckoutUpdate{
 		Checkout: repo, OldSHA: "old", NewSHA: "new", Cause: "test",
 	})
 	if strings.Contains(out.String(), "identify updated checkout") {
 		t.Fatalf("a real repository should be identified:\n%s", out.String())
+	}
+	if dispatchCalls != 1 {
+		t.Fatalf("dispatch calls = %d, want 1: an identified checkout must dispatch exactly once", dispatchCalls)
+	}
+}
+
+// TestLifecycleCheckoutUpdatedDefaultsToRealDispatch confirms the production
+// wiring: lifecycleCheckoutUpdated (used unmodified by pr.go, pr_create.go
+// and worktree_merge.go) still builds its handler from the real
+// lifecyclehooks.Dispatch. The returned handler is never invoked here --
+// invoking it would call the real Dispatch and touch the developer's real
+// config/state/receipt paths (#620); the handler's own behavior is covered
+// through a fake dispatch by TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing.
+func TestLifecycleCheckoutUpdatedDefaultsToRealDispatch(t *testing.T) {
+	if handler := lifecycleCheckoutUpdated(io.Discard); handler == nil {
+		t.Fatal("lifecycleCheckoutUpdated returned a nil handler")
 	}
 }
 
@@ -707,10 +778,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 	// sessionDir and the prune command must resolve the same state home, which
 	// now derives from the projects root, so both are given the same root.
 	root := t.TempDir()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	dir, err := sessionDir()
+	dir, err := sessionDir(&invocation{projectsRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +791,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, root, newSessionPruneCmd)
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newSessionPruneCmd(&invocation{projectsRoot: root}) })
 	if err != nil {
 		t.Fatalf("session prune: %v", err)
 	}
@@ -739,7 +807,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 	}
 
 	// A second prune is a no-op.
-	stdout, _, err = cwCovExec(t, root, newSessionPruneCmd)
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newSessionPruneCmd(&invocation{projectsRoot: root}) })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -79,7 +79,9 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+	}()
 	waitForHealth(t, address)
 
 	cancel()
@@ -112,7 +114,9 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	served := make(chan error, 1)
-	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	go func() {
+		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+	}()
 	waitForHealth(t, address)
 
 	// The daemon is up, which means newDaemonFileBridgeServer already
@@ -153,8 +157,5 @@ func daemonShutdownTestRoot(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	pinDaemonHome(t, root)
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	return root
 }

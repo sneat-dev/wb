@@ -105,7 +105,7 @@ func TestCwWtReadBoundedAndRegularFile(t *testing.T) {
 }
 
 func TestCwWtReadSessionMessageBody(t *testing.T) {
-	command := newSessionSendCmd()
+	command := newSessionSendCmd(&invocation{})
 	command.SetIn(strings.NewReader("from stdin\n"))
 
 	body, err := readSessionMessageBody(command, "inline", "", true)
@@ -140,7 +140,7 @@ func TestCwWtReadSessionMessageBody(t *testing.T) {
 		t.Fatal("oversized direct body must fail")
 	}
 	// A read error from stdin is reported rather than ignored.
-	failing := newSessionSendCmd()
+	failing := newSessionSendCmd(&invocation{})
 	failing.SetIn(cwWtErrorReader{})
 	if _, err := readSessionMessageBody(failing, "", "-", false); err == nil {
 		t.Fatal("a failing stdin reader must be reported")
@@ -173,8 +173,9 @@ func cwWtMessageDeps(source session.Record, ok bool, sourceErr error,
 	}
 }
 
-func cwWtSendBuilder(deps sessionMessageDependencies) func() *cobra.Command {
-	return func() *cobra.Command { return newSessionSendCmdWithDeps(deps) }
+func cwWtSendBuilder(t *testing.T, deps sessionMessageDependencies) func() *cobra.Command {
+	root := t.TempDir()
+	return func() *cobra.Command { return newSessionSendCmdWithDeps(&invocation{projectsRoot: root}, deps) }
 }
 
 func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
@@ -189,7 +190,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 	}
 	deps := cwWtMessageDeps(okSource, true, nil, nil, nil, send)
 
-	stdout, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(deps), "wbs-target", "--message", "hello")
+	stdout, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, deps), "wbs-target", "--message", "hello")
 	if err != nil {
 		t.Fatalf("session send: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 	}
 
 	// JSON output.
-	stdout, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(deps), "wbs-target", "--message", "hello", "--format", "json")
+	stdout, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, deps), "wbs-target", "--message", "hello", "--format", "json")
 	if err != nil {
 		t.Fatalf("session send json: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 
 	// --resume retries the exact durable bytes: no new ID is minted.
 	seen = sessionmessenger.Options{}
-	_, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(deps), "wbs-target", "--resume", "message-existing")
+	_, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, deps), "wbs-target", "--resume", "message-existing")
 	if err != nil {
 		t.Fatalf("session send --resume: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 
 	// --message-file - reads the body from stdin.
 	seen = sessionmessenger.Options{}
-	stdout, _, err = cwWtRunCmd(t, t.TempDir(), "body from stdin\n", cwWtSendBuilder(deps), "wbs-target", "--message-file", "-")
+	stdout, _, err = cwWtRunCmd(t, t.TempDir(), "body from stdin\n", cwWtSendBuilder(t, deps), "wbs-target", "--message-file", "-")
 	if err != nil {
 		t.Fatalf("session send --message-file -: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen = sessionmessenger.Options{}
-	if _, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(deps), "wbs-target", "--message-file", bodyFile); err != nil {
+	if _, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, deps), "wbs-target", "--message-file", bodyFile); err != nil {
 		t.Fatalf("session send --message-file: %v", err)
 	}
 	if seen.Body != "from a file\n" {
@@ -292,7 +293,7 @@ func TestCwWtRunSessionMessageErrors(t *testing.T) {
 			args: []string{"wbs-target", "--message", "hi", "--message-file", "x"}, want: "requires exactly one of --message or --message-file"},
 	}
 	for _, test := range cases {
-		_, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(test.deps), test.args...)
+		_, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, test.deps), test.args...)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%s: error = %v, want %q", test.name, err, test.want)
 		}
@@ -305,7 +306,7 @@ func TestCwWtRunSessionMessageErrors(t *testing.T) {
 				MessageID: "message-durable", TargetWBSessionID: "wbs-target", Cause: errors.New("ambiguous"),
 			}
 		})
-	_, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(durable), "wbs-target", "--message", "hi")
+	_, _, err := cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, durable), "wbs-target", "--message", "hi")
 	if err == nil || !strings.Contains(err.Error(), "wb session send wbs-target --resume message-durable") {
 		t.Fatalf("delivery error retry hint = %v", err)
 	}
@@ -315,7 +316,7 @@ func TestCwWtRunSessionMessageErrors(t *testing.T) {
 		func(context.Context, sessionmessenger.Options) (sessionmessenger.Result, error) {
 			return sessionmessenger.Result{}, &sessionmessenger.DeliveryError{Cause: errors.New("no identity")}
 		})
-	_, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(noID), "wbs-target", "--message", "hi")
+	_, _, err = cwCovExec(t, t.TempDir(), cwWtSendBuilder(t, noID), "wbs-target", "--message", "hi")
 	if err == nil || strings.Contains(err.Error(), "--resume") {
 		t.Fatalf("delivery error without an ID = %v", err)
 	}
@@ -332,7 +333,7 @@ func TestCwWtSessionRecallCmd(t *testing.T) {
 				Receipt: sessionmove.MessageReceipt{TmuxName: "wb-predecessor"},
 			}, nil
 		})
-	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSessionRequestHandoffCmdWithDeps(deps) }, "wbs-target", "--resume", "message-2")
+	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSessionRequestHandoffCmdWithDeps(&invocation{}, deps) }, "wbs-target", "--resume", "message-2")
 	if err != nil {
 		t.Fatalf("session recall: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestCwWtSessionRecallCmd(t *testing.T) {
 func TestCwWtDefaultSessionMessageDependencies(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
 	// No live session is registered for this process, so the resolver says so.
-	_, _, err := cwCovExec(t, t.TempDir(), newSessionSendCmd, "wbs-target", "--message", "hi")
+	_, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSessionSendCmd(&invocation{}) }, "wbs-target", "--message", "hi")
 	if err == nil {
 		t.Fatal("session send without a registered session must fail")
 	}
@@ -358,7 +359,7 @@ func TestCwWtDefaultSessionMessageDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "home"))
-	_, _, err = cwCovExec(t, t.TempDir(), newSessionSendCmd, "wbs-target", "--message", "hi")
+	_, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newSessionSendCmd(&invocation{}) }, "wbs-target", "--message", "hi")
 	if err == nil {
 		t.Fatal("session send with an unresolvable WB_HOME must fail")
 	}
@@ -380,7 +381,7 @@ func TestCwWtSessionReceiveMessageBranches(t *testing.T) {
 		return sessionmessage.Result{Message: sessionmove.Message{MessageID: "message-1"}, Receipt: cwWtValidReceipt()}, nil
 	}
 	build := func(deps sessionReceiveMessageDependencies) func() *cobra.Command {
-		return func() *cobra.Command { return newSessionReceiveMessageCmdWithDeps(deps) }
+		return func() *cobra.Command { return newSessionReceiveMessageCmdWithDeps(&invocation{}, deps) }
 	}
 
 	// Text success.
@@ -445,8 +446,35 @@ func TestCwWtDefaultSessionReceiveMessageDependencies(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
-	_, _, err := cwWtRunCmd(t, t.TempDir(), "x", newSessionReceiveMessageCmd)
+	_, _, err := cwWtRunCmd(t, t.TempDir(), "x", func() *cobra.Command { return newSessionReceiveMessageCmd(&invocation{}) })
 	if err == nil || !strings.Contains(err.Error(), "load validated local remote.machine") {
 		t.Fatalf("default receive dependencies error = %v", err)
+	}
+}
+
+// TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir proves
+// the default sessionDir dependency (session_message.go:190, which wires
+// sessionDirForRead(inv) into "wb session receive-message") is actually
+// invoked: the sibling test above stops at the earlier local-machine check,
+// so the sessionDir closure - and the real deps.receive call beyond it -
+// were never exercised with the real default dependencies.
+func TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "wb.yaml"), []byte("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: cwwt-machine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "projects")
+	t.Setenv(wbhome.EnvOverride, root)
+	_, _, err := cwWtRunCmd(t, root, "not a valid session message", func() *cobra.Command { return newSessionReceiveMessageCmd(&invocation{projectsRoot: root}) })
+	if err == nil {
+		t.Fatal("an invalid session message body must be refused")
+	}
+	if strings.Contains(err.Error(), "load validated local remote.machine") {
+		t.Fatalf("receive-message error = %v, want past the local-machine check", err)
 	}
 }

@@ -79,18 +79,18 @@ func (s Store) SaveRoute(route Route) (Route, bool, error) {
 	if err := validateCourierRoute(route); err != nil {
 		return Route{}, false, err
 	}
-	raw, err := marshalJSON(route)
+	raw, err := s.marshal(route)
 	if err != nil {
 		return Route{}, false, err
 	}
-	created, err := publishRouteImmutableAt(handoff, raw)
+	created, err := s.publishRouteImmutableAt(handoff, raw)
 	if err != nil {
 		return Route{}, false, err
 	}
 	if created {
 		return route, false, nil
 	}
-	existingRaw, err := readRouteFileAt(handoff, routeFileName, maxRouteBytes, "durable courier route")
+	existingRaw, err := s.read(handoff, routeFileName, maxRouteBytes, "durable courier route")
 	if err != nil {
 		return Route{}, false, err
 	}
@@ -143,11 +143,11 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 	if durableReceipt == nil {
 		return SuccessorAddress{}, false, fmt.Errorf("successor address requires a durable completion receipt")
 	}
-	durableRaw, err := EncodeReceipt(*durableReceipt)
+	durableRaw, err := s.encodeReceipt(*durableReceipt)
 	if err != nil {
 		return SuccessorAddress{}, false, err
 	}
-	suppliedRaw, err := EncodeReceipt(receipt)
+	suppliedRaw, err := s.encodeReceipt(receipt)
 	if err != nil {
 		return SuccessorAddress{}, false, err
 	}
@@ -158,7 +158,7 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 	if err != nil {
 		return SuccessorAddress{}, false, err
 	}
-	root, err := lock.RetainStoreRootForStore(s.Root, request, digest)
+	root, err := s.retainRoot(lock, s.Root, request, digest)
 	if err != nil {
 		return SuccessorAddress{}, false, fmt.Errorf("retain exact store root for successor address: %w", err)
 	}
@@ -172,7 +172,7 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 	if err := validateSuccessorAddress(address, receipt.SuccessorWBSessionID); err != nil {
 		return SuccessorAddress{}, false, err
 	}
-	raw, err := marshalJSON(address)
+	raw, err := s.marshal(address)
 	if err != nil {
 		return SuccessorAddress{}, false, err
 	}
@@ -180,11 +180,11 @@ func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 		return SuccessorAddress{}, false, fmt.Errorf("successor address exceeds %d bytes", maxSuccessorAddressBytes)
 	}
 	name := successorAddressFileName(receipt.SuccessorWBSessionID)
-	created, err := publishImmutableAt(addresses, name, raw, 0o600, nil)
+	created, err := s.publish(addresses, name, raw, 0o600)
 	if err != nil {
 		return SuccessorAddress{}, false, fmt.Errorf("publish immutable successor address: %w", err)
 	}
-	existingRaw, err := readImmutableAt(addresses, name, maxSuccessorAddressBytes, "successor address")
+	existingRaw, err := s.read(addresses, name, maxSuccessorAddressBytes, "successor address")
 	if err != nil {
 		return SuccessorAddress{}, false, err
 	}
@@ -244,7 +244,7 @@ func (s Store) LoadSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 		return SuccessorAddress{}, fmt.Errorf("load successor address under exact admitted execution authority: %w", err)
 	}
 	defer func() { _ = handoff.Close() }()
-	root, err := lock.RetainStoreRootForStore(s.Root, request, digest)
+	root, err := s.retainRoot(lock, s.Root, request, digest)
 	if err != nil {
 		return SuccessorAddress{}, fmt.Errorf("retain exact store root for successor address: %w", err)
 	}
@@ -262,6 +262,10 @@ func (s Store) LoadSuccessorAddressUnderLock(lock *ExecutionLock, handoffID stri
 }
 
 func corroborateSuccessorAddressAt(handoff *os.File, request Request, digest Digest, successorWBSessionID string, raw []byte) (SuccessorAddress, error) {
+	return corroborateSuccessorAddressAtWithMarshal(handoff, request, digest, successorWBSessionID, raw, marshalJSON)
+}
+
+func corroborateSuccessorAddressAtWithMarshal(handoff *os.File, request Request, digest Digest, successorWBSessionID string, raw []byte, marshal func(any) ([]byte, error)) (SuccessorAddress, error) {
 	address, err := decodeAndValidateSuccessorAddress(raw, successorWBSessionID)
 	if err != nil {
 		return SuccessorAddress{}, err
@@ -280,7 +284,7 @@ func corroborateSuccessorAddressAt(handoff *os.File, request Request, digest Dig
 	if err != nil {
 		return SuccessorAddress{}, err
 	}
-	expectedRaw, err := marshalJSON(successorAddressFor(request, digest, *receipt, route))
+	expectedRaw, err := marshal(successorAddressFor(request, digest, *receipt, route))
 	if err != nil {
 		return SuccessorAddress{}, err
 	}
@@ -347,6 +351,10 @@ func loadRouteAt(handoff *os.File, request Request, digest Digest) (Route, error
 }
 
 func openSuccessorAddressesAt(root *os.File, create bool) (*os.File, error) {
+	return openSuccessorAddressesAtWithStat(root, create, unix.Fstat)
+}
+
+func openSuccessorAddressesAtWithStat(root *os.File, create bool, fstat func(int, *unix.Stat_t) error) (*os.File, error) {
 	if root == nil {
 		return nil, fmt.Errorf("open successor addresses: exact Store root is required")
 	}
@@ -360,12 +368,8 @@ func openSuccessorAddressesAt(root *os.File, create bool) (*os.File, error) {
 		return nil, fmt.Errorf("open successor addresses directory: %w", err)
 	}
 	directory := os.NewFile(uintptr(fd), "wb-session-successor-addresses")
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap successor addresses directory")
-	}
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
+	if err := fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
 		_ = directory.Close()
 		if err != nil {
 			return nil, fmt.Errorf("inspect successor addresses directory: %w", err)
@@ -418,10 +422,8 @@ func validateSuccessorAddress(address SuccessorAddress, successorWBSessionID str
 	if err != nil {
 		return err
 	}
-	claimID, err := ExternalHandoffClaimID(address.RequestDigest, address.SuccessorWBSessionID)
-	if err != nil {
-		return err
-	}
+	// Both inputs passed their validators above, so hashing cannot fail.
+	claimID := externalHandoffClaimIDValidated(address.RequestDigest, address.SuccessorWBSessionID)
 	if reference.EffortID != sourceReference.EffortID || reference.RunID != sourceReference.RunID || reference.ClaimID != claimID {
 		return fmt.Errorf("%w: successor address target Work Log claim is not deterministic", ErrHandoffConflict)
 	}
@@ -467,9 +469,9 @@ func readRouteFileAt(directory *os.File, name string, maximum int64, description
 	return readImmutableAt(directory, name, maximum, description)
 }
 
-func publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
+func (s Store) publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
 	if len(raw) > maxRouteBytes {
 		return false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
 	}
-	return publishImmutableAt(directory, routeFileName, raw, 0o600, nil)
+	return s.publish(directory, routeFileName, raw, 0o600)
 }

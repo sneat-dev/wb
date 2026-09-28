@@ -358,7 +358,7 @@ func TestCwCovFleetInventoryWorktreesAndLayout(t *testing.T) {
 		t.Fatalf("layout = %+v, want all three checkouts classified", layoutStats)
 	}
 
-	hooksStats, err := fleetHooksRollup([]qualityTarget{{repository: "acme/app", path: filepath.Join(root, "acme", "app")}}, 1)
+	hooksStats, err := fleetHooksRollup(&invocation{}, []qualityTarget{{repository: "acme/app", path: filepath.Join(root, "acme", "app")}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

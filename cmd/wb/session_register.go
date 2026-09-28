@@ -15,7 +15,7 @@ var (
 	sessionRegisterRuntimeProcess = session.IsRuntimeProcess
 )
 
-func newSessionRegisterCmd() *cobra.Command {
+func newSessionRegisterCmd(inv *invocation) *cobra.Command {
 	var record session.Record
 	command := &cobra.Command{
 		Use:   "register",
@@ -66,7 +66,7 @@ corrects its model does not have to clean up after itself.`,
 			if record.PID == sessionRegisterParentPID() && !sessionRegisterRuntimeProcess(record.PID, record.Runtime) {
 				return fmt.Errorf("session PID %d is the intermediate shell; register the live harness with --pid $PPID from its tool-call shell", record.PID)
 			}
-			directory, err := sessionDir()
+			directory, err := sessionDir(inv)
 			if err != nil {
 				return err
 			}

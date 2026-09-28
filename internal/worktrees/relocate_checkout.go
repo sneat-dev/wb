@@ -230,7 +230,7 @@ func RelocateCheckout(ctx context.Context, options RelocateCheckoutOptions) (Rel
 		return result, relativeErr
 	}
 	destinationRoot := relocationDestinationRoot(options.Destination, destinationRelative, options.To)
-	if err := prepareRelocationDestination(ctx, ListResult{CanonicalDir: options.CanonicalDir}, "", options.Destination, destinationRelative, options.To); err != nil {
+	if err := prepareRelocationDestination(ctx, ListResult{CanonicalDir: options.CanonicalDir}, claim.BaseSHA, options.Destination, destinationRelative, options.To); err != nil {
 		return result, err
 	}
 	// Record the destination relative to the root that produced it, so the

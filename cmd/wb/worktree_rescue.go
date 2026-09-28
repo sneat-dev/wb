@@ -70,7 +70,7 @@ applies anything.`,
 			if len(args) == 1 {
 				path = args[0]
 			}
-			options := canonicalrescue.Options{ProjectsRoot: projectsRoot, Branch: branch}
+			options := canonicalrescue.Options{ProjectsRoot: inv.projectsRoot, Branch: branch}
 			report, err := canonicalrescue.Inspect(cmd.Context(), path, options)
 			if err != nil {
 				return err
@@ -110,11 +110,11 @@ applies anything.`,
 // finds whatever still got through — including everything already sitting in a
 // clone before the guard existed.
 func runFleetRescueReport(inv *invocation, cmd *cobra.Command, format string) error {
-	repositories, err := discover.ScanLocal(projectsRoot)
+	repositories, err := discover.ScanLocal(inv.projectsRoot)
 	if err != nil {
 		return fmt.Errorf("scan local repositories: %w", err)
 	}
-	options := canonicalrescue.Options{ProjectsRoot: projectsRoot}
+	options := canonicalrescue.Options{ProjectsRoot: inv.projectsRoot}
 	var dirty []canonicalrescue.Report
 	for _, repository := range repositories {
 		if inv.filterFlag != "" && !strings.Contains(repository.Slug(), inv.filterFlag) {
@@ -146,7 +146,7 @@ func runFleetRescueReport(inv *invocation, cmd *cobra.Command, format string) er
 	}
 	out := cmd.OutOrStdout()
 	if len(dirty) == 0 {
-		return writeLine(out, "every canonical clone under", projectsRoot, "is clean")
+		return writeLine(out, "every canonical clone under", inv.projectsRoot, "is clean")
 	}
 	for _, report := range dirty {
 		if err := writeFormat(out, "✗ %s: %d change(s), %d untracked\n", report.Path, len(report.Changes), report.UntrackedCount); err != nil {

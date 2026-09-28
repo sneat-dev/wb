@@ -128,7 +128,7 @@ func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeRece
 	if v.Base.Ref != r.Target || v.Head.Ref != r.Candidate.Branch || v.Head.SHA != r.Candidate.SHA || v.Head.Repo == nil || v.Head.Repo.FullName != hostedRepository || v.Base.Repo == nil || v.Base.Repo.FullName != hostedRepository {
 		return fmt.Errorf("pull request %s does not match exact repository, target, candidate branch, and candidate SHA", selector)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+r.Candidate.Branch)
+	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+r.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("read candidate remote ref: %w", err)
 	}
@@ -143,7 +143,7 @@ func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeRece
 // Renames preserve the latter for WB lifecycle identity while GitHub PR reads
 // must address the repository that currently hosts the branch.
 func hostedRepositoryForCandidate(ctx context.Context, r WorktreeMergeReceipt) (string, error) {
-	origin, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "remote", "get-url", "origin")
+	origin, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("read candidate origin: %w", err)
 	}
@@ -233,7 +233,7 @@ func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt Work
 		if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
 			return fmt.Errorf("source %s is not clean: %w", source.Branch, err)
 		}
-		branch, _, err := runCommand(ctx, 0, 0, source.Worktree, "git", "branch", "--show-current")
+		branch, _, err := runCommand(ctx, defaultRunner, 0, 0, source.Worktree, "git", "branch", "--show-current")
 		if err != nil {
 			return err
 		}
@@ -241,7 +241,7 @@ func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt Work
 		if branch != source.Branch {
 			return fmt.Errorf("source branch %s no longer matches receipted branch %s", branch, source.Branch)
 		}
-		head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
 		if err != nil {
 			return err
 		}

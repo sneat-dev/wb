@@ -9,13 +9,15 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-// setUpShellRetirementFixture points a hermetic WB_HOME at a fresh temp
-// directory and returns its worktrees root, without ever running Create or
+// setUpShellRetirementFixture isolates HOME and the WB projects root in a
+// fresh temp directory and returns its worktrees root, without running Create or
 // Cleanup: RetireTaskShells only ever inspects filesystem structure, so
 // every fixture here is built directly with os.MkdirAll/os.WriteFile.
 func setUpShellRetirementFixture(t *testing.T) (projectsRoot, worktreesRoot string) {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	projectsRoot = filepath.Join(root, "projects")
 	home := filepath.Join(projectsRoot, ".wb")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)

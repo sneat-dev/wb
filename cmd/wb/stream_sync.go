@@ -15,7 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newStreamSyncCmd() *cobra.Command {
+func newStreamSyncCmd(inv *invocation) *cobra.Command {
+	return newStreamSyncCmdWithRunner(inv, nil)
+}
+
+// streamSyncRunner lets command tests observe the options passed to the engine
+// without starting Git or the verification toolchain.
+type streamSyncRunner func(context.Context, streamsync.Options) (streamsync.Result, error)
+
+func newStreamSyncCmdWithRunner(inv *invocation, runner streamSyncRunner) *cobra.Command {
 	var (
 		format, base, reason string
 		libraries            []string
@@ -88,7 +96,7 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
-			store, err := streams.Open(projectsRoot)
+			store, err := streams.Open(inv.projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -101,12 +109,16 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 				trigger = streamsync.TriggerExplicit
 			}
 
-			engine := &streamsync.Engine{
-				Git:      streamsync.ExecGit{Timeout: timeout},
-				Bumper:   streamsync.ExecBumper{Timeout: timeout},
-				Verifier: batchVerifier{timeout: timeout},
-				CI:       workflowMechanisms{},
-				Events:   streamEventSink{log: store.EventLog(args[0])},
+			sync := runner
+			if sync == nil {
+				engine := &streamsync.Engine{
+					Git:      streamsync.ExecGit{Timeout: timeout},
+					Bumper:   streamsync.ExecBumper{Timeout: timeout},
+					Verifier: batchVerifier{timeout: timeout},
+					CI:       workflowMechanisms{},
+					Events:   streamEventSink{log: store.EventLog(args[0])},
+				}
+				sync = engine.Sync
 			}
 
 			results := make([]streamsync.Result, 0, len(stream.Members))
@@ -127,7 +139,7 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 					// A library does not bump itself to its own version.
 					memberLibraries = nil
 				}
-				result, syncErr := engine.Sync(command.Context(), streamsync.Options{
+				result, syncErr := sync(command.Context(), streamsync.Options{
 					Stream: stream.Name, Worktree: member.Worktree, Repository: member.Repository,
 					Branch: member.Branch, Base: memberBase, Libraries: memberLibraries,
 					RecordedRemoteHead: member.Lease.RecordedHead,
@@ -320,11 +332,18 @@ func printBatch(out interface{ Write([]byte) (int, error) }, batch streamsync.Ba
 
 // batchVerifier runs the existing wb verify profiles, single-worker, and
 // names the mechanisms it did not run so they can be checked against CI.
-type batchVerifier struct{ timeout time.Duration }
+type batchVerifier struct {
+	timeout time.Duration
+	verify  func(context.Context, string, string, []quality.Check, quality.RunOptions) quality.VerificationReport
+}
 
 func (verifier batchVerifier) Verify(ctx context.Context, dir string) (streamsync.VerificationRun, error) {
 	started := time.Now()
-	report := quality.VerifyWithOptions(ctx, dir, dir, []quality.Check{
+	verify := verifier.verify
+	if verify == nil {
+		verify = quality.VerifyWithOptions
+	}
+	report := verify(ctx, dir, dir, []quality.Check{
 		quality.CheckLint, quality.CheckBuild, quality.CheckTest,
 	}, quality.RunOptions{
 		Timeout: verifier.timeout, SingleWorker: true,

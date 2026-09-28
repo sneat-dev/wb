@@ -517,7 +517,10 @@ echo "unexpected gh args: $*" >&2; exit 30
 
 	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: head,
-		Slice: 5 * time.Second, CheckPollInterval: 200 * time.Millisecond,
+		// The first observation launches several fixture processes. Leave enough
+		// deadline headroom for a loaded coverage shard to reach the authority
+		// response; the asserted path still returns on that first response.
+		Slice: 30 * time.Second, CheckPollInterval: 200 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("WaitForCommitChecks: %v", err)

@@ -35,7 +35,7 @@ func TestTaskParkCreatesWorktreeWithoutLaunch(t *testing.T) {
 		},
 		store: func() (taskoffload.Store, error) { return store, nil },
 	}
-	command := newTaskOffloadCmdWithDeps(deps, true)
+	command := newTaskOffloadCmdWithDeps(&invocation{}, deps, true)
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{"review-auth", "acme/app", "--context-file", contextFile})
@@ -67,7 +67,7 @@ func TestTaskOffloadLaunchesSuccessor(t *testing.T) {
 		},
 		store: func() (taskoffload.Store, error) { return store, nil },
 	}
-	command := newTaskOffloadCmdWithDeps(deps, false)
+	command := newTaskOffloadCmdWithDeps(&invocation{}, deps, false)
 	command.SetOut(&bytes.Buffer{})
 	command.SetArgs([]string{"review-auth", "acme/app", "--context-file", contextFile, "--harness", "claude", "--model", "opus"})
 	if err := command.Execute(); err != nil {

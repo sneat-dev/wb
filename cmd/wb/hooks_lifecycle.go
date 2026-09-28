@@ -232,7 +232,7 @@ whether the external tool initializes missing per-repository state.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			dispatcher := lifecyclehooks.DefaultDispatcher()
-			plan, err := planLifecycleBackfill(command.Context(), projectsRoot, inv.filterFlag, dispatcher, apply)
+			plan, err := planLifecycleBackfill(command.Context(), inv.projectsRoot, inv.filterFlag, dispatcher, apply)
 			if err != nil {
 				return err
 			}

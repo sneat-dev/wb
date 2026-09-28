@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newRemoteClaimsCmd() *cobra.Command {
+func newRemoteClaimsCmd(inv *invocation) *cobra.Command {
 	var jsonOut bool
 	var stale time.Duration
 	cmd := &cobra.Command{
@@ -22,7 +22,7 @@ against --stale. Claims that cannot be decoded are rendered as error rows
 and do not change the exit code.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemoteClaims(defaultRemoteDeps(), projectsRoot, stale, jsonOut, os.Stdout)
+			return runRemoteClaims(defaultRemoteDeps(), inv.projectsRoot, stale, jsonOut, os.Stdout)
 		},
 	}
 	addJSONFormatFlags(cmd, &jsonOut)

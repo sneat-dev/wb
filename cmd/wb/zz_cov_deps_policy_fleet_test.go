@@ -67,10 +67,7 @@ func cwCovWriteFile(t *testing.T, path, body string) {
 func cwCovRunDepsPolicy(t *testing.T, projects string, args ...string) (string, error) {
 	t.Helper()
 	testenv.Isolate(t)
-	previousRoot := projectsRoot
-	projectsRoot = projects
-	t.Cleanup(func() { projectsRoot = previousRoot })
-	command := newDepsPolicyCmd(&invocation{})
+	command := newDepsPolicyCmd(&invocation{projectsRoot: projects})
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	var out bytes.Buffer
@@ -85,7 +82,7 @@ func TestCwCovSweepGovernsAndReportsUngovernedModules(t *testing.T) {
 	governed := cwCovViolatingModule(t, "github.com/acme/app/backend")
 	policyPath := writeTestPolicy(t)
 
-	outcomes := sweep([]deps.Repository{{Slug: "acme/app", Path: governed}}, policyPath)
+	outcomes := sweep(&invocation{}, []deps.Repository{{Slug: "acme/app", Path: governed}}, policyPath)
 	if len(outcomes) != 1 {
 		t.Fatalf("outcomes = %+v, want one module", outcomes)
 	}
@@ -110,7 +107,7 @@ func TestCwCovSweepGovernsAndReportsUngovernedModules(t *testing.T) {
 	// A module with no policy declaration at all is recorded, not silently
 	// skipped: an unwired repository is the finding.
 	ungoverned := cwCovViolatingModule(t, "github.com/acme/nowire/backend")
-	outcomes = sweep([]deps.Repository{{Slug: "acme/nowire", Path: ungoverned}}, "")
+	outcomes = sweep(&invocation{}, []deps.Repository{{Slug: "acme/nowire", Path: ungoverned}}, "")
 	if len(outcomes) != 1 || outcomes[0].Governed {
 		t.Fatalf("ungoverned outcomes = %+v", outcomes)
 	}
@@ -122,7 +119,7 @@ func TestCwCovSweepGovernsAndReportsUngovernedModules(t *testing.T) {
 	}
 
 	// Outcomes from several repositories are sorted by repository then dir.
-	multi := sweep([]deps.Repository{
+	multi := sweep(&invocation{}, []deps.Repository{
 		{Slug: "zeta/app", Path: cwCovViolatingModule(t, "github.com/acme/zeta/backend")},
 		{Slug: "alpha/app", Path: cwCovViolatingModule(t, "github.com/acme/alpha/backend")},
 	}, policyPath)

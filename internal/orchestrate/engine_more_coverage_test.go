@@ -11,8 +11,8 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -41,8 +41,8 @@ func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalReportsAnUnclonableRepository(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "missing")
@@ -62,8 +62,8 @@ func TestOrchCovEnsureCanonicalReportsAFetchFailure(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -102,8 +102,8 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "broken")

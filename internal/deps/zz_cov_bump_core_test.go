@@ -828,8 +828,8 @@ func TestDepsCovBumpCoreRunBumpResumesCompletedAndRefusesMismatchedReports(t *te
 	})
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	options := depsCovDryRunBumpOptions(githubDir)
 	seed := depsCovSeedEvents()
@@ -865,8 +865,8 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -886,8 +886,8 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	provider := newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n")
@@ -906,8 +906,8 @@ func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -924,8 +924,8 @@ func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesAStaleEventRefreshFailure(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	sentinel := errors.New("registry unavailable")
 	options := depsCovDryRunBumpOptions(githubDir)
@@ -1212,8 +1212,8 @@ func depsCovPublishedCarrierFleet(t *testing.T) (string, []Repository) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpCompletesWhenEveryConsumerAlreadyCarriesTheRelease(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovPublishedCarrierFleet(t)
 	report, err := RunBump(context.Background(), depsCovSeedEvents(), repositories, BumpOptions{
 		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 1, ParallelExplicit: true, DryRun: true},

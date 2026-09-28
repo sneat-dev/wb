@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
@@ -19,7 +20,7 @@ func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
 	write("go.mod", "module example.test/cache\n\ngo 1.26\n")
 	write("go.sum", "example.test/dep v1.0.0 h1:test\n")
 	checks := []Check{CheckLint, CheckTest, CheckBuild, CheckSpec}
-	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil)
+	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +65,39 @@ func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
 	}
 }
 
+func TestValidationCacheInvalidatesChangedExecutionLimits(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := t.TempDir()
+	base := RunOptions{Timeout: 20 * time.Minute, Retry: 1, CheckTimeout: 25 * time.Minute, ShardAttemptTimeout: 10 * time.Minute}
+	makeKey := func(options RunOptions) ValidationCacheKey {
+		t.Helper()
+		key, err := NewValidationCacheKey("example/cache", "target-revision", root, "wb-revision", []Check{CheckLint, CheckTest}, nil, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	key := makeKey(base)
+	if err := SaveValidationCache(cache, key, VerificationReport{Repository: key.Repository, Revision: key.TargetRevision, WorkspaceClean: true, Status: StatusFailed}); err != nil {
+		t.Fatal(err)
+	}
+	changed := []RunOptions{
+		{Timeout: 35 * time.Minute, Retry: base.Retry, CheckTimeout: base.CheckTimeout, ShardAttemptTimeout: base.ShardAttemptTimeout},
+		{Timeout: base.Timeout, Retry: 2, CheckTimeout: base.CheckTimeout, ShardAttemptTimeout: base.ShardAttemptTimeout},
+		{Timeout: base.Timeout, Retry: base.Retry, CheckTimeout: 35 * time.Minute, ShardAttemptTimeout: base.ShardAttemptTimeout},
+		{Timeout: base.Timeout, Retry: base.Retry, CheckTimeout: base.CheckTimeout, ShardAttemptTimeout: 15 * time.Minute},
+	}
+	for _, options := range changed {
+		if _, hit, err := LoadValidationCache(cache, makeKey(options)); err != nil || hit {
+			t.Fatalf("cache reused changed execution limits %+v: hit=%v err=%v", options, hit, err)
+		}
+	}
+	if _, hit, err := LoadValidationCache(cache, key); err != nil || !hit {
+		t.Fatalf("unchanged limits missed cache: hit=%v err=%v", hit, err)
+	}
+}
+
 func TestValidationCacheRejectsEvidenceFromDifferentValidator(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -72,7 +106,7 @@ func TestValidationCacheRejectsEvidenceFromDifferentValidator(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := []Check{CheckSpec}
-	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil)
+	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

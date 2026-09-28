@@ -168,8 +168,10 @@ func TestLifecycleResumeAndGCAreSafeOnEmptyState(t *testing.T) {
 // TestHooksLifecycleBackfillCommandOnEmptyProjectsRootReportsZeroExecutions
 // drives "wb hooks lifecycle backfill" through the real CLI dispatch (not
 // just planLifecycleBackfill called directly), so the RunE closure that
-// reads inv.filterFlag before calling planLifecycleBackfill actually
-// executes.
+// reads inv.projectsRoot before calling planLifecycleBackfill actually
+// executes. An empty projects root has no repositories to filter either way,
+// so this does not prove inv.filterFlag's value reaches
+// planLifecycleBackfill; it only proves the dispatch path runs.
 func TestHooksLifecycleBackfillCommandOnEmptyProjectsRootReportsZeroExecutions(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

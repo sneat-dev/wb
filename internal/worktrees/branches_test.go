@@ -384,6 +384,57 @@ func TestQuarantineManifestRequiresExactIdentityAndReason(t *testing.T) {
 	}
 }
 
+func TestQuarantineRequestsKeepsManifestAndSingleEntryContractsDistinct(t *testing.T) {
+	t.Parallel()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	manifestPath := filepath.Join(t.TempDir(), "quarantine.json")
+	writeManifest := func(entries []BranchQuarantineRequest) {
+		t.Helper()
+		data, err := json.Marshal(BranchQuarantineManifest{Entries: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := quarantineRequests(BranchQuarantineOptions{}); err == nil || !strings.Contains(err.Error(), "--repo, --branch, and --reason") {
+		t.Fatalf("incomplete single request = %v", err)
+	}
+	single, err := quarantineRequests(BranchQuarantineOptions{Repository: "acme/app", Branch: "feature/old", Reason: " retired "})
+	if err != nil || len(single) != 1 || single[0].Ref != "feature/old" || single[0].Reason != "retired" {
+		t.Fatalf("single request = (%#v, %v)", single, err)
+	}
+	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath, Repository: "acme/app"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("mixed manifest and single request = %v", err)
+	}
+	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath}); err == nil || !strings.Contains(err.Error(), "read quarantine manifest") {
+		t.Fatalf("missing manifest = %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath}); err == nil || !strings.Contains(err.Error(), "decode quarantine manifest") {
+		t.Fatalf("malformed manifest = %v", err)
+	}
+	writeManifest(nil)
+	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath}); err == nil || !strings.Contains(err.Error(), "no entries") {
+		t.Fatalf("empty manifest = %v", err)
+	}
+	writeManifest([]BranchQuarantineRequest{{Repository: "acme/app", Ref: "feature/old", Reason: "obsolete"}})
+	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath}); err == nil || !strings.Contains(err.Error(), "exact sha") {
+		t.Fatalf("manifest without pinned SHA = %v", err)
+	}
+	writeManifest([]BranchQuarantineRequest{
+		{Repository: "zeta/app", Ref: "feature/z", SHA: sha, Reason: "obsolete"},
+		{Repository: "acme/app", Ref: "feature/a", SHA: sha, Reason: "obsolete"},
+	})
+	requests, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifestPath})
+	if err != nil || len(requests) != 2 || requests[0].Repository != "acme/app" || requests[1].Repository != "zeta/app" || requests[0].SHA != sha {
+		t.Fatalf("sorted pinned manifest = (%#v, %v)", requests, err)
+	}
+}
+
 func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "feature/old")

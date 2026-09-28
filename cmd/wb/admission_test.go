@@ -23,7 +23,9 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd(&invocation{}).Flags().Lookup(name) != nil }},
 		{name: "retire", flagPresent: func(name string) bool { return newWorktreeRetireCmd(&invocation{}).Flags().Lookup(name) != nil }},
 		{name: "own", flagPresent: func(name string) bool { return newWorktreeOwnCmd().Flags().Lookup(name) != nil }},
-		{name: "correct-identity", flagPresent: func(name string) bool { return newWorktreeCorrectIdentityCmd().Flags().Lookup(name) != nil }},
+		{name: "correct-identity", flagPresent: func(name string) bool {
+			return newWorktreeCorrectIdentityCmd(&invocation{}).Flags().Lookup(name) != nil
+		}},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
@@ -34,7 +36,7 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 			}
 		})
 	}
-	log := newWorktreeWorkLogCmd()
+	log := newWorktreeWorkLogCmd(&invocation{})
 	for _, name := range []string{"mode", "initiator"} {
 		if log.PersistentFlags().Lookup(name) == nil {
 			t.Fatalf("worktree log is missing persistent --%s", name)
@@ -174,7 +176,7 @@ func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, root)
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return worktrees.AgentIdentity{}, false })
 	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
-	log := newWorktreeWorkLogCmd()
+	log := newWorktreeWorkLogCmd(&invocation{})
 	recoverCommand, _, err := log.Find([]string{"recover"})
 	if err != nil {
 		t.Fatal(err)

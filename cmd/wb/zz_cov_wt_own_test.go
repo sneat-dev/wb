@@ -77,9 +77,6 @@ func TestCwWtWorktreeOwnRecoversFromEnvironment(t *testing.T) {
 
 	// Not testenv.Isolate: this test's whole point is the ambient declaration,
 	// which Isolate deliberately clears.
-	previousRoot := projectsRoot
-	projectsRoot = t.TempDir()
-	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	command := newWorktreeOwnCmd()
 	command.SilenceUsage = true

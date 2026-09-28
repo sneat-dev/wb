@@ -31,6 +31,12 @@ type wmEngineGH struct {
 
 func installWorktreeMergeEngineGH(t *testing.T, fixture engineFixture, candidateSHA, candidateBranch string) *wmEngineGH {
 	t.Helper()
+	// This file is on internal/quality/testdata/unit_tier.pending (task-17):
+	// every landing under test here reaches WorktreeMergeLandOptions' git
+	// seam (worktree_merge.go), which defaults to production's real
+	// gitcli/runner adapters and so starts a real process through
+	// task-24's guarded runner exactly as this fixture's own runEngineGit
+	// calls already do outside it.
 	// The fake GitHub commits directly in the remote (update-branch merges,
 	// "GitHub merges while WB is away"), so the bare remote needs a git
 	// identity of its own: a CI runner has no global one to fall back on.
@@ -309,7 +315,9 @@ func (gh *wmEngineGH) ghLog(t *testing.T) string {
 func wmEngineLandOptions(fixture engineFixture, receiptPath string) WorktreeMergeLandOptions {
 	return WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		// Successful paths need two exact-head observations across real git
+		// and gh processes. Leave enough time for both on a loaded CI host.
+		Timeout: 15 * time.Second, CheckPollInterval: time.Millisecond,
 	}
 }
 

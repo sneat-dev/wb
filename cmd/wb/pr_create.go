@@ -10,11 +10,12 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
-func newPRCreateCmd() *cobra.Command {
+func newPRCreateCmd(inv *invocation) *cobra.Command {
 	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile string
 	var draft, autoMerge, allowUnfenced, commitStaged, commitAll, land, keep bool
 	var timeout time.Duration
@@ -167,7 +168,7 @@ wb pr create --format json`,
 			// #615: never add issue numbers to the body silently — print
 			// whatever the task's own original prompt names as a suggestion,
 			// leaving --closes as the only thing that acts on it.
-			if suggested := suggestedClosesFromWorktreePrompt(command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
+			if suggested := suggestedClosesFromWorktreePrompt(inv, command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
 					formatSuggestedIssues(suggested))
 			}
@@ -176,7 +177,7 @@ wb pr create --format json`,
 				interactive := console.Interactive(command.ErrOrStderr(), false)
 				progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 				landOptions = &orchestrate.PullRequestLandOptions{
-					ProjectsRoot:      projectsRoot,
+					ProjectsRoot:      inv.projectsRoot,
 					Keep:              keep,
 					ApprovedBy:        approvedBy,
 					ReviewComment:     reviewComment,
@@ -187,27 +188,27 @@ wb pr create --format json`,
 					CheckPollInterval: orchestrate.DefaultCheckPollInterval,
 					Progress:          progress.report,
 					OperationProgress: progress.operationReporter("pr create --land"),
-					Lane:              landingLaneGuardRequest("wb pr create --land", "", false),
+					Lane:              landingLaneGuardRequest(inv, "wb pr create --land", "", false),
 					CheckoutUpdated:   lifecycleCheckoutUpdated(command.ErrOrStderr()),
 				}
 			}
 			var lane orchestrate.LaneGuardRequest
 			if autoMerge && !land {
-				lane = landingLaneGuardRequest("wb pr create --auto-merge", "", false)
+				lane = landingLaneGuardRequest(inv, "wb pr create --auto-merge", "", false)
 			}
 			result, createErr := orchestrate.CreatePullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
-				Worktree: worktreeArg, ProjectsRoot: projectsRoot,
+				Worktree: worktreeArg, ProjectsRoot: inv.projectsRoot,
 				Title: title, Body: body, BodyFile: bodyFile, Draft: draft, Base: base,
 				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message, Closes: closesIssues,
 				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod, Lane: lane,
 				Land: land, LandOptions: landOptions,
-				LinkPreflight: refuseLinkedRepositoryWorktrees,
+				LinkPreflight: func(repository string) error { return refuseLinkedRepositoryWorktrees(inv, repository) },
 				// The repository is not known until the worktree's manifest is
 				// read inside CreatePullRequest itself, unlike `wb pr land`,
 				// which already has it as a CLI argument — so this hands over
 				// the same repository-scoped-stream resolver `wb pr land`
 				// uses, rather than a repository resolved too early to be right.
-				EventsForRepository: landingEventLog,
+				EventsForRepository: func(repository string) (streams.EventAppender, string) { return landingEventLog(inv, repository) },
 			})
 			// The envelope is printed whatever createErr is: `result` is
 			// initialized on the invocation's very first line and carries
@@ -347,13 +348,13 @@ func parseIssueNumbers(values []string) ([]int, error) {
 // failure to resolve the worktree or load its Work Log is silent here: this
 // is a courtesy suggestion, never a requirement, and must not turn into a
 // usage error for a worktree that simply has no recorded prompt.
-func suggestedClosesFromWorktreePrompt(ctx context.Context, worktreeArg string) []int {
-	worktree, err := orchestrate.ResolvePullRequestCreateWorktree(ctx, projectsRoot, worktreeArgOrCurrent(worktreeArg))
+func suggestedClosesFromWorktreePrompt(inv *invocation, ctx context.Context, worktreeArg string) []int {
+	worktree, err := orchestrate.ResolvePullRequestCreateWorktree(ctx, inv.projectsRoot, worktreeArgOrCurrent(worktreeArg))
 	if err != nil {
 		return nil
 	}
 	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{
-		ProjectsRoot: projectsRoot, Worktree: worktree, IncludePromptBodies: true,
+		ProjectsRoot: inv.projectsRoot, Worktree: worktree, IncludePromptBodies: true,
 	})
 	if err != nil || view.OriginalPrompt == nil {
 		return nil

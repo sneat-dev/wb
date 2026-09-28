@@ -266,6 +266,59 @@ func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
 	}
 }
 
+// TestDispatchWithFullyInjectedPathsNeverConsultsRealDefaultsOrLauncher
+// guards sneat-dev/wb#620: a Dispatcher that supplies every path and a fake
+// LaunchWorker must dispatch entirely through those injected values, never
+// falling back to defaults() re-resolving the real config/state/receipt
+// paths or the real detached-process launcher -- even though this runs
+// inside a go test binary. HOME and the XDG variables are set to a decoy
+// root with no wb.yaml: if a regression ever let defaults() override an
+// explicitly-set field, the dispatch would silently find no config there
+// and enqueue nothing, turning that regression into an assertion failure
+// here instead of a detached worker against the developer's real state.
+//
+//nolint:paralleltest // calls t.Setenv (HOME, XDG_CONFIG_HOME, XDG_STATE_HOME), which Go's testing package forbids combined with t.Parallel
+func TestDispatchWithFullyInjectedPathsNeverConsultsRealDefaultsOrLauncher(t *testing.T) {
+	decoyHome := t.TempDir()
+	t.Setenv("HOME", decoyHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(decoyHome, "xdg-config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(decoyHome, "xdg-state"))
+
+	dispatcher, repository := testDispatcher(t)
+	var launched []WorkerRequest
+	dispatcher.LaunchWorker = func(request WorkerRequest) error {
+		launched = append(launched, request)
+		return nil
+	}
+
+	report, err := dispatcher.Dispatch(context.Background(), []Event{
+		{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if report.Enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1 (a defaults() regression would find no config at the decoy HOME and enqueue nothing)", report.Enqueued)
+	}
+	if len(launched) != 1 {
+		t.Fatalf("fake launcher calls = %d, want 1", len(launched))
+	}
+	if launched[0].ConfigPath != dispatcher.ConfigPath || launched[0].StateDir != dispatcher.StateDir || launched[0].ReceiptPath != dispatcher.ReceiptPath {
+		t.Fatalf("worker request = %+v, want the injected dispatcher paths (config=%q state=%q receipt=%q)",
+			launched[0], dispatcher.ConfigPath, dispatcher.StateDir, dispatcher.ReceiptPath)
+	}
+	for _, decoyPath := range []string{
+		filepath.Join(decoyHome, ".config", "wb", "wb.yaml"),
+		filepath.Join(decoyHome, "xdg-config", "wb", "wb.yaml"),
+		filepath.Join(decoyHome, "xdg-state", "wb"),
+		filepath.Join(decoyHome, ".local", "state", "wb"),
+	} {
+		if _, statErr := os.Stat(decoyPath); statErr == nil {
+			t.Fatalf("decoy default path %s exists; the real-path resolver was consulted", decoyPath)
+		}
+	}
+}
+
 func TestCheckRejectsGroupWritableExecutable(t *testing.T) {
 	t.Parallel()
 	dispatcher, _ := testDispatcher(t)

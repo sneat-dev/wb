@@ -617,17 +617,17 @@ func TestCwWtCleanupTaskNameHelpers(t *testing.T) {
 func TestCwWtWorktreeCmdsRejectBadFormatInProcess(t *testing.T) {
 	projects := t.TempDir()
 	builders := map[string]func() *cobra.Command{
-		"log-show":    newWorktreeLogShowCmd,
-		"log-refresh": newWorktreeLogRefreshCmd,
-		"backfill":    newWorktreeBackfillCmd,
+		"log-show":    func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) },
+		"log-refresh": func() *cobra.Command { return newWorktreeLogRefreshCmd(&invocation{}) },
+		"backfill":    func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{}) },
 		"adopt":       func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) },
-		"orphans":     newWorktreeOrphansCmd,
+		"orphans":     func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{}) },
 		"list":        func() *cobra.Command { return newWorktreeListCmd(&invocation{}) },
 		"marker":      func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) },
 		"relocate":    func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) },
 		"checkpoint":  newWorktreeCheckpointFetchCmd,
 		"rescue":      func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) },
-		"end":         newWorktreeEndCmd,
+		"end":         func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) },
 		"gc":          func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) },
 		"cleanup":     func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) },
 	}
@@ -677,7 +677,7 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 	projects := cwCovProjectsRoot(t, "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{}) })
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("worktree list: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 		t.Fatalf("worktree list stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{}) }, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{projectsRoot: projects}) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("worktree list json: %v", err)
 	}
@@ -693,12 +693,12 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 		t.Fatalf("worktree list json stdout = %q", stdout)
 	}
 
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{}) }, "--finalized", "--not-finalized")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{projectsRoot: projects}) }, "--finalized", "--not-finalized")
 	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 		t.Fatalf("conflicting finalize filters = %v", err)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{}) }, "absent-task")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{projectsRoot: projects}) }, "absent-task")
 	if err != nil {
 		t.Fatalf("worktree summary: %v", err)
 	}
@@ -706,7 +706,7 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 		t.Fatalf("worktree summary stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{}) }, "absent-task", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{projectsRoot: projects}) }, "absent-task", "--format", "json")
 	if err != nil {
 		t.Fatalf("worktree summary json: %v", err)
 	}
@@ -715,57 +715,108 @@ func TestCwWtWorktreeListAndSummaryInProcess(t *testing.T) {
 	}
 }
 
+// TestWorktreeListFilterNarrowsResultsToMatchingRepository proves --filter
+// actually narrows worktree list's results, not just how they are described:
+// with live worktrees in two different orgs, an unfiltered list names both
+// tasks, and adding --filter for one org's slug names only that one.
+// Mutating ListOptions.Filter's application (internal/worktrees) to a no-op
+// turns this from PASS to FAIL, proving the value.
+func TestWorktreeListFilterNarrowsResultsToMatchingRepository(t *testing.T) {
+	projects := t.TempDir()
+	seeds := t.TempDir()
+	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prompt := writeOriginalPromptFixture(t, "filter fixture")
+
+	acmeClone := filepath.Join(projects, "acme", "app")
+	cwCovCloneWithOrigin(t, seeds, "app", acmeClone)
+	otherClone := filepath.Join(projects, "other-org", "app2")
+	cwCovCloneWithOrigin(t, seeds, "app2", otherClone)
+
+	for _, spec := range []struct{ task, repo string }{
+		{"cwwt-acme-task", "acme/app"},
+		{"cwwt-other-task", "other-org/app2"},
+	} {
+		if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCreateCmd(&invocation{projectsRoot: projects}) },
+			spec.task, spec.repo, "--model", "unknown", "--mode", "manual", "--initiator", "cwWt",
+			"--original-prompt-file", prompt, "--no-claim"); err != nil {
+			t.Fatalf("create %s/%s: %v", spec.task, spec.repo, err)
+		}
+	}
+
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeListCmd(&invocation{projectsRoot: projects}) })
+	if err != nil {
+		t.Fatalf("worktree list: %v", err)
+	}
+	if !strings.Contains(stdout, "cwwt-acme-task") || !strings.Contains(stdout, "cwwt-other-task") {
+		t.Fatalf("unfiltered list = %q, want both tasks", stdout)
+	}
+
+	filtered, _, err := cwCovExec(t, projects, func() *cobra.Command {
+		return newWorktreeListCmd(&invocation{projectsRoot: projects, filterFlag: "acme"})
+	})
+	if err != nil {
+		t.Fatalf("worktree list --filter acme: %v", err)
+	}
+	if !strings.Contains(filtered, "cwwt-acme-task") {
+		t.Fatalf("filtered list = %q, want cwwt-acme-task", filtered)
+	}
+	if strings.Contains(filtered, "cwwt-other-task") {
+		t.Fatalf("filtered list still names the excluded task: %q", filtered)
+	}
+}
+
 func TestCwWtWorktreeBackfillAdoptOrphansInProcess(t *testing.T) {
 	projects := cwCovProjectsRoot(t, "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeBackfillCmd)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("backfill dry run: %v", err)
 	}
 	if !strings.Contains(stdout, "dry-run only, pass --apply to write") {
 		t.Fatalf("backfill stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeBackfillCmd, "--apply")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{projectsRoot: projects}) }, "--apply")
 	if err != nil {
 		t.Fatalf("backfill apply: %v", err)
 	}
 	if strings.Contains(stdout, "dry-run only") {
 		t.Fatalf("backfill apply stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeBackfillCmd, "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{projectsRoot: projects}) }, "--format", "json"); err != nil {
 		t.Fatalf("backfill json: %v", err)
 	}
 
 	// adopt requires exactly one selector.
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) }, "--apply"); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{projectsRoot: projects}) }, "--apply"); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("adopt with no selector = %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) }, ".", "--all-external"); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{projectsRoot: projects}) }, ".", "--all-external"); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("adopt with both selectors = %v", err)
 	}
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) }, "--all-external")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{projectsRoot: projects}) }, "--all-external")
 	if err != nil {
 		t.Fatalf("adopt dry run: %v", err)
 	}
 	if !strings.Contains(stdout, "dry-run only, pass --apply to write") {
 		t.Fatalf("adopt stdout = %q", stdout)
 	}
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) }, "--all-external", "--format", "json"); err != nil {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{projectsRoot: projects}) }, "--all-external", "--format", "json"); err != nil {
 		t.Fatalf("adopt json: %v", err)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeOrphansCmd)
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("orphans: %v", err)
 	}
 	if !strings.Contains(stdout, "worktrees in") {
 		t.Fatalf("orphans stdout = %q", stdout)
 	}
-	if _, _, err = cwCovExec(t, projects, newWorktreeOrphansCmd, "--format", "json"); err != nil {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) }, "--format", "json"); err != nil {
 		t.Fatalf("orphans json: %v", err)
 	}
-	if _, _, err = cwCovExec(t, projects, newWorktreeOrphansCmd, "--only", "remove"); err != nil {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) }, "--only", "remove"); err != nil {
 		t.Fatalf("orphans --only: %v", err)
 	}
 }
@@ -775,19 +826,19 @@ func TestCwWtWorktreeRenameInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
 	// An old task that does not exist is refused with the backend's reason.
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "absent-old", "absent-new", "--model", "unknown")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "absent-old", "absent-new", "--model", "unknown")
 	if err == nil || !strings.Contains(err.Error(), "was not found") {
 		t.Fatalf("rename of an absent task = %v", err)
 	}
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "absent-old", "absent-new", "--model", "unknown", "--format", "json"); err == nil {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "absent-old", "absent-new", "--model", "unknown", "--format", "json"); err == nil {
 		t.Fatal("rename json of an absent task must fail")
 	}
 	// --branch and --branch-prefix together are refused before the backend.
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "a", "b", "--branch", "x", "--branch-prefix", "y"); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "a", "b", "--branch", "x", "--branch-prefix", "y"); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
 		t.Fatalf("rename --branch with --branch-prefix = %v", err)
 	}
 	// --model is required for the new Work Log claim.
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "a", "b"); err == nil || !strings.Contains(err.Error(), "--model is required") {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "a", "b"); err == nil || !strings.Contains(err.Error(), "--model is required") {
 		t.Fatalf("rename without --model = %v", err)
 	}
 }
@@ -796,14 +847,14 @@ func TestCwWtWorktreeRenameRealTaskInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
 	// The fixture worktree is dirty, so the dry-run plans a skip whose reason
 	// is printed; either way the text renderer runs.
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown")
 	if err != nil && exitCodeOf(t, err) != exitFindings {
 		t.Fatalf("rename dry run of a real task: %v", err)
 	}
 	if !strings.Contains(stdout, "gc-cli") {
 		t.Fatalf("rename dry-run stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown", "--format", "json"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRenameCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "gc-cli-renamed", "--model", "unknown", "--format", "json"); err != nil {
 		t.Fatalf("rename json of a real task: %v", err)
 	}
 }
@@ -812,15 +863,15 @@ func TestCwWtWorktreeRelocateInProcess(t *testing.T) {
 	projects := cwCovProjectsRoot(t, "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "absent-task", "--to", "local")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "absent-task", "--to", "local")
 	if err == nil || !strings.Contains(err.Error(), "was not found") {
 		t.Fatalf("relocate of an absent task = %v", err)
 	}
 	// An invalid destination is refused before the backend.
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "absent-task", "--to", "elsewhere"); err == nil {
+	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "absent-task", "--to", "elsewhere"); err == nil {
 		t.Fatal("relocate with an invalid --to must fail")
 	}
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "absent-task", "--to", "local", "--json", "--format", "text"); err == nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "absent-task", "--to", "local", "--json", "--format", "text"); err == nil {
 		t.Fatal("--json with a conflicting --format must be refused")
 	}
 }
@@ -832,14 +883,14 @@ func TestCwWtWorktreeRelocateRealTaskInProcess(t *testing.T) {
 	if err := os.Remove(filepath.Join(worktree, "wip.txt")); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "gc-cli", "--to", "local")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--to", "local")
 	if err != nil {
 		t.Fatalf("relocate dry run of a real task: %v", err)
 	}
 	if !strings.Contains(stdout, "already there") && !strings.Contains(stdout, "would relocate") {
 		t.Fatalf("relocate dry-run stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, "gc-cli", "--to", "local", "--json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--to", "local", "--json")
 	if err != nil {
 		t.Fatalf("relocate json of a real task: %v", err)
 	}
@@ -855,31 +906,31 @@ func TestCwWtWorktreeGuardAndCheckpointFetchInProcess(t *testing.T) {
 	cwCovCloneWithOrigin(t, seed, "app", clone)
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
-	stdout, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone)
 	if err != nil {
 		t.Fatalf("guard on a clean canonical clone: %v", err)
 	}
 	if !strings.Contains(stdout, "ok: ") {
 		t.Fatalf("guard stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--format", "json")
 	if err != nil {
 		t.Fatalf("guard json: %v", err)
 	}
 	if !strings.Contains(stdout, "\"kind\"") {
 		t.Fatalf("guard json stdout = %q", stdout)
 	}
-	stdout, _, err = cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--quiet")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--quiet")
 	if err != nil {
 		t.Fatalf("guard --quiet: %v", err)
 	}
 	if stdout != "" {
 		t.Fatalf("guard --quiet stdout = %q", stdout)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--admission", "bogus"); err == nil || !strings.Contains(err.Error(), "unsupported admission mode") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--admission", "bogus"); err == nil || !strings.Contains(err.Error(), "unsupported admission mode") {
 		t.Fatalf("guard bad admission = %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeGuardCmd, clone, "--published"); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGuardCmd(&invocation{projectsRoot: projects}) }, clone, "--published"); err != nil {
 		// A branch pushed to this local bare origin is verified; either way
 		// the code path through PublicationFinding must not crash.
 		if !strings.Contains(err.Error(), "not verified as published") {
@@ -903,27 +954,27 @@ func TestCwWtWorktreeSetAndLogVerbsInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
 
 	// set requires a prompt source and refuses an empty one.
-	if _, _, err := cwCovExec(t, projects, newWorktreeSetCmd, checkout); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSetCmd(&invocation{}) }, checkout); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("set without a source = %v", err)
 	}
-	if _, _, err := cwCovExec(t, projects, newWorktreeSetCmd, checkout, "--prompt", "   "); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeSetCmd(&invocation{}) }, checkout, "--prompt", "   "); err == nil || !strings.Contains(err.Error(), "must not be empty") {
 		t.Fatalf("set with a blank prompt = %v", err)
 	}
 
 	// log show on a path that does not exist reports the backend error.
-	_, _, err := cwCovExec(t, projects, newWorktreeLogShowCmd, filepath.Join(t.TempDir(), "missing"))
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) }, filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatal("log show on a missing path must fail")
 	}
 	// log show on a real checkout with no journal is a valid, empty read.
-	if _, _, err := cwCovExec(t, projects, newWorktreeLogShowCmd, checkout); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) }, checkout); err != nil {
 		t.Fatalf("log show on a clean checkout: %v", err)
 	}
 
 	// log init on a plain git checkout is the first step that can succeed.
 	// The admission flags live on the parent `worktree log` command, so the
 	// whole subcommand tree is exercised.
-	stdout, _, err := cwCovExec(t, projects, newWorktreeWorkLogCmd, "init", checkout, "--format", "json")
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "init", checkout, "--format", "json")
 	if err != nil {
 		t.Fatalf("log init: %v", err)
 	}
@@ -947,8 +998,8 @@ func TestCwWtWorktreeErrorPropagationFromBackend(t *testing.T) {
 	}{
 		{name: "list", build: func() *cobra.Command { return newWorktreeListCmd(&invocation{}) }},
 		{name: "summary", build: func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{}) }, args: []string{"t"}},
-		{name: "backfill", build: newWorktreeBackfillCmd},
-		{name: "orphans", build: newWorktreeOrphansCmd},
+		{name: "backfill", build: func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{}) }},
+		{name: "orphans", build: func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{}) }},
 		{name: "gc", build: func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }},
 		{name: "cleanup", build: func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, args: []string{"t"}},
 		{name: "rename", build: func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, args: []string{"a", "b"}},

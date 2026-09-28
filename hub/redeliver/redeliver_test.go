@@ -53,6 +53,8 @@ type fakeStore struct {
 	saveLog []hub.WebhookRedeliveryRecord
 
 	loadErr, saveErr, listErr, deleteErr error
+	saveCalls                            int
+	saveErrAtCall                        map[int]error
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{records: map[string]hub.WebhookRedeliveryRecord{}} }
@@ -68,14 +70,107 @@ func (store *fakeStore) LoadWebhookRedelivery(_ context.Context, guid string) (h
 }
 
 func (store *fakeStore) SaveWebhookRedelivery(_ context.Context, record hub.WebhookRedeliveryRecord) error {
-	if store.saveErr != nil {
-		return store.saveErr
+	store.mu.Lock()
+	store.saveCalls++
+	call := store.saveCalls
+	err := store.saveErr
+	if atCallErr := store.saveErrAtCall[call]; atCallErr != nil {
+		err = atCallErr
+	}
+	store.mu.Unlock()
+	if err != nil {
+		return err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.records[record.GUID] = record
 	store.saveLog = append(store.saveLog, record)
 	return nil
+}
+
+func TestExpiredGUIDSaveFailureIsReported(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.seed("guid-expired-save", "push", http.StatusInternalServerError, now.Add(-time.Minute))
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	store.saveErr = errors.New("disk unavailable")
+	store.records["guid-expired-save"] = hub.WebhookRedeliveryRecord{GUID: "guid-expired-save", LastAttemptAt: now.Add(-time.Hour), FirstDeliveredAt: now.Add(-73 * time.Hour)}
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{Client: server.Client(), APIBaseURL: server.URL, AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM, Store: store, Now: func() time.Time { return now }, Narrate: narrateFn})
+	sweeper.Sweep(background())
+
+	if record, found := store.get("guid-expired-save"); !found || record.Abandoned {
+		t.Fatalf("record after failed age-abandon save = %+v, found=%t, want original non-abandoned state", record, found)
+	}
+	if got := sweeper.Status().LastFailureClass; got != "store" {
+		t.Fatalf("failure class = %q, want store", got)
+	}
+	if got := len(api.redeliveredIDs()); got != 0 {
+		t.Fatalf("redeliver calls = %d, want 0 for an expired GUID", got)
+	}
+	if len(*lines) != 1 || !strings.Contains((*lines)[0].Action, "sweep failed: webhook redelivery store") {
+		t.Fatalf("narration = %+v, want one classified store failure", *lines)
+	}
+}
+
+func TestSystemicFailureRollbackSaveFailureIsReported(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.seed("guid-rollback-save", "push", http.StatusInternalServerError, now.Add(-time.Minute))
+	api.redeliverStatus = http.StatusInternalServerError
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	store.saveErrAtCall = map[int]error{2: errors.New("rollback unavailable")}
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{Client: server.Client(), APIBaseURL: server.URL, AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM, Store: store, Now: func() time.Time { return now }, Narrate: narrateFn})
+	sweeper.Sweep(background())
+
+	record, found := store.get("guid-rollback-save")
+	if !found || record.Attempts != 1 {
+		t.Fatalf("record after failed rollback = %+v, found=%t, want durable pre-save Attempts=1", record, found)
+	}
+	if got := len(api.redeliveredIDs()); got != 1 {
+		t.Fatalf("redeliver calls = %d, want 1", got)
+	}
+	if got := sweeper.Status().LastFailureClass; got != "store" {
+		t.Fatalf("failure class = %q, want store for failed rollback", got)
+	}
+	if len(*lines) != 1 || !strings.Contains((*lines)[0].Action, "rollback unavailable") {
+		t.Fatalf("narration = %+v, want rollback save failure", *lines)
+	}
+}
+
+func TestThirdRejectedAttemptIsPersistedAndAbandoned(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.seed("guid-evidence", "push", http.StatusOK, now.Add(-time.Minute))
+	api.seed("guid-third-rejected", "push", http.StatusInternalServerError, now.Add(-2*time.Minute))
+	api.redeliverStatus = http.StatusUnprocessableEntity
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	store.records["guid-third-rejected"] = hub.WebhookRedeliveryRecord{GUID: "guid-third-rejected", Attempts: MaxAttempts - 1, LastAttemptAt: now.Add(-time.Hour), FirstDeliveredAt: now.Add(-2 * time.Minute)}
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{Client: server.Client(), APIBaseURL: server.URL, AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM, Store: store, Now: func() time.Time { return now }, Interval: time.Hour, Narrate: narrateFn})
+	sweeper.Sweep(background())
+
+	record, found := store.get("guid-third-rejected")
+	if !found || !record.Abandoned || record.Attempts != MaxAttempts || !record.LastAttemptAt.Equal(now) {
+		t.Fatalf("record = %+v, found=%t, want abandoned third attempt persisted at fixed time", record, found)
+	}
+	if got := len(api.redeliveredIDs()); got != 1 {
+		t.Fatalf("redeliver calls = %d, want exactly one rejected attempt", got)
+	}
+	want := fmt.Sprintf("abandoned after %d attempts (github rejected redelivery, status %d)", MaxAttempts, http.StatusUnprocessableEntity)
+	if len(*lines) != 1 || (*lines)[0].Action != want {
+		t.Fatalf("narration = %+v, want %q", *lines, want)
+	}
 }
 
 func (store *fakeStore) saves(guid string) []hub.WebhookRedeliveryRecord {

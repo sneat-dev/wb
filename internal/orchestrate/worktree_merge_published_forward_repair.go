@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -264,7 +265,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
@@ -338,7 +339,7 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 	if receipt.Candidate.SHA == "" {
 		return errors.New("failed receipt has no immutable candidate SHA for historical source provenance")
 	}
-	candidateSHA, err := mergeRevision(ctx, repositoryDir, receipt.Candidate.SHA)
+	candidateSHA, err := mergeRevision(ctx, defaultRunner, repositoryDir, receipt.Candidate.SHA)
 	if err != nil || candidateSHA != receipt.Candidate.SHA {
 		if err == nil {
 			err = fmt.Errorf("resolved %s", candidateSHA)
@@ -349,7 +350,7 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 			return errors.New("failed receipt contains an incomplete immutable historical source identity")
 		}
-		revision, err := mergeRevision(ctx, repositoryDir, source.SHA)
+		revision, err := mergeRevision(ctx, defaultRunner, repositoryDir, source.SHA)
 		if err != nil || revision != source.SHA {
 			if err == nil {
 				err = fmt.Errorf("resolved %s", revision)
@@ -401,7 +402,7 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 			continue
 		}
 		seen[root.SHA] = true
-		head, err := mergeRevision(ctx, worktree, "HEAD")
+		head, err := mergeRevision(ctx, defaultRunner, worktree, "HEAD")
 		if err != nil {
 			return err
 		}
@@ -412,8 +413,8 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 		if contains {
 			continue
 		}
-		if _, _, err := runCommand(ctx, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
-			_, _, _ = runCommand(ctx, timeout, 0, worktree, "git", "merge", "--abort")
+		if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
+			_, _, _ = runCommand(ctx, defaultRunner, timeout, 0, worktree, "git", "merge", "--abort")
 			return fmt.Errorf("merge required %s root %s: %w", root.Kind, root.SHA, err)
 		}
 	}
@@ -487,10 +488,12 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 }
 
 func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSelfSupersessionCorrection, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, receiptHash, claimHash, supersessionHash string) error {
+	// The corrected replacement has its own recorded claim base. It may be
+	// based on the current target, after the failed candidate's original base.
 	if correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash || correction.ImmutableClaimSHA256 != claimHash ||
 		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash ||
 		correction.OriginalCandidate != receipt.Candidate || correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA ||
-		correction.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
+		correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
 		return errors.New("correction does not retain immutable receipt, claim, supersession, candidate, base, or target evidence")
 	}
 	if correction.CorrectedReplacement.SHA == "" || correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" {
@@ -500,16 +503,17 @@ func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSel
 }
 
 func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-published-forward-repair-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writePublishedForwardRepairPromptInjected(receipt, supersession, currentTarget, sources, roots, actor, reason, nil)
+}
+
+// writePublishedForwardRepairPromptInjected is
+// writePublishedForwardRepairPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writePublishedForwardRepairPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writePublishedForwardRepairPromptInjected(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares one explicit published forward-repair candidate for failed receipt %s.\n", receipt.ReceiptPath)
 	fmt.Fprintf(&body, "Target: %s@%s; historical self-supersession: %s.\n", receipt.Target, currentTarget, supersession.AcknowledgementPath)
@@ -520,13 +524,8 @@ func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersessio
 		fmt.Fprintf(&body, "- immutable root %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-published-forward-repair-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

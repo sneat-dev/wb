@@ -109,7 +109,7 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		return result, fmt.Errorf("open source canonical repository: %w", err)
 	}
 	defer canonical.close()
-	lock, err := acquireRepositoryRegistrationLock(canonical)
+	lock, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if err != nil {
 		return result, fmt.Errorf("lock source repository registration: %w", err)
 	}

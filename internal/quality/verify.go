@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -52,6 +53,10 @@ type RunOptions struct {
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.
 	GoLintCommands [][]string
+	// PriorNodeInstallReport permits a later phase over the same repository
+	// path to reuse only successful locked Node installs from an earlier phase.
+	// A missing or failed install still runs before the later checks.
+	PriorNodeInstallReport *VerificationReport
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
@@ -138,7 +143,10 @@ type VerificationEntry struct {
 	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
 	Status   Status `yaml:"status" json:"status"`
 	Detail   string `yaml:"detail,omitempty" json:"detail,omitempty"`
-	Attempts int    `yaml:"attempts,omitempty" json:"attempts,omitempty"`
+	// Deadcode retains complete machine-comparable findings separately from
+	// the bounded human diagnostic. A non-nil incomplete value fails closed.
+	Deadcode *DeadcodeFailureEvidence `yaml:"deadcode,omitempty" json:"deadcode,omitempty"`
+	Attempts int                      `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
 // Verify runs the requested conventional Go and Node checks. The caller owns
@@ -181,7 +189,9 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			}
 			if hasScript && node.Locked {
 				command := nodeInstallCommand(node.PackageManager)
-				report.Results = append(report.Results, runVerification(ctx, options, "node", node.Module, checkInstall, node.Path, command...))
+				if !priorNodeInstallPassed(options.PriorNodeInstallReport, repository, path, node.Module, command) {
+					report.Results = append(report.Results, runVerification(ctx, options, "node", node.Module, checkInstall, node.Path, command...))
+				}
 			}
 			for _, check := range checks {
 				if check == CheckSpec {
@@ -230,6 +240,19 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	return report
+}
+
+func priorNodeInstallPassed(previous *VerificationReport, repository, path, module string, command []string) bool {
+	if previous == nil || previous.Repository != repository || previous.Path != path {
+		return false
+	}
+	for _, entry := range previous.Results {
+		if entry.Language == "node" && entry.Module == module && entry.Check == checkInstall &&
+			entry.Command == strings.Join(command, " ") && entry.Status == StatusPassed {
+			return true
+		}
+	}
+	return false
 }
 
 func containsCheck(checks []Check, want Check) bool {
@@ -500,7 +523,7 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	checkCtx := ctx
 	cancel := func() {}
 	if options.CheckTimeout > 0 {
-		checkCtx, cancel = context.WithTimeout(ctx, options.CheckTimeout)
+		checkCtx, cancel = context.WithTimeoutCause(ctx, options.CheckTimeout, errLogicalCheckTimeout)
 	}
 	defer cancel()
 	var output string
@@ -518,6 +541,14 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		if isDeadcodeVerificationCommand(language, check, command) {
+			entry.Deadcode = &DeadcodeFailureEvidence{}
+			// A timeout or another execution failure must not become an inherited
+			// finding merely because the subprocess emitted a complete report.
+			if err.Error() == "exit status 1" && checkCtx.Err() == nil {
+				entry.Deadcode = parseDeadcodeFailureEvidence(output)
+			}
+		}
 		if ambient := envguard.Inspect(os.Environ(), os.TempDir(), dir); !ambient.Empty() {
 			entry.Detail = strings.TrimRight(entry.Detail, "\n") + "\n" + ambient.String()
 		}
@@ -536,13 +567,21 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 }
 
 func runShardedVerification(ctx context.Context, options RunOptions, module string) (string, int, error) {
-	profile, err := os.CreateTemp("", "wb-verify-coverage-*.out")
+	return runShardedVerificationInjected(ctx, options, module, nil)
+}
+
+// runShardedVerificationInjected is runShardedVerification's test seam
+// (task-9 PR-9): every production call site reaches it only through
+// runShardedVerification, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func runShardedVerificationInjected(ctx context.Context, options RunOptions, module string, inj *filewrite.Injector) (string, int, error) {
+	profilePath, err := filewrite.CreateScratch("", "wb-verify-coverage-*.out", 0, nil, inj)
 	if err != nil {
-		return "", 0, err
-	}
-	profilePath := profile.Name()
-	if err := profile.Close(); err != nil {
-		_ = os.Remove(profilePath)
+		if profilePath != "" {
+			_ = os.Remove(profilePath)
+		}
 		return "", 0, err
 	}
 	defer func() { _ = os.Remove(profilePath) }()

@@ -40,7 +40,7 @@ type sessionMoveDependencies struct {
 	acknowledge       func(context.Context, sessioncustody.Options) (sessioncustody.Result, error)
 }
 
-func defaultSessionMoveDependencies() sessionMoveDependencies {
+func defaultSessionMoveDependencies(inv *invocation) sessionMoveDependencies {
 	return sessionMoveDependencies{
 		defaultConfigPath: wbconfig.DefaultPath,
 		loadConfig:        sessionmove.LoadConfig,
@@ -52,7 +52,7 @@ func defaultSessionMoveDependencies() sessionMoveDependencies {
 			return strings.TrimSpace(config.Machine), nil
 		},
 		resolveSource: func() (session.Record, bool, error) {
-			directory, err := sessionDirForRead()
+			directory, err := sessionDirForRead(inv)
 			if err != nil {
 				return session.Record{}, false, err
 			}
@@ -98,11 +98,11 @@ type sessionMoveOutput struct {
 	Address      *sessionmove.SuccessorAddress `json:"successor_address,omitempty"`
 }
 
-func newSessionMoveCmd() *cobra.Command {
-	return newSessionMoveCmdWithDeps(defaultSessionMoveDependencies())
+func newSessionMoveCmd(inv *invocation) *cobra.Command {
+	return newSessionMoveCmdWithDeps(inv, defaultSessionMoveDependencies(inv))
 }
 
-func newSessionMoveCmdWithDeps(deps sessionMoveDependencies) *cobra.Command {
+func newSessionMoveCmdWithDeps(inv *invocation, deps sessionMoveDependencies) *cobra.Command {
 	var targetMachine, via, configPath, handoverFile, harness, model, resume string
 	var summary, validation, remaining, format string
 	var overrideSecrets []string
@@ -133,7 +133,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 			}
 			resume = strings.TrimSpace(resume)
 			if resume != "" {
-				return runSessionMoveResume(command, deps, resume, via, configPath, format, args)
+				return runSessionMoveResume(inv, command, deps, resume, via, configPath, format, args)
 			}
 			targetMachine = strings.TrimSpace(targetMachine)
 			localMachine := ""
@@ -232,7 +232,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 			}
 			printSecretScanAdvisories(command, secretWarnings)
 			result, err := deps.checkpoint(command.Context(), worktrees.SessionCheckpointOptions{
-				ProjectsRoot:     projectsRoot,
+				ProjectsRoot:     inv.projectsRoot,
 				Worktree:         argumentOrCurrent(args),
 				SourceSession:    source,
 				TargetMachine:    targetMachine,
@@ -248,7 +248,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 				}
 				return err
 			}
-			deliveryStore, err = deps.store(projectsRoot)
+			deliveryStore, err = deps.store(inv.projectsRoot)
 			if err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "open durable move state", err)
 			}
@@ -257,7 +257,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 				if deps.loopbackDeliverer != nil {
 					deliverer = deps.loopbackDeliverer(deliveryStore)
 				} else {
-					deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: projectsRoot, Store: deliveryStore}
+					deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: inv.projectsRoot, Store: deliveryStore}
 				}
 			}
 			if deliverer == nil {
@@ -271,7 +271,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 			if err != nil {
 				return resumableDeliveryError(result.Request.HandoffID, err)
 			}
-			output, err := acknowledgeSessionMove(command.Context(), deps, deliveryStore, source, courier,
+			output, err := acknowledgeSessionMove(inv, command.Context(), deps, deliveryStore, source, courier,
 				result.Request, result.Digest, delivery)
 			if err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "complete receipt-gated source custody", err)
@@ -305,7 +305,7 @@ a whole-session transfer that may be dirty, park then pickup instead.`,
 	return command
 }
 
-func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, handoffID, via, configPath, format string, args []string) error {
+func runSessionMoveResume(inv *invocation, command *cobra.Command, deps sessionMoveDependencies, handoffID, via, configPath, format string, args []string) error {
 	if len(args) != 0 || command.Flags().Changed("handover-file") || command.Flags().Changed("harness") || command.Flags().Changed("model") || command.Flags().Changed("summary") ||
 		command.Flags().Changed("validation") || command.Flags().Changed("remaining") || command.Flags().Changed("to") ||
 		command.Flags().Changed(secretOverrideFlagName) {
@@ -318,7 +318,7 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 	if !ok {
 		return fmt.Errorf("session move resume requires the live registered predecessor session")
 	}
-	store, err := deps.store(projectsRoot)
+	store, err := deps.store(inv.projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 						localMachine = strings.TrimSpace(machine)
 					}
 				}
-				deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: projectsRoot, Store: store}
+				deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: inv.projectsRoot, Store: store}
 			}
 		} else {
 			deliverer, delivererErr = deps.newDeliverer(target, route.Courier, options)
@@ -397,7 +397,7 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 			return resumableDeliveryError(handoffID, err)
 		}
 	}
-	output, err := acknowledgeSessionMove(command.Context(), deps, store, source, route.Courier, request, digest, delivery)
+	output, err := acknowledgeSessionMove(inv, command.Context(), deps, store, source, route.Courier, request, digest, delivery)
 	if err != nil {
 		return resumablePostCheckpointError(handoffID, "complete receipt-gated source custody", err)
 	}
@@ -446,16 +446,14 @@ func sessionMoveSynchestraOptions(store sessionmove.Store, handoffID string, cou
 	return sessioncourier.SynchestraOptions{}, err
 }
 
-func acknowledgeSessionMove(
-	ctx context.Context,
+func acknowledgeSessionMove(inv *invocation, ctx context.Context,
 	deps sessionMoveDependencies,
 	store sessionmove.Store,
 	source session.Record,
 	courier sessionmove.Courier,
 	request sessionmove.Request,
 	digest sessionmove.Digest,
-	delivery sessionreceive.Result,
-) (sessionMoveOutput, error) {
+	delivery sessionreceive.Result) (sessionMoveOutput, error) {
 	var output sessionMoveOutput
 	if delivery.Phase != sessionmove.PhaseCompleted || delivery.Receipt == nil {
 		return output, errors.New("courier returned no durable completion receipt")
@@ -479,7 +477,7 @@ func acknowledgeSessionMove(
 		return output, errors.New("source custody acknowledger is unavailable")
 	}
 	acknowledged, err := acknowledge(ctx, sessioncustody.Options{
-		Store: store, ProjectsRoot: projectsRoot, Request: request, RequestDigest: digest,
+		Store: store, ProjectsRoot: inv.projectsRoot, Request: request, RequestDigest: digest,
 		Receipt: *delivery.Receipt, SourceSession: source,
 	})
 	if err != nil {

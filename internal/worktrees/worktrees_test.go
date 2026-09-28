@@ -330,7 +330,7 @@ func TestAcquireRepositoryRegistrationLockConcurrentFirstOpen(t *testing.T) {
 		for _, repository := range canonical {
 			go func(repository *canonicalRepository) {
 				<-start
-				lock, err := acquireRepositoryRegistrationLock(repository)
+				lock, err := acquireRepositoryRegistrationLock(repository, time.Now, time.Sleep)
 				if err == nil {
 					err = lock.release()
 				}

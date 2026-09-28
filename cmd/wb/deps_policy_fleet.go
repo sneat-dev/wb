@@ -35,7 +35,7 @@ type moduleOutcome struct {
 // A module with no policy declaration is recorded rather than skipped in
 // silence: the quiet failure of a central policy is a repository nobody wired
 // up, and a sweep that hides those reports a cleaner fleet than exists.
-func sweep(repositories []deps.Repository, policyOverride string) []moduleOutcome {
+func sweep(inv *invocation, repositories []deps.Repository, policyOverride string) []moduleOutcome {
 	var outcomes []moduleOutcome
 	for _, repository := range repositories {
 		for _, moduleDir := range discoverModules(repository.Path) {
@@ -43,7 +43,7 @@ func sweep(repositories []deps.Repository, policyOverride string) []moduleOutcom
 				Repository: repository.Slug,
 				Directory:  moduleDir,
 			}
-			context, err := resolvePolicy(moduleDir, policyOverride)
+			context, err := resolvePolicy(inv, moduleDir, policyOverride)
 			if err != nil {
 				outcome.Skipped = strings.SplitN(err.Error(), "\n", 2)[0]
 				if module, scanErr := policy.ScanModule(moduleDir); scanErr == nil {
@@ -115,7 +115,7 @@ Exits 1 when any enforcing rule is violated anywhere.`,
 			if err != nil {
 				return err
 			}
-			outcomes := sweep(repositories, policyFlag)
+			outcomes := sweep(inv, repositories, policyFlag)
 			out := cmd.OutOrStdout()
 			if format == "json" {
 				if err := writeJSONTo(out, outcomes); err != nil {
@@ -265,7 +265,7 @@ Exits 1 when any module is ungoverned or disagrees with detection.`,
 			for _, repository := range repositories {
 				for _, moduleDir := range discoverModules(repository.Path) {
 					row := driftRow{Repository: repository.Slug}
-					context, err := resolvePolicy(moduleDir, policyFlag)
+					context, err := resolvePolicy(inv, moduleDir, policyFlag)
 					if err != nil {
 						row.Issue = "no policy: " + strings.SplitN(err.Error(), "\n", 2)[0]
 						if module, scanErr := policy.ScanModule(moduleDir); scanErr == nil {
@@ -350,8 +350,8 @@ Exits 1 when the candidate would newly fail any repository.`,
 			if err != nil {
 				return err
 			}
-			baseline := sweep(repositories, "")
-			candidate := sweep(repositories, candidatePath)
+			baseline := sweep(inv, repositories, "")
+			candidate := sweep(inv, repositories, candidatePath)
 
 			type change struct {
 				Repository string `json:"repository"`

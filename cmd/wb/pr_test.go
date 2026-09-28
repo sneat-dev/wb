@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,13 +41,32 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 }
 
 func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	previousProjectsRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	// Hide gh without hiding git: the preflight itself shells out to git
+	// (branch-name validation) before the landing ever calls gh, so a PATH
+	// wiped down to an empty directory defeats the preflight too and this
+	// test would never reach GitHub in the first place. A PATH restricted to
+	// git's own directory (e.g. /usr/bin) is not safe either: on this VM and
+	// on GitHub's own runners that directory also holds a real, authenticated
+	// gh, so the "missing gh" refusal this test wants would instead become a
+	// live call to the real GitHub API. Symlink only the git executable into
+	// an otherwise-empty directory and point PATH there, so gh is genuinely
+	// absent and git is genuinely present.
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found on PATH: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(binDir, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{projectsRoot: projectsRoot})
 	var stderr bytes.Buffer
 	command.SetErr(&stderr)
 	command.SetArgs([]string{"acme/app#7", "--non-interactive"})
@@ -54,15 +74,17 @@ func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
 		t.Fatal("missing gh unexpectedly let the landing continue")
 	}
 	output := stderr.String()
+	if strings.Contains(output, "GitHub repos/") {
+		t.Fatalf("test reached the real GitHub API (PATH leaked a real gh):\n%s", output)
+	}
 	if !strings.Contains(output, "pr land: local link preflight: acme/app: started") ||
-		(!strings.Contains(output, ": completed") &&
-			!strings.Contains(output, "pr land: local link preflight: failed")) {
-		t.Fatalf("local-link preflight was silent before GitHub:\n%s", output)
+		!strings.Contains(output, "pr land: local link preflight: acme/app: completed") {
+		t.Fatalf("local-link preflight did not complete before GitHub:\n%s", output)
 	}
 }
 
 func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	if got := command.Flags().Lookup("timeout").DefValue; got != defaultCIWaitSlice.String() {
 		t.Fatalf("--timeout default = %s, want %s", got, defaultCIWaitSlice)
 	}
@@ -75,7 +97,7 @@ func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
 }
 
 func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
-	command := newPRLandCmd()
+	command := newPRLandCmd(&invocation{})
 	if got := command.Flags().Lookup("merge-method").DefValue; got != "merge" {
 		t.Fatalf("--merge-method default = %q, want merge", got)
 	}
@@ -111,7 +133,7 @@ func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
 			name = "default"
 		}
 		t.Run(name, func(t *testing.T) {
-			command := newPRLandCmd()
+			command := newPRLandCmd(&invocation{})
 			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
 				t.Fatal(err)
 			}
@@ -141,13 +163,10 @@ func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 // local-link guard can make its real decision.
 func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
 	root := t.TempDir()
-	previousProjectsRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	t.Setenv("WB_PROJECTS_ROOT", root)
 	home := filepath.Join(root, ".wb")
 
-	log, streamName := landingEventLog("acme/app")
+	log, streamName := landingEventLog(&invocation{projectsRoot: root}, "acme/app")
 	if streamName != "" {
 		t.Fatalf("stream name = %q, want an outside-stream landing", streamName)
 	}
@@ -158,7 +177,7 @@ func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.
 		t.Fatalf("fleet event log was not appended: %v", err)
 	}
 
-	if err := refuseLinkedRepositoryWorktrees("acme/app"); err != nil {
+	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: root}, "acme/app"); err != nil {
 		t.Fatalf("next landing guard rejected only the fleet event log: %v", err)
 	}
 }

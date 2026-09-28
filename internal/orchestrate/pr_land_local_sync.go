@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -26,14 +27,19 @@ func syncLocalWorktreeAfterUpdateBranch(ctx context.Context, options PullRequest
 	// --porcelain` lookup every resumed operation already uses to find the
 	// linked worktree for a branch; it lists every worktree of the
 	// repository's canonical clone, not only ones WB itself registered.
-	worktree, err := registeredWorktreeForBranch(ctx, canonical, branch, Options{})
+	// Threading options.resolveRunner() through here (rather than an
+	// Options{} zero value, which would always fall back to defaultRunner)
+	// is what lets a unit test substitute a runnertest.Fake for this call
+	// too, so this whole function is reachable end to end without a real
+	// process (spec/plans/coverage-to-100 task-17).
+	worktree, err := registeredWorktreeForBranch(ctx, canonical, branch, Options{run: options.resolveRunner()})
 	if err != nil || strings.TrimSpace(worktree) == "" {
 		// No worktree holds the branch, or the branch is (unusually) checked
 		// out in the canonical clone itself: neither is this landing's to
 		// report.
 		return ""
 	}
-	return fastForwardWorktreeToUpdatedHead(ctx, worktree, branch, updatedHead)
+	return fastForwardWorktreeToUpdatedHead(ctx, options.resolveGit(), options.resolveRunner(), worktree, branch, updatedHead)
 }
 
 // fastForwardWorktreeToUpdatedHead brings a local WB worktree that has
@@ -51,14 +57,14 @@ func syncLocalWorktreeAfterUpdateBranch(ctx context.Context, options PullRequest
 // does not have, or a fetched head that disagrees with updatedHead — becomes
 // a short note in the returned string; only a clean worktree whose HEAD is
 // an ancestor of the newly fetched branch is fast-forwarded.
-func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, updatedHead string) (note string) {
+func fastForwardWorktreeToUpdatedHead(ctx context.Context, git Git, run runner.Runner, worktree, branch, updatedHead string) (note string) {
 	worktree = strings.TrimSpace(worktree)
 	if worktree == "" {
 		return ""
 	}
 	prefix := fmt.Sprintf("local worktree not fast-forwarded: %s: ", worktree)
 
-	status, err := runGit(ctx, worktree, "status", "--porcelain")
+	status, err := git.StatusPorcelain(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -66,7 +72,7 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 		return prefix + "uncommitted changes"
 	}
 
-	current, err := runGit(ctx, worktree, "branch", "--show-current")
+	current, err := git.BranchShowCurrent(ctx, worktree)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -76,11 +82,11 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 
 	remoteRef := "refs/remotes/origin/" + branch
 	refspec := "+refs/heads/" + branch + ":" + remoteRef
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
+	if _, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
 		return prefix + "fetch failed: " + err.Error()
 	}
 
-	fetched, err := mergeRevision(ctx, worktree, remoteRef)
+	fetched, err := mergeRevision(ctx, run, worktree, remoteRef)
 	if err != nil {
 		return prefix + err.Error()
 	}
@@ -89,17 +95,17 @@ func fastForwardWorktreeToUpdatedHead(ctx context.Context, worktree, branch, upd
 			shortMergeRevision(fetched), shortMergeRevision(updatedHead))
 	}
 
-	if _, ancestorErr := runGit(ctx, worktree, "merge-base", "--is-ancestor", "HEAD", remoteRef); ancestorErr != nil {
+	if ancestorErr := git.MergeBaseIsAncestorStrict(ctx, worktree, "HEAD", remoteRef); ancestorErr != nil {
 		return prefix + "diverged local commits"
 	}
 
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "merge", "--ff-only", remoteRef); err != nil {
+	if _, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "merge", "--ff-only", remoteRef); err != nil {
 		return prefix + "fast-forward failed: " + err.Error()
 	}
 
 	// Best effort: the fast-forward already succeeded, and a tracking-branch
 	// slip is not worth reporting as an obstacle to it.
-	_, _ = runGit(ctx, worktree, "branch", "--set-upstream-to=origin/"+branch, branch)
+	_ = git.BranchSetUpstreamTo(ctx, worktree, "origin/"+branch, branch)
 
 	return fmt.Sprintf("fast-forwarded worktree %s to %s", worktree, shortMergeRevision(updatedHead))
 }

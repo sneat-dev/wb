@@ -30,6 +30,7 @@ type ExecutionLock struct {
 	handoffID   string
 	digest      Digest
 	request     Request
+	afterProof  func()
 }
 
 // HeldForSession adapts the existing request-bound execution proof to the
@@ -91,10 +92,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-authority-root-check")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return false
-	}
 	defer func() { _ = root.Close() }()
 	if !sameFile(lock.root, root) {
 		return false
@@ -104,10 +101,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	handoff := os.NewFile(uintptr(handoffFD), "wb-session-receive-authority-handoff-check")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		return false
-	}
 	defer func() { _ = handoff.Close() }()
 	if !sameFile(lock.handoff, handoff) {
 		return false
@@ -117,10 +110,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	requestFile := os.NewFile(uintptr(requestFD), "wb-session-receive-authority-request-check")
-	if requestFile == nil {
-		_ = unix.Close(requestFD)
-		return false
-	}
 	defer func() { _ = requestFile.Close() }()
 	if !sameFile(lock.requestFile, requestFile) {
 		return false
@@ -134,10 +123,6 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 		return false
 	}
 	file := os.NewFile(uintptr(fileFD), "wb-session-receive-authority-lock-check")
-	if file == nil {
-		_ = unix.Close(fileFD)
-		return false
-	}
 	defer func() { _ = file.Close() }()
 	return sameFile(lock.file, file)
 }
@@ -148,24 +133,27 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 // cannot split reads, locks, and immutable publications across directories.
 // The caller owns the returned file.
 func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	return lock.retainHandoffForStore(expectedRoot, request, digest, unix.Dup)
+}
+
+func (lock *ExecutionLock) retainHandoffForStore(expectedRoot string, request Request, digest Digest, dup func(int) (int, error)) (*os.File, error) {
 	if !lock.HeldForStore(expectedRoot, request, digest) {
 		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff directory")
+	}
+	if lock.afterProof != nil {
+		lock.afterProof()
 	}
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	if lock.handoff == nil {
 		return nil, fmt.Errorf("execution lock handoff directory is closed")
 	}
-	fd, err := unix.Dup(int(lock.handoff.Fd()))
+	fd, err := dup(int(lock.handoff.Fd()))
 	if err != nil {
 		return nil, fmt.Errorf("duplicate admitted handoff directory: %w", err)
 	}
 	unix.CloseOnExec(fd)
 	file := os.NewFile(uintptr(fd), "wb-session-retained-handoff-authority")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap retained handoff directory")
-	}
 	return file, nil
 }
 
@@ -173,24 +161,27 @@ func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Re
 // retained with this admitted handoff. It is used for indexes whose key spans
 // handoff aggregates while the held execution fence supplies authority.
 func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	return lock.retainStoreRootForStore(expectedRoot, request, digest, unix.Dup)
+}
+
+func (lock *ExecutionLock) retainStoreRootForStore(expectedRoot string, request Request, digest Digest, dup func(int) (int, error)) (*os.File, error) {
 	if !lock.HeldForStore(expectedRoot, request, digest) {
 		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff store root")
+	}
+	if lock.afterProof != nil {
+		lock.afterProof()
 	}
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	if lock.root == nil {
 		return nil, fmt.Errorf("execution lock store root is closed")
 	}
-	fd, err := unix.Dup(int(lock.root.Fd()))
+	fd, err := dup(int(lock.root.Fd()))
 	if err != nil {
 		return nil, fmt.Errorf("duplicate admitted handoff store root: %w", err)
 	}
 	unix.CloseOnExec(fd)
 	file := os.NewFile(uintptr(fd), "wb-session-retained-store-root-authority")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap retained handoff store root")
-	}
 	return file, nil
 }
 
@@ -204,6 +195,14 @@ func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, diges
 // been opened. Passing them per call keeps failure tests isolated from other
 // lock acquisitions without changing the production syscall path.
 func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, digest Digest, chmod func(int, uint32) error, flock func(int, int) error) (*ExecutionLock, error) {
+	return s.acquireExecutionLockWithStat(ctx, handoffID, digest, chmod, flock, unix.Fstat)
+}
+
+func (s Store) acquireExecutionLockWithStat(ctx context.Context, handoffID string, digest Digest, chmod func(int, uint32) error, flock func(int, int) error, fstat func(int, *unix.Stat_t) error) (*ExecutionLock, error) {
+	return s.acquireExecutionLockWithDeps(ctx, handoffID, digest, chmod, flock, fstat, filepath.Abs)
+}
+
+func (s Store) acquireExecutionLockWithDeps(ctx context.Context, handoffID string, digest Digest, chmod func(int, uint32) error, flock func(int, int) error, fstat func(int, *unix.Stat_t) error, abs func(string) (string, error)) (*ExecutionLock, error) {
 	if err := validateID("handoff_id", handoffID); err != nil {
 		return nil, err
 	}
@@ -213,7 +212,7 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 	if s.Root == "" || s.Root != strings.TrimSpace(s.Root) {
 		return nil, fmt.Errorf("handoff store root is required")
 	}
-	rootPath, err := filepath.Abs(s.Root)
+	rootPath, err := abs(s.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve handoff store root: %w", err)
 	}
@@ -223,21 +222,12 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 		return nil, fmt.Errorf("open admitted handoff store root: %w", err)
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-store-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap admitted handoff store root")
-	}
 	handoffFD, err := unix.Openat(rootFD, handoffID, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("open admitted handoff execution directory: %w", err)
 	}
 	handoff := os.NewFile(uintptr(handoffFD), "wb-session-receive-handoff")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap admitted handoff execution directory")
-	}
 	request, requestFile, err := admittedRequestAt(handoff, handoffID, digest)
 	if err != nil {
 		_ = handoff.Close()
@@ -252,15 +242,8 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 		return nil, fmt.Errorf("open handoff execution lock: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-receive-lock")
-	if file == nil {
-		_ = unix.Close(fd)
-		_ = requestFile.Close()
-		_ = handoff.Close()
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap handoff execution lock")
-	}
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+	if err := fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		_ = file.Close()
 		_ = requestFile.Close()
 		_ = handoff.Close()
@@ -295,9 +278,9 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			// Go 1.23+ Timer.Stop guarantees no stale receive from C; draining
+			// after Stop could block with the module's synchronous timers.
+			_ = timer.Stop()
 			_ = file.Close()
 			_ = requestFile.Close()
 			_ = handoff.Close()
@@ -314,16 +297,20 @@ func (s Store) acquireExecutionLock(ctx context.Context, handoffID string, diges
 // exclusively gives every loser an unambiguous signal to reopen the winner's
 // inode; WB never unlinks this file.
 func openExecutionLockAt(handoffFD int) (int, error) {
+	return openExecutionLockAtWithOpen(handoffFD, openatWithIntFlags)
+}
+
+func openExecutionLockAtWithOpen(handoffFD int, openat func(int, string, int, uint32) (int, error)) (int, error) {
 	const flags = unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
 	for attempts := 0; attempts < 3; attempts++ {
-		fd, err := unix.Openat(handoffFD, executionLockFileName, flags, 0)
+		fd, err := openat(handoffFD, executionLockFileName, flags, 0)
 		if err == nil {
 			return fd, nil
 		}
 		if !errors.Is(err, unix.ENOENT) {
 			return -1, err
 		}
-		fd, err = unix.Openat(handoffFD, executionLockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+		fd, err = openat(handoffFD, executionLockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
 		if err == nil {
 			return fd, nil
 		}
@@ -340,10 +327,6 @@ func admittedRequestAt(handoff *os.File, handoffID string, digest Digest) (Reque
 		return Request{}, nil, fmt.Errorf("open admitted handoff request: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-receive-admitted-request")
-	if file == nil {
-		_ = unix.Close(fd)
-		return Request{}, nil, fmt.Errorf("wrap admitted handoff request")
-	}
 	request, err := readAdmittedRequestFile(file, handoffID, digest)
 	if err != nil {
 		_ = file.Close()
@@ -353,6 +336,10 @@ func admittedRequestAt(handoff *os.File, handoffID string, digest Digest) (Reque
 }
 
 func readAdmittedRequestFile(file *os.File, handoffID string, digest Digest) (Request, error) {
+	return readAdmittedRequestFileWithIO(file, handoffID, digest, file.Seek, io.ReadAll)
+}
+
+func readAdmittedRequestFileWithIO(file *os.File, handoffID string, digest Digest, seek func(int64, int) (int64, error), readAll func(io.Reader) ([]byte, error)) (Request, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 || stat.Size > maxExecutionLockRequestBytes {
 		if err != nil {
@@ -360,10 +347,10 @@ func readAdmittedRequestFile(file *os.File, handoffID string, digest Digest) (Re
 		}
 		return Request{}, fmt.Errorf("admitted handoff request is not one bounded immutable file")
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if _, err := seek(0, io.SeekStart); err != nil {
 		return Request{}, fmt.Errorf("seek admitted handoff request: %w", err)
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxExecutionLockRequestBytes+1))
+	raw, err := readAll(io.LimitReader(file, maxExecutionLockRequestBytes+1))
 	if err != nil || len(raw) > maxExecutionLockRequestBytes {
 		if err != nil {
 			return Request{}, fmt.Errorf("read admitted handoff request: %w", err)

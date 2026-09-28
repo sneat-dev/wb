@@ -70,7 +70,7 @@ func newDepsCmd(inv *invocation) *cobra.Command {
 	command.AddCommand(newDepsGraphCmd(inv))
 	command.AddCommand(newDepsDriftCmd(inv))
 	command.AddCommand(newDepsPeersCmd())
-	command.AddCommand(newDepsPropagateCmd())
+	command.AddCommand(newDepsPropagateCmd(inv))
 	command.AddCommand(newDepsPolicyCmd(inv))
 	command.AddCommand(newDepsGoDirectiveCmd(inv))
 	return command
@@ -120,7 +120,7 @@ func newDepsGraphCmd(inv *invocation) *cobra.Command {
 				return err
 			}
 			graph, err := deps.BuildGraph(command.Context(), repositories, deps.GraphOptions{
-				Ecosystem: ecosystem, GitHubDir: projectsRoot, Ref: options.ref,
+				Ecosystem: ecosystem, GitHubDir: inv.projectsRoot, Ref: options.ref,
 				Parallel: options.parallel, Timeout: options.timeout, Retry: options.retry,
 				Dependencies: options.dependencies,
 				Progress:     campaign.reporter(),
@@ -132,7 +132,7 @@ func newDepsGraphCmd(inv *invocation) *cobra.Command {
 			campaign.finish("completed")
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
-				home, err := wbhome.EnsureRoot(projectsRoot)
+				home, err := wbhome.EnsureRoot(inv.projectsRoot)
 				if err != nil {
 					return err
 				}
@@ -250,7 +250,7 @@ Inspection errors always exit non-zero after the report.`,
 			}
 			report, err := deps.AnalyzeDrift(command.Context(), repositories, deps.DriftOptions{
 				Ecosystem: ecosystem,
-				GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
+				GitHubDir: inv.projectsRoot, Ref: options.ref, Parallel: options.parallel,
 				Timeout: options.timeout, Retry: options.retry, GoPrivate: options.goPrivate,
 				Dependencies: options.dependencies, Scopes: options.scopes, ExcludeRepositories: options.exclude,
 				Online: options.online, FailOnDrift: options.failOnDrift, FailOnBehind: options.failOnBehind,
@@ -267,7 +267,7 @@ Inspection errors always exit non-zero after the report.`,
 			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
-				home, homeErr := wbhome.EnsureRoot(projectsRoot)
+				home, homeErr := wbhome.EnsureRoot(inv.projectsRoot)
 				if homeErr != nil {
 					return homeErr
 				}
@@ -467,7 +467,7 @@ func newDepsSetCmd(inv *invocation) *cobra.Command {
 				campaign.finish("failed")
 				return err
 			}
-			lifecycle := dependencyOptions(options, checks)
+			lifecycle := dependencyOptions(inv, options, checks)
 			lifecycle.Progress = campaign.reporter()
 			if options.propagate {
 				if !options.fleet {
@@ -487,7 +487,7 @@ func newDepsSetCmd(inv *invocation) *cobra.Command {
 			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" && report.Operation != "" {
-				home, homeErr := wbhome.EnsureRoot(projectsRoot)
+				home, homeErr := wbhome.EnsureRoot(inv.projectsRoot)
 				if homeErr != nil {
 					return homeErr
 				}
@@ -622,7 +622,7 @@ does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
 				campaign.finish("failed")
 				return err
 			}
-			lifecycle := dependencyOptions(options, checks)
+			lifecycle := dependencyOptions(inv, options, checks)
 			events, err := depsBumpSeedEvents(command, ecosystem, changed, repositories, &options, lifecycle)
 			if err != nil {
 				campaign.finish("failed")
@@ -663,7 +663,7 @@ does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
 	return command
 }
 
-func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Options {
+func dependencyOptions(inv *invocation, options depsSetOptions, checks []quality.Check) deps.Options {
 	validationMode := deps.ValidationMode(options.validation)
 	if options.noVerify {
 		validationMode = deps.ValidationModeNone
@@ -671,7 +671,7 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		validationMode = deps.ValidationModeFull
 	}
 	return deps.Options{
-		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel, ParallelExplicit: options.parallelExplicit,
+		GitHubDir: inv.projectsRoot, Ref: options.ref, Parallel: options.parallel, ParallelExplicit: options.parallelExplicit,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
 		ValidationMode: validationMode, Verify: validationMode == deps.ValidationModeFull, Checks: checks, Timeout: options.timeout, Retry: options.retry,
 		GoPrivate:           options.goPrivate,
@@ -821,7 +821,7 @@ func executeDepsBumpWithRegistryPolicy(inv *invocation, command *cobra.Command, 
 	operation := deps.BumpOperationIDFor(ecosystem, events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
-		home, err := wbhome.EnsureRoot(projectsRoot)
+		home, err := wbhome.EnsureRoot(inv.projectsRoot)
 		if err != nil {
 			return deps.BumpReport{}, "", err
 		}
@@ -931,7 +931,7 @@ func dependencyRepositories(inv *invocation, args []string, options depsSetOptio
 		if err != nil {
 			return nil, err
 		}
-		slug, cloneURL, err := repositoryIdentity(absolute, projectsRoot)
+		slug, cloneURL, err := repositoryIdentity(absolute, inv.projectsRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -944,7 +944,7 @@ func dependencyRepositories(inv *invocation, args []string, options depsSetOptio
 		progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", Repository: slug, State: progress.Completed, Completed: 1, Total: 1})
 		return []deps.Repository{{Slug: slug, Path: absolute, CloneURL: cloneURL}}, nil
 	}
-	selected, err := fleet(projectsRoot, inv.filterFlag, func() []string { return fleetOwners(inv.extraOrgs) })
+	selected, err := fleet(inv.projectsRoot, inv.filterFlag, func() []string { return fleetOwners(inv.extraOrgs) })
 	if err != nil {
 		return nil, err
 	}

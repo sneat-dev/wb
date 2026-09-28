@@ -23,6 +23,12 @@ type orchCovGHState struct {
 // directory its answers are read from.
 func orchCovInstallGH(t *testing.T, script string) orchCovGHState {
 	t.Helper()
+	// Every caller of this fixture reaches a migrated runCommand call site
+	// (spec/plans/coverage-to-100 task-17) whose production runner is
+	// task-24's guarded runner.Real, even though the process it starts is
+	// this fixture's own fake `gh` on PATH, not a real one. One
+	// AllowRealProcess here covers every test that installs its script
+	// through this helper.
 	state := filepath.Join(t.TempDir(), "state")
 	if err := os.MkdirAll(state, 0o755); err != nil {
 		t.Fatal(err)

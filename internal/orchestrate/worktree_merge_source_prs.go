@@ -23,7 +23,11 @@ type sourcePullRequestRemote interface {
 	close(context.Context, string, int) error
 }
 
-type githubSourcePullRequestRemote struct{}
+type githubSourcePullRequestRemote struct {
+	get     func(context.Context, string, string, string, string, string) ([]byte, error)
+	pages   func(context.Context, githubobserver.GetRequest, int) ([]githubobserver.Response, error)
+	execute func(context.Context, string, ...string) githubobserver.CommandResponse
+}
 
 func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
 	if receipt == nil || receipt.LandingSHA == "" || receipt.Repository == "" {
@@ -50,7 +54,7 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 			heads[source.SHA] = true
 		}
 	}
-	output, _, err := runCommand(ctx, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
+	output, _, err := runCommand(ctx, defaultRunner, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
 	if err != nil {
 		return nil, err
 	}
@@ -202,8 +206,12 @@ func findSourcePullRequestReconciliation(receipt *WorktreeMergeReceipt, number i
 	return &receipt.SourcePullRequests[len(receipt.SourcePullRequests)-1]
 }
 
-func (githubSourcePullRequestRemote) associated(ctx context.Context, repository, head string) ([]PullRequestView, error) {
-	body, err := githubGet(ctx, "", repository, "", head, "repos/"+repository+"/commits/"+url.PathEscape(head)+"/pulls?per_page=100")
+func (remote githubSourcePullRequestRemote) associated(ctx context.Context, repository, head string) ([]PullRequestView, error) {
+	get := remote.get
+	if get == nil {
+		get = githubGet
+	}
+	body, err := get(ctx, "", repository, "", head, "repos/"+repository+"/commits/"+url.PathEscape(head)+"/pulls?per_page=100")
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +222,12 @@ func (githubSourcePullRequestRemote) associated(ctx context.Context, repository,
 	return views, nil
 }
 
-func (githubSourcePullRequestRemote) hasComment(ctx context.Context, repository string, number int, marker string) (bool, error) {
-	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+func (remote githubSourcePullRequestRemote) hasComment(ctx context.Context, repository string, number int, marker string) (bool, error) {
+	pages := remote.pages
+	if pages == nil {
+		pages = githubobserver.GetPages
+	}
+	responses, err := pages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repository, number),
 	}, 0)
@@ -238,13 +250,21 @@ func (githubSourcePullRequestRemote) hasComment(ctx context.Context, repository 
 	return false, nil
 }
 
-func (githubSourcePullRequestRemote) comment(ctx context.Context, repository string, number int, body string) error {
-	result := githubExecute(ctx, "", "api", "--method", "POST", fmt.Sprintf("repos/%s/issues/%d/comments", repository, number), "-f", "body="+body)
+func (remote githubSourcePullRequestRemote) comment(ctx context.Context, repository string, number int, body string) error {
+	execute := remote.execute
+	if execute == nil {
+		execute = githubExecute
+	}
+	result := execute(ctx, "", "api", "--method", "POST", fmt.Sprintf("repos/%s/issues/%d/comments", repository, number), "-f", "body="+body)
 	return githubMutationError(result, "post comment")
 }
 
-func (githubSourcePullRequestRemote) close(ctx context.Context, repository string, number int) error {
-	result := githubExecute(ctx, "", "api", "--method", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", repository, number), "-f", "state=closed")
+func (remote githubSourcePullRequestRemote) close(ctx context.Context, repository string, number int) error {
+	execute := remote.execute
+	if execute == nil {
+		execute = githubExecute
+	}
+	result := execute(ctx, "", "api", "--method", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", repository, number), "-f", "state=closed")
 	return githubMutationError(result, "close pull request")
 }
 

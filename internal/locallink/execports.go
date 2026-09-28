@@ -39,12 +39,17 @@ func (git ExecGit) run(ctx context.Context, dir string, env []string, args ...st
 // than a checksum of a file listing. Ignored paths — `node_modules`, `dist` —
 // stay out, so a rebuild does not change the source identity.
 func (git ExecGit) ContentHash(ctx context.Context, dir string) (string, bool, error) {
-	index, err := os.CreateTemp("", "wb-locallink-index-*")
+	return git.contentHashInjected(ctx, dir, nil)
+}
+
+// contentHashInjected is ContentHash's test seam (task-9 PR-9): every
+// production call site reaches it only through ContentHash, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the temporary index reservation's
+// create/close failure branches deterministically.
+func (git ExecGit) contentHashInjected(ctx context.Context, dir string, inj *filewrite.Injector) (string, bool, error) {
+	indexPath, err := filewrite.CreateScratch("", "wb-locallink-index-*", 0, nil, inj)
 	if err != nil {
-		return "", false, err
-	}
-	indexPath := index.Name()
-	if err := index.Close(); err != nil {
 		return "", false, err
 	}
 	// git read-tree refuses to populate an index file that already exists as

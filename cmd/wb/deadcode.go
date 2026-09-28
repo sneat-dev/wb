@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,12 @@ type deadcodeOptions struct {
 }
 
 func newDeadcodeCmd() *cobra.Command {
+	return newDeadcodeCmdWithAnalyzer(quality.Deadcode)
+}
+
+type deadcodeAnalyzer func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error)
+
+func newDeadcodeCmdWithAnalyzer(analyze deadcodeAnalyzer) *cobra.Command {
 	options := deadcodeOptions{timeout: 10 * time.Minute}
 	command := &cobra.Command{
 		Use:   "deadcode [repository-path]",
@@ -78,7 +85,7 @@ Exit codes: 0 nothing new, 1 new unreachable functions, 2 bad invocation.
 			if options.noBaseline {
 				baseline = ""
 			}
-			report, err := quality.Deadcode(cmd.Context(), absolute, quality.DeadcodeOptions{
+			report, err := analyze(cmd.Context(), absolute, quality.DeadcodeOptions{
 				Patterns:         options.patterns,
 				BaselinePath:     baseline,
 				Filter:           options.filter,
