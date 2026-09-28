@@ -4607,21 +4607,33 @@ func exclusivelyOwnedLockIdentity(file *os.File) (managedLockIdentity, error) {
 	return managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
 }
 
-func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity) (*os.File, error) {
+type moveExpectedLockHooks struct {
+	afterMove     func()
+	afterOpen     func()
+	beforeRestore func()
+}
+
+func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity, hooks ...moveExpectedLockHooks) (*os.File, error) {
 	if !lockEntryStillMatches(directory, fromName, expected) {
 		return nil, fmt.Errorf("%w: operation lock %s changed before move", errDirectoryMoveIdentityChanged, fromName)
 	}
 	if err := renameNoReplace(int(directory.Fd()), fromName, int(directory.Fd()), toName); err != nil {
 		return nil, err
 	}
+	var hook moveExpectedLockHooks
+	if len(hooks) > 0 {
+		hook = hooks[0]
+	}
+	if hook.afterMove != nil {
+		hook.afterMove()
+	}
 	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open moved operation lock %s: %w", toName, err)
 	}
 	moved := os.NewFile(uintptr(fd), "wb-moved-operation-lock")
-	if moved == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap moved operation lock %s", toName)
+	if hook.afterOpen != nil {
+		hook.afterOpen()
 	}
 	actual, identityErr := lockIdentity(moved)
 	sourceAbsent, absentErr := noFollowChildAbsent(int(directory.Fd()), fromName)
@@ -4636,6 +4648,9 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 		return moved, fmt.Errorf("%w: operation lock %s was recreated after no-replace move", errDirectoryMoveIdentityChanged, fromName)
 	}
 	_ = moved.Close()
+	if hook.beforeRestore != nil {
+		hook.beforeRestore()
+	}
 	if restoreErr := renameNoReplace(int(directory.Fd()), toName, int(directory.Fd()), fromName); restoreErr != nil {
 		return nil, fmt.Errorf("%w: operation lock %s changed before restoration: %v", errDirectoryMoveIdentityChanged, toName, restoreErr)
 	}
