@@ -16,20 +16,8 @@ import (
 
 func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-exact-owner")
-	useIdentityRemote(t, fixture, worktree)
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-	gitTest(t, worktree, "push", "origin", branch)
-	guard, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := CaptureParkedSessionWorktree(context.Background(), fixture.projectsRoot, ListResult{
-		Repository: "acme/app", CanonicalDir: guard.CanonicalDir, WorktreeDir: worktree,
-		WorktreesRoot: guard.WorktreesRoot, Branch: branch,
-	}, source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-owner",
 		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
 	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-successor", PredecessorWBSessionID: source.WBSessionID,
@@ -59,9 +47,7 @@ func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) 
 
 func TestAttachParkedLocalSuccessorPreservesDirtyUnpushedBytes(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-dirty-unpushed")
-	useIdentityRemote(t, fixture, worktree)
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-	gitTest(t, worktree, "push", "origin", branch)
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
 	if err := os.WriteFile(filepath.Join(worktree, "unpushed.txt"), []byte("committed locally\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -71,17 +57,7 @@ func TestAttachParkedLocalSuccessorPreservesDirtyUnpushedBytes(t *testing.T) {
 	if err := os.WriteFile(dirtyPath, []byte("exact dirty bytes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	guard, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := CaptureParkedSessionWorktree(context.Background(), fixture.projectsRoot, ListResult{
-		Repository: "acme/app", CanonicalDir: guard.CanonicalDir, WorktreeDir: worktree,
-		WorktreesRoot: guard.WorktreesRoot, Branch: branch,
-	}, source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 	if !member.Dirty || member.Head == member.RemoteHead {
 		t.Fatalf("parked member did not capture dirty/unpushed evidence: %#v", member)
 	}
@@ -108,20 +84,8 @@ func TestAttachParkedLocalSuccessorPreservesDirtyUnpushedBytes(t *testing.T) {
 
 func TestAttachParkedLocalSuccessorRefusesNewerCustodyWithoutAppending(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-newer-owner")
-	useIdentityRemote(t, fixture, worktree)
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-	gitTest(t, worktree, "push", "origin", branch)
-	guard, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := CaptureParkedSessionWorktree(context.Background(), fixture.projectsRoot, ListResult{
-		Repository: "acme/app", CanonicalDir: guard.CanonicalDir, WorktreeDir: worktree,
-		WorktreesRoot: guard.WorktreesRoot, Branch: branch,
-	}, source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 	if err := RecordCustody(worktree, "", "newer sequential session", AgentIdentity{Runtime: "codex", AgentID: "newer", Model: "gpt-5", PID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,20 +115,8 @@ func TestAttachParkedLocalSuccessorRefusesNewerCustodyWithoutAppending(t *testin
 
 func TestAttachParkedLocalSuccessorConcurrentCandidatesHaveOneOwner(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-concurrent-owner")
-	useIdentityRemote(t, fixture, worktree)
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-	gitTest(t, worktree, "push", "origin", branch)
-	guard, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := CaptureParkedSessionWorktree(context.Background(), fixture.projectsRoot, ListResult{
-		Repository: "acme/app", CanonicalDir: guard.CanonicalDir, WorktreeDir: worktree,
-		WorktreesRoot: guard.WorktreesRoot, Branch: branch,
-	}, source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-race",
 		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
 	candidates := []session.Record{
