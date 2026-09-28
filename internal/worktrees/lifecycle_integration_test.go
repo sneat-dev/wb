@@ -2727,19 +2727,6 @@ func installMergedPullRequestFixture(t *testing.T, head string, mergedAt time.Ti
 
 func installExactMergedPullRequestForDeletedTarget(t *testing.T, head, merge, source, base string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_MERGED_PULLS"
-`
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number":           77,
 		"html_url":         "https://github.com/acme/app/pull/77",
@@ -2752,9 +2739,7 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installMergedPullRequestFixtures(t *testing.T, heads []string, mergedAt time.Time) {
@@ -2767,19 +2752,6 @@ func installMergedPullRequestFixtureWithMerge(t *testing.T, head, mergeSHA strin
 
 func installMergedPullRequestFixturesWithMerge(t *testing.T, heads, mergeSHAs []string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_MERGED_PULLS"
-`
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	pulls := make([]map[string]any, 0, len(heads))
 	for index, head := range heads {
 		pulls = append(pulls, map[string]any{
@@ -2799,26 +2771,11 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, repository, source, openBase, mergedBase string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_PULLS"
-`
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	pulls := []map[string]any{
 		{
 			"number": 31, "html_url": "https://github.com/acme/app/pull/31", "state": "open",
@@ -2836,9 +2793,7 @@ printf '%s\n' "$WB_TEST_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installOpenTargetPullRequestFixture(t *testing.T, head, branch string) string {

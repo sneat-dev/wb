@@ -1064,14 +1064,6 @@ func TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence(t *testing.T) 
 // pull request rather than a merged one.
 func installOpenPullRequestFixture(t *testing.T, head string) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := "#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\nprintf '%s\\n' \"$WB_TEST_OPEN_PULLS\"\n"
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload := `[{"number":9,"html_url":"https://example.test/pull/9","state":"open","head":{"ref":"feature/open-pr","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}]`
-	t.Setenv("WB_TEST_OPEN_PULLS", payload)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, payload, "")
 }
