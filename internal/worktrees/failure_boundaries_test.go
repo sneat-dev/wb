@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -662,7 +663,7 @@ func TestCreateRollsBackWhenPostCheckoutHookRemovesStagedCheckout(t *testing.T) 
 	configureFixtureSharedWorktrees(t, fixture)
 	hook := filepath.Join(fixture.canonical, ".git", "hooks", "post-checkout")
 	contents := "#!/bin/sh\ncase \"$PWD\" in */.wb-stage-*/checkout) rm -rf \"$PWD\" ;; esac\nexit 0\n"
-	if err := os.WriteFile(hook, []byte(contents), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -744,7 +745,7 @@ func TestSessionReceivePlacementHandlesExistingTargetAndPinFailures(t *testing.T
 				gitTest(t, fixture.canonical, "worktree", "add", "--quiet", "-b", state.spec.PinBranch, outside, state.spec.Commit)
 			case "staged add failure":
 				hook := filepath.Join(fixture.canonical, ".git", "hooks", "post-checkout")
-				if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+				if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			case "post-publication drift":
