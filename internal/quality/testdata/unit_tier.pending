@@ -323,7 +323,7 @@ internal/worktrees/pull_request_fixture_test.go	2	task-18
 internal/worktrees/relocate_checkout_test.go	3	task-18
 internal/worktrees/relocate_test.go	1	task-18
 internal/worktrees/rename_test.go	27	task-18
-internal/worktrees/repository_relocate_test.go	40	task-18
+internal/worktrees/repository_relocate_test.go	48	task-18
 internal/worktrees/residue_test.go	5	task-18
 # Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.
 internal/worktrees/retire_preflight_behavior_test.go	4	task-18

@@ -501,6 +501,140 @@ func TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerif
 	}
 }
 
+type twoClaimTransferFixture struct {
+	git         *gitFixture
+	options     RepositoryRelocateOptions
+	second      CreateResult
+	destination string
+}
+
+func newTwoClaimTransferFixture(t *testing.T) twoClaimTransferFixture {
+	t.Helper()
+	fixture := newGitFixture(t)
+	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
+	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
+	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
+	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.remote, oldRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	var second CreateResult
+	for index, task := range []string{"transfer-first", "transfer-second"} {
+		results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+			ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 1 {
+			second = results[0]
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldRemote, newRemote); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	return twoClaimTransferFixture{
+		git: fixture, second: second, destination: destination,
+		options: RepositoryRelocateOptions{
+			ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
+			DestinationRepository: "newco/renamed", RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+		},
+	}
+}
+
+//nolint:paralleltest // newGitFixture changes process environment for real Git subprocesses.
+func TestRelocateRepositoryVerifiesAllWorktreesBeforeAnyReceipt(t *testing.T) {
+	fixture := newTwoClaimTransferFixture(t)
+	fixture.options.OnCleanupPending = func(string, string) error {
+		gitTest(t, fixture.second.WorktreeDir, "commit", "--allow-empty", "-m", "late head before move")
+		return nil
+	}
+	result, err := RelocateRepository(context.Background(), fixture.options)
+	if err == nil || !strings.Contains(err.Error(), "verify relocated worktree") {
+		t.Fatalf("late worktree drift error = %v", err)
+	}
+	if len(result.ReceiptPaths) != 0 {
+		t.Fatalf("relocation published receipts before all worktrees verified: %v", result.ReceiptPaths)
+	}
+	if _, err := os.Stat(fixture.git.canonical); err != nil {
+		t.Fatalf("prepublication failure did not restore source canonical: %v", err)
+	}
+}
+
+//nolint:paralleltest // newGitFixture changes process environment for real Git subprocesses.
+func TestRelocateRepositoryKeepsDestinationAfterReceiptBoundaryDrift(t *testing.T) {
+	fixture := newTwoClaimTransferFixture(t)
+	secondMoved := filepath.Join(fixture.destination, ".worktrees", "transfer-second")
+	secondHead := gitTestOutput(t, fixture.second.WorktreeDir, "rev-parse", "HEAD")
+	changed := false
+	fixture.options.beforeWorkLogCompletion = func(string) error {
+		if !changed {
+			gitTest(t, secondMoved, "commit", "--allow-empty", "-m", "late head after verification")
+			changed = true
+		}
+		return nil
+	}
+	result, err := RelocateRepository(context.Background(), fixture.options)
+	if err == nil || !strings.Contains(err.Error(), "verify relocated worktree") {
+		t.Fatalf("postverification worktree drift error = %v", err)
+	}
+	if len(result.ReceiptPaths) != 1 {
+		t.Fatalf("published receipt count = %d, want first claim only", len(result.ReceiptPaths))
+	}
+	if _, err := os.Stat(fixture.git.canonical); !os.IsNotExist(err) {
+		t.Fatalf("repository rolled back after publishing a receipt: %v", err)
+	}
+	if _, err := os.Stat(fixture.destination); err != nil {
+		t.Fatalf("moved repository unavailable for receipt recovery: %v", err)
+	}
+	gitTest(t, secondMoved, "reset", "--hard", secondHead)
+	fixture.options.beforeWorkLogCompletion = nil
+	receipts, err := FinalizeRepositoryTransferWorkLogs(context.Background(), fixture.options)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("pending second claim recovery = %v, %v", receipts, err)
+	}
+}
+
+//nolint:paralleltest // newGitFixture changes process environment for real Git subprocesses.
+func TestRelocateRepositoryDetectsUnclaimedWorktreeDriftAfterReceipt(t *testing.T) {
+	fixture := newTwoClaimTransferFixture(t)
+	unclaimedSource := filepath.Join(fixture.git.canonical, ".worktrees", "zz-unclaimed")
+	gitTest(t, fixture.git.canonical, "worktree", "add", "-b", "zz-unclaimed", unclaimedSource)
+	unclaimedMoved := filepath.Join(fixture.destination, ".worktrees", "zz-unclaimed")
+	changed := false
+	fixture.options.beforeWorkLogCompletion = func(string) error {
+		if !changed {
+			gitTest(t, unclaimedMoved, "commit", "--allow-empty", "-m", "late unclaimed head")
+			changed = true
+		}
+		return nil
+	}
+	result, err := RelocateRepository(context.Background(), fixture.options)
+	if err == nil || !strings.Contains(err.Error(), "verify relocated worktree") {
+		t.Fatalf("unclaimed worktree drift error = %v", err)
+	}
+	if len(result.ReceiptPaths) != 2 {
+		t.Fatalf("claimed receipt count = %d, want two before unclaimed drift", len(result.ReceiptPaths))
+	}
+	if _, err := os.Stat(fixture.git.canonical); !os.IsNotExist(err) {
+		t.Fatalf("repository rolled back after publishing claimed receipts: %v", err)
+	}
+	if _, err := os.Stat(fixture.destination); err != nil {
+		t.Fatalf("destination missing after late unclaimed drift: %v", err)
+	}
+}
+
 func TestRelocateRepositoryPlanDoesNotFetchDisposableDestination(t *testing.T) {
 	options, destination, remote := newRepositoryTransferCollisionFixture(t)
 	head := gitTestOutput(t, destination, "rev-parse", "HEAD")

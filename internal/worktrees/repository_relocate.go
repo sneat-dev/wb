@@ -269,7 +269,10 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	rollback := func(cause error) error {
 		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "origin", fetchURLs[0])
 		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "--push", "origin", pushURLs[0])
-		_, _ = moveRenameDirectory(result.DestinationDir, result.SourceDir, nil)
+		restored, _ := moveRenameDirectory(result.DestinationDir, result.SourceDir, nil)
+		if restored != nil {
+			_ = restored.Close()
+		}
 		oldPaths := make([]string, 0, len(worktrees))
 		for _, entry := range worktrees {
 			oldPaths = append(oldPaths, entry.source)
@@ -296,22 +299,40 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	if fetched, fetchErr := git(ctx, result.DestinationDir, "rev-parse", "refs/remotes/origin/"+options.DefaultBranch); fetchErr != nil || fetched != expectedRemoteHead {
 		return result, rollback(fmt.Errorf("fetched destination default branch does not match verified remote head"))
 	}
-	for index := range worktrees {
-		entry := &worktrees[index]
+	verifyMovedWorktree := func(entry *repositoryRelocateWorktree) error {
 		head, headErr := git(ctx, entry.destination, "rev-parse", "HEAD")
 		if headErr != nil || head != entry.head {
-			return result, rollback(fmt.Errorf("verify relocated worktree %s", entry.destination))
+			return fmt.Errorf("verify relocated worktree %s", entry.destination)
 		}
 		_, common, commonErr := gitDirectories(ctx, entry.destination)
 		if commonErr != nil || filepath.Clean(common) != filepath.Join(result.DestinationDir, ".git") {
-			return result, rollback(fmt.Errorf("verify relocated Git administration for %s", entry.destination))
+			return fmt.Errorf("verify relocated Git administration for %s", entry.destination)
+		}
+		return nil
+	}
+	// No immutable Work Log receipt may be published until every moved
+	// worktree has passed verification. Failures in this phase can still
+	// restore the source repository without contradicting any receipt.
+	for index := range worktrees {
+		if err := verifyMovedWorktree(&worktrees[index]); err != nil {
+			return result, rollback(err)
+		}
+	}
+	// Once publication starts, an error must leave the repository at its
+	// destination for pending-intent recovery. Recheck every worktree, including
+	// unclaimed ones, after any per-claim hook so drift since the first pass is
+	// still detected without rolling a published receipt back to the source.
+	for index := range worktrees {
+		entry := &worktrees[index]
+		if entry.claim != nil && entry.intent != nil && options.beforeWorkLogCompletion != nil {
+			if err := options.beforeWorkLogCompletion(entry.destination); err != nil {
+				return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, err)
+			}
+		}
+		if err := verifyMovedWorktree(entry); err != nil {
+			return result, err
 		}
 		if entry.claim != nil && entry.intent != nil {
-			if options.beforeWorkLogCompletion != nil {
-				if err := options.beforeWorkLogCompletion(entry.destination); err != nil {
-					return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, err)
-				}
-			}
 			_, receipt, receiptErr := appendRelocationReceipt(home, *entry.claim, entry.intent, options.Now().UTC())
 			if receiptErr != nil {
 				return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, receiptErr)
