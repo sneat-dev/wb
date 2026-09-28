@@ -5,7 +5,6 @@ package worktrees
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -1970,11 +1969,7 @@ func fetchOriginBranchToPrivateRef(
 	run originBranchGit,
 	afterFetch func(),
 ) (revision string, resultErr error) {
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", fmt.Errorf("generate private fetch ref for %s/%s: %w", repository, branch, err)
-	}
-	fetchedRef := fmt.Sprintf("refs/wb/fetch-base/%x", token[:])
+	fetchedRef := "refs/wb/fetch-base/" + randomHexToken(16)
 	defer func() {
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
@@ -3425,11 +3420,7 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	}
 	parentFD := int(parent.Fd())
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return "", fmt.Errorf("generate staging directory name: %w", err)
-		}
-		name := fmt.Sprintf(".wb-stage-%x", token[:])
+		name := ".wb-stage-" + randomHexToken(16)
 		if err := unix.Mkdirat(parentFD, name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
@@ -3464,11 +3455,7 @@ func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, err
 		return name, nil
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return "", err
-		}
-		name := activePrefix + fmt.Sprintf("%x", token[:])
+		name := activePrefix + randomHexToken(16)
 		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
@@ -3578,12 +3565,7 @@ func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix str
 			continue
 		}
 		for attempt := 0; attempt < 16; attempt++ {
-			var token [16]byte
-			if _, err := rand.Read(token[:]); err != nil {
-				_ = retired.Close()
-				return "", false, fmt.Errorf("generate reclaimed staging name: %w", err)
-			}
-			name = activePrefix + fmt.Sprintf("%x", token[:])
+			name = activePrefix + randomHexToken(16)
 			moved, moveErr := moveExpectedDirectoryNoReplace(parent, entry.Name(), parent, name, retired, nil)
 			if errors.Is(moveErr, unix.EEXIST) {
 				continue
@@ -3784,11 +3766,7 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 
 func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return nil, "", fmt.Errorf("generate directory retirement name: %w", err)
-		}
-		retired := fmt.Sprintf("%s%x", prefix, token[:])
+		retired := prefix + randomHexToken(16)
 		moved, err := moveExpectedDirectoryNoReplace(parent, name, parent, retired, expected, nil)
 		if errors.Is(err, unix.EEXIST) {
 			continue
@@ -4155,11 +4133,7 @@ func rollbackPublishedCreate(ctx context.Context, canonical *canonicalRepository
 
 func quarantineSecureStageCheckout(stageDirectory, checkoutDirectory *os.File) error {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return fmt.Errorf("generate staged checkout quarantine name: %w", err)
-		}
-		name := fmt.Sprintf(".wb-retired-checkout-%x", token[:])
+		name := ".wb-retired-checkout-" + randomHexToken(16)
 		moved, err := moveExpectedDirectoryNoReplace(stageDirectory, "checkout", stageDirectory, name, checkoutDirectory, nil)
 		if errors.Is(err, unix.EEXIST) {
 			continue
@@ -4639,11 +4613,7 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 // previous operation finishing late.
 func quarantineLockEntry(directory *os.File, expected managedLockIdentity) error {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return err
-		}
-		name := fmt.Sprintf(".wb-retired-lock-%x", token[:])
+		name := ".wb-retired-lock-" + randomHexToken(16)
 		moved, err := moveExpectedLockNoReplace(directory, ".lock", name, expected)
 		if errors.Is(err, unix.EEXIST) {
 			continue

@@ -3,7 +3,6 @@ package worktrees
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -3623,11 +3622,7 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		return err
-	}
-	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
+	temporary := "." + name + ".tmp-" + randomHexToken(12)
 	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
 		return err
@@ -3738,11 +3733,7 @@ func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte,
 	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe atomic filename %q", name)
 	}
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		return err
-	}
-	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
+	temporary := "." + name + ".tmp-" + randomHexToken(12)
 	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
 		return err
