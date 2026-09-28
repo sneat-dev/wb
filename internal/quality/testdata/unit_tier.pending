@@ -284,8 +284,8 @@ internal/worktrees/branches_absorbed_by_test.go	36	task-18
 internal/worktrees/branches_pull_requests_test.go	17	task-18
 # Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
 internal/worktrees/branches_quarantine_validation_test.go	23	task-18
-internal/worktrees/branches_receipted_test.go	19	task-18
-internal/worktrees/branches_test.go	115	task-18
+internal/worktrees/branches_receipted_test.go	17	task-18
+internal/worktrees/branches_test.go	113	task-18
 internal/worktrees/canonical_policy_test.go	9	task-18
 internal/worktrees/checkpoint_remote_test.go	13	task-18
 internal/worktrees/claim_pull_request_test.go	1	task-18
@@ -309,7 +309,7 @@ internal/worktrees/journal_test.go	11	task-18
 internal/worktrees/lifecycle_backlog_detached_test.go	1	task-18
 internal/worktrees/lifecycle_cleanup_safety_test.go	8	task-18
 internal/worktrees/lifecycle_filter_performance_test.go	3	task-18
-internal/worktrees/lifecycle_integration_test.go	263	task-18
+internal/worktrees/lifecycle_integration_test.go	257	task-18
 internal/worktrees/lifecycle_rebased_terminal_test.go	18	task-18
 internal/worktrees/lockdiag_test.go	1	task-18
 internal/worktrees/log_verbs_test.go	11	task-18
@@ -319,10 +319,11 @@ internal/worktrees/parallel_walk_integration_test.go	3	task-18
 internal/worktrees/placement_create_test.go	3	task-18
 internal/worktrees/placement_lifecycle_test.go	12	task-18
 internal/worktrees/publication_test.go	5	task-18
+internal/worktrees/pull_request_fixture_test.go	2	task-18
 internal/worktrees/relocate_checkout_test.go	3	task-18
 internal/worktrees/relocate_test.go	1	task-18
 internal/worktrees/rename_test.go	27	task-18
-internal/worktrees/repository_relocate_test.go	42	task-18
+internal/worktrees/repository_relocate_test.go	40	task-18
 internal/worktrees/residue_test.go	5	task-18
 # Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.
 internal/worktrees/retire_preflight_behavior_test.go	4	task-18
