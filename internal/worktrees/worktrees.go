@@ -3355,6 +3355,22 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 	return openAbsoluteDirectoryNoFollowWith(secureopen.Real{}, path, create)
 }
 
+// openDirectoryAtNoFollow returns one owned child directory handle. The
+// caller supplies exact open/wrap diagnostics and retains responsibility for
+// path identity checks and the returned handle's lifetime.
+func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, wrapMessage string) (*os.File, error) {
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", openContext, err)
+	}
+	directory := os.NewFile(uintptr(fd), descriptorName)
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New(wrapMessage)
+	}
+	return directory, nil
+}
+
 func openAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, create bool) (*os.File, error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {

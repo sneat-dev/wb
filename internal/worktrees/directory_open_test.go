@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestOpenSessionReceiveDirectoryAtOwnsOnlyChild(t *testing.T) {
+func TestOpenDirectoryAtNoFollowOwnsOnlyChild(t *testing.T) {
 	t.Parallel()
 	rootPath := t.TempDir()
 	if err := os.Mkdir(filepath.Join(rootPath, "child"), 0o700); err != nil {
@@ -29,7 +29,7 @@ func TestOpenSessionReceiveDirectoryAtOwnsOnlyChild(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			child, err := openSessionReceiveDirectoryAt(int(parent.Fd()), test.name, "wb-test-receive-child",
+			child, err := openDirectoryAtNoFollow(int(parent.Fd()), test.name, "wb-test-receive-child",
 				"open exact test child", "wrap exact test child")
 			if test.missing {
 				if child != nil || err == nil || !strings.HasPrefix(err.Error(), "open exact test child: ") || !errors.Is(err, os.ErrNotExist) {

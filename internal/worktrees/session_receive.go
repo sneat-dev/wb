@@ -824,22 +824,6 @@ func openOrCloneSessionReceiveCanonical(
 	)
 }
 
-// openSessionReceiveDirectoryAt returns one owned no-follow directory handle.
-// openContext and wrapMessage are the caller's exact, stage-specific errors;
-// the caller retains responsibility for path identity and handle lifetime.
-func openSessionReceiveDirectoryAt(parentFD int, name, descriptorName, openContext, wrapMessage string) (*os.File, error) {
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", openContext, err)
-	}
-	directory := os.NewFile(uintptr(fd), descriptorName)
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New(wrapMessage)
-	}
-	return directory, nil
-}
-
 func cloneSessionReceiveCanonical(
 	ctx context.Context,
 	ownerDirectory *os.File,
@@ -856,7 +840,7 @@ func cloneSessionReceiveCanonical(
 	if err != nil {
 		return nil, fmt.Errorf("create secure canonical clone stage for %s: %w", declared.Repository, err)
 	}
-	stage, err := openSessionReceiveDirectoryAt(int(ownerDirectory.Fd()), stageName, "wb-session-receive-clone-stage",
+	stage, err := openDirectoryAtNoFollow(int(ownerDirectory.Fd()), stageName, "wb-session-receive-clone-stage",
 		"open secure canonical clone stage for "+declared.Repository,
 		"wrap secure canonical clone stage for "+declared.Repository)
 	if err != nil {
@@ -896,7 +880,7 @@ func cloneSessionReceiveCanonical(
 		return nil, err
 	}
 	stagedPath := filepath.Join(stagePath, "checkout")
-	checkout, err := openSessionReceiveDirectoryAt(int(stage.Fd()), "checkout", "wb-session-receive-staged-canonical",
+	checkout, err := openDirectoryAtNoFollow(int(stage.Fd()), "checkout", "wb-session-receive-staged-canonical",
 		"open staged canonical clone for "+declared.Repository,
 		"wrap staged canonical clone for "+declared.Repository)
 	if err != nil {
@@ -1005,7 +989,7 @@ func recoverInterruptedSessionReceivePublication(
 	if err := requireOnlyInterruptedSessionStage(operationDirectory, stageName); err != nil {
 		return false, err
 	}
-	stage, err := openSessionReceiveDirectoryAt(int(operationDirectory.Fd()), stageName, "wb-session-receive-interrupted-stage",
+	stage, err := openDirectoryAtNoFollow(int(operationDirectory.Fd()), stageName, "wb-session-receive-interrupted-stage",
 		"open exact interrupted receive stage", "wrap exact interrupted receive stage")
 	if err != nil {
 		return false, err
@@ -1036,7 +1020,7 @@ func recoverInterruptedSessionReceivePublication(
 		} else if !errors.Is(statErr, unix.ENOENT) {
 			return false, fmt.Errorf("inspect interrupted staged checkout: %w", statErr)
 		}
-		finalDirectory, err = openSessionReceiveDirectoryAt(ownerFD, repository, "wb-session-receive-interrupted-published",
+		finalDirectory, err = openDirectoryAtNoFollow(ownerFD, repository, "wb-session-receive-interrupted-published",
 			"open interrupted published target", "wrap interrupted published target")
 		if err != nil {
 			return false, err
@@ -1045,7 +1029,7 @@ func recoverInterruptedSessionReceivePublication(
 		if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 			return false, err
 		}
-		checkout, openErr := openSessionReceiveDirectoryAt(int(stage.Fd()), "checkout", "wb-session-receive-interrupted-checkout",
+		checkout, openErr := openDirectoryAtNoFollow(int(stage.Fd()), "checkout", "wb-session-receive-interrupted-checkout",
 			"open exact interrupted staged checkout", "wrap exact interrupted staged checkout")
 		if openErr != nil {
 			return false, openErr
@@ -1157,7 +1141,7 @@ func retireCompletedInterruptedSessionStage(ctx context.Context, operationRoot s
 	if len(names) != 1 {
 		return fmt.Errorf("multiple active receive stages make completed interrupted recovery ambiguous")
 	}
-	stage, err := openSessionReceiveDirectoryAt(int(operationDirectory.Fd()), names[0], "wb-session-receive-completed-stage",
+	stage, err := openDirectoryAtNoFollow(int(operationDirectory.Fd()), names[0], "wb-session-receive-completed-stage",
 		"open completed interrupted receive stage", "wrap completed interrupted receive stage")
 	if err != nil {
 		return err
