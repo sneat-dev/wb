@@ -409,7 +409,7 @@ func TestWTCoreCovValidateOrphanedClaimIdentityRejectsIncompleteClaims(t *testin
 		"successor no agent":   mutate(func(c *workLogClaim) { c.ParentClaimID = strings.Repeat("c", 64); c.AcquiredVia = "handoff" }),
 		"successor bad parent": mutate(func(c *workLogClaim) { c.ParentClaimID = "short"; c.AgentID = "agent"; c.AcquiredVia = "handoff" }),
 		"unknown acquisition": mutate(func(c *workLogClaim) {
-			c.ParentClaimID = strings.Repeat("c", 32)
+			c.ParentClaimID = strings.Repeat("c", 64)
 			c.AgentID = "agent"
 			c.AcquiredVia = "made-up"
 		}),
@@ -419,6 +419,8 @@ func TestWTCoreCovValidateOrphanedClaimIdentityRejectsIncompleteClaims(t *testin
 			t.Parallel()
 			if err := validateOrphanedClaimIdentity(claim); err == nil {
 				t.Fatal("an invalid claim identity was accepted")
+			} else if name == "unknown acquisition" && !strings.Contains(err.Error(), `successor claim acquisition "made-up" is invalid`) {
+				t.Fatalf("unknown acquisition error = %v", err)
 			}
 		})
 	}

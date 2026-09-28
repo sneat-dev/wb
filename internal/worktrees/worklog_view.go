@@ -363,19 +363,10 @@ func parsePromptFile(content []byte) (PromptHeader, string, error) {
 }
 
 func observeWorkLogGit(ctx context.Context, worktree string) WorkLogGitEvidence {
-	evidence := WorkLogGitEvidence{}
-	if branch, err := git(ctx, worktree, "branch", "--show-current"); err == nil {
-		evidence.Branch = strings.TrimSpace(branch)
+	local := observeLocalGit(ctx, worktree)
+	return WorkLogGitEvidence{
+		Branch: local.Branch, Head: local.Head, Dirty: local.Dirty, Status: local.Status,
 	}
-	if head, err := git(ctx, worktree, "rev-parse", "HEAD"); err == nil {
-		evidence.Head = strings.TrimSpace(head)
-	}
-	if status, err := git(ctx, worktree, "status", "--porcelain"); err == nil {
-		trimmed := strings.TrimSpace(status)
-		evidence.Status = trimmed
-		evidence.Dirty = trimmed != ""
-	}
-	return evidence
 }
 
 // FormatWorkLogViewText renders the agent bootstrap dump. Private prompt bodies
@@ -384,64 +375,10 @@ func observeWorkLogGit(ctx context.Context, worktree string) WorkLogGitEvidence 
 func FormatWorkLogViewText(view WorkLogView) string {
 	var b strings.Builder
 	b.WriteString("# WB work log\n\n")
-	b.WriteString("## Worktree\n")
-	b.WriteString(view.Worktree)
-	b.WriteString("\n\n")
-
-	if view.Manifest != nil {
-		b.WriteString("## Manifest\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Manifest.EffortID)
-		if view.Manifest.ParentEffort != "" {
-			fmt.Fprintf(&b, "parent_effort: %s\n", view.Manifest.ParentEffort)
-		}
-		fmt.Fprintf(&b, "effort_kind: %s\n", view.Manifest.EffortKind)
-		fmt.Fprintf(&b, "repository: %s\n", view.Manifest.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Manifest.Branch)
-		fmt.Fprintf(&b, "base: %s\n", view.Manifest.Base)
-		fmt.Fprintf(&b, "base_sha: %s\n", view.Manifest.BaseSHA)
-		fmt.Fprintf(&b, "provenance: %s\n", view.Manifest.Provenance)
-		if view.Manifest.RunID != "" {
-			fmt.Fprintf(&b, "run_id: %s\n", view.Manifest.RunID)
-		}
-		if view.Manifest.ClaimID != "" {
-			fmt.Fprintf(&b, "claim_id: %s\n", view.Manifest.ClaimID)
-		}
-		if view.Manifest.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Manifest.Model)
-		}
-		b.WriteString("\n")
-	}
-
-	if view.Claim != nil {
-		b.WriteString("## Claim\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Claim.EffortID)
-		fmt.Fprintf(&b, "run_id: %s\n", view.Claim.RunID)
-		fmt.Fprintf(&b, "claim_id: %s\n", view.Claim.ClaimID)
-		fmt.Fprintf(&b, "lifecycle: %s\n", view.Claim.Lifecycle)
-		fmt.Fprintf(&b, "repository: %s\n", view.Claim.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Claim.Branch)
-		if view.Claim.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Claim.Model)
-		}
-		if view.Claim.PromptDigest != "" {
-			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
-		}
-		b.WriteString("\n")
-	}
+	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("\n")
 		if view.FinalizeReportBody != "" {
 			b.WriteString("### Finalize report\n")
@@ -504,27 +441,7 @@ func FormatWorkLogViewText(view WorkLogView) string {
 		}
 	}
 
-	b.WriteString("## Git\n")
-	if view.Git.Branch != "" {
-		fmt.Fprintf(&b, "branch: %s\n", view.Git.Branch)
-	}
-	if view.Git.Head != "" {
-		fmt.Fprintf(&b, "head: %s\n", view.Git.Head)
-	}
-	fmt.Fprintf(&b, "dirty: %t\n", view.Git.Dirty)
-	if view.Git.Status != "" {
-		b.WriteString("status:\n")
-		b.WriteString(view.Git.Status)
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-
-	if len(view.Notes) > 0 {
-		b.WriteString("## Notes\n")
-		for _, note := range view.Notes {
-			fmt.Fprintf(&b, "- %s\n", note)
-		}
-	}
+	writeWorkLogStatusSections(&b, view)
 	return b.String()
 }
 
@@ -535,64 +452,10 @@ func FormatWorkLogViewText(view WorkLogView) string {
 func FormatWorktreeInfoText(view WorkLogView) string {
 	var b strings.Builder
 	b.WriteString("# WB worktree info\n\n")
-	b.WriteString("## Worktree\n")
-	b.WriteString(view.Worktree)
-	b.WriteString("\n\n")
-
-	if view.Manifest != nil {
-		b.WriteString("## Manifest\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Manifest.EffortID)
-		if view.Manifest.ParentEffort != "" {
-			fmt.Fprintf(&b, "parent_effort: %s\n", view.Manifest.ParentEffort)
-		}
-		fmt.Fprintf(&b, "effort_kind: %s\n", view.Manifest.EffortKind)
-		fmt.Fprintf(&b, "repository: %s\n", view.Manifest.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Manifest.Branch)
-		fmt.Fprintf(&b, "base: %s\n", view.Manifest.Base)
-		fmt.Fprintf(&b, "base_sha: %s\n", view.Manifest.BaseSHA)
-		fmt.Fprintf(&b, "provenance: %s\n", view.Manifest.Provenance)
-		if view.Manifest.RunID != "" {
-			fmt.Fprintf(&b, "run_id: %s\n", view.Manifest.RunID)
-		}
-		if view.Manifest.ClaimID != "" {
-			fmt.Fprintf(&b, "claim_id: %s\n", view.Manifest.ClaimID)
-		}
-		if view.Manifest.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Manifest.Model)
-		}
-		b.WriteString("\n")
-	}
-
-	if view.Claim != nil {
-		b.WriteString("## Claim\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Claim.EffortID)
-		fmt.Fprintf(&b, "run_id: %s\n", view.Claim.RunID)
-		fmt.Fprintf(&b, "claim_id: %s\n", view.Claim.ClaimID)
-		fmt.Fprintf(&b, "lifecycle: %s\n", view.Claim.Lifecycle)
-		fmt.Fprintf(&b, "repository: %s\n", view.Claim.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Claim.Branch)
-		if view.Claim.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Claim.Model)
-		}
-		if view.Claim.PromptDigest != "" {
-			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
-		}
-		b.WriteString("\n")
-	}
+	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n\n")
 	}
 
@@ -607,14 +470,81 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 	}
 	b.WriteString("Prompt bodies are omitted. Use `wb worktree log` for the private agent dump.\n\n")
 
+	writeWorkLogStatusSections(&b, view)
+	return b.String()
+}
+
+func writeWorkLogTerminalHeader(b *strings.Builder, terminal *WorkLogTerminalView) {
+	b.WriteString("## Terminal\n")
+	fmt.Fprintf(b, "disposition: %s\n", terminal.Disposition)
+	fmt.Fprintf(b, "sealed_at: %s\n", terminal.SealedAt.UTC().Format(time.RFC3339))
+	if terminal.TerminalResult != "" {
+		fmt.Fprintf(b, "terminal_result: %s\n", terminal.TerminalResult)
+	}
+	if terminal.TerminalMessage != "" {
+		fmt.Fprintf(b, "terminal_message: %s\n", terminal.TerminalMessage)
+	}
+	if terminal.ReportPath != "" {
+		fmt.Fprintf(b, "report_path: %s\n", terminal.ReportPath)
+	}
+}
+
+func writeWorkLogIdentitySections(b *strings.Builder, view WorkLogView) {
+	b.WriteString("## Worktree\n")
+	b.WriteString(view.Worktree)
+	b.WriteString("\n\n")
+
+	if view.Manifest != nil {
+		b.WriteString("## Manifest\n")
+		fmt.Fprintf(b, "effort_id: %s\n", view.Manifest.EffortID)
+		if view.Manifest.ParentEffort != "" {
+			fmt.Fprintf(b, "parent_effort: %s\n", view.Manifest.ParentEffort)
+		}
+		fmt.Fprintf(b, "effort_kind: %s\n", view.Manifest.EffortKind)
+		fmt.Fprintf(b, "repository: %s\n", view.Manifest.Repository)
+		fmt.Fprintf(b, "branch: %s\n", view.Manifest.Branch)
+		fmt.Fprintf(b, "base: %s\n", view.Manifest.Base)
+		fmt.Fprintf(b, "base_sha: %s\n", view.Manifest.BaseSHA)
+		fmt.Fprintf(b, "provenance: %s\n", view.Manifest.Provenance)
+		if view.Manifest.RunID != "" {
+			fmt.Fprintf(b, "run_id: %s\n", view.Manifest.RunID)
+		}
+		if view.Manifest.ClaimID != "" {
+			fmt.Fprintf(b, "claim_id: %s\n", view.Manifest.ClaimID)
+		}
+		if view.Manifest.Model != "" {
+			fmt.Fprintf(b, "model: %s\n", view.Manifest.Model)
+		}
+		b.WriteString("\n")
+	}
+
+	if view.Claim != nil {
+		b.WriteString("## Claim\n")
+		fmt.Fprintf(b, "effort_id: %s\n", view.Claim.EffortID)
+		fmt.Fprintf(b, "run_id: %s\n", view.Claim.RunID)
+		fmt.Fprintf(b, "claim_id: %s\n", view.Claim.ClaimID)
+		fmt.Fprintf(b, "lifecycle: %s\n", view.Claim.Lifecycle)
+		fmt.Fprintf(b, "repository: %s\n", view.Claim.Repository)
+		fmt.Fprintf(b, "branch: %s\n", view.Claim.Branch)
+		if view.Claim.Model != "" {
+			fmt.Fprintf(b, "model: %s\n", view.Claim.Model)
+		}
+		if view.Claim.PromptDigest != "" {
+			fmt.Fprintf(b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
+		}
+		b.WriteString("\n")
+	}
+}
+
+func writeWorkLogStatusSections(b *strings.Builder, view WorkLogView) {
 	b.WriteString("## Git\n")
 	if view.Git.Branch != "" {
-		fmt.Fprintf(&b, "branch: %s\n", view.Git.Branch)
+		fmt.Fprintf(b, "branch: %s\n", view.Git.Branch)
 	}
 	if view.Git.Head != "" {
-		fmt.Fprintf(&b, "head: %s\n", view.Git.Head)
+		fmt.Fprintf(b, "head: %s\n", view.Git.Head)
 	}
-	fmt.Fprintf(&b, "dirty: %t\n", view.Git.Dirty)
+	fmt.Fprintf(b, "dirty: %t\n", view.Git.Dirty)
 	if view.Git.Status != "" {
 		b.WriteString("status:\n")
 		b.WriteString(view.Git.Status)
@@ -625,8 +555,7 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 	if len(view.Notes) > 0 {
 		b.WriteString("## Notes\n")
 		for _, note := range view.Notes {
-			fmt.Fprintf(&b, "- %s\n", note)
+			fmt.Fprintf(b, "- %s\n", note)
 		}
 	}
-	return b.String()
 }

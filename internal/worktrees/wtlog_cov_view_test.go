@@ -191,6 +191,23 @@ func TestWtLogCovFormatWorktreeInfoRendersRedactedSections(t *testing.T) {
 	}
 }
 
+func TestWorkLogTerminalHeaderKeepsPrivateAndInfoSuffixesDistinct(t *testing.T) {
+	t.Parallel()
+	view := wtLogCovFullView()
+	header := "## Terminal\ndisposition: landed\nsealed_at: 2026-01-02T03:04:05Z\nterminal_result: success\nterminal_message: merged\nreport_path: /tmp/report.md\n"
+	private := FormatWorkLogViewText(view)
+	if !strings.Contains(private, header+"\n### Finalize report\nreport body without newline\n") {
+		t.Fatalf("private terminal section changed:\n%s", private)
+	}
+	info := FormatWorktreeInfoText(view)
+	if !strings.Contains(info, header+"Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n") {
+		t.Fatalf("info terminal section changed:\n%s", info)
+	}
+	if strings.Contains(info, view.FinalizeReportBody) {
+		t.Fatal("redacted info included the private report body")
+	}
+}
+
 func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
 	t.Parallel()
 	text := FormatWorktreeInfoText(WorkLogView{Worktree: "/tmp/info-empty", Prompts: []PromptRecord{}})
@@ -208,5 +225,46 @@ func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("empty info text unexpectedly contains %q:\n%s", unwanted, text)
 		}
+	}
+}
+
+func TestWorkLogRenderersPreserveSharedSections(t *testing.T) {
+	t.Parallel()
+	view := wtLogCovFullView()
+	wantIdentity := "## Worktree\n/tmp/wt\n\n" +
+		"## Manifest\n" +
+		"effort_id: effort-1\nparent_effort: parent-1\neffort_kind: feature\n" +
+		"repository: acme/app\nbranch: wb/feature\nbase: main\nbase_sha: abc123\n" +
+		"provenance: created\nrun_id: run-1\nclaim_id: claim-1\nmodel: claude-sonnet\n\n" +
+		"## Claim\n" +
+		"effort_id: effort-1\nrun_id: run-1\nclaim_id: claim-1\nlifecycle: active\n" +
+		"repository: acme/app\nbranch: wb/feature\nmodel: claude-sonnet\n" +
+		"prompt_sha256: digest-1\n\n"
+	wantStatus := "## Git\nbranch: wb/feature\nhead: deadbeef\ndirty: true\n" +
+		"status:\n M file.go\n\n" +
+		"## Notes\n- first note\n- second note\n"
+	for _, tc := range []struct {
+		name   string
+		render func(WorkLogView) string
+	}{
+		{"private log", FormatWorkLogViewText},
+		{"redacted info", FormatWorktreeInfoText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			text := tc.render(view)
+			_, fromIdentity, ok := strings.Cut(text, "## Worktree\n")
+			if !ok {
+				t.Fatal("missing worktree section")
+			}
+			identity, _, ok := strings.Cut(fromIdentity, "## Terminal\n")
+			if !ok || "## Worktree\n"+identity != wantIdentity {
+				t.Fatalf("identity sections changed:\n%s", text)
+			}
+			statusAt := strings.Index(text, "## Git\n")
+			if statusAt < 0 || text[statusAt:] != wantStatus {
+				t.Fatalf("Git and notes sections changed:\n%s", text)
+			}
+		})
 	}
 }

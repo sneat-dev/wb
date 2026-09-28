@@ -2648,30 +2648,7 @@ func TestCleanupRejectsAdvancedTerminalNotDescendedFromSealedCommit(t *testing.T
 // path; only the new advanced-terminal authorization can retire it.
 func prepareFinalizedThenAdvancedTask(t *testing.T, task string) (fixture *gitFixture, result CreateResult, head1, head2, mergeSHA string, mergedAt time.Time) {
 	t.Helper()
-	fixture = newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result = created[0]
-	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, result.WorktreeDir, "add", "feature.txt")
-	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
-	head1 = gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
-	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
-
-	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
-		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
-		Result: "success", Message: "landed before the follow-up commit", Apply: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+	fixture, result, head1 = prepareFinalizedTask(t, task, "landed before the follow-up commit")
 	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "follow-up.txt"), []byte("more work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2685,18 +2662,51 @@ func prepareFinalizedThenAdvancedTask(t *testing.T, task string) (fixture *gitFi
 	// concurrently-landing repository would produce — the shape that makes
 	// the squash-only absorbed-by proof (tree equality) reject a genuine
 	// merge-commit landing.
-	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", "unrelated.txt")
-	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
-	gitTest(t, fixture.canonical, "push", "origin", "main")
+	advanceFixtureMainWithUnrelatedCommit(t, fixture)
 
 	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature (advanced)")
 	mergeSHA = gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 
 	return fixture, result, head1, head2, mergeSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+}
+
+func prepareFinalizedTask(t *testing.T, task, finalMessage string) (*gitFixture, CreateResult, string) {
+	t.Helper()
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head1 := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "success", Message: finalMessage, Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, result, head1
+}
+
+func advanceFixtureMainWithUnrelatedCommit(t *testing.T, fixture *gitFixture) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "unrelated.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
 }
 
 func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) (CreateResult, string, time.Time) {
@@ -2798,21 +2808,6 @@ func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, reposit
 
 func installOpenTargetPullRequestFixture(t *testing.T, head, branch string) string {
 	t.Helper()
-	binDir := t.TempDir()
-	logPath := filepath.Join(binDir, "gh.log")
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$WB_TEST_GH_LOG"
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected mutating gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_PULLS"
-`
-	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number": 325, "html_url": "https://github.com/acme/app/pull/325", "state": "open",
 		"head": map[string]any{
@@ -2824,11 +2819,7 @@ printf '%s\n' "$WB_TEST_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_GH_LOG", logPath)
-	t.Setenv("WB_TEST_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return logPath
+	return installPullRequestResponses(t, string(payload), "")
 }
 
 func assertPullRequestFixtureWasReadOnly(t *testing.T, logPath string) {

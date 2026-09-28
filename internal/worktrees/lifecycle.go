@@ -2561,9 +2561,7 @@ func (run *cleanupRun) gatherInventory() error {
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &run.listed.Results[index]); err != nil {
 			return err
 		}
-		if err := applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &run.listed.Results[index]); err != nil {
-			return err
-		}
+		applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &run.listed.Results[index])
 	}
 	if run.recovery != nil {
 		for index := range run.listed.Results {
@@ -3021,9 +3019,7 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &refreshed); err != nil {
 			return fmt.Errorf("cleanup absorbed-conflict acknowledgement proof for %s: %w", refreshed.Repository, err)
 		}
-		if err := applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed); err != nil {
-			return fmt.Errorf("supersession receipt for %s: %w", refreshed.Repository, err)
-		}
+		applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed)
 		if err := worktree.validate(); err != nil {
 			return err
 		}
@@ -5376,9 +5372,7 @@ func preflightCleanupRepository(
 	if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, home, &refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s absorbed-conflict acknowledgement proof: %w", entry.Repository, err)
 	}
-	if err := applySupersessionReceipt(ctx, options.SupersededBy, &refreshed); err != nil {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt: %w", entry.Repository, err)
-	}
+	applySupersessionReceipt(ctx, options.SupersededBy, &refreshed)
 	if refreshed.SupersessionRejection != "" {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt refused: %s", entry.Repository, refreshed.SupersessionRejection)
 	}
@@ -5492,16 +5486,11 @@ func acquireCleanupTaskAtReclaimingInterrupted(
 	if err != nil {
 		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", worktreesRoot, err)
 	}
-	taskFD, err := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-cleanup-task",
+		"open cleanup task "+taskName+" without following links", "wrap cleanup task "+taskName)
 	if err != nil {
 		_ = worktrees.Close()
-		return nil, fmt.Errorf("open cleanup task %s without following links: %w", taskName, err)
-	}
-	task := os.NewFile(uintptr(taskFD), "wb-cleanup-task")
-	if task == nil {
-		_ = unix.Close(taskFD)
-		_ = worktrees.Close()
-		return nil, fmt.Errorf("wrap cleanup task %s", taskName)
+		return nil, err
 	}
 	handle := &cleanupTaskHandle{
 		worktreesPath: worktreesRoot,
@@ -5585,16 +5574,11 @@ func acquireCleanupTaskAtReclaimingInterruptedLock(worktreesRoot, taskName strin
 	if err != nil {
 		return nil, fmt.Errorf("open recovery worktrees root %s: %w", worktreesRoot, err)
 	}
-	taskFD, err := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-recovery-task",
+		"open recovery task "+taskName+" without following links", "wrap recovery task "+taskName)
 	if err != nil {
 		_ = worktrees.Close()
-		return nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, err)
-	}
-	task := os.NewFile(uintptr(taskFD), "wb-recovery-task")
-	if task == nil {
-		_ = unix.Close(taskFD)
-		_ = worktrees.Close()
-		return nil, fmt.Errorf("wrap recovery task %s", taskName)
+		return nil, err
 	}
 	handle := &cleanupTaskHandle{worktreesPath: worktreesRoot, taskPath: filepath.Join(worktreesRoot, taskName), worktrees: worktrees, task: task}
 	if err := handle.validate(); err != nil {
@@ -5808,13 +5792,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 	}
 	canonical := os.NewFile(uintptr(3), "wb-cleanup-canonical")
 	common := os.NewFile(uintptr(4), "wb-cleanup-canonical-git")
-	if canonical == nil || common == nil {
-		if canonical != nil {
-			_ = canonical.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(canonical, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited canonical repository is unavailable")
 		return 1
 	}
@@ -5836,13 +5814,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 	if args[1] != "" {
 		parent = os.NewFile(uintptr(5), "wb-cleanup-worktree-parent")
 		worktree := os.NewFile(uintptr(6), "wb-cleanup-worktree")
-		if parent == nil || worktree == nil {
-			if parent != nil {
-				_ = parent.Close()
-			}
-			if worktree != nil {
-				_ = worktree.Close()
-			}
+		if closeIncompleteInheritedFiles(parent, worktree) {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited worktree is unavailable")
 			return 1
 		}
@@ -5875,18 +5847,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		}
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[3], args[6:], gitEnvironmentWithHeldGitDirAndWorkTree(filepath.Join(args[0], ".git"), args[0]))
+	return runSecureGitHelper("wb secure cleanup helper", args[0], writeRoots, args[3], args[6:], gitEnvironmentWithHeldGitDirAndWorkTree(filepath.Join(args[0], ".git"), args[0]))
 }
 
 func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanupWorktreeHandle, error) {
@@ -5927,14 +5888,10 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		if !validSafeSegment(parts[0]) || !validRepositorySegment(parts[1]) {
 			return nil, fmt.Errorf("invalid cleanup worktree hierarchy %s", relative)
 		}
-		parentFD, err := unix.Openat(int(task.task.Fd()), parts[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		parent, err := openDirectoryAtNoFollow(int(task.task.Fd()), parts[0], "wb-cleanup-worktree-parent",
+			"open cleanup worktree parent "+parts[0]+" without following links", "wrap cleanup worktree parent "+parts[0])
 		if err != nil {
-			return nil, fmt.Errorf("open cleanup worktree parent %s without following links: %w", parts[0], err)
-		}
-		parent := os.NewFile(uintptr(parentFD), "wb-cleanup-worktree-parent")
-		if parent == nil {
-			_ = unix.Close(parentFD)
-			return nil, fmt.Errorf("wrap cleanup worktree parent %s", parts[0])
+			return nil, err
 		}
 		handle.parent = parent
 		handle.parentPath = filepath.Join(task.taskPath, parts[0])
@@ -5954,30 +5911,21 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		if !repopath.IsForgeHost(parts[0]) || !validSafeSegment(parts[1]) || !validRepositorySegment(parts[2]) {
 			return nil, fmt.Errorf("invalid cleanup worktree hierarchy %s", relative)
 		}
-		hostFD, err := unix.Openat(int(task.task.Fd()), parts[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		host, err := openDirectoryAtNoFollow(int(task.task.Fd()), parts[0], "wb-cleanup-worktree-host",
+			"open cleanup worktree host "+parts[0]+" without following links", "wrap cleanup worktree host "+parts[0])
 		if err != nil {
-			return nil, fmt.Errorf("open cleanup worktree host %s without following links: %w", parts[0], err)
-		}
-		host := os.NewFile(uintptr(hostFD), "wb-cleanup-worktree-host")
-		if host == nil {
-			_ = unix.Close(hostFD)
-			return nil, fmt.Errorf("wrap cleanup worktree host %s", parts[0])
+			return nil, err
 		}
 		handle.ancestor = host
 		handle.ancestorName = parts[0]
 		handle.ancestorPath = filepath.Join(task.taskPath, parts[0])
 		handle.ancestorContainer = task.task
 		handle.closeAncestor = true
-		ownerFD, err := unix.Openat(hostFD, parts[1], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		parent, err := openDirectoryAtNoFollow(int(host.Fd()), parts[1], "wb-cleanup-worktree-parent",
+			"open cleanup worktree parent "+parts[1]+" without following links", "wrap cleanup worktree parent "+parts[1])
 		if err != nil {
 			handle.close()
-			return nil, fmt.Errorf("open cleanup worktree parent %s without following links: %w", parts[1], err)
-		}
-		parent := os.NewFile(uintptr(ownerFD), "wb-cleanup-worktree-parent")
-		if parent == nil {
-			_ = unix.Close(ownerFD)
-			handle.close()
-			return nil, fmt.Errorf("wrap cleanup worktree parent %s", parts[1])
+			return nil, err
 		}
 		handle.parent = parent
 		handle.parentPath = filepath.Join(task.taskPath, parts[0], parts[1])
@@ -5989,16 +5937,11 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 	default:
 		return nil, fmt.Errorf("cleanup worktree %s has unsupported hierarchy", result.WorktreeDir)
 	}
-	worktreeFD, err := unix.Openat(int(handle.parent.Fd()), repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	handle.worktree, err = openDirectoryAtNoFollow(int(handle.parent.Fd()), repository, "wb-cleanup-worktree",
+		"open cleanup worktree "+result.WorktreeDir+" without following links", "wrap cleanup worktree "+result.WorktreeDir)
 	if err != nil {
 		handle.close()
-		return nil, fmt.Errorf("open cleanup worktree %s without following links: %w", result.WorktreeDir, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap cleanup worktree %s", result.WorktreeDir)
+		return nil, err
 	}
 	if err := handle.validate(); err != nil {
 		handle.close()
@@ -6011,63 +5954,11 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 // coordination lock lives in WB_HOME. Its physical parent is retained for
 // Git removal, but is not retired through the logical task descriptor.
 func openRelocatedManagedCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
-	worktreePath = filepath.Clean(worktreePath)
-	parentPath := filepath.Dir(worktreePath)
-	leaf := filepath.Base(worktreePath)
-	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("relocated managed worktree path %s has no checkout segment", worktreePath)
-	}
-	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("open relocated managed worktree parent %s without following links: %w", parentPath, err)
-	}
-	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, ownParent: true}
-	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("open relocated managed worktree %s without following links: %w", worktreePath, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-relocated-managed-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap relocated managed worktree %s", worktreePath)
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	return handle, nil
+	return openAbsoluteCleanupWorktree(task, worktreePath, "relocated managed", "checkout segment")
 }
 
 func openCanonicalLocalCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
-	worktreePath = filepath.Clean(worktreePath)
-	parentPath := filepath.Dir(worktreePath)
-	leaf := filepath.Base(worktreePath)
-	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("canonical local worktree path %s has no task segment", worktreePath)
-	}
-	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("open canonical local worktree parent %s without following links: %w", parentPath, err)
-	}
-	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
-	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("open canonical local worktree %s without following links: %w", worktreePath, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-canonical-local-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap canonical local worktree %s", worktreePath)
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	return handle, nil
+	return openAbsoluteCleanupWorktree(task, worktreePath, "canonical local", "task segment")
 }
 
 // openAdoptedCleanupWorktree opens an adopted external worktree's parent and
@@ -6079,27 +5970,30 @@ func openCanonicalLocalCleanupWorktree(task *cleanupTaskHandle, worktreePath str
 // removeAdoptedRegistration for the WB-owned registration entry that really
 // does get retired once the checkout itself is gone.
 func openAdoptedCleanupWorktree(worktreePath string) (*cleanupWorktreeHandle, error) {
+	return openAbsoluteCleanupWorktree(nil, worktreePath, "adopted", "repository segment to open")
+}
+
+// openAbsoluteCleanupWorktree retains both no-follow descriptors until the
+// caller closes the handle. Only the named callers choose task ownership;
+// none of these paths permits retirement of the checkout's parent directory.
+func openAbsoluteCleanupWorktree(task *cleanupTaskHandle, worktreePath, kind, missingSegment string) (*cleanupWorktreeHandle, error) {
 	worktreePath = filepath.Clean(worktreePath)
 	parentPath := filepath.Dir(worktreePath)
 	leaf := filepath.Base(worktreePath)
 	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
-		return nil, fmt.Errorf("adopted worktree path %s has no repository segment to open", worktreePath)
+		return nil, fmt.Errorf("%s worktree path %s has no %s", kind, worktreePath, missingSegment)
 	}
 	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
 	if err != nil {
-		return nil, fmt.Errorf("open adopted worktree parent %s without following links: %w", parentPath, err)
+		return nil, fmt.Errorf("open %s worktree parent %s without following links: %w", kind, parentPath, err)
 	}
-	handle := &cleanupWorktreeHandle{worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
-	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, ownParent: true}
+	handle.worktree, err = openDirectoryAtNoFollow(int(parent.Fd()), leaf,
+		"wb-cleanup-"+strings.ReplaceAll(kind, " ", "-")+"-worktree",
+		"open "+kind+" worktree "+worktreePath+" without following links", "wrap "+kind+" worktree "+worktreePath)
 	if err != nil {
 		handle.close()
-		return nil, fmt.Errorf("open adopted worktree %s without following links: %w", worktreePath, err)
-	}
-	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-adopted-worktree")
-	if handle.worktree == nil {
-		_ = unix.Close(worktreeFD)
-		handle.close()
-		return nil, fmt.Errorf("wrap adopted worktree %s", worktreePath)
+		return nil, err
 	}
 	if err := handle.validate(); err != nil {
 		handle.close()
@@ -6182,9 +6076,6 @@ func writeCleanupReportInjected(
 	recovery *InterruptedLockRecovery,
 	inj *filewrite.Injector,
 ) (string, error) {
-	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
-		return "", fmt.Errorf("create cleanup report directory: %w", err)
-	}
 	report := cleanupReport{
 		GeneratedAt:  generatedAt,
 		Phase:        phase,
@@ -6202,18 +6093,5 @@ func writeCleanupReportInjected(
 	if len(options.Tasks) > 1 {
 		report.Tasks = append([]string(nil), options.Tasks...)
 	}
-	content, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode cleanup report: %w", err)
-	}
-	content = append(content, '\n')
-	path := filepath.Join(options.ReportDir, "cleanup.json")
-	temporary := path + ".tmp"
-	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
-		return "", fmt.Errorf("write cleanup report: %w", err)
-	}
-	if err := filewrite.Rename(temporary, path, inj); err != nil {
-		return "", fmt.Errorf("activate cleanup report: %w", err)
-	}
-	return path, nil
+	return writeLifecycleReportInjected(options.ReportDir, "cleanup", report, inj)
 }

@@ -906,6 +906,24 @@ func TestWorkLogMigratesLegacyProjectionOnlyAfterPrivateClaimCorroboration(t *te
 	if _, err := git(context.Background(), worktree, "check-ignore", ".wb-worklog/recovery.json"); err != nil {
 		t.Fatalf("migrated projection is not excluded: %v", err)
 	}
+	// A matching legacy pointer is harmless to read-only planning, while the
+	// mutable claim path corroborates and removes it under the same authority.
+	legacyPath := filepath.Join(worktree, legacyWorkLogProjectionName)
+	if err := writeJSONAtomic(legacyPath, projection, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if selected, err := readWorkLogProjectionForReadOnlyClaim(worktree); err != nil || selected != projection {
+		t.Fatalf("read-only matching projections = %#v, %v", selected, err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("read-only selection removed the legacy pointer: %v", err)
+	}
+	if err := preflightWorkLogSeal(fixture.home, worktree, head); err != nil {
+		t.Fatalf("corroborate matching projections: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("mutable selection retained the redundant legacy pointer: %v", err)
+	}
 
 	// Recreate a legacy pointer with a valid-looking but mismatching claim ID.
 	if err := removeWorkLogProjection(worktree); err != nil {

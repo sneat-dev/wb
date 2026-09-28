@@ -2469,6 +2469,11 @@ func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *git
 	gitTest(t, canonical, "add", "README.md")
 	gitTest(t, canonical, "commit", "-m", "initial")
 	gitTest(t, canonical, "push", "-u", "origin", "main")
+	return resolvedGitFixture(t, projectsRoot, canonical, remote, home)
+}
+
+func resolvedGitFixture(t *testing.T, projectsRoot, canonical, remote, home string) *gitFixture {
+	t.Helper()
 	var err error
 	projectsRoot, err = filepath.EvalSymlinks(projectsRoot)
 	if err != nil {

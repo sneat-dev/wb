@@ -295,16 +295,11 @@ func validateBranchReconciliationOptions(options LogRecoverOptions) error {
 }
 
 func lockBranchReconciliationClaim(home string, claim workLogClaim) (func(), error) {
-	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := lockClaim(run, claim.ClaimID)
-	if err != nil {
-		_ = run.Close()
-		return nil, err
-	}
-	return func() { unlock(); _ = run.Close() }, nil
+	return locked.close, nil
 }
 
 func reconciliationClaim(home, worktree string) (workLogProjection, workLogClaim, error) {
@@ -317,13 +312,8 @@ func reconciliationClaim(home, worktree string) (workLogProjection, workLogClaim
 		return workLogProjection{}, workLogClaim{}, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogProjection{}, workLogClaim{}, err
 	}
 	if err := corroborateReconciliationClaimShape(worktree, projection, claim); err != nil {

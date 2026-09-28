@@ -108,6 +108,7 @@ func TestWriteBytesImmutableAtInjectedRenameNoReplaceFailureSurvivesIdenticalIde
 	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, true, inj); err != nil {
 		t.Fatalf("idempotent rewrite with an injected rename failure = %v, want nil (existing content already matches)", err)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
 }
 
 func TestWriteBytesImmutableAtInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {

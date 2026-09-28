@@ -182,16 +182,12 @@ func recoverLegacyMissingClaimForAbort(home string, options AbortOptions, entry 
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, plan.claim.EffortID, plan.claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, plan.claim.EffortID, plan.claim.RunID, plan.claim.ClaimID, false)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, plan.claim.ClaimID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 
 	claims, err := openPrivateChild(runDir, "claims", true)
 	if err != nil {

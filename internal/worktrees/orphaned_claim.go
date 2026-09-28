@@ -200,36 +200,14 @@ func validateOrphanedClaimIdentity(claim workLogClaim) error {
 		!isGitObjectID(claim.BaseSHA) {
 		return fmt.Errorf("immutable claim identity is incomplete or invalid")
 	}
-	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	if claim.ParentClaimID != "" {
 		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" {
 			return fmt.Errorf("successor claim metadata is invalid")
 		}
-		switch claim.AcquiredVia {
-		case "external_handoff":
-			var err error
-			wantID, err = expectedExternalClaimID(claim)
-			if err != nil {
-				return err
-			}
-		case "parked_session_resume":
-			var err error
-			wantID, err = expectedParkedSessionClaimID(claim)
-			if err != nil {
-				return err
-			}
-		case "handoff", "not_landed":
-			if claim.Version == 2 {
-				wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
-					ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
-			} else {
-				wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-			}
-		case "recycle_failed":
-			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-		default:
-			return fmt.Errorf("successor claim acquisition %q is invalid", claim.AcquiredVia)
-		}
+	}
+	wantID, err := expectedWorkLogClaimID(claim)
+	if err != nil {
+		return err
 	}
 	if wantID != claim.ClaimID {
 		return fmt.Errorf("immutable claim digest mismatch")

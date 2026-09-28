@@ -3,7 +3,6 @@
 package worktrees
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -148,11 +147,7 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 
 func moveEmptyRetiredStageForGC(root *os.File, name string, expected *os.File, afterAuthorization func()) (string, *os.File, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		var token [16]byte
-		if _, err := rand.Read(token[:]); err != nil {
-			return "", nil, fmt.Errorf("generate isolated retired-stage name: %w", err)
-		}
-		retiredName := fmt.Sprintf(".wb-retired-stage-%x", token[:])
+		retiredName := ".wb-retired-stage-" + randomHexToken(16)
 		moved, err := moveExpectedDirectoryNoReplace(root, name, root, retiredName, expected, afterAuthorization)
 		if errors.Is(err, unix.EEXIST) {
 			continue

@@ -3,7 +3,6 @@ package worktrees
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -527,32 +526,16 @@ func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {
 		!validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validClaimID(claim.ClaimID) || !isGitObjectID(claim.BaseSHA) {
 		return errors.New("immutable Work Log claim identity metadata is invalid")
 	}
-	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	if claim.ParentClaimID != "" {
 		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" ||
 			(claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" &&
 				claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
 			return errors.New("immutable successor Work Log claim metadata is invalid")
 		}
-		var err error
-		switch claim.AcquiredVia {
-		case "external_handoff":
-			wantID, err = expectedExternalClaimID(claim)
-		case "parked_session_resume":
-			wantID, err = expectedParkedSessionClaimID(claim)
-		case "recycle_failed":
-			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-		case "handoff", "not_landed":
-			if claim.Version == 2 {
-				wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
-					ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
-			} else {
-				wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-			}
-		}
-		if err != nil {
-			return err
-		}
+	}
+	wantID, err := expectedWorkLogClaimID(claim)
+	if err != nil {
+		return err
 	}
 	if claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume" && claim.ExternalHandoff != nil {
 		return errors.New("ordinary immutable Work Log claim carries external handoff evidence")
@@ -1046,6 +1029,30 @@ func declaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition strin
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// expectedWorkLogClaimID derives the immutable identity after a caller has
+// validated which acquisition modes its workflow accepts.
+func expectedWorkLogClaimID(claim workLogClaim) (string, error) {
+	if claim.ParentClaimID == "" {
+		return workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}), nil
+	}
+	switch claim.AcquiredVia {
+	case "external_handoff":
+		return expectedExternalClaimID(claim)
+	case "parked_session_resume":
+		return expectedParkedSessionClaimID(claim)
+	case "recycle_failed":
+		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
+	case "handoff", "not_landed":
+		if claim.Version == 2 {
+			return declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
+				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider}), nil
+		}
+		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
+	default:
+		return "", fmt.Errorf("successor claim acquisition %q is invalid", claim.AcquiredVia)
+	}
+}
+
 func validClaimID(value string) bool {
 	if len(value) != sha256.Size*2 {
 		return false
@@ -1340,13 +1347,8 @@ func activeWorkLogClaimWithMode(home, worktree string, readOnly bool) (workLogCl
 		return workLogClaim{}, projection, "", err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return workLogClaim{}, projection, "", err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, projection, "", err
 	}
 	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
@@ -1391,13 +1393,8 @@ func readWorkLogTerminalRecordWithMode(home, worktree string, readOnly bool) (*w
 		return nil, err
 	}
 	defer func() { _ = runDir.Close() }()
-	terminals, err := openPrivateChild(runDir, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(runDir, projection.ClaimID)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, projection.ClaimID+".json", &terminal); err != nil {
 		return nil, err
 	}
 	return &terminal, nil
@@ -2133,6 +2130,12 @@ func writeWorkLogProjection(worktree string, projection workLogProjection) error
 }
 
 func ensureWorkLogProjectionExclude(worktree string) error {
+	return ensurePerWorktreeGitExclude(worktree,
+		[]string{workLogProjectionExclude, legacyWorkLogProjectionExclude, worktreeInstructionsExclude},
+		"exclude work-log projection")
+}
+
+func ensurePerWorktreeGitExclude(worktree string, rules []string, writeError string) error {
 	gitPath, err := git(context.Background(), worktree, "rev-parse", "--git-path", "info/exclude")
 	if err != nil {
 		return fmt.Errorf("resolve per-worktree exclude: %w", err)
@@ -2148,7 +2151,7 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 		return fmt.Errorf("read per-worktree exclude: %w", err)
 	}
 	updated := append([]byte(nil), exclude...)
-	for _, rule := range []string{workLogProjectionExclude, legacyWorkLogProjectionExclude, worktreeInstructionsExclude} {
+	for _, rule := range rules {
 		if strings.Contains("\n"+string(updated)+"\n", "\n"+rule+"\n") {
 			continue
 		}
@@ -2156,7 +2159,7 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 	}
 	if !bytes.Equal(updated, exclude) {
 		if err := writeBytesAtomic(filepath.Dir(gitPath), filepath.Base(gitPath), updated, 0o600); err != nil {
-			return fmt.Errorf("exclude work-log projection: %w", err)
+			return fmt.Errorf("%s: %w", writeError, err)
 		}
 	}
 	return nil
@@ -2370,6 +2373,39 @@ func readWorkLogFinalizeReportBody(reportPath string) (string, error) {
 	return string(content), nil
 }
 
+// openCheckedCleanupClaim holds the claim fence and run directory until the
+// caller finishes authorizing or publishing the cleanup transition.
+func openCheckedCleanupClaim(home, worktree string, projection workLogProjection) (*lockedWorkLogRun, workLogClaim, error) {
+	var claim workLogClaim
+	runDir, path, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return nil, claim, fmt.Errorf("open private work-log run: %w", err)
+	}
+	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	if err != nil {
+		_ = runDir.Close()
+		return nil, claim, err
+	}
+	locked := &lockedWorkLogRun{directory: runDir, path: path, unlock: claimLock}
+	currentProjection, err := readWorkLogProjection(worktree)
+	if err != nil || currentProjection != projection {
+		locked.close()
+		return nil, claim, fmt.Errorf("work-log projection changed while waiting for claim fence")
+	}
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		locked.close()
+		return nil, claim, err
+	}
+	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
+	_ = claims.Close()
+	if readClaimErr != nil {
+		locked.close()
+		return nil, workLogClaim{}, fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
+	}
+	return locked, claim, nil
+}
+
 func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, report *workLogFinalizeReport) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
@@ -2378,29 +2414,12 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", err)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
@@ -2460,13 +2479,8 @@ func hasExistingWorkLogTerminal(home string, projection workLogProjection) bool 
 		return false
 	}
 	defer func() { _ = runDir.Close() }()
-	terminals, err := openPrivateChild(runDir, "terminals", false)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	return readJSONAt(terminals, projection.ClaimID+".json", &terminal) == nil
+	_, err = readWorkLogTerminalAt(runDir, projection.ClaimID)
+	return err == nil
 }
 
 // acceptExistingCleanupTerminal lets cleanup compose with the public
@@ -2485,30 +2499,12 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	var claim workLogClaim
-	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
-	_ = claims.Close()
-	if readClaimErr != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
@@ -2576,30 +2572,12 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 // composes safely and a later audit can see both the original landing and
 // the wider final commit that cleanup actually removed.
 func acceptAdvancedCleanupTerminal(home, worktree, finalCommit string, projection workLogProjection) error {
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return fmt.Errorf("open private work-log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	locked, claim, err := openCheckedCleanupClaim(home, worktree, projection)
 	if err != nil {
 		return err
 	}
-	defer claimLock()
-	currentProjection, err := readWorkLogProjection(worktree)
-	if err != nil || currentProjection != projection {
-		return fmt.Errorf("work-log projection changed while waiting for claim fence")
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return err
-	}
-	var claim workLogClaim
-	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
-	_ = claims.Close()
-	if readClaimErr != nil {
-		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
-	}
+	defer locked.close()
+	runDir := locked.directory
 	terminals, err := openPrivateChild(runDir, "terminals", false)
 	if err != nil {
 		return err
@@ -2697,16 +2675,12 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	locked, err := openLockedWorkLogRun(home, projection.EffortID, projection.RunID, projection.ClaimID, false)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
-	if err != nil {
-		return err
-	}
-	defer claimLock()
+	defer locked.close()
+	runDir := locked.directory
 	currentProjection, err := readWorkLogProjection(worktree)
 	if err != nil || currentProjection != projection {
 		return fmt.Errorf("work-log projection changed while waiting for claim fence")
@@ -2772,16 +2746,12 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 // makes a repeated rollback idempotent and keeps the old identity out of a new
 // task path.
 func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLogProjection) error {
-	runDir, _, err := openWorkLogRun(home, prior.EffortID, prior.RunID, false)
+	locked, err := openLockedWorkLogRun(home, prior.EffortID, prior.RunID, prior.ClaimID, false)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, prior.ClaimID)
-	if err != nil {
-		return err
-	}
-	defer claimLock()
+	defer locked.close()
+	runDir := locked.directory
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return err
@@ -3010,13 +2980,8 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 		return false, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return false, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return false, err
 	}
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
@@ -3177,13 +3142,8 @@ func corroborateWorkLogProjection(home, worktree, finalCommit string, projection
 		return err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	return corroborateClaimAtPath(home, worktree, finalCommit, projection, claim)
@@ -3205,6 +3165,36 @@ func readWorkLogProjection(worktree string) (workLogProjection, error) {
 	return projection, nil
 }
 
+type workLogProjectionSelection uint8
+
+const (
+	workLogProjectionCurrentOnly workLogProjectionSelection = iota
+	workLogProjectionLegacyOnly
+	workLogProjectionBothEqual
+)
+
+func selectWorkLogProjection(projection workLogProjection, currentErr error, legacy workLogProjection, legacyErr error) (workLogProjection, workLogProjectionSelection, error) {
+	switch {
+	case currentErr == nil:
+		if legacyErr == nil {
+			if legacy != projection {
+				return workLogProjection{}, 0, fmt.Errorf("legacy and current work-log projections disagree")
+			}
+			return projection, workLogProjectionBothEqual, nil
+		} else if !errors.Is(legacyErr, os.ErrNotExist) {
+			return workLogProjection{}, 0, legacyErr
+		}
+		return projection, workLogProjectionCurrentOnly, nil
+	case !errors.Is(currentErr, os.ErrNotExist):
+		return workLogProjection{}, 0, currentErr
+	case errors.Is(legacyErr, os.ErrNotExist):
+		return workLogProjection{}, 0, errWorkLogProjectionNotFound
+	case legacyErr != nil:
+		return workLogProjection{}, 0, legacyErr
+	}
+	return legacy, workLogProjectionLegacyOnly, nil
+}
+
 // readWorkLogProjectionForClaim performs the one-way migration from the
 // short-lived .wb-worklog.json pointer used by the first Hybrid Work Log
 // implementation. The editable legacy pointer is never trusted: WB first
@@ -3212,41 +3202,30 @@ func readWorkLogProjection(worktree string) (workLogProjection, error) {
 // corroborates that claim against live Git. Only then does it write the
 // approved .wb-worklog/recovery.json projection and unlink the old pointer.
 func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, error) {
-	projection, currentErr := readWorkLogProjection(worktree)
+	current, currentErr := readWorkLogProjection(worktree)
 	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
-	switch {
-	case currentErr == nil:
-		if legacyErr == nil {
-			if legacy != projection {
-				return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
-			}
-			if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
-				return workLogProjection{}, err
-			}
-			if err := removeLegacyWorkLogProjection(worktree); err != nil {
-				return workLogProjection{}, err
-			}
-		} else if !errors.Is(legacyErr, os.ErrNotExist) {
-			return workLogProjection{}, legacyErr
-		}
+	projection, selection, err := selectWorkLogProjection(current, currentErr, legacy, legacyErr)
+	if err != nil {
+		return workLogProjection{}, err
+	}
+	if selection == workLogProjectionCurrentOnly {
 		return projection, nil
-	case !errors.Is(currentErr, os.ErrNotExist):
-		return workLogProjection{}, currentErr
-	case errors.Is(legacyErr, os.ErrNotExist):
-		return workLogProjection{}, errWorkLogProjectionNotFound
-	case legacyErr != nil:
-		return workLogProjection{}, legacyErr
 	}
-	if err := corroborateProjectionWithPrivateClaim(home, worktree, legacy); err != nil {
-		return workLogProjection{}, fmt.Errorf("corroborate legacy work-log projection: %v", err)
+	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+		if selection == workLogProjectionLegacyOnly {
+			return workLogProjection{}, fmt.Errorf("corroborate legacy work-log projection: %v", err)
+		}
+		return workLogProjection{}, err
 	}
-	if err := writeWorkLogProjection(worktree, legacy); err != nil {
-		return workLogProjection{}, fmt.Errorf("migrate legacy work-log projection: %w", err)
+	if selection == workLogProjectionLegacyOnly {
+		if err := writeWorkLogProjection(worktree, projection); err != nil {
+			return workLogProjection{}, fmt.Errorf("migrate legacy work-log projection: %w", err)
+		}
 	}
 	if err := removeLegacyWorkLogProjection(worktree); err != nil {
 		return workLogProjection{}, err
 	}
-	return legacy, nil
+	return projection, nil
 }
 
 // readWorkLogProjectionForReadOnlyClaim selects the same current or legacy
@@ -3255,24 +3234,8 @@ func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, er
 func readWorkLogProjectionForReadOnlyClaim(worktree string) (workLogProjection, error) {
 	projection, currentErr := readWorkLogProjection(worktree)
 	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
-	switch {
-	case currentErr == nil:
-		if legacyErr == nil && legacy != projection {
-			return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
-		}
-		if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
-			return workLogProjection{}, legacyErr
-		}
-		return projection, nil
-	case !errors.Is(currentErr, os.ErrNotExist):
-		return workLogProjection{}, currentErr
-	case errors.Is(legacyErr, os.ErrNotExist):
-		return workLogProjection{}, errWorkLogProjectionNotFound
-	case legacyErr != nil:
-		return workLogProjection{}, legacyErr
-	default:
-		return legacy, nil
-	}
+	selected, _, err := selectWorkLogProjection(projection, currentErr, legacy, legacyErr)
+	return selected, err
 }
 
 func readLegacyWorkLogProjection(worktree string) (workLogProjection, error) {
@@ -3297,13 +3260,8 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 		return err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
@@ -3355,24 +3313,9 @@ func corroborateRelocatedClaim(worktree, finalCommit string, projection workLogP
 	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
 		return fmt.Errorf("work-log projection does not match immutable active claim")
 	}
-	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
-		return err
-	}
-	branch, err := git(context.Background(), worktree, "branch", "--show-current")
-	if err != nil {
-		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
-	}
-	if branch != "" && branch != claim.Branch {
+	return corroborateClaimGit(worktree, finalCommit, projection, claim, func(branch string) error {
 		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
-	}
-	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
-	if err != nil || head != finalCommit {
-		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
-	}
-	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
-		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
-	}
-	return nil
+	})
 }
 
 func corroborateClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
@@ -3382,6 +3325,21 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
 		return fmt.Errorf("private work-log claim identity/path mismatch")
 	}
+	return corroborateClaimGit(worktree, finalCommit, projection, claim, func(branch string) error {
+		// #183: the proven recovery is renaming the live branch back to the
+		// claim name. Landing evidence is commit-based (see the shared
+		// HEAD/base checks below and Cleanup's PR-containment proof), so a
+		// PR already opened from the renamed branch still proves out once the
+		// name matches again — this is a pure message change, not a relaxed
+		// check.
+		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
+	})
+}
+
+// corroborateClaimGit checks the proof shared by ordinary and relocated claims.
+// The caller supplies only its branch-mismatch diagnostic; a detached checkout
+// remains valid when its HEAD and claimed base still corroborate.
+func corroborateClaimGit(worktree, finalCommit string, projection workLogProjection, claim workLogClaim, branchMismatch func(string) error) error {
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
 		return err
 	}
@@ -3391,18 +3349,9 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	// A detached checkout has no branch to match. The claim records the branch
 	// the worktree was created on, and a review checkout leaves it behind by
-	// construction; refusing on the absent name asked an operator to
-	// `git branch -m` a HEAD that is not on a branch, which is not a recovery
-	// at all. The commit checks below are the whole proof in that case, and
-	// they are commit-based exactly as the landing rule requires.
+	// construction. HEAD and base checks below provide the commit proof.
 	if branch != "" && branch != claim.Branch {
-		// #183: the proven recovery is renaming the live branch back to the
-		// claim name. Landing evidence is commit-based (see corroborateClaim's
-		// own HEAD/base checks below and Cleanup's PR-containment proof), so a
-		// PR already opened from the renamed branch still proves out once the
-		// name matches again — this is a pure message change, not a relaxed
-		// check.
-		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
+		return branchMismatch(branch)
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
 	if err != nil || head != finalCommit {
@@ -3574,6 +3523,32 @@ func lockClaim(runDir *os.File, claimID string) (func(), error) {
 	return func() { _ = unix.Flock(fd, unix.LOCK_UN); _ = unix.Close(fd) }, nil
 }
 
+// lockedWorkLogRun owns the run descriptor and its claim fence together.
+// Release the fence before closing the directory it protects.
+type lockedWorkLogRun struct {
+	directory *os.File
+	path      string
+	unlock    func()
+}
+
+func openLockedWorkLogRun(home, effort, run, claimID string, create bool) (*lockedWorkLogRun, error) {
+	directory, path, err := openWorkLogRun(home, effort, run, create)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := lockClaim(directory, claimID)
+	if err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	return &lockedWorkLogRun{directory: directory, path: path, unlock: unlock}, nil
+}
+
+func (run *lockedWorkLogRun) close() {
+	run.unlock()
+	_ = run.directory.Close()
+}
+
 func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent bool) error {
 	content, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -3621,11 +3596,24 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		return err
-	}
-	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+		writeBytesImmutableAtBeforeRename(directory, name)
+		if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
+			if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	})
+}
+
+// writeBytesWithTemporaryAtInjected owns the temporary file through
+// publication. The callback may return false, nil only after verifying an
+// immutable idempotent collision; that removes the temporary entry and skips
+// SyncDir because this invocation published nothing.
+func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector, publish func(string) (bool, error)) error {
+	temporary := "." + name + ".tmp-" + randomHexToken(12)
 	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
 		return err
@@ -3647,12 +3635,12 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	writeBytesImmutableAtBeforeRename(directory, name)
-	if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-		if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
-			return nil
-		}
+	published, err := publish(temporary)
+	if err != nil {
 		return err
+	}
+	if !published {
+		return nil
 	}
 	cleanup = false
 	return filewrite.SyncDir(directory, inj)
@@ -3677,6 +3665,28 @@ func readJSONAt(directory *os.File, name string, target any) error {
 		return err
 	}
 	return json.Unmarshal(content, target)
+}
+
+func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) {
+	var zero T
+	directory, err := openPrivateChild(runDir, child, false)
+	if err != nil {
+		return zero, err
+	}
+	defer func() { _ = directory.Close() }()
+	var record T
+	if err := readJSONAt(directory, name, &record); err != nil {
+		return zero, err
+	}
+	return record, nil
+}
+
+func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
+	return readPrivateRecordAt[workLogClaim](runDir, "claims", claimID+".json")
+}
+
+func readWorkLogTerminalAt(runDir *os.File, claimID string) (workLogTerminalRecord, error) {
+	return readPrivateRecordAt[workLogTerminalRecord](runDir, "terminals", claimID+".json")
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
@@ -3714,37 +3724,12 @@ func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte,
 	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe atomic filename %q", name)
 	}
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		return err
-	}
-	temporary := "." + name + ".tmp-" + hex.EncodeToString(random)
-	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
-	if err != nil {
-		return err
-	}
-	file := os.NewFile(uintptr(fd), temporary)
-	cleanup := true
-	defer func() {
-		_ = file.Close()
-		if cleanup {
-			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+		if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
+			return false, err
 		}
-	}()
-	if err := filewrite.Write(file, content, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Sync(file, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Close(file, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-		return err
-	}
-	cleanup = false
-	return filewrite.SyncDir(directory, inj)
+		return true, nil
+	})
 }
 
 func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) error {

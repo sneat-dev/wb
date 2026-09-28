@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -474,13 +473,9 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 	return requireAbsentNoFollowChild(int(parentDirectory.Fd()), repository)
 }
 
-func relocationOperationID(claimID, source, destination, head string, at time.Time) (string, error) {
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		return "", err
-	}
-	hash := sha256.Sum256([]byte(strings.Join([]string{claimID, filepath.Clean(source), filepath.Clean(destination), head, at.UTC().Format(time.RFC3339Nano), hex.EncodeToString(random)}, "\x00")))
-	return hex.EncodeToString(hash[:16]), nil
+func relocationOperationID(claimID, source, destination, head string, at time.Time) string {
+	hash := sha256.Sum256([]byte(strings.Join([]string{claimID, filepath.Clean(source), filepath.Clean(destination), head, at.UTC().Format(time.RFC3339Nano), randomHexToken(12)}, "\x00")))
+	return hex.EncodeToString(hash[:16])
 }
 
 func relocationIntentName(claimID, operationID string) string {
@@ -635,16 +630,12 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 }
 
 func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
-	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = run.Close() }()
-	unlock, err := lockClaim(run, claim.ClaimID)
-	if err != nil {
-		return nil, "", err
-	}
-	defer unlock()
+	defer locked.close()
+	run, runPath := locked.directory, locked.path
 	receipts, err := openPrivateChild(run, "relocations", true)
 	if err != nil {
 		return nil, "", err
@@ -657,10 +648,7 @@ func appendRelocationIntentForRepository(home string, claim workLogClaim, source
 	if existing, path, err := matchingPendingIntent(journal, claim, source, destination, to, claim.Branch, head); err != nil || existing != nil {
 		return existing, path, err
 	}
-	operationID, err := relocationOperationID(claim.ClaimID, source, destination, head, at)
-	if err != nil {
-		return nil, "", err
-	}
+	operationID := relocationOperationID(claim.ClaimID, source, destination, head, at)
 	intent := &workLogRelocationIntent{Version: 1, Type: workLogRelocationIntentType, OperationID: operationID, ClaimID: claim.ClaimID, Task: claim.Task,
 		Repository: claim.Repository, Branch: claim.Branch, HeadSHA: head, Source: filepath.Clean(source), Destination: filepath.Clean(destination), To: to,
 		SourceRepository: sourceRepository, DestinationRepository: destinationRepository, RemoteURL: remoteURL, At: at}
@@ -679,16 +667,12 @@ func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRel
 	if err := validateRelocationRecord(*intent, claim, true); err != nil {
 		return nil, "", err
 	}
-	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = run.Close() }()
-	unlock, err := lockClaim(run, claim.ClaimID)
-	if err != nil {
-		return nil, "", err
-	}
-	defer unlock()
+	defer locked.close()
+	run, runPath := locked.directory, locked.path
 	receipts, err := openPrivateChild(run, "relocations", true)
 	if err != nil {
 		return nil, "", err

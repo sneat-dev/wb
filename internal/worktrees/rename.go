@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -152,12 +151,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	gitFile := os.NewFile(uintptr(7), "wb-rename-worktree-gitfile")
 	adminRoot := os.NewFile(uintptr(8), "wb-rename-linked-admin-root")
 	admin := os.NewFile(uintptr(9), "wb-rename-linked-admin")
-	if canonical == nil || common == nil || parent == nil || worktree == nil || gitFile == nil || adminRoot == nil || admin == nil {
-		for _, file := range []*os.File{canonical, common, parent, worktree, gitFile, adminRoot, admin} {
-			if file != nil {
-				_ = file.Close()
-			}
-		}
+	if closeIncompleteInheritedFiles(canonical, common, parent, worktree, gitFile, adminRoot, admin) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure rename helper: inherited descriptors are unavailable")
 		return 1
 	}
@@ -221,18 +215,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	// ordinary commits. Its hooks need the same narrowly held runtime roots as
 	// cleanup's Git helper; otherwise a healthy managed hook can be denied by
 	// the filesystem capability before the source is preserved.
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: prepare hook runtime layout: %v\n", err)
-		return 1
-	}
-	defer closeSecureHookRootHandles(hookRoots)
-	capability, err := newGitFilesystemCapability(writeRoots...)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: %v\n", err)
-		return 1
-	}
-	return runGitWithFilesystemCapability(capability, args[4], args[5:], gitEnvironmentWithHeldLinkedWorktreeGitDir(adminPath, commonPath))
+	return runSecureGitHelper("wb secure rename helper", args[0], writeRoots, args[4], args[5:], gitEnvironmentWithHeldLinkedWorktreeGitDir(adminPath, commonPath))
 }
 
 func openLinkedWorktreeGitDir(canonical *canonicalRepository, worktree *os.File) (*linkedWorktreeGitDir, error) {
@@ -1472,11 +1455,7 @@ func verifyWorktreeRegistered(ctx context.Context, canonicalDir, oldPath, newPat
 		return fmt.Errorf("verify worktree registration: %w", err)
 	}
 	found := false
-	for _, line := range strings.Split(output, "\n") {
-		path, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, path := range worktreePathsFromPorcelain(output) {
 		switch filepath.Clean(path) {
 		case filepath.Clean(newPath):
 			found = true
@@ -1652,9 +1631,6 @@ func writeRenameReportInjected(
 	diagnostics []ListDiagnostic,
 	inj *filewrite.Injector,
 ) (string, error) {
-	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
-		return "", fmt.Errorf("create rename report directory: %w", err)
-	}
 	report := renameReport{
 		GeneratedAt: generatedAt, Phase: phase, OldTask: options.OldTask, NewTask: options.NewTask,
 		Filter: options.Filter, Branch: options.Branch, Base: options.Base,
@@ -1662,18 +1638,5 @@ func writeRenameReportInjected(
 		Force: options.Force, PreserveCachePaths: options.PreserveCachePaths, Apply: options.Apply,
 		Results: results, Diagnostics: diagnostics,
 	}
-	content, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode rename report: %w", err)
-	}
-	content = append(content, '\n')
-	path := filepath.Join(options.ReportDir, "rename.json")
-	temporary := path + ".tmp"
-	if err := filewrite.WriteFile(temporary, content, 0o644, inj); err != nil {
-		return "", fmt.Errorf("write rename report: %w", err)
-	}
-	if err := filewrite.Rename(temporary, path, inj); err != nil {
-		return "", fmt.Errorf("activate rename report: %w", err)
-	}
-	return path, nil
+	return writeLifecycleReportInjected(options.ReportDir, "rename", report, inj)
 }

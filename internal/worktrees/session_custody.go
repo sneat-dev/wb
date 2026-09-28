@@ -162,36 +162,18 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, true)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, claim.ClaimID)
+	defer locked.close()
+	runDir := locked.directory
+	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
+		"immutable external target Work Log claim conflicts with admitted handoff",
+		"publish immutable external target Work Log claim")
 	if err != nil {
 		return result, err
 	}
-	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", true)
-	if err != nil {
-		return result, err
-	}
-	var existing workLogClaim
-	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
-	result.Replayed = readErr == nil
-	if readErr == nil && !reflect.DeepEqual(existing, claim) {
-		_ = claims.Close()
-		return result, fmt.Errorf("immutable external target Work Log claim conflicts with admitted handoff")
-	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		_ = claims.Close()
-		return result, readErr
-	}
-	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
-		_ = claims.Close()
-		return result, fmt.Errorf("publish immutable external target Work Log claim: %w", err)
-	}
-	_ = claims.Close()
 	if options.hooks.afterClaim != nil {
 		if err := options.hooks.afterClaim(); err != nil {
 			return result, err
@@ -205,12 +187,7 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 			return result, err
 		}
 	}
-	manifest := Manifest{
-		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
-		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-		Model: options.Session.Model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
-	}
+	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
 	if err := ensureExternalManifest(worktree, manifest); err != nil {
 		return result, err
 	}
@@ -280,6 +257,41 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	result.WorkLogReference, result.ClaimID = targetReference.String(), claim.ClaimID
 	result.ReceivedEvent, result.OwnerEvent = receivedEvent, ownerEvent
 	return result, nil
+}
+
+// publishPreparedTargetClaim owns the short-lived claims directory handle.
+// The caller retains the claim lock through all later publication stages.
+func publishPreparedTargetClaim(runDir *os.File, claim workLogClaim, conflictMessage, writeErrorContext string) (bool, error) {
+	claims, err := openPrivateChild(runDir, "claims", true)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = claims.Close() }()
+	var existing workLogClaim
+	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
+	replayed := readErr == nil
+	if replayed && !reflect.DeepEqual(existing, claim) {
+		return replayed, errors.New(conflictMessage)
+	}
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return replayed, readErr
+	}
+	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
+		if writeErrorContext != "" {
+			return replayed, fmt.Errorf("%s: %w", writeErrorContext, err)
+		}
+		return replayed, err
+	}
+	return replayed, nil
+}
+
+func preparedTargetManifest(claim workLogClaim, receivedAt time.Time, model string) Manifest {
+	return Manifest{
+		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
+		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
+		Model: model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
+	}
 }
 
 // ExternalTargetCompletionOptions records proof of a live successor before a
@@ -468,23 +480,13 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, false)
+	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, sourceReference.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return result, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, sourceReference.ClaimID+".json", &claim)
-	_ = claims.Close()
+	defer locked.close()
+	runDir := locked.directory
+	claim, err := readWorkLogClaimAt(runDir, sourceReference.ClaimID)
 	if err != nil {
 		return result, err
 	}
@@ -613,23 +615,13 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, false)
+	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, sourceReference.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return result, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, sourceReference.ClaimID+".json", &claim)
-	_ = claims.Close()
+	defer locked.close()
+	runDir := locked.directory
+	claim, err := readWorkLogClaimAt(runDir, sourceReference.ClaimID)
 	if err != nil {
 		return result, err
 	}
@@ -804,18 +796,11 @@ func findExternalSourceOwner(events []LocalWorkLogEvent, request sessionmove.Req
 }
 
 func validateExistingExternalTerminal(runDir *os.File, claim workLogClaim, request sessionmove.Request, target sessionmove.WorkLogReference, evidence *workLogExternalHandoffEvidence) (bool, time.Time, error) {
-	terminals, err := openPrivateChild(runDir, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(runDir, claim.ClaimID)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, time.Time{}, nil
 	}
 	if err != nil {
-		return false, time.Time{}, err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, claim.ClaimID+".json", &terminal); errors.Is(err, os.ErrNotExist) {
-		return false, time.Time{}, nil
-	} else if err != nil {
 		return false, time.Time{}, err
 	}
 	wantClaim := claim
@@ -1093,24 +1078,13 @@ func loadExternalTargetClaim(projectsRoot string, request sessionmove.Request, d
 	if err != nil {
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
-	runDir, _, err := openWorkLogRun(home, target.EffortID, target.RunID, false)
+	locked, err := openLockedWorkLogRun(home, target.EffortID, target.RunID, target.ClaimID, false)
 	if err != nil {
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
-	unlockClaim, err := lockClaim(runDir, target.ClaimID)
-	if err != nil {
-		_ = runDir.Close()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
-	}
-	unlock := func() { unlockClaim(); _ = runDir.Close() }
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		unlock()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, target.ClaimID+".json", &claim)
-	_ = claims.Close()
+	runDir := locked.directory
+	unlock := locked.close
+	claim, err := readWorkLogClaimAt(runDir, target.ClaimID)
 	if err != nil {
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err

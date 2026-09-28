@@ -150,39 +150,36 @@ var supersessionClassifications = map[string]bool{
 
 // supersessionReceiptForEntry loads and independently verifies one receipt
 // against the current exact source and fetched target identities.
-func supersessionReceiptForEntry(ctx context.Context, path string, entry ListResult) (*SupersessionReceipt, string, error) {
+func supersessionReceiptForEntry(ctx context.Context, path string, entry ListResult) (*SupersessionReceipt, string) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Sprintf("read supersession receipt %s: %v", path, err), nil
+		return nil, fmt.Sprintf("read supersession receipt %s: %v", path, err)
 	}
 	var receipt SupersessionReceipt
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil {
-		return nil, fmt.Sprintf("decode supersession receipt %s: %v", path, err), nil
+		return nil, fmt.Sprintf("decode supersession receipt %s: %v", path, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, fmt.Sprintf("supersession receipt %s contains trailing JSON", path), nil
+		return nil, fmt.Sprintf("supersession receipt %s contains trailing JSON", path)
 	}
 	if rejection := validateSupersessionReceipt(ctx, receipt, entry); rejection != "" {
-		return nil, rejection, nil
+		return nil, rejection
 	}
-	return &receipt, "", nil
+	return &receipt, ""
 }
 
-func applySupersessionReceipt(ctx context.Context, path string, entry *ListResult) error {
+func applySupersessionReceipt(ctx context.Context, path string, entry *ListResult) {
 	if strings.TrimSpace(path) == "" {
-		return nil
+		return
 	}
-	receipt, rejection, err := supersessionReceiptForEntry(ctx, path, *entry)
-	if err != nil {
-		return err
-	}
+	receipt, rejection := supersessionReceiptForEntry(ctx, path, *entry)
 	if rejection != "" {
 		entry.SupersessionRejection = rejection
 		entry.SupersededAtOrigin = false
-		return nil
+		return
 	}
 	entry.SupersededAtOrigin = true
 	entry.SupersessionReceipt = path
@@ -190,7 +187,6 @@ func applySupersessionReceipt(ctx context.Context, path string, entry *ListResul
 	entry.SupersessionReceiptID = receipt.Approval.ReceiptID
 	entry.SupersessionRejection = ""
 	entry.supersessionReceipt = receipt
-	return nil
 }
 
 func validateSupersessionReceipt(ctx context.Context, receipt SupersessionReceipt, entry ListResult) string {
@@ -768,15 +764,32 @@ func mustAtoi(value string) int {
 	return result
 }
 
+type npmDependencyManifest struct {
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+}
+
+func (manifest npmDependencyManifest) directDependencies(field string) (map[string]string, bool) {
+	switch field {
+	case "dependencies":
+		return manifest.Dependencies, true
+	case "devDependencies":
+		return manifest.DevDependencies, true
+	case "peerDependencies":
+		return manifest.PeerDependencies, true
+	case "optionalDependencies":
+		return manifest.OptionalDependencies, true
+	default:
+		return nil, false
+	}
+}
+
 func validateDependencyManifest(delta SupersessionDependencyDelta, contents []byte, expectedVersion string, exact bool) string {
 	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
 	case "npm":
-		var manifest struct {
-			Dependencies         map[string]string `json:"dependencies"`
-			DevDependencies      map[string]string `json:"devDependencies"`
-			PeerDependencies     map[string]string `json:"peerDependencies"`
-			OptionalDependencies map[string]string `json:"optionalDependencies"`
-		}
+		var manifest npmDependencyManifest
 		if err := json.Unmarshal(contents, &manifest); err != nil {
 			return fmt.Sprintf("cannot parse npm manifest %q: %v", delta.Manifest, err)
 		}
@@ -784,17 +797,8 @@ func validateDependencyManifest(delta SupersessionDependencyDelta, contents []by
 		if len(parts) != 2 || parts[0] == "" || parts[1] != delta.Package {
 			return fmt.Sprintf("npm selector %q is not the exact direct package selector for %q", delta.Selector, delta.Package)
 		}
-		var dependencies map[string]string
-		switch parts[0] {
-		case "dependencies":
-			dependencies = manifest.Dependencies
-		case "devDependencies":
-			dependencies = manifest.DevDependencies
-		case "peerDependencies":
-			dependencies = manifest.PeerDependencies
-		case "optionalDependencies":
-			dependencies = manifest.OptionalDependencies
-		default:
+		dependencies, direct := manifest.directDependencies(parts[0])
+		if !direct {
 			return fmt.Sprintf("npm selector %q is not a direct dependency field", delta.Selector)
 		}
 		value, ok := dependencies[delta.Package]
@@ -833,12 +837,7 @@ func validateDependencyManifest(delta SupersessionDependencyDelta, contents []by
 func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte) (string, bool, error) {
 	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
 	case "npm":
-		var manifest struct {
-			Dependencies         map[string]string `json:"dependencies"`
-			DevDependencies      map[string]string `json:"devDependencies"`
-			PeerDependencies     map[string]string `json:"peerDependencies"`
-			OptionalDependencies map[string]string `json:"optionalDependencies"`
-		}
+		var manifest npmDependencyManifest
 		if err := json.Unmarshal(contents, &manifest); err != nil {
 			return "", false, err
 		}
@@ -846,17 +845,8 @@ func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte)
 		if len(parts) != 2 || parts[1] != delta.Package {
 			return "", false, nil
 		}
-		var dependencies map[string]string
-		switch parts[0] {
-		case "dependencies":
-			dependencies = manifest.Dependencies
-		case "devDependencies":
-			dependencies = manifest.DevDependencies
-		case "peerDependencies":
-			dependencies = manifest.PeerDependencies
-		case "optionalDependencies":
-			dependencies = manifest.OptionalDependencies
-		default:
+		dependencies, direct := manifest.directDependencies(parts[0])
+		if !direct {
 			return "", false, nil
 		}
 		value, found := dependencies[delta.Package]

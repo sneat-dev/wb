@@ -125,4 +125,5 @@ func TestWriteBytesImmutableAtIdempotentRewriteSurvivesACompetingIdenticalWriter
 	if string(stored) != string(content) {
 		t.Fatalf("stored content = %q, want %q", stored, content)
 	}
+	assertNoLeftoverPR3TempFile(t, directory.Name(), ".shared.txt.tmp-*")
 }

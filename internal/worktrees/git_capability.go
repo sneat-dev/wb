@@ -74,3 +74,20 @@ func newGitFilesystemCapability(writeRoots ...gitFilesystemCapabilityRoot) (gitF
 func runGitWithFilesystemCapability(capability gitFilesystemCapability, executable string, args, environment []string) int {
 	return runPlatformGitWithFilesystemCapability(capability, executable, args, environment)
 }
+
+// runSecureGitHelper keeps hook runtime descriptors alive until Git finishes,
+// after each caller has validated its own retained repository descriptors.
+func runSecureGitHelper(prefix, repoPath string, writeRoots []gitFilesystemCapabilityRoot, executable string, args, environment []string) int {
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(repoPath, helperProjectsRoot(), writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s: prepare hook runtime layout: %v\n", prefix, err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
+	capability, err := newGitFilesystemCapability(writeRoots...)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %v\n", prefix, err)
+		return 1
+	}
+	return runGitWithFilesystemCapability(capability, executable, args, environment)
+}

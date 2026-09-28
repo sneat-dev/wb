@@ -147,6 +147,10 @@ func TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo(t *testing.T) {
 	if projection.Lifecycle != "active" {
 		t.Fatalf("source claim lifecycle = %q, want active", projection.Lifecycle)
 	}
+	reference, err := ParkedSessionWorkLogReference(fixture.projectsRoot, worktree, source)
+	if err != nil || reference != result.Request.WorkLogReference {
+		t.Fatalf("parked source reference = %q, error = %v; want %q", reference, err, result.Request.WorkLogReference)
+	}
 }
 
 func TestCreateSessionCheckpointRejectsOfferTimestampBeforeSourceStartWithoutMutation(t *testing.T) {
