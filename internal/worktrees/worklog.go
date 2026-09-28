@@ -3165,6 +3165,36 @@ func readWorkLogProjection(worktree string) (workLogProjection, error) {
 	return projection, nil
 }
 
+type workLogProjectionSelection uint8
+
+const (
+	workLogProjectionCurrentOnly workLogProjectionSelection = iota
+	workLogProjectionLegacyOnly
+	workLogProjectionBothEqual
+)
+
+func selectWorkLogProjection(projection workLogProjection, currentErr error, legacy workLogProjection, legacyErr error) (workLogProjection, workLogProjectionSelection, error) {
+	switch {
+	case currentErr == nil:
+		if legacyErr == nil {
+			if legacy != projection {
+				return workLogProjection{}, 0, fmt.Errorf("legacy and current work-log projections disagree")
+			}
+			return projection, workLogProjectionBothEqual, nil
+		} else if !errors.Is(legacyErr, os.ErrNotExist) {
+			return workLogProjection{}, 0, legacyErr
+		}
+		return projection, workLogProjectionCurrentOnly, nil
+	case !errors.Is(currentErr, os.ErrNotExist):
+		return workLogProjection{}, 0, currentErr
+	case errors.Is(legacyErr, os.ErrNotExist):
+		return workLogProjection{}, 0, errWorkLogProjectionNotFound
+	case legacyErr != nil:
+		return workLogProjection{}, 0, legacyErr
+	}
+	return legacy, workLogProjectionLegacyOnly, nil
+}
+
 // readWorkLogProjectionForClaim performs the one-way migration from the
 // short-lived .wb-worklog.json pointer used by the first Hybrid Work Log
 // implementation. The editable legacy pointer is never trusted: WB first
@@ -3172,41 +3202,30 @@ func readWorkLogProjection(worktree string) (workLogProjection, error) {
 // corroborates that claim against live Git. Only then does it write the
 // approved .wb-worklog/recovery.json projection and unlink the old pointer.
 func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, error) {
-	projection, currentErr := readWorkLogProjection(worktree)
+	current, currentErr := readWorkLogProjection(worktree)
 	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
-	switch {
-	case currentErr == nil:
-		if legacyErr == nil {
-			if legacy != projection {
-				return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
-			}
-			if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
-				return workLogProjection{}, err
-			}
-			if err := removeLegacyWorkLogProjection(worktree); err != nil {
-				return workLogProjection{}, err
-			}
-		} else if !errors.Is(legacyErr, os.ErrNotExist) {
-			return workLogProjection{}, legacyErr
-		}
+	projection, selection, err := selectWorkLogProjection(current, currentErr, legacy, legacyErr)
+	if err != nil {
+		return workLogProjection{}, err
+	}
+	if selection == workLogProjectionCurrentOnly {
 		return projection, nil
-	case !errors.Is(currentErr, os.ErrNotExist):
-		return workLogProjection{}, currentErr
-	case errors.Is(legacyErr, os.ErrNotExist):
-		return workLogProjection{}, errWorkLogProjectionNotFound
-	case legacyErr != nil:
-		return workLogProjection{}, legacyErr
 	}
-	if err := corroborateProjectionWithPrivateClaim(home, worktree, legacy); err != nil {
-		return workLogProjection{}, fmt.Errorf("corroborate legacy work-log projection: %v", err)
+	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+		if selection == workLogProjectionLegacyOnly {
+			return workLogProjection{}, fmt.Errorf("corroborate legacy work-log projection: %v", err)
+		}
+		return workLogProjection{}, err
 	}
-	if err := writeWorkLogProjection(worktree, legacy); err != nil {
-		return workLogProjection{}, fmt.Errorf("migrate legacy work-log projection: %w", err)
+	if selection == workLogProjectionLegacyOnly {
+		if err := writeWorkLogProjection(worktree, projection); err != nil {
+			return workLogProjection{}, fmt.Errorf("migrate legacy work-log projection: %w", err)
+		}
 	}
 	if err := removeLegacyWorkLogProjection(worktree); err != nil {
 		return workLogProjection{}, err
 	}
-	return legacy, nil
+	return projection, nil
 }
 
 // readWorkLogProjectionForReadOnlyClaim selects the same current or legacy
@@ -3215,24 +3234,8 @@ func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, er
 func readWorkLogProjectionForReadOnlyClaim(worktree string) (workLogProjection, error) {
 	projection, currentErr := readWorkLogProjection(worktree)
 	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
-	switch {
-	case currentErr == nil:
-		if legacyErr == nil && legacy != projection {
-			return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
-		}
-		if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
-			return workLogProjection{}, legacyErr
-		}
-		return projection, nil
-	case !errors.Is(currentErr, os.ErrNotExist):
-		return workLogProjection{}, currentErr
-	case errors.Is(legacyErr, os.ErrNotExist):
-		return workLogProjection{}, errWorkLogProjectionNotFound
-	case legacyErr != nil:
-		return workLogProjection{}, legacyErr
-	default:
-		return legacy, nil
-	}
+	selected, _, err := selectWorkLogProjection(projection, currentErr, legacy, legacyErr)
+	return selected, err
 }
 
 func readLegacyWorkLogProjection(worktree string) (workLogProjection, error) {
