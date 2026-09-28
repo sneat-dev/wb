@@ -327,7 +327,9 @@ internal/worktrees/repository_relocate_test.go	38	task-18
 internal/worktrees/residue_test.go	5	task-18
 # Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.
 internal/worktrees/retire_preflight_behavior_test.go	4	task-18
-internal/worktrees/retire_test.go	82	task-18
+# Three direct Git-object helper calls verify missing-object and cancelled-process handling; the other cases use a fake runner.
+internal/worktrees/retire_edge_behavior_test.go	3	task-18
+internal/worktrees/retire_test.go	85	task-18
 internal/worktrees/retired_prepare_candidate_ack_test.go	15	task-18
 internal/worktrees/session_checkpoint_test.go	32	task-18
 internal/worktrees/session_custody_test.go	2	task-18

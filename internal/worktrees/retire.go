@@ -1075,10 +1075,9 @@ func retireCaptureTree(source, destination string, include func(string) bool, ha
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies only source itself and its descendants, so Rel
+		// cannot cross roots or volumes here.
+		relative, _ := filepath.Rel(source, path)
 		if relative == "." {
 			return nil
 		}

@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,42 @@ import (
 )
 
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
+
+//nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
+func TestRetireCommitSourceDoesNotCommitBeforeDurableIntent(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "retire-intent", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := created[0].WorktreeDir
+	before := gitTestOutput(t, worktreePath, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(worktreePath, "pending.txt"), []byte("pending\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	held, err := openAdoptedCleanupWorktree(worktreePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(held.close)
+	intentFailure := errors.New("durable retirement intent unavailable")
+	prepared := false
+	committed, err := retireCommitSource(context.Background(), fixture.canonical, held, "", func(tree, message string) error {
+		prepared = true
+		if !isGitObjectID(tree) || message != "Retire worktree source changes" {
+			t.Fatalf("prepared source commit = (%q, %q)", tree, message)
+		}
+		return intentFailure
+	})
+	if !errors.Is(err, intentFailure) || committed || !prepared {
+		t.Fatalf("commit before durable intent = (committed %t, prepared %t, error %v)", committed, prepared, err)
+	}
+	if after := gitTestOutput(t, worktreePath, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("prepared failure moved HEAD from %s to %s", before, after)
+	}
+}
 
 func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	fixture := newGitFixture(t)
@@ -49,6 +86,15 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	}
 	if head := gitTestOutput(t, worktree, "rev-parse", "HEAD"); head != planned.SourceSHA {
 		t.Fatalf("dry run moved HEAD")
+	}
+	if err := retireValidateRemovedClaim(fixture.home, planned); err == nil {
+		t.Fatal("unsealed Work Log authorized removed-checkout recovery")
+	}
+	if err := retirePublishArchive(context.Background(), fixture.home, archive, &planned); err == nil || !strings.Contains(err.Error(), "missing mandatory Work Log file") {
+		t.Fatalf("unsealed Work Log archive publication error = %v", err)
+	}
+	if ref := gitTestOutput(t, fixture.canonical, "ls-remote", archive, "refs/heads/"+planned.ArchiveRef); ref != "" {
+		t.Fatalf("unsealed Work Log published archive ref %q", ref)
 	}
 	options.Apply = true
 	applied, err := Retire(context.Background(), options)
@@ -88,8 +134,32 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	if _, err := gitTestRun(fixture.canonical, "show", applied.SourceSHA+":original-prompt.txt"); err == nil {
 		t.Fatal("private prompt entered source commit")
 	}
-	if body := gitTestOutput(t, fixture.canonical, "show", "FETCH_HEAD:retirement.json"); strings.Contains(body, "keep me") {
+	manifestBody := gitTestOutput(t, fixture.canonical, "show", "FETCH_HEAD:retirement.json")
+	if strings.Contains(manifestBody, "keep me") {
 		t.Fatalf("archive manifest contains source")
+	}
+	var manifest retireArchiveManifest
+	if err := json.Unmarshal([]byte(manifestBody), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	changedManifest := manifest
+	changedManifest.ClaimID = strings.Repeat("f", len(manifest.ClaimID))
+	if err := retireVerifyArchive(context.Background(), fixture.canonical, archive, "refs/heads/"+applied.ArchiveRef, applied.ArchiveSHA, changedManifest); err == nil || !strings.Contains(err.Error(), "manifest identity mismatch") {
+		t.Fatalf("changed archive manifest expectation = %v", err)
+	}
+	changedClaim := applied
+	changedClaim.Repository = "acme/another"
+	if err := retireValidateRemovedClaim(fixture.home, changedClaim); err == nil || !strings.Contains(err.Error(), "conflicts with immutable Work Log claim") {
+		t.Fatalf("removed checkout with changed receipt identity = %v", err)
+	}
+	missingAuthority := options
+	missingAuthority.RemoteOwnership = nil
+	if _, err := retireResumeRemoved(context.Background(), fixture.home, missingAuthority); err == nil || !strings.Contains(err.Error(), "authoritative remote owner check") {
+		t.Fatalf("removed checkout without renewed authority = %v", err)
+	}
+	idempotentSource := applied
+	if err := retirePublishSource(context.Background(), &idempotentSource); err != nil || idempotentSource.Phase != "source_published" {
+		t.Fatalf("idempotent retired source publication = (%+v, %v)", idempotentSource, err)
 	}
 }
 
