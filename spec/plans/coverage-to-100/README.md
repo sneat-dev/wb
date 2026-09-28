@@ -99,6 +99,18 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
     - The coordinator keeps the PR green. A red run is fixed forward before the next lane merges, and decision 13 still applies: no retries as flake fixes.
     - The coordinator merges `origin/main` into `cov/integration` at least daily.
     - The PR lands through `wb pr land`, with a merge commit and an adversarial review of the whole batch, at least daily and at the end of each wave. A new standing PR then opens from `cov/integration`.
+
+    **One-time PR #773 integration acceptance (2026-09-28).** The founder
+    authorized merging the current coverage progress despite inherited CI
+    failures. At exact head `8866009d`, the full CI profile covered 86,392 of
+    94,475 statements (91.4443%, 8,083 missed), above the 87% repository floor.
+    Lint, race, build/vet, real-Git E2E and Windows checks passed. The PR's
+    cross-branch ratchet against `main` reported 202 changed-statement findings
+    and `unit_tier.pending` had 4,917 matches versus 4,841 on `main`. PR #773
+    alone therefore runs the full test and coverage suite with the floor plus
+    the strict local audit, accepting those two recorded cross-branch debts.
+    The workflow predicates require PR #773, head `cov/integration`, and base
+    `main`; every later PR continues to run both cross-branch ratchets.
     - A task's plan status becomes complete only once its work is on `main`.
     - For coverage-programme work, older text in this plan that says "PR" (for example "refactor PR" or "test PR") now means a lane branch merged into `cov/integration` after its own review. The ~3,000-line guideline applies to each lane branch.
 

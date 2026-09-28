@@ -47,6 +47,15 @@ func TestPullRequestLandOptionsResolveRunnerReturnsTheInjectedRunner(t *testing.
 	}
 }
 
+func TestPullRequestCreateOptionsResolveRunnerReturnsTheInjectedRunner(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	options := PullRequestCreateOptions{run: fake}
+	if got := options.resolveRunner(); got != runner.Runner(fake) {
+		t.Fatalf("create runner = %v, want the injected runner", got)
+	}
+}
+
 // TestWorktreeMergeLandOptionsResolveGitReturnsTheInjectedGit covers
 // worktree_merge.go's own resolveGit() non-nil branch: WorktreeMergeLandOptions
 // carries the identical seam PullRequestLandOptions does, for `wb worktree

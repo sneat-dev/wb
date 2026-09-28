@@ -27,7 +27,9 @@ case "$2" in
   repos/acme/app/branches/main) echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["Required checks passed"]}}}' ;;
   repos/acme/app/branches/main/protection/required_status_checks) echo '{"strict":true,"contexts":["Required checks passed"],"checks":[]}' ;;
   'repos/acme/app/rules/branches/main?per_page=100') echo '[]' ;;
-  repos/acme/app/actions/workflows/go-ci.yml) echo "$WB_TEST_WORKFLOW" ;;
+  repos/acme/app/actions/workflows/go-ci.yml)
+    if [ "$WB_TEST_WORKFLOW_ERROR" = 1 ]; then echo 'workflow unavailable' >&2; exit 1; fi
+    echo "$WB_TEST_WORKFLOW" ;;
   'repos/acme/app/actions/runs?head_sha=` + directCITestHead + `&per_page=100') echo "$WB_TEST_RUNS" ;;
   'repos/acme/app/commits/` + directCITestHead + `/check-runs?per_page=100') echo "$WB_TEST_CHECK_RUNS" ;;
   'repos/acme/app/commits/` + directCITestHead + `/status?per_page=100') echo '{"total_count":0,"statuses":[]}' ;;

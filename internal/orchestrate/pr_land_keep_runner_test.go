@@ -46,3 +46,30 @@ func TestRunGitPushDeleteWithLeaseKeepsCredentialsOutOfArgvAndErrors(t *testing.
 		t.Fatalf("push environment lacks isolated remote configuration")
 	}
 }
+
+func TestRunGitPushDeleteWithLeaseAcceptsEmptyRemoteURLWithoutRedaction(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.Expect(func(call runnertest.Call) bool {
+		return strings.HasPrefix(strings.Join(call.Argv(), " "), "git config --get-regexp ^remote\\.wb-landing-")
+	}, runner.Result{ExitCode: 1}, errors.New("exit status 1"))
+	fake.Expect(func(call runnertest.Call) bool {
+		return len(call.Argv()) == 5 && call.Argv()[1] == "push"
+	}, runner.Result{CombinedOutput: "deleted branch\n"}, nil)
+	got, err := runGitPushDeleteWithLease(context.Background(), fake, t.TempDir(), "", "refs/heads/candidate", "abc123")
+	if err != nil || got != "deleted branch" {
+		t.Fatalf("empty-URL push = %q, %v", got, err)
+	}
+}
+
+func TestUnusedTemporaryGitRemoteNameReportsConfigFailure(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.Expect(func(call runnertest.Call) bool {
+		return strings.HasPrefix(strings.Join(call.Argv(), " "), "git config --get-regexp ^remote\\.wb-landing-")
+	}, runner.Result{ExitCode: 2, CombinedOutput: "invalid config"}, errors.New("git config failed"))
+	name, err := unusedTemporaryGitRemoteName(context.Background(), fake, t.TempDir())
+	if name != "" || err == nil || !strings.Contains(err.Error(), "invalid config") {
+		t.Fatalf("temporary remote = %q, %v", name, err)
+	}
+}
