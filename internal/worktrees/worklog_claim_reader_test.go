@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestReadWorkLogClaimAtRejectsMissingAndMalformedRecords(t *testing.T) {
+func TestReadWorkLogRecordsRejectsMissingAndMalformedRecords(t *testing.T) {
 	t.Parallel()
 	run, runPath, err := openWorkLogRun(t.TempDir(), "effort", "run", true)
 	if err != nil {
@@ -38,5 +38,22 @@ func TestReadWorkLogClaimAtRejectsMissingAndMalformedRecords(t *testing.T) {
 	}
 	if _, err := readWorkLogClaimAt(run, "malformed"); err == nil {
 		t.Fatal("malformed immutable claim was accepted")
+	}
+	if _, err := readWorkLogTerminalAt(run, claimID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing terminal directory: %v", err)
+	}
+	terminals, err := openPrivateChild(run, "terminals", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTerminal := workLogTerminalRecord{workLogClaim: want, Disposition: "landed"}
+	if err := writeJSONImmutableAt(terminals, claimID+".json", wantTerminal, false); err != nil {
+		_ = terminals.Close()
+		t.Fatal(err)
+	}
+	_ = terminals.Close()
+	gotTerminal, err := readWorkLogTerminalAt(run, claimID)
+	if err != nil || gotTerminal.ClaimID != claimID || gotTerminal.Disposition != "landed" {
+		t.Fatalf("immutable terminal: got=%+v, error=%v", gotTerminal, err)
 	}
 }

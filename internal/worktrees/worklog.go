@@ -1348,13 +1348,8 @@ func activeWorkLogClaimWithMode(home, worktree string, readOnly bool) (workLogCl
 		return workLogClaim{}, projection, "", err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return workLogClaim{}, projection, "", err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return workLogClaim{}, projection, "", err
 	}
 	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
@@ -1399,13 +1394,8 @@ func readWorkLogTerminalRecordWithMode(home, worktree string, readOnly bool) (*w
 		return nil, err
 	}
 	defer func() { _ = runDir.Close() }()
-	terminals, err := openPrivateChild(runDir, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(runDir, projection.ClaimID)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, projection.ClaimID+".json", &terminal); err != nil {
 		return nil, err
 	}
 	return &terminal, nil
@@ -2468,13 +2458,8 @@ func hasExistingWorkLogTerminal(home string, projection workLogProjection) bool 
 		return false
 	}
 	defer func() { _ = runDir.Close() }()
-	terminals, err := openPrivateChild(runDir, "terminals", false)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	return readJSONAt(terminals, projection.ClaimID+".json", &terminal) == nil
+	_, err = readWorkLogTerminalAt(runDir, projection.ClaimID)
+	return err == nil
 }
 
 // acceptExistingCleanupTerminal lets cleanup compose with the public
@@ -3010,13 +2995,8 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 		return false, err
 	}
 	defer func() { _ = run.Close() }()
-	claims, err := openPrivateChild(run, "claims", false)
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
-		return false, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return false, err
 	}
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
@@ -3177,13 +3157,8 @@ func corroborateWorkLogProjection(home, worktree, finalCommit string, projection
 		return err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	return corroborateClaimAtPath(home, worktree, finalCommit, projection, claim)
@@ -3297,13 +3272,8 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 		return err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
@@ -3705,17 +3675,26 @@ func readJSONAt(directory *os.File, name string, target any) error {
 	return json.Unmarshal(content, target)
 }
 
-func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
-	claims, err := openPrivateChild(runDir, "claims", false)
+func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) {
+	var zero T
+	directory, err := openPrivateChild(runDir, child, false)
 	if err != nil {
-		return workLogClaim{}, err
+		return zero, err
 	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, claimID+".json", &claim); err != nil {
-		return workLogClaim{}, err
+	defer func() { _ = directory.Close() }()
+	var record T
+	if err := readJSONAt(directory, name, &record); err != nil {
+		return zero, err
 	}
-	return claim, nil
+	return record, nil
+}
+
+func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
+	return readPrivateRecordAt[workLogClaim](runDir, "claims", claimID+".json")
+}
+
+func readWorkLogTerminalAt(runDir *os.File, claimID string) (workLogTerminalRecord, error) {
+	return readPrivateRecordAt[workLogTerminalRecord](runDir, "terminals", claimID+".json")
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {

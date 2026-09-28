@@ -609,13 +609,8 @@ func retireValidateRemovedClaim(home string, result RetireResult) error {
 	if claim.Task != result.Task || claim.Repository != result.Repository || claim.Branch != result.Branch || claim.ClaimID != result.ClaimID || claim.EffortID != result.EffortID || claim.RunID != result.RunID || filepath.Clean(claim.Worktree) != filepath.Clean(result.Worktree) {
 		return fmt.Errorf("retirement receipt conflicts with immutable Work Log claim")
 	}
-	terminals, err := openPrivateChild(run, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(run, result.ClaimID)
 	if err != nil {
-		return err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, result.ClaimID+".json", &terminal); err != nil {
 		return err
 	}
 	if terminal.ClaimID != result.ClaimID || terminal.FinalCommit != result.SourceSHA || terminal.Disposition != "retired" {

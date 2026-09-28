@@ -796,18 +796,11 @@ func findExternalSourceOwner(events []LocalWorkLogEvent, request sessionmove.Req
 }
 
 func validateExistingExternalTerminal(runDir *os.File, claim workLogClaim, request sessionmove.Request, target sessionmove.WorkLogReference, evidence *workLogExternalHandoffEvidence) (bool, time.Time, error) {
-	terminals, err := openPrivateChild(runDir, "terminals", false)
+	terminal, err := readWorkLogTerminalAt(runDir, claim.ClaimID)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, time.Time{}, nil
 	}
 	if err != nil {
-		return false, time.Time{}, err
-	}
-	defer func() { _ = terminals.Close() }()
-	var terminal workLogTerminalRecord
-	if err := readJSONAt(terminals, claim.ClaimID+".json", &terminal); errors.Is(err, os.ErrNotExist) {
-		return false, time.Time{}, nil
-	} else if err != nil {
 		return false, time.Time{}, err
 	}
 	wantClaim := claim
