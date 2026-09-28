@@ -4301,6 +4301,10 @@ func remoteDefaultBranch(ctx context.Context, repository string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("read origin default branch: %w", err)
 	}
+	return parseRemoteDefaultBranch(output, func(branch string) bool { return validBranch(ctx, branch) })
+}
+
+func parseRemoteDefaultBranch(output string, valid func(string) bool) (string, error) {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "ref: ") {
@@ -4311,7 +4315,7 @@ func remoteDefaultBranch(ctx context.Context, repository string) (string, error)
 			continue
 		}
 		branch := strings.TrimPrefix(fields[0], "refs/heads/")
-		if !validBranch(ctx, branch) {
+		if !valid(branch) {
 			return "", fmt.Errorf("origin default branch is invalid: %q", branch)
 		}
 		return branch, nil
@@ -4362,6 +4366,14 @@ func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head
 // GitHub keeps the PR's immutable head SHA after deleting its ref, whereas the
 // commit-to-PR index can point solely to the earlier PR into that branch.
 func githubPullRequestsForBranch(ctx context.Context, worktree, repository, branch, base string) ([]githubPullRequest, error) {
+	return githubPullRequestsForBranchWithExecute(ctx, worktree, repository, branch, base, githubobserver.Execute)
+}
+
+func githubPullRequestsForBranchWithExecute(
+	ctx context.Context,
+	worktree, repository, branch, base string,
+	execute func(context.Context, string, ...string) githubobserver.CommandResponse,
+) ([]githubPullRequest, error) {
 	owner, _, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || branch == "" || base == "" {
 		return nil, fmt.Errorf("query exact merged pull request requires repository, source branch, and default base")
@@ -4371,7 +4383,7 @@ func githubPullRequestsForBranch(ctx context.Context, worktree, repository, bran
 		"head":  []string{owner + ":" + branch},
 		"state": []string{"closed"},
 	}.Encode()
-	result := githubobserver.Execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/pulls?"+query)
+	result := execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/pulls?"+query)
 	if result.Err != nil {
 		return nil, fmt.Errorf("query pull requests for deleted target %s in %s: %w: %s", branch, repository, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)))
 	}
@@ -4880,7 +4892,16 @@ func resolveAbsorbedByPullRequest(
 	worktree, slug, base string,
 	number int,
 ) (string, *PullRequest, string, error) {
-	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{
+	return resolveAbsorbedByPullRequestWithGet(ctx, worktree, slug, base, number, githubobserver.Get)
+}
+
+func resolveAbsorbedByPullRequestWithGet(
+	ctx context.Context,
+	worktree, slug, base string,
+	number int,
+	get func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error),
+) (string, *PullRequest, string, error) {
+	response, err := get(ctx, githubobserver.GetRequest{
 		Dir:         worktree,
 		Repository:  slug,
 		Target:      base,
@@ -5013,6 +5034,10 @@ func commitFirstParent(ctx context.Context, repository, revision string) (string
 	if err != nil {
 		return "", fmt.Errorf("resolve parents of %s: %w", revision, err)
 	}
+	return parseCommitFirstParent(revision, parents)
+}
+
+func parseCommitFirstParent(revision, parents string) (string, error) {
 	fields := strings.Fields(parents)
 	if len(fields) < 2 {
 		return "", nil
@@ -5028,6 +5053,10 @@ func commitTree(ctx context.Context, repository, revision string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("resolve tree for %s: %w", revision, err)
 	}
+	return parseCommitTree(revision, tree)
+}
+
+func parseCommitTree(revision, tree string) (string, error) {
 	if !isGitObjectID(tree) {
 		return "", fmt.Errorf("revision %s resolved to invalid tree SHA %q", revision, tree)
 	}
