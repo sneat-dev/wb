@@ -210,3 +210,42 @@ func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkLogRenderersPreserveSharedSections(t *testing.T) {
+	view := wtLogCovFullView()
+	wantIdentity := "## Worktree\n/tmp/wt\n\n" +
+		"## Manifest\n" +
+		"effort_id: effort-1\nparent_effort: parent-1\neffort_kind: feature\n" +
+		"repository: acme/app\nbranch: wb/feature\nbase: main\nbase_sha: abc123\n" +
+		"provenance: created\nrun_id: run-1\nclaim_id: claim-1\nmodel: claude-sonnet\n\n" +
+		"## Claim\n" +
+		"effort_id: effort-1\nrun_id: run-1\nclaim_id: claim-1\nlifecycle: active\n" +
+		"repository: acme/app\nbranch: wb/feature\nmodel: claude-sonnet\n" +
+		"prompt_sha256: digest-1\n\n"
+	wantStatus := "## Git\nbranch: wb/feature\nhead: deadbeef\ndirty: true\n" +
+		"status:\n M file.go\n\n" +
+		"## Notes\n- first note\n- second note\n"
+	for _, tc := range []struct {
+		name   string
+		render func(WorkLogView) string
+	}{
+		{"private log", FormatWorkLogViewText},
+		{"redacted info", FormatWorktreeInfoText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.render(view)
+			_, fromIdentity, ok := strings.Cut(text, "## Worktree\n")
+			if !ok {
+				t.Fatal("missing worktree section")
+			}
+			identity, _, ok := strings.Cut(fromIdentity, "## Terminal\n")
+			if !ok || "## Worktree\n"+identity != wantIdentity {
+				t.Fatalf("identity sections changed:\n%s", text)
+			}
+			statusAt := strings.Index(text, "## Git\n")
+			if statusAt < 0 || text[statusAt:] != wantStatus {
+				t.Fatalf("Git and notes sections changed:\n%s", text)
+			}
+		})
+	}
+}
