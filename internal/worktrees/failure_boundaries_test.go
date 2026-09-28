@@ -12,7 +12,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -658,16 +657,18 @@ func TestRepositoryTransferRejectsChangedMovedGitAdministration(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture sets process-wide Git environment.
-func TestCreateRollsBackWhenPostCheckoutHookRemovesStagedCheckout(t *testing.T) {
+func TestCreateRollsBackWhenStagedCheckoutDisappearsBeforePublication(t *testing.T) {
 	fixture := newGitFixture(t)
 	configureFixtureSharedWorktrees(t, fixture)
-	hook := filepath.Join(fixture.canonical, ".git", "hooks", "post-checkout")
-	contents := "#!/bin/sh\ncase \"$PWD\" in */.wb-stage-*/checkout) rm -rf \"$PWD\" ;; esac\nexit 0\n"
-	if err := testenv.WriteExecutableFile(hook, []byte(contents), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	operation := "removed-staged-checkout"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot, Operation: "removed-staged-checkout",
+		ProjectsRoot: fixture.projectsRoot, Operation: operation,
+		beforeStagedWorktreeOpen: func() {
+			if err := os.RemoveAll(filepath.Join(testStageRoot(t, operationRoot), "checkout")); err != nil {
+				t.Fatal(err)
+			}
+		},
 		WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "open staged worktree checkout") {
@@ -711,7 +712,7 @@ func TestSessionReceivePlacementHandlesExistingTargetAndPinFailures(t *testing.T
 		{"inspect pin branch", "injected branch inspection failure"},
 		{"wrong pin tip", "does not identify exact admitted commit"},
 		{"occupied pin branch", "already checked out at conflicting path"},
-		{"staged add failure", "create pinned target worktree"},
+		{"staged add failure", "injected staged add failure"},
 		{"post-publication drift", "verify new pinned target worktree"},
 	} {
 		//nolint:paralleltest // The fixture sets process-wide Git environment for this case.
@@ -744,10 +745,7 @@ func TestSessionReceivePlacementHandlesExistingTargetAndPinFailures(t *testing.T
 				}
 				gitTest(t, fixture.canonical, "worktree", "add", "--quiet", "-b", state.spec.PinBranch, outside, state.spec.Commit)
 			case "staged add failure":
-				hook := filepath.Join(fixture.canonical, ".git", "hooks", "post-checkout")
-				if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-					t.Fatal(err)
-				}
+				state.afterTargetStagedAdd = func() error { return errors.New("injected staged add failure") }
 			case "post-publication drift":
 				state.afterTargetPublication = func(path string) {
 					if err := os.WriteFile(filepath.Join(path, "untracked-drift"), []byte("changed"), 0o600); err != nil {
@@ -764,6 +762,9 @@ func TestSessionReceivePlacementHandlesExistingTargetAndPinFailures(t *testing.T
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("placement %s error = %v", tc.name, err)
+			}
+			if tc.name == "staged add failure" && !strings.Contains(err.Error(), "create pinned target worktree") {
+				t.Fatalf("staged add failure lost placement context: %v", err)
 			}
 			if tc.name == "post-publication drift" {
 				path := fixture.targetWorktree()
