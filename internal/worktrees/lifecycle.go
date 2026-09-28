@@ -5808,13 +5808,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 	}
 	canonical := os.NewFile(uintptr(3), "wb-cleanup-canonical")
 	common := os.NewFile(uintptr(4), "wb-cleanup-canonical-git")
-	if canonical == nil || common == nil {
-		if canonical != nil {
-			_ = canonical.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(canonical, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited canonical repository is unavailable")
 		return 1
 	}
@@ -5836,13 +5830,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 	if args[1] != "" {
 		parent = os.NewFile(uintptr(5), "wb-cleanup-worktree-parent")
 		worktree := os.NewFile(uintptr(6), "wb-cleanup-worktree")
-		if parent == nil || worktree == nil {
-			if parent != nil {
-				_ = parent.Close()
-			}
-			if worktree != nil {
-				_ = worktree.Close()
-			}
+		if closeIncompleteInheritedFiles(parent, worktree) {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited worktree is unavailable")
 			return 1
 		}

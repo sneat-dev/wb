@@ -2382,13 +2382,7 @@ func RunSecureCanonicalPolicyGitHelper(args []string) int {
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-policy-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-policy-git-directory")
-	if root == nil || common == nil {
-		if root != nil {
-			_ = root.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(root, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: inherited canonical descriptors are unavailable")
 		return 1
 	}
@@ -2448,13 +2442,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-git-directory")
-	if root == nil || common == nil {
-		if root != nil {
-			_ = root.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(root, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: inherited canonical descriptors are unavailable")
 		return 1
 	}
@@ -3246,16 +3234,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 	stage := os.NewFile(uintptr(3), "wb-worktree-stage")
 	canonical := os.NewFile(uintptr(4), "wb-canonical-root")
 	common := os.NewFile(uintptr(5), "wb-canonical-git-directory")
-	if stage == nil || canonical == nil || common == nil {
-		if stage != nil {
-			_ = stage.Close()
-		}
-		if canonical != nil {
-			_ = canonical.Close()
-		}
-		if common != nil {
-			_ = common.Close()
-		}
+	if closeIncompleteInheritedFiles(stage, canonical, common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: inherited descriptors are unavailable")
 		return 1
 	}

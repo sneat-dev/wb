@@ -151,12 +151,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	gitFile := os.NewFile(uintptr(7), "wb-rename-worktree-gitfile")
 	adminRoot := os.NewFile(uintptr(8), "wb-rename-linked-admin-root")
 	admin := os.NewFile(uintptr(9), "wb-rename-linked-admin")
-	if canonical == nil || common == nil || parent == nil || worktree == nil || gitFile == nil || adminRoot == nil || admin == nil {
-		for _, file := range []*os.File{canonical, common, parent, worktree, gitFile, adminRoot, admin} {
-			if file != nil {
-				_ = file.Close()
-			}
-		}
+	if closeIncompleteInheritedFiles(canonical, common, parent, worktree, gitFile, adminRoot, admin) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure rename helper: inherited descriptors are unavailable")
 		return 1
 	}
