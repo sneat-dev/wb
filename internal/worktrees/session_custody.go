@@ -440,6 +440,23 @@ type ExternalSourceOfferResult struct {
 	Replayed   bool              `json:"replayed"`
 }
 
+func validateExternalOfferState(state sessionmove.State, request sessionmove.Request, digest sessionmove.Digest) (bool, error) {
+	if state.Request != request || state.Digest != digest {
+		return false, fmt.Errorf("source offer repair does not match exact admitted request")
+	}
+	offeredFound := false
+	for _, event := range state.Events {
+		if event.Phase != sessionmove.PhaseOffered {
+			continue
+		}
+		if !event.At.Equal(request.CreatedAt.UTC()) || event.Diagnostic != "" {
+			return false, fmt.Errorf("durable offered phase conflicts with admitted source checkpoint")
+		}
+		offeredFound = true
+	}
+	return offeredFound, nil
+}
+
 // EnsureExternalSourceOfferEvidence repairs the two source checkpoint crash
 // gaps under one exact admitted aggregate authority:
 //
@@ -457,8 +474,9 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 	if err != nil {
 		return result, fmt.Errorf("load exact source offer aggregate: %w", err)
 	}
-	if state.Request != options.Request || state.Digest != options.RequestDigest {
-		return result, fmt.Errorf("source offer repair does not match exact admitted request")
+	offeredFound, err := validateExternalOfferState(state, options.Request, options.RequestDigest)
+	if err != nil {
+		return result, err
 	}
 	if err := validateExternalSourceSession(options.SourceSession, options.Request); err != nil {
 		return result, err
@@ -467,16 +485,6 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		return result, fmt.Errorf("admitted source offer predates the predecessor session")
 	}
 
-	offeredFound := false
-	for _, event := range state.Events {
-		if event.Phase != sessionmove.PhaseOffered {
-			continue
-		}
-		if !event.At.Equal(options.Request.CreatedAt.UTC()) || event.Diagnostic != "" {
-			return result, fmt.Errorf("durable offered phase conflicts with admitted source checkpoint")
-		}
-		offeredFound = true
-	}
 	if !offeredFound {
 		if _, err := options.Store.AppendEventUnderLock(options.ExecutionLock, options.Request.HandoffID, options.RequestDigest,
 			sessionmove.HandoffEvent{Phase: sessionmove.PhaseOffered, At: options.Request.CreatedAt.UTC()}); err != nil {
@@ -566,16 +574,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		return result, err
 	}
 	if !ownerFound {
-		ownerRegistration := OwnerRegistration{
-			Agent: options.SourceSession.Runtime + "/" + options.SourceSession.WBSessionID,
-			Model: options.SourceSession.Model, Effort: claim.EffortID, PID: options.SourceSession.PID,
-			WBVersion: buildinfo.Version(), Command: "session move offer", At: options.Request.CreatedAt.UTC(),
-		}
-		owner, _, err = appendLocalEventWithoutCustody(claim.Worktree, LocalWorkLogEvent{
-			ID: externalLocalEventID("source-owner", options.RequestDigest, ""), Type: LocalEventOwner,
-			At: options.Request.CreatedAt.UTC(), Message: "predecessor session owns offered external handoff", Owner: &ownerRegistration,
-			Extra: externalSourceOwnerExtra(options.Request, options.RequestDigest),
-		})
+		owner, _, err = appendLocalEventWithoutCustody(claim.Worktree, externalSourceOwnerEvent(options, claim))
 		if err != nil {
 			return result, fmt.Errorf("repair exact source session owner for handoff: %w", err)
 		}
@@ -599,6 +598,38 @@ type ExternalSourceSealResult struct {
 	Replayed               bool              `json:"replayed"`
 }
 
+func validateExternalSealState(state sessionmove.State, request sessionmove.Request, digest sessionmove.Digest, receipt sessionmove.Receipt) error {
+	if state.Request != request || state.Digest != digest || state.Receipt == nil || *state.Receipt != receipt {
+		return fmt.Errorf("durable source receipt does not exactly authorize requested custody seal")
+	}
+	return nil
+}
+
+func externalSourceOwnerEvent(options ExternalSourceOfferOptions, claim workLogClaim) LocalWorkLogEvent {
+	owner := OwnerRegistration{
+		Agent: options.SourceSession.Runtime + "/" + options.SourceSession.WBSessionID,
+		Model: options.SourceSession.Model, Effort: claim.EffortID, PID: options.SourceSession.PID,
+		WBVersion: buildinfo.Version(), Command: "session move offer", At: options.Request.CreatedAt.UTC(),
+	}
+	return LocalWorkLogEvent{
+		ID: externalLocalEventID("source-owner", options.RequestDigest, ""), Type: LocalEventOwner,
+		At: options.Request.CreatedAt.UTC(), Message: "predecessor session owns offered external handoff", Owner: &owner,
+		Extra: externalSourceOwnerExtra(options.Request, options.RequestDigest),
+	}
+}
+
+func terminalTargetProjection(claim workLogClaim) workLogProjection {
+	return workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "terminal"}
+}
+
+func externalSourceCompletionEvent(request sessionmove.Request, digest sessionmove.Digest, targetReference string) LocalWorkLogEvent {
+	return LocalWorkLogEvent{
+		ID: externalLocalEventID("source-completed", digest, ""), Type: LocalEventHandoff,
+		Message: "external successor receipt accepted; predecessor custody sealed", Result: "completed",
+		Extra: externalLocalEventExtra(request, targetReference, "source"),
+	}
+}
+
 // SealExternalSessionWorkLog directly terminalizes the predecessor as an
 // external_handoff. It deliberately does not call LogHandoff Apply,
 // transferWorkLogClaim, or create a source-local successor claim.
@@ -614,8 +645,8 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	if err != nil {
 		return result, fmt.Errorf("load durable source receipt authority: %w", err)
 	}
-	if state.Request != options.Request || state.Digest != options.RequestDigest || state.Receipt == nil || *state.Receipt != options.Receipt {
-		return result, fmt.Errorf("durable source receipt does not exactly authorize requested custody seal")
+	if err := validateExternalSealState(state, options.Request, options.RequestDigest, options.Receipt); err != nil {
+		return result, err
 	}
 	if _, err := options.Store.LoadSuccessorAddressUnderLock(options.ExecutionLock, options.Request.HandoffID, options.RequestDigest); err != nil {
 		return result, fmt.Errorf("load durable completed-successor address before custody seal: %w", err)
@@ -691,7 +722,7 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 			return result, err
 		}
 	}
-	terminalProjection := workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "terminal"}
+	terminalProjection := terminalTargetProjection(claim)
 	if err := writeWorkLogProjection(claim.Worktree, terminalProjection); err != nil {
 		return result, err
 	}
@@ -700,11 +731,7 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 			return result, err
 		}
 	}
-	completion := LocalWorkLogEvent{
-		ID: externalLocalEventID("source-completed", options.RequestDigest, ""), Type: LocalEventHandoff,
-		Message: "external successor receipt accepted; predecessor custody sealed", Result: "completed",
-		Extra: externalLocalEventExtra(request, targetReference.String(), "source"),
-	}
+	completion := externalSourceCompletionEvent(request, options.RequestDigest, targetReference.String())
 	completion, _, err = appendLocalEventWithoutCustody(claim.Worktree, completion)
 	if err != nil {
 		return result, err

@@ -706,3 +706,70 @@ func TestSessionCustodyRefactorBatchParkedCompletionValues(t *testing.T) {
 		t.Fatalf("completion event = %#v", event)
 	}
 }
+
+func TestSessionCustodyRefactorBatchExternalSourceValues(t *testing.T) {
+	t.Parallel()
+	at := time.Unix(400, 0).UTC()
+	digest := sessionmove.DigestBytes([]byte("external source values"))
+	request := sessionmove.Request{HandoffID: "handoff-values", CreatedAt: at}
+	state := sessionmove.State{Request: request, Digest: digest}
+	found, err := validateExternalOfferState(state, request, digest)
+	if err != nil || found {
+		t.Fatalf("empty offered state = %t/%v", found, err)
+	}
+	state.Events = []sessionmove.HandoffEvent{
+		{Phase: sessionmove.PhaseReceived, At: at.Add(-time.Second)},
+		{Phase: sessionmove.PhaseOffered, At: at},
+	}
+	found, err = validateExternalOfferState(state, request, digest)
+	if err != nil || !found {
+		t.Fatalf("exact offered state = %t/%v", found, err)
+	}
+	conflicting := state
+	conflicting.Digest = sessionmove.DigestBytes([]byte("other"))
+	if _, err := validateExternalOfferState(conflicting, request, digest); err == nil {
+		t.Fatal("conflicting admitted offer state was accepted")
+	}
+	conflicting = state
+	conflicting.Events = []sessionmove.HandoffEvent{{Phase: sessionmove.PhaseOffered, At: at.Add(time.Second)}}
+	if _, err := validateExternalOfferState(conflicting, request, digest); err == nil {
+		t.Fatal("conflicting offered checkpoint was accepted")
+	}
+	conflicting.Events[0].At = at
+	conflicting.Events[0].Diagnostic = "failed"
+	if _, err := validateExternalOfferState(conflicting, request, digest); err == nil {
+		t.Fatal("diagnostic-bearing offered checkpoint was accepted")
+	}
+
+	receipt := sessionmove.Receipt{HandoffID: request.HandoffID}
+	state.Receipt = &receipt
+	if err := validateExternalSealState(state, request, digest, receipt); err != nil {
+		t.Fatal(err)
+	}
+	missingReceipt := state
+	missingReceipt.Receipt = nil
+	if err := validateExternalSealState(missingReceipt, request, digest, receipt); err == nil {
+		t.Fatal("seal without an exact durable receipt was accepted")
+	}
+
+	claim := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: strings.Repeat("a", 64)}
+	projection := terminalTargetProjection(claim)
+	if projection.EffortID != claim.EffortID || projection.RunID != claim.RunID ||
+		projection.ClaimID != claim.ClaimID || projection.Lifecycle != "terminal" {
+		t.Fatalf("terminal projection = %#v", projection)
+	}
+	offerOptions := ExternalSourceOfferOptions{
+		Request: request, RequestDigest: digest,
+		SourceSession: session.Record{Runtime: "codex", WBSessionID: "wbs-source", Model: "gpt-5", PID: os.Getpid()},
+	}
+	ownerEvent := externalSourceOwnerEvent(offerOptions, claim)
+	if ownerEvent.Type != LocalEventOwner || ownerEvent.Owner == nil || ownerEvent.Owner.Effort != claim.EffortID ||
+		ownerEvent.Owner.PID != os.Getpid() || ownerEvent.At != at {
+		t.Fatalf("source owner event = %#v", ownerEvent)
+	}
+	completion := externalSourceCompletionEvent(request, digest, "worklog:effort/run/claim")
+	if completion.Type != LocalEventHandoff || completion.Result != "completed" ||
+		completion.Extra["target_work_log_reference"] != "worklog:effort/run/claim" || completion.Extra["endpoint"] != "source" {
+		t.Fatalf("source completion event = %#v", completion)
+	}
+}
