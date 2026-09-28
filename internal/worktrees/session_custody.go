@@ -162,16 +162,12 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, true)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, claim.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
 		"immutable external target Work Log claim conflicts with admitted handoff",
 		"publish immutable external target Work Log claim")
@@ -484,16 +480,12 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, false)
+	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, sourceReference.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return result, err
@@ -629,16 +621,12 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, false)
+	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, sourceReference.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return result, err
@@ -1109,16 +1097,12 @@ func loadExternalTargetClaim(projectsRoot string, request sessionmove.Request, d
 	if err != nil {
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
-	runDir, _, err := openWorkLogRun(home, target.EffortID, target.RunID, false)
+	locked, err := openLockedWorkLogRun(home, target.EffortID, target.RunID, target.ClaimID, false)
 	if err != nil {
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
-	unlockClaim, err := lockClaim(runDir, target.ClaimID)
-	if err != nil {
-		_ = runDir.Close()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
-	}
-	unlock := func() { unlockClaim(); _ = runDir.Close() }
+	runDir := locked.directory
+	unlock := locked.close
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		unlock()

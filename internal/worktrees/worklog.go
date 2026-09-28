@@ -2697,16 +2697,12 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err != nil {
 		return err
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	locked, err := openLockedWorkLogRun(home, projection.EffortID, projection.RunID, projection.ClaimID, false)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, projection.ClaimID)
-	if err != nil {
-		return err
-	}
-	defer claimLock()
+	defer locked.close()
+	runDir := locked.directory
 	currentProjection, err := readWorkLogProjection(worktree)
 	if err != nil || currentProjection != projection {
 		return fmt.Errorf("work-log projection changed while waiting for claim fence")
@@ -2772,16 +2768,12 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 // makes a repeated rollback idempotent and keeps the old identity out of a new
 // task path.
 func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLogProjection) error {
-	runDir, _, err := openWorkLogRun(home, prior.EffortID, prior.RunID, false)
+	locked, err := openLockedWorkLogRun(home, prior.EffortID, prior.RunID, prior.ClaimID, false)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = runDir.Close() }()
-	claimLock, err := lockClaim(runDir, prior.ClaimID)
-	if err != nil {
-		return err
-	}
-	defer claimLock()
+	defer locked.close()
+	runDir := locked.directory
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return err
@@ -3572,6 +3564,32 @@ func lockClaim(runDir *os.File, claimID string) (func(), error) {
 		return nil, err
 	}
 	return func() { _ = unix.Flock(fd, unix.LOCK_UN); _ = unix.Close(fd) }, nil
+}
+
+// lockedWorkLogRun owns the run descriptor and its claim fence together.
+// Release the fence before closing the directory it protects.
+type lockedWorkLogRun struct {
+	directory *os.File
+	path      string
+	unlock    func()
+}
+
+func openLockedWorkLogRun(home, effort, run, claimID string, create bool) (*lockedWorkLogRun, error) {
+	directory, path, err := openWorkLogRun(home, effort, run, create)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := lockClaim(directory, claimID)
+	if err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	return &lockedWorkLogRun{directory: directory, path: path, unlock: unlock}, nil
+}
+
+func (run *lockedWorkLogRun) close() {
+	run.unlock()
+	_ = run.directory.Close()
 }
 
 func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent bool) error {

@@ -635,16 +635,12 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 }
 
 func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
-	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = run.Close() }()
-	unlock, err := lockClaim(run, claim.ClaimID)
-	if err != nil {
-		return nil, "", err
-	}
-	defer unlock()
+	defer locked.close()
+	run, runPath := locked.directory, locked.path
 	receipts, err := openPrivateChild(run, "relocations", true)
 	if err != nil {
 		return nil, "", err
@@ -679,16 +675,12 @@ func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRel
 	if err := validateRelocationRecord(*intent, claim, true); err != nil {
 		return nil, "", err
 	}
-	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = run.Close() }()
-	unlock, err := lockClaim(run, claim.ClaimID)
-	if err != nil {
-		return nil, "", err
-	}
-	defer unlock()
+	defer locked.close()
+	run, runPath := locked.directory, locked.path
 	receipts, err := openPrivateChild(run, "relocations", true)
 	if err != nil {
 		return nil, "", err

@@ -109,16 +109,12 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 	if err != nil {
 		return result, err
 	}
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, true)
 	if err != nil {
 		return result, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, claim.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
 		"immutable parked target Work Log claim conflicts with admitted bundle", "")
 	if err != nil {
@@ -221,16 +217,12 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	runDir, _, err := openWorkLogRun(home, target.EffortID, target.RunID, false)
+	locked, err := openLockedWorkLogRun(home, target.EffortID, target.RunID, target.ClaimID, false)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, target.ClaimID)
-	if err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	if options.hooks.beforeCompletionBarrier != nil {
 		if err := options.hooks.beforeCompletionBarrier(); err != nil {
 			return LocalWorkLogEvent{}, err

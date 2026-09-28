@@ -62,16 +62,12 @@ func RecordExternalSourceMessageSent(options ExternalSourceMessageOptions) (Loca
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	runDir, _, err := openWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, false)
+	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, sourceReference.ClaimID)
-	if err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
