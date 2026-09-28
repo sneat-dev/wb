@@ -3605,6 +3605,23 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+		writeBytesImmutableAtBeforeRename(directory, name)
+		if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
+			if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	})
+}
+
+// writeBytesWithTemporaryAtInjected owns the temporary file through
+// publication. The callback may return false, nil only after verifying an
+// immutable idempotent collision; that removes the temporary entry and skips
+// SyncDir because this invocation published nothing.
+func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector, publish func(string) (bool, error)) error {
 	temporary := "." + name + ".tmp-" + randomHexToken(12)
 	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
@@ -3627,12 +3644,12 @@ func writeBytesImmutableAtInjected(directory *os.File, name string, content []by
 	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	writeBytesImmutableAtBeforeRename(directory, name)
-	if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-		if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
-			return nil
-		}
+	published, err := publish(temporary)
+	if err != nil {
 		return err
+	}
+	if !published {
+		return nil
 	}
 	cleanup = false
 	return filewrite.SyncDir(directory, inj)
@@ -3716,33 +3733,12 @@ func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte,
 	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
 		return fmt.Errorf("unsafe atomic filename %q", name)
 	}
-	temporary := "." + name + ".tmp-" + randomHexToken(12)
-	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
-	if err != nil {
-		return err
-	}
-	file := os.NewFile(uintptr(fd), temporary)
-	cleanup := true
-	defer func() {
-		_ = file.Close()
-		if cleanup {
-			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+		if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
+			return false, err
 		}
-	}()
-	if err := filewrite.Write(file, content, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Sync(file, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Close(file, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-		return err
-	}
-	cleanup = false
-	return filewrite.SyncDir(directory, inj)
+		return true, nil
+	})
 }
 
 func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) error {
