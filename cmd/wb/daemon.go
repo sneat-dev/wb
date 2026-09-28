@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2362,26 +2363,24 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		}
 		return fmt.Errorf("listen for WB daemon on %s: %w", address, err)
 	}
+	closeListener := sync.OnceFunc(func() { _ = listener.Close() })
+	defer closeListener()
 	provenance, err := newDaemonController(deps, inv.projectsRoot).provenance()
 	if err != nil {
-		_ = listener.Close()
 		return err
 	}
 	controller := newDaemonController(deps, inv.projectsRoot)
 	releaseState, err := controller.stateLock()
 	if err != nil {
-		_ = listener.Close()
 		return err
 	}
 	state, found, err := store.Load()
 	if err != nil {
 		releaseState()
-		_ = listener.Close()
 		return err
 	}
 	if managedStart && (!found || state.Status != daemon.StatusStarting || state.OwnerToken != ownerToken) {
 		releaseState()
-		_ = listener.Close()
 		return errors.New("managed daemon startup ownership was superseded")
 	}
 	// Supervisor detection reads this process's own environment (and its own
@@ -2421,54 +2420,47 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	if err := store.Save(state); err != nil {
 		releaseState()
-		_ = listener.Close()
 		return err
 	}
 	releaseState()
 	localListener, err := listenDaemonLocal(inv.projectsRoot)
 	if err != nil {
-		_ = listener.Close()
 		return err
 	}
 	defer func() { _ = localListener.Close() }()
 	rawExecutionPolicyPath, err := daemon.RawExecutionPolicyPath()
 	if err != nil {
-		_ = listener.Close()
 		return fmt.Errorf("resolve daemon raw-execution policy: %w", err)
 	}
 	operationsDirectory, err := daemon.OperationsDir(inv.projectsRoot)
 	if err != nil {
-		_ = listener.Close()
 		return fmt.Errorf("resolve daemon operation store: %w", err)
 	}
 	queue, err := daemon.NewService(inv.projectsRoot, operationsDirectory, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
 		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, inv.projectsRoot)
 	})
 	if err != nil {
-		_ = listener.Close()
 		return fmt.Errorf("load durable daemon queue: %w", err)
 	}
 	if managedStart {
 		releaseState, err := controller.stateLock()
 		if err != nil {
-			_ = listener.Close()
 			return err
 		}
 		current, ok, err := store.Load()
 		if err != nil {
 			releaseState()
-			_ = listener.Close()
 			return err
 		}
 		if !ok || current.Status != daemon.StatusStarting || current.OwnerToken != ownerToken || current.PID != os.Getpid() {
 			releaseState()
-			_ = listener.Close()
 			return errors.New("daemon startup ownership was superseded before serving")
 		}
 		state = current
 		releaseState()
 	}
 	defer func() {
+		closeListener()
 		_ = controller.markStoppedIfOwned(ownerToken)
 	}()
 	hubConfigPath := wbconfig.DefaultPath
@@ -2498,7 +2490,6 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
-		_ = listener.Close()
 		return fmt.Errorf("mount the bench hub: %w", err)
 	}
 	defer func() { _ = mount.Close() }()
@@ -2533,7 +2524,6 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
 	fileBridge, err := newDaemonFileBridgeServer(inv.projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
-		_ = listener.Close()
 		return fmt.Errorf("prepare daemon file bridge: %w", err)
 	}
 	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
@@ -2557,7 +2547,6 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	// poller does with no second lifecycle to get wrong.
 	mount.startRedeliverySweep(ctx)
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "WB dashboard: http://%s\n", listener.Addr()); err != nil {
-		_ = listener.Close()
 		return err
 	}
 	if line := mount.StartLine(); line != "" {

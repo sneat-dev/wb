@@ -93,6 +93,8 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveDashboard did not return after its context was cancelled")
 	}
+	assertDashboardListenerReleased(t, address)
+	assertDashboardStopped(t, store)
 }
 
 // TestServeDashboardReturnsARealServeError is the behaviour-named integration
@@ -142,6 +144,43 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveDashboard did not return after its file bridge failed")
+	}
+	assertDashboardListenerReleased(t, address)
+	assertDashboardStopped(t, store)
+}
+
+func TestServeDashboardReleasesListenerWhenProvenanceFails(t *testing.T) {
+	root := daemonShutdownTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	provenanceErr := errors.New("provenance unavailable")
+	deps.executable = func() (string, error) { return "", provenanceErr }
+	address := freeLoopbackAddress(t)
+	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+
+	err := serveDashboard(&invocation{projectsRoot: root}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
+	if !errors.Is(err, provenanceErr) {
+		t.Fatalf("serveDashboard error = %v, want provenance failure", err)
+	}
+	assertDashboardListenerReleased(t, address)
+	if _, found, err := store.Load(); err != nil || found {
+		t.Fatalf("failed startup recorded lifecycle state: found=%t err=%v", found, err)
+	}
+}
+
+func assertDashboardListenerReleased(t *testing.T, address string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("dashboard listener %s remained bound after serve returned: %v", address, err)
+	}
+	_ = listener.Close()
+}
+
+func assertDashboardStopped(t *testing.T, store daemon.Store) {
+	t.Helper()
+	state, found, err := store.Load()
+	if err != nil || !found || state.Status != daemon.StatusStopped {
+		t.Fatalf("dashboard lifecycle state after serve: found=%t status=%q err=%v", found, state.Status, err)
 	}
 }
 
