@@ -212,6 +212,7 @@ func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
 }
 
 func TestWorkLogRenderersPreserveSharedSections(t *testing.T) {
+	t.Parallel()
 	view := wtLogCovFullView()
 	wantIdentity := "## Worktree\n/tmp/wt\n\n" +
 		"## Manifest\n" +
@@ -233,6 +234,7 @@ func TestWorkLogRenderersPreserveSharedSections(t *testing.T) {
 		{"redacted info", FormatWorktreeInfoText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			text := tc.render(view)
 			_, fromIdentity, ok := strings.Cut(text, "## Worktree\n")
 			if !ok {
