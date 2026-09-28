@@ -7,9 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
@@ -229,7 +228,7 @@ func TestQuarantineNameExhaustionPreservesCheckout(t *testing.T) {
 		if from != parent || to != parent || expected != checkout || fromName != "checkout" || toName != retired {
 			t.Fatalf("unexpected quarantine move: %q to %q", fromName, toName)
 		}
-		return nil, unix.EEXIST
+		return nil, syscall.EEXIST
 	}
 	if err := quarantineSecureStageCheckoutWith(parent, checkout, token, move); err == nil || !strings.Contains(err.Error(), "collision-free staged checkout") {
 		t.Fatalf("exhausted quarantine error = %v", err)
