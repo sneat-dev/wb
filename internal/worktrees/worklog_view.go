@@ -178,17 +178,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
 			}
 		}
-		view.Claim = &WorkLogClaimView{
-			EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
-			Task: claim.Task, Repository: resolvedRepository, Worktree: resolvedWorktree,
-			Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-			Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
-			Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-			Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-			CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
-			PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
-			ClaimPath: claimPath,
-		}
+		view.Claim = newWorkLogClaimView(claim, resolvedRepository, resolvedWorktree, claimPath)
 		if options.IncludePromptBodies {
 			if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
 				view.OriginalPrompt = original
@@ -201,16 +191,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 	} else if projection.Lifecycle == "terminal" {
 		if terminal, terminalErr := readWorkLogTerminalRecord(home, root); terminalErr == nil && terminal != nil {
 			claim := terminal.workLogClaim
-			view.Claim = &WorkLogClaimView{
-				EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
-				Task: claim.Task, Repository: claim.Repository, Worktree: claim.Worktree,
-				Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-				Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
-				Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-				Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-				CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
-				PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
-			}
+			view.Claim = newWorkLogClaimView(claim, claim.Repository, claim.Worktree, "")
 			view.Terminal = &WorkLogTerminalView{
 				Disposition: terminal.Disposition, FinalCommit: terminal.FinalCommit, SealedAt: terminal.SealedAt,
 			}
@@ -254,6 +235,20 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 
 	view.Git = observeWorkLogGit(ctx, root)
 	return view, nil
+}
+
+func newWorkLogClaimView(claim workLogClaim, repository, worktree, claimPath string) *WorkLogClaimView {
+	return &WorkLogClaimView{
+		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
+		Task: claim.Task, Repository: repository, Worktree: worktree,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+		Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
+		Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
+		Model: claim.Model, ModelProvenance: claim.ModelProvenance,
+		CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
+		PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
+		ClaimPath: claimPath,
+	}
 }
 
 func loadOriginalPrompt(home string, claim workLogClaim, prompts []PromptRecord) (*OriginalPromptView, error) {
