@@ -2131,6 +2131,12 @@ func writeWorkLogProjection(worktree string, projection workLogProjection) error
 }
 
 func ensureWorkLogProjectionExclude(worktree string) error {
+	return ensurePerWorktreeGitExclude(worktree,
+		[]string{workLogProjectionExclude, legacyWorkLogProjectionExclude, worktreeInstructionsExclude},
+		"exclude work-log projection")
+}
+
+func ensurePerWorktreeGitExclude(worktree string, rules []string, writeError string) error {
 	gitPath, err := git(context.Background(), worktree, "rev-parse", "--git-path", "info/exclude")
 	if err != nil {
 		return fmt.Errorf("resolve per-worktree exclude: %w", err)
@@ -2146,7 +2152,7 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 		return fmt.Errorf("read per-worktree exclude: %w", err)
 	}
 	updated := append([]byte(nil), exclude...)
-	for _, rule := range []string{workLogProjectionExclude, legacyWorkLogProjectionExclude, worktreeInstructionsExclude} {
+	for _, rule := range rules {
 		if strings.Contains("\n"+string(updated)+"\n", "\n"+rule+"\n") {
 			continue
 		}
@@ -2154,7 +2160,7 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 	}
 	if !bytes.Equal(updated, exclude) {
 		if err := writeBytesAtomic(filepath.Dir(gitPath), filepath.Base(gitPath), updated, 0o600); err != nil {
-			return fmt.Errorf("exclude work-log projection: %w", err)
+			return fmt.Errorf("%s: %w", writeError, err)
 		}
 	}
 	return nil

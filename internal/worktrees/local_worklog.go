@@ -295,7 +295,7 @@ func appendLocalEventUnderLock(worktree string, directory *os.File, event LocalW
 			if !sameLocalEvent(prior, event) {
 				return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("local work-log event ID %q already denotes different immutable evidence", requestedID)
 			}
-			projection, repairErr := repairLocalEventDerivatives(worktree, directory, existing, prior)
+			projection, repairErr := repairLocalEventDerivatives(worktree, directory, existing)
 			return prior, projection, repairErr
 		}
 	}
@@ -321,7 +321,7 @@ func appendLocalEventUnderLock(worktree string, directory *os.File, event LocalW
 	if err := writeBytesAtomicAt(directory, localWorkLogEventsName, journal, 0o600); err != nil {
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
 	}
-	projection, err := repairLocalEventDerivatives(worktree, directory, all, event)
+	projection, err := repairLocalEventDerivatives(worktree, directory, all)
 	if err != nil {
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
 	}
@@ -337,7 +337,7 @@ func sameLocalEvent(first, second LocalWorkLogEvent) bool {
 // repairLocalEventDerivatives makes the journal event the sole source of
 // truth. A crash after events.jsonl but before either derived write is
 // therefore repaired by replaying the exact explicit event ID.
-func repairLocalEventDerivatives(worktree string, directory *os.File, events []LocalWorkLogEvent, event LocalWorkLogEvent) (LocalWorkLogProjection, error) {
+func repairLocalEventDerivatives(worktree string, directory *os.File, events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
 	if err := repairLocalOutbox(directory, events); err != nil {
 		return LocalWorkLogProjection{}, err
 	}
@@ -443,17 +443,7 @@ func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, erro
 			return LocalWorkLogProjection{}, err
 		}
 	}
-	if err := repairLocalOutbox(directory, events); err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	projection, err := projectLocalWorkLog(worktree, events)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	if err := writeJSONAtomicAt(directory, localWorkLogProjectionName, projection, 0o600); err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	return projection, nil
+	return repairLocalEventDerivatives(worktree, directory, events)
 }
 
 func readLocalEventsForAppend(directory *os.File) ([]LocalWorkLogEvent, bool, error) {

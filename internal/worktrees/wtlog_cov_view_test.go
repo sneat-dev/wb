@@ -191,6 +191,23 @@ func TestWtLogCovFormatWorktreeInfoRendersRedactedSections(t *testing.T) {
 	}
 }
 
+func TestWorkLogTerminalHeaderKeepsPrivateAndInfoSuffixesDistinct(t *testing.T) {
+	t.Parallel()
+	view := wtLogCovFullView()
+	header := "## Terminal\ndisposition: landed\nsealed_at: 2026-01-02T03:04:05Z\nterminal_result: success\nterminal_message: merged\nreport_path: /tmp/report.md\n"
+	private := FormatWorkLogViewText(view)
+	if !strings.Contains(private, header+"\n### Finalize report\nreport body without newline\n") {
+		t.Fatalf("private terminal section changed:\n%s", private)
+	}
+	info := FormatWorktreeInfoText(view)
+	if !strings.Contains(info, header+"Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n") {
+		t.Fatalf("info terminal section changed:\n%s", info)
+	}
+	if strings.Contains(info, view.FinalizeReportBody) {
+		t.Fatal("redacted info included the private report body")
+	}
+}
+
 func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
 	t.Parallel()
 	text := FormatWorktreeInfoText(WorkLogView{Worktree: "/tmp/info-empty", Prompts: []PromptRecord{}})

@@ -378,18 +378,7 @@ func FormatWorkLogViewText(view WorkLogView) string {
 	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("\n")
 		if view.FinalizeReportBody != "" {
 			b.WriteString("### Finalize report\n")
@@ -466,18 +455,7 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n\n")
 	}
 
@@ -494,6 +472,21 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 
 	writeWorkLogStatusSections(&b, view)
 	return b.String()
+}
+
+func writeWorkLogTerminalHeader(b *strings.Builder, terminal *WorkLogTerminalView) {
+	b.WriteString("## Terminal\n")
+	fmt.Fprintf(b, "disposition: %s\n", terminal.Disposition)
+	fmt.Fprintf(b, "sealed_at: %s\n", terminal.SealedAt.UTC().Format(time.RFC3339))
+	if terminal.TerminalResult != "" {
+		fmt.Fprintf(b, "terminal_result: %s\n", terminal.TerminalResult)
+	}
+	if terminal.TerminalMessage != "" {
+		fmt.Fprintf(b, "terminal_message: %s\n", terminal.TerminalMessage)
+	}
+	if terminal.ReportPath != "" {
+		fmt.Fprintf(b, "report_path: %s\n", terminal.ReportPath)
+	}
 }
 
 func writeWorkLogIdentitySections(b *strings.Builder, view WorkLogView) {

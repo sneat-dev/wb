@@ -314,6 +314,36 @@ func TestExcludeRuleDoesNotSwallowTrackedRepositoryPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkLogExcludeRulesKeepExactOrderAndAreIdempotent(t *testing.T) {
+	t.Parallel()
+	worktree := newJournalWorktree(t)
+	excludePath := filepath.Join(worktree, ".git", "info", "exclude")
+	if err := os.WriteFile(excludePath, []byte("existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, ensure := range []func(string) error{ensureJournalExclude, ensureWorkLogProjectionExclude} {
+		if err := ensure(worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "existing\n\n/.wb/local/\n\n/.wb-worklog/\n\n/.wb-worklog.json\n\n/.worktree.md\n"
+	for attempt := 0; attempt < 2; attempt++ {
+		got, err := os.ReadFile(excludePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("exclude after attempt %d = %q, want %q", attempt, got, want)
+		}
+		if err := ensureWorkLogProjectionExclude(worktree); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensureJournalExclude(worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestEffortPathParentageIsLexicalAndValidated(t *testing.T) {
 	t.Parallel()
 	for _, valid := range []string{"feature", "feature.task", "feature.task1.subtask2.level4"} {
