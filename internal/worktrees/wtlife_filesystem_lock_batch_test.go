@@ -97,7 +97,7 @@ func TestWtLifeCovFilesystemLockBatchStageFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = regular.Close() }()
+	t.Cleanup(func() { _ = regular.Close() })
 	if _, _, err := claimRetiredStageDirectory(regular, ".wb-stage-", ".wb-retired-stage-"); err == nil ||
 		!strings.Contains(err.Error(), "read secure staging parent") {
 		t.Fatalf("regular retired stage parent error = %v", err)
@@ -264,7 +264,7 @@ func TestWtLifeCovFilesystemLockBatchMetadataAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 
 	for _, operation := range []string{"", "bad\noperation", "bad\roperation", "bad\x00operation"} {
 		if err := writeOperationLockMetadata(file, operation); err == nil {
@@ -333,12 +333,12 @@ func TestWtLifeCovFilesystemLockBatchHoldContention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 	second, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 	if err := holdOperationLock(first); err != nil {
 		t.Fatal(err)
 	}

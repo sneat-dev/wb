@@ -176,7 +176,7 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer large.Close()
+	t.Cleanup(func() { _ = large.Close() })
 	if _, err := linkedWorktreeGitFileAdminName(canonical, large); err == nil || !strings.Contains(err.Error(), "regular file no larger") {
 		t.Fatalf("oversized gitfile error = %v", err)
 	}
@@ -189,7 +189,7 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer writeOnly.Close()
+	t.Cleanup(func() { _ = writeOnly.Close() })
 	if _, err := linkedWorktreeGitFileAdminName(canonical, writeOnly); err == nil || !strings.Contains(err.Error(), "read linked worktree") {
 		t.Fatalf("write-only gitfile error = %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unsafe.Close()
+	t.Cleanup(func() { _ = unsafe.Close() })
 	if _, err := linkedWorktreeGitFileAdminName(canonical, unsafe); err == nil || !strings.Contains(err.Error(), "unsafe gitdir") {
 		t.Fatalf("unsafe gitfile error = %v", err)
 	}
@@ -214,7 +214,7 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outside.Close()
+	t.Cleanup(func() { _ = outside.Close() })
 	if _, err := linkedWorktreeGitFileAdminName(canonical, outside); err == nil || !strings.Contains(err.Error(), "points outside") {
 		t.Fatalf("outside gitfile error = %v", err)
 	}
@@ -239,7 +239,7 @@ func TestRenameCoverageLinkedGitFileFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer growing.Close()
+	t.Cleanup(func() { _ = growing.Close() })
 	if _, err := linkedWorktreeGitFileAdminName(canonical, growing, func() {
 		if writeErr := os.WriteFile(growingPath, make([]byte, maxLinkedWorktreeGitFileSize+1), 0o600); writeErr != nil {
 			t.Fatal(writeErr)
@@ -260,7 +260,7 @@ func TestRenameCoverageRegularFileIdentityAndDescriptorRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
+	t.Cleanup(func() { _ = parent.Close() })
 	if regularFileEntryStillMatches(parent, ".git", parent) {
 		t.Fatal("missing child matched")
 	}
@@ -299,7 +299,7 @@ func TestRenameCoverageRegularFileIdentityAndDescriptorRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer open.Close()
+	t.Cleanup(func() { _ = open.Close() })
 	if err := retainDescriptorsAcrossGitExec(open); err != nil {
 		t.Fatalf("retain open descriptor: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestRenameCoverageVerifyRegistrationOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer initialExpected.Close()
+	t.Cleanup(func() { _ = initialExpected.Close() })
 	oldPath := filepath.Join(t.TempDir(), "old")
 	if err := verifyWorktreeRegistered(t.Context(), "", oldPath, initialPath, nil); err == nil || !strings.Contains(err.Error(), "identity changed") {
 		t.Fatalf("nil identity error = %v", err)
@@ -657,7 +657,7 @@ func TestRenameCoverageVerifyRegistrationOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer expected.Close()
+			t.Cleanup(func() { _ = expected.Close() })
 			listedPath := tc.listedPath
 			if listedPath == "new" {
 				listedPath = newPath
