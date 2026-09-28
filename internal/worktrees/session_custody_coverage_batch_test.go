@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -482,5 +485,206 @@ func TestSessionCustodyCoverageBatchModelsAndParkedBranches(t *testing.T) {
 				t.Fatalf("invalid parked preparation %q was accepted", name)
 			}
 		})
+	}
+}
+
+func TestSessionCustodyRefactorBatchParkedPreparation(t *testing.T) {
+	t.Parallel()
+	digest := sessionmove.DigestBytes([]byte("parked preparation refactor"))
+	member := sessionpark.RemoteMember{
+		MemberID: "m-001-abcdef01", Repository: "acme/app", RepositoryRemote: "https://github.com/acme/app.git",
+		Branch: "main", Commit: strings.Repeat("c", 40),
+		SourceWorkLogReference: "worklog:session-park/source-run/" + strings.Repeat("b", 64),
+	}
+	request := sessionpark.RemoteRequest{
+		SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: "resume-refactor", ParkedSessionID: "park-refactor",
+		SuccessorWBSessionID: "wbs-park-successor", PredecessorWBSessionID: "wbs-park-source",
+		SourceMachine: "source", TargetMachine: "target", SourceRuntime: "codex", SourceModel: "gpt-5",
+		Continuation: "continue", Members: []sessionpark.RemoteMember{member}, CreatedAt: time.Unix(100, 0).UTC(),
+	}
+	record := session.Record{
+		PID: os.Getpid(), WBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		Machine: request.TargetMachine, Runtime: request.SourceRuntime, Model: request.SourceModel,
+		TmuxName: "wb-session-" + request.SuccessorWBSessionID, HandoffID: request.ResumeID,
+		StartedAt: time.Unix(200, 0).UTC(),
+	}
+	newOptions := func(t *testing.T) ParkedSessionWorkLogPrepareOptions {
+		t.Helper()
+		return ParkedSessionWorkLogPrepareOptions{
+			Request: request, RequestDigest: digest, Member: member, Session: record,
+			AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1,
+			WorktreeDir: t.TempDir(), PinnedCommit: member.Commit,
+		}
+	}
+	withCheckout := func(t *testing.T, options ParkedSessionWorkLogPrepareOptions, branch, head string, failCall int) context.Context {
+		t.Helper()
+		fake := runnertest.New(t)
+		fake.Expect(func(call runnertest.Call) bool {
+			return ordinaryGitCall(call, options.WorktreeDir, "branch")
+		}, runner.Result{CombinedOutput: branch + "\n"}, nil)
+		if failCall != 1 && branch == sessionpark.MemberPin(request.ResumeID, member.MemberID) {
+			fake.Expect(func(call runnertest.Call) bool {
+				return ordinaryGitCall(call, options.WorktreeDir, "rev-parse")
+			}, runner.Result{CombinedOutput: head + "\n"}, nil)
+		}
+		if failCall != 0 {
+			fake.FailCall(failCall, errors.New("injected git failure"))
+		}
+		return withGitRunner(context.Background(), fake)
+	}
+
+	t.Run("deterministic preparation", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		prepared, err := prepareParkedTarget(withCheckout(t, options, wantBranch, member.Commit, 0), options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prepared.worktree != options.WorktreeDir || prepared.claim.Branch != wantBranch ||
+			prepared.claim.BaseSHA != member.Commit || prepared.claim.Model != request.SourceModel ||
+			prepared.claim.RecordedAt != request.CreatedAt.UTC() || prepared.manifest.ClaimID != prepared.claim.ClaimID {
+			t.Fatalf("prepared target = %#v", prepared)
+		}
+		if prepared.receivedEvent.Type != LocalEventHandoff || prepared.ownerEvent.Type != LocalEventOwner ||
+			prepared.ownerEvent.Owner == nil || prepared.ownerEvent.Owner.PID != record.PID {
+			t.Fatalf("prepared events = %#v / %#v", prepared.receivedEvent, prepared.ownerEvent)
+		}
+		public := preparedTargetPublicEvent(prepared.claim)
+		if public.ClaimID != prepared.claim.ClaimID || public.ExternalHandoff != prepared.claim.ExternalHandoff {
+			t.Fatalf("public event = %#v", public)
+		}
+		projection := activeTargetProjection(prepared.claim)
+		if projection.ClaimID != prepared.claim.ClaimID || projection.Lifecycle != "active" {
+			t.Fatalf("projection = %#v", projection)
+		}
+	})
+
+	for name, mutate := range map[string]func(*ParkedSessionWorkLogPrepareOptions){
+		"source reference": func(options *ParkedSessionWorkLogPrepareOptions) {
+			options.Member.SourceWorkLogReference = "invalid"
+			options.Request.Members = []sessionpark.RemoteMember{options.Member}
+		},
+		"relative worktree": func(options *ParkedSessionWorkLogPrepareOptions) { options.WorktreeDir = "." },
+		"pinned commit":     func(options *ParkedSessionWorkLogPrepareOptions) { options.PinnedCommit = strings.Repeat("f", 40) },
+		"target session":    func(options *ParkedSessionWorkLogPrepareOptions) { options.Session.PID = 0 },
+		"attempt":           func(options *ParkedSessionWorkLogPrepareOptions) { options.AttemptID = "bad" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			options := newOptions(t)
+			mutate(&options)
+			if _, err := prepareParkedTarget(context.Background(), options); err == nil {
+				t.Fatalf("invalid parked preparation %q was accepted", name)
+			}
+		})
+	}
+
+	t.Run("branch query", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		if _, err := prepareParkedTarget(withCheckout(t, options, "wrong", member.Commit, 0), options); err == nil {
+			t.Fatal("wrong parked branch was accepted")
+		}
+	})
+	t.Run("branch error", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		if _, err := prepareParkedTarget(withCheckout(t, options, wantBranch, member.Commit, 1), options); err == nil {
+			t.Fatal("failed parked branch query was accepted")
+		}
+	})
+	t.Run("head", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		if _, err := prepareParkedTarget(withCheckout(t, options, wantBranch, "wrong", 0), options); err == nil {
+			t.Fatal("wrong parked head was accepted")
+		}
+	})
+	t.Run("head error", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		if _, err := prepareParkedTarget(withCheckout(t, options, wantBranch, member.Commit, 2), options); err == nil {
+			t.Fatal("failed parked head query was accepted")
+		}
+	})
+	t.Run("repository", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		options.Member.RepositoryRemote = "https://github.com/other/app.git"
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		if _, err := prepareParkedTarget(withCheckout(t, options, wantBranch, member.Commit, 0), options); err == nil {
+			t.Fatal("conflicting parked repository was accepted")
+		}
+	})
+	t.Run("unknown model", func(t *testing.T) {
+		t.Parallel()
+		options := newOptions(t)
+		options.Request.SourceModel = ""
+		options.Session.Model = ""
+		wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
+		prepared, err := prepareParkedTarget(withCheckout(t, options, wantBranch, member.Commit, 0), options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prepared.claim.Model != "unknown" || prepared.claim.ModelProvenance != modelProvenanceUnknown {
+			t.Fatalf("unknown model claim = %#v", prepared.claim)
+		}
+	})
+}
+
+func TestSessionCustodyRefactorBatchParkedCompletionValues(t *testing.T) {
+	t.Parallel()
+	digest := sessionmove.DigestBytes([]byte("parked completion refactor"))
+	startedAt := time.Unix(300, 0).UTC()
+	options := ParkedTargetCompletionOptions{
+		Request:       sessionpark.RemoteRequest{ResumeID: "resume-refactor", SuccessorWBSessionID: "wbs-successor"},
+		RequestDigest: digest,
+		Member:        sessionpark.RemoteMember{MemberID: "m-001-abcdef01", Commit: strings.Repeat("c", 40)},
+		WorktreeDir:   "/tmp/parked-refactor",
+		Successor: sessionlaunch.Result{
+			AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1,
+			PID: os.Getpid(), StartedAt: startedAt,
+		},
+	}
+	targetValue := "worklog:session-park/run/" + strings.Repeat("a", 64)
+	target, err := sessionmove.ParseWorkLogReference(targetValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := workLogClaim{
+		EffortID: target.EffortID, RunID: target.RunID, ClaimID: target.ClaimID,
+		Worktree: options.WorktreeDir, Branch: sessionpark.MemberPin(options.Request.ResumeID, options.Member.MemberID),
+		BaseSHA: options.Member.Commit, Lifecycle: "active", AgentID: options.Request.SuccessorWBSessionID,
+		ExternalHandoff: &workLogExternalHandoffEvidence{TargetWorkLogReference: targetValue},
+	}
+	if err := corroborateParkedTargetClaim(claim, options, target, targetValue); err != nil {
+		t.Fatal(err)
+	}
+	invalid := claim
+	invalid.Lifecycle = "terminal"
+	if err := corroborateParkedTargetClaim(invalid, options, target, targetValue); err == nil {
+		t.Fatal("terminal parked claim was accepted")
+	}
+	wantOwnerID := externalLocalEventID("park-target-owner-"+options.Member.MemberID, digest, options.Successor.AttemptID)
+	owner := OwnerRegistration{PID: options.Successor.PID, At: startedAt}
+	events := []LocalWorkLogEvent{{ID: wantOwnerID, Type: LocalEventOwner, Owner: &owner}}
+	if err := validateParkedTargetOwner(events, options); err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, LocalWorkLogEvent{ID: "later-owner", Type: LocalEventOwner, Owner: &OwnerRegistration{PID: os.Getpid(), At: startedAt.Add(time.Second)}})
+	if err := validateParkedTargetOwner(events, options); err == nil {
+		t.Fatal("superseded parked owner was accepted")
+	}
+	if err := validateParkedTargetOwner(nil, options); err == nil {
+		t.Fatal("missing parked owner was accepted")
+	}
+	event := parkedTargetCompletionEvent(options, targetValue)
+	if event.Type != LocalEventHandoff || event.Result != "completed" || event.At != startedAt ||
+		event.Extra["target_work_log_reference"] != targetValue || event.Extra["pid"] != options.Successor.PID {
+		t.Fatalf("completion event = %#v", event)
 	}
 }
