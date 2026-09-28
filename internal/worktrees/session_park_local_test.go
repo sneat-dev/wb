@@ -20,6 +20,28 @@ func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) 
 	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-owner",
 		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
+	for _, acquire := range []struct {
+		name string
+		run  func(func(*ParkedLocalCustody) error) error
+	}{
+		{name: "ordinary", run: func(proceed func(*ParkedLocalCustody) error) error {
+			return WithParkedLocalResumeCustody(context.Background(), fixture.projectsRoot, bundle, proceed)
+		}},
+		{name: "replay attempt", run: func(proceed func(*ParkedLocalCustody) error) error {
+			return WithParkedLocalResumeCustodyForAttempt(context.Background(), fixture.projectsRoot, bundle,
+				"000001-11111111111111111111111111111111", proceed)
+		}},
+	} {
+		if err := acquire.run(func(custody *ParkedLocalCustody) error {
+			resolved := custody.ResolvedWorktreeDirs()
+			if len(resolved) != 1 || resolved[member.WorktreeDir] != worktree {
+				t.Fatalf("%s resolved parked worktrees = %#v, want %s", acquire.name, resolved, worktree)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("%s parked custody: %v", acquire.name, err)
+		}
+	}
 	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-successor", PredecessorWBSessionID: source.WBSessionID,
 		Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()}
 	options := ParkedLocalSuccessorOptions{ProjectsRoot: fixture.projectsRoot, Bundle: bundle, Successor: successor,
@@ -42,6 +64,26 @@ func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) 
 	}
 	if ownerCount != 1 {
 		t.Fatalf("successor owner events = %d, want one: %#v", ownerCount, events)
+	}
+}
+
+func TestParkedLocalCustodyResolvedWorktreeDirsHandlesNilAndCopiesIdentityMap(t *testing.T) {
+	t.Parallel()
+	var absent *ParkedLocalCustody
+	if got := absent.ResolvedWorktreeDirs(); got != nil {
+		t.Fatalf("nil custody dirs = %#v, want nil", got)
+	}
+	custody := &ParkedLocalCustody{members: []parkedLocalMember{
+		{member: sessionpark.Worktree{WorktreeDir: "/recorded/one"}, resolvedWorktreeDir: "/current/one"},
+		{member: sessionpark.Worktree{WorktreeDir: "/recorded/two"}, resolvedWorktreeDir: "/current/two"},
+	}}
+	dirs := custody.ResolvedWorktreeDirs()
+	if len(dirs) != 2 || dirs["/recorded/one"] != "/current/one" || dirs["/recorded/two"] != "/current/two" {
+		t.Fatalf("resolved dirs = %#v", dirs)
+	}
+	dirs["/recorded/one"] = "changed by caller"
+	if got := custody.ResolvedWorktreeDirs()["/recorded/one"]; got != "/current/one" {
+		t.Fatalf("caller changed retained custody mapping to %q", got)
 	}
 }
 

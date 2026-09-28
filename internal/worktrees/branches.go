@@ -1026,14 +1026,10 @@ func classifyBranch(
 		return entry
 	}
 	if sweep.SupersededBy != "" {
-		receipt, rejection, err := branchSupersessionReceipt(ctx, sweep.SupersededBy, ListResult{
+		receipt, rejection := supersessionReceiptForEntry(ctx, sweep.SupersededBy, ListResult{
 			Repository: repository.Slug(), Branch: ref.Name, HeadSHA: ref.SHA,
 			Base: sweep.Base, RemoteTargetSHA: targetSHA, CanonicalDir: repository.Path,
 		})
-		if err != nil {
-			entry.Disposition, entry.Evidence = BranchUnreadable, fmt.Sprintf("read supersession receipt: %v", err)
-			return entry
-		}
 		if rejection == "" {
 			entry.Disposition = BranchSuperseded
 			entry.SupersededAtOrigin = true

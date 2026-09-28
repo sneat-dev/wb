@@ -8,6 +8,44 @@ import (
 	"testing"
 )
 
+func TestInspectRetiredArchiveRepositoryReadsExactPrivateIdentity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, payload string
+		readErr       error
+		wantPrivate   bool
+		wantError     bool
+	}{
+		{name: "private", payload: `{"full_name":"sneat-co/backstage-retired","private":true}`, wantPrivate: true},
+		{name: "public", payload: `{"full_name":"sneat-co/backstage-retired","private":false}`},
+		{name: "malformed", payload: `{`, wantError: true},
+		{name: "unavailable", readErr: errors.New("archive unavailable"), wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inspection, err := inspectRetiredArchiveRepository(context.Background(), "sneat-co/backstage-retired",
+				func(_ context.Context, dir string, args ...string) ([]byte, error) {
+					if dir != "" || len(args) != 2 || args[0] != "api" || args[1] != "repos/sneat-co/backstage-retired" {
+						t.Fatalf("archive read used dir %q and arguments %#v", dir, args)
+					}
+					return []byte(test.payload), test.readErr
+				})
+			if (err != nil) != test.wantError {
+				t.Fatalf("inspection = %#v, error = %v; want error %t", inspection, err, test.wantError)
+			}
+			if test.wantError {
+				if inspection != (RetiredArchiveInspection{}) {
+					t.Fatalf("failed inspection returned authority: %#v", inspection)
+				}
+				return
+			}
+			if !inspection.Exists || inspection.Repository != "sneat-co/backstage-retired" || inspection.Private != test.wantPrivate {
+				t.Fatalf("inspection = %#v, want exact repository and privacy %t", inspection, test.wantPrivate)
+			}
+		})
+	}
+}
+
 func TestResolveRetiredArchiveTargetUsesDefaultAndUserOverrides(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

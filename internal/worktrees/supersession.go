@@ -150,39 +150,36 @@ var supersessionClassifications = map[string]bool{
 
 // supersessionReceiptForEntry loads and independently verifies one receipt
 // against the current exact source and fetched target identities.
-func supersessionReceiptForEntry(ctx context.Context, path string, entry ListResult) (*SupersessionReceipt, string, error) {
+func supersessionReceiptForEntry(ctx context.Context, path string, entry ListResult) (*SupersessionReceipt, string) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Sprintf("read supersession receipt %s: %v", path, err), nil
+		return nil, fmt.Sprintf("read supersession receipt %s: %v", path, err)
 	}
 	var receipt SupersessionReceipt
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil {
-		return nil, fmt.Sprintf("decode supersession receipt %s: %v", path, err), nil
+		return nil, fmt.Sprintf("decode supersession receipt %s: %v", path, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, fmt.Sprintf("supersession receipt %s contains trailing JSON", path), nil
+		return nil, fmt.Sprintf("supersession receipt %s contains trailing JSON", path)
 	}
 	if rejection := validateSupersessionReceipt(ctx, receipt, entry); rejection != "" {
-		return nil, rejection, nil
+		return nil, rejection
 	}
-	return &receipt, "", nil
+	return &receipt, ""
 }
 
-func applySupersessionReceipt(ctx context.Context, path string, entry *ListResult) error {
+func applySupersessionReceipt(ctx context.Context, path string, entry *ListResult) {
 	if strings.TrimSpace(path) == "" {
-		return nil
+		return
 	}
-	receipt, rejection, err := supersessionReceiptForEntry(ctx, path, *entry)
-	if err != nil {
-		return err
-	}
+	receipt, rejection := supersessionReceiptForEntry(ctx, path, *entry)
 	if rejection != "" {
 		entry.SupersessionRejection = rejection
 		entry.SupersededAtOrigin = false
-		return nil
+		return
 	}
 	entry.SupersededAtOrigin = true
 	entry.SupersessionReceipt = path
@@ -190,7 +187,6 @@ func applySupersessionReceipt(ctx context.Context, path string, entry *ListResul
 	entry.SupersessionReceiptID = receipt.Approval.ReceiptID
 	entry.SupersessionRejection = ""
 	entry.supersessionReceipt = receipt
-	return nil
 }
 
 func validateSupersessionReceipt(ctx context.Context, receipt SupersessionReceipt, entry ListResult) string {

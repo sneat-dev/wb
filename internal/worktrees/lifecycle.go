@@ -2561,9 +2561,7 @@ func (run *cleanupRun) gatherInventory() error {
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &run.listed.Results[index]); err != nil {
 			return err
 		}
-		if err := applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &run.listed.Results[index]); err != nil {
-			return err
-		}
+		applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &run.listed.Results[index])
 	}
 	if run.recovery != nil {
 		for index := range run.listed.Results {
@@ -3021,9 +3019,7 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &refreshed); err != nil {
 			return fmt.Errorf("cleanup absorbed-conflict acknowledgement proof for %s: %w", refreshed.Repository, err)
 		}
-		if err := applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed); err != nil {
-			return fmt.Errorf("supersession receipt for %s: %w", refreshed.Repository, err)
-		}
+		applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed)
 		if err := worktree.validate(); err != nil {
 			return err
 		}
@@ -5376,9 +5372,7 @@ func preflightCleanupRepository(
 	if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, home, &refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s absorbed-conflict acknowledgement proof: %w", entry.Repository, err)
 	}
-	if err := applySupersessionReceipt(ctx, options.SupersededBy, &refreshed); err != nil {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt: %w", entry.Repository, err)
-	}
+	applySupersessionReceipt(ctx, options.SupersededBy, &refreshed)
 	if refreshed.SupersessionRejection != "" {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt refused: %s", entry.Repository, refreshed.SupersessionRejection)
 	}

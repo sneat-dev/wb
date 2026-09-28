@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // SetInvokedCommand mutates process-global command attribution until cleanup.
+func TestSetInvokedCommandPublishesAndRestoresCommand(t *testing.T) {
+	previous := InvokedCommand()
+	t.Cleanup(func() { SetInvokedCommand(previous) })
+	SetInvokedCommand("worktree set")
+	if got := InvokedCommand(); got != "worktree set" {
+		t.Fatalf("invoked command = %q, want worktree set", got)
+	}
+}
+
 func TestIdentityFromEnvReadsADeclaration(t *testing.T) {
 	t.Setenv(EnvAgentPID, "4321")
 	t.Setenv(EnvAgentRuntime, "claude-code")
