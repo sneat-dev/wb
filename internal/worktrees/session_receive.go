@@ -824,6 +824,22 @@ func openOrCloneSessionReceiveCanonical(
 	)
 }
 
+// openSessionReceiveDirectoryAt returns one owned no-follow directory handle.
+// openContext and wrapMessage are the caller's exact, stage-specific errors;
+// the caller retains responsibility for path identity and handle lifetime.
+func openSessionReceiveDirectoryAt(parentFD int, name, descriptorName, openContext, wrapMessage string) (*os.File, error) {
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", openContext, err)
+	}
+	directory := os.NewFile(uintptr(fd), descriptorName)
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New(wrapMessage)
+	}
+	return directory, nil
+}
+
 func cloneSessionReceiveCanonical(
 	ctx context.Context,
 	ownerDirectory *os.File,
@@ -840,14 +856,11 @@ func cloneSessionReceiveCanonical(
 	if err != nil {
 		return nil, fmt.Errorf("create secure canonical clone stage for %s: %w", declared.Repository, err)
 	}
-	stageFD, err := unix.Openat(int(ownerDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := openSessionReceiveDirectoryAt(int(ownerDirectory.Fd()), stageName, "wb-session-receive-clone-stage",
+		"open secure canonical clone stage for "+declared.Repository,
+		"wrap secure canonical clone stage for "+declared.Repository)
 	if err != nil {
-		return nil, fmt.Errorf("open secure canonical clone stage for %s: %w", declared.Repository, err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-clone-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return nil, fmt.Errorf("wrap secure canonical clone stage for %s", declared.Repository)
+		return nil, err
 	}
 	defer func() {
 		quarantineErr := quarantineMatchingStageDirectoryAt(ownerDirectory, stage)
@@ -883,14 +896,11 @@ func cloneSessionReceiveCanonical(
 		return nil, err
 	}
 	stagedPath := filepath.Join(stagePath, "checkout")
-	checkoutFD, err := unix.Openat(int(stage.Fd()), "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	checkout, err := openSessionReceiveDirectoryAt(int(stage.Fd()), "checkout", "wb-session-receive-staged-canonical",
+		"open staged canonical clone for "+declared.Repository,
+		"wrap staged canonical clone for "+declared.Repository)
 	if err != nil {
-		return nil, fmt.Errorf("open staged canonical clone for %s: %w", declared.Repository, err)
-	}
-	checkout := os.NewFile(uintptr(checkoutFD), "wb-session-receive-staged-canonical")
-	if checkout == nil {
-		_ = unix.Close(checkoutFD)
-		return nil, fmt.Errorf("wrap staged canonical clone for %s", declared.Repository)
+		return nil, err
 	}
 	defer func() { _ = checkout.Close() }()
 	staged, err := openSessionReceiveCanonicalFromHeldRoot(stagedPath, checkout)
@@ -995,14 +1005,10 @@ func recoverInterruptedSessionReceivePublication(
 	if err := requireOnlyInterruptedSessionStage(operationDirectory, stageName); err != nil {
 		return false, err
 	}
-	stageFD, err := unix.Openat(int(operationDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := openSessionReceiveDirectoryAt(int(operationDirectory.Fd()), stageName, "wb-session-receive-interrupted-stage",
+		"open exact interrupted receive stage", "wrap exact interrupted receive stage")
 	if err != nil {
-		return false, fmt.Errorf("open exact interrupted receive stage: %w", err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-interrupted-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return false, fmt.Errorf("wrap exact interrupted receive stage")
+		return false, err
 	}
 	defer func() { _ = stage.Close() }()
 	stagePath := filepath.Join(operationRoot, stageName)
@@ -1025,32 +1031,24 @@ func recoverInterruptedSessionReceivePublication(
 
 	var finalDirectory *os.File
 	if finalExists {
-		if _, statErr := secureDirectoryIdentityAt(stageFD, "checkout"); statErr == nil {
+		if _, statErr := secureDirectoryIdentityAt(int(stage.Fd()), "checkout"); statErr == nil {
 			return false, fmt.Errorf("interrupted receive has both staged and published checkouts; refusing ambiguous recovery")
 		} else if !errors.Is(statErr, unix.ENOENT) {
 			return false, fmt.Errorf("inspect interrupted staged checkout: %w", statErr)
 		}
-		finalFD, openErr := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-		if openErr != nil {
-			return false, fmt.Errorf("open interrupted published target: %w", openErr)
-		}
-		finalDirectory = os.NewFile(uintptr(finalFD), "wb-session-receive-interrupted-published")
-		if finalDirectory == nil {
-			_ = unix.Close(finalFD)
-			return false, fmt.Errorf("wrap interrupted published target")
+		finalDirectory, err = openSessionReceiveDirectoryAt(ownerFD, repository, "wb-session-receive-interrupted-published",
+			"open interrupted published target", "wrap interrupted published target")
+		if err != nil {
+			return false, err
 		}
 	} else {
 		if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 			return false, err
 		}
-		checkoutFD, openErr := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		checkout, openErr := openSessionReceiveDirectoryAt(int(stage.Fd()), "checkout", "wb-session-receive-interrupted-checkout",
+			"open exact interrupted staged checkout", "wrap exact interrupted staged checkout")
 		if openErr != nil {
-			return false, fmt.Errorf("open exact interrupted staged checkout: %w", openErr)
-		}
-		checkout := os.NewFile(uintptr(checkoutFD), "wb-session-receive-interrupted-checkout")
-		if checkout == nil {
-			_ = unix.Close(checkoutFD)
-			return false, fmt.Errorf("wrap exact interrupted staged checkout")
+			return false, openErr
 		}
 		defer func() { _ = checkout.Close() }()
 		if !directoryStillMatches(registeredPath, checkout) {
@@ -1159,14 +1157,10 @@ func retireCompletedInterruptedSessionStage(ctx context.Context, operationRoot s
 	if len(names) != 1 {
 		return fmt.Errorf("multiple active receive stages make completed interrupted recovery ambiguous")
 	}
-	stageFD, err := unix.Openat(int(operationDirectory.Fd()), names[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := openSessionReceiveDirectoryAt(int(operationDirectory.Fd()), names[0], "wb-session-receive-completed-stage",
+		"open completed interrupted receive stage", "wrap completed interrupted receive stage")
 	if err != nil {
-		return fmt.Errorf("open completed interrupted receive stage: %w", err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-completed-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return fmt.Errorf("wrap completed interrupted receive stage")
+		return err
 	}
 	defer func() { _ = stage.Close() }()
 	stagePath := filepath.Join(operationRoot, names[0])
