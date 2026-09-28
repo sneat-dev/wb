@@ -363,19 +363,10 @@ func parsePromptFile(content []byte) (PromptHeader, string, error) {
 }
 
 func observeWorkLogGit(ctx context.Context, worktree string) WorkLogGitEvidence {
-	evidence := WorkLogGitEvidence{}
-	if branch, err := git(ctx, worktree, "branch", "--show-current"); err == nil {
-		evidence.Branch = strings.TrimSpace(branch)
+	local := observeLocalGit(ctx, worktree)
+	return WorkLogGitEvidence{
+		Branch: local.Branch, Head: local.Head, Dirty: local.Dirty, Status: local.Status,
 	}
-	if head, err := git(ctx, worktree, "rev-parse", "HEAD"); err == nil {
-		evidence.Head = strings.TrimSpace(head)
-	}
-	if status, err := git(ctx, worktree, "status", "--porcelain"); err == nil {
-		trimmed := strings.TrimSpace(status)
-		evidence.Status = trimmed
-		evidence.Dirty = trimmed != ""
-	}
-	return evidence
 }
 
 // FormatWorkLogViewText renders the agent bootstrap dump. Private prompt bodies
