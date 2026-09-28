@@ -527,32 +527,16 @@ func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {
 		!validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validClaimID(claim.ClaimID) || !isGitObjectID(claim.BaseSHA) {
 		return errors.New("immutable Work Log claim identity metadata is invalid")
 	}
-	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	if claim.ParentClaimID != "" {
 		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" ||
 			(claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" &&
 				claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
 			return errors.New("immutable successor Work Log claim metadata is invalid")
 		}
-		var err error
-		switch claim.AcquiredVia {
-		case "external_handoff":
-			wantID, err = expectedExternalClaimID(claim)
-		case "parked_session_resume":
-			wantID, err = expectedParkedSessionClaimID(claim)
-		case "recycle_failed":
-			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-		case "handoff", "not_landed":
-			if claim.Version == 2 {
-				wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
-					ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
-			} else {
-				wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-			}
-		}
-		if err != nil {
-			return err
-		}
+	}
+	wantID, err := expectedWorkLogClaimID(claim)
+	if err != nil {
+		return err
 	}
 	if claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume" && claim.ExternalHandoff != nil {
 		return errors.New("ordinary immutable Work Log claim carries external handoff evidence")
@@ -1044,6 +1028,30 @@ func declaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition strin
 		_, _ = io.WriteString(hash, value)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// expectedWorkLogClaimID derives the immutable identity after a caller has
+// validated which acquisition modes its workflow accepts.
+func expectedWorkLogClaimID(claim workLogClaim) (string, error) {
+	if claim.ParentClaimID == "" {
+		return workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}), nil
+	}
+	switch claim.AcquiredVia {
+	case "external_handoff":
+		return expectedExternalClaimID(claim)
+	case "parked_session_resume":
+		return expectedParkedSessionClaimID(claim)
+	case "recycle_failed":
+		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
+	case "handoff", "not_landed":
+		if claim.Version == 2 {
+			return declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
+				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider}), nil
+		}
+		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
+	default:
+		return "", fmt.Errorf("successor claim acquisition %q is invalid", claim.AcquiredVia)
+	}
 }
 
 func validClaimID(value string) bool {
