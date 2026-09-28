@@ -46,7 +46,7 @@ func TestQuarantineDirectoryEntryNamedReturnsMovedHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = moved.Close() }()
+	t.Cleanup(func() { _ = moved.Close() })
 	if !strings.HasPrefix(name, ".retired-") || len(name) != len(".retired-")+32 {
 		t.Fatalf("retirement name = %q", name)
 	}
