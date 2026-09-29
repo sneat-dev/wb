@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreelayout"
 	"github.com/sneat-dev/wb/internal/worktreepolicy"
 )
 
@@ -67,41 +68,14 @@ type WorktreePlacement struct {
 // no forge keeps the two-level <org>/<repository> suffix so no checkout has to
 // move to stay addressable.
 func (placement WorktreePlacement) Path(task, repository string) (string, error) {
-	address, err := splitRepositoryAddress(repository)
-	if err != nil {
-		return "", err
-	}
-	if !validSafeSegment(task) {
-		return "", fmt.Errorf("invalid worktree task %q", task)
-	}
-	if placement.RepositoryLocal {
-		return filepath.Join(placement.Root, task), nil
-	}
-	relative := strings.Trim(strings.TrimSpace(placement.relative), "/")
-	if relative == "" {
-		relative = address.Relative()
-	}
-	if !validCloneRelative(relative) {
-		return "", fmt.Errorf("canonical clone address %q is not a safe relative path", relative)
-	}
-	return filepath.Join(placement.Root, task, filepath.FromSlash(relative)), nil
+	return worktreelayout.Path(placement.Root, placement.RepositoryLocal, placement.relative, task, repository)
 }
 
 // validCloneRelative reports whether a root-relative canonical clone address is
 // safe to join below a store root: either {org}/{repository}, or
 // {host}/{org}/{repository} with a literal forge hostname first.
 func validCloneRelative(relative string) bool {
-	parts := strings.Split(relative, "/")
-	if len(parts) == 3 {
-		if !repopath.IsForgeHost(parts[0]) {
-			return false
-		}
-		parts = parts[1:]
-	}
-	if len(parts) != 2 {
-		return false
-	}
-	return validSafeSegment(parts[0]) && validRepositorySegment(parts[1])
+	return worktreelayout.ValidCloneRelative(relative)
 }
 
 // splitCloneRelative splits a root-relative clone address into its
@@ -109,12 +83,7 @@ func validCloneRelative(relative string) bool {
 // "github.com/acme/app" becomes ("github.com/acme", "app") and a legacy
 // "acme/app" becomes ("acme", "app").
 func splitCloneRelative(relative string) (parent, repository string) {
-	relative = strings.Trim(strings.TrimSpace(relative), "/")
-	index := strings.LastIndex(relative, "/")
-	if index < 0 {
-		return "", relative
-	}
-	return relative[:index], relative[index+1:]
+	return worktreelayout.SplitCloneRelative(relative)
 }
 
 // canonicalRelativeAddress returns the root-relative canonical clone address the

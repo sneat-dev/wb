@@ -27,6 +27,7 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreelayout"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -3580,11 +3581,11 @@ func DefaultCleanupReportDir(home string, now time.Time) string {
 }
 
 func validSafeSegment(value string) bool {
-	return safeSegment.MatchString(value) && value != "." && value != ".."
+	return worktreelayout.ValidSafeSegment(value)
 }
 
 func validRepositorySegment(value string) bool {
-	return safeRepositorySegment.MatchString(value) && value != "." && value != ".."
+	return worktreelayout.ValidRepositorySegment(value)
 }
 
 // resolveRecordedWorktreeBase binds lifecycle evidence to the target that was
