@@ -845,7 +845,7 @@ func TestSessionCustodyRefactorBatchExternalAttemptFailureEvent(t *testing.T) {
 	t.Parallel()
 	digest := sessionmove.DigestBytes([]byte("external attempt failure"))
 	startedAt := time.Unix(500, 0).UTC()
-	failure := sessionlaunch.FailureEvidence{
+	failure := externalAttemptFailureRecord{
 		AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1, PID: 123,
 		StartedAt: startedAt, FailedAt: startedAt.Add(time.Second), Diagnostic: "  launcher failed  ",
 	}

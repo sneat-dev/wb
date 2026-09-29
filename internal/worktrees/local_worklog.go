@@ -446,12 +446,14 @@ func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, erro
 	return repairLocalEventDerivatives(worktree, directory, events)
 }
 
+var rewriteLocalEventJournalAtomicWrite = writeBytesAtomicAt
+
 func rewriteLocalEventJournal(directory *os.File, events []LocalWorkLogEvent) error {
 	encoded, err := encodeLocalEvents(events)
 	if err != nil {
 		return err
 	}
-	if err := writeBytesAtomicAt(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
+	if err := rewriteLocalEventJournalAtomicWrite(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
 		return fmt.Errorf("repair torn local work-log journal: %w", err)
 	}
 	return nil

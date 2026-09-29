@@ -403,12 +403,35 @@ func RecordExternalTargetAttemptFailed(options ExternalTargetAttemptFailureOptio
 		failure.AttemptID, failure.AttemptIndex, failure.PID, failure.StartedAt, false); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	event := externalTargetAttemptFailureEvent(options.Request, options.RequestDigest, reference.String(), failure)
-	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
+	return appendExternalTargetAttemptFailure(
+		claim.Worktree, options.Request, options.RequestDigest, reference.String(), externalAttemptFailureRecord{
+			AttemptID: failure.AttemptID, AttemptIndex: failure.AttemptIndex, PID: failure.PID,
+			StartedAt: failure.StartedAt, FailedAt: failure.FailedAt, Diagnostic: failure.Diagnostic,
+		},
+	)
+}
+
+// externalAttemptFailureRecord only exists after RecordExternalTargetAttemptFailed
+// authenticates immutable launcher evidence. Keeping the durable append separate
+// lets its journal behavior be tested without forging cross-package evidence.
+type externalAttemptFailureRecord struct {
+	AttemptID    string
+	AttemptIndex uint64
+	PID          int
+	StartedAt    time.Time
+	FailedAt     time.Time
+	Diagnostic   string
+}
+
+func appendExternalTargetAttemptFailure(worktree string, request sessionmove.Request, digest sessionmove.Digest,
+	targetReference string, failure externalAttemptFailureRecord,
+) (LocalWorkLogEvent, error) {
+	event := externalTargetAttemptFailureEvent(request, digest, targetReference, failure)
+	event, _, err := appendLocalEventWithoutCustody(worktree, event)
 	return event, err
 }
 
-func externalTargetAttemptFailureEvent(request sessionmove.Request, digest sessionmove.Digest, targetReference string, failure sessionlaunch.FailureEvidence) LocalWorkLogEvent {
+func externalTargetAttemptFailureEvent(request sessionmove.Request, digest sessionmove.Digest, targetReference string, failure externalAttemptFailureRecord) LocalWorkLogEvent {
 	diagnosticDigest := sha256.Sum256([]byte(strings.TrimSpace(failure.Diagnostic)))
 	return LocalWorkLogEvent{
 		ID: externalLocalEventID("target-attempt-failed", digest, failure.AttemptID), Type: LocalEventHandoff,
@@ -1093,10 +1116,7 @@ func validateExternalHandoverPrompt(worktree string, at time.Time, runtime, mode
 			if found {
 				return fmt.Errorf("external target Work Log has multiple prompt files")
 			}
-			ordinal, parseErr := strconv.Atoi(match[1])
-			if parseErr != nil {
-				return fmt.Errorf("external target Work Log must have exactly one handover prompt")
-			}
+			ordinal, _ := strconv.Atoi(match[1]) // promptFileName accepts exactly four ASCII digits.
 			content, err = readBytesAt(directory, candidate)
 			if err != nil {
 				return err

@@ -59,6 +59,14 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 		PID: record.PID, AttemptID: attemptID, AttemptIndex: 1, TmuxName: record.TmuxName,
 		Runtime: record.Runtime, Model: record.Model, WorktreeDir: worktree, PinnedCommit: member.Commit, StartedAt: startedAt,
 	}
+	wrongMember := member
+	wrongMember.Commit = strings.Repeat("f", 40)
+	if _, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+		ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: wrongMember,
+		WorktreeDir: worktree, Successor: successor,
+	}); err == nil || !strings.Contains(err.Error(), "does not corroborate receipt member") {
+		t.Fatalf("mismatched parked claim error = %v", err)
+	}
 	// The test seam runs after the claim lock but before the journal barrier.
 	// In the vulnerable implementation this same contender was injected after
 	// the unlocked latest-owner read and completion still succeeded. The fixed
@@ -82,5 +90,34 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 	}
 	if eventByID(events, externalLocalEventID("park-target-completed-"+member.MemberID, digest, "")) != nil {
 		t.Fatal("completion was recorded after a competing owner superseded custody")
+	}
+}
+
+//nolint:paralleltest // newSessionReceiveFixture configures process-wide WB and Git fixture environment.
+func TestRecordParkedTargetCompletedRecordsValidatedMember(t *testing.T) {
+	base := newSessionReceiveFixture(t)
+	member := sessionpark.RemoteMember{MemberID: "m-001-abcdef01", Repository: "acme/app", RepositoryRemote: base.remote,
+		Branch: base.request.Branch, Commit: base.request.BundleCommit, SourceWorkLogReference: "worklog:session-park/source-run/" + strings.Repeat("b", 64)}
+	request := sessionpark.RemoteRequest{SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: "resume-custody-complete", ParkedSessionID: "park-custody-complete",
+		SuccessorWBSessionID: "wbs-park-successor", PredecessorWBSessionID: "wbs-park-source", SourceMachine: "laptop", TargetMachine: "target-vm", SourceRuntime: "codex", SourceModel: "gpt-5", Continuation: "continue privately", Members: []sessionpark.RemoteMember{member}, CreatedAt: time.Unix(100, 0).UTC()}
+	raw, err := sessionpark.EncodeEnvelope(sessionpark.Envelope{SchemaVersion: sessionpark.EnvelopeSchemaVersion, Kind: sessionpark.EnvelopeKind, Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sessionmove.DigestBytes(raw)
+	worktree := filepath.Join(base.home, "worktrees", "session-"+request.ResumeID, "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, base.canonical, "worktree", "add", "-b", sessionpark.MemberPin(request.ResumeID, member.MemberID), worktree, member.Commit)
+	startedAt := time.Unix(200, 0).UTC()
+	record := session.Record{PID: os.Getpid(), WBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID, Machine: request.TargetMachine, Runtime: request.SourceRuntime, Model: request.SourceModel, TmuxName: "wb-session-" + request.SuccessorWBSessionID, HandoffID: request.ResumeID, StartedAt: startedAt}
+	attemptID := "000001-" + strings.Repeat("1", 32)
+	if _, err := PrepareParkedSessionWorkLog(context.Background(), ParkedSessionWorkLogPrepareOptions{ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member, ReceivedAt: request.CreatedAt, Session: record, AttemptID: attemptID, AttemptIndex: 1, WorktreeDir: worktree, PinnedCommit: member.Commit}); err != nil {
+		t.Fatal(err)
+	}
+	event, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member, WorktreeDir: worktree, Successor: sessionlaunch.Result{HandoffID: request.ResumeID, WBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine, PID: record.PID, AttemptID: attemptID, AttemptIndex: 1, TmuxName: record.TmuxName, Runtime: record.Runtime, Model: record.Model, WorktreeDir: worktree, PinnedCommit: member.Commit, StartedAt: startedAt}})
+	if err != nil || event.Result != "completed" {
+		t.Fatalf("parked completion = %#v, %v", event, err)
 	}
 }
