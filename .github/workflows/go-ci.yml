@@ -25,69 +25,32 @@ jobs:
     timeout-minutes: 2
     outputs:
       required: ${{ steps.decide.outputs.required }}
+      contract_required: ${{ steps.decide.outputs.contract_required }}
     steps:
-      # Everything Go builds, embeds or reads in tests from its own paths. A
-      # pull request that touches none of it (spec/, docs/ prose, hub/web
-      # sources, …) skips Go validation and runs only go-contract-inputs, which
-      # covers the inputs no path list can: spec/ files named by
-      # ai/capabilities.json, agents/ prose, and every tracked file name that
-      # enters the Go module archive. Only pull requests are scoped, and a
-      # scoped run publishes no validation receipt, so the merge to main always
-      # validates in full.
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: changes
-        if: github.event_name == 'pull_request'
+      - name: Checkout source and comparison history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          filters: |
-            required:
-              - '**/*.go'
-              - '**/go.mod'
-              - '**/go.sum'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'vendor/**'
-              - 'cmd/**'
-              - 'internal/**'
-              - 'api/**'
-              - 'ai/**'
-              - 'agents/**'
-              - 'skills'
-              - 'hub/web/dist/**'
-              - 'proto/**'
-              - 'examples/**'
-              - '.wb/**'
-              - '.github/**'
-              - '.claude-plugin/**'
-              - '.codex-plugin/**'
-              - 'docs/cli-flag-matrix.md'
-              - 'README.md'
-              - '.goreleaser.yml'
-              - '.golangci.*'
-              - '.gitattributes'
+          fetch-depth: 0
       - name: Decide
         id: decide
-        if: github.event_name == 'pull_request'
         env:
-          FILTERED: ${{ steps.changes.outputs.required }}
-          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
-          set -eu
-          case "$FILTERED" in
-            true|false) ;;
-            *) echo "Go scope filter returned '$FILTERED', want true or false" >&2; exit 1 ;;
-          esac
-          # GitHub lists at most 3000 files of a pull request; beyond that the
-          # filter cannot see every path, so validate.
-          if [ "$FILTERED" = true ] || [ "$CHANGED_FILES" -ge 3000 ]; then
-            echo required=true >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            bash .github/scripts/go-scope.sh "$EVENT_NAME" "$PR_BASE_SHA" "$PR_HEAD_SHA" "$REF" "$GITHUB_OUTPUT"
           else
-            echo required=false >> "$GITHUB_OUTPUT"
+            bash .github/scripts/go-scope.sh "$EVENT_NAME" "$PUSH_BEFORE_SHA" "$EVENT_SHA" "$REF" "$GITHUB_OUTPUT"
           fi
 
   go-contract-inputs:
     name: Check non-Go contract inputs
     needs: go-scope
-    if: github.event_name == 'pull_request' && needs.go-scope.outputs.required == 'false'
+    if: needs.go-scope.outputs.contract_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -101,7 +64,7 @@ jobs:
       - name: Test the Go contracts over non-Go files
         run: >-
           go test ./cmd/wb -count=1
-          -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract)$'
+          -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract|TestWBChangeCompletionContractIsSharedAcrossHarnesses|TestPublicInstallDocumentationMatchesReleaseContract|TestAgentSkillsCoverPublicCommands)$'
 
   windows-scope:
     name: Decide native Windows coverage
@@ -189,7 +152,7 @@ jobs:
     name: Check formatting and dependencies
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -217,7 +180,7 @@ jobs:
     name: Build and vet
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -238,7 +201,7 @@ jobs:
     name: Lint (golangci-lint)
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -263,14 +226,9 @@ jobs:
     name: Tests and coverage (8 shards)
     needs: [release-eligibility, validation-reuse, go-scope]
     # This job is the per-change coverage ratchet's one and only baseline
-    # producer (spec/plans/coverage-to-100/README.md task-3(b)): it is
-    # deliberately exempt from the validation-reuse push-event skip other
-    # jobs apply, so a baseline artifact is always published on every push to
-    # main. That is a CI-cost choice, not a free correction — a full 8-shard
-    # run now executes on every push, including ones validation-reuse would
-    # otherwise have let reuse an existing result.
-    if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true')
+    # producer (spec/plans/coverage-to-100/README.md task-3(b)). It runs on
+    # every Go-relevant push even when other jobs reuse exact PR validation.
+    if: needs.go-scope.outputs.required == 'true'
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -419,7 +377,7 @@ jobs:
     name: Race tests
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -455,11 +413,9 @@ jobs:
     # required job on every PR (founder decision 19), never a source of
     # coverage (decision 17) -- this job carries no coverage step at all.
     # It follows the same go-scope/validation-reuse condition as source,
-    # static, lint, and race: skipped when a PR touches nothing Go-relevant,
-    # and skipped on a push whose validation an exact trusted PR run already
-    # covered.
+    # static, lint, and race.
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # Task-23's 10-minute e2e budget (spec/plans/coverage-to-100/README.md
@@ -482,7 +438,7 @@ jobs:
     needs: [windows-scope, validation-reuse, go-scope]
     if: >-
       needs.windows-scope.outputs.required == 'true' &&
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: windows-latest
     timeout-minutes: 8
@@ -527,6 +483,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
+      - name: Checkout aggregate policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Summarize required check results (no build or tests)
         env:
           ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
@@ -535,6 +493,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           GO_SCOPE_RESULT: ${{ needs.go-scope.result }}
           GO_REQUIRED: ${{ needs.go-scope.outputs.required }}
+          CONTRACT_REQUIRED: ${{ needs.go-scope.outputs.contract_required }}
           CONTRACT_RESULT: ${{ needs.go-contract-inputs.result }}
           SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
@@ -543,77 +502,7 @@ jobs:
           RACE_RESULT: ${{ needs.race.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
-        run: |
-          set -eu
-          if [ "$REUSE_JOB_RESULT" != "success" ]; then
-            echo "Validation reuse decision concluded: $REUSE_JOB_RESULT" >&2
-            exit 1
-          fi
-          if [ "$GO_SCOPE_RESULT" != "success" ]; then
-            echo "Go validation scope decision concluded: $GO_SCOPE_RESULT" >&2
-            exit 1
-          fi
-          spec_only=false
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            case "$GO_REQUIRED" in
-              true) ;;
-              false) spec_only=true ;;
-              *) echo "Go validation scope is '$GO_REQUIRED', want true or false" >&2; exit 1 ;;
-            esac
-          fi
-          if [ "$spec_only" = "true" ]; then
-            expected_contract=success
-          else
-            expected_contract=skipped
-          fi
-          if [ "$CONTRACT_RESULT" != "$expected_contract" ]; then
-            echo "Required check 'Non-Go contract inputs' concluded: $CONTRACT_RESULT; expected $expected_contract" >&2
-            exit 1
-          fi
-          if [ "$REUSE_RESULT" = "true" ] || [ "$spec_only" = "true" ]; then
-            expected=skipped
-          else
-            expected=success
-          fi
-          # The coverage job is deliberately exempt from the push-event reuse
-          # skip other jobs apply (it is the per-change ratchet's baseline
-          # producer, .github/workflows/go-ci.yml coverage job comment): its
-          # `if:` runs it on every push regardless of REUSE_RESULT, and on a
-          # pull request only when go-scope requires Go validation. Mirror
-          # that condition exactly here instead of reusing $expected, or a
-          # push that reuses validation expects "skipped" while the job
-          # actually runs and concludes "success".
-          if [ "$EVENT_NAME" = "push" ]; then
-            expected_coverage=success
-          else
-            expected_coverage=$expected
-          fi
-          for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT" "E2E tier (real git):$E2E_RESULT"; do
-            name=${check%%:*}
-            result=${check#*:}
-            if [ "$name" = "Eligibility" ]; then
-              expected_for_check=success
-            elif [ "$name" = "Tests and coverage" ]; then
-              expected_for_check=$expected_coverage
-            else
-              expected_for_check=$expected
-            fi
-            if [ "$result" != "$expected_for_check" ]; then
-              echo "Required check '$name' concluded: $result; expected $expected_for_check" >&2
-              exit 1
-            fi
-          done
-          if [ "$WINDOWS_RESULT" != "success" ] && [ "$WINDOWS_RESULT" != "skipped" ]; then
-            echo "Required check 'Native Windows compile and test' concluded: $WINDOWS_RESULT" >&2
-            exit 1
-          fi
-          if [ "$REUSE_RESULT" = "true" ]; then
-            echo "Reused exact trusted pull-request validation."
-          elif [ "$spec_only" = "true" ]; then
-            echo "No Go-relevant file changed; Go validation was not required."
-          else
-            echo "All required checks passed. This job only combines their results."
-          fi
+        run: bash .github/scripts/go-ci-required.sh
 
   validation-receipt:
     name: Publish validation receipt
@@ -649,10 +538,11 @@ jobs:
       ${{
         !cancelled() &&
         needs.test.result == 'success' &&
+        needs.go-scope.outputs.required == 'true' &&
         needs.release-eligibility.result == 'success' &&
         needs.release-eligibility.outputs.eligible == 'true'
       }}
-    needs: [test, release-eligibility]
+    needs: [test, release-eligibility, go-scope]
     # Serialize publication without cancelling a signing/notarization run.
     concurrency:
       group: wb-release-${{ github.ref }}
