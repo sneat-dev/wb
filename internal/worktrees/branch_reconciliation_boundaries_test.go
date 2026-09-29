@@ -29,12 +29,12 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer created.Close()
+	defer func() { _ = created.Close() }()
 	got, replay, err := readBranchReconciliationRecord(home, claim, record.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replay.Close()
+	defer func() { _ = replay.Close() }()
 	createdInfo, err := created.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer run.Close()
+			defer func() { _ = run.Close() }()
 			if err := os.WriteFile(filepath.Join(runPath, "branch-reconciliations"), []byte("not a directory"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -88,12 +88,12 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer run.Close()
+			defer func() { _ = run.Close() }()
 			collection, err := openPrivateChild(run, "branch-reconciliations", true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer collection.Close()
+			defer func() { _ = collection.Close() }()
 			if err := os.WriteFile(filepath.Join(runPath, "branch-reconciliations", "event-1"), []byte("not a directory"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 			home := filepath.Join(t.TempDir(), "home")
 			tc.setup(t, home)
 			if directory, err := openBranchReconciliationEvent(home, claim, "event-1", true); err == nil {
-				directory.Close()
+				_ = directory.Close()
 				t.Fatal("broken private path was opened for creation")
 			}
 		})
@@ -118,7 +118,7 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if directory, err := createBranchReconciliationRecord(homeFile, claim, record); err == nil {
-		directory.Close()
+		_ = directory.Close()
 		t.Fatal("record creation accepted a file as its home")
 	}
 
@@ -131,17 +131,17 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run.Close()
+	_ = run.Close()
 	if err := os.Mkdir(filepath.Join(runPath, "branch-reconciliations", record.EventID, branchReconciliationRecordName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	directory.Close()
+	_ = directory.Close()
 	if created, err := createBranchReconciliationRecord(home, claim, record); err == nil {
-		created.Close()
+		_ = created.Close()
 		t.Fatal("record creation replaced a directory at the record path")
 	}
 	if _, opened, err := readBranchReconciliationRecord(home, claim, record.EventID); err == nil {
-		opened.Close()
+		_ = opened.Close()
 		t.Fatal("record replay accepted a directory as JSON")
 	}
 
@@ -149,7 +149,7 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed.Close()
+	_ = closed.Close()
 	if _, err := finishBranchReconciliation(closed, record, claim.Worktree, LocalWorkLogEvent{}, LocalWorkLogProjection{}); err == nil {
 		t.Fatal("completion reported success without writing its terminal stage")
 	}
@@ -182,8 +182,8 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", altered, false); err != nil {
 		t.Fatal(err)
 	}
-	claims.Close()
-	run.Close()
+	_ = claims.Close()
+	_ = run.Close()
 	if _, _, err := reconciliationClaim(home, worktree); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("altered immutable claim read error = %v", err)
 	}
@@ -258,7 +258,7 @@ func TestBranchReconciliationBundleRejectsUnknownRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "local",
 		"refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil {
 		t.Fatal("bundle for a nonexistent immutable claim ref was preserved")
