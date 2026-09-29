@@ -359,14 +359,7 @@ func LogRefresh(ctx context.Context, options LogRefreshOptions) (LogVerbResult, 
 	if err != nil {
 		return LogVerbResult{}, err
 	}
-	base := strings.TrimSpace(options.Base)
-	if base == "" {
-		if manifest, err := ReadManifest(root); err == nil && strings.TrimSpace(manifest.Base) != "" {
-			base = manifest.Base
-		} else {
-			base = "main"
-		}
-	}
+	base := resolveLogBase(root, options.Base)
 	gitEvidence := observeLocalGit(ctx, root)
 	targetSHA, err := fetchRemoteTargetHead(ctx, root, base)
 	notes := []string{}
@@ -470,14 +463,7 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 		resolvedConflict = true
 	}
 
-	base := strings.TrimSpace(options.Base)
-	if base == "" {
-		if manifest, err := ReadManifest(root); err == nil && strings.TrimSpace(manifest.Base) != "" {
-			base = manifest.Base
-		} else {
-			base = "main"
-		}
-	}
+	base := resolveLogBase(root, options.Base)
 	targetSHA, err := fetchRemoteTargetHead(ctx, root, base)
 	if err != nil {
 		return LogVerbResult{}, err
@@ -534,6 +520,18 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 		Worktree: root, Verb: "integrate", Event: &event, Projection: &localProjection,
 		Applied: integrateErr == nil, Notes: notes,
 	}, nil
+}
+
+func resolveLogBase(worktree, requested string) string {
+	if base := strings.TrimSpace(requested); base != "" {
+		return base
+	}
+	if manifest, err := ReadManifest(worktree); err == nil {
+		if base := strings.TrimSpace(manifest.Base); base != "" {
+			return base
+		}
+	}
+	return "main"
 }
 
 func branchPublished(ctx context.Context, worktree string) (bool, error) {

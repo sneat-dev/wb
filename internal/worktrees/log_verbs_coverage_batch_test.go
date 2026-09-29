@@ -121,6 +121,15 @@ func TestLogVerbsCoverageBatch(t *testing.T) {
 
 	//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
 	t.Run("refresh integrate handoff", func(t *testing.T) {
+		if base := resolveLogBase(worktree, " release "); base != "release" {
+			t.Fatalf("explicit log base = %q", base)
+		}
+		if base := resolveLogBase(worktree, ""); base != "main" {
+			t.Fatalf("manifest log base = %q", base)
+		}
+		if base := resolveLogBase(t.TempDir(), ""); base != "main" {
+			t.Fatalf("fallback log base = %q", base)
+		}
 		dirty := filepath.Join(worktree, "dirty.txt")
 		if err := os.WriteFile(dirty, []byte("dirty\n"), 0o600); err != nil {
 			t.Fatal(err)
