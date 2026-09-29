@@ -212,6 +212,17 @@ func sessionReceivePhysicalCoordinates(
 	if err != nil {
 		return worktreePlacement{}, "", "", "", "", err
 	}
+	return sessionReceiveCoordinatesForPlacement(placement, spec, repository)
+}
+
+// sessionReceiveCoordinatesForPlacement translates an already validated
+// placement into the deterministic receive paths. Keeping this pure makes the
+// path policy independently testable from Git and user configuration lookup.
+func sessionReceiveCoordinatesForPlacement(
+	placement worktreePlacement,
+	spec SessionReceiveSpec,
+	repository string,
+) (resolved worktreePlacement, operationPath, parent, name, worktreePath string, err error) {
 	_, declaredName, splitErr := splitRepository(repository)
 	if splitErr != nil {
 		return worktreePlacement{}, "", "", "", "", splitErr
@@ -774,7 +785,14 @@ func verifySessionReceiveCanonical(ctx context.Context, canonical *canonicalRepo
 // opens — and, when it must clone, creates — the exact directory tree the clone
 // lives in instead of a host-less duplicate beside it.
 func sessionReceiveCanonicalParent(projectsRoot, canonicalPath string) (parent, name string, err error) {
-	relative, err := filepath.Rel(projectsRoot, canonicalPath)
+	return sessionReceiveCanonicalParentUsing(filepath.Rel, projectsRoot, canonicalPath)
+}
+
+func sessionReceiveCanonicalParentUsing(
+	relativePath func(string, string) (string, error),
+	projectsRoot, canonicalPath string,
+) (parent, name string, err error) {
+	relative, err := relativePath(projectsRoot, canonicalPath)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve canonical clone %s below %s: %w", canonicalPath, projectsRoot, err)
 	}
@@ -785,9 +803,6 @@ func sessionReceiveCanonicalParent(projectsRoot, canonicalPath string) (parent, 
 	parent, name = path.Dir(slashed), path.Base(slashed)
 	if parent == "." {
 		parent = ""
-	}
-	if name == "" || name == "." || name == ".." {
-		return "", "", fmt.Errorf("canonical clone %s has no repository name", canonicalPath)
 	}
 	return parent, name, nil
 }
@@ -1088,7 +1103,14 @@ func recoverInterruptedSessionReceivePublication(
 }
 
 func exactInterruptedSessionStage(operationRoot, registeredPath string) (string, bool) {
-	relative, err := filepath.Rel(filepath.Clean(operationRoot), filepath.Clean(registeredPath))
+	return exactInterruptedSessionStageUsing(filepath.Rel, operationRoot, registeredPath)
+}
+
+func exactInterruptedSessionStageUsing(
+	relativePath func(string, string) (string, error),
+	operationRoot, registeredPath string,
+) (string, bool) {
+	relative, err := relativePath(filepath.Clean(operationRoot), filepath.Clean(registeredPath))
 	if err != nil {
 		return "", false
 	}
