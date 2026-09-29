@@ -167,12 +167,17 @@ func TestTransferReceiptRefusals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = held.Close() })
 			options := RepositoryRelocateOptions{ProjectsRoot: projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed", RemoteURL: "file:///remote", DefaultBranch: "main", Now: time.Now}
 			result := RepositoryRelocateResult{SourceRepository: options.SourceRepository, DestinationRepository: options.DestinationRepository, DestinationDir: dest, RetiredDestinationDir: quarantine, RemoteURL: options.RemoteURL, DefaultBranch: options.DefaultBranch}
 			receipt, pending, err := recordRepositoryTransferCleanupIntent(options, result, "0123456789abcdef0123456789abcdef01234567", held)
-			_ = held.Close()
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario != "replacement inode" {
+				if err := held.Close(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if scenario == "wrong path" {
 				pending = filepath.Join(root, "pending.json")
@@ -201,6 +206,17 @@ func TestTransferReceiptRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Mkdir(quarantine, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				original, err := held.Stat()
+				if err != nil {
+					t.Fatal(err)
+				}
+				replacement, err := os.Stat(quarantine)
+				if err != nil || os.SameFile(original, replacement) {
+					t.Fatalf("replacement reused original quarantine identity: %v", err)
+				}
+				if err := held.Close(); err != nil {
 					t.Fatal(err)
 				}
 			}
