@@ -313,7 +313,7 @@ func TestTransferDescriptorBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
+	t.Cleanup(func() { _ = parent.Close() })
 	if _, absent, err := openRepositoryTransferCleanupQuarantine(parent, root, "absent"); err != nil || !absent {
 		t.Fatalf("absent = %v, %v", absent, err)
 	}
@@ -327,7 +327,7 @@ func TestTransferDescriptorBoundaries(t *testing.T) {
 	if err != nil || absent {
 		t.Fatalf("held = %v, %v", absent, err)
 	}
-	defer held.Close()
+	t.Cleanup(func() { _ = held.Close() })
 	if err := retireRepositoryTransferReplacement(quarantine, held); err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +774,7 @@ func TestTransferReceiptFilesystemFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer held.Close()
+			defer func() { _ = held.Close() }()
 			options := RepositoryRelocateOptions{ProjectsRoot: projectsRoot, Now: time.Now}
 			result := RepositoryRelocateResult{SourceRepository: "a/b", DestinationRepository: "c/d", RetiredDestinationDir: quarantine}
 			if scenario == "intent root" {
@@ -1114,7 +1114,7 @@ func TestStageIsolationNameCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	t.Cleanup(func() { _ = root.Close() })
 	call := 0
 	token := func(int) string { return "dddddddddddddddddddddddddddddddd" }
 	move := func(_ *os.File, _ string, _ *os.File, _ string, _ *os.File, _ func(), _ ...func()) (*os.File, error) {
