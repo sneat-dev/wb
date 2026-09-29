@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -75,38 +74,33 @@ func TestChangedLineRatchetAppendsAuthenticatedExternalFailureRecord(t *testing.
 		StartedAt: fixture.session.StartedAt, FailedAt: fixture.session.StartedAt.Add(time.Second),
 		TargetWorkLogReference: prepared.WorkLogReference, Diagnostic: "launcher exited",
 	}
-	sealFailureEvidenceForTest(&failure)
-	event, err := RecordExternalTargetAttemptFailed(ExternalTargetAttemptFailureOptions{
+	options := ExternalTargetAttemptFailureOptions{
 		ProjectsRoot: fixture.base.projectsRoot, Request: fixture.base.request, RequestDigest: fixture.digest,
 		WorktreeDir: fixture.worktree, Failure: failure,
-	})
+	}
+	authenticates := func(got sessionlaunch.FailureEvidence, handoffID string, digest sessionmove.Digest, targetReference string) bool {
+		return got == failure && handoffID == fixture.base.request.HandoffID && digest == fixture.digest && targetReference == prepared.WorkLogReference
+	}
+	missingProjection := options
+	missingProjection.WorktreeDir = t.TempDir()
+	if _, err := recordExternalTargetAttemptFailed(missingProjection, authenticates); err == nil {
+		t.Fatal("failure record without the target projection was accepted")
+	}
+	wrongOwner := options
+	wrongOwner.Failure.AttemptID = "000002-" + strings.Repeat("2", 32)
+	wrongOwner.Failure.AttemptIndex = 2
+	failure = wrongOwner.Failure
+	if _, err := recordExternalTargetAttemptFailed(wrongOwner, authenticates); err == nil {
+		t.Fatal("failure record without the exact attempt owner was accepted")
+	}
+	failure = options.Failure
+	event, err := recordExternalTargetAttemptFailed(options, authenticates)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if event.Result != "failed" || event.Extra["attempt_id"] != failure.AttemptID {
 		t.Fatalf("event = %#v", event)
 	}
-}
-
-type failureEvidenceTestAuthority struct {
-	HandoffID              string
-	RequestDigest          sessionmove.Digest
-	AttemptID              string
-	AttemptIndex           uint64
-	PID                    int
-	StartedAt              time.Time
-	FailedAt               time.Time
-	TargetWorkLogReference string
-	Diagnostic             string
-}
-
-// sealFailureEvidenceForTest mirrors the private launcher authority only in
-// this internal package test. Production can obtain this token solely from
-// sessionlaunch after its descriptor-backed release protocol succeeds.
-func sealFailureEvidenceForTest(evidence *sessionlaunch.FailureEvidence) {
-	authority := &failureEvidenceTestAuthority{evidence.HandoffID, evidence.RequestDigest, evidence.AttemptID, evidence.AttemptIndex, evidence.PID, evidence.StartedAt, evidence.FailedAt, evidence.TargetWorkLogReference, evidence.Diagnostic}
-	const authorityOffset = unsafe.Sizeof(sessionlaunch.FailureEvidence{}) - unsafe.Sizeof(uintptr(0))
-	*(*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(evidence), authorityOffset)) = unsafe.Pointer(authority)
 }
 
 func TestChangedLineRatchetRejectsIncompleteDependencyDeltaAfterAuthenticatingSource(t *testing.T) {

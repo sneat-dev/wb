@@ -387,9 +387,17 @@ type ExternalTargetAttemptFailureOptions struct {
 }
 
 func RecordExternalTargetAttemptFailed(options ExternalTargetAttemptFailureOptions) (LocalWorkLogEvent, error) {
+	return recordExternalTargetAttemptFailed(options, func(failure sessionlaunch.FailureEvidence, handoffID string, digest sessionmove.Digest, targetReference string) bool {
+		return failure.Authenticates(handoffID, digest, targetReference)
+	})
+}
+
+func recordExternalTargetAttemptFailed(options ExternalTargetAttemptFailureOptions,
+	authenticates func(sessionlaunch.FailureEvidence, string, sessionmove.Digest, string) bool,
+) (LocalWorkLogEvent, error) {
 	failure := options.Failure
 	expectedReference, referenceErr := sessionmove.ExpectedTargetWorkLogReference(options.Request, options.RequestDigest)
-	if referenceErr != nil || !failure.Authenticates(options.Request.HandoffID, options.RequestDigest, expectedReference.String()) ||
+	if referenceErr != nil || !authenticates(failure, options.Request.HandoffID, options.RequestDigest, expectedReference.String()) ||
 		!validExternalAttempt(failure.AttemptID, failure.AttemptIndex) || failure.PID <= 0 || failure.StartedAt.IsZero() || failure.FailedAt.IsZero() ||
 		failure.FailedAt.Before(failure.StartedAt) || strings.TrimSpace(failure.Diagnostic) == "" {
 		return LocalWorkLogEvent{}, fmt.Errorf("exact failed launcher attempt evidence is incomplete")
