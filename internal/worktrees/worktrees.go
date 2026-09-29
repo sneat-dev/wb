@@ -25,12 +25,10 @@ import (
 	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreelayout"
 )
 
-var (
-	safeSegment           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	safeRepositorySegment = regexp.MustCompile(`^[.A-Za-z0-9][A-Za-z0-9._-]*$`)
-)
+var safeSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // SecureStageGitHelperArgument selects the private WB child-process path that
 // enters the stage directory from inherited file descriptor 3 before running
@@ -1830,11 +1828,7 @@ func absoluteProjectsRoot(root string) (string, error) {
 // work logs and filters carry. Use splitRepositoryAddress when the host
 // matters.
 func splitRepository(repository string) (owner, name string, err error) {
-	address, err := splitRepositoryAddress(repository)
-	if err != nil {
-		return "", "", err
-	}
-	return address.Org, address.Repo, nil
+	return worktreelayout.SplitRepository(repository)
 }
 
 // splitRepositoryAddress parses one repository coordinate into its canonical
@@ -1842,26 +1836,7 @@ func splitRepository(repository string) (owner, name string, err error) {
 // spelling every existing claim, work log and CLI argument uses — while a
 // three-segment coordinate must start with a literal forge hostname.
 func splitRepositoryAddress(repository string) (repopath.Address, error) {
-	if repository != strings.TrimSpace(repository) {
-		return repopath.Address{}, fmt.Errorf("repository %q must not have surrounding whitespace", repository)
-	}
-	parts := strings.Split(repository, "/")
-	switch len(parts) {
-	case 2:
-		if !safeSegment.MatchString(parts[0]) || !safeRepositorySegment.MatchString(parts[1]) ||
-			parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
-			return repopath.Address{}, fmt.Errorf("repository %q must be owner/name using safe path segments", repository)
-		}
-		return repopath.Address{Org: parts[0], Repo: parts[1]}, nil
-	case 3:
-		address, err := repopath.ParseRelative(repository)
-		if err != nil {
-			return repopath.Address{}, fmt.Errorf("repository %q must be host/owner/name with a literal forge hostname: %w", repository, err)
-		}
-		return address, nil
-	default:
-		return repopath.Address{}, fmt.Errorf("repository %q must be owner/name or host/owner/name using safe path segments", repository)
-	}
+	return worktreelayout.SplitRepositoryAddress(repository)
 }
 
 // CanonicalRepositoryPath validates one repository coordinate with the same
@@ -1918,15 +1893,7 @@ func ExpectedRemoteURL(projectsRoot, canonicalPath string) (string, error) {
 // actually exists, so a fleet that has not adopted the host level yet stays
 // operable in place. See resolveCanonicalClone.
 func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, canonical string, err error) {
-	address, err := splitRepositoryAddress(repository)
-	if err != nil {
-		return "", "", "", err
-	}
-	resolved, err := resolveCanonicalClone(projectsRoot, address)
-	if err != nil {
-		return "", "", "", err
-	}
-	return resolved.Org, resolved.Repo, resolved.Path(projectsRoot), nil
+	return worktreelayout.CanonicalRepositoryPath(projectsRoot, repository)
 }
 
 // resolveCanonicalClone returns the canonical clone address for one repository
@@ -1940,13 +1907,7 @@ func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, cano
 // from a clone URL, and inventing one would place a repository on a forge
 // nobody named.
 func resolveCanonicalClone(projectsRoot string, address repopath.Address) (repopath.Address, error) {
-	if address.Host != "" {
-		return address, nil
-	}
-	// The placement resolution — existing clone first, literal host level
-	// before the legacy two-level one — lives in repopath so every subsystem
-	// that has to answer "where is this repository" answers it the same way.
-	return repopath.Locate(projectsRoot, address.Org, address.Repo)
+	return worktreelayout.ResolveCanonicalClone(projectsRoot, address)
 }
 
 // synchronizeCanonical validates that canonical is an ordinary clone and
@@ -2167,26 +2128,7 @@ func validBranch(ctx context.Context, branch string) bool {
 // literal forge hostname, and the legacy <projects-root>/{owner}/{repository}
 // this fleet still uses. The returned host is empty for the legacy placement.
 func canonicalCoordinates(projectsRoot, root string) (host, owner, name string, err error) {
-	relative, err := filepath.Rel(projectsRoot, root)
-	if err != nil {
-		return "", "", "", err
-	}
-	parts := strings.Split(filepath.ToSlash(relative), "/")
-	if len(parts) == 3 {
-		if !repopath.IsForgeHost(parts[0]) {
-			return "", "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/{host}/{owner}/{repository} with the literal forge hostname as its first level", root)
-		}
-		host = parts[0]
-		parts = parts[1:]
-	}
-	if len(parts) != 2 {
-		return "", "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/{host}/{owner}/{repository}", root)
-	}
-	owner, name, err = splitRepository(strings.Join(parts, "/"))
-	if err != nil {
-		return "", "", "", err
-	}
-	return host, owner, name, nil
+	return worktreelayout.CanonicalCoordinates(projectsRoot, root)
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
