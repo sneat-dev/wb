@@ -1651,18 +1651,17 @@ func isGitObjectID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
-	for _, character := range value {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
+	return hasOnlyLowerHexCharacters(value)
 }
 
 func isGitRevisionID(value string) bool {
 	if len(value) < 4 || len(value) > 64 {
 		return false
 	}
+	return hasOnlyLowerHexCharacters(value)
+}
+
+func hasOnlyLowerHexCharacters(value string) bool {
 	for _, character := range value {
 		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
@@ -2060,23 +2059,23 @@ func validateExistingWorktree(ctx context.Context, canonical *canonicalRepositor
 }
 
 func gitDirectoriesCanonical(ctx context.Context, canonical *canonicalRepository) (gitDir, commonDir string, err error) {
-	gitDir, err = gitCanonical(ctx, canonical, "rev-parse", "--absolute-git-dir")
-	if err != nil {
-		return "", "", err
-	}
-	commonDir, err = gitCanonical(ctx, canonical, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", "", err
-	}
-	return filepath.Clean(gitDir), filepath.Clean(commonDir), nil
+	return resolveGitDirectories(func(args ...string) (string, error) {
+		return gitCanonical(ctx, canonical, args...)
+	})
 }
 
 func gitDirectories(ctx context.Context, root string) (gitDir, commonDir string, err error) {
-	gitDir, err = git(ctx, root, "rev-parse", "--absolute-git-dir")
+	return resolveGitDirectories(func(args ...string) (string, error) {
+		return git(ctx, root, args...)
+	})
+}
+
+func resolveGitDirectories(run func(...string) (string, error)) (gitDir, commonDir string, err error) {
+	gitDir, err = run("rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return "", "", err
 	}
-	commonDir, err = git(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonDir, err = run("rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", "", err
 	}

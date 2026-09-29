@@ -4417,11 +4417,7 @@ func selectExactDeletedTargetDefaultBranchReceipt(ctx context.Context, repositor
 			candidate.Base.Ref != defaultBase || !isGitObjectID(candidate.Head.SHA) || !isGitObjectID(candidate.MergeCommitSHA) {
 			continue
 		}
-		candidateReceipt := &PullRequest{
-			Number: candidate.Number, URL: candidate.URL, Repository: repository, State: "MERGED",
-			Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
-			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
-		}
+		candidateReceipt := mergedPullRequestReceipt(repository, candidate)
 		if receipt != nil && (receipt.Number != candidateReceipt.Number || receipt.MergeSHA != candidateReceipt.MergeSHA) {
 			return nil, fmt.Errorf("multiple exact merged pull-request receipts found for deleted target %s at head %s", recordedTarget, head)
 		}
@@ -4939,11 +4935,15 @@ func resolveAbsorbedByPullRequestWithGet(
 			slug, number, candidate.Head.SHA,
 		), nil
 	}
-	return candidate.MergeCommitSHA, &PullRequest{
-		Number: candidate.Number, URL: candidate.URL, Repository: slug, State: "MERGED",
+	return candidate.MergeCommitSHA, mergedPullRequestReceipt(slug, candidate), "", nil
+}
+
+func mergedPullRequestReceipt(repository string, candidate githubPullRequest) *PullRequest {
+	return &PullRequest{
+		Number: candidate.Number, URL: candidate.URL, Repository: repository, State: "MERGED",
 		Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
 		MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
-	}, "", nil
+	}
 }
 
 // absorbingPullRequest selects the newest merged pull request into the exact
