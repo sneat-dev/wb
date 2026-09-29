@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+func TestWtLifeCovSummarizeCreatePlanWorkLogs(t *testing.T) {
+	t.Parallel()
+	if summary := summarizeCreatePlanWorkLogs(nil); summary.needsWorkLog || summary.existingRunClaim != nil || summary.existingRunsDiffer {
+		t.Fatalf("empty summary = %#v", summary)
+	}
+
+	first := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: "first"}
+	sameRun := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: "second"}
+	differentRun := workLogClaim{EffortID: "effort", RunID: "other", ClaimID: "third"}
+	summary := summarizeCreatePlanWorkLogs([]createPlan{
+		{needsWorkLog: true},
+		{resumeClaim: &first},
+		{resumeClaim: &sameRun},
+	})
+	if !summary.needsWorkLog || summary.existingRunClaim == nil || summary.existingRunsDiffer ||
+		summary.existingRunClaim.ClaimID != first.ClaimID {
+		t.Fatalf("single-run summary = %#v", summary)
+	}
+	first.ClaimID = "mutated"
+	if summary.existingRunClaim.ClaimID == first.ClaimID {
+		t.Fatal("summary retained the caller's mutable claim pointer")
+	}
+
+	summary = summarizeCreatePlanWorkLogs([]createPlan{{resumeClaim: &sameRun}, {resumeClaim: &differentRun}})
+	if summary.needsWorkLog || summary.existingRunClaim == nil || !summary.existingRunsDiffer {
+		t.Fatalf("different-run summary = %#v", summary)
+	}
+}
+
 func TestWtLifeCovPrepareWorktreeDestinationPlansDirectAndOwnedLayouts(t *testing.T) {
 	operationRoot := t.TempDir()
 	operationDirectory := wtLifeCovOpenDirectory(t, operationRoot)

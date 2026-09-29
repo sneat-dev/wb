@@ -321,6 +321,34 @@ type createPlan struct {
 	recoveredStage bool
 }
 
+type createPlanWorkLogSummary struct {
+	needsWorkLog       bool
+	existingRunClaim   *workLogClaim
+	existingRunsDiffer bool
+}
+
+func summarizeCreatePlanWorkLogs(plans []createPlan) createPlanWorkLogSummary {
+	var summary createPlanWorkLogSummary
+	for index := range plans {
+		if plans[index].needsWorkLog {
+			summary.needsWorkLog = true
+		}
+		claim := plans[index].resumeClaim
+		if claim == nil {
+			continue
+		}
+		if summary.existingRunClaim == nil {
+			copy := *claim
+			summary.existingRunClaim = &copy
+			continue
+		}
+		if claim.EffortID != summary.existingRunClaim.EffortID || claim.RunID != summary.existingRunClaim.RunID {
+			summary.existingRunsDiffer = true
+		}
+	}
+	return summary
+}
+
 type createdWorktreePublication struct {
 	ownerDirectory      *os.File
 	worktreeDirectory   *os.File
@@ -716,32 +744,13 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		plans = append(plans, plan)
 	}
 
-	needsWorkLog := false
-	var existingRunClaim *workLogClaim
-	existingRunsDiffer := false
-	for index := range plans {
-		if plans[index].needsWorkLog {
-			needsWorkLog = true
-		}
-		if plans[index].resumeClaim == nil {
-			continue
-		}
-		claim := plans[index].resumeClaim
-		if existingRunClaim == nil {
-			copy := *claim
-			existingRunClaim = &copy
-			continue
-		}
-		if claim.EffortID != existingRunClaim.EffortID || claim.RunID != existingRunClaim.RunID {
-			existingRunsDiffer = true
-		}
-	}
-	if needsWorkLog && !workLogPrepared {
-		if existingRunClaim != nil {
-			if existingRunsDiffer {
+	workLogs := summarizeCreatePlanWorkLogs(plans)
+	if workLogs.needsWorkLog && !workLogPrepared {
+		if workLogs.existingRunClaim != nil {
+			if workLogs.existingRunsDiffer {
 				return nil, fmt.Errorf("cannot extend one coordinated resume across different active Work Log runs; resume the existing worktrees separately or perform an audited handoff")
 			}
-			normalized.WorkLog, err = workLogOptionsForClaimExtension(home, normalized.WorkLog, *existingRunClaim)
+			normalized.WorkLog, err = workLogOptionsForClaimExtension(home, normalized.WorkLog, *workLogs.existingRunClaim)
 			if err != nil {
 				return nil, err
 			}
