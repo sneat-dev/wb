@@ -328,6 +328,10 @@ func TestTransferDescriptorBoundaries(t *testing.T) {
 		t.Fatalf("held = %v, %v", absent, err)
 	}
 	t.Cleanup(func() { _ = held.Close() })
+	flags, err := unix.FcntlInt(held.Fd(), unix.F_GETFD, 0)
+	if err != nil || flags&unix.FD_CLOEXEC == 0 {
+		t.Fatalf("quarantine descriptor close-on-exec = %d, %v", flags, err)
+	}
 	if err := retireRepositoryTransferReplacement(quarantine, held); err != nil {
 		t.Fatal(err)
 	}
@@ -639,6 +643,18 @@ func TestStageApplyFilesystemBoundaries(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(retiredStageArchivePath(home, planned), "evidence")); err != nil {
 					t.Fatalf("partial move archive lost: %v", err)
+				}
+			}
+			if scenario == "move refused" {
+				if _, err := os.Lstat(filepath.Join(worktreesRoot, task, ".lock")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("pre-rename refusal retained operation lock: %v", err)
+				}
+				if err := os.Rename(stage+"-saved", stage); err != nil {
+					t.Fatal(err)
+				}
+				retry, err := RecoverRetiredStages(context.Background(), RetiredStageRecoveryOptions{ProjectsRoot: projectsRoot, Task: task, Apply: true})
+				if err != nil || len(retry.Results) != 1 || !retry.Results[0].Applied {
+					t.Fatalf("pre-rename refusal blocked retry: %#v, %v", retry, err)
 				}
 			}
 		})
@@ -1024,6 +1040,7 @@ func TestUnscopedStageDescriptorBoundaries(t *testing.T) {
 			}
 			artifacts := []LifecycleArtifact{{WorktreesRoot: root, Path: stage, Kind: lifecycleArtifactKindStage, State: "quarantined", Disposition: dispositionEmptyUnscopedLocalRetiredStage, Eligible: true}}
 			var hooks gcRetiredStageHooks
+			var isolatedName string
 			switch scenario {
 			case "root replaced":
 				hooks.afterRootOpen = func(*os.File) {
@@ -1069,6 +1086,7 @@ func TestUnscopedStageDescriptorBoundaries(t *testing.T) {
 				}
 			case "isolated entry changed":
 				hooks.afterIsolation = func(retired string, _ *os.File) {
+					isolatedName = retired
 					from := filepath.Join(root, retired)
 					if err := os.Rename(from, from+"-saved"); err != nil {
 						t.Fatal(err)
@@ -1097,9 +1115,16 @@ func TestUnscopedStageDescriptorBoundaries(t *testing.T) {
 				if _, err := os.Stat(stage + "-saved"); err != nil {
 					t.Fatalf("original stage lost: %v", err)
 				}
+			} else if scenario == "isolated entry changed" {
+				if got.ArchivePath != "" {
+					t.Fatalf("replacement inode advertised as original archive: %q", got.ArchivePath)
+				}
+				if _, err := os.Stat(filepath.Join(root, isolatedName+"-saved")); err != nil {
+					t.Fatalf("moved original was not preserved: %v", err)
+				}
 			} else if scenario == "partial isolation" || strings.HasPrefix(scenario, "isolated") || scenario == "link stat failed" {
 				if got.ArchivePath != "" {
-					if _, err := os.Stat(got.ArchivePath); err != nil && scenario != "isolated entry changed" {
+					if _, err := os.Stat(got.ArchivePath); err != nil {
 						t.Fatalf("isolated stage lost: %v", err)
 					}
 				}

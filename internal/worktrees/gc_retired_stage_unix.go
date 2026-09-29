@@ -119,9 +119,12 @@ func retireEmptyUnscopedLocalStagesWithBoundaryHooks(artifacts []LifecycleArtifa
 				hooks.afterIsolation(retiredName, moved)
 			}
 			empty, emptyErr = directoryEmpty(moved)
-			if emptyErr != nil || !empty || !directoryEntryStillMatches(root, retiredName, moved) {
+			isolatedMatches := directoryEntryStillMatches(root, retiredName, moved)
+			if emptyErr != nil || !empty || !isolatedMatches {
 				artifact.Eligible = false
-				artifact.ArchivePath = filepath.Join(rootPath, retiredName)
+				if isolatedMatches {
+					artifact.ArchivePath = filepath.Join(rootPath, retiredName)
+				}
 				if emptyErr != nil {
 					artifact.Reason = "reinspect isolated retired canonical-local stage: " + emptyErr.Error()
 				} else if !empty {

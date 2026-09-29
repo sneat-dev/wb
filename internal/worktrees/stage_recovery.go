@@ -302,13 +302,13 @@ func applyRetiredStageRecoveryWithHooks(home string, result *RetiredStageRecover
 		result.Reason = "cannot acquire task lock for audited stage recovery: " + err.Error()
 		return
 	}
-	// A refusal before the move is a no-op and must release the operation
-	// lock. Once a move was attempted, an error can mean partial isolation;
+	// A refusal before rename is a no-op and must release the operation
+	// lock. Once rename succeeds, a later error can mean partial isolation;
 	// keep the lock as recovery evidence until an operator inspects it.
-	moveAttempted := false
+	renamed := false
 	settled := false
 	defer func() {
-		if moveAttempted && !settled {
+		if renamed && !settled {
 			task.preserveLock()
 		} else if releaseErr := task.lock.release(); releaseErr == nil {
 			purgeTerminalTaskLockDebris(task)
@@ -372,8 +372,12 @@ func applyRetiredStageRecoveryWithHooks(home string, result *RetiredStageRecover
 	if hooks.beforeMove != nil {
 		hooks.beforeMove()
 	}
-	moveAttempted = true
-	moved, err := moveExpectedDirectoryNoReplace(task.task, result.Stage, archiveParent, filepath.Base(archivePath), stage, nil, hooks.afterMove)
+	moved, err := moveExpectedDirectoryNoReplace(task.task, result.Stage, archiveParent, filepath.Base(archivePath), stage, nil, func() {
+		renamed = true
+		if hooks.afterMove != nil {
+			hooks.afterMove()
+		}
+	})
 	if err != nil {
 		if moved != nil {
 			_ = moved.Close()
