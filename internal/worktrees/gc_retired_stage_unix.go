@@ -26,6 +26,19 @@ func retireEmptyUnscopedLocalStagesAfterAuthorization(artifacts []LifecycleArtif
 }
 
 func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afterAuthorization func(), beforeRemoval func(string)) {
+	retireEmptyUnscopedLocalStagesWithBoundaryHooks(artifacts, afterAuthorization, beforeRemoval, gcRetiredStageHooks{})
+}
+
+type gcRetiredStageHooks struct {
+	afterRootOpen   func(*os.File)
+	afterStageOpen  func(*os.File)
+	afterStageMatch func(*os.File)
+	afterMove       func(string)
+	afterIsolation  func(string, *os.File)
+	beforeLinkStat  func(*os.File)
+}
+
+func retireEmptyUnscopedLocalStagesWithBoundaryHooks(artifacts []LifecycleArtifact, afterAuthorization func(), beforeRemoval func(string), hooks gcRetiredStageHooks) {
 	for index := range artifacts {
 		artifact := &artifacts[index]
 		if artifact.Kind != lifecycleArtifactKindStage || artifact.State != "quarantined" ||
@@ -47,12 +60,16 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 		}
 		func() {
 			defer func() { _ = root.Close() }()
+			if hooks.afterRootOpen != nil {
+				hooks.afterRootOpen(root)
+			}
 			if !directoryStillMatches(rootPath, root) {
 				artifact.Eligible = false
 				artifact.Reason = "canonical-local worktrees root changed before apply"
 				return
 			}
-			fd, openErr := unix.Openat(int(root.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			directory, openErr := openDirectoryAtNoFollow(int(root.Fd()), name, "wb-gc-retired-stage",
+				"open retired canonical-local stage without following links", "")
 			if errors.Is(openErr, unix.ENOENT) {
 				artifact.Applied = true
 				artifact.Disposition = dispositionRetiredEmptyUnscopedLocalStage
@@ -61,21 +78,20 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 			}
 			if openErr != nil {
 				artifact.Eligible = false
-				artifact.Reason = "open retired canonical-local stage without following links: " + openErr.Error()
-				return
-			}
-			directory := os.NewFile(uintptr(fd), "wb-gc-retired-stage")
-			if directory == nil {
-				_ = unix.Close(fd)
-				artifact.Eligible = false
-				artifact.Reason = "wrap retired canonical-local stage descriptor"
+				artifact.Reason = openErr.Error()
 				return
 			}
 			defer func() { _ = directory.Close() }()
+			if hooks.afterStageOpen != nil {
+				hooks.afterStageOpen(directory)
+			}
 			if !directoryStillMatches(artifact.Path, directory) {
 				artifact.Eligible = false
 				artifact.Reason = "retired canonical-local stage changed before apply"
 				return
+			}
+			if hooks.afterStageMatch != nil {
+				hooks.afterStageMatch(directory)
 			}
 			empty, emptyErr := directoryEmpty(directory)
 			if emptyErr != nil || !empty {
@@ -87,7 +103,7 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 				}
 				return
 			}
-			retiredName, moved, moveErr := moveEmptyRetiredStageForGC(root, name, directory, afterAuthorization)
+			retiredName, moved, moveErr := moveEmptyRetiredStageForGC(root, name, directory, afterAuthorization, hooks.afterMove)
 			if moved != nil {
 				defer func() { _ = moved.Close() }()
 			}
@@ -99,10 +115,8 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 				}
 				return
 			}
-			if moved == nil {
-				artifact.Eligible = false
-				artifact.Reason = "isolate exact retired canonical-local stage: moved descriptor is unavailable"
-				return
+			if hooks.afterIsolation != nil {
+				hooks.afterIsolation(retiredName, moved)
 			}
 			empty, emptyErr = directoryEmpty(moved)
 			if emptyErr != nil || !empty || !directoryEntryStillMatches(root, retiredName, moved) {
@@ -116,6 +130,9 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 					artifact.Reason = "isolated retired canonical-local stage changed before removal"
 				}
 				return
+			}
+			if hooks.beforeLinkStat != nil {
+				hooks.beforeLinkStat(moved)
 			}
 			var linked unix.Stat_t
 			if statErr := unix.Fstat(int(moved.Fd()), &linked); statErr != nil {
@@ -145,10 +162,20 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 	}
 }
 
-func moveEmptyRetiredStageForGC(root *os.File, name string, expected *os.File, afterAuthorization func()) (string, *os.File, error) {
+func moveEmptyRetiredStageForGC(root *os.File, name string, expected *os.File, afterAuthorization func(), afterMove ...func(string)) (string, *os.File, error) {
+	return moveEmptyRetiredStageForGCWith(root, name, expected, afterAuthorization, afterMove, randomHexToken, moveExpectedDirectoryNoReplace)
+}
+
+func moveEmptyRetiredStageForGCWith(root *os.File, name string, expected *os.File, afterAuthorization func(), afterMove []func(string), token func(int) string,
+	move func(*os.File, string, *os.File, string, *os.File, func(), ...func()) (*os.File, error),
+) (string, *os.File, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		retiredName := ".wb-retired-stage-" + randomHexToken(16)
-		moved, err := moveExpectedDirectoryNoReplace(root, name, root, retiredName, expected, afterAuthorization)
+		retiredName := ".wb-retired-stage-" + token(16)
+		var movedHook func()
+		if len(afterMove) > 0 && afterMove[0] != nil {
+			movedHook = func() { afterMove[0](retiredName) }
+		}
+		moved, err := move(root, name, root, retiredName, expected, afterAuthorization, movedHook)
 		if errors.Is(err, unix.EEXIST) {
 			continue
 		}
