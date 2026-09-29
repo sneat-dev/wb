@@ -255,21 +255,9 @@ func prepareExternalTarget(ctx context.Context, options ExternalSessionWorkLogPr
 		ParentClaimID: sourceReference.ClaimID, AcquiredVia: "external_handoff", ExternalHandoff: evidence,
 	}
 	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
-	receivedEvent := LocalWorkLogEvent{
-		ID: externalLocalEventID("target-received", options.RequestDigest, ""), Type: LocalEventHandoff, At: receivedAt,
-		Message: "external session handoff received", Result: "received",
-		Extra: externalLocalEventExtra(request, targetReference.String(), "target"),
-	}
-	owner := OwnerRegistration{
-		Agent: options.Session.Runtime + "/" + options.Session.WBSessionID, Model: options.Session.Model,
-		Effort: claim.EffortID, PID: options.Session.PID, WBVersion: buildinfo.Version(), Command: "session receive", At: options.Session.StartedAt.UTC(),
-	}
-	ownerEvent := LocalWorkLogEvent{
-		ID: externalLocalEventID("target-owner", options.RequestDigest, options.AttemptID), Type: LocalEventOwner,
-		At: owner.At, Message: "successor launcher attempt prepared", Owner: &owner,
-		Extra: map[string]any{"handoff_id": request.HandoffID, "attempt_id": options.AttemptID,
-			"attempt_index": options.AttemptIndex, "target_work_log_reference": targetReference.String()},
-	}
+	receivedEvent := externalTargetReceivedEvent(request, options.RequestDigest, targetReference.String(), receivedAt)
+	ownerEvent := externalTargetOwnerEvent(request, options.RequestDigest, claim, targetReference.String(),
+		options.AttemptID, options.AttemptIndex, options.Session.PID, options.Session.StartedAt, buildinfo.Version())
 	return externalTargetPreparation{
 		targetReference: targetReference.String(), worktree: worktree, handover: handover,
 		claim: claim, manifest: manifest, receivedEvent: receivedEvent, ownerEvent: ownerEvent,
@@ -308,6 +296,29 @@ func preparedTargetManifest(claim workLogClaim, receivedAt time.Time, model stri
 		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
 		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
 		Model: model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
+	}
+}
+
+func externalTargetReceivedEvent(request sessionmove.Request, digest sessionmove.Digest, targetReference string, at time.Time) LocalWorkLogEvent {
+	return LocalWorkLogEvent{
+		Version: 1, ID: externalLocalEventID("target-received", digest, ""), Type: LocalEventHandoff, At: at.UTC(),
+		Message: "external session handoff received", Result: "received",
+		Extra: externalLocalEventExtra(request, targetReference, "target"),
+	}
+}
+
+func externalTargetOwnerEvent(request sessionmove.Request, digest sessionmove.Digest, claim workLogClaim, targetReference,
+	attemptID string, attemptIndex uint64, pid int, startedAt time.Time, wbVersion string,
+) LocalWorkLogEvent {
+	owner := OwnerRegistration{
+		Agent: claim.AgentRuntime + "/" + claim.AgentID, Model: externalReceiptModel(claim),
+		Effort: claim.EffortID, PID: pid, WBVersion: wbVersion, Command: "session receive", At: startedAt.UTC(),
+	}
+	return LocalWorkLogEvent{
+		Version: 1, ID: externalLocalEventID("target-owner", digest, attemptID), Type: LocalEventOwner,
+		At: owner.At, Message: "successor launcher attempt prepared", Owner: &owner,
+		Extra: map[string]any{"handoff_id": request.HandoffID, "attempt_id": attemptID,
+			"attempt_index": attemptIndex, "target_work_log_reference": targetReference},
 	}
 }
 
@@ -974,12 +985,7 @@ func validateExternalTargetManifestAndJournal(worktree string, request sessionmo
 	if err != nil {
 		return fmt.Errorf("read external target Work Log manifest: %w", err)
 	}
-	wantManifest := Manifest{
-		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
-		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-		CreatedAt: claim.RecordedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-		Model: receiptModel, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
-	}
+	wantManifest := preparedTargetManifest(claim, claim.RecordedAt, receiptModel)
 	if !reflect.DeepEqual(manifest, wantManifest) {
 		return fmt.Errorf("immutable external target Work Log manifest conflicts with admitted request")
 	}
@@ -995,15 +1001,14 @@ func validateExternalTargetManifestAndJournal(worktree string, request sessionmo
 		return fmt.Errorf("read external target Work Log journal: %w", err)
 	}
 	targetReference, _ := sessionmove.ExpectedTargetWorkLogReference(request, digest)
-	receivedID := externalLocalEventID("target-received", digest, "")
+	wantReceived := externalTargetReceivedEvent(request, digest, targetReference.String(), claim.RecordedAt)
 	receivedFound := false
 	for _, event := range events {
-		if event.ID != receivedID {
+		if event.ID != wantReceived.ID {
 			continue
 		}
-		wantExtra := externalLocalEventExtra(request, targetReference.String(), "target")
-		if event.Type != LocalEventHandoff || !event.At.Equal(claim.RecordedAt) || event.Message != "external session handoff received" ||
-			event.Result != "received" || !reflect.DeepEqual(event.Extra, wantExtra) {
+		wantReceived.Seq = event.Seq
+		if !sameLocalEvent(event, wantReceived) {
 			return fmt.Errorf("external target received event conflicts with admitted request")
 		}
 		receivedFound = true
@@ -1037,15 +1042,9 @@ func validateExternalAttemptOwner(worktree string, request sessionmove.Request, 
 		return fmt.Errorf("external target Work Log lacks deterministic owner for attempt %s", attemptID)
 	}
 	owner := found.Owner
-	wantExtra := map[string]any{"handoff_id": request.HandoffID, "attempt_id": attemptID,
-		"attempt_index": attemptIndex, "target_work_log_reference": claim.ExternalHandoff.TargetWorkLogReference}
-	want := LocalWorkLogEvent{
-		Version: 1, Seq: found.Seq, ID: wantID, Type: LocalEventOwner, At: startedAt.UTC(),
-		Message: "successor launcher attempt prepared",
-		Owner: &OwnerRegistration{Agent: claim.AgentRuntime + "/" + claim.AgentID, Model: externalReceiptModel(claim),
-			Effort: claim.EffortID, PID: pid, WBVersion: owner.WBVersion, Command: "session receive", At: startedAt.UTC()},
-		Extra: wantExtra,
-	}
+	want := externalTargetOwnerEvent(request, digest, claim, claim.ExternalHandoff.TargetWorkLogReference,
+		attemptID, attemptIndex, pid, startedAt, owner.WBVersion)
+	want.Seq = found.Seq
 	if owner.WBVersion == "" || !sameLocalEvent(*found, want) {
 		return fmt.Errorf("external target attempt owner conflicts with immutable launch evidence")
 	}
