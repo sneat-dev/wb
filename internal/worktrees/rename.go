@@ -1009,12 +1009,7 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 // still belongs to WB_HOME and is held by Rename.
 func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
 	if plan.destinationLocal {
-		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
-		if err != nil {
-			return err
-		}
-		defer canonical.close()
-		rootPath, root, err := prepareCanonicalWorktreesRoot(ctx, canonical, plan.baseRevision)
+		rootPath, root, err := openLocalRenameDestination(ctx, plan)
 		if err != nil {
 			return err
 		}
@@ -1039,14 +1034,11 @@ func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *re
 	}
 	parent := filepath.ToSlash(filepath.Join(parts[1 : len(parts)-1]...))
 	repository := parts[len(parts)-1]
-	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
+	root, err := openSharedRenameDestinationRoot(plan, "before move")
 	if err != nil {
-		return fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
+		return err
 	}
 	defer func() { _ = root.Close() }()
-	if !directoryStillMatches(plan.destinationRoot, root) {
-		return fmt.Errorf("shared rename destination root changed before move: %s", plan.destinationRoot)
-	}
 	taskFD, err := openOrCreateNoFollowDirectory(int(root.Fd()), task)
 	if err != nil {
 		return fmt.Errorf("create shared rename task destination: %w", err)
@@ -1070,12 +1062,7 @@ func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *re
 // checkout name absent; moveWorktree owns that no-replace publication.
 func preflightRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
 	if plan.destinationLocal {
-		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
-		if err != nil {
-			return err
-		}
-		defer canonical.close()
-		rootPath, root, err := prepareCanonicalWorktreesRoot(ctx, canonical, plan.baseRevision)
+		rootPath, root, err := openLocalRenameDestination(ctx, plan)
 		if err != nil {
 			return err
 		}
@@ -1085,14 +1072,11 @@ func preflightRenamePhysicalDestination(ctx context.Context, task string, plan *
 		}
 		return requireAbsentNoFollowChild(int(root.Fd()), task)
 	}
-	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
+	root, err := openSharedRenameDestinationRoot(plan, "during preflight")
 	if err != nil {
-		return fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
+		return err
 	}
 	defer func() { _ = root.Close() }()
-	if !directoryStillMatches(plan.destinationRoot, root) {
-		return fmt.Errorf("shared rename destination root changed during preflight: %s", plan.destinationRoot)
-	}
 	probe := ".wb-rename-probe-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	if err := unix.Mkdirat(int(root.Fd()), probe, 0o700); err != nil {
 		return fmt.Errorf("verify shared rename destination write access: %w", err)
@@ -1101,6 +1085,30 @@ func preflightRenamePhysicalDestination(ctx context.Context, task string, plan *
 		return fmt.Errorf("remove shared rename destination probe: %w", err)
 	}
 	return nil
+}
+
+func openLocalRenameDestination(ctx context.Context, plan *renamePlan) (string, *os.File, error) {
+	canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
+	if err != nil {
+		return "", nil, err
+	}
+	defer canonical.close()
+	return prepareCanonicalWorktreesRoot(ctx, canonical, plan.baseRevision)
+}
+
+func openSharedRenameDestinationRoot(plan *renamePlan, phase string, afterOpen ...func()) (*os.File, error) {
+	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
+	if err != nil {
+		return nil, fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
+	}
+	if len(afterOpen) > 0 && afterOpen[0] != nil {
+		afterOpen[0]()
+	}
+	if !directoryStillMatches(plan.destinationRoot, root) {
+		_ = root.Close()
+		return nil, fmt.Errorf("shared rename destination root changed %s: %s", phase, plan.destinationRoot)
+	}
+	return root, nil
 }
 
 func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) error {

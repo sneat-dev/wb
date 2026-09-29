@@ -791,6 +791,42 @@ func TestRenameCoverageSharedPhysicalDestination(t *testing.T) {
 	}
 }
 
+func TestRenameCoverageDestinationOpenHelpers(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	plan := &renamePlan{destinationRoot: root}
+	opened, err := openSharedRenameDestinationRoot(plan, "during test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := opened.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	blockedPath := filepath.Join(t.TempDir(), "blocked")
+	if writeErr := os.WriteFile(blockedPath, []byte("not a directory"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	blocked := &renamePlan{destinationRoot: blockedPath}
+	if opened, err = openSharedRenameDestinationRoot(blocked, "during test"); err == nil || opened != nil {
+		t.Fatalf("blocked shared root = %v/%v", opened, err)
+	}
+
+	held := root + "-held"
+	opened, err = openSharedRenameDestinationRoot(plan, "during test", func() {
+		if renameErr := os.Rename(root, held); renameErr != nil {
+			t.Fatal(renameErr)
+		}
+		if mkdirErr := os.Mkdir(root, 0o755); mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+	})
+	if err == nil || opened != nil || !strings.Contains(err.Error(), "changed during test") {
+		t.Fatalf("replaced shared root = %v/%v", opened, err)
+	}
+}
+
 func renameCoverageAncestryCall(call runnertest.Call, canonicalPath string) bool {
 	return call.Op == "RunOpts" && call.Dir == "" && call.Name == "git" &&
 		len(call.Args) >= 3 && call.Args[0] == "-C" && call.Args[1] == canonicalPath && call.Args[2] == "merge-base"
