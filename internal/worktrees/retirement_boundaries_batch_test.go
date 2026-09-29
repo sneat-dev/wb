@@ -187,6 +187,43 @@ func TestRetirementReceiptAndCaptureFailureBoundaries(t *testing.T) {
 	}
 }
 
+func TestRetirementResumeReceiptCorroboration(t *testing.T) {
+	t.Parallel()
+	remoteSHA := strings.Repeat("a", 40)
+	planned := RetireResult{
+		Task: "retire-task", Repository: "acme/app", ArchiveRepository: "acme/backstage-retired",
+		Worktree: "/worktree", Canonical: "/canonical", WorktreesRoot: "/worktrees", Branch: "source",
+		ClaimID: "claim", EffortID: "effort", RunID: "run",
+	}
+	prior := planned
+	prior.OriginalRemoteSHA = remoteSHA
+	prior.Phase = "committed"
+	if err := corroborateRetireResumeReceipt(prior, planned, "branch", remoteSHA); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteIntent := prior
+	deleteIntent.DeleteIntentSHA = remoteSHA
+	if err := corroborateRetireResumeReceipt(deleteIntent, planned, "branch", ""); err != nil {
+		t.Fatalf("durable delete intent was rejected: %v", err)
+	}
+
+	deleted := prior
+	deleted.Phase = "original_deleted"
+	if err := corroborateRetireResumeReceipt(deleted, planned, "branch", ""); err != nil {
+		t.Fatalf("completed remote deletion was rejected: %v", err)
+	}
+	if err := corroborateRetireResumeReceipt(deleted, planned, "branch", remoteSHA); err == nil {
+		t.Fatal("completed deletion with a restored remote branch was accepted")
+	}
+
+	conflicting := prior
+	conflicting.ClaimID = "other"
+	if err := corroborateRetireResumeReceipt(conflicting, planned, "branch", remoteSHA); err == nil {
+		t.Fatal("conflicting retirement receipt was accepted")
+	}
+}
+
 func TestRetirementGitFailureBoundaries(t *testing.T) {
 	t.Parallel()
 

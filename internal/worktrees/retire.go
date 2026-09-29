@@ -208,12 +208,8 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return RetireResult{}, err
 	}
 	if priorErr == nil {
-		remoteMatchesReceipt := remoteSHA == prior.OriginalRemoteSHA || remoteSHA == "" && (prior.OriginalRemoteSHA == "" || prior.DeleteIntentSHA == prior.OriginalRemoteSHA)
-		if prior.Phase == "original_deleted" {
-			remoteMatchesReceipt = remoteSHA == ""
-		}
-		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || retirePreserveMode(prior) != options.Preserve || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || !remoteMatchesReceipt {
-			return RetireResult{}, fmt.Errorf("retirement receipt conflicts with current checkout")
+		if err := corroborateRetireResumeReceipt(prior, result, options.Preserve, remoteSHA); err != nil {
+			return RetireResult{}, err
 		}
 		result = prior
 		if result.Phase == "commit_intent" {
@@ -371,6 +367,22 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func corroborateRetireResumeReceipt(prior, planned RetireResult, preserve, remoteSHA string) error {
+	remoteMatchesReceipt := remoteSHA == prior.OriginalRemoteSHA ||
+		remoteSHA == "" && (prior.OriginalRemoteSHA == "" || prior.DeleteIntentSHA == prior.OriginalRemoteSHA)
+	if prior.Phase == "original_deleted" {
+		remoteMatchesReceipt = remoteSHA == ""
+	}
+	if prior.Task != planned.Task || prior.Repository != planned.Repository || prior.Worktree != planned.Worktree ||
+		prior.Canonical != planned.Canonical || prior.WorktreesRoot != planned.WorktreesRoot || prior.Branch != planned.Branch ||
+		retirePreserveMode(prior) != preserve || prior.ArchiveRepository != planned.ArchiveRepository ||
+		prior.ClaimID != planned.ClaimID || prior.EffortID != planned.EffortID || prior.RunID != planned.RunID ||
+		!remoteMatchesReceipt {
+		return fmt.Errorf("retirement receipt conflicts with current checkout")
+	}
+	return nil
 }
 
 func normalizeRetireOptions(options RetireOptions) (RetireOptions, error) {
