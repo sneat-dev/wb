@@ -49,6 +49,28 @@ func TestWtLifeCovCreateWritableRequirements(t *testing.T) {
 	}
 }
 
+func TestWtLifeCovResumedCreateOwner(t *testing.T) {
+	t.Parallel()
+	claim := workLogClaim{EffortID: "effort", AgentRuntime: "claim-runtime", AgentID: "claim-agent", Model: "claim-model"}
+	effort, agent, model := resumedCreateOwner(WorkLogOptions{}, claim)
+	if effort != "effort" || agent != "claim-runtime" || model != "claim-model" {
+		t.Fatalf("claim owner = %q, %q, %q", effort, agent, model)
+	}
+
+	effort, agent, model = resumedCreateOwner(WorkLogOptions{
+		AgentRuntime: " caller-runtime ", AgentID: "caller-agent", Model: " caller-model ",
+	}, claim)
+	if effort != "effort" || agent != "caller-runtime" || model != "caller-model" {
+		t.Fatalf("caller owner = %q, %q, %q", effort, agent, model)
+	}
+
+	claim.AgentRuntime = ""
+	_, agent, _ = resumedCreateOwner(WorkLogOptions{}, claim)
+	if agent != "claim-agent" {
+		t.Fatalf("claim agent ID fallback = %q", agent)
+	}
+}
+
 func TestWtLifeCovSummarizeCreatePlanWorkLogs(t *testing.T) {
 	t.Parallel()
 	if summary := summarizeCreatePlanWorkLogs(nil); summary.needsWorkLog || summary.existingRunClaim != nil || summary.existingRunsDiffer {

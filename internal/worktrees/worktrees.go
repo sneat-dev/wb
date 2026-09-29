@@ -375,6 +375,19 @@ func createWritableRequirements(projectsRoot, home string, repositories []string
 	return canonicalPaths, requirements, nil
 }
 
+func resumedCreateOwner(options WorkLogOptions, claim workLogClaim) (effort, agent, model string) {
+	effort = claim.EffortID
+	agent = ownerAgent(options.AgentRuntime, options.AgentID)
+	model = strings.TrimSpace(options.Model)
+	if agent == "" {
+		agent = ownerAgent(claim.AgentRuntime, claim.AgentID)
+	}
+	if model == "" {
+		model = claim.Model
+	}
+	return effort, agent, model
+}
+
 type createdWorktreePublication struct {
 	ownerDirectory      *os.File
 	worktreeDirectory   *os.File
@@ -969,15 +982,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if !plan.resumed || plan.resumeClaim == nil {
 			continue
 		}
-		effort := plan.resumeClaim.EffortID
-		agent := ownerAgent(normalized.WorkLog.AgentRuntime, normalized.WorkLog.AgentID)
-		model := strings.TrimSpace(normalized.WorkLog.Model)
-		if agent == "" {
-			agent = ownerAgent(plan.resumeClaim.AgentRuntime, plan.resumeClaim.AgentID)
-		}
-		if model == "" {
-			model = plan.resumeClaim.Model
-		}
+		effort, agent, model := resumedCreateOwner(normalized.WorkLog, *plan.resumeClaim)
 		if _, err := recordOwner(plan.result.WorktreeDir, effort, agent, model, CurrentIdentity().PID); err != nil {
 			return nil, fmt.Errorf("record resumed worktree owner for %s: %w", plan.result.Repository, err)
 		}
