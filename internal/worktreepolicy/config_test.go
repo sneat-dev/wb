@@ -55,6 +55,27 @@ func TestDecodePolicyShapesAndBranchValidator(t *testing.T) {
 			if err != nil || !found || config.Version != Version {
 				t.Fatalf("config=%+v found=%v err=%v", config, found, err)
 			}
+			if tc.name == "full" {
+				if config.Worktrees.BranchPrefix == nil || *config.Worktrees.BranchPrefix != "team/" {
+					t.Fatalf("branch prefix = %v, want team/", config.Worktrees.BranchPrefix)
+				}
+				if config.Worktrees.Store == nil || *config.Worktrees.Store != StoreModeCentral {
+					t.Fatalf("store = %v, want %s", config.Worktrees.Store, StoreModeCentral)
+				}
+				if config.Worktrees.Root == nil || *config.Worktrees.Root != "/tmp/worktrees" {
+					t.Fatalf("root = %v, want /tmp/worktrees", config.Worktrees.Root)
+				}
+				if config.Retirement.ArchiveRepository == nil || *config.Retirement.ArchiveRepository != ".archive" {
+					t.Fatalf("archive repository = %v, want .archive", config.Retirement.ArchiveRepository)
+				}
+				if len(config.Retirement.Organizations) != 1 {
+					t.Fatalf("organizations = %+v, want exactly my-org", config.Retirement.Organizations)
+				}
+				organization, ok := config.Retirement.Organizations["my-org"]
+				if !ok || organization.ArchiveRepository == nil || *organization.ArchiveRepository != "repo_name" {
+					t.Fatalf("my-org archive repository = %+v, want repo_name", organization)
+				}
+			}
 		})
 	}
 }
