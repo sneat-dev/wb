@@ -136,7 +136,7 @@ func TestChangedLineRatchetRejectsUnreadableAndMismatchedExternalPrompts(t *test
 		{
 			name: "header sequence differs from filename",
 			setup: func(t *testing.T, prompts string) {
-				if err := os.WriteFile(filepath.Join(prompts, "0000-mismatch.md"), []byte("---\nseq: 1\n---\nbody\n"), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(prompts, "0000-mismatch.md"), []byte("---\nseq: 1\nsource: agent_declared\n---\nbody\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			},
