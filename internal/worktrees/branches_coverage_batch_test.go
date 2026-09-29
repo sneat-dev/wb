@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -65,6 +66,10 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 		ProjectsRoot: root, Base: "main", Scope: BranchScopeLocal, Repository: "acme/missing",
 	}, now); err == nil {
 		t.Fatal("missing selected retired repository was accepted")
+	}
+	listed, err := BranchList(ctx, BranchListOptions{ProjectsRoot: root})
+	if err != nil || len(listed.Entries) != 0 || listed.Base != "main" || listed.Scope != BranchScopeLocal {
+		t.Fatalf("public empty branch list = %#v/%v", listed, err)
 	}
 
 	repository := discover.Repo{Org: "acme", Name: "app", Path: root}
@@ -131,6 +136,12 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	if len(counts) != 0 || branchNames != 0 || len(tagCounts) != 0 || tagNames != 0 || unavailable || len(diagnostics) != 0 {
 		t.Fatalf("empty retired counts = %#v/%d/%#v/%d/%t/%#v", counts, branchNames, tagCounts, tagNames, unavailable, diagnostics)
 	}
+	_, _, _, _, _, diagnostics = countRetiredBranches(ctx, branchSweepOptions{
+		ProjectsRoot: root, Scope: BranchScopeLocal, Repository: "acme/missing",
+	})
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "was not discovered") {
+		t.Fatalf("missing retired-count repository diagnostics = %#v", diagnostics)
+	}
 
 	fileRoot := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
@@ -144,6 +155,159 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	}
 	if index, diagnostic := branchInUseIndex(ctx, fileRoot, ""); diagnostic == "" || len(index) != 0 {
 		t.Fatalf("in-use index through file = %#v/%q", index, diagnostic)
+	}
+}
+
+func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Unix(10_000, 0).UTC()
+	repositories := []discover.Repo{
+		{Org: "acme", Name: "one", Path: "/repos/acme/one"},
+		{Org: "acme", Name: "two", Path: "/repos/acme/two"},
+		{Org: "other", Name: "three", Path: "/repos/other/three"},
+	}
+	selected, err := selectBranchRepositories(repositories, "", "acme")
+	if err != nil || len(selected) != 2 || selected[0].Slug() != "acme/one" || selected[1].Slug() != "acme/two" {
+		t.Fatalf("organization selection = %#v/%v", selected, err)
+	}
+	selected, err = selectBranchRepositories(repositories, "other/three", "other")
+	if err != nil || len(selected) != 1 || selected[0].Slug() != "other/three" {
+		t.Fatalf("repository selection = %#v/%v", selected, err)
+	}
+	if selected, err = selectBranchRepositories(repositories, "missing/repository", ""); err == nil || selected != nil {
+		t.Fatalf("missing repository selection = %#v/%v", selected, err)
+	}
+
+	sweep := branchSweepOptions{Now: now, OlderThan: time.Hour, Name: "retired/*", Base: "main"}
+	refs := []branchRef{
+		{Name: "retired/old", CommitterDate: now.Add(-2 * time.Hour)},
+		{Name: "retired/new", CommitterDate: now.Add(-time.Minute)},
+		{Name: "active/old", CommitterDate: now.Add(-2 * time.Hour)},
+	}
+	counts, names := map[string]int{}, map[string]bool{}
+	accumulateRetiredCounts(sweep, repositories[0], refs, BranchScopeLocal, counts, names)
+	if counts[BranchScopeLocal] != 1 || !names["acme/one|retired/old"] || len(names) != 1 {
+		t.Fatalf("retired counts = %#v/%#v", counts, names)
+	}
+
+	entries := []BranchEntry{}
+	tagNames := map[string]bool{}
+	if count := appendRetiredTagEntries(ctx, &entries, tagNames, repositories[0], sweep,
+		[]branchRef{{Name: "retired/old", CommitterDate: now.Add(-2 * time.Hour)}}, BranchScopeRemote); count != 1 {
+		t.Fatalf("appended retired tags = %d", count)
+	}
+	if len(entries) != 1 || entries[0].RefKind != "tag" || entries[0].Scope != BranchScopeRemote || !tagNames["acme/one|retired/old"] {
+		t.Fatalf("retired tag entries = %#v/%#v", entries, tagNames)
+	}
+
+	if !retiredNamespaceSelected(branchSweepOptions{Only: BranchRetired}) ||
+		!retiredNamespaceSelected(branchSweepOptions{Branch: "retired/one"}) ||
+		!retiredNamespaceSelected(branchSweepOptions{Name: "retired/*"}) ||
+		retiredNamespaceSelected(branchSweepOptions{Branch: "feature/one"}) {
+		t.Fatal("retired namespace selector classification is inconsistent")
+	}
+	if got := tallyDispositions([]BranchEntry{{Disposition: BranchRetired}, {Disposition: BranchRetired}, {Disposition: BranchUnique}}); got[BranchRetired] != 2 || got[BranchUnique] != 1 {
+		t.Fatalf("disposition totals = %#v", got)
+	}
+
+	var progress bytes.Buffer
+	reportBranchProgress(nil, 1, 1, "ignored")
+	reportBranchProgress(&progress, 2, 3, "acme/one")
+	reportBranchSummary(&progress, map[string]int{BranchUnique: 2, BranchContained: 1}, 1500*time.Millisecond)
+	if output := progress.String(); !strings.Contains(output, "[2/3] scanning acme/one") ||
+		!strings.Contains(output, "contained=1 unique=2") {
+		t.Fatalf("progress output = %q", output)
+	}
+
+	directCalls := 0
+	directEntries, directDiagnostic := inspectRepositoryBranchesWithHeartbeat(ctx, repositories[0], branchSweepOptions{}, nil, 1, 1, 0,
+		func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string) {
+			directCalls++
+			return []BranchEntry{{Branch: "direct"}}, "direct diagnostic"
+		})
+	if directCalls != 1 || len(directEntries) != 1 || directDiagnostic != "direct diagnostic" {
+		t.Fatalf("direct inspection = %d/%#v/%q", directCalls, directEntries, directDiagnostic)
+	}
+
+	release := make(chan struct{})
+	var heartbeat bytes.Buffer
+	timer := time.AfterFunc(5*time.Millisecond, func() { close(release) })
+	t.Cleanup(func() { timer.Stop() })
+	heartbeatEntries, heartbeatDiagnostic := inspectRepositoryBranchesWithHeartbeat(ctx, repositories[0],
+		branchSweepOptions{Progress: &heartbeat}, nil, 1, 2, time.Millisecond,
+		func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string) {
+			<-release
+			return []BranchEntry{{Branch: "heartbeat"}}, ""
+		})
+	if len(heartbeatEntries) != 1 || heartbeatDiagnostic != "" || !strings.Contains(heartbeat.String(), "still scanning acme/one") {
+		t.Fatalf("heartbeat inspection = %#v/%q/%q", heartbeatEntries, heartbeatDiagnostic, heartbeat.String())
+	}
+}
+
+func TestBranchesCoverageBatchRefParsingWithFakeGit(t *testing.T) {
+	t.Parallel()
+	const repository = "/fixture/repository"
+	const separator = "\x1f"
+	const format = "--format=%(refname:short)" + separator + "%(objectname)" + separator + "%(committerdate:iso-strict)"
+	sha := strings.Repeat("a", 40)
+	date := time.Unix(20_000, 0).UTC().Format(time.RFC3339)
+	ctx := context.Background()
+
+	remote := runnertest.New(t)
+	remote.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
+	remote.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/"}, runner.Result{CombinedOutput: strings.Join([]string{
+		"origin/HEAD" + separator + sha + separator + date,
+		"origin/feature/one" + separator + sha + separator + date,
+		"feature/wrong-prefix" + separator + sha + separator + date,
+		"malformed",
+		"",
+	}, "\n")}, nil)
+	refs, diagnostic := listRemoteRefs(withGitRunner(ctx, remote), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "feature/one" || refs[0].SHA != sha || refs[0].CommitterDate.IsZero() {
+		t.Fatalf("remote refs = %#v/%q", refs, diagnostic)
+	}
+
+	retired := runnertest.New(t)
+	retired.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/retired/*:refs/remotes/origin/retired/*"}, runner.Result{}, nil)
+	retired.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/retired/"}, runner.Result{
+		CombinedOutput: "origin/retired/one" + separator + sha + separator + date,
+	}, nil)
+	refs, diagnostic = listRetiredRemoteRefs(withGitRunner(ctx, retired), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "retired/one" {
+		t.Fatalf("retired remote refs = %#v/%q", refs, diagnostic)
+	}
+
+	local := runnertest.New(t)
+	local.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/heads/"}, runner.Result{
+		CombinedOutput: "feature/local" + separator + sha + separator + "not-a-date",
+	}, nil)
+	refs, diagnostic = listLocalRefs(withGitRunner(ctx, local), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "feature/local" || !refs[0].CommitterDate.IsZero() {
+		t.Fatalf("local refs = %#v/%q", refs, diagnostic)
+	}
+
+	worktrees := runnertest.New(t)
+	worktrees.ExpectArgv([]string{"git", "-C", repository, "worktree", "list", "--porcelain"}, runner.Result{
+		CombinedOutput: "worktree /one\nbranch refs/heads/feature/one\n\nworktree /detached\ndetached\n",
+	}, nil)
+	checkedOut, diagnostic := checkedOutLocalBranches(withGitRunner(ctx, worktrees), repository)
+	if diagnostic != "" || !checkedOut["feature/one"] || len(checkedOut) != 1 {
+		t.Fatalf("checked out branches = %#v/%q", checkedOut, diagnostic)
+	}
+
+	remoteTags := runnertest.New(t)
+	remoteTags.ExpectArgv([]string{"git", "-C", repository, "ls-remote", "--tags", "--refs", "origin", "refs/tags/retired/*"}, runner.Result{
+		CombinedOutput: strings.Join([]string{
+			sha + " refs/tags/retired/one",
+			"invalid refs/tags/retired/bad",
+			sha + " refs/tags/active/wrong",
+			sha + " refs/tags/retired/peeled^{}",
+		}, "\n"),
+	}, nil)
+	refs, diagnostic = listRetiredTags(withGitRunner(ctx, remoteTags), repository, true, false)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "retired/one" || !refs[0].UnknownDate {
+		t.Fatalf("remote retired tags = %#v/%q", refs, diagnostic)
 	}
 }
 
