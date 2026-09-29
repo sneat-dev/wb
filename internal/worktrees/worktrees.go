@@ -2084,7 +2084,10 @@ func resolveGitDirectories(run func(...string) (string, error)) (gitDir, commonD
 
 func cleanWorktree(ctx context.Context, root string) (bool, error) {
 	output, err := git(ctx, root, "status", "--porcelain=v1")
-	return output == "", err
+	if err != nil {
+		return false, err
+	}
+	return output == "", nil
 }
 
 func localBranchExists(ctx context.Context, root, branch string) (bool, error) {
