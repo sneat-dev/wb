@@ -129,6 +129,41 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 	if target.String() != prepared.WorkLogReference || claim.ClaimID != prepared.ClaimID {
 		t.Fatalf("loaded target = %#v/%s, prepared = %#v", claim, target.String(), prepared)
 	}
+	projection := activeTargetProjection(claim)
+	if err := corroborateExternalTargetClaim(
+		claim, projection, target, fixture.base.request, fixture.digest, fixture.worktree, claim.Repository,
+	); err != nil {
+		t.Fatal(err)
+	}
+	unknownRequest := fixture.base.request
+	unknownRequest.SourceModel = ""
+	if err := corroborateExternalTargetClaim(
+		preparedUnknown.claim, activeTargetProjection(preparedUnknown.claim), target,
+		unknownRequest, fixture.digest, fixture.worktree, preparedUnknown.claim.Repository,
+	); err != nil {
+		t.Fatalf("unknown-model target claim was rejected: %v", err)
+	}
+	conflictingShape := claim
+	conflictingShape.Repository = "other/repository"
+	if err := corroborateExternalTargetClaim(
+		conflictingShape, projection, target, fixture.base.request, fixture.digest, fixture.worktree, claim.Repository,
+	); err == nil {
+		t.Fatal("conflicting target claim shape was accepted")
+	}
+	conflictingProjection := projection
+	conflictingProjection.Lifecycle = "completed"
+	if err := corroborateExternalTargetClaim(
+		claim, conflictingProjection, target, fixture.base.request, fixture.digest, fixture.worktree, claim.Repository,
+	); err == nil {
+		t.Fatal("conflicting target projection was accepted")
+	}
+	conflictingEvidence := claim
+	conflictingEvidence.ExternalHandoff = &workLogExternalHandoffEvidence{}
+	if err := corroborateExternalTargetClaim(
+		conflictingEvidence, projection, target, fixture.base.request, fixture.digest, fixture.worktree, claim.Repository,
+	); err == nil {
+		t.Fatal("conflicting target lineage evidence was accepted")
+	}
 	if err := validateExternalTargetManifestAndJournal(
 		fixture.worktree, fixture.base.request, fixture.digest, claim, receipt.Model,
 	); err != nil {

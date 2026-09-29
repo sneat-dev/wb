@@ -1141,38 +1141,16 @@ func loadExternalTargetClaim(projectsRoot string, request sessionmove.Request, d
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
-	source, _ := sessionmove.ParseWorkLogReference(request.WorkLogReference)
-	runtime, receiptModel := externalTargetRuntimeModel(request)
-	claimModel, provenance := receiptModel, modelProvenanceCallerDeclared
-	if claimModel == "" {
-		claimModel, provenance = "unknown", modelProvenanceUnknown
-	}
-	if claim.Version != 2 || claim.ClaimID != target.ClaimID || claim.EffortID != target.EffortID || claim.RunID != target.RunID ||
-		claim.Task != "external session handoff "+request.HandoffID || claim.Repository != remote.Identity.Repository ||
-		claim.Worktree != worktree || claim.Branch != "wb-session/"+request.HandoffID || claim.Base != request.Branch ||
-		claim.BaseSHA != request.SourceWorkCommit || claim.Lifecycle != "active" || claim.RecordedAt.IsZero() ||
-		claim.Initiator != request.PredecessorWBSessionID || claim.AgentID != request.SuccessorWBSessionID ||
-		claim.AgentRuntime != runtime || claim.Model != claimModel || claim.ModelProvenance != provenance ||
-		claim.ModelDeclaredBy != request.PredecessorWBSessionID || claim.CLI != "" || claim.Provider != "" ||
-		claim.PromptArchive != "" || claim.PromptDigest != "" || claim.ParentClaimID != source.ClaimID ||
-		claim.AcquiredVia != "external_handoff" {
-		unlock()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, fmt.Errorf("external target Work Log claim conflicts with receipt")
-	}
 	projection, err := readWorkLogProjection(worktree)
-	if err != nil || projection != (workLogProjection{Version: 1, EffortID: target.EffortID, RunID: target.RunID, ClaimID: target.ClaimID, Lifecycle: "active"}) {
+	if err != nil {
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, fmt.Errorf("external target Work Log projection conflicts with receipt lineage")
 	}
-	wantEvidence := externalHandoffEvidence(request, digest, target.String())
-	if !sameExternalHandoffEvidence(claim.ExternalHandoff, wantEvidence) {
-		unlock()
-		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, fmt.Errorf("external target Work Log claim carries conflicting lineage evidence")
-	}
-	if _, err := expectedExternalClaimID(claim); err != nil {
+	if err := corroborateExternalTargetClaim(claim, projection, target, request, digest, worktree, remote.Identity.Repository); err != nil {
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
 	}
+	_, receiptModel := externalTargetRuntimeModel(request)
 	if err := validateExternalTargetManifestAndJournal(worktree, request, digest, claim, receiptModel); err != nil {
 		unlock()
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, err
@@ -1182,6 +1160,36 @@ func loadExternalTargetClaim(projectsRoot string, request sessionmove.Request, d
 		return workLogClaim{}, sessionmove.WorkLogReference{}, nil, fmt.Errorf("corroborate external target Work Log live pin: %w", err)
 	}
 	return claim, target, unlock, nil
+}
+
+func corroborateExternalTargetClaim(claim workLogClaim, projection workLogProjection, target sessionmove.WorkLogReference,
+	request sessionmove.Request, digest sessionmove.Digest, worktree, repository string,
+) error {
+	source, _ := sessionmove.ParseWorkLogReference(request.WorkLogReference)
+	runtime, claimModel := externalTargetRuntimeModel(request)
+	provenance := modelProvenanceCallerDeclared
+	if claimModel == "" {
+		claimModel, provenance = "unknown", modelProvenanceUnknown
+	}
+	if claim.Version != 2 || claim.ClaimID != target.ClaimID || claim.EffortID != target.EffortID || claim.RunID != target.RunID ||
+		claim.Task != "external session handoff "+request.HandoffID || claim.Repository != repository ||
+		claim.Worktree != worktree || claim.Branch != "wb-session/"+request.HandoffID || claim.Base != request.Branch ||
+		claim.BaseSHA != request.SourceWorkCommit || claim.Lifecycle != "active" || claim.RecordedAt.IsZero() ||
+		claim.Initiator != request.PredecessorWBSessionID || claim.AgentID != request.SuccessorWBSessionID ||
+		claim.AgentRuntime != runtime || claim.Model != claimModel || claim.ModelProvenance != provenance ||
+		claim.ModelDeclaredBy != request.PredecessorWBSessionID || claim.CLI != "" || claim.Provider != "" ||
+		claim.PromptArchive != "" || claim.PromptDigest != "" || claim.ParentClaimID != source.ClaimID ||
+		claim.AcquiredVia != "external_handoff" {
+		return fmt.Errorf("external target Work Log claim conflicts with receipt")
+	}
+	if projection != activeTargetProjection(claim) {
+		return fmt.Errorf("external target Work Log projection conflicts with receipt lineage")
+	}
+	wantEvidence := externalHandoffEvidence(request, digest, target.String())
+	if !sameExternalHandoffEvidence(claim.ExternalHandoff, wantEvidence) {
+		return fmt.Errorf("external target Work Log claim carries conflicting lineage evidence")
+	}
+	return nil
 }
 
 func validExternalAttempt(attemptID string, index uint64) bool {
