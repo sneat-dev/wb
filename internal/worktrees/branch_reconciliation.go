@@ -404,17 +404,7 @@ func revalidateReconciliationStage(ctx context.Context, options LogRecoverOption
 }
 
 func createBranchReconciliationRecord(home string, claim workLogClaim, record branchReconciliationRecord) (*os.File, error) {
-	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = run.Close() }()
-	reconciliations, err := openPrivateChild(run, "branch-reconciliations", true)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = reconciliations.Close() }()
-	directory, err := openPrivateChild(reconciliations, record.EventID, true)
+	directory, err := openBranchReconciliationEvent(home, claim, record.EventID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -426,17 +416,7 @@ func createBranchReconciliationRecord(home string, claim workLogClaim, record br
 }
 
 func readBranchReconciliationRecord(home string, claim workLogClaim, eventID string) (branchReconciliationRecord, *os.File, error) {
-	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
-	if err != nil {
-		return branchReconciliationRecord{}, nil, err
-	}
-	defer func() { _ = run.Close() }()
-	reconciliations, err := openPrivateChild(run, "branch-reconciliations", false)
-	if err != nil {
-		return branchReconciliationRecord{}, nil, err
-	}
-	defer func() { _ = reconciliations.Close() }()
-	directory, err := openPrivateChild(reconciliations, eventID, false)
+	directory, err := openBranchReconciliationEvent(home, claim, eventID, false)
 	if err != nil {
 		return branchReconciliationRecord{}, nil, err
 	}
@@ -446,6 +426,22 @@ func readBranchReconciliationRecord(home string, claim workLogClaim, eventID str
 		return branchReconciliationRecord{}, nil, err
 	}
 	return record, directory, nil
+}
+
+// openBranchReconciliationEvent keeps create and replay on the same private
+// work-log path, so neither can silently read a different recovery record.
+func openBranchReconciliationEvent(home string, claim workLogClaim, eventID string, create bool) (*os.File, error) {
+	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, create)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = run.Close() }()
+	reconciliations, err := openPrivateChild(run, "branch-reconciliations", create)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reconciliations.Close() }()
+	return openPrivateChild(reconciliations, eventID, create)
 }
 
 func writeBranchReconciliationRecord(directory *os.File, record branchReconciliationRecord) error {

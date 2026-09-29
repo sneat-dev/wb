@@ -347,6 +347,10 @@ func TestWtLogCovReconciliationBundleHelpers(t *testing.T) {
 	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "local", "refs/heads/wb/bundle", head); err != nil {
 		t.Fatalf("bundle preservation failed: %v", err)
 	}
+	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "missing", "refs/heads/wb/missing", head); err == nil ||
+		!strings.Contains(err.Error(), "create missing recovery bundle") {
+		t.Fatalf("unknown immutable-claim ref bundle error = %v", err)
+	}
 	for _, name := range []string{"local.bundle", "local.json"} {
 		if _, err := os.Stat(filepath.Join(directory.Name(), name)); err != nil {
 			t.Fatalf("preserved %s missing: %v", name, err)
