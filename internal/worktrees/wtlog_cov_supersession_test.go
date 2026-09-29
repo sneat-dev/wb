@@ -6,6 +6,55 @@ import (
 	"testing"
 )
 
+func TestWtLogCovDependencyDeltasForValidation(t *testing.T) {
+	t.Parallel()
+	valid := SupersessionDependencyDelta{
+		SourcePR: "https://github.com/acme/app/pull/17", SourceHead: "source", Consumer: "acme/app",
+		Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx",
+		Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
+	}
+	receipt := SupersessionReceipt{
+		OriginalPR: valid.SourcePR, OriginalHead: valid.SourceHead,
+		DependencyDeltasComplete: true, DependencyDeltas: []SupersessionDependencyDelta{valid},
+	}
+	entry := ListResult{Repository: valid.Consumer, HeadSHA: valid.SourceHead}
+	if deltas, rejection := dependencyDeltasForValidation(receipt, entry); rejection != "" || len(deltas) != 1 {
+		t.Fatalf("valid deltas = %#v, %q", deltas, rejection)
+	}
+
+	for name, mutate := range map[string]func(*SupersessionReceipt, *ListResult){
+		"incomplete":    func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltasComplete = false },
+		"empty":         func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas = nil },
+		"source PR":     func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas[0].SourcePR = "other" },
+		"source head":   func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas[0].SourceHead = "other" },
+		"consumer":      func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas[0].Consumer = "acme/other" },
+		"missing proof": func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas[0].Manifest = "" },
+		"unreviewed":    func(receipt *SupersessionReceipt, _ *ListResult) { receipt.DependencyDeltas[0].Reviewed = false },
+		"version mismatch": func(receipt *SupersessionReceipt, _ *ListResult) {
+			receipt.DependencyDeltas[0].CandidateAfter = "23.0.0"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			candidate := receipt
+			candidate.DependencyDeltas = append([]SupersessionDependencyDelta(nil), receipt.DependencyDeltas...)
+			candidateEntry := entry
+			mutate(&candidate, &candidateEntry)
+			if _, rejection := dependencyDeltasForValidation(candidate, candidateEntry); rejection == "" {
+				t.Fatal("invalid dependency deltas were accepted")
+			}
+		})
+	}
+
+	second := valid
+	second.Manifest = "a.json"
+	receipt.DependencyDeltas = []SupersessionDependencyDelta{valid, second}
+	deltas, rejection := dependencyDeltasForValidation(receipt, entry)
+	if rejection != "" || deltas[0].Manifest != "a.json" || receipt.DependencyDeltas[0].Manifest != "package.json" {
+		t.Fatalf("sorted validation deltas = %#v, original = %#v, rejection = %q", deltas, receipt.DependencyDeltas, rejection)
+	}
+}
+
 func TestWtLogCovSelectorPackageFromLockfileSelector(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
