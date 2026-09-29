@@ -1,9 +1,9 @@
 # WB `internal/worktrees` coverage and refactoring campaign
 
-**Status:** reviewed, locally green, ready to land on `main`
-**Branch:** `wb-coverage`
+**Status:** landed on `main`; post-merge CI green
+**Campaign source:** `wb-coverage` at `cd5ec427013182f01367920a70ad4884e6887e92` (cleaned after landing)
+**Landing:** [PR #783](https://github.com/sneat-dev/wb/pull/783), merge `27315f4e19e9440ef7437b6cef68c8b744914407`
 **Earlier comparison point:** local `origin/main` merge-base `becfcbc36e0d27c26670c7ab951c4ba0a8e6d5ef`
-**Final implementation head before this report update:** `bd2ac25f317ee3261b2cd4584d162664c933e799`
 **Execution:** Codex `gpt-6-sol`, high reasoning, local Mac host
 
 ## Final landing update — 2026-09-29
@@ -11,25 +11,26 @@
 The campaign continued after the earlier `7159b133` checkpoint on one local
 `wb-coverage` branch. The later work added focused tests and refactors around
 zero-coverage helpers, session custody, branch evidence, Work Log resolution,
-and session path policy. The branch is clean and the accepted implementation
-head is `bd2ac25f317ee3261b2cd4584d162664c933e799`.
+and session path policy. WB landed source head `cd5ec427` through PR #783,
+verified remote and canonical `main` at `27315f4e`, observed 21 terminal
+post-merge checks (13 passed and 8 skipped) with zero pending or failed, and
+cleaned both the source and integration worktrees.
 
-The current authoritative `internal/worktrees` profile was produced from all
-1,322 top-level package tests, split into four independent shards of
-331/331/330/330 tests. All four shards passed in parallel in about 5 minutes
-15 seconds:
+The current authoritative profile is the post-merge eight-shard CI artifact
+for exact `main` SHA `27315f4e`. The preceding local candidate validation ran
+all 1,322 top-level `internal/worktrees` tests in four independent shards of
+331/331/330/330; all four passed in parallel in about 5 minutes 15 seconds.
 
 | Current `internal/worktrees` profile | Covered | Total | Uncovered | Coverage |
 |---|---:|---:|---:|---:|
-| `bd2ac25f` | 17,280 | 20,177 | 2,897 | 85.6421% |
+| merged `main` at `27315f4e` | 17,365 | 20,262 | 2,897 | 85.7023% |
 
 This is 594 fewer uncovered statements than the saved main baseline used for
-the later campaign (`3,491` uncovered in `internal/worktrees`). The saved
-whole-repository main profile was 86,287/93,902 statements, or 91.8905%, with
-7,615 uncovered. Applying only the verified package delta gives an estimated
-current repository result of about 92.5% and roughly 7,021 uncovered
-statements. That repository number is an estimate, not a fresh full-suite
-receipt.
+the later campaign (`3,491` uncovered in `internal/worktrees`). The same
+post-merge artifact records the whole repository at 86,878/93,899 statements,
+or 92.5228%, with 7,021 uncovered. This replaces the earlier estimate with a
+fresh full-suite receipt from
+[workflow run 36578987753](https://github.com/sneat-dev/wb/actions/runs/36578987753).
 
 The last accepted focused batch covered 95 previously missed statements and
 brought 20 functions to 100%. A preceding session-path batch brought 21
@@ -244,12 +245,12 @@ A separate package attempt in `/private/tmp/wb-refactor-worktrees-checkpoint.log
 
 ## Risks and limits
 
-- This is a package campaign, not a repository-wide 100% result. No current repo-wide coverage percentage was measured for this branch.
-- The latest full `internal/worktrees` package profile is from exact source head `7159b133`. A later landing-gate repair changes that package and has focused coverage for all flagged statements and 100% for every edited function, but no newer local package-wide percentage was measured. The `internal/orchestrate` recovery change has its own focused test, coverage, vet, quality-guard, and review receipts.
+- This is a package campaign, not a repository-wide 100% result. Post-merge CI measured the repository at 92.5228%, leaving 7,021 uncovered statements.
+- The latest full `internal/worktrees` package profile is the post-merge artifact for exact `main` SHA `27315f4e`: 17,365/20,262 statements, or 85.7023%, leaving 2,897 uncovered. The `internal/orchestrate` recovery change has its own focused test, coverage, vet, quality-guard, and review receipts.
 - The final Retire batch is committed and independently approved. Its refactored production function is 100%; earlier commits predate the explicit per-refactor 100% rule and do not have a retained changed-function inventory.
 - The older baseline is represented by two complete artifacts that differ by two covered statements, so comparisons correctly use a range rather than a single reproducible number.
-- The report compares against the locally available `origin/main`. Refresh the remote and re-evaluate the merge base before final review and merge.
-- Refactors in `internal/worktrees` operate around claims, immutable receipts, no-follow filesystem access, cleanup, and repository relocation. The final full package test and combined source review passed, but the package still has 3,545 uncovered statements.
+- WB refreshed the remote target before landing, verified the exact remote `main` merge SHA, and fast-forwarded the canonical checkout.
+- Refactors in `internal/worktrees` operate around claims, immutable receipts, no-follow filesystem access, cleanup, and repository relocation. The post-merge full suite and combined source review passed, but the package still has 2,897 uncovered statements.
 - Per-batch focused coverage receipts live in transient campaign logs; this report preserves their conclusions rather than the artifacts themselves.
 - The campaign still contains many real-Git/process tests. They provide useful contract confidence, but their runtime and failure modes make them unsuitable as the inner coverage loop.
 
@@ -271,4 +272,11 @@ The branch now permits the audited `acknowledge-absorbed-conflict` path for this
 
 ## Landing record
 
-This report will be committed as part of the candidate, so the immutable WB landing receipt, exact remote `main` SHA, CI verdict, and source cleanup necessarily follow it. They belong in the coordinating thread's final delivery receipt. The next campaign should add repository-wide coverage from main CI when that artifact becomes available.
+WB receipt `merge-sneat-dev-wb-main-1cbbf49dd60f-c11f3e5a1c59` landed source
+head `cd5ec427013182f01367920a70ad4884e6887e92` through PR #783 as merge
+`27315f4e19e9440ef7437b6cef68c8b744914407`. WB verified that exact remote
+`main`, fast-forwarded the canonical checkout, observed 13 passed and 8 skipped
+terminal post-merge checks with zero pending or failed, and cleaned the
+`wb-coverage` source and merge-candidate worktrees. Post-merge workflow run
+36578987753 supplied the repository and package coverage figures in the final
+landing update above.
