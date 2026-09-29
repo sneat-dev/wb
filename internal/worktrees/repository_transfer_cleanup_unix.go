@@ -25,17 +25,13 @@ func repositoryTransferCleanupIdentityMatches(file *os.File, device, inode uint6
 }
 
 func openRepositoryTransferCleanupQuarantine(parent *os.File, _ string, name string) (*os.File, bool, error) {
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	held, err := openDirectoryAtNoFollow(int(parent.Fd()), name, name,
+		"open replacement quarantine "+name, "wrap replacement quarantine "+name)
 	if errors.Is(err, unix.ENOENT) {
 		return nil, true, nil
 	}
 	if err != nil {
 		return nil, false, err
-	}
-	held := os.NewFile(uintptr(fd), name)
-	if held == nil {
-		_ = unix.Close(fd)
-		return nil, false, fmt.Errorf("open replacement quarantine")
 	}
 	return held, false, nil
 }

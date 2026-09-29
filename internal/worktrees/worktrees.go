@@ -3370,7 +3370,7 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 // caller supplies exact open diagnostics and retains responsibility for
 // path identity checks and the returned handle's lifetime.
 func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, _ string) (*os.File, error) {
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", openContext, err)
 	}

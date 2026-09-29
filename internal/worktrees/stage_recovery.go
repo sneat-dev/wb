@@ -274,6 +274,22 @@ func retiredStageReceiptPath(home string, results []RetiredStageRecoveryResult) 
 }
 
 func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) {
+	applyRetiredStageRecoveryWithHooks(home, result, retiredStageRecoveryHooks{})
+}
+
+// Hooks are used only at filesystem boundaries to prove that a changed
+// entry or failed lock retirement leaves the original evidence untouched.
+type retiredStageRecoveryHooks struct {
+	afterLock           func(*cleanupTaskHandle)
+	afterStageOpen      func(*os.File)
+	beforeIdentityCheck func(*os.File)
+	beforeArchiveOpen   func()
+	afterArchiveOpen    func()
+	beforeMove          func()
+	afterMove           func()
+}
+
+func applyRetiredStageRecoveryWithHooks(home string, result *RetiredStageRecoveryResult, hooks retiredStageRecoveryHooks) {
 	planned, err := inventoryStage(result.Path)
 	if err != nil || planned.Digest != result.ContentDigest || planned.Files != result.FileCount || planned.Bytes != result.ByteCount || planned.Symlinks != result.SymlinkCount {
 		result.Eligible = false
@@ -286,7 +302,26 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		result.Reason = "cannot acquire task lock for audited stage recovery: " + err.Error()
 		return
 	}
-	defer task.close()
+	// A refusal before rename is a no-op and must release the operation
+	// lock. Once rename succeeds, a later error can mean partial isolation;
+	// keep the lock as recovery evidence until an operator inspects it.
+	renamed := false
+	settled := false
+	defer func() {
+		if renamed && !settled {
+			task.preserveLock()
+		} else if releaseErr := task.lock.release(); releaseErr == nil {
+			purgeTerminalTaskLockDebris(task)
+		} else {
+			result.Eligible = false
+			result.Applied = false
+			result.Reason = "cannot retire audited stage recovery lock: " + releaseErr.Error()
+		}
+		task.close()
+	}()
+	if hooks.afterLock != nil {
+		hooks.afterLock(task)
+	}
 	stage, err := openAbsoluteDirectoryNoFollow(result.Path, false)
 	if err != nil {
 		result.Eligible = false
@@ -294,10 +329,16 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		return
 	}
 	defer func() { _ = stage.Close() }()
+	if hooks.afterStageOpen != nil {
+		hooks.afterStageOpen(stage)
+	}
 	if !directoryStillMatches(result.Path, stage) {
 		result.Eligible = false
 		result.Reason = "retired stage path changed before recovery; ambiguous evidence was left untouched"
 		return
+	}
+	if hooks.beforeIdentityCheck != nil {
+		hooks.beforeIdentityCheck(stage)
 	}
 	var identity unix.Stat_t
 	if err := unix.Fstat(int(stage.Fd()), &identity); err != nil || uint64(identity.Dev) != result.StageDevice || uint64(identity.Ino) != result.StageInode {
@@ -306,6 +347,9 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		return
 	}
 	archivePath := retiredStageArchivePath(home, *result)
+	if hooks.beforeArchiveOpen != nil {
+		hooks.beforeArchiveOpen()
+	}
 	archiveParent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(archivePath), true)
 	if err != nil {
 		result.Eligible = false
@@ -313,6 +357,9 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		return
 	}
 	defer func() { _ = archiveParent.Close() }()
+	if hooks.afterArchiveOpen != nil {
+		hooks.afterArchiveOpen()
+	}
 	if _, statErr := os.Lstat(archivePath); statErr == nil {
 		result.Eligible = false
 		result.Reason = "deterministic archive already exists while source remains; refusing ambiguous duplicate"
@@ -322,7 +369,15 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		result.Reason = "cannot inspect deterministic archive destination: " + statErr.Error()
 		return
 	}
-	moved, err := moveExpectedDirectoryNoReplace(task.task, result.Stage, archiveParent, filepath.Base(archivePath), stage, nil)
+	if hooks.beforeMove != nil {
+		hooks.beforeMove()
+	}
+	moved, err := moveExpectedDirectoryNoReplace(task.task, result.Stage, archiveParent, filepath.Base(archivePath), stage, nil, func() {
+		renamed = true
+		if hooks.afterMove != nil {
+			hooks.afterMove()
+		}
+	})
 	if err != nil {
 		if moved != nil {
 			_ = moved.Close()
@@ -333,6 +388,7 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 	}
 	_ = moved.Close()
 	result.Applied = true
+	settled = true
 	result.ArchivePath = archivePath
 	result.Disposition = "archived_retired_stage"
 	result.Reason = "content preserved in a private deterministic recovery archive"
