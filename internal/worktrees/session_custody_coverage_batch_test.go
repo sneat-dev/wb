@@ -2,6 +2,8 @@ package worktrees
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -771,5 +773,25 @@ func TestSessionCustodyRefactorBatchExternalSourceValues(t *testing.T) {
 	if completion.Type != LocalEventHandoff || completion.Result != "completed" ||
 		completion.Extra["target_work_log_reference"] != "worklog:effort/run/claim" || completion.Extra["endpoint"] != "source" {
 		t.Fatalf("source completion event = %#v", completion)
+	}
+}
+
+func TestSessionCustodyRefactorBatchExternalAttemptFailureEvent(t *testing.T) {
+	t.Parallel()
+	digest := sessionmove.DigestBytes([]byte("external attempt failure"))
+	startedAt := time.Unix(500, 0).UTC()
+	failure := sessionlaunch.FailureEvidence{
+		AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1, PID: 123,
+		StartedAt: startedAt, FailedAt: startedAt.Add(time.Second), Diagnostic: "  launcher failed  ",
+	}
+	event := externalTargetAttemptFailureEvent(
+		sessionmove.Request{HandoffID: "handoff-failure"}, digest, "worklog:effort/run/claim", failure,
+	)
+	wantDigest := sha256.Sum256([]byte("launcher failed"))
+	if event.Type != LocalEventHandoff || event.Result != "failed" || !event.At.Equal(failure.FailedAt.UTC()) ||
+		event.Extra["handoff_id"] != "handoff-failure" || event.Extra["attempt_id"] != failure.AttemptID ||
+		event.Extra["target_work_log_reference"] != "worklog:effort/run/claim" ||
+		event.Extra["diagnostic_sha256"] != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("attempt failure event = %#v", event)
 	}
 }

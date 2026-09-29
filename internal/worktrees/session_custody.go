@@ -375,7 +375,6 @@ func RecordExternalTargetAttemptFailed(options ExternalTargetAttemptFailureOptio
 		failure.FailedAt.Before(failure.StartedAt) || strings.TrimSpace(failure.Diagnostic) == "" {
 		return LocalWorkLogEvent{}, fmt.Errorf("exact failed launcher attempt evidence is incomplete")
 	}
-	expectedEventID := externalLocalEventID("target-attempt-failed", options.RequestDigest, failure.AttemptID)
 	claim, reference, unlock, err := loadExternalTargetClaim(options.ProjectsRoot, options.Request, options.RequestDigest, options.WorktreeDir)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
@@ -385,17 +384,21 @@ func RecordExternalTargetAttemptFailed(options ExternalTargetAttemptFailureOptio
 		failure.AttemptID, failure.AttemptIndex, failure.PID, failure.StartedAt, false); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
+	event := externalTargetAttemptFailureEvent(options.Request, options.RequestDigest, reference.String(), failure)
+	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
+	return event, err
+}
+
+func externalTargetAttemptFailureEvent(request sessionmove.Request, digest sessionmove.Digest, targetReference string, failure sessionlaunch.FailureEvidence) LocalWorkLogEvent {
 	diagnosticDigest := sha256.Sum256([]byte(strings.TrimSpace(failure.Diagnostic)))
-	event := LocalWorkLogEvent{
-		ID: expectedEventID, Type: LocalEventHandoff,
+	return LocalWorkLogEvent{
+		ID: externalLocalEventID("target-attempt-failed", digest, failure.AttemptID), Type: LocalEventHandoff,
 		At: failure.FailedAt.UTC(), Message: "external successor launcher attempt failed after release", Result: "failed",
-		Extra: map[string]any{"handoff_id": options.Request.HandoffID, "endpoint": "target",
-			"target_work_log_reference": reference.String(), "attempt_id": failure.AttemptID,
+		Extra: map[string]any{"handoff_id": request.HandoffID, "endpoint": "target",
+			"target_work_log_reference": targetReference, "attempt_id": failure.AttemptID,
 			"attempt_index": failure.AttemptIndex, "pid": failure.PID, "started_at": failure.StartedAt.UTC(),
 			"diagnostic_sha256": hex.EncodeToString(diagnosticDigest[:])},
 	}
-	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
-	return event, err
 }
 
 // ExternalSourceSealOptions describes receipt-authorized predecessor sealing.
