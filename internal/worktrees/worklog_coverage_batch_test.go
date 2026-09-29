@@ -203,26 +203,45 @@ func TestWorkLogCoverageBatchFilesystemRefusals(t *testing.T) {
 func TestActiveClaimPublication(t *testing.T) {
 	t.Parallel()
 	recordedAt := time.Date(2026, time.September, 28, 12, 30, 0, 0, time.UTC)
-	claim := workLogClaim{
+	parent := workLogClaim{
 		ClaimID: "claim", EffortID: "effort", RunID: "run", RecordedAt: recordedAt,
 		Repository: "acme/app", Branch: "feature", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		AgentRuntime: "parent-runtime", Model: "parent-model", CLI: "parent-cli", Provider: "parent-provider",
+	}
+	claim := newSuccessorWorkLogClaim(
+		parent, "successor", recordedAt.Add(time.Minute), "agent-2", "handoff",
+		ClaimExecutionIdentity{Model: " gpt-6-sol ", CLI: " codex ", Provider: " openai-codex "},
+	)
+	if claim.Version != 2 || claim.ClaimID != "successor" || claim.Lifecycle != "active" ||
+		claim.RecordedAt != recordedAt.Add(time.Minute) || claim.Initiator != "agent-2" || claim.AgentID != "agent-2" ||
+		claim.AgentRuntime != "" || claim.Model != "gpt-6-sol" || claim.ModelProvenance != modelProvenanceCallerDeclared ||
+		claim.ModelDeclaredBy != "agent-2" || claim.CLI != "codex" || claim.Provider != "openai-codex" ||
+		claim.ParentClaimID != "claim" || claim.AcquiredVia != "handoff" {
+		t.Fatalf("successor claim = %#v", claim)
+	}
+	unknown := newSuccessorWorkLogClaim(parent, "recovery", recordedAt, "recovery-agent", "recycle_failed", ClaimExecutionIdentity{Model: "unknown"})
+	if unknown.ModelProvenance != modelProvenanceUnknown {
+		t.Fatalf("unknown successor provenance = %q", unknown.ModelProvenance)
+	}
+	if parent.AgentRuntime != "parent-runtime" || parent.Model != "parent-model" {
+		t.Fatalf("parent claim mutated = %#v", parent)
 	}
 	projection := workLogProjection{Version: 1, EffortID: "effort", RunID: "run", ClaimID: "prior", Lifecycle: "terminal"}
 
 	claimName, outboxName, event, nextProjection := activeClaimPublication(claim, "handoff", projection)
-	if claimName != "claim.json" || outboxName != "run-claim-claimed.json" {
+	if claimName != "successor.json" || outboxName != "run-successor-claimed.json" {
 		t.Fatalf("publication names = %q, %q", claimName, outboxName)
 	}
 	wantEvent := workLogPublicEvent{
-		Version: 1, Type: "worktree.claimed", At: recordedAt,
-		EffortID: "effort", RunID: "run", ClaimID: "claim", Repository: "acme/app",
+		Version: 1, Type: "worktree.claimed", At: recordedAt.Add(time.Minute),
+		EffortID: "effort", RunID: "run", ClaimID: "successor", Repository: "acme/app",
 		Branch: "feature", Base: "main", BaseSHA: strings.Repeat("a", 40),
 		Lifecycle: "active", Disposition: "handoff",
 	}
 	if event != wantEvent {
 		t.Fatalf("publication event = %#v, want %#v", event, wantEvent)
 	}
-	if nextProjection.ClaimID != "claim" || nextProjection.Lifecycle != "active" {
+	if nextProjection.ClaimID != "successor" || nextProjection.Lifecycle != "active" {
 		t.Fatalf("next projection = %#v", nextProjection)
 	}
 	if projection.ClaimID != "prior" || projection.Lifecycle != "terminal" {

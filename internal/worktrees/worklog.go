@@ -2702,24 +2702,7 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err != nil {
 		return err
 	}
-	successorClaim := claim
-	successorClaim.Version = 2
-	successorClaim.ClaimID = successorClaimID
-	successorClaim.Lifecycle = "active"
-	successorClaim.RecordedAt = sealedAt
-	successorClaim.Initiator = successor
-	successorClaim.AgentID = successor
-	successorClaim.AgentRuntime = ""
-	successorClaim.Model = strings.TrimSpace(identity.Model)
-	successorClaim.ModelProvenance = modelProvenanceCallerDeclared
-	if successorClaim.Model == "unknown" {
-		successorClaim.ModelProvenance = modelProvenanceUnknown
-	}
-	successorClaim.ModelDeclaredBy = successor
-	successorClaim.CLI = strings.TrimSpace(identity.CLI)
-	successorClaim.Provider = strings.TrimSpace(identity.Provider)
-	successorClaim.ParentClaimID = claim.ClaimID
-	successorClaim.AcquiredVia = disposition
+	successorClaim := newSuccessorWorkLogClaim(claim, successorClaimID, sealedAt, successor, disposition, identity)
 	claimName, outboxName, event, nextProjection := activeClaimPublication(successorClaim, disposition, projection)
 	if err := writeJSONImmutableAt(claims, claimName, successorClaim, true); err != nil {
 		return fmt.Errorf("write immutable successor claim: %w", err)
@@ -2775,21 +2758,10 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	const recoveryAgent = "wb-recycle-recovery"
 	const recoveryVia = "recycle_failed"
 	recoveryID := successorWorkLogClaimID(prior.ClaimID, recoveryAgent, recoveryVia)
-	recovery := claim
-	recovery.Version = 2
-	recovery.ClaimID = recoveryID
-	recovery.Lifecycle = "active"
-	recovery.RecordedAt = terminal.SealedAt
-	recovery.Initiator = recoveryAgent
-	recovery.AgentID = recoveryAgent
-	recovery.AgentRuntime = ""
-	recovery.Model = "unknown"
-	recovery.ModelProvenance = modelProvenanceUnknown
-	recovery.ModelDeclaredBy = recoveryAgent
-	recovery.CLI = ""
-	recovery.Provider = ""
-	recovery.ParentClaimID = prior.ClaimID
-	recovery.AcquiredVia = recoveryVia
+	recovery := newSuccessorWorkLogClaim(
+		claim, recoveryID, terminal.SealedAt, recoveryAgent, recoveryVia,
+		ClaimExecutionIdentity{Model: "unknown"},
+	)
 	projection := workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID}
 	claimName, outboxName, event, nextProjection := activeClaimPublication(recovery, recoveryVia, projection)
 	if err := writeJSONImmutableAt(claims, claimName, recovery, true); err != nil {
@@ -2804,6 +2776,28 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 		return err
 	}
 	return writeWorkLogProjection(worktree, nextProjection)
+}
+
+func newSuccessorWorkLogClaim(parent workLogClaim, claimID string, recordedAt time.Time, successor, acquiredVia string, identity ClaimExecutionIdentity) workLogClaim {
+	claim := parent
+	claim.Version = 2
+	claim.ClaimID = claimID
+	claim.Lifecycle = "active"
+	claim.RecordedAt = recordedAt
+	claim.Initiator = successor
+	claim.AgentID = successor
+	claim.AgentRuntime = ""
+	claim.Model = strings.TrimSpace(identity.Model)
+	claim.ModelProvenance = modelProvenanceCallerDeclared
+	if claim.Model == "unknown" {
+		claim.ModelProvenance = modelProvenanceUnknown
+	}
+	claim.ModelDeclaredBy = successor
+	claim.CLI = strings.TrimSpace(identity.CLI)
+	claim.Provider = strings.TrimSpace(identity.Provider)
+	claim.ParentClaimID = parent.ClaimID
+	claim.AcquiredVia = acquiredVia
+	return claim
 }
 
 func activeClaimPublication(claim workLogClaim, disposition string, projection workLogProjection) (claimName, outboxName string, event workLogPublicEvent, nextProjection workLogProjection) {
