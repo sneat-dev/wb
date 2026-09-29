@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,13 @@ import (
 )
 
 const externalHandoffEvidenceVersion = 1
+
+// These seams retain the descriptor-first safety boundary while making the
+// kernel failure and post-stat drift outcomes deterministic in unit tests.
+var (
+	readBoundedRelativeRegularFstat   = unix.Fstat
+	readBoundedRelativeRegularReadAll = io.ReadAll
+)
 
 // workLogExternalHandoffEvidence is immutable, transport-neutral lineage that
 // links the source terminal and target active claim without manufacturing a
@@ -1067,33 +1075,46 @@ func externalReceiptModel(claim workLogClaim) string {
 }
 
 func validateExternalHandoverPrompt(worktree string, at time.Time, runtime, model string, digest sessionmove.Digest, body []byte) error {
-	prompts, err := ListPrompts(worktree)
-	if err != nil || len(prompts) != 1 {
-		return fmt.Errorf("external target Work Log must have exactly one handover prompt")
-	}
 	directory, err := openJournalSubdirectory(worktree, promptsDirectory, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("external target Work Log must have exactly one handover prompt")
 	}
 	defer func() { _ = directory.Close() }()
 	names, err := directory.Readdirnames(-1)
 	if err != nil {
 		return err
 	}
-	var name string
+	var header PromptHeader
+	var content []byte
+	found := false
 	for _, candidate := range names {
-		if promptFileName.MatchString(candidate) {
-			if name != "" {
+		match := promptFileName.FindStringSubmatch(candidate)
+		if match != nil {
+			if found {
 				return fmt.Errorf("external target Work Log has multiple prompt files")
 			}
-			name = candidate
+			ordinal, parseErr := strconv.Atoi(match[1])
+			if parseErr != nil {
+				return fmt.Errorf("external target Work Log must have exactly one handover prompt")
+			}
+			content, err = readBytesAt(directory, candidate)
+			if err != nil {
+				return err
+			}
+			header, err = parsePromptHeader(content)
+			if err != nil {
+				return fmt.Errorf("prompt %s: %w", candidate, err)
+			}
+			if header.Seq != ordinal || header.Seq != 0 {
+				return fmt.Errorf("external target Work Log must have exactly one handover prompt")
+			}
+			found = true
 		}
 	}
-	content, err := readBytesAt(directory, name)
-	if err != nil {
-		return err
+	if !found {
+		return fmt.Errorf("external target Work Log must have exactly one handover prompt")
 	}
-	return corroborateExternalHandoverPrompt(prompts[0], content, at, runtime, model, digest, body)
+	return corroborateExternalHandoverPrompt(header, content, at, runtime, model, digest, body)
 }
 
 func corroborateExternalHandoverPrompt(header PromptHeader, content []byte, at time.Time, runtime, model string,
@@ -1329,13 +1350,13 @@ func readBoundedRelativeRegular(rootPath, relative string, limit int64) ([]byte,
 	file := os.NewFile(uintptr(fd), segments[len(segments)-1])
 	defer func() { _ = file.Close() }()
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	if err := readBoundedRelativeRegularFstat(fd, &stat); err != nil {
 		return nil, err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 || stat.Size < 0 || stat.Size > limit {
 		return nil, fmt.Errorf("relative handover is not one bounded regular file")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	raw, err := readBoundedRelativeRegularReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}

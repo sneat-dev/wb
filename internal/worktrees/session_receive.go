@@ -836,10 +836,6 @@ func openOrCloneSessionReceiveCanonical(
 	existingFD, openErr := unix.Openat(int(ownerDirectory.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if openErr == nil {
 		existing := os.NewFile(uintptr(existingFD), "wb-session-receive-existing-canonical")
-		if existing == nil {
-			_ = unix.Close(existingFD)
-			return nil, fmt.Errorf("wrap existing canonical clone for %s", declared.Repository)
-		}
 		defer func() { _ = existing.Close() }()
 		return openSessionReceiveCanonicalFromHeldRoot(canonicalPath, existing)
 	}
@@ -970,10 +966,6 @@ func openSessionReceiveCanonicalFromHeldRoot(path string, held *os.File) (*canon
 	}
 	unix.CloseOnExec(rootFD)
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-canonical-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap retained canonical repository root")
-	}
 	return openCanonicalRepositoryFromOwnedRoot(path, root, "wb-session-receive-canonical-git-directory")
 }
 
