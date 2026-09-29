@@ -1,11 +1,9 @@
 package worktrees
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,12 +12,12 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"gopkg.in/yaml.v3"
+	"github.com/sneat-dev/wb/internal/worktreepolicy"
 )
 
 const (
-	branchConfigVersion = 1
-	maxBranchConfigSize = 64 << 10
+	branchConfigVersion = worktreepolicy.Version
+	maxBranchConfigSize = worktreepolicy.MaxConfigSize
 )
 
 // Store modes select where a new checkout physically lands. The store mode is
@@ -27,42 +25,15 @@ const (
 const (
 	// StoreModeCentral places every checkout of one task together below the
 	// projects-root store: <root>/.worktrees/<task>/<host>/<org>/<repo>.
-	StoreModeCentral = "central"
+	StoreModeCentral = worktreepolicy.StoreModeCentral
 	// StoreModeRepositoryLocal places the checkout inside its own canonical
 	// clone: <canonical>/.worktrees/<task>.
-	StoreModeRepositoryLocal = "repository-local"
+	StoreModeRepositoryLocal = worktreepolicy.StoreModeRepositoryLocal
 )
 
 // branchConfigFile is layered user then repository. A nil prefix leaves the
 // lower layer intact; an explicitly empty value deliberately disables it.
-type branchConfigFile struct {
-	Version   int `yaml:"version"`
-	Worktrees struct {
-		BranchPrefix *string `yaml:"branch_prefix"`
-		// Store selects the machine-local store mode. It is intentionally a
-		// user-only setting: a repository-tracked .wb/worktrees.yaml may not
-		// select or override it. When unset, StoreModeCentral applies.
-		Store *string `yaml:"store"`
-		// Root is intentionally a user-only setting. In central mode it
-		// selects the exact store directory containing
-		// <task>/<host>/<org>/<repository> checkouts; when unset the
-		// projects-root store <root>/.worktrees is used. It is not meaningful
-		// in repository-local mode, which has no configurable store root.
-		Root *string `yaml:"root"`
-	} `yaml:"worktrees"`
-	// Retirement is user-only policy for a future remote/worktree retirement
-	// flow. It is intentionally absent from repository policy: an arbitrary
-	// source repository must never choose where a developer exports its private
-	// Work Log evidence.
-	Retirement struct {
-		ArchiveRepository *string                                     `yaml:"archive_repository"`
-		Organizations     map[string]retiredArchiveOrganizationConfig `yaml:"organizations"`
-	} `yaml:"retirement"`
-}
-
-type retiredArchiveOrganizationConfig struct {
-	ArchiveRepository *string `yaml:"archive_repository"`
-}
+type branchConfigFile = worktreepolicy.Config
 
 // worktreePlacement is the physical placement selected for one canonical
 // repository. WB_HOME remains the authority for claims, locks, and receipts;
@@ -404,16 +375,7 @@ func configuredBranchPrefix(ctx context.Context, canonical *canonicalRepository,
 // configuration path that may select them, because .wb/worktrees.yaml is a
 // user-local filename as well and a bare filename would not tell them apart.
 func repositoryPlacementPolicy(config branchConfigFile, baseRevision, userConfigPath string) error {
-	if config.Worktrees.Store != nil {
-		return fmt.Errorf("repository worktrees policy at %s must not set worktrees.store; the store mode is machine-local user policy, set it in %s", baseRevision, userConfigPath)
-	}
-	if config.Worktrees.Root != nil {
-		return fmt.Errorf("repository worktrees policy at %s must not set worktrees.root; the store root is machine-local user policy, set it in %s", baseRevision, userConfigPath)
-	}
-	if config.Retirement.ArchiveRepository != nil || len(config.Retirement.Organizations) != 0 {
-		return fmt.Errorf("repository worktrees policy at %s must not set retirement; retired archive selection is machine-local user policy, set it in %s", baseRevision, userConfigPath)
-	}
-	return nil
+	return worktreepolicy.RepositoryPlacementPolicy(config, baseRevision, userConfigPath)
 }
 
 // validatedRepositoryBranchConfig is the single repository-policy admission
@@ -606,67 +568,7 @@ func repositoryBranchConfigAt(ctx context.Context, canonical *canonicalRepositor
 }
 
 func parseBranchConfig(path string, contents []byte) (branchConfigFile, bool, error) {
-	if len(contents) > maxBranchConfigSize {
-		return branchConfigFile{}, false, fmt.Errorf("worktrees config %s exceeds %d-byte limit", path, maxBranchConfigSize)
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(contents))
-	decoder.KnownFields(true)
-	var config branchConfigFile
-	if err := decoder.Decode(&config); err != nil {
-		return branchConfigFile{}, false, fmt.Errorf("parse worktrees config %s: %w", path, err)
-	}
-	if config.Version != branchConfigVersion {
-		return branchConfigFile{}, false, fmt.Errorf("worktrees config %s has version %d; supported version is %d", path, config.Version, branchConfigVersion)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err == nil {
-		return branchConfigFile{}, false, fmt.Errorf("parse worktrees config %s: multiple YAML documents are not supported", path)
-	} else if !errors.Is(err, io.EOF) {
-		return branchConfigFile{}, false, fmt.Errorf("parse worktrees config %s: %w", path, err)
-	}
-	if config.Worktrees.BranchPrefix != nil {
-		prefix := *config.Worktrees.BranchPrefix
-		if strings.TrimSpace(prefix) != prefix {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s branch_prefix must not have surrounding whitespace", path)
-		}
-		if prefix != "" && !strings.HasSuffix(prefix, "/") {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s branch_prefix must end with /", path)
-		}
-		if prefix != "" && !validBranch(context.Background(), prefix+"probe") {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s has invalid branch_prefix %q", path, prefix)
-		}
-	}
-	if config.Worktrees.Store != nil {
-		store := *config.Worktrees.Store
-		if strings.TrimSpace(store) != store {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s store must not have surrounding whitespace", path)
-		}
-		if store != StoreModeCentral && store != StoreModeRepositoryLocal {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s store mode %q is unsupported; use %q or %q", path, store, StoreModeCentral, StoreModeRepositoryLocal)
-		}
-	}
-	if config.Worktrees.Root != nil {
-		if strings.TrimSpace(*config.Worktrees.Root) != *config.Worktrees.Root {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s root must not have surrounding whitespace", path)
-		}
-		if *config.Worktrees.Root == "" {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s root must not be empty", path)
-		}
-	}
-	if config.Retirement.ArchiveRepository != nil {
-		if err := validateRetiredArchiveRepositoryName(*config.Retirement.ArchiveRepository); err != nil {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.archive_repository: %w", path, err)
-		}
-	}
-	for organization, policy := range config.Retirement.Organizations {
-		if !validSafeSegment(organization) {
-			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.organizations has invalid organization %q", path, organization)
-		}
-		if policy.ArchiveRepository != nil {
-			if err := validateRetiredArchiveRepositoryName(*policy.ArchiveRepository); err != nil {
-				return branchConfigFile{}, false, fmt.Errorf("worktrees config %s retirement.organizations.%s.archive_repository: %w", path, organization, err)
-			}
-		}
-	}
-	return config, true, nil
+	return worktreepolicy.Decode(path, contents, func(branch string) bool {
+		return validBranch(context.Background(), branch)
+	})
 }
