@@ -1072,12 +1072,6 @@ func validateExternalHandoverPrompt(worktree string, at time.Time, runtime, mode
 	if err != nil || len(prompts) != 1 {
 		return fmt.Errorf("external target Work Log must have exactly one handover prompt")
 	}
-	wantDigest := strings.TrimPrefix(string(digest), sessionmove.DigestAlgorithmSHA256+":")
-	header := prompts[0]
-	if header.Seq != 0 || !header.At.Equal(at) || header.SHA256 != wantDigest || header.Source != PromptSourceAgent ||
-		header.Runtime != runtime || header.Model != model {
-		return fmt.Errorf("external target Work Log prompt metadata conflicts with admitted handover")
-	}
 	directory, err := openJournalSubdirectory(worktree, promptsDirectory, false)
 	if err != nil {
 		return err
@@ -1099,6 +1093,17 @@ func validateExternalHandoverPrompt(worktree string, at time.Time, runtime, mode
 	content, err := readBytesAt(directory, name)
 	if err != nil {
 		return err
+	}
+	return corroborateExternalHandoverPrompt(prompts[0], content, at, runtime, model, digest, body)
+}
+
+func corroborateExternalHandoverPrompt(header PromptHeader, content []byte, at time.Time, runtime, model string,
+	digest sessionmove.Digest, body []byte,
+) error {
+	wantDigest := strings.TrimPrefix(string(digest), sessionmove.DigestAlgorithmSHA256+":")
+	if header.Seq != 0 || !header.At.Equal(at) || header.SHA256 != wantDigest || header.Source != PromptSourceAgent ||
+		header.Runtime != runtime || header.Model != model {
+		return fmt.Errorf("external target Work Log prompt metadata conflicts with admitted handover")
 	}
 	separator := []byte("\n---\n\n")
 	frontmatterEnd := bytes.Index(content, separator)

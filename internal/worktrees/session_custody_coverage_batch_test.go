@@ -231,6 +231,36 @@ func TestSessionCustodyCoverageBatchExternalTargetBranches(t *testing.T) {
 	); err == nil {
 		t.Fatal("prompt with conflicting body was accepted")
 	}
+	promptAt := time.Unix(1_700_000_000, 0).UTC()
+	promptDigest := sessionmove.Digest(sessionmove.DigestAlgorithmSHA256 + ":digest")
+	promptHeader := PromptHeader{
+		At: promptAt, SHA256: "digest", Source: PromptSourceAgent, Runtime: "codex", Model: "gpt-test",
+	}
+	conflictingPromptHeader := promptHeader
+	conflictingPromptHeader.Seq = 1
+	for name, testCase := range map[string]struct {
+		header  PromptHeader
+		content []byte
+		body    []byte
+		wantErr bool
+	}{
+		"body without newline": {header: promptHeader, content: []byte("---\n---\n\nbody\n"), body: []byte("body")},
+		"body with newline":    {header: promptHeader, content: []byte("---\n---\n\nbody\n"), body: []byte("body\n")},
+		"empty body":           {header: promptHeader, content: []byte("---\n---\n\n\n")},
+		"metadata conflict":    {header: conflictingPromptHeader, content: []byte("---\n---\n\nbody\n"), body: []byte("body"), wantErr: true},
+		"malformed content":    {header: promptHeader, content: []byte("body"), body: []byte("body"), wantErr: true},
+		"body conflict":        {header: promptHeader, content: []byte("---\n---\n\nother\n"), body: []byte("body"), wantErr: true},
+	} {
+		//nolint:paralleltest // shares the parent fixture's process environment and Git checkout.
+		t.Run("prompt content "+name, func(t *testing.T) {
+			err := corroborateExternalHandoverPrompt(
+				testCase.header, testCase.content, promptAt, "codex", "gpt-test", promptDigest, testCase.body,
+			)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("corroborate prompt error = %v, want error %v", err, testCase.wantErr)
+			}
+		})
+	}
 	if _, err := RecordExternalTargetCompleted(ExternalTargetCompletionOptions{
 		ProjectsRoot: fixture.base.projectsRoot, Request: fixture.base.request, RequestDigest: fixture.digest,
 		Receipt: receipt, WorktreeDir: fixture.worktree,
