@@ -17,6 +17,8 @@ import (
 
 // TestBatch7BoundedRelativeRegularFailureBoundaries proves the descriptor
 // validation failures that cannot be scheduled reliably with filesystem races.
+//
+//nolint:paralleltest // mutates the package-level readBoundedRelativeRegular Fstat and ReadAll seams.
 func TestBatch7BoundedRelativeRegularFailureBoundaries(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "handover.md"), []byte("body"), 0o600); err != nil {
@@ -44,6 +46,8 @@ func TestBatch7BoundedRelativeRegularFailureBoundaries(t *testing.T) {
 }
 
 func TestBatch7ExternalHandoverPromptRejectsUnusableSequence(t *testing.T) {
+	t.Parallel()
+
 	root := t.TempDir()
 	prompts := filepath.Join(root, journalRootDirectory, journalLocalDirectory, promptsDirectory)
 	if err := os.MkdirAll(prompts, 0o700); err != nil {
@@ -62,6 +66,7 @@ func TestBatch7ExternalHandoverPromptRejectsUnusableSequence(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newSessionReceiveFixture calls t.Setenv for WB home and XDG configuration.
 func TestBatch7SessionReceiveCanonicalAndHeldRootBoundaries(t *testing.T) {
 	if _, err := openSessionReceiveCanonicalFromHeldRoot(t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "descriptor is unavailable") {
 		t.Fatalf("nil held root error = %v", err)
@@ -88,6 +93,8 @@ func TestBatch7SessionReceiveCanonicalAndHeldRootBoundaries(t *testing.T) {
 }
 
 func TestBatch7RetireAndRemoteCustodyGuards(t *testing.T) {
+	t.Parallel()
+
 	root := t.TempDir()
 	directory, err := os.Open(root)
 	if err != nil {
@@ -113,6 +120,7 @@ func TestBatch7RetireAndRemoteCustodyGuards(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // mutates the package-level invoked command recording.
 func TestBatch7MicroValueCoverage(t *testing.T) {
 	if got := AbortDisposition("  discard ").String(); got != "discard" {
 		t.Fatalf("abort disposition = %q", got)
@@ -172,6 +180,8 @@ func TestBatch7MicroValueCoverage(t *testing.T) {
 }
 
 func TestBatch7MicroFormattingAndLockCoverage(t *testing.T) {
+	t.Parallel()
+
 	wrapped := errors.New("publication interrupted")
 	if got := (*CreatePublicationError)(nil).Error(); got != "worktree publication failed" {
 		t.Fatalf("nil publication error = %q", got)
@@ -235,6 +245,8 @@ func TestBatch7MicroFormattingAndLockCoverage(t *testing.T) {
 }
 
 func TestBatch7PublicationFindingCoverage(t *testing.T) {
+	t.Parallel()
+
 	if got := PublicationFinding(nil, "feature"); got != "" {
 		t.Fatalf("nil publication finding = %q", got)
 	}

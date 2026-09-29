@@ -99,6 +99,7 @@ func TestSessionPartialCoverageBatchRemoteAndReceiveHelpers(t *testing.T) {
 		"malformed": {output: "not-a-sha refs/heads/feature", wantErr: true},
 		"present":   {output: head + "\trefs/heads/feature\n", want: head},
 	} {
+		//nolint:paralleltest // parent fixture calls t.Setenv, and child cases share its canonical checkout and preflight.
 		t.Run(name, func(t *testing.T) {
 			ctx := withCanonicalGitInterceptor(context.Background(), func(_ context.Context, args []string, _ func() ([]byte, error)) ([]byte, error) {
 				if len(args) == 0 || args[0] != "ls-remote" {
