@@ -349,6 +349,32 @@ func summarizeCreatePlanWorkLogs(plans []createPlan) createPlanWorkLogSummary {
 	return summary
 }
 
+func createWritableRequirements(projectsRoot, home string, repositories []string, policy userStorePolicy, resume bool) (
+	[]string, []pathguard.Requirement, error,
+) {
+	centralStore := policy.CentralRoot
+	if resume {
+		centralStore = ""
+	}
+	requirements := pathguard.Requirements(home, centralStore)
+	canonicalPaths := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		_, _, canonical, err := canonicalRepositoryPath(projectsRoot, repository)
+		if err != nil {
+			return nil, nil, err
+		}
+		canonicalPaths = append(canonicalPaths, canonical)
+		if policy.RepositoryLocal && !resume {
+			requirements = append(requirements, pathguard.Requirement{
+				Path: filepath.Join(canonical, ".worktrees"),
+				Role: pathguard.RoleLocalStore,
+			})
+		}
+		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
+	}
+	return canonicalPaths, requirements, nil
+}
+
 type createdWorktreePublication struct {
 	ownerDirectory      *os.File
 	worktreeDirectory   *os.File
@@ -536,10 +562,6 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	// on a machine where nothing was going to be written there. State and the
 	// canonical Git registration are still required, because a resume can
 	// publish a recovered claim and always reads the clone.
-	centralStore := storePolicy.CentralRoot
-	if normalized.Resume {
-		centralStore = ""
-	}
 	// The central store requirement is declared only when the selected mode has
 	// a central store root. Repository-local mode keeps each checkout inside its
 	// own canonical clone, so its store root is per repository
@@ -550,21 +572,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	//
 	// The canonical paths are read-only derivations, so resolving them here
 	// costs nothing the loop below would not have done anyway.
-	requirements := pathguard.Requirements(home, centralStore)
-	canonicalPaths := make([]string, 0, len(repositories))
-	for _, repository := range repositories {
-		_, _, canonical, pathErr := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
-		if pathErr != nil {
-			return nil, pathErr
-		}
-		canonicalPaths = append(canonicalPaths, canonical)
-		if storePolicy.RepositoryLocal && !normalized.Resume {
-			requirements = append(requirements, pathguard.Requirement{
-				Path: filepath.Join(canonical, ".worktrees"),
-				Role: pathguard.RoleLocalStore,
-			})
-		}
-		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
+	canonicalPaths, requirements, err := createWritableRequirements(
+		normalized.ProjectsRoot, home, repositories, storePolicy, normalized.Resume,
+	)
+	if err != nil {
+		return nil, err
 	}
 	if err := pathguard.Check(resolution.Root, requirements, normalized.writableProbe); err != nil {
 		return nil, err

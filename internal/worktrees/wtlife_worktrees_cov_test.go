@@ -5,7 +5,49 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/pathguard"
 )
+
+func TestWtLifeCovCreateWritableRequirements(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := filepath.Join(root, "acme", "app")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, ".wb")
+	store := filepath.Join(root, "store")
+
+	paths, requirements, err := createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{CentralRoot: store}, false,
+	)
+	if err != nil || len(paths) != 1 || paths[0] != canonical || len(requirements) != 4 ||
+		requirements[2] != (pathguard.Requirement{Path: store, Role: pathguard.RoleStore}) ||
+		requirements[3] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("central requirements = %q, %#v, %v", paths, requirements, err)
+	}
+
+	_, requirements, err = createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{CentralRoot: store}, true,
+	)
+	if err != nil || len(requirements) != 3 || requirements[2] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("resume requirements = %#v, %v", requirements, err)
+	}
+
+	_, requirements, err = createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{RepositoryLocal: true}, false,
+	)
+	wantLocal := pathguard.Requirement{Path: filepath.Join(canonical, ".worktrees"), Role: pathguard.RoleLocalStore}
+	if err != nil || len(requirements) != 4 || requirements[2] != wantLocal ||
+		requirements[3] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("repository-local requirements = %#v, %v", requirements, err)
+	}
+
+	if _, _, err := createWritableRequirements(root, home, []string{"invalid"}, userStorePolicy{}, false); err == nil {
+		t.Fatal("invalid repository produced writable requirements")
+	}
+}
 
 func TestWtLifeCovSummarizeCreatePlanWorkLogs(t *testing.T) {
 	t.Parallel()
