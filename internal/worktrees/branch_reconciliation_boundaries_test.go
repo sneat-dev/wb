@@ -61,12 +61,12 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = created.Close() }()
+	t.Cleanup(func() { _ = created.Close() })
 	got, replay, err := readBranchReconciliationRecord(home, claim, record.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = replay.Close() }()
+	t.Cleanup(func() { _ = replay.Close() })
 	createdInfo, err := created.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +331,7 @@ func TestBranchReconciliationBundleRejectsInvalidCanonicalAndUnknownRef(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if err := bundleClaimHead(context.Background(), invalidCanonical, directory, "event-1", "local",
 		"refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil {
 		t.Fatal("bundle creation accepted unavailable canonical descriptors")
