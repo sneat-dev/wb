@@ -81,9 +81,10 @@ func TestBranchCleanupSourceWithoutRegisteredRootsIsRejected(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchCleanupRecoveryArchiveFailureStopsRetirement(t *testing.T) {
-	fixture := newGitFixture(t)
+	t.Parallel()
+
+	repository := t.TempDir()
 	reportFile := filepath.Join(t.TempDir(), "occupied")
 	if err := os.WriteFile(reportFile, []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
@@ -91,26 +92,27 @@ func TestBranchCleanupRecoveryArchiveFailureStopsRetirement(t *testing.T) {
 	result := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/reviewed",
 		Scope: BranchScopeLocal, Disposition: BranchSuperseded, SupersededAtOrigin: true},
 		Eligible: true, Outcome: "planned"}
-	if _, err := archiveReviewedBranch(context.Background(), reportFile, fixture.canonical, result); err == nil {
+	if _, err := archiveReviewedBranch(context.Background(), reportFile, repository, result); err == nil {
 		t.Fatal("archive succeeded despite blocked recovery destination")
 	}
 	results := []BranchCleanupResult{result}
-	applyBranchCleanup(context.Background(), results, map[string]string{"acme/app": fixture.canonical},
+	applyBranchCleanup(context.Background(), results, map[string]string{"acme/app": repository},
 		BranchCleanupOptions{ReportDir: reportFile}, time.Now())
 	if results[0].Outcome != "failed" || results[0].Applied || !strings.Contains(results[0].Error, "recovery bundle") {
 		t.Fatalf("retirement continued after archive failure: %#v", results[0])
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchCleanupApplyFailsWhenAuditReportCannotBeWritten(t *testing.T) {
-	fixture := newGitFixture(t)
+	t.Parallel()
+
+	projectsRoot := t.TempDir()
 	reportFile := filepath.Join(t.TempDir(), "occupied")
 	if err := os.WriteFile(reportFile, []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := BranchCleanup(context.Background(), BranchCleanupOptions{
-		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeLocal, Apply: true, ReportDir: reportFile,
+		ProjectsRoot: projectsRoot, Scope: BranchScopeLocal, Apply: true, ReportDir: reportFile,
 	}); err == nil {
 		t.Fatal("cleanup continued without a durable audit report")
 	}

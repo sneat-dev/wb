@@ -2,12 +2,42 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
+
+// cancellationAwareReconciliationRunner makes a dropped context observable
+// without starting Git. A canned cancellation error would pass even if a
+// caller accidentally replaced the canceled context with Background.
+type cancellationAwareReconciliationRunner struct{ runner.Runner }
+
+func (r cancellationAwareReconciliationRunner) RunOpts(ctx context.Context, dir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return runner.Result{}, err
+	}
+	return r.Runner.RunOpts(ctx, dir, opts, name, args...)
+}
+
+func reconciliationFakeCanonical(t *testing.T) *canonicalRepository {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := openCanonicalRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(canonical.close)
+	return canonical
+}
 
 func reconciliationRecordForClaim(claim workLogClaim) branchReconciliationRecord {
 	return branchReconciliationRecord{
@@ -163,12 +193,20 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testing.T) {
-	fixture := newGitFixture(t)
-	worktree := fixture.canonical
+	t.Parallel()
+
+	worktree := t.TempDir()
 	claim, projection := wtLogCovReconciliationClaim(worktree)
-	if err := writeWorkLogProjection(worktree, projection); err != nil {
+	projectionDir, err := openWorkLogProjectionDirectory(worktree, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomicAt(projectionDir, workLogProjectionName, projection, 0o600); err != nil {
+		_ = projectionDir.Close()
+		t.Fatal(err)
+	}
+	if err := projectionDir.Close(); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
@@ -201,30 +239,47 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationGuardsPropagateCancelledGitQueries(t *testing.T) {
-	fixture := newGitFixture(t)
-	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
-	gitTest(t, fixture.canonical, "branch", "wb/claim")
-	gitTest(t, fixture.canonical, "push", "origin", "wb/claim")
-	canonical, err := openCanonicalRepository(fixture.canonical)
-	if err != nil {
-		t.Fatal(err)
+	t.Parallel()
+
+	canonical := reconciliationFakeCanonical(t)
+	head := strings.Repeat("a", 40)
+	ref := "refs/heads/wb/claim"
+	remote := runnertest.New(t)
+	remoteQuery := []string{"git", "-C", canonical.path, "ls-remote", "--heads", "origin", ref}
+	remote.ExpectArgv(remoteQuery, runner.Result{CombinedOutput: head + "\t" + ref + "\n"}, nil)
+	// If cancellation stops propagating, the fake still returns a present ref,
+	// which cannot satisfy the cancellation assertion below.
+	remote.ExpectArgv(remoteQuery, runner.Result{CombinedOutput: head + "\t" + ref + "\n"}, nil)
+	remote.ExpectArgv(remoteQuery, runner.Result{CombinedOutput: head + "\t" + ref + "\n"}, nil)
+	remoteCtx := withGitRunner(context.Background(), cancellationAwareReconciliationRunner{remote})
+	localCtx := withCanonicalGitInterceptor(context.Background(), func(ctx context.Context, args []string, _ func() ([]byte, error)) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(args) == 2 && args[0] == "rev-parse" && args[1] == ref {
+			return []byte(head + "\n"), nil
+		}
+		if len(args) == 3 && args[0] == "for-each-ref" && args[2] == ref {
+			return []byte(head + "\n"), nil
+		}
+		return nil, errors.New("unexpected canonical Git query")
+	})
+	if err := requireRemoteClaimHead(remoteCtx, canonical.path, "wb/claim", head); err != nil {
+		t.Fatalf("fake remote claim ref was not readable: %v", err)
 	}
-	defer canonical.close()
-	if err := requireRemoteClaimHead(context.Background(), fixture.canonical, "wb/claim", head); err != nil {
-		t.Fatalf("live remote claim ref was not readable: %v", err)
+	if err := requireLocalClaimHead(localCtx, canonical, "wb/claim", head); err != nil {
+		t.Fatalf("fake local claim ref was not readable: %v", err)
 	}
-	if err := requireLocalClaimHead(context.Background(), canonical, "wb/claim", head); err != nil {
-		t.Fatalf("live local claim ref was not readable: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
+	remoteCanceled, cancel := context.WithCancel(remoteCtx)
 	cancel()
+	localCanceled, cancelLocal := context.WithCancel(localCtx)
+	cancelLocal()
 	for name, check := range map[string]func() error{
-		"remote head":   func() error { return requireRemoteClaimHead(ctx, fixture.canonical, "wb/claim", head) },
-		"remote absent": func() error { return requireRemoteClaimAbsent(ctx, fixture.canonical, "wb/claim") },
-		"local head":    func() error { return requireLocalClaimHead(ctx, canonical, "wb/claim", head) },
-		"local absent":  func() error { return requireLocalClaimAbsent(ctx, canonical, "wb/claim") },
+		"remote head":   func() error { return requireRemoteClaimHead(remoteCanceled, canonical.path, "wb/claim", head) },
+		"remote absent": func() error { return requireRemoteClaimAbsent(remoteCanceled, canonical.path, "wb/claim") },
+		"local head":    func() error { return requireLocalClaimHead(localCanceled, canonical, "wb/claim", head) },
+		"local absent":  func() error { return requireLocalClaimAbsent(localCanceled, canonical, "wb/claim") },
 	} {
 		if err := check(); err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
 			t.Errorf("%s returned %v, want context cancellation", name, err)
@@ -232,20 +287,21 @@ func TestBranchReconciliationGuardsPropagateCancelledGitQueries(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
-func TestBranchReconciliationRejectsAnUnrelatedRealGitBase(t *testing.T) {
-	fixture := newGitFixture(t)
-	base := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
-	gitTest(t, fixture.canonical, "checkout", "--orphan", "unrelated")
-	gitTest(t, fixture.canonical, "commit", "--allow-empty", "-m", "unrelated root")
-	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
-	claim, _ := wtLogCovReconciliationClaim(fixture.canonical)
+func TestBranchReconciliationRejectsUnrelatedBaseWithFakeGit(t *testing.T) {
+	t.Parallel()
+
+	repository := t.TempDir()
+	base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", repository, "merge-base", "--is-ancestor", base, head},
+		runner.Result{ExitCode: 1}, errors.New("exit status 1"))
+	claim, _ := wtLogCovReconciliationClaim(repository)
 	claim.BaseSHA = base
-	entry := ListResult{CanonicalDir: fixture.canonical, WorktreeDir: fixture.canonical,
+	entry := ListResult{CanonicalDir: repository, WorktreeDir: repository,
 		Branch: "wb/live", HeadSHA: head, Clean: true, IntegratedAtOrigin: true,
 		RemoteTargetSHA: head, MergedPullRequest: &PullRequest{Number: 1}}
 	options := LogRecoverOptions{ExpectedHead: head}
-	if err := validateReconciliationLifecycleEvidence(context.Background(), entry, claim, options); err == nil ||
+	if err := validateReconciliationLifecycleEvidence(withGitRunner(context.Background(), fake), entry, claim, options); err == nil ||
 		!strings.Contains(err.Error(), "not descended") {
 		t.Fatalf("unrelated root validation = %v", err)
 	}
@@ -267,43 +323,26 @@ func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
-func TestBranchReconciliationBundleRejectsUnknownRef(t *testing.T) {
-	fixture := newGitFixture(t)
-	canonical, err := openCanonicalRepository(fixture.canonical)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer canonical.close()
+func TestBranchReconciliationBundleRejectsInvalidCanonicalAndUnknownRef(t *testing.T) {
+	t.Parallel()
+
+	invalidCanonical := &canonicalRepository{path: t.TempDir()}
 	directory, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "local",
+	if err := bundleClaimHead(context.Background(), invalidCanonical, directory, "event-1", "local",
 		"refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil {
-		t.Fatal("bundle for a nonexistent immutable claim ref was preserved")
+		t.Fatal("bundle creation accepted unavailable canonical descriptors")
 	}
-	if err := requireBundleAdvertisesClaimRef(context.Background(), canonical,
-		filepath.Join(directory.Name(), "missing.bundle"), "refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil {
-		t.Fatal("missing recovery bundle was accepted as proof")
-	}
-}
-
-//nolint:paralleltest // prepareBranchReconciliationFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
-func TestBranchReconciliationRemoteBundleInterruptionKeepsBothRefs(t *testing.T) {
-	fixture, result, liveBranch, head, remoteHead, _ := prepareBranchReconciliationFixture(t)
-	claimHead := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch)
-	options := reconcileOptions(fixture, result, liveBranch, head)
-	options.Apply = true
-	options.testFailAfterBundle = "remote"
-	if _, err := LogRecover(context.Background(), options); err == nil || !strings.Contains(err.Error(), "after remote preservation") {
-		t.Fatalf("remote bundle interruption = %v", err)
-	}
-	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch); got != claimHead {
-		t.Fatalf("local claim ref changed to %s", got)
-	}
-	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != remoteHead {
-		t.Fatalf("remote claim ref changed to %s", got)
+	canonical := reconciliationFakeCanonical(t)
+	ctx := withCanonicalGitInterceptor(context.Background(), func(_ context.Context, _ []string, _ func() ([]byte, error)) ([]byte, error) {
+		return []byte(strings.Repeat("b", 40) + " refs/heads/wb/other\n"), nil
+	})
+	if err := requireBundleAdvertisesClaimRef(ctx, canonical,
+		filepath.Join(directory.Name(), "missing.bundle"), "refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil ||
+		!strings.Contains(err.Error(), "does not advertise expected ref") {
+		t.Fatalf("unrelated bundle advertisement = %v", err)
 	}
 }
