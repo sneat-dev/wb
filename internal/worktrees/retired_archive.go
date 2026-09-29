@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/worktreepolicy"
 )
 
 // DefaultRetiredArchiveRepository is the per-organization archive repository
@@ -51,10 +52,7 @@ func ResolveRetiredArchiveTarget(organization string) (RetiredArchiveTarget, err
 }
 
 func validateRetiredArchiveRepositoryName(repository string) error {
-	if strings.TrimSpace(repository) != repository || repository == "" || !validRepositorySegment(repository) {
-		return fmt.Errorf("must be a non-empty repository basename")
-	}
-	return nil
+	return worktreepolicy.ValidateRetiredArchiveRepositoryName(repository)
 }
 
 // RetiredArchiveInspection is the minimum authoritative remote observation.
