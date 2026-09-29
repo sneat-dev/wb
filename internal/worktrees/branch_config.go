@@ -34,7 +34,6 @@ const (
 // branchConfigFile is layered user then repository. A nil prefix leaves the
 // lower layer intact; an explicitly empty value deliberately disables it.
 type branchConfigFile = worktreepolicy.Config
-type retiredArchiveOrganizationConfig = worktreepolicy.RetiredArchiveOrganizationConfig
 
 // worktreePlacement is the physical placement selected for one canonical
 // repository. WB_HOME remains the authority for claims, locks, and receipts;
