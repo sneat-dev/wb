@@ -10,6 +10,8 @@ import (
 )
 
 func TestBranchCleanupRelativeReportDirectoryAndYoungerBranch(t *testing.T) {
+	t.Parallel()
+
 	root := t.TempDir()
 	normalized, err := normalizeBranchCleanupOptions(BranchCleanupOptions{
 		ProjectsRoot: root, Scope: BranchScopeLocal, ReportDir: "reports/branch-cleanup",
@@ -30,6 +32,8 @@ func TestBranchCleanupRelativeReportDirectoryAndYoungerBranch(t *testing.T) {
 }
 
 func TestBranchCleanupReportFilesystemFailuresAreReturned(t *testing.T) {
+	t.Parallel()
+
 	root := t.TempDir()
 	reportFile := filepath.Join(root, "report-file")
 	if err := os.WriteFile(reportFile, []byte("occupied"), 0o600); err != nil {
@@ -68,6 +72,8 @@ func TestBranchCleanupReportFilesystemFailuresAreReturned(t *testing.T) {
 }
 
 func TestBranchCleanupSourceWithoutRegisteredRootsIsRejected(t *testing.T) {
+	t.Parallel()
+
 	ctx := lifecycleGitContext(t, "/fixture/repository", lifecycleGitReply{operation: "worktree", output: ""})
 	if _, err := sourceRepositoryRoots(ctx, "/fixture/repository"); err == nil ||
 		!strings.Contains(err.Error(), "no registered worktree roots") {
@@ -75,6 +81,7 @@ func TestBranchCleanupSourceWithoutRegisteredRootsIsRejected(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchCleanupRecoveryArchiveFailureStopsRetirement(t *testing.T) {
 	fixture := newGitFixture(t)
 	reportFile := filepath.Join(t.TempDir(), "occupied")
@@ -95,6 +102,7 @@ func TestBranchCleanupRecoveryArchiveFailureStopsRetirement(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchCleanupApplyFailsWhenAuditReportCannotBeWritten(t *testing.T) {
 	fixture := newGitFixture(t)
 	reportFile := filepath.Join(t.TempDir(), "occupied")

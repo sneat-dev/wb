@@ -22,6 +22,8 @@ func reconciliationRecordForClaim(claim workLogClaim) branchReconciliationRecord
 }
 
 func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *testing.T) {
+	t.Parallel()
+
 	home := t.TempDir()
 	claim, _ := wtLogCovReconciliationClaim(t.TempDir())
 	record := reconciliationRecordForClaim(claim)
@@ -63,6 +65,8 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 }
 
 func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
+	t.Parallel()
+
 	claim, _ := wtLogCovReconciliationClaim(t.TempDir())
 	for _, tc := range []struct {
 		name  string
@@ -100,6 +104,8 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			home := filepath.Join(t.TempDir(), "home")
 			tc.setup(t, home)
 			if directory, err := openBranchReconciliationEvent(home, claim, "event-1", true); err == nil {
@@ -111,6 +117,8 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 }
 
 func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
+	t.Parallel()
+
 	claim, _ := wtLogCovReconciliationClaim(t.TempDir())
 	record := reconciliationRecordForClaim(claim)
 	homeFile := filepath.Join(t.TempDir(), "home-file")
@@ -155,6 +163,7 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testing.T) {
 	fixture := newGitFixture(t)
 	worktree := fixture.canonical
@@ -192,6 +201,7 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationGuardsPropagateCancelledGitQueries(t *testing.T) {
 	fixture := newGitFixture(t)
 	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
@@ -222,6 +232,7 @@ func TestBranchReconciliationGuardsPropagateCancelledGitQueries(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationRejectsAnUnrelatedRealGitBase(t *testing.T) {
 	fixture := newGitFixture(t)
 	base := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
@@ -241,6 +252,8 @@ func TestBranchReconciliationRejectsAnUnrelatedRealGitBase(t *testing.T) {
 }
 
 func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
+	t.Parallel()
+
 	if _, err := reconcileClaimBranch(context.Background(), LogRecoverOptions{}); err == nil {
 		t.Fatal("reconciliation accepted an empty request")
 	}
@@ -254,6 +267,7 @@ func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationBundleRejectsUnknownRef(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonical, err := openCanonicalRepository(fixture.canonical)
@@ -276,6 +290,7 @@ func TestBranchReconciliationBundleRejectsUnknownRef(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // prepareBranchReconciliationFixture uses t.Setenv to isolate real Git, which cannot run in a parallel test.
 func TestBranchReconciliationRemoteBundleInterruptionKeepsBothRefs(t *testing.T) {
 	fixture, result, liveBranch, head, remoteHead, _ := prepareBranchReconciliationFixture(t)
 	claimHead := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch)
