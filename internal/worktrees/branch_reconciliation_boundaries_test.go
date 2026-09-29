@@ -86,7 +86,17 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 	}
 	_, projection := wtLogCovReconciliationClaim(claim.Worktree)
 	local := localProjectionForReconciliation(projection)
-	event := reconciliationEvent(context.Background(), claim.Worktree, got)
+	gitQueries := runnertest.New(t)
+	gitQueries.ExpectArgv([]string{"git", "-C", claim.Worktree, "branch", "--show-current"},
+		runner.Result{CombinedOutput: record.LiveBranch + "\n"}, nil)
+	gitQueries.ExpectArgv([]string{"git", "-C", claim.Worktree, "rev-parse", "HEAD"},
+		runner.Result{CombinedOutput: record.ExpectedHead + "\n"}, nil)
+	gitQueries.ExpectArgv([]string{"git", "-C", claim.Worktree, "status", "--porcelain"},
+		runner.Result{}, nil)
+	event := reconciliationEvent(withGitRunner(context.Background(), gitQueries), claim.Worktree, got)
+	if gitQueries.CallCount() != 3 || event.Git == nil || event.Git.Branch != record.LiveBranch || event.Git.Head != record.ExpectedHead {
+		t.Fatalf("replayed event did not retain fake-observed Git evidence: %#v", event.Git)
+	}
 	completed := completedBranchReconciliationResult(claim.Worktree, event, *local)
 	if !completed.ReadyForNormalCleanup || completed.Event == nil || completed.Event.ID != record.EventID ||
 		completed.Projection == nil || completed.Projection.ClaimID != claim.ClaimID {
@@ -305,6 +315,9 @@ func TestBranchReconciliationRejectsUnrelatedBaseWithFakeGit(t *testing.T) {
 		!strings.Contains(err.Error(), "not descended") {
 		t.Fatalf("unrelated root validation = %v", err)
 	}
+	if fake.CallCount() != 1 {
+		t.Fatalf("ancestry guard made %d fake Git calls, want one exact merge-base query", fake.CallCount())
+	}
 }
 
 func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
@@ -323,26 +336,27 @@ func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
 	}
 }
 
-func TestBranchReconciliationBundleRejectsInvalidCanonicalAndUnknownRef(t *testing.T) {
+func TestBranchReconciliationBundleAdvertisementRejectsUnknownRef(t *testing.T) {
 	t.Parallel()
 
-	invalidCanonical := &canonicalRepository{path: t.TempDir()}
-	directory, err := os.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = directory.Close() })
-	if err := bundleClaimHead(context.Background(), invalidCanonical, directory, "event-1", "local",
-		"refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil {
-		t.Fatal("bundle creation accepted unavailable canonical descriptors")
-	}
 	canonical := reconciliationFakeCanonical(t)
-	ctx := withCanonicalGitInterceptor(context.Background(), func(_ context.Context, _ []string, _ func() ([]byte, error)) ([]byte, error) {
-		return []byte(strings.Repeat("b", 40) + " refs/heads/wb/other\n"), nil
+	wantRef := "refs/heads/wb/missing"
+	otherRef := "refs/heads/wb/other"
+	bundlePath := filepath.Join(t.TempDir(), "missing.bundle")
+	calls := 0
+	ctx := withCanonicalGitInterceptor(context.Background(), func(_ context.Context, args []string, _ func() ([]byte, error)) ([]byte, error) {
+		calls++
+		if len(args) != 3 || args[0] != "bundle" || args[1] != "list-heads" || args[2] != bundlePath {
+			return nil, errors.New("unexpected canonical bundle query")
+		}
+		return []byte(strings.Repeat("b", 40) + " " + otherRef + "\n"), nil
 	})
 	if err := requireBundleAdvertisesClaimRef(ctx, canonical,
-		filepath.Join(directory.Name(), "missing.bundle"), "refs/heads/wb/missing", strings.Repeat("a", 40)); err == nil ||
+		bundlePath, wantRef, strings.Repeat("a", 40)); err == nil ||
 		!strings.Contains(err.Error(), "does not advertise expected ref") {
 		t.Fatalf("unrelated bundle advertisement = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("bundle advertisement made %d canonical Git queries, want one list-heads", calls)
 	}
 }

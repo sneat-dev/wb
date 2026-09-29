@@ -261,19 +261,21 @@ func TestReconcileClaimBranchRefusesTargetRegression(t *testing.T) {
 }
 
 func TestReconcileClaimBranchBundleFailureLeavesAllRefsUntouched(t *testing.T) {
-	fixture, result, liveBranch, head, remoteHead, _ := prepareBranchReconciliationFixture(t)
-	claimHead := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch)
-	options := reconcileOptions(fixture, result, liveBranch, head)
-	options.Apply = true
-	options.testFailAfterBundle = "local"
-	if _, err := LogRecover(context.Background(), options); err == nil {
-		t.Fatal("injected bundle failure unexpectedly succeeded")
-	}
-	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch); got != claimHead {
-		t.Fatalf("bundle failure changed local claim ref to %s", got)
-	}
-	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != remoteHead {
-		t.Fatalf("bundle failure changed remote claim ref to %s", got)
+	for _, stage := range []string{"local", "remote"} {
+		fixture, result, liveBranch, head, remoteHead, _ := prepareBranchReconciliationFixture(t)
+		claimHead := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch)
+		options := reconcileOptions(fixture, result, liveBranch, head)
+		options.Apply = true
+		options.testFailAfterBundle = stage
+		if _, err := LogRecover(context.Background(), options); err == nil || !strings.Contains(err.Error(), "after "+stage+" preservation") {
+			t.Fatalf("injected %s bundle failure = %v", stage, err)
+		}
+		if got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+result.Branch); got != claimHead {
+			t.Fatalf("%s bundle failure changed local claim ref to %s", stage, got)
+		}
+		if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != remoteHead {
+			t.Fatalf("%s bundle failure changed remote claim ref to %s", stage, got)
+		}
 	}
 }
 
