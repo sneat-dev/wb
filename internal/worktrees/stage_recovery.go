@@ -275,7 +275,7 @@ func retiredStageReceiptPath(home string, results []RetiredStageRecoveryResult) 
 
 func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) {
 	planned, err := inventoryStage(result.Path)
-	if err != nil || planned.Digest != result.ContentDigest || planned.Files != result.FileCount || planned.Bytes != result.ByteCount || planned.Symlinks != result.SymlinkCount {
+	if err != nil || !retiredStageInventoryMatches(*result, planned) {
 		result.Eligible = false
 		result.Reason = "retired stage changed after inventory; ambiguous evidence was left untouched"
 		return
@@ -336,6 +336,17 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 	result.ArchivePath = archivePath
 	result.Disposition = "archived_retired_stage"
 	result.Reason = "content preserved in a private deterministic recovery archive"
+}
+
+// retiredStageInventoryMatches keeps the apply-time recheck aligned with the
+// inventory recorded by inspection. Recovery may only move the exact content
+// the operator reviewed; any added, removed, or retargeted evidence remains in
+// place for a new inspection.
+func retiredStageInventoryMatches(result RetiredStageRecoveryResult, inventory stageContentInventory) bool {
+	return inventory.Digest == result.ContentDigest &&
+		inventory.Files == result.FileCount &&
+		inventory.Bytes == result.ByteCount &&
+		inventory.Symlinks == result.SymlinkCount
 }
 
 func writeRetiredStageReceipt(path string, outcome RetiredStageRecoveryOutcome) error {
