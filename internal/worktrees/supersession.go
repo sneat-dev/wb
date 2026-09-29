@@ -528,7 +528,7 @@ func dependencyLockfile(ctx context.Context, canonical, target string, delta Sup
 		if dir == "." {
 			dir = ""
 		}
-		if manifestDir != dir && !strings.HasPrefix(manifestDir, dir+"/") {
+		if manifestDir != dir && dir != "" && !strings.HasPrefix(manifestDir, dir+"/") {
 			continue
 		}
 		if best == "" || len(dir) > len(path.Dir(best)) || (len(dir) == len(path.Dir(best)) && candidate < best) {
