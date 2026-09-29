@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 )
@@ -222,10 +224,10 @@ func TestSessionPartialClosureBatchParkedResolutionErrors(t *testing.T) {
 
 //nolint:paralleltest // Git fixtures and canonical Git interception are process-scoped test infrastructure.
 func TestSessionPartialClosureBatchGitBoundaries(t *testing.T) {
-	repository := t.TempDir()
-	gitTest(t, repository, "init")
-	gitTest(t, repository, "config", "remote.origin.url", "://")
-	if reason := verifyParkedMemberOriginRemote(context.Background(), repository, "https://example.com/acme/app.git"); !strings.Contains(reason, "is unusable") {
+	const repository = "/fixture/repository"
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", repository, "remote", "get-url", "origin"}, runner.Result{CombinedOutput: "://\n"}, nil)
+	if reason := verifyParkedMemberOriginRemote(withGitRunner(context.Background(), fake), repository, "https://example.com/acme/app.git"); !strings.Contains(reason, "is unusable") {
 		t.Fatalf("invalid current origin reason = %q", reason)
 	}
 
