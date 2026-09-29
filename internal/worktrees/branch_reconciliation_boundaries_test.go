@@ -194,24 +194,31 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 
 func TestBranchReconciliationGuardsPropagateCancelledGitQueries(t *testing.T) {
 	fixture := newGitFixture(t)
+	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "branch", "wb/claim")
+	gitTest(t, fixture.canonical, "push", "origin", "wb/claim")
 	canonical, err := openCanonicalRepository(fixture.canonical)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer canonical.close()
+	if err := requireRemoteClaimHead(context.Background(), fixture.canonical, "wb/claim", head); err != nil {
+		t.Fatalf("live remote claim ref was not readable: %v", err)
+	}
+	if err := requireLocalClaimHead(context.Background(), canonical, "wb/claim", head); err != nil {
+		t.Fatalf("live local claim ref was not readable: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := requireRemoteClaimHead(ctx, fixture.canonical, "wb/claim", strings.Repeat("a", 40)); err == nil {
-		t.Fatal("remote head check ignored cancelled query")
-	}
-	if err := requireRemoteClaimAbsent(ctx, fixture.canonical, "wb/claim"); err == nil {
-		t.Fatal("remote absence check ignored cancelled query")
-	}
-	if err := requireLocalClaimAbsent(ctx, canonical, "wb/claim"); err == nil {
-		t.Fatal("local absence check ignored cancelled query")
-	}
-	if err := requireLocalClaimHead(ctx, canonical, "wb/claim", strings.Repeat("a", 40)); err == nil {
-		t.Fatal("local head check ignored cancelled query")
+	for name, check := range map[string]func() error{
+		"remote head":   func() error { return requireRemoteClaimHead(ctx, fixture.canonical, "wb/claim", head) },
+		"remote absent": func() error { return requireRemoteClaimAbsent(ctx, fixture.canonical, "wb/claim") },
+		"local head":    func() error { return requireLocalClaimHead(ctx, canonical, "wb/claim", head) },
+		"local absent":  func() error { return requireLocalClaimAbsent(ctx, canonical, "wb/claim") },
+	} {
+		if err := check(); err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Errorf("%s returned %v, want context cancellation", name, err)
+		}
 	}
 }
 
