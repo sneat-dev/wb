@@ -1077,15 +1077,7 @@ func classifyBranch(
 			return entry
 		}
 		if receipt != nil {
-			entry.Disposition = BranchReceipted
-			entry.LandingSHA = receipt.LandingSHA
-			entry.ReceiptPullRequest = receipt.PullRequest
-			entry.Evidence = fmt.Sprintf(
-				"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
-				sweep.AbsorbedBy, shortSHA(receipt.LandingSHA), shortSHA(receipt.LandingSHA))
-			entry.Reason = fmt.Sprintf(
-				"content-proven absorbed via --absorbed-by %s; eligible for deletion", sweep.AbsorbedBy)
-			return entry
+			return receiptedBranch(entry, receipt.LandingSHA, receipt.PullRequest, sweep.AbsorbedBy)
 		}
 		entry.AbsorbedByRejection = rejection
 		absorbedByNote = "; --absorbed-by: " + rejection
@@ -1101,15 +1093,7 @@ func classifyBranch(
 	if sweep.Receipts {
 		receipt, note := classifyLandingReceipt(ctx, repository, ref, sweep.Base, targetSHA, pullRequestCache)
 		if receipt != nil {
-			entry.Disposition = BranchReceipted
-			entry.LandingSHA = receipt.MergeSHA
-			entry.ReceiptPullRequest = receipt
-			entry.Evidence = fmt.Sprintf(
-				"merged pull request #%d into %s; landing %s is in the fetched target and the three-way proof holds",
-				receipt.Number, sweep.Base, shortSHA(receipt.MergeSHA))
-			entry.Reason = fmt.Sprintf(
-				"landed via merged pull request #%d; eligible for deletion under --receipts", receipt.Number)
-			return entry
+			return receiptedBranch(entry, receipt.MergeSHA, receipt, "")
 		}
 		receiptNote = "; receipt: " + note
 	}
@@ -1127,6 +1111,24 @@ func classifyBranch(
 	}
 	entry.Disposition = BranchUnique
 	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote + absorbedByNote
+	return entry
+}
+
+func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequest, absorbedBy string) BranchEntry {
+	entry.Disposition = BranchReceipted
+	entry.LandingSHA = landingSHA
+	entry.ReceiptPullRequest = pullRequest
+	if absorbedBy != "" {
+		entry.Evidence = fmt.Sprintf(
+			"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
+			absorbedBy, shortSHA(landingSHA), shortSHA(landingSHA))
+		entry.Reason = fmt.Sprintf("content-proven absorbed via --absorbed-by %s; eligible for deletion", absorbedBy)
+		return entry
+	}
+	entry.Evidence = fmt.Sprintf(
+		"merged pull request #%d into %s; landing %s is in the fetched target and the three-way proof holds",
+		pullRequest.Number, entry.Base, shortSHA(landingSHA))
+	entry.Reason = fmt.Sprintf("landed via merged pull request #%d; eligible for deletion under --receipts", pullRequest.Number)
 	return entry
 }
 

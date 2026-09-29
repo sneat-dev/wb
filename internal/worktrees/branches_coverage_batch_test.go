@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,5 +264,32 @@ func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
 	}
 	if absorbed, evidence, unique, err := classifyAbsorbedOrUnique(ctx, repository.Path, target, sha); err == nil || absorbed || evidence != "" || unique != 0 {
 		t.Fatalf("unreadable absorption = %t/%q/%d/%v", absorbed, evidence, unique, err)
+	}
+
+	pullRequest := &PullRequest{Number: 17}
+	explicit := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
+	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
+		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
+		t.Fatalf("explicit receipt classification = %#v", explicit)
+	}
+	automatic := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
+	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
+		!strings.Contains(automatic.Reason, "--receipts") {
+		t.Fatalf("automatic receipt classification = %#v", automatic)
+	}
+
+	brokenGit := runnertest.New(t)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "merge-base", "--is-ancestor", sha, target},
+		runner.Result{ExitCode: 1}, errors.New("not an ancestor"),
+	)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "cherry", target, sha},
+		runner.Result{}, errors.New("unreadable cherry evidence"),
+	)
+	unreadableCherry := classifyBranch(withGitRunner(context.Background(), brokenGit), repository, sweep,
+		branchRef{Name: "feature/unreadable-cherry", SHA: sha}, BranchScopeLocal, target, "main", nil, nil, nil)
+	if unreadableCherry.Disposition != BranchUnreadable || !strings.Contains(unreadableCherry.Evidence, "unreadable cherry evidence") {
+		t.Fatalf("unreadable cherry classification = %#v", unreadableCherry)
 	}
 }
