@@ -14,7 +14,17 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionpark"
 )
 
-func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(t *testing.T) {
+type parkedTargetCompletionFixture struct {
+	base      *sessionReceiveFixture
+	member    sessionpark.RemoteMember
+	request   sessionpark.RemoteRequest
+	digest    sessionmove.Digest
+	worktree  string
+	successor sessionlaunch.Result
+}
+
+func newParkedTargetCompletionFixture(t *testing.T, resumeID string) *parkedTargetCompletionFixture {
+	t.Helper()
 	base := newSessionReceiveFixture(t)
 	member := sessionpark.RemoteMember{
 		MemberID: "m-001-abcdef01", Repository: "acme/app", RepositoryRemote: base.remote,
@@ -22,7 +32,7 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 		SourceWorkLogReference: "worklog:session-park/source-run/" + strings.Repeat("b", 64),
 	}
 	request := sessionpark.RemoteRequest{
-		SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: "resume-custody-race", ParkedSessionID: "park-custody-race",
+		SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: resumeID, ParkedSessionID: "park-" + resumeID,
 		SuccessorWBSessionID: "wbs-park-successor", PredecessorWBSessionID: "wbs-park-source",
 		SourceMachine: "laptop", TargetMachine: "target-vm", SourceRuntime: "codex", SourceModel: "gpt-5",
 		Continuation: "continue privately", Members: []sessionpark.RemoteMember{member}, CreatedAt: time.Unix(100, 0).UTC(),
@@ -59,6 +69,13 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 		PID: record.PID, AttemptID: attemptID, AttemptIndex: 1, TmuxName: record.TmuxName,
 		Runtime: record.Runtime, Model: record.Model, WorktreeDir: worktree, PinnedCommit: member.Commit, StartedAt: startedAt,
 	}
+	return &parkedTargetCompletionFixture{base: base, member: member, request: request, digest: digest, worktree: worktree, successor: successor}
+}
+
+func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(t *testing.T) {
+	fixture := newParkedTargetCompletionFixture(t, "resume-custody-race")
+	base, member, request := fixture.base, fixture.member, fixture.request
+	digest, worktree, successor := fixture.digest, fixture.worktree, fixture.successor
 	wrongMember := member
 	wrongMember.Commit = strings.Repeat("f", 40)
 	if _, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
@@ -72,7 +89,7 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 	// the unlocked latest-owner read and completion still succeeded. The fixed
 	// path admits the contender first, then revalidates the full barrier while
 	// holding the journal lock and refuses stale completion authority.
-	_, err = RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+	_, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
 		ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member,
 		WorktreeDir: worktree, Successor: successor,
 		hooks: parkedTargetCompletionHooks{beforeCompletionBarrier: func() error {
@@ -95,28 +112,11 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 
 //nolint:paralleltest // newSessionReceiveFixture configures process-wide WB and Git fixture environment.
 func TestRecordParkedTargetCompletedRecordsValidatedMember(t *testing.T) {
-	base := newSessionReceiveFixture(t)
-	member := sessionpark.RemoteMember{MemberID: "m-001-abcdef01", Repository: "acme/app", RepositoryRemote: base.remote,
-		Branch: base.request.Branch, Commit: base.request.BundleCommit, SourceWorkLogReference: "worklog:session-park/source-run/" + strings.Repeat("b", 64)}
-	request := sessionpark.RemoteRequest{SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: "resume-custody-complete", ParkedSessionID: "park-custody-complete",
-		SuccessorWBSessionID: "wbs-park-successor", PredecessorWBSessionID: "wbs-park-source", SourceMachine: "laptop", TargetMachine: "target-vm", SourceRuntime: "codex", SourceModel: "gpt-5", Continuation: "continue privately", Members: []sessionpark.RemoteMember{member}, CreatedAt: time.Unix(100, 0).UTC()}
-	raw, err := sessionpark.EncodeEnvelope(sessionpark.Envelope{SchemaVersion: sessionpark.EnvelopeSchemaVersion, Kind: sessionpark.EnvelopeKind, Request: request})
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sessionmove.DigestBytes(raw)
-	worktree := filepath.Join(base.home, "worktrees", "session-"+request.ResumeID, "acme", "app")
-	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, base.canonical, "worktree", "add", "-b", sessionpark.MemberPin(request.ResumeID, member.MemberID), worktree, member.Commit)
-	startedAt := time.Unix(200, 0).UTC()
-	record := session.Record{PID: os.Getpid(), WBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID, Machine: request.TargetMachine, Runtime: request.SourceRuntime, Model: request.SourceModel, TmuxName: "wb-session-" + request.SuccessorWBSessionID, HandoffID: request.ResumeID, StartedAt: startedAt}
-	attemptID := "000001-" + strings.Repeat("1", 32)
-	if _, err := PrepareParkedSessionWorkLog(context.Background(), ParkedSessionWorkLogPrepareOptions{ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member, ReceivedAt: request.CreatedAt, Session: record, AttemptID: attemptID, AttemptIndex: 1, WorktreeDir: worktree, PinnedCommit: member.Commit}); err != nil {
-		t.Fatal(err)
-	}
-	event, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member, WorktreeDir: worktree, Successor: sessionlaunch.Result{HandoffID: request.ResumeID, WBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine, PID: record.PID, AttemptID: attemptID, AttemptIndex: 1, TmuxName: record.TmuxName, Runtime: record.Runtime, Model: record.Model, WorktreeDir: worktree, PinnedCommit: member.Commit, StartedAt: startedAt}})
+	fixture := newParkedTargetCompletionFixture(t, "resume-custody-complete")
+	event, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+		ProjectsRoot: fixture.base.projectsRoot, Request: fixture.request, RequestDigest: fixture.digest,
+		Member: fixture.member, WorktreeDir: fixture.worktree, Successor: fixture.successor,
+	})
 	if err != nil || event.Result != "completed" {
 		t.Fatalf("parked completion = %#v, %v", event, err)
 	}

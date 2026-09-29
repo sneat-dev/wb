@@ -336,7 +336,7 @@ internal/worktrees/retired_prepare_candidate_ack_test.go	15	task-18
 internal/worktrees/session_checkpoint_test.go	32	task-18
 internal/worktrees/session_custody_test.go	2	task-18
 internal/worktrees/session_park_aggregate_test.go	2	task-18
-internal/worktrees/session_park_custody_test.go	2	task-18
+internal/worktrees/session_park_custody_test.go	1	task-18
 internal/worktrees/session_park_fixture_test.go	2	task-18
 internal/worktrees/session_park_local_test.go	15	task-18
 internal/worktrees/session_receive_test.go	49	task-18
