@@ -255,6 +255,93 @@ func TestRepairCurrentLocalProjectionRestoresDerivedRecords(t *testing.T) {
 	}
 }
 
+func TestLocalWorkLogRefactorHelpers(t *testing.T) {
+	t.Parallel()
+
+	unique := []LocalWorkLogEvent{
+		{ID: "one", Version: 1, Seq: 0, Type: LocalEventInit},
+		{ID: "two", Version: 1, Seq: 1, Type: LocalEventCheckpoint},
+	}
+	directoryPath := t.TempDir()
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = directory.Close() })
+	if err := rewriteLocalEventJournal(directory, unique); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteLocalEventJournal(directory, []LocalWorkLogEvent{{
+		ID: "unencodable", Version: 1, Type: LocalEventInit, Extra: map[string]any{"channel": make(chan int)},
+	}}); err == nil || !strings.Contains(err.Error(), "encode local work-log event") {
+		t.Fatalf("unencodable journal error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(directoryPath, localWorkLogEventsName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseLocalEvents(content)
+	if err != nil || len(parsed) != len(unique) || parsed[1].ID != "two" {
+		t.Fatalf("rewritten journal = %#v/%v", parsed, err)
+	}
+	closed, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteLocalEventJournal(closed, unique); err == nil || !strings.Contains(err.Error(), "repair torn") {
+		t.Fatalf("closed journal directory error = %v", err)
+	}
+
+	worktree := newJournalWorktree(t)
+	if content, err := readLocalWorkLogBytes(worktree, localWorkLogOutboxName); err != nil || content != nil {
+		t.Fatalf("missing outbox = %q/%v", content, err)
+	}
+	workLogDirectory, err := openLocalWorkLogDir(worktree, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content, err := readLocalWorkLogBytes(worktree, localWorkLogOutboxName); err != nil || content != nil {
+		_ = workLogDirectory.Close()
+		t.Fatalf("missing file in existing work-log directory = %q/%v", content, err)
+	}
+	if err := writeBytesAtomicAt(workLogDirectory, localWorkLogOutboxName, []byte("outbox-only\n"), 0o600); err != nil {
+		_ = workLogDirectory.Close()
+		t.Fatal(err)
+	}
+	if err := workLogDirectory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	content, err = readLocalWorkLogBytes(worktree, localWorkLogOutboxName)
+	if err != nil || string(content) != "outbox-only\n" {
+		t.Fatalf("named local work-log file = %q/%v", content, err)
+	}
+
+	blockedWorktree := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedWorktree, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := readLocalWorkLogBytes(blockedWorktree, localWorkLogOutboxName); err == nil || content != nil {
+		t.Fatalf("blocked worktree read = %q/%v", content, err)
+	}
+	invalidFileWorktree := newJournalWorktree(t)
+	invalidDirectory, err := openLocalWorkLogDir(invalidFileWorktree, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := invalidDirectory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(invalidFileWorktree, journalRootDirectory, journalLocalDirectory, worklogDirectory, localWorkLogOutboxName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := readLocalWorkLogBytes(invalidFileWorktree, localWorkLogOutboxName); err == nil || content != nil {
+		t.Fatalf("directory-shaped work-log file = %q/%v", content, err)
+	}
+}
+
 func TestAppendLocalEventSameIDDifferentEvidenceConflicts(t *testing.T) {
 	clearIdentity(t)
 	worktree := custodyWorktree(t)

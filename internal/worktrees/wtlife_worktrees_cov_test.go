@@ -5,7 +5,100 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/pathguard"
 )
+
+func TestWtLifeCovCreateWritableRequirements(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := filepath.Join(root, "acme", "app")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, ".wb")
+	store := filepath.Join(root, "store")
+
+	paths, requirements, err := createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{CentralRoot: store}, false,
+	)
+	if err != nil || len(paths) != 1 || paths[0] != canonical || len(requirements) != 4 ||
+		requirements[2] != (pathguard.Requirement{Path: store, Role: pathguard.RoleStore}) ||
+		requirements[3] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("central requirements = %q, %#v, %v", paths, requirements, err)
+	}
+
+	_, requirements, err = createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{CentralRoot: store}, true,
+	)
+	if err != nil || len(requirements) != 3 || requirements[2] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("resume requirements = %#v, %v", requirements, err)
+	}
+
+	_, requirements, err = createWritableRequirements(
+		root, home, []string{"acme/app"}, userStorePolicy{RepositoryLocal: true}, false,
+	)
+	wantLocal := pathguard.Requirement{Path: filepath.Join(canonical, ".worktrees"), Role: pathguard.RoleLocalStore}
+	if err != nil || len(requirements) != 4 || requirements[2] != wantLocal ||
+		requirements[3] != pathguard.CanonicalRequirement(canonical) {
+		t.Fatalf("repository-local requirements = %#v, %v", requirements, err)
+	}
+
+	if _, _, err := createWritableRequirements(root, home, []string{"invalid"}, userStorePolicy{}, false); err == nil {
+		t.Fatal("invalid repository produced writable requirements")
+	}
+}
+
+func TestWtLifeCovResumedCreateOwner(t *testing.T) {
+	t.Parallel()
+	claim := workLogClaim{EffortID: "effort", AgentRuntime: "claim-runtime", AgentID: "claim-agent", Model: "claim-model"}
+	effort, agent, model := resumedCreateOwner(WorkLogOptions{}, claim)
+	if effort != "effort" || agent != "claim-runtime" || model != "claim-model" {
+		t.Fatalf("claim owner = %q, %q, %q", effort, agent, model)
+	}
+
+	effort, agent, model = resumedCreateOwner(WorkLogOptions{
+		AgentRuntime: " caller-runtime ", AgentID: "caller-agent", Model: " caller-model ",
+	}, claim)
+	if effort != "effort" || agent != "caller-runtime" || model != "caller-model" {
+		t.Fatalf("caller owner = %q, %q, %q", effort, agent, model)
+	}
+
+	claim.AgentRuntime = ""
+	_, agent, _ = resumedCreateOwner(WorkLogOptions{}, claim)
+	if agent != "claim-agent" {
+		t.Fatalf("claim agent ID fallback = %q", agent)
+	}
+}
+
+func TestWtLifeCovSummarizeCreatePlanWorkLogs(t *testing.T) {
+	t.Parallel()
+	if summary := summarizeCreatePlanWorkLogs(nil); summary.needsWorkLog || summary.existingRunClaim != nil || summary.existingRunsDiffer {
+		t.Fatalf("empty summary = %#v", summary)
+	}
+
+	first := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: "first"}
+	sameRun := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: "second"}
+	differentRun := workLogClaim{EffortID: "effort", RunID: "other", ClaimID: "third"}
+	summary := summarizeCreatePlanWorkLogs([]createPlan{
+		{needsWorkLog: true},
+		{resumeClaim: &first},
+		{resumeClaim: &sameRun},
+	})
+	if !summary.needsWorkLog || summary.existingRunClaim == nil || summary.existingRunsDiffer ||
+		summary.existingRunClaim.ClaimID != first.ClaimID {
+		t.Fatalf("single-run summary = %#v", summary)
+	}
+	first.ClaimID = "mutated"
+	if summary.existingRunClaim.ClaimID == first.ClaimID {
+		t.Fatal("summary retained the caller's mutable claim pointer")
+	}
+
+	summary = summarizeCreatePlanWorkLogs([]createPlan{{resumeClaim: &sameRun}, {resumeClaim: &differentRun}})
+	if summary.needsWorkLog || summary.existingRunClaim == nil || !summary.existingRunsDiffer {
+		t.Fatalf("different-run summary = %#v", summary)
+	}
+}
 
 func TestWtLifeCovPrepareWorktreeDestinationPlansDirectAndOwnedLayouts(t *testing.T) {
 	operationRoot := t.TempDir()

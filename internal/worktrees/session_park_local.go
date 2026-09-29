@@ -80,10 +80,12 @@ func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bund
 	sort.Slice(members, func(i, j int) bool { return members[i].member.WorktreeDir < members[j].member.WorktreeDir })
 	custody := &ParkedLocalCustody{projectsRoot: projectsRoot, bundle: bundle, members: members, replayAttemptID: replayAttemptID}
 	defer custody.close()
-	for index := range custody.members {
-		if index > 0 && custody.members[index-1].member.WorktreeDir == custody.members[index].member.WorktreeDir {
+	for index := 1; index < len(custody.members); index++ {
+		if custody.members[index-1].member.WorktreeDir == custody.members[index].member.WorktreeDir {
 			return fmt.Errorf("parked local member path is duplicated")
 		}
+	}
+	for index := range custody.members {
 		if err := custody.acquire(ctx, index); err != nil {
 			return fmt.Errorf("retain parked local member %s: %w", custody.members[index].member.WorktreeDir, err)
 		}
@@ -222,18 +224,32 @@ func resolveParkedMemberWorktreeDir(projectsRoot string, member sessionpark.Work
 	if err != nil {
 		return "", err
 	}
-	for _, home := range resolvedClaimHomes(resolution) {
-		claim, claimErr := readWorkLogClaimByReference(home, reference)
+	if worktree := relocatedParkedMemberWorktree(
+		resolvedClaimHomes(resolution), reference, readWorkLogClaimByReference, resolveRelocationChain,
+	); worktree != "" {
+		return worktree, nil
+	}
+	return "", fmt.Errorf("recorded worktree %s is missing or no longer this member's checkout, and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+}
+
+func relocatedParkedMemberWorktree(
+	homes []string,
+	reference sessionmove.WorkLogReference,
+	readClaim func(string, sessionmove.WorkLogReference) (workLogClaim, error),
+	resolveRelocation func(string, workLogClaim) (workLogRelocationResolution, error),
+) string {
+	for _, home := range homes {
+		claim, claimErr := readClaim(home, reference)
 		if claimErr != nil {
 			continue
 		}
-		chain, chainErr := resolveRelocationChain(home, claim)
+		chain, chainErr := resolveRelocation(home, claim)
 		if chainErr != nil || chain.worktree == "" {
 			continue
 		}
-		return chain.worktree, nil
+		return chain.worktree
 	}
-	return "", fmt.Errorf("recorded worktree %s is missing or no longer this member's checkout, and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+	return ""
 }
 
 // corroborateProjectionAcrossHomes corroborates projection against the

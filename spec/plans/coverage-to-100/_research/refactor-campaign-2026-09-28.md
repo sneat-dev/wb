@@ -1,10 +1,77 @@
 # WB `internal/worktrees` coverage and refactoring campaign
 
-**Status:** reviewed and locally green merge candidate
-**Branch:** `wb-refactor`
-**Compared with:** local `origin/main` merge-base `becfcbc36e0d27c26670c7ab951c4ba0a8e6d5ef`
-**Candidate head:** `7159b133`
+**Status:** reviewed, locally green, ready to land on `main`
+**Branch:** `wb-coverage`
+**Earlier comparison point:** local `origin/main` merge-base `becfcbc36e0d27c26670c7ab951c4ba0a8e6d5ef`
+**Final implementation head before this report update:** `bd2ac25f317ee3261b2cd4584d162664c933e799`
 **Execution:** Codex `gpt-6-sol`, high reasoning, local Mac host
+
+## Final landing update — 2026-09-29
+
+The campaign continued after the earlier `7159b133` checkpoint on one local
+`wb-coverage` branch. The later work added focused tests and refactors around
+zero-coverage helpers, session custody, branch evidence, Work Log resolution,
+and session path policy. The branch is clean and the accepted implementation
+head is `bd2ac25f317ee3261b2cd4584d162664c933e799`.
+
+The current authoritative `internal/worktrees` profile was produced from all
+1,322 top-level package tests, split into four independent shards of
+331/331/330/330 tests. All four shards passed in parallel in about 5 minutes
+15 seconds:
+
+| Current `internal/worktrees` profile | Covered | Total | Uncovered | Coverage |
+|---|---:|---:|---:|---:|
+| `bd2ac25f` | 17,280 | 20,177 | 2,897 | 85.6421% |
+
+This is 594 fewer uncovered statements than the saved main baseline used for
+the later campaign (`3,491` uncovered in `internal/worktrees`). The saved
+whole-repository main profile was 86,287/93,902 statements, or 91.8905%, with
+7,615 uncovered. Applying only the verified package delta gives an estimated
+current repository result of about 92.5% and roughly 7,021 uncovered
+statements. That repository number is an estimate, not a fresh full-suite
+receipt.
+
+The last accepted focused batch covered 95 previously missed statements and
+brought 20 functions to 100%. A preceding session-path batch brought 21
+functions to 100% and covered 42 prior misses. Vet, package lint, focused tests,
+and Windows compile-only validation passed for both.
+
+Three later experiments were rejected by measurement rather than retained as
+test volume:
+
+- a retirement/recovery batch added one covered statement and one new
+  statement, leaving the uncovered count unchanged; it was reverted;
+- an early-validation batch added only seven unique covered statements and was
+  removed without commit;
+- a session-handoff caller batch added only three unique covered statements
+  and was removed without commit.
+
+Those experiments establish the main conclusion of this tranche: existing
+happy paths and entry-point validation are already well exercised. The
+remaining gap is concentrated in deep Git, filesystem, rollback, receipt,
+process, and interrupted-state branches. Adding more caller-level tests is not
+economical. Future work should first consolidate the repeated
+plan -> revalidate -> mutate -> durable receipt -> rollback lifecycle and add
+reusable, narrow failure seams. Tests should then drive exact previously missed
+branches through those seams.
+
+If the strict 100% programme resumes, retain both acceptance thresholds for a
+batch: at least 20 substantive functions closed and at least 200 genuinely new
+covered statements. Reject tiny-helper padding and any batch whose merged
+caller-complete profile shows negligible gain. Refresh the four-shard package
+profile after production refactors; focused profiles may be merged only when
+the production source hash and block layout are unchanged.
+
+The remaining planning range for strict repository-wide 100% is 8–16
+full-time weeks at observed complexity. A 4–6 week result requires sustained
+200–300-statement batches from the lifecycle refactors above. Numeric 100% can
+be reached without live GitHub for most paths by combining local bare-Git
+contracts with injected process/provider boundaries, while a separately
+reported small live-platform tier remains necessary to prove GitHub behavior.
+
+The sections below preserve the earlier checkpoint evidence and process
+history. Where an older number differs from this update, the 2026-09-29
+caller-complete profile above is the current package baseline.
 
 ## Scope and outcome
 

@@ -2702,25 +2702,9 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err != nil {
 		return err
 	}
-	successorClaim := claim
-	successorClaim.Version = 2
-	successorClaim.ClaimID = successorClaimID
-	successorClaim.Lifecycle = "active"
-	successorClaim.RecordedAt = sealedAt
-	successorClaim.Initiator = successor
-	successorClaim.AgentID = successor
-	successorClaim.AgentRuntime = ""
-	successorClaim.Model = strings.TrimSpace(identity.Model)
-	successorClaim.ModelProvenance = modelProvenanceCallerDeclared
-	if successorClaim.Model == "unknown" {
-		successorClaim.ModelProvenance = modelProvenanceUnknown
-	}
-	successorClaim.ModelDeclaredBy = successor
-	successorClaim.CLI = strings.TrimSpace(identity.CLI)
-	successorClaim.Provider = strings.TrimSpace(identity.Provider)
-	successorClaim.ParentClaimID = claim.ClaimID
-	successorClaim.AcquiredVia = disposition
-	if err := writeJSONImmutableAt(claims, successorClaimID+".json", successorClaim, true); err != nil {
+	successorClaim := newSuccessorWorkLogClaim(claim, successorClaimID, sealedAt, successor, disposition, identity)
+	claimName, outboxName, event, nextProjection := activeClaimPublication(successorClaim, disposition, projection)
+	if err := writeJSONImmutableAt(claims, claimName, successorClaim, true); err != nil {
 		return fmt.Errorf("write immutable successor claim: %w", err)
 	}
 	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
@@ -2728,16 +2712,10 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 		return err
 	}
 	defer func() { _ = outbox.Close() }()
-	event := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: sealedAt,
-		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: successorClaimID,
-		Repository: claim.Repository, Branch: claim.Branch, Base: claim.Base,
-		BaseSHA: claim.BaseSHA, Lifecycle: "active", Disposition: disposition}
-	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+successorClaimID+"-claimed.json", event, true); err != nil {
+	if err := writeJSONImmutableAt(outbox, outboxName, event, true); err != nil {
 		return fmt.Errorf("write successor outbox: %w", err)
 	}
-	projection.ClaimID = successorClaimID
-	projection.Lifecycle = "active"
-	return writeWorkLogProjection(worktree, projection)
+	return writeWorkLogProjection(worktree, nextProjection)
 }
 
 // recoverFailedRecycleClaim gives a checkout moved back to its original path
@@ -2780,22 +2758,13 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	const recoveryAgent = "wb-recycle-recovery"
 	const recoveryVia = "recycle_failed"
 	recoveryID := successorWorkLogClaimID(prior.ClaimID, recoveryAgent, recoveryVia)
-	recovery := claim
-	recovery.Version = 2
-	recovery.ClaimID = recoveryID
-	recovery.Lifecycle = "active"
-	recovery.RecordedAt = terminal.SealedAt
-	recovery.Initiator = recoveryAgent
-	recovery.AgentID = recoveryAgent
-	recovery.AgentRuntime = ""
-	recovery.Model = "unknown"
-	recovery.ModelProvenance = modelProvenanceUnknown
-	recovery.ModelDeclaredBy = recoveryAgent
-	recovery.CLI = ""
-	recovery.Provider = ""
-	recovery.ParentClaimID = prior.ClaimID
-	recovery.AcquiredVia = recoveryVia
-	if err := writeJSONImmutableAt(claims, recoveryID+".json", recovery, true); err != nil {
+	recovery := newSuccessorWorkLogClaim(
+		claim, recoveryID, terminal.SealedAt, recoveryAgent, recoveryVia,
+		ClaimExecutionIdentity{Model: "unknown"},
+	)
+	projection := workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID}
+	claimName, outboxName, event, nextProjection := activeClaimPublication(recovery, recoveryVia, projection)
+	if err := writeJSONImmutableAt(claims, claimName, recovery, true); err != nil {
 		return err
 	}
 	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
@@ -2803,14 +2772,44 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 		return err
 	}
 	defer func() { _ = outbox.Close() }()
-	event := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: recovery.RecordedAt,
-		EffortID: recovery.EffortID, RunID: recovery.RunID, ClaimID: recoveryID,
-		Repository: recovery.Repository, Branch: recovery.Branch, Base: recovery.Base,
-		BaseSHA: recovery.BaseSHA, Lifecycle: "active", Disposition: recoveryVia}
-	if err := writeJSONImmutableAt(outbox, recovery.RunID+"-"+recoveryID+"-claimed.json", event, true); err != nil {
+	if err := writeJSONImmutableAt(outbox, outboxName, event, true); err != nil {
 		return err
 	}
-	return writeWorkLogProjection(worktree, workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID, ClaimID: recoveryID, Lifecycle: "active"})
+	return writeWorkLogProjection(worktree, nextProjection)
+}
+
+func newSuccessorWorkLogClaim(parent workLogClaim, claimID string, recordedAt time.Time, successor, acquiredVia string, identity ClaimExecutionIdentity) workLogClaim {
+	claim := parent
+	claim.Version = 2
+	claim.ClaimID = claimID
+	claim.Lifecycle = "active"
+	claim.RecordedAt = recordedAt
+	claim.Initiator = successor
+	claim.AgentID = successor
+	claim.AgentRuntime = ""
+	claim.Model = strings.TrimSpace(identity.Model)
+	claim.ModelProvenance = modelProvenanceCallerDeclared
+	if claim.Model == "unknown" {
+		claim.ModelProvenance = modelProvenanceUnknown
+	}
+	claim.ModelDeclaredBy = successor
+	claim.CLI = strings.TrimSpace(identity.CLI)
+	claim.Provider = strings.TrimSpace(identity.Provider)
+	claim.ParentClaimID = parent.ClaimID
+	claim.AcquiredVia = acquiredVia
+	return claim
+}
+
+func activeClaimPublication(claim workLogClaim, disposition string, projection workLogProjection) (claimName, outboxName string, event workLogPublicEvent, nextProjection workLogProjection) {
+	event = workLogPublicEvent{
+		Version: 1, Type: "worktree.claimed", At: claim.RecordedAt,
+		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
+		Repository: claim.Repository, Branch: claim.Branch, Base: claim.Base,
+		BaseSHA: claim.BaseSHA, Lifecycle: "active", Disposition: disposition,
+	}
+	projection.ClaimID = claim.ClaimID
+	projection.Lifecycle = "active"
+	return claim.ClaimID + ".json", claim.RunID + "-" + claim.ClaimID + "-claimed.json", event, projection
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {

@@ -311,48 +311,12 @@ func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, 
 	if rejection := validateAuthoritativeSourcePullRequest(receipt, entry); rejection != "" {
 		return rejection
 	}
-	if !receipt.DependencyDeltasComplete {
-		return "dependency delta evidence is incomplete; terminal supersession is refused"
+	deltas, rejection := dependencyDeltasForValidation(receipt, entry)
+	if rejection != "" {
+		return rejection
 	}
-	if len(receipt.DependencyDeltas) == 0 {
-		return "dependency PR supersession has no exact manifest/importer delta"
-	}
-	deltas := append([]SupersessionDependencyDelta(nil), receipt.DependencyDeltas...)
-	sort.Slice(deltas, func(i, j int) bool {
-		left, right := deltas[i], deltas[j]
-		for _, pair := range [][2]string{{left.SourcePR, right.SourcePR}, {left.Manifest, right.Manifest}, {left.Selector, right.Selector}, {left.Package, right.Package}} {
-			if pair[0] != pair[1] {
-				return pair[0] < pair[1]
-			}
-		}
-		return left.Before < right.Before
-	})
 	for index, delta := range deltas {
 		prefix := fmt.Sprintf("dependency delta %d", index+1)
-		if delta.SourcePR != receipt.OriginalPR {
-			return fmt.Sprintf("%s source PR %q does not match original PR %q", prefix, delta.SourcePR, receipt.OriginalPR)
-		}
-		if delta.SourceHead != receipt.OriginalHead || delta.SourceHead != entry.HeadSHA {
-			return fmt.Sprintf("%s source head %q does not match exact original head %q (source PR may have been force-updated)", prefix, delta.SourceHead, entry.HeadSHA)
-		}
-		if delta.Consumer != entry.Repository {
-			return fmt.Sprintf("%s consumer %q does not match exact repository %q", prefix, delta.Consumer, entry.Repository)
-		}
-		for name, value := range map[string]string{
-			"ecosystem": delta.Ecosystem, "package": delta.Package, "manifest": delta.Manifest,
-			"selector": delta.Selector, "before": delta.Before, "requested_after": delta.RequestedAfter,
-			"candidate_after": delta.CandidateAfter,
-		} {
-			if strings.TrimSpace(value) == "" {
-				return fmt.Sprintf("%s is missing %s proof", prefix, name)
-			}
-		}
-		if !delta.Reviewed {
-			return fmt.Sprintf("%s is unreviewed", prefix)
-		}
-		if !dependencyVersionSatisfies(delta.Ecosystem, delta.CandidateAfter, delta.RequestedAfter) {
-			return fmt.Sprintf("%s candidate version %q does not satisfy requested %q", prefix, delta.CandidateAfter, delta.RequestedAfter)
-		}
 		manifest, err := git(ctx, entry.CanonicalDir, "show", entry.RemoteTargetSHA+":"+delta.Manifest)
 		if err != nil {
 			return fmt.Sprintf("%s cannot read exact target manifest %q: %v", prefix, delta.Manifest, err)
@@ -418,6 +382,51 @@ func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, 
 		}
 	}
 	return ""
+}
+
+func dependencyDeltasForValidation(receipt SupersessionReceipt, entry ListResult) ([]SupersessionDependencyDelta, string) {
+	if !receipt.DependencyDeltasComplete {
+		return nil, "dependency delta evidence is incomplete; terminal supersession is refused"
+	}
+	if len(receipt.DependencyDeltas) == 0 {
+		return nil, "dependency PR supersession has no exact manifest/importer delta"
+	}
+	deltas := sortedDependencyDeltas(receipt.DependencyDeltas)
+	for index, delta := range deltas {
+		prefix := fmt.Sprintf("dependency delta %d", index+1)
+		if delta.SourcePR != receipt.OriginalPR {
+			return nil, fmt.Sprintf("%s source PR %q does not match original PR %q", prefix, delta.SourcePR, receipt.OriginalPR)
+		}
+		if delta.SourceHead != receipt.OriginalHead || delta.SourceHead != entry.HeadSHA {
+			return nil, fmt.Sprintf("%s source head %q does not match exact original head %q (source PR may have been force-updated)", prefix, delta.SourceHead, entry.HeadSHA)
+		}
+		if delta.Consumer != entry.Repository {
+			return nil, fmt.Sprintf("%s consumer %q does not match exact repository %q", prefix, delta.Consumer, entry.Repository)
+		}
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{name: "ecosystem", value: delta.Ecosystem},
+			{name: "package", value: delta.Package},
+			{name: "manifest", value: delta.Manifest},
+			{name: "selector", value: delta.Selector},
+			{name: "before", value: delta.Before},
+			{name: "requested_after", value: delta.RequestedAfter},
+			{name: "candidate_after", value: delta.CandidateAfter},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return nil, fmt.Sprintf("%s is missing %s proof", prefix, field.name)
+			}
+		}
+		if !delta.Reviewed {
+			return nil, fmt.Sprintf("%s is unreviewed", prefix)
+		}
+		if !dependencyVersionSatisfies(delta.Ecosystem, delta.CandidateAfter, delta.RequestedAfter) {
+			return nil, fmt.Sprintf("%s candidate version %q does not satisfy requested %q", prefix, delta.CandidateAfter, delta.RequestedAfter)
+		}
+	}
+	return deltas, ""
 }
 
 // ValidateDependencyDeltas exposes the same fail-closed dependency proof used
@@ -519,7 +528,7 @@ func dependencyLockfile(ctx context.Context, canonical, target string, delta Sup
 		if dir == "." {
 			dir = ""
 		}
-		if manifestDir != dir && !strings.HasPrefix(manifestDir, dir+"/") {
+		if manifestDir != dir && dir != "" && !strings.HasPrefix(manifestDir, dir+"/") {
 			continue
 		}
 		if best == "" || len(dir) > len(path.Dir(best)) || (len(dir) == len(path.Dir(best)) && candidate < best) {

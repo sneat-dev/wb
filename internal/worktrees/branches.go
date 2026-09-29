@@ -323,16 +323,9 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	retiredTagNames := map[string]bool{}
 	retiredRemoteUnavailable := false
 	diagnostics := []string{fmt.Sprintf("retired namespace inventory skipped fetch of origin/%s", sweep.Base)}
-	selected := make([]discover.Repo, 0, len(repositories))
-	for _, repository := range repositories {
-		owner, _, _ := strings.Cut(repository.Slug(), "/")
-		if (sweep.Repository != "" && repository.Slug() != sweep.Repository) || (sweep.Org != "" && owner != sweep.Org) {
-			continue
-		}
-		selected = append(selected, repository)
-	}
-	if sweep.Repository != "" && len(selected) == 0 {
-		return BranchListOutcome{}, fmt.Errorf("selected repository %q was not discovered", sweep.Repository)
+	selected, err := selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
+	if err != nil {
+		return BranchListOutcome{}, err
 	}
 	if sweep.Only != "" && sweep.Only != BranchRetired {
 		diagnostics = append(diagnostics, fmt.Sprintf("retired namespace cannot match --only %s", sweep.Only))
@@ -385,28 +378,21 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 }
 
 func appendRetiredEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
-	start := len(*entries)
-	count := 0
-	for _, ref := range refs {
-		if !retiredRefSelected(sweep, ref) {
-			continue
-		}
-		*entries = append(*entries, retiredBranchEntry(repository, sweep, ref, scope, ""))
-		names[repository.Slug()+"|"+ref.Name] = true
-		count++
-	}
-	decorateBranchCommits(ctx, repository.Path, (*entries)[start:])
-	return count
+	return appendRetiredRefEntries(ctx, entries, names, repository, sweep, refs, scope, "branch")
 }
 
 func appendRetiredTagEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
+	return appendRetiredRefEntries(ctx, entries, names, repository, sweep, refs, scope, "tag")
+}
+
+func appendRetiredRefEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope, refKind string) int {
 	start, count := len(*entries), 0
 	for _, ref := range refs {
 		if !retiredRefSelected(sweep, ref) {
 			continue
 		}
 		entry := retiredBranchEntry(repository, sweep, ref, scope, "")
-		entry.RefKind = "tag"
+		entry.RefKind = refKind
 		*entries = append(*entries, entry)
 		names[repository.Slug()+"|"+ref.Name] = true
 		count++
@@ -514,17 +500,10 @@ func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOption
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("discover repositories below %s: %w", sweep.ProjectsRoot, err)
 	}
-	selected := repositories[:0]
-	for _, repository := range repositories {
-		owner, _, _ := strings.Cut(repository.Slug(), "/")
-		if (sweep.Repository == "" || repository.Slug() == sweep.Repository) && (sweep.Org == "" || owner == sweep.Org) {
-			selected = append(selected, repository)
-		}
+	repositories, err = selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	if sweep.Repository != "" && len(selected) == 0 {
-		return nil, nil, nil, fmt.Errorf("selected repository %q was not discovered", sweep.Repository)
-	}
-	repositories = selected
 	paths := make(map[string]string, len(repositories))
 	for _, repository := range repositories {
 		paths[repository.Slug()] = repository.Path
@@ -557,6 +536,10 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 	if err != nil {
 		return nil, 0, nil, 0, false, []string{fmt.Sprintf("count retired branches: discover repositories: %v", err)}
 	}
+	repositories, err = selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
+	if err != nil {
+		return nil, 0, nil, 0, false, []string{fmt.Sprintf("count retired branches: %v", err)}
+	}
 	names := map[string]bool{}
 	counts := map[string]int{}
 	tagNames := map[string]bool{}
@@ -564,34 +547,17 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 	retiredRemoteUnavailable := false
 	var diagnostics []string
 	for _, repository := range repositories {
-		owner, _, _ := strings.Cut(repository.Slug(), "/")
-		if (sweep.Repository != "" && repository.Slug() != sweep.Repository) || (sweep.Org != "" && owner != sweep.Org) {
-			continue
-		}
 		if sweep.Scope == BranchScopeLocal || sweep.Scope == BranchScopeAll {
 			refs, diagnostic := listLocalRefs(ctx, repository.Path)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired local refs: %s", repository.Slug(), diagnostic))
 			}
-			for _, ref := range refs {
-				if !retiredRefSelected(sweep, ref) {
-					continue
-				}
-				if isRetiredBranch(ref.Name) {
-					counts[BranchScopeLocal]++
-					names[repository.Slug()+"|"+ref.Name] = true
-				}
-			}
+			accumulateRetiredCounts(sweep, repository, refs, BranchScopeLocal, counts, names)
 			tags, diagnostic := listRetiredTags(ctx, repository.Path, false, true)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired local tags: %s", repository.Slug(), diagnostic))
 			}
-			for _, tag := range tags {
-				if retiredRefSelected(sweep, tag) {
-					tagCounts[BranchScopeLocal]++
-					tagNames[repository.Slug()+"|"+tag.Name] = true
-				}
-			}
+			accumulateRetiredCounts(sweep, repository, tags, BranchScopeLocal, tagCounts, tagNames)
 		}
 		if sweep.Scope == BranchScopeRemote || sweep.Scope == BranchScopeAll {
 			// Inventory already fetched remote refs for classification. Count the
@@ -602,29 +568,26 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote refs: %s", repository.Slug(), diagnostic))
 				retiredRemoteUnavailable = true
 			}
-			for _, ref := range refs {
-				if !retiredRefSelected(sweep, ref) {
-					continue
-				}
-				if isRetiredBranch(ref.Name) {
-					counts[BranchScopeRemote]++
-					names[repository.Slug()+"|"+ref.Name] = true
-				}
-			}
+			accumulateRetiredCounts(sweep, repository, refs, BranchScopeRemote, counts, names)
 			tags, diagnostic := listRetiredTags(ctx, repository.Path, true, sweep.OlderThan > 0)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote tags: %s", repository.Slug(), diagnostic))
 				retiredRemoteUnavailable = true
 			}
-			for _, tag := range tags {
-				if retiredRefSelected(sweep, tag) {
-					tagCounts[BranchScopeRemote]++
-					tagNames[repository.Slug()+"|"+tag.Name] = true
-				}
-			}
+			accumulateRetiredCounts(sweep, repository, tags, BranchScopeRemote, tagCounts, tagNames)
 		}
 	}
 	return counts, len(names), tagCounts, len(tagNames), retiredRemoteUnavailable, diagnostics
+}
+
+func accumulateRetiredCounts(sweep branchSweepOptions, repository discover.Repo, refs []branchRef, scope string, counts map[string]int, names map[string]bool) {
+	for _, ref := range refs {
+		if !retiredRefSelected(sweep, ref) {
+			continue
+		}
+		counts[scope]++
+		names[repository.Slug()+"|"+ref.Name] = true
+	}
 }
 
 func retiredRefSelected(sweep branchSweepOptions, ref branchRef) bool {
@@ -697,6 +660,20 @@ func discoverBranchRepositories(projectsRoot, filter string) ([]discover.Repo, e
 		}
 	}
 	return filtered, nil
+}
+
+func selectBranchRepositories(repositories []discover.Repo, repositorySlug, org string) ([]discover.Repo, error) {
+	selected := make([]discover.Repo, 0, len(repositories))
+	for _, repository := range repositories {
+		owner, _, _ := strings.Cut(repository.Slug(), "/")
+		if (repositorySlug == "" || repository.Slug() == repositorySlug) && (org == "" || owner == org) {
+			selected = append(selected, repository)
+		}
+	}
+	if repositorySlug != "" && len(selected) == 0 {
+		return nil, fmt.Errorf("selected repository %q was not discovered", repositorySlug)
+	}
+	return selected, nil
 }
 
 // branchInUseKey identifies one repository/branch pair claimed live by a WB
@@ -823,19 +800,9 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 }
 
 func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *BranchEntry) {
-	if entry.SHA == "" {
-		return
-	}
-	const separator = "\x1f"
-	output, err := git(ctx, repositoryPath, "show", "-s", "--format=%an%x1f%s", entry.SHA)
-	if err != nil {
-		return
-	}
-	parts := strings.SplitN(output, separator, 2)
-	entry.Author = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
-		entry.Title = strings.TrimSpace(parts[1])
-	}
+	entries := []BranchEntry{*entry}
+	decorateBranchCommits(ctx, repositoryPath, entries)
+	*entry = entries[0]
 }
 
 func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
@@ -881,17 +848,18 @@ func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, str
 }
 
 func listRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
-		return nil, fmt.Sprintf("fetch --prune origin: %v", err)
-	}
-	return listRefs(ctx, repositoryPath, "refs/remotes/origin/", "origin/")
+	return fetchRemoteRefs(ctx, repositoryPath, "+refs/heads/*:refs/remotes/origin/*", "refs/remotes/origin/", "fetch --prune origin")
 }
 
 func listRetiredRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", "+refs/heads/retired/*:refs/remotes/origin/retired/*"); err != nil {
-		return nil, fmt.Sprintf("fetch --prune origin retired namespace: %v", err)
+	return fetchRemoteRefs(ctx, repositoryPath, "+refs/heads/retired/*:refs/remotes/origin/retired/*", "refs/remotes/origin/retired/", "fetch --prune origin retired namespace")
+}
+
+func fetchRemoteRefs(ctx context.Context, repositoryPath, refspec, refPrefix, failureLabel string) ([]branchRef, string) {
+	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", refspec); err != nil {
+		return nil, fmt.Sprintf("%s: %v", failureLabel, err)
 	}
-	return listRefs(ctx, repositoryPath, "refs/remotes/origin/retired/", "origin/")
+	return listRefs(ctx, repositoryPath, refPrefix, "origin/")
 }
 
 // listRetiredTags keeps remote tag inspection separate from local tags. It
@@ -1087,15 +1055,7 @@ func classifyBranch(
 			return entry
 		}
 		if receipt != nil {
-			entry.Disposition = BranchReceipted
-			entry.LandingSHA = receipt.LandingSHA
-			entry.ReceiptPullRequest = receipt.PullRequest
-			entry.Evidence = fmt.Sprintf(
-				"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
-				sweep.AbsorbedBy, shortSHA(receipt.LandingSHA), shortSHA(receipt.LandingSHA))
-			entry.Reason = fmt.Sprintf(
-				"content-proven absorbed via --absorbed-by %s; eligible for deletion", sweep.AbsorbedBy)
-			return entry
+			return receiptedBranch(entry, receipt.LandingSHA, receipt.PullRequest, sweep.AbsorbedBy)
 		}
 		entry.AbsorbedByRejection = rejection
 		absorbedByNote = "; --absorbed-by: " + rejection
@@ -1111,15 +1071,7 @@ func classifyBranch(
 	if sweep.Receipts {
 		receipt, note := classifyLandingReceipt(ctx, repository, ref, sweep.Base, targetSHA, pullRequestCache)
 		if receipt != nil {
-			entry.Disposition = BranchReceipted
-			entry.LandingSHA = receipt.MergeSHA
-			entry.ReceiptPullRequest = receipt
-			entry.Evidence = fmt.Sprintf(
-				"merged pull request #%d into %s; landing %s is in the fetched target and the three-way proof holds",
-				receipt.Number, sweep.Base, shortSHA(receipt.MergeSHA))
-			entry.Reason = fmt.Sprintf(
-				"landed via merged pull request #%d; eligible for deletion under --receipts", receipt.Number)
-			return entry
+			return receiptedBranch(entry, receipt.MergeSHA, receipt, "")
 		}
 		receiptNote = "; receipt: " + note
 	}
@@ -1137,6 +1089,24 @@ func classifyBranch(
 	}
 	entry.Disposition = BranchUnique
 	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote + absorbedByNote
+	return entry
+}
+
+func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequest, absorbedBy string) BranchEntry {
+	entry.Disposition = BranchReceipted
+	entry.LandingSHA = landingSHA
+	entry.ReceiptPullRequest = pullRequest
+	if absorbedBy != "" {
+		entry.Evidence = fmt.Sprintf(
+			"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
+			absorbedBy, shortSHA(landingSHA), shortSHA(landingSHA))
+		entry.Reason = fmt.Sprintf("content-proven absorbed via --absorbed-by %s; eligible for deletion", absorbedBy)
+		return entry
+	}
+	entry.Evidence = fmt.Sprintf(
+		"merged pull request #%d into %s; landing %s is in the fetched target and the three-way proof holds",
+		pullRequest.Number, entry.Base, shortSHA(landingSHA))
+	entry.Reason = fmt.Sprintf("landed via merged pull request #%d; eligible for deletion under --receipts", pullRequest.Number)
 	return entry
 }
 

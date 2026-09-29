@@ -321,6 +321,73 @@ type createPlan struct {
 	recoveredStage bool
 }
 
+type createPlanWorkLogSummary struct {
+	needsWorkLog       bool
+	existingRunClaim   *workLogClaim
+	existingRunsDiffer bool
+}
+
+func summarizeCreatePlanWorkLogs(plans []createPlan) createPlanWorkLogSummary {
+	var summary createPlanWorkLogSummary
+	for index := range plans {
+		if plans[index].needsWorkLog {
+			summary.needsWorkLog = true
+		}
+		claim := plans[index].resumeClaim
+		if claim == nil {
+			continue
+		}
+		if summary.existingRunClaim == nil {
+			copy := *claim
+			summary.existingRunClaim = &copy
+			continue
+		}
+		if claim.EffortID != summary.existingRunClaim.EffortID || claim.RunID != summary.existingRunClaim.RunID {
+			summary.existingRunsDiffer = true
+		}
+	}
+	return summary
+}
+
+func createWritableRequirements(projectsRoot, home string, repositories []string, policy userStorePolicy, resume bool) (
+	[]string, []pathguard.Requirement, error,
+) {
+	centralStore := policy.CentralRoot
+	if resume {
+		centralStore = ""
+	}
+	requirements := pathguard.Requirements(home, centralStore)
+	canonicalPaths := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		_, _, canonical, err := canonicalRepositoryPath(projectsRoot, repository)
+		if err != nil {
+			return nil, nil, err
+		}
+		canonicalPaths = append(canonicalPaths, canonical)
+		if policy.RepositoryLocal && !resume {
+			requirements = append(requirements, pathguard.Requirement{
+				Path: filepath.Join(canonical, ".worktrees"),
+				Role: pathguard.RoleLocalStore,
+			})
+		}
+		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
+	}
+	return canonicalPaths, requirements, nil
+}
+
+func resumedCreateOwner(options WorkLogOptions, claim workLogClaim) (effort, agent, model string) {
+	effort = claim.EffortID
+	agent = ownerAgent(options.AgentRuntime, options.AgentID)
+	model = strings.TrimSpace(options.Model)
+	if agent == "" {
+		agent = ownerAgent(claim.AgentRuntime, claim.AgentID)
+	}
+	if model == "" {
+		model = claim.Model
+	}
+	return effort, agent, model
+}
+
 type createdWorktreePublication struct {
 	ownerDirectory      *os.File
 	worktreeDirectory   *os.File
@@ -508,10 +575,6 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	// on a machine where nothing was going to be written there. State and the
 	// canonical Git registration are still required, because a resume can
 	// publish a recovered claim and always reads the clone.
-	centralStore := storePolicy.CentralRoot
-	if normalized.Resume {
-		centralStore = ""
-	}
 	// The central store requirement is declared only when the selected mode has
 	// a central store root. Repository-local mode keeps each checkout inside its
 	// own canonical clone, so its store root is per repository
@@ -522,21 +585,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	//
 	// The canonical paths are read-only derivations, so resolving them here
 	// costs nothing the loop below would not have done anyway.
-	requirements := pathguard.Requirements(home, centralStore)
-	canonicalPaths := make([]string, 0, len(repositories))
-	for _, repository := range repositories {
-		_, _, canonical, pathErr := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
-		if pathErr != nil {
-			return nil, pathErr
-		}
-		canonicalPaths = append(canonicalPaths, canonical)
-		if storePolicy.RepositoryLocal && !normalized.Resume {
-			requirements = append(requirements, pathguard.Requirement{
-				Path: filepath.Join(canonical, ".worktrees"),
-				Role: pathguard.RoleLocalStore,
-			})
-		}
-		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
+	canonicalPaths, requirements, err := createWritableRequirements(
+		normalized.ProjectsRoot, home, repositories, storePolicy, normalized.Resume,
+	)
+	if err != nil {
+		return nil, err
 	}
 	if err := pathguard.Check(resolution.Root, requirements, normalized.writableProbe); err != nil {
 		return nil, err
@@ -716,32 +769,13 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		plans = append(plans, plan)
 	}
 
-	needsWorkLog := false
-	var existingRunClaim *workLogClaim
-	existingRunsDiffer := false
-	for index := range plans {
-		if plans[index].needsWorkLog {
-			needsWorkLog = true
-		}
-		if plans[index].resumeClaim == nil {
-			continue
-		}
-		claim := plans[index].resumeClaim
-		if existingRunClaim == nil {
-			copy := *claim
-			existingRunClaim = &copy
-			continue
-		}
-		if claim.EffortID != existingRunClaim.EffortID || claim.RunID != existingRunClaim.RunID {
-			existingRunsDiffer = true
-		}
-	}
-	if needsWorkLog && !workLogPrepared {
-		if existingRunClaim != nil {
-			if existingRunsDiffer {
+	workLogs := summarizeCreatePlanWorkLogs(plans)
+	if workLogs.needsWorkLog && !workLogPrepared {
+		if workLogs.existingRunClaim != nil {
+			if workLogs.existingRunsDiffer {
 				return nil, fmt.Errorf("cannot extend one coordinated resume across different active Work Log runs; resume the existing worktrees separately or perform an audited handoff")
 			}
-			normalized.WorkLog, err = workLogOptionsForClaimExtension(home, normalized.WorkLog, *existingRunClaim)
+			normalized.WorkLog, err = workLogOptionsForClaimExtension(home, normalized.WorkLog, *workLogs.existingRunClaim)
 			if err != nil {
 				return nil, err
 			}
@@ -948,15 +982,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if !plan.resumed || plan.resumeClaim == nil {
 			continue
 		}
-		effort := plan.resumeClaim.EffortID
-		agent := ownerAgent(normalized.WorkLog.AgentRuntime, normalized.WorkLog.AgentID)
-		model := strings.TrimSpace(normalized.WorkLog.Model)
-		if agent == "" {
-			agent = ownerAgent(plan.resumeClaim.AgentRuntime, plan.resumeClaim.AgentID)
-		}
-		if model == "" {
-			model = plan.resumeClaim.Model
-		}
+		effort, agent, model := resumedCreateOwner(normalized.WorkLog, *plan.resumeClaim)
 		if _, err := recordOwner(plan.result.WorktreeDir, effort, agent, model, CurrentIdentity().PID); err != nil {
 			return nil, fmt.Errorf("record resumed worktree owner for %s: %w", plan.result.Repository, err)
 		}
@@ -1625,18 +1651,17 @@ func isGitObjectID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
-	for _, character := range value {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
+	return hasOnlyLowerHexCharacters(value)
 }
 
 func isGitRevisionID(value string) bool {
 	if len(value) < 4 || len(value) > 64 {
 		return false
 	}
+	return hasOnlyLowerHexCharacters(value)
+}
+
+func hasOnlyLowerHexCharacters(value string) bool {
 	for _, character := range value {
 		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
@@ -2034,23 +2059,23 @@ func validateExistingWorktree(ctx context.Context, canonical *canonicalRepositor
 }
 
 func gitDirectoriesCanonical(ctx context.Context, canonical *canonicalRepository) (gitDir, commonDir string, err error) {
-	gitDir, err = gitCanonical(ctx, canonical, "rev-parse", "--absolute-git-dir")
-	if err != nil {
-		return "", "", err
-	}
-	commonDir, err = gitCanonical(ctx, canonical, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", "", err
-	}
-	return filepath.Clean(gitDir), filepath.Clean(commonDir), nil
+	return resolveGitDirectories(func(args ...string) (string, error) {
+		return gitCanonical(ctx, canonical, args...)
+	})
 }
 
 func gitDirectories(ctx context.Context, root string) (gitDir, commonDir string, err error) {
-	gitDir, err = git(ctx, root, "rev-parse", "--absolute-git-dir")
+	return resolveGitDirectories(func(args ...string) (string, error) {
+		return git(ctx, root, args...)
+	})
+}
+
+func resolveGitDirectories(run func(...string) (string, error)) (gitDir, commonDir string, err error) {
+	gitDir, err = run("rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return "", "", err
 	}
-	commonDir, err = git(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonDir, err = run("rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", "", err
 	}
@@ -2059,7 +2084,10 @@ func gitDirectories(ctx context.Context, root string) (gitDir, commonDir string,
 
 func cleanWorktree(ctx context.Context, root string) (bool, error) {
 	output, err := git(ctx, root, "status", "--porcelain=v1")
-	return output == "", err
+	if err != nil {
+		return false, err
+	}
+	return output == "", nil
 }
 
 func localBranchExists(ctx context.Context, root, branch string) (bool, error) {
@@ -2255,6 +2283,18 @@ type canonicalGitInterceptorKey struct{}
 // Callers that authenticate blob contents need the byte-exact stream, while
 // the canonical helper still supplies the same retained-descriptor authority.
 func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args ...string) ([]byte, error) {
+	return runCanonicalGitBytes(ctx, canonical, SecureCanonicalGitHelperArgument, "canonical Git", func() []string {
+		return secureHelperEnvironment(ctx)
+	}, args...)
+}
+
+func runCanonicalGitBytes(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	helperArgument, errorPrefix string,
+	environment func() []string,
+	args ...string,
+) ([]byte, error) {
 	if err := canonical.authorizeForGit(); err != nil {
 		return nil, err
 	}
@@ -2267,8 +2307,8 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 		if err != nil {
 			return nil, err
 		}
-		command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-		command.Env = secureHelperEnvironment(ctx)
+		command := exec.CommandContext(ctx, executable, append([]string{helperArgument, canonical.path, gitExecutable}, args...)...)
+		command.Env = environment()
 		command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 		output, err := command.Output()
 		if err != nil {
@@ -2280,7 +2320,7 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 			if detail == "" {
 				detail = err.Error()
 			}
-			return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
+			return nil, fmt.Errorf("%s %s: %s", errorPrefix, strings.Join(args, " "), detail)
 		}
 		return output, nil
 	}
@@ -2302,36 +2342,7 @@ func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository
 	if !canonicalPolicyGitArgumentsAllowed(args) {
 		return nil, fmt.Errorf("unsupported canonical policy Git query")
 	}
-	if err := canonical.authorizeForGit(); err != nil {
-		return nil, err
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	gitExecutable, err := trustedGitExecutable()
-	if err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalPolicyGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-	command.Env = console.Env()
-	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
-	output, err := command.Output()
-	if validateErr := canonical.validate(); validateErr != nil {
-		return nil, validateErr
-	}
-	if err != nil {
-		detail := ""
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			detail = strings.TrimSpace(string(exitErr.Stderr))
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("canonical policy Git %s: %s", strings.Join(args, " "), detail)
-	}
-	return output, nil
+	return runCanonicalGitBytes(ctx, canonical, SecureCanonicalPolicyGitHelperArgument, "canonical policy Git", console.Env, args...)
 }
 
 // init makes every package-owned descriptor helper available from any Go binary
@@ -4607,21 +4618,33 @@ func exclusivelyOwnedLockIdentity(file *os.File) (managedLockIdentity, error) {
 	return managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
 }
 
-func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity) (*os.File, error) {
+type moveExpectedLockHooks struct {
+	afterMove     func()
+	afterOpen     func()
+	beforeRestore func()
+}
+
+func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity, hooks ...moveExpectedLockHooks) (*os.File, error) {
 	if !lockEntryStillMatches(directory, fromName, expected) {
 		return nil, fmt.Errorf("%w: operation lock %s changed before move", errDirectoryMoveIdentityChanged, fromName)
 	}
 	if err := renameNoReplace(int(directory.Fd()), fromName, int(directory.Fd()), toName); err != nil {
 		return nil, err
 	}
+	var hook moveExpectedLockHooks
+	if len(hooks) > 0 {
+		hook = hooks[0]
+	}
+	if hook.afterMove != nil {
+		hook.afterMove()
+	}
 	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open moved operation lock %s: %w", toName, err)
 	}
 	moved := os.NewFile(uintptr(fd), "wb-moved-operation-lock")
-	if moved == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap moved operation lock %s", toName)
+	if hook.afterOpen != nil {
+		hook.afterOpen()
 	}
 	actual, identityErr := lockIdentity(moved)
 	sourceAbsent, absentErr := noFollowChildAbsent(int(directory.Fd()), fromName)
@@ -4636,6 +4659,9 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 		return moved, fmt.Errorf("%w: operation lock %s was recreated after no-replace move", errDirectoryMoveIdentityChanged, fromName)
 	}
 	_ = moved.Close()
+	if hook.beforeRestore != nil {
+		hook.beforeRestore()
+	}
 	if restoreErr := renameNoReplace(int(directory.Fd()), toName, int(directory.Fd()), fromName); restoreErr != nil {
 		return nil, fmt.Errorf("%w: operation lock %s changed before restoration: %v", errDirectoryMoveIdentityChanged, toName, restoreErr)
 	}

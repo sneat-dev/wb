@@ -73,22 +73,10 @@ type RetireResult struct {
 }
 
 func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	if options.Preserve == "" {
-		options.Preserve = "branch"
-	}
-	if options.Preserve != "branch" && options.Preserve != "tag" {
-		return RetireResult{}, fmt.Errorf("unsupported --preserve %q; use branch or tag", options.Preserve)
-	}
-	if !validSafeSegment(options.Task) {
-		return RetireResult{}, fmt.Errorf("invalid retirement task %q", options.Task)
-	}
-	if options.Repository != "" {
-		if _, _, err := splitRepository(options.Repository); err != nil {
-			return RetireResult{}, err
-		}
+	var err error
+	options, err = normalizeRetireOptions(options)
+	if err != nil {
+		return RetireResult{}, err
 	}
 	root, err := absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
@@ -102,27 +90,12 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if err != nil {
 		return RetireResult{}, err
 	}
-	if len(inventory.Diagnostics) != 0 {
-		return RetireResult{}, fmt.Errorf("retirement inventory has %d malformed candidate(s)", len(inventory.Diagnostics))
+	entry, resumeRemoved, err := selectRetirementEntry(inventory, options)
+	if err != nil {
+		return RetireResult{}, err
 	}
-	var selected []ListResult
-	for _, entry := range inventory.Results {
-		if options.Repository == "" || options.Repository == entry.Repository {
-			selected = append(selected, entry)
-		}
-	}
-	if len(selected) != 1 {
-		if len(selected) == 0 && options.Apply {
-			return retireResumeRemoved(ctx, resolution.Write.Home, options)
-		}
-		return RetireResult{}, fmt.Errorf("retirement requires exactly one managed repository; found %d", len(selected))
-	}
-	entry := selected[0]
-	if entry.External || entry.Detached || entry.Branch == "" {
-		return RetireResult{}, fmt.Errorf("retirement requires a managed attached branch")
-	}
-	if entry.Locked {
-		return RetireResult{}, fmt.Errorf("task %s has a competing lifecycle lock", options.Task)
+	if resumeRemoved {
+		return retireResumeRemoved(ctx, resolution.Write.Home, options)
 	}
 	if err := retireCheckOwner(entry); err != nil {
 		return RetireResult{}, err
@@ -235,12 +208,8 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return RetireResult{}, err
 	}
 	if priorErr == nil {
-		remoteMatchesReceipt := remoteSHA == prior.OriginalRemoteSHA || remoteSHA == "" && (prior.OriginalRemoteSHA == "" || prior.DeleteIntentSHA == prior.OriginalRemoteSHA)
-		if prior.Phase == "original_deleted" {
-			remoteMatchesReceipt = remoteSHA == ""
-		}
-		if prior.Task != result.Task || prior.Repository != result.Repository || prior.Worktree != result.Worktree || prior.Canonical != result.Canonical || prior.WorktreesRoot != result.WorktreesRoot || prior.Branch != result.Branch || retirePreserveMode(prior) != options.Preserve || prior.ArchiveRepository != result.ArchiveRepository || prior.ClaimID != result.ClaimID || prior.EffortID != result.EffortID || prior.RunID != result.RunID || !remoteMatchesReceipt {
-			return RetireResult{}, fmt.Errorf("retirement receipt conflicts with current checkout")
+		if err := corroborateRetireResumeReceipt(prior, result, options.Preserve, remoteSHA); err != nil {
+			return RetireResult{}, err
 		}
 		result = prior
 		if result.Phase == "commit_intent" {
@@ -398,6 +367,69 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func corroborateRetireResumeReceipt(prior, planned RetireResult, preserve, remoteSHA string) error {
+	remoteMatchesReceipt := remoteSHA == prior.OriginalRemoteSHA ||
+		remoteSHA == "" && (prior.OriginalRemoteSHA == "" || prior.DeleteIntentSHA == prior.OriginalRemoteSHA)
+	if prior.Phase == "original_deleted" {
+		remoteMatchesReceipt = remoteSHA == ""
+	}
+	if prior.Task != planned.Task || prior.Repository != planned.Repository || prior.Worktree != planned.Worktree ||
+		prior.Canonical != planned.Canonical || prior.WorktreesRoot != planned.WorktreesRoot || prior.Branch != planned.Branch ||
+		retirePreserveMode(prior) != preserve || prior.ArchiveRepository != planned.ArchiveRepository ||
+		prior.ClaimID != planned.ClaimID || prior.EffortID != planned.EffortID || prior.RunID != planned.RunID ||
+		!remoteMatchesReceipt {
+		return fmt.Errorf("retirement receipt conflicts with current checkout")
+	}
+	return nil
+}
+
+func normalizeRetireOptions(options RetireOptions) (RetireOptions, error) {
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	if options.Preserve == "" {
+		options.Preserve = "branch"
+	}
+	if options.Preserve != "branch" && options.Preserve != "tag" {
+		return RetireOptions{}, fmt.Errorf("unsupported --preserve %q; use branch or tag", options.Preserve)
+	}
+	if !validSafeSegment(options.Task) {
+		return RetireOptions{}, fmt.Errorf("invalid retirement task %q", options.Task)
+	}
+	if options.Repository != "" {
+		if _, _, err := splitRepository(options.Repository); err != nil {
+			return RetireOptions{}, err
+		}
+	}
+	return options, nil
+}
+
+func selectRetirementEntry(inventory ListOutcome, options RetireOptions) (ListResult, bool, error) {
+	if len(inventory.Diagnostics) != 0 {
+		return ListResult{}, false, fmt.Errorf("retirement inventory has %d malformed candidate(s)", len(inventory.Diagnostics))
+	}
+	var selected []ListResult
+	for _, entry := range inventory.Results {
+		if options.Repository == "" || options.Repository == entry.Repository {
+			selected = append(selected, entry)
+		}
+	}
+	if len(selected) != 1 {
+		if len(selected) == 0 && options.Apply {
+			return ListResult{}, true, nil
+		}
+		return ListResult{}, false, fmt.Errorf("retirement requires exactly one managed repository; found %d", len(selected))
+	}
+	entry := selected[0]
+	if entry.External || entry.Detached || entry.Branch == "" {
+		return ListResult{}, false, fmt.Errorf("retirement requires a managed attached branch")
+	}
+	if entry.Locked {
+		return ListResult{}, false, fmt.Errorf("task %s has a competing lifecycle lock", options.Task)
+	}
+	return entry, false, nil
 }
 
 func retireCheckOwner(entry ListResult) error {
@@ -1155,25 +1187,7 @@ func retirePublishArchive(ctx context.Context, home, remote string, result *Reti
 	if err != nil {
 		return err
 	}
-	includeRun := func(path string) bool {
-		if path == "run.json" || path == "original-prompt.json" || strings.HasPrefix(path, "original-prompt.") {
-			return true
-		}
-		parts := strings.Split(path, "/")
-		if len(parts) < 2 {
-			return true // run-scoped index, prompt, or migration record
-		}
-		if parts[0] == "claims" || parts[0] == "terminals" || parts[0] == "cleanups" {
-			return parts[1] == result.ClaimID+".json"
-		}
-		if parts[0] == "corrections" || parts[0] == "dirty-discard" {
-			return parts[1] == result.ClaimID
-		}
-		if parts[0] == "reports" {
-			return parts[1] == reportName
-		}
-		return false
-	}
+	includeRun := func(path string) bool { return retireArchiveIncludesRunPath(result.ClaimID, reportName, path) }
 	if err := retireCaptureTree(run, filepath.Join(working, "worklog", "run"), includeRun, hashes, "worklog/run"); err != nil {
 		return fmt.Errorf("capture private Work Log run: %w", err)
 	}
@@ -1247,6 +1261,26 @@ func retirePublishArchive(ctx context.Context, home, remote string, result *Reti
 	return nil
 }
 
+func retireArchiveIncludesRunPath(claimID, reportName, path string) bool {
+	if path == "run.json" || path == "original-prompt.json" || strings.HasPrefix(path, "original-prompt.") {
+		return true
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return true // run-scoped index, prompt, or migration record
+	}
+	if parts[0] == "claims" || parts[0] == "terminals" || parts[0] == "cleanups" {
+		return parts[1] == claimID+".json"
+	}
+	if parts[0] == "corrections" || parts[0] == "dirty-discard" {
+		return parts[1] == claimID
+	}
+	if parts[0] == "reports" {
+		return parts[1] == reportName
+	}
+	return false
+}
+
 func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA string, expected retireArchiveManifest) error {
 	if _, err := git(ctx, working, "fetch", "--no-tags", remote, ref); err != nil {
 		return err
@@ -1271,17 +1305,10 @@ func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA 
 	if err := json.Unmarshal(body, &actual); err != nil {
 		return err
 	}
-	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || retireArchiveManifestPreserve(actual) != retireArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
-		return fmt.Errorf("private archive manifest identity mismatch")
+	paths, err := validateRetireArchiveManifest(expected, actual)
+	if err != nil {
+		return err
 	}
-	paths := make([]string, 0, len(expected.Files))
-	for path, hash := range expected.Files {
-		if actual.Files[path] != hash {
-			return fmt.Errorf("private archive manifest file mismatch %s", path)
-		}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
 	tree, err := git(ctx, working, "ls-tree", "-r", "-z", "--name-only", "FETCH_HEAD")
 	if err != nil {
 		return err
@@ -1293,13 +1320,8 @@ func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA 
 			listed = append(listed, path)
 		}
 	}
-	if len(listed) != len(paths)+1 {
-		return fmt.Errorf("private archive has unlisted files")
-	}
-	for _, path := range listed {
-		if path != "retirement.json" && expected.Files[path] == "" {
-			return fmt.Errorf("private archive has unlisted file %s", path)
-		}
+	if err := validateRetireArchiveTree(expected.Files, paths, listed); err != nil {
+		return err
 	}
 	for _, path := range paths {
 		value, err := retireGitObjectSHA(ctx, working, "FETCH_HEAD:"+path)
@@ -1308,6 +1330,33 @@ func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA 
 		}
 		if value != expected.Files[path] {
 			return fmt.Errorf("private archive file digest mismatch %s", path)
+		}
+	}
+	return nil
+}
+
+func validateRetireArchiveManifest(expected, actual retireArchiveManifest) ([]string, error) {
+	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || retireArchiveManifestPreserve(actual) != retireArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
+		return nil, fmt.Errorf("private archive manifest identity mismatch")
+	}
+	paths := make([]string, 0, len(expected.Files))
+	for path, hash := range expected.Files {
+		if actual.Files[path] != hash {
+			return nil, fmt.Errorf("private archive manifest file mismatch %s", path)
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func validateRetireArchiveTree(files map[string]string, paths, listed []string) error {
+	if len(listed) != len(paths)+1 {
+		return fmt.Errorf("private archive has unlisted files")
+	}
+	for _, path := range listed {
+		if path != "retirement.json" && files[path] == "" {
+			return fmt.Errorf("private archive has unlisted file %s", path)
 		}
 	}
 	return nil

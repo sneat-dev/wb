@@ -112,20 +112,22 @@ func branchPullRequestsForHeadState(ctx context.Context, worktree, repository, b
 			result.openBase = open
 		}
 	}
-	for _, candidate := range head {
-		if candidate.Head.Ref == branch && candidate.Head.Repo == nil {
-			return branchPullRequestEvidence{err: fmt.Errorf("head pull request #%d for %s:%s has no repository identity", candidate.Number, repository, branch)}
-		}
-		if candidate.Head.Ref == branch && candidate.Head.Repo != nil && strings.EqualFold(candidate.Head.Repo.FullName, repository) {
-			appendCandidate(candidate, "head")
-		}
-	}
-	for _, candidate := range base {
-		if candidate.Base.Ref == branch && candidate.Base.Repo == nil {
-			return branchPullRequestEvidence{err: fmt.Errorf("base pull request #%d for %s:%s has no repository identity", candidate.Number, repository, branch)}
-		}
-		if candidate.Base.Ref == branch && candidate.Base.Repo != nil && strings.EqualFold(candidate.Base.Repo.FullName, repository) {
-			appendCandidate(candidate, "base")
+	for _, candidates := range []struct {
+		role      string
+		requests  []githubPullRequest
+		reference func(githubPullRequest) githubRef
+	}{
+		{role: "head", requests: head, reference: func(candidate githubPullRequest) githubRef { return candidate.Head }},
+		{role: "base", requests: base, reference: func(candidate githubPullRequest) githubRef { return candidate.Base }},
+	} {
+		for _, candidate := range candidates.requests {
+			ref := candidates.reference(candidate)
+			if ref.Ref == branch && ref.Repo == nil {
+				return branchPullRequestEvidence{err: fmt.Errorf("%s pull request #%d for %s:%s has no repository identity", candidates.role, candidate.Number, repository, branch)}
+			}
+			if ref.Ref == branch && ref.Repo != nil && strings.EqualFold(ref.Repo.FullName, repository) {
+				appendCandidate(candidate, candidates.role)
+			}
 		}
 	}
 	sort.Slice(result.requests, func(i, j int) bool {

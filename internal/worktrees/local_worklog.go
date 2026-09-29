@@ -112,6 +112,14 @@ func openLocalWorkLogDir(worktree string, create bool) (*os.File, error) {
 }
 
 func readLocalEvents(worktree string) ([]LocalWorkLogEvent, error) {
+	content, err := readLocalWorkLogBytes(worktree, localWorkLogEventsName)
+	if err != nil || content == nil {
+		return nil, err
+	}
+	return parseLocalEvents(content)
+}
+
+func readLocalWorkLogBytes(worktree, name string) ([]byte, error) {
 	directory, err := openLocalWorkLogDir(worktree, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -120,14 +128,14 @@ func readLocalEvents(worktree string) ([]LocalWorkLogEvent, error) {
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }()
-	content, err := readBytesAt(directory, localWorkLogEventsName)
+	content, err := readBytesAt(directory, name)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return parseLocalEvents(content)
+	return content, nil
 }
 
 // readLocalEventsForInspection preserves the strict append/validation path
@@ -276,12 +284,8 @@ func appendLocalEventUnderLock(worktree string, directory *os.File, event LocalW
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
 	}
 	if journalRepair {
-		encoded, encodeErr := encodeLocalEvents(existing)
-		if encodeErr != nil {
-			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, encodeErr
-		}
-		if err := writeBytesAtomicAt(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
-			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("repair torn local work-log journal: %w", err)
+		if err := rewriteLocalEventJournal(directory, existing); err != nil {
+			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
 		}
 	}
 	requestedID := strings.TrimSpace(event.ID)
@@ -434,16 +438,25 @@ func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, erro
 	if err != nil {
 		return LocalWorkLogProjection{}, err
 	}
-	encoded, err := encodeLocalEvents(events)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
 	if repair {
-		if err := writeBytesAtomicAt(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
+		if err := rewriteLocalEventJournal(directory, events); err != nil {
 			return LocalWorkLogProjection{}, err
 		}
 	}
 	return repairLocalEventDerivatives(worktree, directory, events)
+}
+
+var rewriteLocalEventJournalAtomicWrite = writeBytesAtomicAt
+
+func rewriteLocalEventJournal(directory *os.File, events []LocalWorkLogEvent) error {
+	encoded, err := encodeLocalEvents(events)
+	if err != nil {
+		return err
+	}
+	if err := rewriteLocalEventJournalAtomicWrite(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
+		return fmt.Errorf("repair torn local work-log journal: %w", err)
+	}
+	return nil
 }
 
 func readLocalEventsForAppend(directory *os.File) ([]LocalWorkLogEvent, bool, error) {
@@ -613,19 +626,8 @@ func observeLocalGit(ctx context.Context, worktree string) LocalGitEvidence {
 }
 
 func countLocalOutbox(worktree string) (int, error) {
-	directory, err := openLocalWorkLogDir(worktree, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = directory.Close() }()
-	content, err := readBytesAt(directory, localWorkLogOutboxName)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
+	content, err := readLocalWorkLogBytes(worktree, localWorkLogOutboxName)
+	if err != nil || content == nil {
 		return 0, err
 	}
 	count := 0

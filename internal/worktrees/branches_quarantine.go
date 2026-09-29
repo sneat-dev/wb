@@ -245,65 +245,29 @@ type branchQuarantinePlanOps struct {
 	inUse        func(context.Context, string, string) (map[string]string, string)
 	pullRequests func(context.Context, string, string, string) ([]githubPullRequest, error)
 	openBasePull func(context.Context, string, string, string) (*PullRequest, error)
+	rename       func(context.Context, string, string, string, string) error
+}
+
+func realBranchQuarantineOps() branchQuarantinePlanOps {
+	return branchQuarantinePlanOps{
+		git: git, checkedOut: checkedOutLocalBranches, inUse: branchInUseIndex,
+		pullRequests: githubPullRequests, openBasePull: openPullRequestUsingBranchAsBase,
+		rename: atomicLocalBranchRename,
+	}
 }
 
 func planBranchQuarantine(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time) BranchQuarantineResult {
-	return planBranchQuarantineWithOps(ctx, projectsRoot, path, request, now, branchQuarantinePlanOps{
-		git: git, checkedOut: checkedOutLocalBranches, inUse: branchInUseIndex,
-		pullRequests: githubPullRequests, openBasePull: openPullRequestUsingBranchAsBase,
-	})
+	return planBranchQuarantineWithOps(ctx, projectsRoot, path, request, now, realBranchQuarantineOps())
 }
 
 func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time, ops branchQuarantinePlanOps) BranchQuarantineResult {
 	result := BranchQuarantineResult{BranchQuarantineRequest: request, Outcome: "refused"}
-	source, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+request.Ref+"^{commit}")
-	if err != nil {
-		result.Error = "source ref unavailable: " + err.Error()
-		return result
-	}
-	source = strings.TrimSpace(source)
-	if request.SHA != "" && request.SHA != source {
-		result.Error = fmt.Sprintf("source moved from manifest SHA %s to %s", shortSHA(request.SHA), shortSHA(source))
+	source, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, "", false, ops)
+	if refusal != "" {
+		result.Error = refusal
 		return result
 	}
 	result.SHA = source
-	head, _ := ops.git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
-	if isProtectedBranch(request.Ref, "main", strings.TrimSpace(head)) {
-		result.Error = "source is protected or the canonical current branch"
-		return result
-	}
-	checked, diagnostic := ops.checkedOut(ctx, path)
-	if diagnostic != "" {
-		result.Error = diagnostic
-		return result
-	}
-	if checked[request.Ref] {
-		result.Error = "source is checked out in a linked worktree"
-		return result
-	}
-	if inUse, diagnostic := ops.inUse(ctx, projectsRoot, ""); diagnostic != "" {
-		result.Error = diagnostic
-		return result
-	} else if _, claimed := inUse[branchInUseKey(request.Repository, request.Ref)]; claimed {
-		result.Error = "source is claimed by a live WB work log"
-		return result
-	}
-	pulls, err := ops.pullRequests(ctx, path, request.Repository, source)
-	if err != nil {
-		result.Error = "cannot prove pull-request safety: " + err.Error()
-		return result
-	}
-	if open, _ := matchingPullRequests(pulls, request.Repository, "main", request.Ref, source); open != nil {
-		result.Error = "source is head of open pull request " + open.URL
-		return result
-	}
-	if open, err := ops.openBasePull(ctx, path, request.Repository, request.Ref); err != nil {
-		result.Error = "cannot prove pull-request base safety: " + err.Error()
-		return result
-	} else if open != nil {
-		result.Error = "source is base of open pull request " + open.URL
-		return result
-	}
 	result.Destination = retiredBranchDestination(now, request.Ref, source)
 	if _, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Destination); err == nil {
 		result.Error = "destination already exists"
@@ -326,62 +290,113 @@ func retiredBranchDestination(now time.Time, source, sha string) string {
 }
 
 func applyBranchQuarantine(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult) {
-	current, err := git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Ref+"^{commit}")
-	if err != nil {
-		result.Outcome, result.Error = "failed", "source disappeared before apply: "+err.Error()
+	applyBranchQuarantineWithOps(ctx, projectsRoot, path, result, realBranchQuarantineOps())
+}
+
+func applyBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult, ops branchQuarantinePlanOps) {
+	request := BranchQuarantineRequest{Repository: result.Repository, Ref: result.Ref, SHA: result.SHA, Reason: result.Reason}
+	current, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, result.Destination, true, ops)
+	if refusal != "" {
+		result.Outcome, result.Error = "failed", refusal
 		return
 	}
-	current = strings.TrimSpace(current)
-	if current != result.SHA {
-		result.Outcome, result.Error = "failed", fmt.Sprintf("source moved from %s to %s before apply", shortSHA(result.SHA), shortSHA(current))
-		return
-	}
-	head, _ := git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
-	if isProtectedBranch(result.Ref, "main", strings.TrimSpace(head)) {
-		result.Outcome, result.Error = "failed", "source became protected or the canonical current branch"
-		return
-	}
-	checked, diagnostic := checkedOutLocalBranches(ctx, path)
-	if diagnostic != "" {
-		result.Outcome, result.Error = "failed", diagnostic
-		return
-	}
-	if checked[result.Ref] {
-		result.Outcome, result.Error = "failed", "source became checked out in a linked worktree"
-		return
-	}
-	if _, err := git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Destination); err == nil {
-		result.Outcome, result.Error = "failed", "destination appeared before apply"
-		return
-	}
-	pulls, err := githubPullRequests(ctx, path, result.Repository, current)
-	if err != nil {
-		result.Outcome, result.Error = "failed", "cannot re-prove pull-request safety: "+err.Error()
-		return
-	}
-	if open, _ := matchingPullRequests(pulls, result.Repository, "main", result.Ref, current); open != nil {
-		result.Outcome, result.Error = "failed", "source became head of open pull request "+open.URL
-		return
-	}
-	if open, err := openPullRequestUsingBranchAsBase(ctx, path, result.Repository, result.Ref); err != nil {
-		result.Outcome, result.Error = "failed", "cannot re-prove pull-request base safety: "+err.Error()
-		return
-	} else if open != nil {
-		result.Outcome, result.Error = "failed", "source became base of open pull request "+open.URL
-		return
-	}
-	if inUse, diagnostic := branchInUseIndex(ctx, projectsRoot, ""); diagnostic != "" {
-		result.Outcome, result.Error = "failed", diagnostic
-		return
-	} else if _, claimed := inUse[branchInUseKey(result.Repository, result.Ref)]; claimed {
-		result.Outcome, result.Error = "failed", "source became claimed by a live WB work log"
-		return
-	}
-	if err := atomicLocalBranchRename(ctx, path, result.Ref, result.Destination, current); err != nil {
+	if err := ops.rename(ctx, path, result.Ref, result.Destination, current); err != nil {
 		result.Outcome, result.Error = "failed", "local CAS rename: "+err.Error()
 		return
 	}
 	result.Outcome = "quarantined"
+}
+
+func inspectBranchQuarantineCandidate(
+	ctx context.Context,
+	projectsRoot, path string,
+	request BranchQuarantineRequest,
+	destination string,
+	applying bool,
+	ops branchQuarantinePlanOps,
+) (string, string) {
+	source, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+request.Ref+"^{commit}")
+	if err != nil {
+		if applying {
+			return "", "source disappeared before apply: " + err.Error()
+		}
+		return "", "source ref unavailable: " + err.Error()
+	}
+	source = strings.TrimSpace(source)
+	if request.SHA != "" && request.SHA != source {
+		if applying {
+			return "", fmt.Sprintf("source moved from %s to %s before apply", shortSHA(request.SHA), shortSHA(source))
+		}
+		return "", fmt.Sprintf("source moved from manifest SHA %s to %s", shortSHA(request.SHA), shortSHA(source))
+	}
+	head, _ := ops.git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
+	if isProtectedBranch(request.Ref, "main", strings.TrimSpace(head)) {
+		if applying {
+			return "", "source became protected or the canonical current branch"
+		}
+		return "", "source is protected or the canonical current branch"
+	}
+	checked, diagnostic := ops.checkedOut(ctx, path)
+	if diagnostic != "" {
+		return "", diagnostic
+	}
+	if checked[request.Ref] {
+		if applying {
+			return "", "source became checked out in a linked worktree"
+		}
+		return "", "source is checked out in a linked worktree"
+	}
+	if !applying {
+		if refusal := branchQuarantineClaimRefusal(ctx, projectsRoot, request, false, ops); refusal != "" {
+			return "", refusal
+		}
+	} else if _, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+destination); err == nil {
+		return "", "destination appeared before apply"
+	}
+	pulls, err := ops.pullRequests(ctx, path, request.Repository, source)
+	if err != nil {
+		if applying {
+			return "", "cannot re-prove pull-request safety: " + err.Error()
+		}
+		return "", "cannot prove pull-request safety: " + err.Error()
+	}
+	if open, _ := matchingPullRequests(pulls, request.Repository, "main", request.Ref, source); open != nil {
+		if applying {
+			return "", "source became head of open pull request " + open.URL
+		}
+		return "", "source is head of open pull request " + open.URL
+	}
+	if open, err := ops.openBasePull(ctx, path, request.Repository, request.Ref); err != nil {
+		if applying {
+			return "", "cannot re-prove pull-request base safety: " + err.Error()
+		}
+		return "", "cannot prove pull-request base safety: " + err.Error()
+	} else if open != nil {
+		if applying {
+			return "", "source became base of open pull request " + open.URL
+		}
+		return "", "source is base of open pull request " + open.URL
+	}
+	if applying {
+		if refusal := branchQuarantineClaimRefusal(ctx, projectsRoot, request, true, ops); refusal != "" {
+			return "", refusal
+		}
+	}
+	return source, ""
+}
+
+func branchQuarantineClaimRefusal(ctx context.Context, projectsRoot string, request BranchQuarantineRequest, applying bool, ops branchQuarantinePlanOps) string {
+	inUse, diagnostic := ops.inUse(ctx, projectsRoot, "")
+	if diagnostic != "" {
+		return diagnostic
+	}
+	if _, claimed := inUse[branchInUseKey(request.Repository, request.Ref)]; !claimed {
+		return ""
+	}
+	if applying {
+		return "source became claimed by a live WB work log"
+	}
+	return "source is claimed by a live WB work log"
 }
 
 func openPullRequestUsingBranchAsBase(ctx context.Context, worktree, repository, branch string) (*PullRequest, error) {
