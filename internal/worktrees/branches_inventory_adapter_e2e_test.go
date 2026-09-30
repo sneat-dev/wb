@@ -11,7 +11,7 @@ import (
 )
 
 //nolint:paralleltest // the native Git fixture changes process-wide WB home state.
-func TestBranchInventoryFacadeAdaptersAndRealGit(t *testing.T) {
+func TestE2EBranchInventoryFacadeAdaptersAndRealGit(t *testing.T) {
 	ctx := context.Background()
 	fixture, result, commits, target := prepareSupersessionTask(t, "branch-inventory-adapter")
 	service := branchInventoryService()

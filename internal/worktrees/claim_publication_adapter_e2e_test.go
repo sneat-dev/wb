@@ -11,7 +11,7 @@ import (
 )
 
 //nolint:paralleltest // the Git fixture and WB home state are process-wide.
-func TestClaimPublicationRetryRejectsUntrustedAuthority(t *testing.T) {
+func TestE2EClaimPublicationRetryRejectsUntrustedAuthority(t *testing.T) {
 	for _, testCase := range []struct {
 		name           string
 		breakAuthority func(*testing.T, WorkLogPublicationOutcome, CreateResult)

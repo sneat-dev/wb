@@ -13,7 +13,7 @@ import (
 )
 
 //nolint:paralleltest // newEngineFixture configures process-wide WB and Git environment for real repositories.
-func TestSupersedeValidationFailedWorktreeMergePreservesSourceOwnBase(t *testing.T) {
+func TestE2ESupersedeValidationFailedWorktreeMergePreservesSourceOwnBase(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "main-based-source", "feature/main-based-source", "source.txt", "source\n")
 	sourceView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: source.WorktreeDir})

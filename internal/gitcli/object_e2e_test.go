@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestObjectBytesAndStreamingSHAWithNativeGit(t *testing.T) {
+func TestE2EObjectBytesAndStreamingSHAWithNativeGit(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	if output, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {

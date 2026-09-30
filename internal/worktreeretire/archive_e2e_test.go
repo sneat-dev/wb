@@ -12,7 +12,7 @@ import (
 )
 
 //nolint:paralleltest // PATH is process-wide; this test verifies the real Git executable failure path.
-func TestArchiveGitObjectRejectsMissingGit(t *testing.T) {
+func TestE2EArchiveGitObjectRejectsMissingGit(t *testing.T) {
 	root := t.TempDir()
 	if _, err := GitObjectSHA(context.Background(), root, "missing"); err == nil {
 		t.Fatal("missing repository object accepted")
@@ -23,7 +23,7 @@ func TestArchiveGitObjectRejectsMissingGit(t *testing.T) {
 	}
 }
 
-func TestArchiveGitObjectHashesExactBytes(t *testing.T) {
+func TestE2EArchiveGitObjectHashesExactBytes(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	if output, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
