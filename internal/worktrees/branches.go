@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // Branch Hygiene inventories and safely retires local and remote Git branches
@@ -27,31 +28,20 @@ import (
 // `wb branch` surface. See spec/features/branch-hygiene/README.md.
 
 // Branch disposition is a closed set. A branch carries exactly one.
-const (
-	BranchContained  = "contained"  // ancestor of the fetched exact target; always eligible for deletion
-	BranchAbsorbed   = "absorbed"   // patch-id/tree equal to the target, but not an ancestor; report-only, forever
-	BranchReceipted  = "receipted"  // a proved landing receipt shows the work is in the target; eligible only under --receipts
-	BranchSuperseded = "superseded" // a trusted reviewer receipt replaces the exact branch; eligible only under --superseded-by
-	BranchRetired    = "retired"    // user-selected quarantine; never an active-backlog candidate
-	BranchUnique     = "unique"     // has content git cherry proves is not upstream
-	BranchProtected  = "protected"  // base, canonical HEAD, or a protected name
-	BranchInUse      = "in-use"     // checked out in a linked worktree, or named by a WB Work Log claim
-	BranchUnreadable = "unreadable" // required evidence could not be obtained
-)
+const BranchContained = worktreebranches.BranchContained
+const BranchAbsorbed = worktreebranches.BranchAbsorbed
+const BranchReceipted = worktreebranches.BranchReceipted
+const BranchSuperseded = worktreebranches.BranchSuperseded
+const BranchRetired = worktreebranches.BranchRetired
+const BranchUnique = worktreebranches.BranchUnique
+const BranchProtected = worktreebranches.BranchProtected
+const BranchInUse = worktreebranches.BranchInUse
+const BranchUnreadable = worktreebranches.BranchUnreadable
 
 // Branch scope selects which refs a sweep enumerates.
-const (
-	BranchScopeLocal  = "local"
-	BranchScopeRemote = "remote"
-	BranchScopeAll    = "all"
-)
-
-// protectedBranchNames are hard-coded per branch-hygiene's Open Questions
-// pending a configurable follow-up.
-var protectedBranchNames = map[string]bool{
-	"main":   true,
-	"master": true,
-}
+const BranchScopeLocal = worktreebranches.BranchScopeLocal
+const BranchScopeRemote = worktreebranches.BranchScopeRemote
+const BranchScopeAll = worktreebranches.BranchScopeAll
 
 // BranchListOptions selects the inventory. It is read-only in every
 // configuration: it fetches Git refs and optionally reads GitHub PR metadata.
@@ -80,54 +70,7 @@ type BranchListOptions struct {
 }
 
 // BranchEntry is one branch and the evidence behind its disposition.
-type BranchEntry struct {
-	Repository            string              `json:"repository"`
-	Branch                string              `json:"branch"`
-	RefKind               string              `json:"ref_kind,omitempty"` // branch or tag
-	Scope                 string              `json:"scope"`              // local or remote
-	SHA                   string              `json:"sha"`
-	ShortSHA              string              `json:"short_sha"`
-	CommitterDate         time.Time           `json:"committer_date,omitempty"`
-	Author                string              `json:"author,omitempty"`
-	Title                 string              `json:"title,omitempty"`
-	Base                  string              `json:"base"`
-	TargetSHA             string              `json:"target_sha,omitempty"`
-	Disposition           string              `json:"disposition"`
-	Evidence              string              `json:"evidence"`
-	Reason                string              `json:"reason,omitempty"`
-	Task                  string              `json:"task,omitempty"`
-	OpenPullRequest       *PullRequest        `json:"open_pull_request,omitempty"`
-	OpenBasePullRequest   *PullRequest        `json:"open_base_pull_request,omitempty"`
-	PullRequests          []BranchPullRequest `json:"pull_requests,omitempty"`
-	PullRequestQueried    bool                `json:"pull_request_queried,omitempty"`
-	PullRequestQueryError string              `json:"pull_request_query_error,omitempty"`
-	// LandingSHA and ReceiptPullRequest carry a receipted branch's proved
-	// landing so apply can re-verify the receipt — not ancestry, which a
-	// receipted branch fails by construction — against the freshly fetched
-	// target. See #req:receipted-requires-a-proved-landing.
-	LandingSHA         string       `json:"landing_sha,omitempty"`
-	ReceiptPullRequest *PullRequest `json:"receipt_pull_request,omitempty"`
-	// PullRequestQueryFailed distinguishes "no matching pull request" from
-	// "WB could not ask GitHub." Cleanup's remote apply fails the whole scope
-	// closed on the latter; list surfaces the specific error.
-	PullRequestQueryFailed bool `json:"pull_request_query_failed,omitempty"`
-	// AbsorbedByRejection explains why an operator-supplied --absorbed-by
-	// pointer did not verify for this branch. It is set only when
-	// --absorbed-by was passed and its attested-absorption proof (see
-	// attestedAbsorbedReceipt, shared with `wb worktree cleanup
-	// --absorbed-by`) failed for this candidate specifically; the branch keeps
-	// whatever disposition its patch evidence (or --receipts) produces. A
-	// wrong or dishonest pointer can therefore only fail closed, never widen
-	// eligibility, and the rejection is reported rather than silently
-	// swallowed.
-	AbsorbedByRejection   string `json:"absorbed_by_rejection,omitempty"`
-	SupersessionReceipt   string `json:"supersession_receipt,omitempty"`
-	SupersessionReviewer  string `json:"supersession_reviewer,omitempty"`
-	SupersessionReceiptID string `json:"supersession_receipt_id,omitempty"`
-	SupersessionSHA256    string `json:"supersession_sha256,omitempty"`
-	SupersessionRejection string `json:"supersession_rejection,omitempty"`
-	SupersededAtOrigin    bool   `json:"superseded_at_origin,omitempty"`
-}
+type BranchEntry = worktreebranches.BranchEntry
 
 // BranchListOutcome is the full result of one sweep.
 type BranchListOutcome struct {
@@ -301,10 +244,7 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 // retired refs. Those refs need no target-based disposition evidence, so their
 // inventory must not fetch origin/<base> merely to count a quarantine.
 func retiredNamespaceSelected(sweep branchSweepOptions) bool {
-	if sweep.Only == BranchRetired {
-		return true
-	}
-	return strings.HasPrefix(sweep.Branch, "retired/") || strings.HasPrefix(sweep.Name, "retired/")
+	return worktreebranches.RetiredNamespaceSelected(sweep.branchPolicyOptions())
 }
 
 // inventoryRetiredNamespace is the narrow inventory used by --only retired
@@ -447,37 +387,15 @@ func branchEvidenceHost() string {
 }
 
 func applyListDisplayFilters(entries []BranchEntry, sweep branchSweepOptions) []BranchEntry {
-	filtered := make([]BranchEntry, 0, len(entries))
-	for _, entry := range entries {
-		if sweep.Only != "" && entry.Disposition != sweep.Only {
-			continue
-		}
-		if sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
+	return worktreebranches.ApplyListDisplayFilters(entries, sweep.branchPolicyOptions())
 }
 
 func sortBranchEntries(entries []BranchEntry) {
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Repository != entries[j].Repository {
-			return entries[i].Repository < entries[j].Repository
-		}
-		if entries[i].Branch != entries[j].Branch {
-			return entries[i].Branch < entries[j].Branch
-		}
-		return entries[i].Scope < entries[j].Scope
-	})
+	worktreebranches.SortBranchEntries(entries)
 }
 
 func tallyDispositions(entries []BranchEntry) map[string]int {
-	totals := map[string]int{}
-	for _, entry := range entries {
-		totals[entry.Disposition]++
-	}
-	return totals
+	return worktreebranches.TallyDispositions(entries)
 }
 
 // classifyFleetBranches is the shared enumeration engine for both list and
@@ -581,37 +499,15 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 }
 
 func accumulateRetiredCounts(sweep branchSweepOptions, repository discover.Repo, refs []branchRef, scope string, counts map[string]int, names map[string]bool) {
-	for _, ref := range refs {
-		if !retiredRefSelected(sweep, ref) {
-			continue
-		}
-		counts[scope]++
-		names[repository.Slug()+"|"+ref.Name] = true
-	}
+	worktreebranches.AccumulateRetiredCounts(sweep.branchPolicyOptions(), repository.Slug(), refs, scope, counts, names)
 }
 
 func retiredRefSelected(sweep branchSweepOptions, ref branchRef) bool {
-	if !isRetiredBranch(ref.Name) {
-		return false
-	}
-	if !branchNameSelected(sweep, ref.Name) {
-		return false
-	}
-	if sweep.OlderThan == 0 {
-		return true
-	}
-	return !ref.UnknownDate && !ref.CommitterDate.IsZero() && sweep.Now.Sub(ref.CommitterDate) >= sweep.OlderThan
+	return worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), ref)
 }
 
 func branchNameSelected(sweep branchSweepOptions, name string) bool {
-	if sweep.Branch != "" && sweep.Branch != name {
-		return false
-	}
-	if sweep.Name == "" {
-		return true
-	}
-	matched, err := path.Match(sweep.Name, name)
-	return err == nil && matched
+	return worktreebranches.BranchNameSelected(sweep.branchPolicyOptions(), name)
 }
 
 func inspectRepositoryBranchesWithHeartbeat(
@@ -806,12 +702,12 @@ func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *Bra
 }
 
 func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
-	return BranchEntry{Repository: repository.Slug(), Branch: ref.Name, RefKind: "branch", Scope: scope, SHA: ref.SHA,
-		ShortSHA: shortSHA(ref.SHA), CommitterDate: ref.CommitterDate, Author: ref.Author, Title: ref.Title, Base: sweep.Base, TargetSHA: targetSHA,
-		Disposition: BranchRetired, Evidence: "user-selected retired quarantine; excluded from active backlog and never cleanup-eligible"}
+	return worktreebranches.RetiredBranchEntry(repository.Slug(), sweep.branchPolicyOptions(), ref, scope, targetSHA)
 }
 
-func isRetiredBranch(branch string) bool { return strings.HasPrefix(branch, "retired/") }
+func isRetiredBranch(branch string) bool {
+	return worktreebranches.IsRetiredBranch(branch)
+}
 
 // checkedOutLocalBranches lists every branch checked out in any linked
 // worktree of this repository, WB-managed or not. #req:evidence-class-
@@ -834,14 +730,7 @@ func checkedOutLocalBranches(ctx context.Context, repositoryPath string) (map[st
 }
 
 // branchRef is one enumerated ref before classification.
-type branchRef struct {
-	Name          string
-	SHA           string
-	CommitterDate time.Time
-	UnknownDate   bool
-	Author        string
-	Title         string
-}
+type branchRef = worktreebranches.BranchRef
 
 func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
 	return listRefs(ctx, repositoryPath, "refs/heads/", "")
@@ -1093,21 +982,7 @@ func classifyBranch(
 }
 
 func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequest, absorbedBy string) BranchEntry {
-	entry.Disposition = BranchReceipted
-	entry.LandingSHA = landingSHA
-	entry.ReceiptPullRequest = pullRequest
-	if absorbedBy != "" {
-		entry.Evidence = fmt.Sprintf(
-			"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
-			absorbedBy, shortSHA(landingSHA), shortSHA(landingSHA))
-		entry.Reason = fmt.Sprintf("content-proven absorbed via --absorbed-by %s; eligible for deletion", absorbedBy)
-		return entry
-	}
-	entry.Evidence = fmt.Sprintf(
-		"merged pull request #%d into %s; landing %s is in the fetched target and the three-way proof holds",
-		pullRequest.Number, entry.Base, shortSHA(landingSHA))
-	entry.Reason = fmt.Sprintf("landed via merged pull request #%d; eligible for deletion under --receipts", pullRequest.Number)
-	return entry
+	return worktreebranches.ReceiptedBranch(entry, landingSHA, pullRequest, absorbedBy)
 }
 
 // classifyAttestedReceipt verifies an operator-supplied --absorbed-by pointer
@@ -1131,28 +1006,15 @@ func classifyAttestedReceipt(
 }
 
 func shortSHA(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
+	return worktreebranches.ShortSHA(sha)
 }
 
 func isProtectedBranch(branch, base, canonicalHEAD string) bool {
-	if branch == base || branch == canonicalHEAD {
-		return true
-	}
-	return protectedBranchNames[branch]
+	return worktreebranches.IsProtectedBranch(branch, base, canonicalHEAD)
 }
 
 func protectedEvidence(branch, base, canonicalHEAD string) string {
-	switch branch {
-	case base:
-		return fmt.Sprintf("is the base branch %q", base)
-	case canonicalHEAD:
-		return "is the canonical clone's current HEAD"
-	default:
-		return "matches a configured protected branch name"
-	}
+	return worktreebranches.ProtectedEvidence(branch, base, canonicalHEAD)
 }
 
 // classifyLandingReceipt tries to prove, on evidence, that a non-ancestor

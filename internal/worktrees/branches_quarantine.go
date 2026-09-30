@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // BranchQuarantineOptions moves explicitly selected local refs into retired/*.
@@ -277,16 +277,8 @@ func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string,
 	return result
 }
 
-var quarantineSegmentUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-
 func retiredBranchDestination(now time.Time, source, sha string) string {
-	flat := strings.ReplaceAll(source, "/", "-")
-	flat = quarantineSegmentUnsafe.ReplaceAllString(flat, "-")
-	flat = strings.Trim(flat, "-.")
-	if flat == "" {
-		flat = "branch"
-	}
-	return "retired/" + now.UTC().Format("20060102") + "-" + flat + "-" + shortSHA(sha)
+	return worktreebranches.RetiredBranchDestination(now, source, sha)
 }
 
 func applyBranchQuarantine(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult) {

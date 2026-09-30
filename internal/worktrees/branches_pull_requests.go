@@ -10,25 +10,15 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // BranchPullRequest describes a PR's relationship to the named branch. This
 // is branch history, separate from the immutable merged landing proof.
-type BranchPullRequest struct {
-	Number   int        `json:"number"`
-	URL      string     `json:"url"`
-	Role     string     `json:"role"`  // head or base
-	State    string     `json:"state"` // open, merged, or closed
-	Head     string     `json:"head"`
-	Base     string     `json:"base"`
-	HeadSHA  string     `json:"head_sha"`
-	MergeSHA string     `json:"merge_sha,omitempty"`
-	MergedAt *time.Time `json:"merged_at,omitempty"`
-}
+type BranchPullRequest = worktreebranches.BranchPullRequest
 
 type branchPullRequestEvidence struct {
 	requests []BranchPullRequest

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // BranchCleanupOptions plans or applies retirement of branches provably
@@ -56,18 +57,10 @@ type BranchCleanupOptions struct {
 }
 
 // BranchCleanupResult is one candidate's plan and, under --apply, its
-// outcome. Only contained — and, under --receipts, receipted — can ever have
-// Applied == true; absorbed is permanently report-only. See
+// outcome. Contained, receipted, and superseded-at-origin candidates can be
+// applied after their respective guards; absorbed is permanently report-only. See
 // #req:absorbed-is-report-only and #req:receipted-requires-a-proved-landing.
-type BranchCleanupResult struct {
-	BranchEntry
-	Eligible       bool   `json:"eligible"`
-	SkipReason     string `json:"skip_reason,omitempty"`
-	Applied        bool   `json:"applied"`
-	Outcome        string `json:"outcome"` // planned, deleted, skipped, or failed
-	Error          string `json:"error,omitempty"`
-	RecoveryBundle string `json:"recovery_bundle,omitempty"`
-}
+type BranchCleanupResult = worktreebranches.BranchCleanupResult
 
 // BranchCleanupOutcome is the full result of one plan or apply run.
 type BranchCleanupOutcome struct {
@@ -124,7 +117,7 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 }
 
 func scopeIncludesRemote(scope string) bool {
-	return scope == BranchScopeRemote || scope == BranchScopeAll
+	return worktreebranches.ScopeIncludesRemote(scope)
 }
 
 // DefaultBranchCleanupReportDir mirrors DefaultCleanupReportDir's naming
@@ -223,39 +216,11 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 // an open PR refuses it outright, and evidence WB could not obtain refuses
 // every remote candidate in the run, never only the ones it touched.
 func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []BranchCleanupResult {
-	remoteEvidenceUnavailable := remotePullRequestEvidenceUnavailable(entries, sweep)
-	results := make([]BranchCleanupResult, 0, len(entries))
-	for _, entry := range entries {
-		result := BranchCleanupResult{BranchEntry: entry, Outcome: "skipped"}
-		switch {
-		case !eligibleBranchCleanupDisposition(entry):
-			result.SkipReason = skipReasonForDisposition(entry)
-		case sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan:
-			result.SkipReason = fmt.Sprintf("branch is younger than --older-than %s", sweep.OlderThan)
-		case entry.Scope == BranchScopeRemote && remoteEvidenceUnavailable:
-			result.SkipReason = "remote pull-request evidence unavailable; refusing every remote deletion in this run"
-		case entry.Scope == BranchScopeRemote && entry.OpenPullRequest != nil:
-			result.SkipReason = fmt.Sprintf("branch is the head of open pull request %s", entry.OpenPullRequest.URL)
-		case entry.Scope == BranchScopeRemote && entry.OpenBasePullRequest != nil:
-			result.SkipReason = fmt.Sprintf("branch is the base of open pull request %s", entry.OpenBasePullRequest.URL)
-		default:
-			result.Eligible = true
-			result.Outcome = "planned"
-		}
-		results = append(results, result)
-	}
-	return results
+	return worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 }
 
 func eligibleBranchCleanupDisposition(entry BranchEntry) bool {
-	switch entry.Disposition {
-	case BranchContained, BranchReceipted:
-		return true
-	case BranchSuperseded:
-		return entry.SupersededAtOrigin
-	default:
-		return false
-	}
+	return worktreebranches.EligibleBranchCleanupDisposition(entry)
 }
 
 // skipReasonForDisposition prefers the entry's own tailored Reason, then its
@@ -268,13 +233,7 @@ func eligibleBranchCleanupDisposition(entry BranchEntry) bool {
 // entry, so dropping it here silently discarded the one actionable detail an
 // operator needs to act on a skip row.
 func skipReasonForDisposition(entry BranchEntry) string {
-	if entry.Reason != "" {
-		return entry.Reason
-	}
-	if entry.Evidence != "" {
-		return entry.Evidence
-	}
-	return fmt.Sprintf("disposition %s is never eligible for --apply", entry.Disposition)
+	return worktreebranches.SkipReasonForDisposition(entry)
 }
 
 // remotePullRequestEvidenceUnavailable reports whether WB could not query
@@ -282,25 +241,11 @@ func skipReasonForDisposition(entry BranchEntry) string {
 // failure fails the whole remote scope closed for this run, never only the
 // branch that happened to be queried first.
 func remotePullRequestEvidenceUnavailable(entries []BranchEntry, sweep branchSweepOptions) bool {
-	if sweep.Scope == BranchScopeLocal {
-		return false
-	}
-	for _, entry := range entries {
-		if entry.Scope == BranchScopeRemote &&
-			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted || entry.Disposition == BranchSuperseded) &&
-			entry.PullRequestQueryFailed {
-			return true
-		}
-	}
-	return false
+	return worktreebranches.RemotePullRequestEvidenceUnavailable(entries, sweep.branchPolicyOptions())
 }
 
 func tallyCleanupOutcomes(results []BranchCleanupResult) map[string]int {
-	totals := map[string]int{}
-	for _, result := range results {
-		totals[result.Outcome]++
-	}
-	return totals
+	return worktreebranches.TallyCleanupOutcomes(results)
 }
 
 // applyBranchCleanup deletes every eligible candidate after repeating its

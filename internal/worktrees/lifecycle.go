@@ -27,6 +27,7 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
 )
 
@@ -243,17 +244,7 @@ func (r *listProgressReporter) finish(token progressToken, task, repository, pat
 
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
 // to clean up. HeadSHA must match the current branch tip.
-type PullRequest struct {
-	Number     int        `json:"number"`
-	URL        string     `json:"url"`
-	Repository string     `json:"repository,omitempty"`
-	State      string     `json:"state"`
-	Base       string     `json:"base"`
-	BaseSHA    string     `json:"base_sha,omitempty"`
-	HeadSHA    string     `json:"head_sha"`
-	MergeSHA   string     `json:"merge_sha,omitempty"`
-	Merged     *time.Time `json:"merged_at,omitempty"`
-}
+type PullRequest = worktreebranches.PullRequest
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {

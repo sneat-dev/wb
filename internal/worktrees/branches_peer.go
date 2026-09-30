@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 const peerEvidenceMaximumAge = 5 * time.Minute
@@ -81,12 +82,7 @@ func validatePeerEvidence(options BranchCleanupOptions, results []BranchCleanupR
 }
 
 func peerEvidenceSafeDisposition(disposition string) bool {
-	switch disposition {
-	case BranchContained, BranchReceipted, BranchAbsorbed, BranchUnique:
-		return true
-	default:
-		return false
-	}
+	return worktreebranches.PeerEvidenceSafeDisposition(disposition)
 }
 
 // reviewedRemoteForkGuard refuses reviewed retirement from a fork. GitHub's
