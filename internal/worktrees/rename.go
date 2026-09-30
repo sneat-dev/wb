@@ -1118,7 +1118,11 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 	}
 	// If a fresh claim was partially or fully bound, archive it before removing
 	// its projection. Failure here stops rollback rather than losing evidence.
-	if projection, err := readWorkLogProjection(currentPath); err == nil && projection.ClaimID != plan.priorProjection.ClaimID {
+	projection, projectionErr := readWorkLogProjectionForReadOnlyClaim(currentPath)
+	if projectionErr != nil && !errors.Is(projectionErr, errWorkLogProjectionNotFound) {
+		return fmt.Errorf("inspect fresh recycle projection before rollback: %w", projectionErr)
+	}
+	if projectionErr == nil && projection.ClaimID != plan.priorProjection.ClaimID {
 		head, headErr := git(ctx, currentPath, "rev-parse", "HEAD")
 		if headErr != nil {
 			return headErr
@@ -1155,7 +1159,7 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 		}
 		restoreErr := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
 			"push", "--force-with-lease=refs/heads/"+plan.entry.Branch+":", "origin",
-			"refs/heads/"+plan.entry.Branch+":refs/heads/"+plan.entry.Branch)
+			plan.entry.HeadSHA+":refs/heads/"+plan.entry.Branch)
 		canonical.close()
 		if restoreErr != nil {
 			return fmt.Errorf("restore retired remote branch %s at %s: %w", plan.entry.Branch, plan.entry.HeadSHA, restoreErr)
