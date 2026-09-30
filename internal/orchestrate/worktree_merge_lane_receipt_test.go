@@ -70,9 +70,10 @@ func TestMergeLaneClaimIncludesRebatchedCandidate(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
 func TestActiveMergeLaneConflictReleaseRequiresUnpublishedPrepare(t *testing.T) {
-	t.Parallel()
-	lane := worktreeMergeLaneID("acme/repo", "main")
+	fixture := newEngineFixture(t)
+	lane := worktreeMergeLaneID("acme/app", "main")
 	for _, test := range []struct {
 		name      string
 		phase     WorktreeMergePhase
@@ -87,9 +88,12 @@ func TestActiveMergeLaneConflictReleaseRequiresUnpublishedPrepare(t *testing.T) 
 		{name: "land phase", phase: WorktreeMergePhaseLand, wantHeld: true},
 		{name: "landed sha", landing: "landed-sha", wantHeld: true},
 	} {
+		//nolint:paralleltest // each case rewrites and scans the same receipt path
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			reports := t.TempDir()
+			reports := filepath.Join(fixture.githubDir, ".wb", "reports", "worktree-merge")
+			if err := os.MkdirAll(reports, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(reports, lane+".json")
 			phase := test.phase
 			if phase == "" {
@@ -97,10 +101,11 @@ func TestActiveMergeLaneConflictReleaseRequiresUnpublishedPrepare(t *testing.T) 
 			}
 			writeMergeLaneReceipt(t, path, WorktreeMergeReceipt{
 				SchemaVersion: WorktreeMergeSchemaVersion, ReceiptPath: path, Lane: lane,
-				Repository: "acme/repo", Target: "main", Phase: phase, Status: WorktreeMergeConflict,
+				Repository: "acme/app", Target: "main", Phase: phase, Status: WorktreeMergeConflict,
+				Candidate:             WorktreeMergeCandidate{Branch: "wb/integration/main/fixture"},
 				PublishedCandidateSHA: test.published, PullRequest: test.pr, LandingSHA: test.landing,
 			})
-			active, err := activeWorktreeMergeLaneReceipt(context.Background(), reports, reports, lane)
+			active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, reports, lane)
 			if err != nil || (active != nil) != test.wantHeld {
 				t.Fatalf("active lane = %+v, %v; want held=%t", active, err, test.wantHeld)
 			}

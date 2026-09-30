@@ -2726,6 +2726,7 @@ func TestPrepareWorktreeMergeConflictPreservesEverySource(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
 func TestPrepareWorktreeMergeUnpublishedConflictDoesNotBlockIndependentSource(t *testing.T) {
 	fixture := newEngineFixture(t)
 	sourceA := createMergeSource(t, fixture, "queue-conflict-a", "feature/queue-a", "shared.txt", "a\n")
@@ -2737,6 +2738,14 @@ func TestPrepareWorktreeMergeUnpublishedConflictDoesNotBlockIndependentSource(t 
 		t.Fatalf("first prepare = %+v, %v; want prepare conflict", conflict, err)
 	}
 	independent := createMergeSource(t, fixture, "queue-independent", "feature/queue-independent", "independent.txt", "ready\n")
+	runEngineGit(t, conflict.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+conflict.Candidate.Branch)
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{independent.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "still owned") {
+		t.Fatalf("published conflict should hold the lane: %v", err)
+	}
+	runEngineGit(t, conflict.Candidate.Worktree, "push", "origin", ":refs/heads/"+conflict.Candidate.Branch)
 	prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir, Sources: []string{independent.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
 	})

@@ -4929,13 +4929,26 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			receiptLane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
 		}
 		if receiptLane == lane && receipt.Status != WorktreeMergeComplete {
-			// A prepare-time conflict has not touched the remote target and is
-			// terminal for lane ownership, even though its receipt and sources
-			// remain available for a later repair. Do not skip a conflict that
-			// reached publication or the land phase.
+			// A prepare-time conflict releases this lane only after proving its
+			// candidate was not published. Publication fields can be lost after
+			// an ambiguous push, so the receipt alone is not enough evidence.
 			if receipt.Status == WorktreeMergeConflict && receipt.Phase == WorktreeMergePhasePrepare &&
-				receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" {
-				continue
+				receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" && receipt.Candidate.Branch != "" {
+				if _, adopted, adoptionErr := adoptedPublishedCandidate(ctx, receipt); adoptionErr != nil {
+					return nil, fmt.Errorf("validate published-candidate adoption for %s: %w", receipt.ReceiptPath, adoptionErr)
+				} else if !adopted {
+					canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+					if canonicalErr != nil {
+						return nil, canonicalErr
+					}
+					remote, _, remoteErr := runCommand(ctx, defaultRunner, 0, 0, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+					if remoteErr != nil {
+						return nil, fmt.Errorf("verify unpublished conflict candidate %s: %w", receipt.ReceiptPath, remoteErr)
+					}
+					if strings.TrimSpace(remote) == "" {
+						continue
+					}
+				}
 			}
 			// A valid immutable missing-cleanup acknowledgement proves the old
 			// landed receipt's assets are already terminal. It releases lane
