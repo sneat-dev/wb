@@ -668,10 +668,43 @@ func externalSourceCompletionEvent(request sessionmove.Request, digest sessionmo
 	}
 }
 
+// externalSourceSealPorts keeps live Work Log and Git I/O local to one seal.
+// Durable receipt reads and the retained execution lock stay direct below.
+type externalSourceSealPorts struct {
+	openRun          func(string, string, string, string, bool) (*lockedWorkLogRun, error)
+	readClaim        func(*os.File, string) (workLogClaim, error)
+	readProjection   func(string) (workLogProjection, error)
+	validateOffer    func(string, sessionmove.Request, sessionmove.Digest) error
+	validateTerminal func(*os.File, workLogClaim, sessionmove.Request, sessionmove.WorkLogReference, *workLogExternalHandoffEvidence) (bool, time.Time, error)
+	validateOwner    func(string, session.Record, sessionmove.Request, sessionmove.Digest, workLogClaim) error
+	gitStatus        func(string) (string, error)
+	corroborate      func(string, string, workLogProjection, workLogClaim) error
+	sealTerminal     func(string, *os.File, worktreeclaims.TerminalSealRequest) (time.Time, error)
+	writeProjection  func(string, workLogProjection) error
+	appendEvent      func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
+}
+
+func defaultExternalSourceSealPorts() externalSourceSealPorts {
+	return externalSourceSealPorts{
+		openRun:   openLockedWorkLogRun,
+		readClaim: readWorkLogClaimAt, readProjection: readWorkLogProjection,
+		validateOffer:    validateExternalSourceOffer,
+		validateTerminal: validateExistingExternalTerminal, validateOwner: validateLiveExternalSourceOwner,
+		gitStatus: func(worktree string) (string, error) {
+			return git(context.Background(), worktree, "status", "--porcelain=v1", "--untracked-files=all")
+		},
+		corroborate: corroborateClaim, sealTerminal: sealWorkLogTerminal,
+		writeProjection: writeWorkLogProjection, appendEvent: appendLocalEventWithoutCustody,
+	}
+}
+
 // SealExternalSessionWorkLog directly terminalizes the predecessor as an
-// external_handoff. It deliberately does not call LogHandoff Apply,
-// transferWorkLogClaim, or create a source-local successor claim.
+// external_handoff. It does not create a source-local successor claim.
 func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSourceSealResult, error) {
+	return defaultExternalSourceSealPorts().sealExternalSessionWorkLog(options)
+}
+
+func (p externalSourceSealPorts) sealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSourceSealResult, error) {
 	var result ExternalSourceSealResult
 	if err := validateExternalReceipt(options.Request, options.RequestDigest, options.Receipt); err != nil {
 		return result, err
@@ -693,25 +726,24 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	if err := validateExternalSourceSession(options.SourceSession, request); err != nil {
 		return result, err
 	}
-	sourceReference, err := sessionmove.ParseWorkLogReference(request.WorkLogReference)
-	if err != nil {
-		return result, err
-	}
+	// validateExternalReceipt already validated this exact request, including
+	// its Work Log reference, through ExpectedTargetWorkLogReference.
+	sourceReference, _ := sessionmove.ParseWorkLogReference(request.WorkLogReference)
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
 		return result, err
 	}
-	locked, err := openLockedWorkLogRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
+	locked, err := p.openRun(home, sourceReference.EffortID, sourceReference.RunID, sourceReference.ClaimID, false)
 	if err != nil {
 		return result, err
 	}
 	defer locked.close()
 	runDir := locked.directory
-	claim, err := readWorkLogClaimAt(runDir, sourceReference.ClaimID)
+	claim, err := p.readClaim(runDir, sourceReference.ClaimID)
 	if err != nil {
 		return result, err
 	}
-	projection, err := readWorkLogProjection(claim.Worktree)
+	projection, err := p.readProjection(claim.Worktree)
 	if err != nil {
 		return result, err
 	}
@@ -719,12 +751,12 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 		(projection.Lifecycle != "active" && projection.Lifecycle != "terminal") {
 		return result, fmt.Errorf("source Work Log projection conflicts with receipt lineage")
 	}
-	if err := validateExternalSourceOffer(claim.Worktree, request, options.RequestDigest); err != nil {
+	if err := p.validateOffer(claim.Worktree, request, options.RequestDigest); err != nil {
 		return result, err
 	}
 	targetReference, _ := sessionmove.ExpectedTargetWorkLogReference(request, options.RequestDigest)
 	evidence := externalHandoffEvidence(request, options.RequestDigest, targetReference.String())
-	terminalExists, terminalSealedAt, err := validateExistingExternalTerminal(runDir, claim, request, targetReference, evidence)
+	terminalExists, terminalSealedAt, err := p.validateTerminal(runDir, claim, request, targetReference, evidence)
 	if err != nil {
 		return result, err
 	}
@@ -733,10 +765,10 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	}
 	result.Replayed = terminalExists
 	if !terminalExists {
-		if err := validateLiveExternalSourceOwner(claim.Worktree, options.SourceSession, request, options.RequestDigest, claim); err != nil {
+		if err := p.validateOwner(claim.Worktree, options.SourceSession, request, options.RequestDigest, claim); err != nil {
 			return result, err
 		}
-		status, statusErr := git(context.Background(), claim.Worktree, "status", "--porcelain=v1", "--untracked-files=all")
+		status, statusErr := p.gitStatus(claim.Worktree)
 		if statusErr != nil {
 			return result, fmt.Errorf("inspect predecessor worktree before external custody seal: %w", statusErr)
 		}
@@ -744,10 +776,10 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 			return result, fmt.Errorf("predecessor worktree changed after its handoff bundle; commit and create a new handoff before sealing custody")
 		}
 	}
-	if err := corroborateClaim(claim.Worktree, request.BundleCommit, projection, claim); err != nil {
+	if err := p.corroborate(claim.Worktree, request.BundleCommit, projection, claim); err != nil {
 		return result, fmt.Errorf("corroborate source Work Log before external seal: %w", err)
 	}
-	sealedAt, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+	sealedAt, err := p.sealTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: claim, FinalCommit: request.BundleCommit, Disposition: "external_handoff",
 		SuccessorClaimID: targetReference.ClaimID, SuccessorAgentID: request.SuccessorWBSessionID,
 		Evidence: worktreeclaims.TerminalEvidence{ExternalHandoff: evidence},
@@ -764,7 +796,7 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 		}
 	}
 	terminalProjection := terminalTargetProjection(claim)
-	if err := writeWorkLogProjection(claim.Worktree, terminalProjection); err != nil {
+	if err := p.writeProjection(claim.Worktree, terminalProjection); err != nil {
 		return result, err
 	}
 	if options.hooks.afterProjection != nil {
@@ -773,7 +805,7 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 		}
 	}
 	completion := externalSourceCompletionEvent(request, options.RequestDigest, targetReference.String())
-	completion, _, err = appendLocalEventWithoutCustody(claim.Worktree, completion)
+	completion, _, err = p.appendEvent(claim.Worktree, completion)
 	if err != nil {
 		return result, err
 	}

@@ -27,7 +27,25 @@ type orphanedClaimCandidate struct {
 // claims that the vanished checkout's bytes or final commit were inspected.
 type workLogOrphanedEvidence = worktreeproof.OrphanedEvidence
 
+type orphanedAbortPorts struct {
+	find    func(string, string, string) (orphanedClaimCandidate, error)
+	inspect func(context.Context, string, orphanedClaimCandidate, string, string) (*workLogOrphanedEvidence, error)
+	openRun func(string, string, string, bool) (*os.File, string, error)
+	lock    func(*os.File, string) (func(), error)
+	recheck func(*os.File, workLogClaim) error
+	seal    func(string, *os.File, worktreeclaims.TerminalSealRequest) (time.Time, error)
+}
+
+func defaultOrphanedAbortPorts() orphanedAbortPorts {
+	return orphanedAbortPorts{find: findOrphanedClaim, inspect: inspectOrphanedClaimAbsence,
+		openRun: openWorkLogRun, lock: lockClaim, recheck: recheckOrphanedClaim, seal: sealWorkLogTerminal}
+}
+
 func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
+	return defaultOrphanedAbortPorts().abortOrphanedClaim(ctx, options)
+}
+
+func (p orphanedAbortPorts) abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	claimID := strings.TrimSpace(options.ClaimID)
 	actor := strings.TrimSpace(options.Actor)
 	reason := strings.TrimSpace(options.Reason)
@@ -54,14 +72,14 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 		return nil, fmt.Errorf("task is required")
 	}
 	options.ProjectsRoot = projectsRoot
-	candidate, err := findOrphanedClaim(projectsRoot, task, claimID)
+	candidate, err := p.find(projectsRoot, task, claimID)
 	if err != nil {
 		return nil, err
 	}
 	if filter := strings.TrimSpace(options.Filter); filter != "" && abortRepositoryExcludedByFilter(filter, candidate.claim.Repository, candidate.claim.Worktree) {
 		return nil, fmt.Errorf("exact orphaned claim %s does not match --filter %q", claimID, filter)
 	}
-	_, inspectErr := inspectOrphanedClaimAbsence(ctx, projectsRoot, candidate, actor, reason)
+	_, inspectErr := p.inspect(ctx, projectsRoot, candidate, actor, reason)
 	result := orphanedAbortResult(projectsRoot, candidate, inspectErr)
 	if inspectErr != nil {
 		if options.Apply {
@@ -72,12 +90,12 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 	if !options.Apply {
 		return []AbortResult{result}, nil
 	}
-	runDir, _, err := openWorkLogRun(candidate.home, candidate.claim.EffortID, candidate.claim.RunID, false)
+	runDir, _, err := p.openRun(candidate.home, candidate.claim.EffortID, candidate.claim.RunID, false)
 	if err != nil {
 		return []AbortResult{result}, fmt.Errorf("open orphaned claim run: %w", err)
 	}
 	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, candidate.claim.ClaimID)
+	unlock, err := p.lock(runDir, candidate.claim.ClaimID)
 	if err != nil {
 		return []AbortResult{result}, fmt.Errorf("lock orphaned claim: %w", err)
 	}
@@ -85,18 +103,18 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 	if options.beforeOrphanSeal != nil {
 		options.beforeOrphanSeal()
 	}
-	if err := recheckOrphanedClaim(runDir, candidate.claim); err != nil {
+	if err := p.recheck(runDir, candidate.claim); err != nil {
 		result.Eligible = false
 		result.Reason = err.Error()
 		return []AbortResult{result}, fmt.Errorf("orphaned claim identity changed under lock: %w", err)
 	}
-	evidence, err := inspectOrphanedClaimAbsence(ctx, projectsRoot, candidate, actor, reason)
+	evidence, err := p.inspect(ctx, projectsRoot, candidate, actor, reason)
 	if err != nil {
 		result.Eligible = false
 		result.Reason = err.Error()
 		return []AbortResult{result}, fmt.Errorf("orphaned claim safety changed under lock: %w", err)
 	}
-	if _, err := sealWorkLogTerminal(candidate.home, runDir, worktreeclaims.TerminalSealRequest{
+	if _, err := p.seal(candidate.home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: candidate.claim, Disposition: string(AbortOrphaned),
 		Evidence: worktreeclaims.TerminalEvidence{Orphaned: evidence},
 	}); err != nil {

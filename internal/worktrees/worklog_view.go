@@ -121,37 +121,68 @@ type LoadWorkLogOptions struct {
 	IncludePromptBodies bool
 }
 
+// workLogViewPorts scopes repository and private-read dependencies to one view.
+type workLogViewPorts struct {
+	repositoryRoot  func(context.Context, string) (string, error)
+	homeRoot        func(string) (string, error)
+	lifecycleOwners func(string, string) ([]OwnerView, error)
+	owners          func(string) ([]OwnerView, error)
+	manifest        func(string) (Manifest, error)
+	prompts         func(string, bool) ([]PromptRecord, error)
+	activeClaim     func(string, string) (workLogClaim, workLogProjection, string, error)
+	relocation      func(string, workLogClaim, string) (workLogRelocationResolution, error)
+	originalPrompt  func(string, workLogClaim, []PromptRecord) (*OriginalPromptView, error)
+	terminal        func(string, string) (*workLogTerminalRecord, error)
+	reportBody      func(string) (string, error)
+	git             func(context.Context, string) WorkLogGitEvidence
+}
+
+func defaultWorkLogViewPorts() workLogViewPorts {
+	return workLogViewPorts{
+		repositoryRoot: RepositoryRootFor, homeRoot: wbhome.Root,
+		lifecycleOwners: lifecycleOwnerViews, owners: ownerViews,
+		manifest: ReadManifest, prompts: listPromptRecords,
+		activeClaim: activeWorkLogClaim, relocation: latestRelocationResolution,
+		originalPrompt: loadOriginalPrompt, terminal: readWorkLogTerminalRecord,
+		reportBody: readWorkLogFinalizeReportBody, git: observeWorkLogGit,
+	}
+}
+
 // LoadWorkLogView assembles the local recovery record an agent needs to resume
 // work. It is read-only with respect to Git state and prompt archives. The
 // only mutation it may perform is the existing one-way legacy projection
 // migration that activeWorkLogClaim already performs when corroborating a
 // claim.
 func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogView, error) {
+	return defaultWorkLogViewPorts().loadWorkLogView(ctx, options)
+}
+
+func (p workLogViewPorts) loadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogView, error) {
 	worktree := strings.TrimSpace(options.Worktree)
 	if worktree == "" {
 		worktree = "."
 	}
-	root, err := RepositoryRootFor(ctx, worktree)
+	root, err := p.repositoryRoot(ctx, worktree)
 	if err != nil {
 		return WorkLogView{}, err
 	}
 	view := WorkLogView{Worktree: root, Prompts: []PromptRecord{}}
-	home, homeErr := wbhome.Root(options.ProjectsRoot)
+	home, homeErr := p.homeRoot(options.ProjectsRoot)
 	if homeErr == nil {
-		owners, ownersErr := lifecycleOwnerViews(home, root)
+		owners, ownersErr := p.lifecycleOwners(home, root)
 		if ownersErr != nil {
 			return WorkLogView{}, ownersErr
 		}
 		view.Owners = owners
 	} else {
-		owners, ownersErr := ownerViews(root)
+		owners, ownersErr := p.owners(root)
 		if ownersErr != nil {
 			return WorkLogView{}, ownersErr
 		}
 		view.Owners = owners
 	}
 
-	if manifest, manifestErr := ReadManifest(root); manifestErr == nil {
+	if manifest, manifestErr := p.manifest(root); manifestErr == nil {
 		copy := manifest
 		view.Manifest = &copy
 	} else if !errors.Is(manifestErr, errManifestNotFound) {
@@ -160,7 +191,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		view.Notes = append(view.Notes, "no .wb/local/manifest.yaml; record one with wb worktree set or recreate under a valid effort path")
 	}
 
-	prompts, err := listPromptRecords(root, options.IncludePromptBodies)
+	prompts, err := p.prompts(root, options.IncludePromptBodies)
 	if err != nil {
 		return WorkLogView{}, err
 	}
@@ -171,16 +202,16 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 
 	if homeErr != nil {
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
-	} else if claim, projection, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {
+	} else if claim, projection, claimPath, claimErr := p.activeClaim(home, root); claimErr == nil {
 		resolvedRepository, resolvedWorktree := claim.Repository, claim.Worktree
 		if filepath.Clean(root) != filepath.Clean(claim.Worktree) {
-			if resolution, resolutionErr := latestRelocationResolution(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
+			if resolution, resolutionErr := p.relocation(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
 				resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
 			}
 		}
 		view.Claim = newWorkLogClaimView(claim, resolvedRepository, resolvedWorktree, claimPath)
 		if options.IncludePromptBodies {
-			if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
+			if original, originalErr := p.originalPrompt(home, claim, prompts); originalErr == nil {
 				view.OriginalPrompt = original
 			} else if originalErr != nil {
 				view.Notes = append(view.Notes, fmt.Sprintf("original prompt unavailable: %v", originalErr))
@@ -189,7 +220,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 	} else if errors.Is(claimErr, errWorkLogProjectionNotFound) {
 		view.Notes = append(view.Notes, "no active work-log projection; this checkout may predate Hybrid Work Log create")
 	} else if projection.Lifecycle == "terminal" {
-		if terminal, terminalErr := readWorkLogTerminalRecord(home, root); terminalErr == nil && terminal != nil {
+		if terminal, terminalErr := p.terminal(home, root); terminalErr == nil && terminal != nil {
 			claim := terminal.Claim
 			view.Claim = newWorkLogClaimView(claim, claim.Repository, claim.Worktree, "")
 			view.Terminal = &WorkLogTerminalView{
@@ -200,7 +231,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				view.Terminal.TerminalMessage = terminal.FinalizeReport.Message
 				view.Terminal.ReportPath = terminal.FinalizeReport.ReportPath
 				if options.IncludePromptBodies && terminal.FinalizeReport.ReportPath != "" {
-					if body, bodyErr := readWorkLogFinalizeReportBody(terminal.FinalizeReport.ReportPath); bodyErr == nil {
+					if body, bodyErr := p.reportBody(terminal.FinalizeReport.ReportPath); bodyErr == nil {
 						view.FinalizeReportBody = body
 					} else {
 						view.Notes = append(view.Notes, fmt.Sprintf("finalize report unavailable: %v", bodyErr))
@@ -208,7 +239,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				}
 			}
 			if options.IncludePromptBodies {
-				if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
+				if original, originalErr := p.originalPrompt(home, claim, prompts); originalErr == nil {
 					view.OriginalPrompt = original
 				} else if originalErr != nil {
 					view.Notes = append(view.Notes, fmt.Sprintf("original prompt unavailable: %v", originalErr))
@@ -233,7 +264,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		}
 	}
 
-	view.Git = observeWorkLogGit(ctx, root)
+	view.Git = p.git(ctx, root)
 	return view, nil
 }
 
