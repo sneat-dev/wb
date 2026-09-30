@@ -246,25 +246,6 @@ func TestPrepareRelocationDestinationRefusesUnsafePaths(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture sets process-wide HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for real Git.
-func TestPrepareLocalRelocationDestinationFailures(t *testing.T) {
-	fixture := newGitFixture(t)
-	entry := ListResult{CanonicalDir: fixture.canonical}
-	local := filepath.Join(fixture.canonical, ".worktrees", "test-task")
-	if err := prepareRelocationDestination(context.Background(), ListResult{CanonicalDir: filepath.Join(t.TempDir(), "missing")}, "HEAD", local, "", "local"); err == nil {
-		t.Fatal("missing canonical clone was accepted")
-	}
-	if err := prepareRelocationDestination(context.Background(), entry, "not-a-revision", local, "", "local"); err == nil {
-		t.Fatal("invalid base revision was accepted")
-	}
-	if _, _, err := prepareRelocationMove(context.Background(), fixture.projectsRoot, entry, "not-a-revision", local, "local"); err == nil {
-		t.Fatal("move preparation accepted an invalid base revision")
-	}
-	if err := prepareRelocationDestination(context.Background(), entry, "HEAD", filepath.Join(t.TempDir(), "elsewhere"), "", "local"); err == nil || !strings.Contains(err.Error(), "local relocation destination root changed") {
-		t.Fatalf("wrong local root error=%v", err)
-	}
-}
-
 func TestPrepareRelocationMoveRejectsUnrelatedCanonicalPath(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

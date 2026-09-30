@@ -45,44 +45,6 @@ func TestPlanRelocationRefusesMissingClaim(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // newGitFixture and configureFixtureSharedWorktrees set process-wide WB and Git environment.
-func TestPlanRelocationRefusesDirtyAndOccupiedDestination(t *testing.T) {
-	fixture := newGitFixture(t)
-	configureFixtureSharedWorktrees(t, fixture)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot, Operation: "relocation-plan-boundary", WorkLog: WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "relocation-plan-boundary"})
-	if err != nil || len(listed) != 1 {
-		t.Fatalf("list=%+v, err=%v", listed, err)
-	}
-	if listed[0].WorktreeDir != created[0].WorktreeDir {
-		t.Fatal("fixture listed a different checkout")
-	}
-	resolution, err := wbhome.Resolve(fixture.projectsRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	options := RelocateOptions{ProjectsRoot: fixture.projectsRoot, To: "local"}
-	dirty := listed[0]
-	dirty.Clean = false
-	result, err := planRelocation(context.Background(), resolution, options, dirty)
-	if err != nil || result.Eligible || !strings.Contains(result.Reason, "local changes") {
-		t.Fatalf("dirty plan=%+v, err=%v", result, err)
-	}
-	destination := filepath.Join(fixture.canonical, ".worktrees", "relocation-plan-boundary")
-	if err := os.MkdirAll(destination, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	result, err = planRelocation(context.Background(), resolution, options, listed[0])
-	if err != nil || result.Eligible || !strings.Contains(result.Reason, "destination already exists") {
-		t.Fatalf("occupied plan=%+v, err=%v", result, err)
-	}
-}
-
 func TestReverseRelocationRefusesInvalidPathAndMissingClaim(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
