@@ -270,20 +270,43 @@ func TestE2EExternalCustodySourceOfferToTargetClaimAndRetry(t *testing.T) {
 		t.Fatalf("target retry = (%#v, %v)", targetRetry, err)
 	}
 	projection, err := readWorkLogProjection(targetWorktree)
-	if err != nil || projection.ClaimID != target.ClaimID || projection.Lifecycle != "active" {
+	if err != nil || projection.EffortID != "session-move" || projection.RunID != "session-move-run" ||
+		projection.ClaimID != target.ClaimID || projection.Lifecycle != "active" {
 		t.Fatalf("target projection = (%#v, %v)", projection, err)
 	}
 	reference, err := sessionmove.ParseWorkLogReference(target.WorkLogReference)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.base.home, "worklogs", reference.EffortID, "runs", reference.RunID,
-		"claims", reference.ClaimID+".json")); err != nil {
-		t.Fatalf("target claim missing: %v", err)
+	claimBytes, err := os.ReadFile(filepath.Join(fixture.base.home, "worklogs", reference.EffortID, "runs", reference.RunID,
+		"claims", reference.ClaimID+".json"))
+	if err != nil {
+		t.Fatalf("read target immutable claim: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.base.home, "worklogs", reference.EffortID, "outbox",
-		reference.RunID+"-"+reference.ClaimID+"-claimed.json")); err != nil {
-		t.Fatalf("target outbox missing: %v", err)
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatalf("decode target immutable claim: %v", err)
+	}
+	if claim.EffortID != reference.EffortID || claim.RunID != reference.RunID || claim.ClaimID != target.ClaimID ||
+		claim.Worktree != targetWorktree || claim.Branch != "wb-session/"+fixture.base.request.HandoffID ||
+		claim.ExternalHandoff == nil || claim.ExternalHandoff.RequestDigest != string(fixture.digest) ||
+		claim.ExternalHandoff.SourceWorkLogReference != fixture.base.request.WorkLogReference ||
+		claim.ExternalHandoff.TargetWorkLogReference != target.WorkLogReference {
+		t.Fatalf("target immutable claim lost admitted lineage: %#v", claim)
+	}
+	outboxBytes, err := os.ReadFile(filepath.Join(fixture.base.home, "worklogs", reference.EffortID, "outbox",
+		reference.RunID+"-"+reference.ClaimID+"-claimed.json"))
+	if err != nil {
+		t.Fatalf("read target public outbox: %v", err)
+	}
+	var event workLogPublicEvent
+	if err := json.Unmarshal(outboxBytes, &event); err != nil {
+		t.Fatalf("decode target public outbox: %v", err)
+	}
+	if event.Type != "worktree.claimed" || event.EffortID != claim.EffortID || event.RunID != claim.RunID ||
+		event.ClaimID != claim.ClaimID || !event.At.Equal(claim.RecordedAt) || event.Lifecycle != "active" ||
+		event.ExternalHandoff == nil || *event.ExternalHandoff != *claim.ExternalHandoff {
+		t.Fatalf("target outbox lost claim identity or source lineage: %#v", event)
 	}
 	receipt := fixture.authorizeSeal(t, lock)
 	if receipt.TargetWorkLogReference != target.WorkLogReference {
