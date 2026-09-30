@@ -97,7 +97,11 @@ func TestJournalStoreAppendReplayRepairAndConcurrency(t *testing.T) {
 				errs <- err
 				return
 			}
-			defer dir.Close()
+			defer func() {
+				if err := dir.Close(); err != nil {
+					errs <- err
+				}
+			}()
 			unlock, err := store.LockLocalWorkLog(dir)
 			if err != nil {
 				errs <- err
@@ -315,7 +319,8 @@ func TestJournalProjectionIDAndJSON(t *testing.T) {
 	if err != nil || empty.Lifecycle != "active" {
 		t.Fatalf("empty=%#v/%v", empty, err)
 	}
-	if s.LocalEventID(nil, first) != s.LocalEventID(nil, first) || s.LocalEventID([]LocalWorkLogEvent{first}, first) == s.LocalEventID(nil, first) {
+	firstID := s.LocalEventID(nil, first)
+	if firstID != s.LocalEventID(nil, first) || s.LocalEventID([]LocalWorkLogEvent{first}, first) == firstID {
 		t.Fatal("event ID not deterministic and sequence-sensitive")
 	}
 	if s.SameLocalEvent(first, second) || !s.SameLocalEvent(first, first) {
@@ -378,7 +383,11 @@ func TestJournalDirectoryNoFollowAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer parent.Close()
+	t.Cleanup(func() {
+		if err := parent.Close(); err != nil {
+			t.Errorf("close parent directory: %v", err)
+		}
+	})
 	if _, err := OpenJournalComponent(int(parent.Fd()), "missing", false); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing component=%v", err)
 	}

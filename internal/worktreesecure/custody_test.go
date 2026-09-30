@@ -117,13 +117,21 @@ func TestCustodyBasicClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer duplicate.Close()
+	duplicateClosed := false
+	t.Cleanup(func() {
+		if !duplicateClosed {
+			if err := duplicate.Close(); err != nil {
+				t.Errorf("close duplicate directory: %v", err)
+			}
+		}
+	})
 	if !DirectoryStillMatches(root, duplicate) {
 		t.Fatal("duplicate identity mismatch")
 	}
 	if err := duplicate.Close(); err != nil {
 		t.Fatal(err)
 	}
+	duplicateClosed = true
 	if _, err := DuplicateDirectoryDescriptor(duplicate, "closed"); err == nil {
 		t.Fatal("closed descriptor duplicated")
 	}
@@ -161,7 +169,11 @@ func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer created.Close()
+	t.Cleanup(func() {
+		if err := created.Close(); err != nil {
+			t.Errorf("close created directory: %v", err)
+		}
+	})
 	if !DirectoryStillMatches(filepath.Join(root, "nested", "child"), created) {
 		t.Fatal("created identity mismatch")
 	}
@@ -169,7 +181,11 @@ func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer child.Close()
+	t.Cleanup(func() {
+		if err := child.Close(); err != nil {
+			t.Errorf("close child directory: %v", err)
+		}
+	})
 	fd, err := OpenOrCreateNoFollowDirectory(int(parent.Fd()), "other")
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +212,11 @@ func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer empty.Close()
+	t.Cleanup(func() {
+		if err := empty.Close(); err != nil {
+			t.Errorf("close empty directory: %v", err)
+		}
+	})
 	if ok, err := DirectoryEmpty(empty); err != nil || !ok {
 		t.Fatalf("empty = %v, %v", ok, err)
 	}
@@ -263,7 +283,11 @@ func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer regularParent.Close()
+	t.Cleanup(func() {
+		if err := regularParent.Close(); err != nil {
+			t.Errorf("close regular parent: %v", err)
+		}
+	})
 	if err := RequireAbsentNoFollowChild(int(regularParent.Fd()), "missing"); err == nil {
 		t.Fatal("regular parent accepted")
 	}
@@ -324,7 +348,11 @@ func TestCustodyOpenWithAndPrivateChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer private.Close()
+	t.Cleanup(func() {
+		if err := private.Close(); err != nil {
+			t.Errorf("close private directory: %v", err)
+		}
+	})
 	if err := filewrite.WriteJSONImmutableAt(private, "record.json", map[string]string{"value": "ok"}, false, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +378,11 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer expected.Close()
+	t.Cleanup(func() {
+		if err := expected.Close(); err != nil {
+			t.Errorf("close expected directory: %v", err)
+		}
+	})
 	rename := func(a int, b string, c int, d string) error { return filewrite.RenameNoReplace(a, b, c, d, nil) }
 	moved, err := MoveExpectedDirectoryNoReplace(parent, "source", parent, "target", expected, rename, nil)
 	if err != nil {
@@ -367,7 +399,11 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source2.Close()
+	t.Cleanup(func() {
+		if err := source2.Close(); err != nil {
+			t.Errorf("close source2 directory: %v", err)
+		}
+	})
 	want := errors.New("authorization")
 	if _, err := MoveExpectedDirectoryNoReplaceAuthorized(parent, "source2", parent, "target2", source2, rename, func() error { return want }); !errors.Is(err, want) {
 		t.Fatalf("authorization = %v", err)
