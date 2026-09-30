@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -125,6 +127,7 @@ func TestE2EExternalSourceSealStopsAtFailedWorkLogStage(t *testing.T) {
 		}, "injected custody stage failure"},
 	}
 	for _, tc := range cases {
+		//nolint:paralleltest // each case constructs a Git fixture that calls t.Setenv
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newExternalSourceFixture(t)
 			lock := fixture.lock(t)
