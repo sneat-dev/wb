@@ -70,7 +70,8 @@ func TestBranchReconciliationDurableBundleAuthority(t *testing.T) {
 func TestBranchReconciliationEventReplayUsesRecordedPayload(t *testing.T) {
 	t.Parallel()
 	record := branchReconciliationRecord{EventID: "event-1", Reason: "restore branch", Actor: "operator",
-		LiveBranch: "wb/live", ClaimBranch: "wb/claim", LocalHead: strings.Repeat("a", 40), RemoteHead: strings.Repeat("b", 40)}
+		LiveBranch: "wb/live", ClaimBranch: "wb/claim", ExpectedHead: strings.Repeat("c", 40),
+		LocalHead: strings.Repeat("a", 40), RemoteHead: strings.Repeat("b", 40)}
 	prior := reconciliationEvent(record, LocalGitEvidence{Branch: "wb/claim", Head: strings.Repeat("c", 40)})
 	prior.Version, prior.Seq, prior.At = 1, 1, time.Date(2026, time.September, 30, 0, 0, 0, 0, time.UTC)
 	marker := errors.New("event port failure")
@@ -82,17 +83,38 @@ func TestBranchReconciliationEventReplayUsesRecordedPayload(t *testing.T) {
 	}{
 		{"read failure", nil, marker, nil, "port failure"},
 		{"missing Git", []LocalWorkLogEvent{func() LocalWorkLogEvent { e := prior; e.Git = nil; return e }()}, nil, nil, "no Git evidence"},
+		{"wrong Git branch", []LocalWorkLogEvent{func() LocalWorkLogEvent {
+			e := prior
+			git := *e.Git
+			git.Branch = "wb/unrelated"
+			e.Git = &git
+			return e
+		}()}, nil, nil, "Git identity"},
+		{"wrong Git head", []LocalWorkLogEvent{func() LocalWorkLogEvent {
+			e := prior
+			git := *e.Git
+			git.Head = strings.Repeat("d", 40)
+			e.Git = &git
+			return e
+		}()}, nil, nil, "Git identity"},
 		{"different payload", []LocalWorkLogEvent{func() LocalWorkLogEvent { e := prior; e.Message = "other"; return e }()}, nil, nil, "differs"},
 		{"append failure", []LocalWorkLogEvent{prior}, nil, marker, "port failure"},
 		{"exact replay", []LocalWorkLogEvent{prior}, nil, nil, ""},
 		{"new event", nil, nil, nil, ""},
+		{"new observation has wrong Git identity", nil, nil, nil, "Git identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			observed := 0
 			ports := reconciliationPorts{
 				readEvents: func(string) ([]LocalWorkLogEvent, error) { return tc.events, tc.readErr },
-				observeGit: func(context.Context, string) LocalGitEvidence { observed++; return LocalGitEvidence{Branch: "later"} },
+				observeGit: func(context.Context, string) LocalGitEvidence {
+					observed++
+					if tc.name == "new observation has wrong Git identity" {
+						return LocalGitEvidence{Branch: "later", Head: record.ExpectedHead}
+					}
+					return LocalGitEvidence{Branch: record.ClaimBranch, Head: record.ExpectedHead}
+				},
 				appendEvent: func(_ string, event LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
 					if tc.name == "exact replay" && !sameLocalEvent(event, prior) {
 						t.Fatalf("replayed event changed: %+v", event)
@@ -124,13 +146,13 @@ func TestBranchReconciliationStageRevalidationPorts(t *testing.T) {
 	marker := errors.New("lifecycle unavailable")
 	options := LogRecoverOptions{ExpectedHead: record.ExpectedHead}
 	if err := revalidateReconciliationStage(context.Background(), options, claim.Worktree, claim, record,
-		func(context.Context, string, string, workLogClaim) (ListResult, error) { return ListResult{}, marker }); !errors.Is(err, marker) {
+		nil, (reconciliationPorts{lifecycle: func(context.Context, string, string, workLogClaim) (ListResult, error) { return ListResult{}, marker }}).withDefaults()); !errors.Is(err, marker) {
 		t.Fatalf("lifecycle error = %v", err)
 	}
 	if err := revalidateReconciliationStage(context.Background(), options, claim.Worktree, claim, record,
-		func(context.Context, string, string, workLogClaim) (ListResult, error) {
+		nil, (reconciliationPorts{lifecycle: func(context.Context, string, string, workLogClaim) (ListResult, error) {
 			return ListResult{HeadSHA: "other"}, nil
-		}); err == nil {
+		}}).withDefaults()); err == nil {
 		t.Fatal("invalid lifecycle evidence passed")
 	}
 }

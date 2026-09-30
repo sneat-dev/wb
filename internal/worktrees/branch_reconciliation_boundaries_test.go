@@ -332,7 +332,7 @@ func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
 		t.Fatal("unmanaged worktree had lifecycle evidence")
 	}
 	if err := revalidateReconciliationStage(context.Background(), LogRecoverOptions{ProjectsRoot: t.TempDir()},
-		t.TempDir(), claim, reconciliationRecordForClaim(claim), reconciliationLifecycleEvidence); err == nil {
+		t.TempDir(), claim, reconciliationRecordForClaim(claim), nil, reconciliationPorts{}.withDefaults()); err == nil {
 		t.Fatal("unmanaged worktree passed stage revalidation")
 	}
 }

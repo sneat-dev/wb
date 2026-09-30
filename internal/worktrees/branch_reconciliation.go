@@ -256,7 +256,7 @@ func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOption
 		}
 	}
 	if record.Stage == reconciliationStageBundles {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record, ports.lifecycle); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
 		if err := verifyReconciliationBundles(recordDir, record); err != nil {
@@ -286,7 +286,7 @@ func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOption
 		}
 	}
 	if record.Stage == reconciliationStageRemote {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record, ports.lifecycle); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
 		if err := requireRemoteClaimAbsent(ctx, entry.CanonicalDir, record.ClaimBranch); err != nil {
@@ -318,7 +318,7 @@ func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOption
 		}
 	}
 	if record.Stage == reconciliationStageLocal {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record, ports.lifecycle); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
 		if err := verifyReconciliationBundles(recordDir, record); err != nil {
@@ -355,7 +355,7 @@ func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOption
 		}
 	}
 	if record.Stage == reconciliationStageRebound {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record, ports.lifecycle); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
 		if err := ports.corroborate(home, root, projection); err != nil {
@@ -375,6 +375,9 @@ func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOption
 		return finishBranchReconciliation(recordDir, record, root, event, updated)
 	}
 	if record.Stage == reconciliationStageEvent || record.Stage == reconciliationStageComplete {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
+			return LogVerbResult{}, err
+		}
 		event, updated, appendErr := appendReconciliationEvent(ctx, root, record, ports)
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
@@ -407,6 +410,9 @@ func appendReconciliationEvent(ctx context.Context, root string, record branchRe
 		if prior.Git == nil {
 			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("recorded branch reconciliation event has no Git evidence")
 		}
+		if prior.Git.Branch != record.ClaimBranch || prior.Git.Head != record.ExpectedHead {
+			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("recorded branch reconciliation event Git identity differs from exact recovery request")
+		}
 		expected := reconciliationEvent(record, *prior.Git)
 		expected.Version, expected.Seq, expected.At = prior.Version, prior.Seq, prior.At
 		if !sameLocalEvent(prior, expected) {
@@ -414,7 +420,11 @@ func appendReconciliationEvent(ctx context.Context, root string, record branchRe
 		}
 		return ports.appendEvent(root, prior)
 	}
-	return ports.appendEvent(root, reconciliationEvent(record, ports.observeGit(ctx, root)))
+	observed := ports.observeGit(ctx, root)
+	if observed.Branch != record.ClaimBranch || observed.Head != record.ExpectedHead {
+		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("observed branch reconciliation Git identity differs from exact recovery request")
+	}
+	return ports.appendEvent(root, reconciliationEvent(record, observed))
 }
 
 func localReconciliationBranchHead(ctx context.Context, canonical *canonicalRepository, branch string) (string, error) {
@@ -538,16 +548,29 @@ func validateReconciliationLifecycleEvidence(ctx context.Context, entry ListResu
 	return nil
 }
 
-func revalidateReconciliationStage(ctx context.Context, options LogRecoverOptions, root string, claim workLogClaim, record branchReconciliationRecord, lifecycle func(context.Context, string, string, workLogClaim) (ListResult, error)) error {
-	entry, err := lifecycle(ctx, options.ProjectsRoot, root, claim)
+func revalidateReconciliationStage(ctx context.Context, options LogRecoverOptions, root string, claim workLogClaim, record branchReconciliationRecord, canonical *canonicalRepository, ports reconciliationPorts) error {
+	entry, err := ports.lifecycle(ctx, options.ProjectsRoot, root, claim)
 	if err != nil {
 		return err
 	}
 	if err := validateReconciliationLifecycleEvidence(ctx, entry, claim, options); err != nil {
 		return err
 	}
-	if entry.Branch != record.LiveBranch && entry.Branch != record.ClaimBranch {
-		return fmt.Errorf("live branch %q changed outside the recorded reconciliation", entry.Branch)
+	switch record.Stage {
+	case reconciliationStageRebound, reconciliationStageEvent, reconciliationStageComplete:
+		if entry.Branch != record.ClaimBranch {
+			return fmt.Errorf("live branch %q is not the rebound immutable claim %q", entry.Branch, record.ClaimBranch)
+		}
+		if err := ports.requireHead(ctx, canonical, record.ClaimBranch, record.ExpectedHead); err != nil {
+			return fmt.Errorf("verify rebound immutable claim head: %w", err)
+		}
+		if err := ports.requireAbsent(ctx, canonical, record.LiveBranch); err != nil {
+			return fmt.Errorf("verify retired live branch absence: %w", err)
+		}
+	default:
+		if entry.Branch != record.LiveBranch && entry.Branch != record.ClaimBranch {
+			return fmt.Errorf("live branch %q changed outside the recorded reconciliation", entry.Branch)
+		}
 	}
 	return nil
 }

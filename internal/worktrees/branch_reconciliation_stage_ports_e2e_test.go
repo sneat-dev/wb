@@ -163,6 +163,8 @@ func TestE2EBranchReconciliationStagePortsPreserveRecordedAuthority(t *testing.T
 			reject("rebind effect", reconciliationPorts{rebind: func(context.Context, *canonicalRepository, branchReconciliationRecord) error { return marker }}, "stage action failed")
 		case "rebind":
 			stageWrite("rebound")
+			reject("rebound claim ref verification", reconciliationPorts{requireHead: func(context.Context, *canonicalRepository, string, string) error { return marker }}, "stage action failed")
+			reject("rebound live ref absence", reconciliationPorts{requireAbsent: func(context.Context, *canonicalRepository, string) error { return marker }}, "stage action failed")
 			reject("private projection corroboration", reconciliationPorts{corroborate: func(string, string, workLogProjection) error { return marker }}, "stage action failed")
 			reject("event append", reconciliationPorts{appendEvent: func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
 				return LocalWorkLogEvent{}, LocalWorkLogProjection{}, marker
