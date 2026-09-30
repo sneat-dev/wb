@@ -25,21 +25,22 @@ import (
 )
 
 type qualityOptions struct {
-	ci              bool
-	fleet           bool
-	match           string
-	regex           string
-	parallel        int
-	format          string
-	reportDir       string
-	checks          string
-	timeout         time.Duration
-	retry           int
-	resume          bool
-	testShards      int
-	shardPackages   []string
-	coverageProfile string
-	minimumCoverage float64
+	ci                     bool
+	fleet                  bool
+	match                  string
+	regex                  string
+	parallel               int
+	format                 string
+	reportDir              string
+	checks                 string
+	timeout                time.Duration
+	retry                  int
+	resume                 bool
+	testShards             int
+	shardPackages          []string
+	explicitGoTestSharding bool
+	coverageProfile        string
+	minimumCoverage        float64
 	// changed selects the per-change coverage ratchet
 	// (spec/plans/coverage-to-100/README.md task-3): a package fails when its
 	// uncovered-statement count rises against its baseline, or when a changed,
@@ -71,6 +72,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 		Short: "Measure Go test coverage for one repository or the local fleet",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			options.explicitGoTestSharding = coverageShardingExplicit(cmd)
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
@@ -112,7 +114,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			}
 			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), inv.nonInteractive), "coverage", len(targets))
 			progress.start()
-			runOptions := coverageOptionsForCommand(cmd, options)
+			runOptions := coverageOptionsForCommand(options)
 			runOptions.Progress = progress.report
 			reports := runCoverageTargets(targets, options.parallel, runOptions)
 			progress.finish()
@@ -134,7 +136,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, json, or summary (summary requires --report-dir)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write coverage.md and coverage.yaml to this directory")
 	command.Flags().IntVar(&options.testShards, "test-shards", 1, "process-isolated shards for every explicit --shard-package")
-	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name (repeatable)")
+	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name; other module packages still run once (repeatable)")
 	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
 	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
@@ -158,12 +160,12 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 		if options.coverageProfile != "" {
 			return fmt.Errorf("--ci cannot be combined with --coverage-profile")
 		}
-		if options.testShards > 1 {
-			return fmt.Errorf("--ci cannot be combined with --test-shards")
+		if options.explicitGoTestSharding {
+			return fmt.Errorf("--ci cannot be combined with --test-shards or --shard-package")
 		}
-		if len(options.shardPackages) > 0 {
-			return fmt.Errorf("--ci cannot be combined with --shard-package")
-		}
+	}
+	if options.changed && options.explicitGoTestSharding {
+		return fmt.Errorf("--changed cannot be combined with --test-shards or --shard-package")
 	}
 	if options.testShards < 1 {
 		return fmt.Errorf("--test-shards must be at least 1")
@@ -192,9 +194,6 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 		}
 		if options.resume {
 			return fmt.Errorf("--changed cannot be combined with --resume")
-		}
-		if options.testShards > 1 {
-			return fmt.Errorf("--changed cannot be combined with --test-shards")
 		}
 		if options.format != "markdown" && options.format != "json" {
 			// exitUsage for the same reason as --baseline-timeout above: an
@@ -422,6 +421,8 @@ func matchesQualityTarget(repository, filter, glob string, expression *regexp.Re
 	return expression == nil || expression.MatchString(repository)
 }
 
+var coverWithOptions = quality.CoverWithOptions
+
 func runCoverageTargets(targets []qualityTarget, parallel int, options quality.RunOptions) []quality.RepositoryCoverage {
 	reports := make([]quality.RepositoryCoverage, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
@@ -435,7 +436,7 @@ func runCoverageTargets(targets []qualityTarget, parallel int, options quality.R
 			reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 			return
 		}
-		reports[index] = quality.CoverWithOptions(context.Background(), target.repository, target.path, targetOptions)
+		reports[index] = coverWithOptions(context.Background(), target.repository, target.path, targetOptions)
 		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
@@ -785,11 +786,15 @@ func runOptions(options qualityOptions) quality.RunOptions {
 	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry, CoverageDiagnosticsDir: options.reportDir}
 }
 
-func coverageOptionsForCommand(command *cobra.Command, options qualityOptions) quality.RunOptions {
+func coverageShardingExplicit(command *cobra.Command) bool {
+	return command.Flags().Changed("test-shards") || command.Flags().Changed("shard-package")
+}
+
+func coverageOptionsForCommand(options qualityOptions) quality.RunOptions {
 	runOptions := runOptions(options)
 	runOptions.GoTestShards = options.testShards
 	runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
-	runOptions.ExplicitGoTestSharding = command.Flags().Changed("test-shards") || command.Flags().Changed("shard-package")
+	runOptions.ExplicitGoTestSharding = options.explicitGoTestSharding
 	runOptions.CoverageProfile = options.coverageProfile
 	return runOptions
 }
