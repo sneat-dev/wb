@@ -29,6 +29,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
 const (
@@ -3460,42 +3461,11 @@ func openWorkLogOutbox(home, effort string, create bool) (*os.File, error) {
 // a test can substitute secureopen.Fake instead, the seam spec/plans/
 // coverage-to-100 lane cov-seam-fs added.
 func openPrivateChild(parent *os.File, name string, create bool) (*os.File, error) {
-	return openPrivateChildWith(secureopen.Real{}, parent, name, create)
+	return worktreesecure.OpenPrivateChild(parent, name, create, validSafeSegment)
 }
 
 func openPrivateChildWith(opener secureopen.Opener, parent *os.File, name string, create bool) (*os.File, error) {
-	if !validSafeSegment(name) {
-		return nil, fmt.Errorf("unsafe private directory segment %q", name)
-	}
-	var fd int
-	var err error
-	if create {
-		fd, err = openOrCreateNoFollowDirectoryWith(opener, int(parent.Fd()), name)
-	} else {
-		fd, err = opener.OpenDir(int(parent.Fd()), name)
-	}
-	if err != nil {
-		return nil, err
-	}
-	// Harden the mode only on the creating path. The read path opens the
-	// descriptor O_RDONLY, and fchmod is a metadata write on that descriptor:
-	// under a sandbox that denies writes outside the workspace it fails with
-	// EPERM, which surfaced as "inspect existing work-log run before mutation:
-	// operation not permitted" — a read reported as a denied write. Nothing is
-	// lost by not re-tightening a directory an earlier release already
-	// created, and reading must never require write permission.
-	if create {
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			_ = unix.Close(fd)
-			return nil, err
-		}
-	}
-	file := os.NewFile(uintptr(fd), "wb-worklog-"+name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap private directory %s", name)
-	}
-	return file, nil
+	return worktreesecure.OpenPrivateChildWith(opener, parent, name, create, validSafeSegment)
 }
 
 func lockClaim(runDir *os.File, claimID string) (func(), error) {
@@ -3591,17 +3561,7 @@ func readJSONAt(directory *os.File, name string, target any) error {
 }
 
 func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) {
-	var zero T
-	directory, err := openPrivateChild(runDir, child, false)
-	if err != nil {
-		return zero, err
-	}
-	defer func() { _ = directory.Close() }()
-	var record T
-	if err := readJSONAt(directory, name, &record); err != nil {
-		return zero, err
-	}
-	return record, nil
+	return worktreesecure.ReadPrivateRecordAt[T](runDir, child, name, validSafeSegment)
 }
 
 func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {

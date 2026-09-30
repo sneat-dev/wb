@@ -26,6 +26,7 @@ import (
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
+	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
 var safeSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -2566,20 +2567,7 @@ func prepareCanonicalWorktreesRoot(ctx context.Context, canonical *canonicalRepo
 }
 
 func directoryExistsNoFollow(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("inspect worktree destination %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false, fmt.Errorf("refusing symlinked worktree destination %s", path)
-	}
-	if !info.IsDir() {
-		return false, fmt.Errorf("worktree destination is not a directory: %s", path)
-	}
-	return true, nil
+	return worktreesecure.DirectoryExistsNoFollow(path)
 }
 
 // prepareWorktreeDestination walks from the held operation descriptor. It
@@ -2686,10 +2674,7 @@ func validWorktreeParentSegment(segment string) bool {
 	return validSafeSegment(segment) || repopath.IsForgeHost(segment)
 }
 
-func pathWithin(root, path string) bool {
-	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
+func pathWithin(root, path string) bool { return worktreesecure.PathWithin(root, path) }
 
 // addWorktreeAtSecureDestination asks Git to create the checkout beneath a
 // fresh private staging directory, then publishes it with renameat between
@@ -2957,20 +2942,7 @@ func addWorktreeAtSecureDestination(
 }
 
 func duplicateDirectoryDescriptor(directory *os.File, name string) (*os.File, error) {
-	if directory == nil {
-		return nil, fmt.Errorf("directory descriptor is unavailable")
-	}
-	fd, err := unix.Dup(int(directory.Fd()))
-	if err != nil {
-		return nil, err
-	}
-	unix.CloseOnExec(fd)
-	duplicate := os.NewFile(uintptr(fd), name)
-	if duplicate == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap duplicate directory descriptor")
-	}
-	return duplicate, nil
+	return worktreesecure.DuplicateDirectoryDescriptor(directory, name)
 }
 
 // gitWorktreeAddFromStageDirectory starts a private WB child with the stage,
@@ -3305,70 +3277,18 @@ func verifyPublishedWorktree(
 // explicit Opener so a test can substitute secureopen.Fake instead, the
 // seam spec/plans/coverage-to-100 lane cov-seam-fs added.
 func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
-	return openAbsoluteDirectoryNoFollowWith(secureopen.Real{}, path, create)
+	return worktreesecure.OpenAbsoluteDirectoryNoFollow(path, create)
 }
 
 // openDirectoryAtNoFollow returns one owned child directory handle. The
 // caller supplies exact open diagnostics and retains responsibility for
 // path identity checks and the returned handle's lifetime.
 func openDirectoryAtNoFollow(parentFD int, name, descriptorName, openContext, _ string) (*os.File, error) {
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", openContext, err)
-	}
-	// A successful openat returns a nonnegative descriptor. NewFile cannot
-	// return nil for that descriptor, so there is no second failure path here.
-	directory := os.NewFile(uintptr(fd), descriptorName)
-	return directory, nil
+	return worktreesecure.OpenDirectoryAtNoFollow(parentFD, name, descriptorName, openContext)
 }
 
 func openAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, create bool) (*os.File, error) {
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
-		return nil, fmt.Errorf("secure directory path must be absolute: %s", path)
-	}
-	fd, err := opener.OpenRoot(string(filepath.Separator))
-	if err != nil {
-		return nil, fmt.Errorf("open filesystem root for secure directory %s: %w", path, err)
-	}
-	if path == string(filepath.Separator) {
-		directory := os.NewFile(uintptr(fd), "wb-secure-directory")
-		if directory == nil {
-			_ = unix.Close(fd)
-			return nil, fmt.Errorf("wrap secure directory %s", path)
-		}
-		return directory, nil
-	}
-	for _, segment := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
-		if segment == "" || segment == "." || segment == ".." {
-			_ = unix.Close(fd)
-			return nil, fmt.Errorf("invalid secure directory segment %q", segment)
-		}
-		var next int
-		if create {
-			next, err = openOrCreateNoFollowDirectoryWith(opener, fd, segment)
-		} else {
-			next, err = opener.OpenDir(fd, segment)
-			if err != nil {
-				if opener.IsSymlink(fd, segment) {
-					err = fmt.Errorf("refusing symlinked secure worktree directory %s", segment)
-				} else {
-					err = fmt.Errorf("open secure worktree directory %s: %w", segment, err)
-				}
-			}
-		}
-		_ = unix.Close(fd)
-		if err != nil {
-			return nil, err
-		}
-		fd = next
-	}
-	directory := os.NewFile(uintptr(fd), "wb-secure-directory")
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap secure directory %s", path)
-	}
-	return directory, nil
+	return worktreesecure.OpenAbsoluteDirectoryNoFollowWith(opener, path, create)
 }
 
 // OpenOperationLockDirectory opens a persistent operation directory without
@@ -3560,77 +3480,30 @@ func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix str
 }
 
 func directoryEmpty(directory *os.File) (bool, error) {
-	if _, err := directory.Seek(0, 0); err != nil {
-		return false, err
-	}
-	entries, err := directory.ReadDir(1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	return len(entries) == 0, nil
+	return worktreesecure.DirectoryEmpty(directory)
 }
 
 func openOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
-	return openOrCreateNoFollowDirectoryWith(secureopen.Real{}, parentFD, name)
+	return worktreesecure.OpenOrCreateNoFollowDirectory(parentFD, name)
 }
 
 func openOrCreateNoFollowDirectoryWith(opener secureopen.Opener, parentFD int, name string) (int, error) {
-	if err := opener.Mkdir(parentFD, name); err != nil && !errors.Is(err, unix.EEXIST) {
-		return -1, fmt.Errorf("create secure worktree directory %s: %w", name, err)
-	}
-	fd, err := opener.OpenDir(parentFD, name)
-	if err != nil {
-		if opener.IsSymlink(parentFD, name) {
-			return -1, fmt.Errorf("refusing symlinked secure worktree directory %s", name)
-		}
-		return -1, fmt.Errorf("open secure worktree directory %s: %w", name, err)
-	}
-	return fd, nil
+	return worktreesecure.OpenOrCreateNoFollowDirectoryWith(opener, parentFD, name)
 }
 
 func requireAbsentNoFollowChild(parentFD int, name string) error {
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) {
-		return nil
-	}
-	if err == nil {
-		_ = unix.Close(fd)
-	}
-	if err != nil {
-		return fmt.Errorf("inspect secure worktree destination %s: %w", name, err)
-	}
-	return fmt.Errorf("secure worktree destination already exists: %s", name)
+	return worktreesecure.RequireAbsentNoFollowChild(parentFD, name)
 }
 
 func directoryStillMatches(path string, directory *os.File) bool {
-	current, err := os.Lstat(path)
-	if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() {
-		return false
-	}
-	held, err := directory.Stat()
-	return err == nil && os.SameFile(current, held)
+	return worktreesecure.DirectoryStillMatches(path, directory)
 }
 
 func directoryEntryStillMatches(parent *os.File, name string, directory *os.File) bool {
-	if parent == nil || directory == nil {
-		return false
-	}
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return false
-	}
-	candidate := os.NewFile(uintptr(fd), "wb-worktree-entry-check")
-	if candidate == nil {
-		_ = unix.Close(fd)
-		return false
-	}
-	defer func() { _ = candidate.Close() }()
-	expected, expectedErr := directory.Stat()
-	actual, actualErr := candidate.Stat()
-	return expectedErr == nil && actualErr == nil && os.SameFile(expected, actual)
+	return worktreesecure.DirectoryEntryStillMatches(parent, name, directory)
 }
 
-var errDirectoryMoveIdentityChanged = errors.New("directory move identity changed")
+var errDirectoryMoveIdentityChanged = worktreesecure.ErrDirectoryMoveIdentityChanged
 
 // moveExpectedDirectoryNoReplace moves a retained directory entry without
 // replacing a destination. It verifies both halves after the no-replace move:
@@ -3639,23 +3512,8 @@ var errDirectoryMoveIdentityChanged = errors.New("directory move identity change
 // expected directory may already be safely published at the destination but
 // no rollback is allowed to touch either name; callers receive the retained
 // descriptor plus errDirectoryMoveIdentityChanged and must preserve both.
-func moveExpectedDirectoryNoReplace(
-	fromDirectory *os.File,
-	fromName string,
-	toDirectory *os.File,
-	toName string,
-	expected *os.File,
-	afterAuthorization func(),
-	afterMove ...func(),
-) (*os.File, error) {
-	var authorize func() error
-	if afterAuthorization != nil {
-		authorize = func() error {
-			afterAuthorization()
-			return nil
-		}
-	}
-	return moveExpectedDirectoryNoReplaceAuthorized(fromDirectory, fromName, toDirectory, toName, expected, authorize, afterMove...)
+func moveExpectedDirectoryNoReplace(fromDirectory *os.File, fromName string, toDirectory *os.File, toName string, expected *os.File, afterAuthorization func(), afterMove ...func()) (*os.File, error) {
+	return worktreesecure.MoveExpectedDirectoryNoReplace(fromDirectory, fromName, toDirectory, toName, expected, renameNoReplace, afterAuthorization, afterMove...)
 }
 
 // moveExpectedDirectoryNoReplaceAuthorized is the error-returning form used
@@ -3664,67 +3522,12 @@ func moveExpectedDirectoryNoReplace(
 // descriptors remain the mutation authority; the callback makes a changed
 // public spelling fail closed rather than silently publishing through a
 // stale namespace.
-func moveExpectedDirectoryNoReplaceAuthorized(
-	fromDirectory *os.File,
-	fromName string,
-	toDirectory *os.File,
-	toName string,
-	expected *os.File,
-	authorize func() error,
-	afterMove ...func(),
-) (*os.File, error) {
-	if !directoryEntryStillMatches(fromDirectory, fromName, expected) {
-		return nil, fmt.Errorf("directory entry %s changed after inspection; refusing mutation", fromName)
-	}
-	if authorize != nil {
-		if err := authorize(); err != nil {
-			return nil, err
-		}
-	}
-	if err := renameNoReplace(int(fromDirectory.Fd()), fromName, int(toDirectory.Fd()), toName); err != nil {
-		return nil, err
-	}
-	if len(afterMove) > 0 && afterMove[0] != nil {
-		afterMove[0]()
-	}
-	moved, err := openDirectoryAtNoFollow(int(toDirectory.Fd()), toName, "wb-worktree-moved-directory",
-		"open moved directory "+toName, "wrap moved directory "+toName)
-	if err != nil {
-		return nil, err
-	}
-	expectedInfo, expectedErr := expected.Stat()
-	movedInfo, movedErr := moved.Stat()
-	expectedMoved := expectedErr == nil && movedErr == nil && os.SameFile(expectedInfo, movedInfo)
-	sourceAbsent, absentErr := noFollowChildAbsent(int(fromDirectory.Fd()), fromName)
-	if absentErr != nil {
-		_ = moved.Close()
-		return nil, fmt.Errorf("inspect source %s after directory move: %w", fromName, absentErr)
-	}
-	if expectedMoved && sourceAbsent {
-		return moved, nil
-	}
-	if !sourceAbsent {
-		// A second source insertion means a restore could clobber it. Keep the
-		// moved descriptor open for the caller's diagnostics but never attempt
-		// another path mutation; both names now require explicit recovery.
-		return moved, fmt.Errorf("%w: source %s was recreated after no-replace move", errDirectoryMoveIdentityChanged, fromName)
-	}
-	_ = moved.Close()
-	if restoreErr := renameNoReplace(int(toDirectory.Fd()), toName, int(fromDirectory.Fd()), fromName); restoreErr != nil {
-		return nil, fmt.Errorf("%w: destination %s changed after inspection; preserve replacement: %v", errDirectoryMoveIdentityChanged, toName, restoreErr)
-	}
-	return nil, fmt.Errorf("%w: destination %s was not the expected directory", errDirectoryMoveIdentityChanged, toName)
+func moveExpectedDirectoryNoReplaceAuthorized(fromDirectory *os.File, fromName string, toDirectory *os.File, toName string, expected *os.File, authorize func() error, afterMove ...func()) (*os.File, error) {
+	return worktreesecure.MoveExpectedDirectoryNoReplaceAuthorized(fromDirectory, fromName, toDirectory, toName, expected, renameNoReplace, authorize, afterMove...)
 }
 
 func noFollowChildAbsent(parentFD int, name string) (bool, error) {
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return false, unix.Close(fd)
+	return worktreesecure.NoFollowChildAbsent(parentFD, name)
 }
 
 func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, prefix string) (*os.File, error) {
@@ -3769,14 +3572,11 @@ type secureDirectoryIdentity struct {
 }
 
 func secureDirectoryIdentityAt(parentFD int, name string) (secureDirectoryIdentity, error) {
-	var stat unix.Stat_t
-	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	identity, err := worktreesecure.IdentityAt(parentFD, name)
+	if err != nil {
 		return secureDirectoryIdentity{}, err
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return secureDirectoryIdentity{}, fmt.Errorf("%s is not a directory", name)
-	}
-	return secureDirectoryIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
+	return secureDirectoryIdentity{device: identity.Device(), inode: identity.Inode()}, nil
 }
 
 // quarantineStageDirectoryByIdentityAt moves the WB-created stage out of its
