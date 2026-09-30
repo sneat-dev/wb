@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // This file lets cleanup and end recognize one extra, narrowly scoped piece
@@ -39,44 +40,10 @@ const (
 // internal/orchestrate.WorktreeMergeReceipt cleanup needs to recognize a
 // candidate worktree as the receipt's own, to name its receipted sources, and
 // to validate a sidecar acknowledgement fully via internal/mergeack.Load.
-type absorbedConflictReceipt struct {
-	ReceiptPath string `json:"receipt_path"`
-	ID          string `json:"id"`
-	Status      string `json:"status"`
-	Lane        string `json:"lane"`
-	Repository  string `json:"repository"`
-	Target      string `json:"target"`
-	TargetSHA   string `json:"target_sha"`
-	Candidate   struct {
-		Task     string `json:"task"`
-		Worktree string `json:"worktree"`
-		Branch   string `json:"branch"`
-		SHA      string `json:"sha"`
-	} `json:"candidate"`
-	Sources []struct {
-		Task     string `json:"task"`
-		Worktree string `json:"worktree"`
-		Branch   string `json:"branch"`
-		SHA      string `json:"sha"`
-	} `json:"sources"`
-}
+type absorbedConflictReceipt worktreeproof.AbsorbedConflictReceipt
 
-// identity converts receipt into the mergeack.ReceiptIdentity Load validates
-// an acknowledgement sidecar against.
 func (receipt absorbedConflictReceipt) identity() mergeack.ReceiptIdentity {
-	sources := make([]mergeack.Source, 0, len(receipt.Sources))
-	for _, source := range receipt.Sources {
-		sources = append(sources, mergeack.Source{Task: source.Task, Worktree: source.Worktree, Branch: source.Branch, SHA: source.SHA})
-	}
-	return mergeack.ReceiptIdentity{
-		Path: receipt.ReceiptPath, ID: receipt.ID, Status: receipt.Status, Lane: receipt.Lane,
-		Repository: receipt.Repository, Target: receipt.Target, TargetSHA: receipt.TargetSHA,
-		Candidate: mergeack.Source{
-			Task: receipt.Candidate.Task, Worktree: receipt.Candidate.Worktree,
-			Branch: receipt.Candidate.Branch, SHA: receipt.Candidate.SHA,
-		},
-		Sources: sources,
-	}
+	return worktreeproof.AbsorbedConflictReceipt(receipt).Identity()
 }
 
 // absorbedConflictCleanupProof is the landing proof cleanup accepted: the

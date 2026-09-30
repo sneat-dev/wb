@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/worktreelanding"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -61,7 +62,7 @@ func TestFetchRemoteTargetHeadReportsEachGitFailureAndDeletesItsPrivateRef(t *te
 				fake.FailCall(tc.failCall, boom)
 			}
 			ctx := withGitRunner(context.Background(), fake)
-			got, err := fetchRemoteTargetHeadUncached(ctx, repository, "main")
+			got, err := worktreelanding.FetchRemoteTargetHeadUncached(ctx, repository, "main", remoteTargetFetchTimeout, fetchRemoteTargetPrivate)
 			if tc.failCall == 0 {
 				if err != nil || got != head {
 					t.Fatalf("fetch target = (%q, %v), want (%q, nil)", got, err, head)

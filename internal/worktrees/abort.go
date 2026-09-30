@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // AbortDisposition makes an unfinished effort legible instead of leaving an
@@ -784,13 +785,7 @@ func absorbedAbortSafety(planned, refreshed ListResult, absorbedBy string) error
 }
 
 func sameAbsorbedPullRequest(left, right *PullRequest) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	return left.Number == right.Number && left.Repository == right.Repository &&
-		left.Base == right.Base && left.BaseSHA == right.BaseSHA &&
-		left.HeadSHA == right.HeadSHA && left.MergeSHA == right.MergeSHA &&
-		left.Merged != nil && right.Merged != nil && left.Merged.Equal(*right.Merged)
+	return worktreeproof.SameAbsorbedPullRequest(left, right)
 }
 
 // firstFilterMatchingDiagnosticPath returns the first malformed-candidate

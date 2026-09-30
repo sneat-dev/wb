@@ -10,37 +10,17 @@ import (
 
 	"github.com/sneat-dev/wb/internal/retiredcandidateack"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // retiredPrepareCandidateReceipt is the smallest immutable prepare/conflict
 // receipt shape this recovery accepts. A receipt that was ever published,
 // landed, or recorded an actual candidate SHA must use its existing lifecycle
 // path instead.
-type retiredPrepareCandidateReceipt struct {
-	ReceiptPath           string                       `json:"receipt_path"`
-	ID                    string                       `json:"id"`
-	Phase                 string                       `json:"phase"`
-	Status                string                       `json:"status"`
-	Lane                  string                       `json:"lane"`
-	Repository            string                       `json:"repository"`
-	Target                string                       `json:"target"`
-	TargetSHA             string                       `json:"target_sha"`
-	LandingSHA            string                       `json:"landing_sha"`
-	PullRequest           string                       `json:"pull_request"`
-	PublishedCandidateSHA string                       `json:"published_candidate_sha"`
-	Candidate             retiredcandidateack.Source   `json:"candidate"`
-	Sources               []retiredcandidateack.Source `json:"sources"`
-}
+type retiredPrepareCandidateReceipt worktreeproof.RetiredPrepareCandidateReceipt
 
 func (receipt retiredPrepareCandidateReceipt) identity() retiredcandidateack.ReceiptIdentity {
-	candidate := receipt.Candidate
-	candidate.SHA = receipt.TargetSHA
-	return retiredcandidateack.ReceiptIdentity{
-		Path: receipt.ReceiptPath, ID: receipt.ID, Phase: receipt.Phase,
-		Status: receipt.Status, Lane: receipt.Lane, Repository: receipt.Repository,
-		Target: receipt.Target, TargetSHA: receipt.TargetSHA, Candidate: candidate,
-		Sources: receipt.Sources,
-	}
+	return worktreeproof.RetiredPrepareCandidateReceipt(receipt).Identity()
 }
 
 func (receipt retiredPrepareCandidateReceipt) validLegacyEmptyCandidate(path string) bool {

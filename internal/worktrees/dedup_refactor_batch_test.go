@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -21,7 +22,7 @@ func TestDedupRefactorBatchIdentifiersAndGitDirectories(t *testing.T) {
 	if !isGitRevisionID("09af") || isGitRevisionID("abc") || isGitRevisionID(strings.Repeat("a", 65)) || isGitRevisionID("abcdZ") {
 		t.Fatal("Git revision ID validation accepted an invalid ID or rejected a valid one")
 	}
-	if !hasOnlyLowerHexCharacters("09af") || hasOnlyLowerHexCharacters("09aF") {
+	if !worktreeproof.HasOnlyLowerHexCharacters("09af") || worktreeproof.HasOnlyLowerHexCharacters("09aF") {
 		t.Fatal("lower-hex character validation is inconsistent")
 	}
 

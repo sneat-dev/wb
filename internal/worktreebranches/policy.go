@@ -3,6 +3,7 @@ package worktreebranches
 
 import (
 	"fmt"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"path"
 	"regexp"
 	"sort"
@@ -108,17 +109,7 @@ type BranchPullRequest struct {
 	MergedAt *time.Time `json:"merged_at,omitempty"`
 }
 
-type PullRequest struct {
-	Number     int        `json:"number"`
-	URL        string     `json:"url"`
-	Repository string     `json:"repository,omitempty"`
-	State      string     `json:"state"`
-	Base       string     `json:"base"`
-	BaseSHA    string     `json:"base_sha,omitempty"`
-	HeadSHA    string     `json:"head_sha"`
-	MergeSHA   string     `json:"merge_sha,omitempty"`
-	Merged     *time.Time `json:"merged_at,omitempty"`
-}
+type PullRequest = worktreeproof.PullRequest
 
 // PolicyOptions contains only the selection and planning inputs consumed by pure policy.
 type PolicyOptions struct {

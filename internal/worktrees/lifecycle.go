@@ -28,7 +28,9 @@ import (
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreelanding"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -4129,190 +4131,80 @@ func isUnfetchedGitObjectError(err error) bool {
 		strings.Contains(message, "could not get object info")
 }
 
-// applyWorktreeAge records who holds a checkout and how long it has been
-// there. Nothing in WB could previously tell an abandoned worktree from a
-// paused one: the inventory showed `owners=orphaned` for 20 of them and no age
-// at all, so nothing ever prompted a sweep and the sweep only happened when the
-// disk filled.
+// applyWorktreeAge records the owner and age using facade-owned manifest readers.
 func applyWorktreeAge(result *ListResult, worktree string, policy inspectPolicy) {
-	result.Owner = worktreeOwnerName(result.Owners, result.OwnerState)
-	if manifest, err := ReadManifest(worktree); err == nil && !manifest.CreatedAt.IsZero() {
-		result.CreatedAt = manifest.CreatedAt.UTC()
-	} else if info, statErr := os.Stat(worktree); statErr == nil {
-		// A checkout WB did not create — an adopted or hand-made one — still
-		// has an age, and reporting the directory's own is honest as long as
-		// nothing claims it came from a manifest.
-		result.CreatedAt = info.ModTime().UTC()
+	owners := make([]string, len(result.Owners))
+	for i, owner := range result.Owners {
+		owners[i] = owner.Agent
 	}
-	if result.CreatedAt.IsZero() {
-		return
-	}
-	now := policy.clock()
-	if age := now.Sub(result.CreatedAt); age > 0 {
-		result.AgeSeconds = int64(age / time.Second)
-	}
-	if policy.ttl > 0 {
-		result.TTLSeconds = int64(policy.ttl / time.Second)
-		result.Expired = now.Sub(result.CreatedAt) > policy.ttl
-	}
-}
-
-// worktreeOwnerName names the agent to ask before removing a checkout.
-func worktreeOwnerName(owners []OwnerView, state string) string {
-	for index := len(owners) - 1; index >= 0; index-- {
-		if agent := strings.TrimSpace(owners[index].Agent); agent != "" {
-			return agent
-		}
-	}
-	return state
+	fields := worktreeproof.AgeFields{Owner: result.Owner, CreatedAt: result.CreatedAt, AgeSeconds: result.AgeSeconds, TTLSeconds: result.TTLSeconds, Expired: result.Expired}
+	worktreeproof.ApplyWorktreeAge(&fields, worktree, owners, result.OwnerState, policy.ttl, policy.clock,
+		func(path string) (time.Time, error) {
+			manifest, err := ReadManifest(path)
+			return manifest.CreatedAt, err
+		},
+		func(path string) (time.Time, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return time.Time{}, err
+			}
+			return info.ModTime(), nil
+		})
+	result.Owner, result.CreatedAt, result.AgeSeconds, result.TTLSeconds, result.Expired =
+		fields.Owner, fields.CreatedAt, fields.AgeSeconds, fields.TTLSeconds, fields.Expired
 }
 
 func isAncestor(ctx context.Context, repository, ancestor, descendant string) (bool, error) {
-	// A commit is trivially its own ancestor. One fleet listing issued 71 of
-	// these self-comparisons as real git processes.
-	if ancestor == descendant {
-		return true, nil
-	}
-	memo := gitQueryMemoFrom(ctx)
 	args := []string{"merge-base", "--is-ancestor", ancestor, descendant}
-	memoKey := gitQueryMemoKey(repository, args)
+	memo := gitQueryMemoFrom(ctx)
+	key := gitQueryMemoKey(repository, args)
+	var lookup func(string) (bool, bool)
+	var store func(string, bool)
 	if memo != nil {
-		if cached, ok := memo.get(memoKey); ok {
-			return cached == "true", nil
-		}
-	}
-	var commandRunner runner.Runner = runner.Real{}
-	if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
-		commandRunner = injected
-	}
-	// Keep the process cwd inherited; -C selects the repository as before.
-	result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", append([]string{"-C", repository}, args...)...)
-	remember := func(verdict bool) {
-		if memo != nil && ctx.Err() == nil {
+		lookup = func(string) (bool, bool) { value, ok := memo.get(key); return value == "true", ok }
+		store = func(_ string, verdict bool) {
 			if verdict {
-				memo.put(memoKey, "true")
+				memo.put(key, "true")
 			} else {
-				memo.put(memoKey, "false")
+				memo.put(key, "false")
 			}
 		}
 	}
-	if err == nil {
-		remember(true)
-		return true, nil
-	}
-	if result.ExitCode == 1 && ctx.Err() == nil {
-		remember(false)
-		return false, nil
-	}
-	return false, fmt.Errorf("check whether %s is merged into %s: %w", ancestor, descendant, err)
+	return worktreeproof.IsAncestor(ctx, repository, ancestor, descendant,
+		func(ctx context.Context, repository, ancestor, descendant string) (int, error) {
+			var commandRunner runner.Runner = runner.Real{}
+			if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
+				commandRunner = injected
+			}
+			result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git",
+				"-C", repository, "merge-base", "--is-ancestor", ancestor, descendant)
+			return result.ExitCode, err
+		}, lookup, store)
 }
 
 func remoteBranchHead(ctx context.Context, repository, branch string) (string, error) {
-	output, err := git(ctx, repository, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return "", nil
-	}
-	if len(fields) != 2 {
-		return "", fmt.Errorf("unexpected remote branch response for %s: %q", branch, output)
-	}
-	return fields[0], nil
+	return worktreelanding.RemoteBranchHead(ctx, repository, branch, git)
 }
 
-// fetchRemoteTargetHead obtains the exact origin target object used for the
-// integration decision through an invocation-private ref rather than a stale
-// tracking ref or shared FETCH_HEAD. Cleanup repeats this immediately before
-// deletion, so a force-pushed target cannot reuse old evidence.
 func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
-	if cache := targetHeadCacheFrom(ctx); cache != nil {
-		return cache.resolve(repository, branch, func() (string, error) {
-			return fetchRemoteTargetHeadUncached(ctx, repository, branch)
-		})
-	}
-	return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+	return worktreelanding.FetchRemoteTargetHead(ctx, repository, branch, remoteTargetFetchTimeout, fetchRemoteTargetPrivate)
 }
 
-// remoteTargetFetchTimeout bounds one exact-target fetch. A fleet walk makes one
-// of these per repository and a healthy fetch of a single ref answers in
-// seconds, so this is generous rather than tight — its job is to convert a
-// remote that will never answer into a reported state, not to police slow ones.
-// A live sweep once sat 38 minutes on a single unanswered fetch, holding a task
-// lock, with no output and no way to tell it apart from ordinary slowness.
-//
-// It is a var so tests can shorten it.
+// A live remote fetch is bounded, while tests can shorten this timeout.
 var remoteTargetFetchTimeout = 90 * time.Second
 
 func isMissingRemoteTargetError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	// These are the explicit missing-ref diagnostics emitted by Git's fetch
-	// transport. Do not broaden on generic network, authentication, or timeout
-	// failures: those must remain non-recoverable for cleanup safety.
-	for _, marker := range []string{
-		"couldn't find remote ref",
-		"could not find remote ref",
-		"remote ref does not exist",
-		"no such ref",
-	} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
+	return worktreelanding.IsMissingRemoteTargetError(err)
 }
 
-func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
-	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
-	defer cancel()
-	head, err := fetchOriginBranchToPrivateRef(fetchCtx, repository, branch, func(runCtx context.Context, args ...string) (string, error) {
+func fetchRemoteTargetPrivate(ctx context.Context, repository, branch string) (string, error) {
+	return fetchOriginBranchToPrivateRef(ctx, repository, branch, func(runCtx context.Context, args ...string) (string, error) {
 		return git(runCtx, repository, args...)
 	}, nil)
-	if err != nil {
-		// Distinguish our own deadline from a caller who cancelled the whole run:
-		// the operator needs to know this one remote never answered, and which
-		// budget it blew, rather than reading a bare "signal: killed".
-		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return "", fmt.Errorf("fetch exact origin/%s target: remote did not answer within %s", branch, remoteTargetFetchTimeout)
-		}
-		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
-	}
-	return head, nil
 }
 
-// remoteDefaultBranch obtains the repository's current default branch from
-// origin itself. A caller's --base is a useful fallback for legacy manifests,
-// but it cannot authorize replacing a deleted recorded target with an
-// arbitrary release branch.
 func remoteDefaultBranch(ctx context.Context, repository string) (string, error) {
-	output, err := git(ctx, repository, "ls-remote", "--symref", "origin", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("read origin default branch: %w", err)
-	}
-	return parseRemoteDefaultBranch(output, func(branch string) bool { return validBranch(ctx, branch) })
-}
-
-func parseRemoteDefaultBranch(output string, valid func(string) bool) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "ref: ") {
-			continue
-		}
-		fields := strings.Fields(strings.TrimPrefix(line, "ref: "))
-		if len(fields) != 2 || fields[1] != "HEAD" || !strings.HasPrefix(fields[0], "refs/heads/") {
-			continue
-		}
-		branch := strings.TrimPrefix(fields[0], "refs/heads/")
-		if !valid(branch) {
-			return "", fmt.Errorf("origin default branch is invalid: %q", branch)
-		}
-		return branch, nil
-	}
-	return "", fmt.Errorf("origin did not resolve a default branch")
+	return worktreelanding.RemoteDefaultBranch(ctx, repository, git, func(branch string) bool { return validBranch(ctx, branch) })
 }
 
 // githubPullRequests reads pull requests associated with the immutable source
@@ -5019,40 +4911,11 @@ func mergeResultTree(ctx context.Context, repository, ours, theirs string) (stri
 	return tree, true, nil
 }
 
-// commitFirstParent returns the first parent of a commit, or an empty string
-// for a root commit.
 func commitFirstParent(ctx context.Context, repository, revision string) (string, error) {
-	parents, err := git(ctx, repository, "rev-list", "--parents", "-n", "1", "--end-of-options", revision)
-	if err != nil {
-		return "", fmt.Errorf("resolve parents of %s: %w", revision, err)
-	}
-	return parseCommitFirstParent(revision, parents)
+	return worktreeproof.CommitFirstParent(ctx, repository, revision, git)
 }
-
-func parseCommitFirstParent(revision, parents string) (string, error) {
-	fields := strings.Fields(parents)
-	if len(fields) < 2 {
-		return "", nil
-	}
-	if !isGitObjectID(fields[1]) {
-		return "", fmt.Errorf("commit %s resolved to invalid first parent %q", revision, fields[1])
-	}
-	return fields[1], nil
-}
-
 func commitTree(ctx context.Context, repository, revision string) (string, error) {
-	tree, err := git(ctx, repository, "rev-parse", revision+"^{tree}")
-	if err != nil {
-		return "", fmt.Errorf("resolve tree for %s: %w", revision, err)
-	}
-	return parseCommitTree(revision, tree)
-}
-
-func parseCommitTree(revision, tree string) (string, error) {
-	if !isGitObjectID(tree) {
-		return "", fmt.Errorf("revision %s resolved to invalid tree SHA %q", revision, tree)
-	}
-	return tree, nil
+	return worktreeproof.CommitTree(ctx, repository, revision, git)
 }
 
 // cleanupEligibility answers whether one candidate may be retired now. Safety

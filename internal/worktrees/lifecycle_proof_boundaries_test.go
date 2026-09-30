@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 type lifecycleGitReply struct {
@@ -38,29 +39,29 @@ func TestLifecycleProofGitOutputParsers(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	parent := strings.Repeat("b", 40)
 
-	branch, err := parseRemoteDefaultBranch("noise\nref: refs/heads/main HEAD\n", func(value string) bool { return value == "main" })
+	branch, err := worktreeproof.ParseRemoteDefaultBranch("noise\nref: refs/heads/main HEAD\n", func(value string) bool { return value == "main" })
 	if err != nil || branch != "main" {
 		t.Fatalf("default branch = %q, %v", branch, err)
 	}
-	if _, err := parseRemoteDefaultBranch("ref: refs/tags/v1 HEAD\n", func(string) bool { return true }); err == nil {
+	if _, err := worktreeproof.ParseRemoteDefaultBranch("ref: refs/tags/v1 HEAD\n", func(string) bool { return true }); err == nil {
 		t.Fatal("tag accepted as the remote default branch")
 	}
-	if _, err := parseRemoteDefaultBranch("ref: refs/heads/bad HEAD\n", func(string) bool { return false }); err == nil {
+	if _, err := worktreeproof.ParseRemoteDefaultBranch("ref: refs/heads/bad HEAD\n", func(string) bool { return false }); err == nil {
 		t.Fatal("invalid remote default branch accepted")
 	}
-	if got, err := parseCommitFirstParent("revision", sha); err != nil || got != "" {
+	if got, err := worktreeproof.ParseCommitFirstParent("revision", sha); err != nil || got != "" {
 		t.Fatalf("root first parent = %q, %v", got, err)
 	}
-	if got, err := parseCommitFirstParent("revision", sha+" "+parent); err != nil || got != parent {
+	if got, err := worktreeproof.ParseCommitFirstParent("revision", sha+" "+parent); err != nil || got != parent {
 		t.Fatalf("first parent = %q, %v", got, err)
 	}
-	if _, err := parseCommitFirstParent("revision", sha+" invalid"); err == nil {
+	if _, err := worktreeproof.ParseCommitFirstParent("revision", sha+" invalid"); err == nil {
 		t.Fatal("invalid first parent accepted")
 	}
-	if got, err := parseCommitTree("revision", sha); err != nil || got != sha {
+	if got, err := worktreeproof.ParseCommitTree("revision", sha); err != nil || got != sha {
 		t.Fatalf("commit tree = %q, %v", got, err)
 	}
-	if _, err := parseCommitTree("revision", "invalid"); err == nil {
+	if _, err := worktreeproof.ParseCommitTree("revision", "invalid"); err == nil {
 		t.Fatal("invalid tree accepted")
 	}
 }

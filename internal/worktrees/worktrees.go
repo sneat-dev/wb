@@ -26,6 +26,7 @@ import (
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
@@ -1646,29 +1647,8 @@ func rebaseTodoHasResolvableCommit(ctx context.Context, root, todo string) bool 
 	return foundCommit
 }
 
-func isGitObjectID(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	return hasOnlyLowerHexCharacters(value)
-}
-
-func isGitRevisionID(value string) bool {
-	if len(value) < 4 || len(value) > 64 {
-		return false
-	}
-	return hasOnlyLowerHexCharacters(value)
-}
-
-func hasOnlyLowerHexCharacters(value string) bool {
-	for _, character := range value {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
+func isGitObjectID(value string) bool   { return worktreeproof.IsGitObjectID(value) }
+func isGitRevisionID(value string) bool { return worktreeproof.IsGitRevisionID(value) }
 func gitCommitExists(ctx context.Context, root, revision string) bool {
 	_, err := git(ctx, root, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
 	return err == nil
