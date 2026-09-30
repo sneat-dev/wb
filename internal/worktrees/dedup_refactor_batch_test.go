@@ -85,7 +85,7 @@ func TestDedupRefactorBatchMergedReceipt(t *testing.T) {
 		Head: githubRef{Ref: "feature", SHA: strings.Repeat("a", 40)},
 		Base: githubRef{Ref: "main", SHA: strings.Repeat("b", 40)}, MergeCommitSHA: strings.Repeat("c", 40),
 	}
-	receipt := mergedPullRequestReceipt("acme/app", candidate)
+	receipt := landingReceiptService().MergedPullRequestReceipt("acme/app", candidate)
 	if receipt.Number != candidate.Number || receipt.Repository != "acme/app" || receipt.State != "MERGED" ||
 		receipt.Base != candidate.Base.Ref || receipt.BaseSHA != candidate.Base.SHA || receipt.HeadSHA != candidate.Head.SHA ||
 		receipt.MergeSHA != candidate.MergeCommitSHA || receipt.Merged != candidate.MergedAt {
