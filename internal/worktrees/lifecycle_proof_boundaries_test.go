@@ -173,6 +173,9 @@ func TestLifecycleProofExactReceiptSelection(t *testing.T) {
 	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{{Head: githubRef{SHA: head}, Base: githubRef{Ref: "bad\nbase"}, MergedAt: &mergedAt}}, head, "source"); ok || target != "" {
 		t.Fatalf("invalid replacement target = %q, %t", target, ok)
 	}
+	if receipt := absorbingPullRequest([]githubPullRequest{candidate}, "main"); receipt == nil || receipt.Number != candidate.Number {
+		t.Fatalf("absorbing pull request = %#v", receipt)
+	}
 }
 
 func TestLifecycleProofFetchExactRemotePullRequestHeadFailures(t *testing.T) {

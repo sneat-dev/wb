@@ -31,25 +31,9 @@ type BranchUse struct {
 
 // GitHubPullRequest is only the GitHub response shape consumed by inventory.
 // It is not trusted as a landing receipt until the exact Git proof succeeds.
-type GitHubPullRequest struct {
-	Number         int        `json:"number"`
-	URL            string     `json:"html_url"`
-	State          string     `json:"state"`
-	Base           GitHubRef  `json:"base"`
-	Head           GitHubRef  `json:"head"`
-	MergeCommitSHA string     `json:"merge_commit_sha"`
-	MergedAt       *time.Time `json:"merged_at"`
-}
-
-type GitHubRef struct {
-	Ref  string            `json:"ref"`
-	SHA  string            `json:"sha"`
-	Repo *GitHubRepository `json:"repo"`
-}
-
-type GitHubRepository struct {
-	FullName string `json:"full_name"`
-}
+type GitHubPullRequest = worktreelanding.GitHubPullRequest
+type GitHubRef = worktreelanding.GitHubRef
+type GitHubRepository = worktreelanding.GitHubRepository
 
 type SupersessionEvidence struct {
 	Reviewer  string
