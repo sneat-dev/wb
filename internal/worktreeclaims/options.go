@@ -36,7 +36,6 @@ type PromptMetadata struct {
 	SourceReference string    `json:"source_reference"`
 	CapturedAt      time.Time `json:"captured_at"`
 }
-type ExecutionIdentity struct{ Model, CLI, Provider string }
 type OptionsPorts struct {
 	Root             func(string) (string, error)
 	OpenRun          func(string, string, string, bool) (*os.File, string, error)

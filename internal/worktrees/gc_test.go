@@ -1138,11 +1138,11 @@ func TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, err := worktreeRootOf(nested)
+	root, err := heartbeatPorts().WorktreeRootOf(nested)
 	if err != nil || root != created[0].WorktreeDir {
-		t.Fatalf("worktreeRootOf(%s) = %q, %v", nested, root, err)
+		t.Fatalf("heartbeatPorts().WorktreeRootOf(%s) = %q, %v", nested, root, err)
 	}
-	outside, err := worktreeRootOf(t.TempDir())
+	outside, err := heartbeatPorts().WorktreeRootOf(t.TempDir())
 	if err != nil || outside != "" {
 		t.Fatalf("a directory outside every worktree resolves to %q, %v", outside, err)
 	}

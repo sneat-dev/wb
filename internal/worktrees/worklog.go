@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -85,12 +84,10 @@ var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 // refusal.
 var errImmutableTerminalConflict = errors.New("immutable terminal conflicts with requested transition")
 
-var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
-
 const (
-	modelProvenanceRuntimeObserved = "runtime_observed"
-	modelProvenanceCallerDeclared  = "caller_declared"
-	modelProvenanceUnknown         = "unknown"
+	modelProvenanceRuntimeObserved = worktreeclaims.ModelProvenanceRuntimeObserved
+	modelProvenanceCallerDeclared  = worktreeclaims.ModelProvenanceCallerDeclared
+	modelProvenanceUnknown         = worktreeclaims.ModelProvenanceUnknown
 )
 
 // WorkLogOptions is transport-neutral. The exact prompt is private local data;
@@ -214,14 +211,7 @@ type workLogIdentityCorrection struct {
 // ExecutionIdentity is the current, projected view of immutable claim and
 // correction history. CLI/provider are deliberately independent and never
 // inferred from model or one another.
-type ExecutionIdentity struct {
-	Model           string   `json:"model"`
-	ModelProvenance string   `json:"model_provenance"`
-	ModelDeclaredBy string   `json:"model_declared_by,omitempty"`
-	CLI             string   `json:"cli,omitempty"`
-	Provider        string   `json:"provider,omitempty"`
-	CorrectionIDs   []string `json:"correction_ids,omitempty"`
-}
+type ExecutionIdentity = worktreeclaims.ExecutionIdentity
 
 // CorrectExecutionIdentityOptions changes only explicitly selected fields.
 // Nil means leave unchanged; a pointer to "" clears CLI/provider. Model cannot
@@ -707,190 +697,50 @@ func NormalizeTaskSummary(value string) (string, error) {
 }
 
 func validateNewExecutionIdentity(identity ClaimExecutionIdentity) error {
-	model := strings.TrimSpace(identity.Model)
-	if model == "" {
-		return fmt.Errorf("--model is required for every new Work Log claim; pass the exact child model or the explicit value unknown")
-	}
-	if !validExecutionIdentifier(model, true) {
-		return fmt.Errorf("model %q must be a non-secret execution identifier or explicit unknown", model)
-	}
-	for _, field := range []struct{ name, value string }{{"cli", identity.CLI}, {"provider", identity.Provider}} {
-		value := strings.TrimSpace(field.value)
-		if value != "" && !validExecutionIdentifier(value, false) {
-			return fmt.Errorf("%s %q must be a non-secret execution identifier", field.name, value)
-		}
-	}
-	return nil
+	return worktreeclaims.ValidateNewExecutionIdentity(worktreeclaims.ClaimExecutionIdentity{Model: identity.Model, CLI: identity.CLI, Provider: identity.Provider})
 }
-
 func validateCorrectionIdentity(options CorrectExecutionIdentityOptions) error {
-	if !validSafeSegment(options.EffortID) || !validSafeSegment(options.RunID) || !validClaimID(options.ClaimID) || !validSafeSegment(options.EventID) {
-		return fmt.Errorf("effort, run, claim, and correction event ID must be valid exact Work Log identifiers")
-	}
-	if strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "" {
-		return fmt.Errorf("--actor and --reason are required for an execution-identity correction")
-	}
-	if options.Model == nil && options.CLI == nil && options.Provider == nil {
-		return fmt.Errorf("select at least one of --model, --cli, or --provider to correct")
-	}
-	if options.Model != nil {
-		model := strings.TrimSpace(*options.Model)
-		if model == "" || !validExecutionIdentifier(model, true) {
-			return fmt.Errorf("corrected model must be an exact non-secret identifier or explicit unknown")
-		}
-	}
-	for _, field := range []struct {
-		name  string
-		value *string
-	}{{"cli", options.CLI}, {"provider", options.Provider}} {
-		if field.value != nil && strings.TrimSpace(*field.value) != "" && !validExecutionIdentifier(strings.TrimSpace(*field.value), false) {
-			return fmt.Errorf("corrected %s must be a bounded non-secret execution identifier, or an explicit empty value to clear it", field.name)
-		}
-	}
-	return nil
+	return worktreeclaims.ValidateCorrectionIdentity(worktreeclaims.CorrectionIdentity{
+		EffortID: options.EffortID, RunID: options.RunID, ClaimID: options.ClaimID, EventID: options.EventID,
+		Actor: options.Actor, Reason: options.Reason, Model: options.Model, CLI: options.CLI, Provider: options.Provider,
+	})
 }
-
-// ValidExecutionIdentifier reports whether value may be recorded as execution
-// route metadata: model, CLI, or provider. It is the single authority for that
-// rule, shared by every caller that records an execution identity so the
-// accepted syntax cannot drift between them.
 func ValidExecutionIdentifier(value string, allowUnknown bool) bool {
-	return validExecutionIdentifier(value, allowUnknown)
+	return worktreeclaims.ValidExecutionIdentifier(value, allowUnknown)
 }
-
 func validExecutionIdentifier(value string, allowUnknown bool) bool {
-	if value == "unknown" {
-		return allowUnknown
-	}
-	if !executionIdentifier.MatchString(value) {
-		return false
-	}
-	lower := strings.ToLower(value)
-	// Credentials are never execution-route metadata. This is deliberately a
-	// bounded defense against well-known credential shapes, not a claim that
-	// arbitrary secrets can be detected. Label syntax and caller guidance remain
-	// the primary boundary; obvious token and URL user-info forms are refused.
-	return !strings.ContainsAny(value, "@=?#") && !strings.Contains(lower, "token") &&
-		!strings.Contains(lower, "secret") && !strings.Contains(lower, "password") &&
-		!hasCredentialPrefix(lower)
+	return worktreeclaims.ValidExecutionIdentifier(value, allowUnknown)
 }
-
-func hasCredentialPrefix(lower string) bool {
-	for _, prefix := range []string{
-		"sk-", "sk_", "rk_live_", "bearer", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
-		"glpat-", "xoxa-", "xoxb-", "xoxp-", "xoxr-", "npm_", "pypi-", "hf_", "ops_", "akia", "aiza", "eyj",
-	} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func declaredBy(options WorkLogOptions) string {
-	if value := strings.TrimSpace(options.Initiator); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(options.AgentID); value != "" {
-		return value
-	}
-	return "unknown"
+	return worktreeclaims.DeclaredBy(toClaimOptions(options))
 }
-
 func identityFromClaim(claim workLogClaim) ExecutionIdentity {
-	model := strings.TrimSpace(claim.Model)
-	provenance := strings.TrimSpace(claim.ModelProvenance)
-	if model == "" { // legacy records are readable but never guessed.
-		model, provenance = "unknown", modelProvenanceUnknown
-	}
-	if provenance == "" {
-		if model == "unknown" {
-			provenance = modelProvenanceUnknown
-		} else {
-			// v1 records predate caller-declaration evidence; preserve the fact
-			// that a runtime supplied it rather than manufacturing a caller.
-			provenance = modelProvenanceRuntimeObserved
-		}
-	}
-	return ExecutionIdentity{Model: model, ModelProvenance: provenance,
-		ModelDeclaredBy: claim.ModelDeclaredBy, CLI: claim.CLI, Provider: claim.Provider}
+	return worktreeclaims.IdentityFromClaim(toClaimIdentity(claim))
 }
-
 func workLogClaimID(effort string, result CreateResult) string {
-	hash := sha256.New()
-	// Claim identity is portable: run IDs and machine-local worktree paths are
-	// deliberately absent. The immutable private claim still records and
-	// corroborates the absolute live path.
-	for _, value := range []string{effort, result.Repository, result.Branch, result.Base, result.BaseSHA} {
-		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
-		_, _ = io.WriteString(hash, value)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return worktreeclaims.WorkLogClaimID(effort, toCreationResult(result))
 }
-
-// WorkLogClaimID returns the portable identity of the claim for one effort
-// and checkout.  Orchestration engines that create a worktree before the
-// normal Work Log writer runs use this same function so the immutable
-// checkout manifest and private claim cannot diverge.
 func WorkLogClaimID(effort string, result CreateResult) string {
-	return workLogClaimID(effort, result)
+	return worktreeclaims.WorkLogClaimID(effort, toCreationResult(result))
 }
-
 func successorWorkLogClaimID(parentClaimID, successor, disposition string) string {
-	hash := sha256.New()
-	for _, value := range []string{"successor", parentClaimID, successor, disposition} {
-		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
-		_, _ = io.WriteString(hash, value)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return worktreeclaims.SuccessorWorkLogClaimID(parentClaimID, successor, disposition)
 }
-
-// declaredSuccessorWorkLogClaimID binds a creator's normalized execution
-// identity to the deterministic successor ID. The terminal record stores that
-// ID before the successor is published, so a crash/retry cannot silently
-// substitute a different model or route beneath an already-sealed handoff.
 func declaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition string, identity ClaimExecutionIdentity) string {
-	hash := sha256.New()
-	for _, value := range []string{
-		"successor-execution-identity-v2", parentClaimID, successor, disposition,
-		strings.TrimSpace(identity.Model), strings.TrimSpace(identity.CLI), strings.TrimSpace(identity.Provider),
-	} {
-		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
-		_, _ = io.WriteString(hash, value)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return worktreeclaims.DeclaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition, worktreeclaims.ClaimExecutionIdentity{Model: identity.Model, CLI: identity.CLI, Provider: identity.Provider})
 }
-
-// expectedWorkLogClaimID derives the immutable identity after a caller has
-// validated which acquisition modes its workflow accepts.
 func expectedWorkLogClaimID(claim workLogClaim) (string, error) {
-	if claim.ParentClaimID == "" {
-		return workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}), nil
-	}
-	switch claim.AcquiredVia {
-	case "external_handoff":
-		return expectedExternalClaimID(claim)
-	case "parked_session_resume":
-		return expectedParkedSessionClaimID(claim)
-	case "recycle_failed":
-		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
-	case "handoff", "not_landed":
-		if claim.Version == 2 {
-			return declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
-				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider}), nil
-		}
-		return successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia), nil
-	default:
-		return "", fmt.Errorf("successor claim acquisition %q is invalid", claim.AcquiredVia)
-	}
+	return worktreeclaims.ExpectedWorkLogClaimID(toClaimIdentity(claim), func() (string, error) { return expectedExternalClaimID(claim) }, func() (string, error) { return expectedParkedSessionClaimID(claim) })
 }
-
-func validClaimID(value string) bool {
-	if len(value) != sha256.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+func validClaimID(value string) bool { return worktreeclaims.ValidClaimID(value) }
+func toCreationResult(result CreateResult) worktreeclaims.CreationResult {
+	return worktreeclaims.CreationResult{Repository: result.Repository, WorktreeDir: result.WorktreeDir, Branch: result.Branch, Base: result.Base, BaseSHA: result.BaseSHA}
+}
+func toClaimIdentity(claim workLogClaim) worktreeclaims.ClaimIdentity {
+	return worktreeclaims.ClaimIdentity{Version: claim.Version, EffortID: claim.EffortID, Repository: claim.Repository, Worktree: claim.Worktree,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, Model: claim.Model, ModelProvenance: claim.ModelProvenance,
+		ModelDeclaredBy: claim.ModelDeclaredBy, CLI: claim.CLI, Provider: claim.Provider, ParentClaimID: claim.ParentClaimID,
+		AcquiredVia: claim.AcquiredVia, AgentID: claim.AgentID}
 }
 
 // recordWorkLog writes one immutable private claim per worktree, a redacted
