@@ -73,6 +73,7 @@ func TestValidateDecodedPeerEvidenceChecksHostAndExactHead(t *testing.T) {
 		{"missing peer", "required peer evidence", func(v *PeerEvidenceValidation) { v.RequireHosts = []string{"local", "peer"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			v := base
 			v.RequireHosts = append([]string(nil), base.RequireHosts...)
 			v.Evidence = append([]PeerEvidence(nil), base.Evidence...)

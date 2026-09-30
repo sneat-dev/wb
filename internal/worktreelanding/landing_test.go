@@ -13,6 +13,7 @@ import (
 )
 
 func TestLandingWalkAndResidue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	calls := []string{}
 	git := func(_ context.Context, repo string, args ...string) (string, error) {
@@ -63,6 +64,7 @@ func TestLandingWalkAndResidue(t *testing.T) {
 }
 
 func TestLandingWalkRefusalsAndFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	git := func(context.Context, string, ...string) (string, error) { return "head\nlanded\nextra\n", nil }
 	verify := func(context.Context, string, string, string, string, string, string) (*VerifiedCandidate, error) {
@@ -128,6 +130,7 @@ func TestLandingWalkRefusalsAndFailures(t *testing.T) {
 }
 
 func TestRemoteQueriesAndTargetCache(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	git := func(_ context.Context, _ string, args ...string) (string, error) {
 		switch args[0] {

@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/gitcli"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
@@ -362,54 +362,9 @@ func ArchiveManifestPreserve(manifest Manifest) string {
 }
 
 func GitObjectSHA(ctx context.Context, directory, object string) (string, error) {
-	command := exec.CommandContext(ctx, "git", "-C", directory, "show", object)
-	return gitObjectSHAWithCommand(command)
-}
-
-// gitObjectCommand keeps the command and its pipe together so a failed pipe
-// creation cannot start the process or reach the streaming hash.
-type gitObjectCommand interface {
-	StdoutPipe() (io.ReadCloser, error)
-	Start() error
-	Wait() error
-}
-
-func gitObjectSHAWithCommand(command gitObjectCommand) (string, error) {
-	pipe, err := command.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	if err := command.Start(); err != nil {
-		return "", err
-	}
-	return hashGitObjectAndWait(pipe, command.Wait)
-}
-
-func hashGitObjectAndWait(reader io.Reader, wait func() error) (string, error) {
-	digest, copyErr := hashGitObject(reader)
-	waitErr := wait()
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if waitErr != nil {
-		return "", waitErr
-	}
-	return digest, nil
-}
-
-func hashGitObject(reader io.Reader) (string, error) {
-	hash := sha256.New()
-	if _, err := io.Copy(hash, reader); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return gitcli.SHA256Object(ctx, directory, object)
 }
 
 func GitBytes(ctx context.Context, directory string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", directory}, args...)...)
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("read archive Git object: %w", err)
-	}
-	return output, nil
+	return gitcli.ReadObjectBytes(ctx, directory, args...)
 }

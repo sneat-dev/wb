@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -100,6 +99,7 @@ func digest(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+//nolint:paralleltest // staging-unavailable case changes process-wide TMPDIR.
 func TestPublishArchiveProofAndFailureBoundaries(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -221,6 +221,7 @@ func TestPublishArchiveProofAndFailureBoundaries(t *testing.T) {
 			}
 		}},
 	} {
+		//nolint:paralleltest // one case changes process-wide TMPDIR.
 		t.Run(tc.name, func(t *testing.T) {
 			home, result, ports := archiveFixture(t)
 			tc.change(t, home, &result, &ports)
@@ -236,40 +237,8 @@ func TestPublishArchiveProofAndFailureBoundaries(t *testing.T) {
 	}
 }
 
-type errorReader struct{}
-
-func (errorReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
-
-type fakeGitObjectCommand struct {
-	pipeErr    error
-	startCalls int
-	waitCalls  int
-}
-
-func (command *fakeGitObjectCommand) StdoutPipe() (io.ReadCloser, error) {
-	return nil, command.pipeErr
-}
-
-func (command *fakeGitObjectCommand) Start() error {
-	command.startCalls++
-	return nil
-}
-
-func (command *fakeGitObjectCommand) Wait() error {
-	command.waitCalls++
-	return nil
-}
-
-func TestGitObjectPipeFailureStopsBeforeStartAndHash(t *testing.T) {
-	pipeErr := errors.New("pipe descriptors exhausted")
-	command := &fakeGitObjectCommand{pipeErr: pipeErr}
-	got, err := gitObjectSHAWithCommand(command)
-	if got != "" || !errors.Is(err, pipeErr) || command.startCalls != 0 || command.waitCalls != 0 {
-		t.Fatalf("pipe failure = (digest %q, error %v, starts %d, waits %d)", got, err, command.startCalls, command.waitCalls)
-	}
-}
-
-func TestCaptureAndGitObjectFailureBoundaries(t *testing.T) {
+func TestCaptureFileFaultPorts(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -287,51 +256,11 @@ func TestCaptureAndGitObjectFailureBoundaries(t *testing.T) {
 		{name: "copy", ops: captureOps{stat: (*os.File).Stat, copy: func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy failed") }}, want: "copy failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := captureFileWithOps(source, filepath.Join(root, tc.name+".copy"), nil, tc.ops); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("capture error = %v", err)
 			}
 		})
-	}
-	if _, err := hashGitObject(errorReader{}); err == nil || !strings.Contains(err.Error(), "read failed") {
-		t.Fatalf("hash read error = %v", err)
-	}
-	if _, err := hashGitObjectAndWait(errorReader{}, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "read failed") {
-		t.Fatalf("object stream error = %v", err)
-	}
-	if _, err := hashGitObjectAndWait(strings.NewReader("private"), func() error { return errors.New("git failed") }); err == nil || !strings.Contains(err.Error(), "git failed") {
-		t.Fatalf("object wait error = %v", err)
-	}
-	if got, err := hashGitObjectAndWait(strings.NewReader("private"), func() error { return nil }); err != nil || got != digest([]byte("private")) {
-		t.Fatalf("object stream digest = (%q, %v)", got, err)
-	}
-	if got, err := hashGitObject(strings.NewReader("private")); err != nil || got != digest([]byte("private")) {
-		t.Fatalf("hash = (%q, %v)", got, err)
-	}
-	if _, err := GitObjectSHA(context.Background(), root, "missing"); err == nil {
-		t.Fatal("missing repository object accepted")
-	}
-	t.Setenv("PATH", "")
-	if _, err := GitObjectSHA(context.Background(), root, "missing"); err == nil {
-		t.Fatal("missing git executable accepted")
-	}
-}
-
-func TestGitObjectSHAReadsExactBytes(t *testing.T) {
-	repo := t.TempDir()
-	if output, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	source := filepath.Join(repo, "source")
-	if err := os.WriteFile(source, []byte("private\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	output, err := exec.Command("git", "-C", repo, "hash-object", "-w", source).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := GitObjectSHA(context.Background(), repo, strings.TrimSpace(string(output)))
-	if err != nil || got != digest([]byte("private\n")) {
-		t.Fatalf("object digest = (%q, %v)", got, err)
 	}
 }
 
@@ -348,6 +277,7 @@ func failGit(command, message string) func(*testing.T, string, *Receipt, *Ports)
 }
 
 func TestVerifyArchiveFailureBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name, want string
@@ -400,6 +330,7 @@ func TestVerifyArchiveFailureBoundaries(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			working := t.TempDir()
 			body := []byte(`{"version":1,"repository":"acme/app","branch":"topic","preserve":"branch","source_sha":"source","retired_ref":"retired/topic","claim_id":"claim","files":{"a":"hash"}}`)
 			if err := os.WriteFile(filepath.Join(working, "retirement.json"), body, 0o600); err != nil {

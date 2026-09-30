@@ -10,6 +10,7 @@ import (
 )
 
 func TestInventoryServiceRefAndFleetPorts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	var calls []string
@@ -76,6 +77,7 @@ func TestInventoryServiceRefAndFleetPorts(t *testing.T) {
 }
 
 func TestInventoryServiceClassificationPrecedenceAndErrors(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	target := strings.Repeat("b", 40)
@@ -135,6 +137,7 @@ func TestInventoryServiceClassificationPrecedenceAndErrors(t *testing.T) {
 }
 
 func TestInventoryServicePullRequestEvidenceAndRetiredNamespace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
@@ -178,6 +181,7 @@ func TestInventoryServicePullRequestEvidenceAndRetiredNamespace(t *testing.T) {
 }
 
 func TestInventoryRemoteTagMetadataAndCounts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
@@ -236,6 +240,7 @@ func TestInventoryRemoteTagMetadataAndCounts(t *testing.T) {
 }
 
 func TestInventoryPortsFailuresAndSelection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	mode := "discover"
@@ -313,6 +318,7 @@ func TestInventoryPortsFailuresAndSelection(t *testing.T) {
 }
 
 func TestInventoryPullRequestErrorShapes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
 	mode := ""
@@ -370,6 +376,7 @@ func TestInventoryPullRequestErrorShapes(t *testing.T) {
 }
 
 func TestInventoryInspectionHeartbeatAndFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
@@ -440,6 +447,7 @@ func TestInventoryInspectionHeartbeatAndFailurePaths(t *testing.T) {
 }
 
 func TestInventoryPullRequestStatesAndIdentities(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
 	head := `[{"number":4,"state":"open","head":{"ref":"feature","repo":{"full_name":"org/repo"}},"base":{"ref":"main"}},{"number":8,"state":"open","head":{"ref":"feature","repo":{"full_name":"org/repo"}},"base":{"ref":"main"}},{"number":2,"state":"closed","merged_at":"2020-01-01T00:00:00Z","head":{"ref":"feature","repo":{"full_name":"org/repo"}},"base":{"ref":"main"}},{"number":7,"state":"unknown","head":{"ref":"feature","repo":{"full_name":"org/repo"}},"base":{"ref":"main"}}]`
@@ -466,6 +474,7 @@ func TestInventoryPullRequestStatesAndIdentities(t *testing.T) {
 }
 
 func TestInventoryRetiredCountAndMetadataFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	repo := Repository{Slug: "org/repo", Path: "/repo"}
@@ -559,6 +568,7 @@ func TestInventoryRetiredCountAndMetadataFailures(t *testing.T) {
 }
 
 func TestInventoryRemainingFleetAndRefBranches(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	repo := Repository{Slug: "org/repo", Path: "/repo"}

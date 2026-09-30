@@ -59,6 +59,7 @@ func mustJSON(t *testing.T, e LocalWorkLogEvent) []byte {
 }
 
 func TestJournalStoreAppendReplayRepairAndConcurrency(t *testing.T) {
+	t.Parallel()
 	store, root := journalTestStore(t)
 	d := testDir(t, store, root)
 	first := event(0, "first")
@@ -139,6 +140,7 @@ func TestJournalStoreAppendReplayRepairAndConcurrency(t *testing.T) {
 }
 
 func TestJournalStoreTornFinalRecordAndInteriorCorruption(t *testing.T) {
+	t.Parallel()
 	store, root := journalTestStore(t)
 	d := testDir(t, store, root)
 	first := event(0, "stable")
@@ -168,6 +170,7 @@ func TestJournalStoreTornFinalRecordAndInteriorCorruption(t *testing.T) {
 }
 
 func TestJournalStoreOutboxContradictionsAndFaults(t *testing.T) {
+	t.Parallel()
 	store, root := journalTestStore(t)
 	d := testDir(t, store, root)
 	one := event(0, "one")
@@ -183,6 +186,7 @@ func TestJournalStoreOutboxContradictionsAndFaults(t *testing.T) {
 		{"invalid-outbox", []LocalWorkLogEvent{one}, []byte("{bad}\n"), "parse local work-log outbox"},
 	}
 	for _, tc := range cases {
+		//nolint:paralleltest // cases share a mutable journal store and verify its post-case state.
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.outbox == nil {
 				_ = os.Remove(filepath.Join(root, JournalRootDirectory, JournalLocalDirectory, "worklog", OutboxName))
@@ -224,6 +228,7 @@ func TestJournalStoreOutboxContradictionsAndFaults(t *testing.T) {
 }
 
 func TestJournalStoreReadParseAndSequenceFailures(t *testing.T) {
+	t.Parallel()
 	store, root := journalTestStore(t)
 	if events, err := store.ReadLocalEvents(root); err != nil || events != nil {
 		t.Fatalf("missing events=%v/%v", events, err)
@@ -290,6 +295,7 @@ func TestJournalStoreReadParseAndSequenceFailures(t *testing.T) {
 }
 
 func TestJournalProjectionIDAndJSON(t *testing.T) {
+	t.Parallel()
 	s := Store{}
 	now := time.Unix(100, 0).UTC()
 	first := event(0, "one")
@@ -346,6 +352,7 @@ func TestJournalProjectionIDAndJSON(t *testing.T) {
 }
 
 func TestJournalDirectoryNoFollowAndCleanup(t *testing.T) {
+	t.Parallel()
 	root := secureTmpDir(t)
 	if _, err := OpenJournalDirectory(root, false); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing=%v", err)
@@ -400,6 +407,7 @@ func TestJournalDirectoryNoFollowAndCleanup(t *testing.T) {
 }
 
 func TestJournalStoreInjectedStorageFailures(t *testing.T) {
+	t.Parallel()
 	base, root := journalTestStore(t)
 	d := testDir(t, base, root)
 	one := event(0, "one")
@@ -454,6 +462,7 @@ func TestJournalStoreInjectedStorageFailures(t *testing.T) {
 			return s
 		}(), "projection write failed"},
 	} {
+		//nolint:paralleltest // cases share a mutable journal store and verify its post-case state.
 		t.Run(tc.name, func(t *testing.T) {
 			clearJournal()
 			if tc.name == "outbox write" || tc.name == "projection" || tc.name == "projection write" {
@@ -485,6 +494,7 @@ func TestJournalStoreInjectedStorageFailures(t *testing.T) {
 }
 
 func TestJournalStoreRepairAndLockFailures(t *testing.T) {
+	t.Parallel()
 	base, root := journalTestStore(t)
 	d := testDir(t, base, root)
 	one := event(0, "one")
@@ -526,6 +536,7 @@ func TestJournalStoreRepairAndLockFailures(t *testing.T) {
 			return s
 		}(), func() { _ = os.WriteFile(journalPath, mustJSON(t, one), 0600) }, "project failed"},
 	} {
+		//nolint:paralleltest // cases share a mutable journal store and verify its post-case state.
 		t.Run(tc.name, func(t *testing.T) {
 			tc.prepare()
 			if _, err := tc.store.RepairCurrentLocalProjection(root); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -547,6 +558,7 @@ func TestJournalStoreRepairAndLockFailures(t *testing.T) {
 }
 
 func TestJournalStoreReadAndCountFailures(t *testing.T) {
+	t.Parallel()
 	base, root := journalTestStore(t)
 	d := testDir(t, base, root)
 	// Directory exists, but the requested file does not.
@@ -572,6 +584,7 @@ func TestJournalStoreReadAndCountFailures(t *testing.T) {
 }
 
 func TestJournalDirectoryFailurePaths(t *testing.T) {
+	t.Parallel()
 	root := secureTmpDir(t)
 	badRoot := filepath.Join(root, "missing")
 	if _, err := OpenJournalDirectory(badRoot, false); err == nil {
@@ -627,6 +640,7 @@ func TestJournalDirectoryFailurePaths(t *testing.T) {
 }
 
 func TestJournalStoreAppendFailureAfterPublicationAndRepairRefusal(t *testing.T) {
+	t.Parallel()
 	base, root := journalTestStore(t)
 	d := testDir(t, base, root)
 	one := event(0, "one")

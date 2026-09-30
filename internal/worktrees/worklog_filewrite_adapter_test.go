@@ -7,12 +7,13 @@ import (
 )
 
 func TestWorkLogFilewriteAdapters(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	directory, err := os.Open(directoryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 
 	if err := writeJSONImmutableAt(directory, "immutable.json", map[string]string{"value": "immutable"}, false); err != nil {
 		t.Fatal(err)

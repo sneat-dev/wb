@@ -595,6 +595,7 @@ func TestOperationLockRejectsRetiredDirectoryAndMetadataWriteFaults(t *testing.T
 		{"sync", LockMetadataPorts{AfterWrite: func() { _ = file.Close() }}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			opened, err := os.OpenFile(file.Name(), os.O_RDWR, 0)
 			if err != nil {
 				t.Fatal(err)
