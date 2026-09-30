@@ -121,7 +121,26 @@ The combined package-only gate at `27ed43844feeac6bbe8ff84f2274312cc4c82aec` pas
 
 Focused `mode: set` profiles combined across test selections can contain repeated block rows. Count each source block once by location and statement count, with execution counts ORed across runs. For the lock checkpoint, this gives 409 unique blocks and 543/543 statements across `locks.go`, `cleanup_lock.go`, `repository_registration_lock.go`, `lockdiag.go`, and `worklog_lock.go`; raw repeated rows are not additional source statements.
 
-The reviewed combined result and subsequent test-only lint fixes are accumulated on local `coverage-refactor` at `c26a52c8`. Next coherent slices are immutable claim publication/correction and landing PR receipt verification. Both implementation lanes start from that same commit. Local commits are accumulated before publication; the coordinator owns integration. Each batch must provide its exact moved/retained/deleted function inventory and focused coverage evidence before review. Batch focused checks, then share one package-only gate across compatible reviewed batches.
+That checkpoint and subsequent test-only lint fixes were accumulated at `c26a52c8`. The next reviewed local checkpoint is `dd1d74eaeffa33607efee4971b7efc6f2dbaacdc`, after these additional domain slices:
+
+| Domain slice | Local evidence |
+| --- | --- |
+| Landing PR receipts and dependency observation | Focused moved leaf 277/277 statements; context, exact API arguments, freshness and tree proofs retained. |
+| Immutable claim publication and corrections | Focused new files 307/307 statements; claim-before-projection/journal/outbox ordering retained. |
+| Interrupted claim publication retry | Native concurrency regression and focused race checks; original durable authority and timestamps reused. |
+| Supersession receipt and dependency proof | Focused moved leaf 431/431 statements and retained adapters 39/39; strict identity and dependency evidence checks retained. |
+| Retirement archive capture, publication and verification | Focused leaf 227/227 statements; pipe-creation error propagation restored and independently reviewed before integration. |
+| Coverage profile accounting | Duplicate source blocks normalized in both summaries and aggregate totals, with set/count/atomic regression checks. |
+
+The shared checkpoint command was `go test -coverpkg=./internal/worktree... -coverprofile=<profile> -timeout=15m ./internal/worktree...`, run through WB. It passed in 14m12s. Normalized unique-block coverage is **18,644/20,895 statements (89.2271%)**, with **2,251 uncovered**, across eleven worktree-related packages. The facade alone is **14,273/16,523 (86.3826%)**, with **2,250 uncovered**, 146 fewer than the previous 2,396. Moving covered bodies changes the facade denominator; compare uncovered statements as well as percentages. This is not whole-CLI coverage.
+
+Nine extracted packages are fully covered in that shared profile: claims, end, journal, landing, layout, policy, proof, retire and secure. Branches has one missed statement in direct dependency-selector identity matching. The profile includes extracted code invoked by facade tests, unlike a test-package-only coverage selection. Its normalized summary records the exact checkpoint SHA; the local evidence files are `/private/tmp/wb-worktree-after-archive.coverage.out` and `/private/tmp/wb-worktree-dd1d74ea-summary.json` and are not repository artifacts.
+
+A subsequent test-only addition verifies direct package identity, empty identity refusal, lockfile selectors and lookalike package names. Its full branches-package run passed. Combining that profile with the shared checkpoint over unchanged production source covers the last branch statement: **1,138/1,138** for branches and **18,645/20,895 (89.2319%)** for the group, leaving **2,250 uncovered**. This combined-profile observation is not another broad test run; standalone branch tests cover 82.5%, with facade tests supplying the remaining execution paths.
+
+Next is the terminal authority and removed-history domain: replace the long sealing argument list and redundant forwarding variants with a typed request, move immutable terminal/history storage to claims, and retain live Git/projection authorization and advanced cleanup proofs in the facade. A parallel lane repairs campaign-introduced quality guard violations without raising ratchet totals. Local commits remain accumulated before publication, with the coordinator owning integration. Each batch provides its moved/retained/deleted function inventory and focused coverage evidence before review; compatible reviewed batches share one broader checkpoint.
+
+Reachable operating-system failures must retain error propagation even when the receiver is newly created. In particular, `exec.Cmd.StdoutPipe` allocates an OS pipe and can fail; a fresh command does not make that error unreachable. Remove error branches only with a concrete proof about the operation and its inputs, not to make coverage pass.
 
 ## Evidence and limits
 
