@@ -98,7 +98,7 @@ func removeFailedRenameBranch(plan *renamePlan, ports renameFailedBranchPorts) e
 	return ports.DeleteExact(canonical)
 }
 
-// Restore usesthe recorded immutable source SHA under an empty remote lease.
+// Restore uses the recorded immutable source SHA under an empty remote lease.
 // The same query is deliberately repeated after push: an accepted invocation
 // is insufficient evidence that the remote still names the recorded object.
 type renameRemoteRestorePorts struct {
