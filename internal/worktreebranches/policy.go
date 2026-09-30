@@ -1,4 +1,5 @@
-// Package worktreebranches owns dependency-free branch selection and cleanup policy.
+// Package worktreebranches owns branch selection, cleanup policy, and reviewed
+// supersession receipt proof.
 package worktreebranches
 
 import (
