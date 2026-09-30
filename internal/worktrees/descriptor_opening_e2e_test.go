@@ -46,22 +46,47 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesReboundPath(t *testing.T) {
 		path, directory, openErr := prepareCanonicalWorktreesRoot(ctx, canonical, strings.Repeat("a", 40))
 		done <- result{path: path, directory: directory, err: openErr}
 	}()
+	patterns := fmt.Sprintf("%s\n%s\n", checkoutmarker.ExcludePattern, checkoutmarker.WorktreesExcludePattern)
 	writerFD := -1
+	fifoPath := exclude
 	joined := false
 	defer func() {
+		released := false
 		if writerFD >= 0 {
+			_, _ = unix.Write(writerFD, []byte(patterns))
 			_ = unix.Close(writerFD)
+			writerFD = -1
+			released = true
 		}
 		if joined {
 			return
 		}
-		select {
-		case returned := <-done:
-			if returned.directory != nil {
-				_ = returned.directory.Close()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			select {
+			case returned := <-done:
+				if returned.directory != nil {
+					_ = returned.directory.Close()
+				}
+				return
+			default:
 			}
-		case <-time.After(5 * time.Second):
-			t.Error("canonical root preparation did not finish after FIFO writer release")
+			if !released {
+				fd, openErr := unix.Open(fifoPath, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+				if openErr == nil {
+					_, _ = unix.Write(fd, []byte(patterns))
+					_ = unix.Close(fd)
+					released = true // The reader was opened; no further writer retry is needed.
+				} else if !errors.Is(openErr, unix.ENXIO) {
+					t.Errorf("release exclude reader after early failure: %v", openErr)
+					return
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Error("canonical root preparation did not finish after bounded FIFO release")
+				return
+			}
+			time.Sleep(time.Millisecond)
 		}
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -89,7 +114,7 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesReboundPath(t *testing.T) {
 	if err := os.Rename(root, moved); err != nil {
 		t.Fatal(err)
 	}
-	patterns := fmt.Sprintf("%s\n%s\n", checkoutmarker.ExcludePattern, checkoutmarker.WorktreesExcludePattern)
+	fifoPath = filepath.Join(moved, ".git", "info", "exclude")
 	if n, err := unix.Write(writerFD, []byte(patterns)); err != nil || n != len(patterns) {
 		t.Fatalf("release exclude reader: wrote %d/%d bytes: %v", n, len(patterns), err)
 	}
