@@ -406,9 +406,36 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 	})
 	t.Run("source returns", func(t *testing.T) {
 		fixtureRoot, fixtureParent, held := moveFixture(t, "again")
-		moved, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "again", fixtureParent, "again-target", held, rename, nil, func() { _ = os.Mkdir(filepath.Join(fixtureRoot, "again"), 0o700) })
+		if err := os.WriteFile(filepath.Join(fixtureRoot, "again", "original"), []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		heldInfo, err := held.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		moved, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "again", fixtureParent, "again-target", held, rename, nil, func() {
+			if err := os.Mkdir(filepath.Join(fixtureRoot, "again"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(fixtureRoot, "again", "competitor"), []byte("competitor"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
 		if !errors.Is(err, ErrDirectoryMoveIdentityChanged) || moved == nil {
 			t.Fatalf("recreated source = %v, %v", moved, err)
+		}
+		movedInfo, statErr := moved.Stat()
+		if statErr != nil || !os.SameFile(heldInfo, movedInfo) {
+			t.Fatalf("returned handle lost original identity: %v", statErr)
+		}
+		if _, statErr := held.Stat(); statErr != nil {
+			t.Fatalf("borrowed handle invalid: %v", statErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(fixtureRoot, "again-target", "original")); readErr != nil || string(got) != "original" {
+			t.Fatalf("published content = %q, %v", got, readErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(fixtureRoot, "again", "competitor")); readErr != nil || string(got) != "competitor" {
+			t.Fatalf("competing source overwritten = %q, %v", got, readErr)
 		}
 		_ = moved.Close()
 		_ = held.Close()
@@ -460,14 +487,50 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 			t.Fatalf("restore failure = %v", err)
 		}
 	})
-	t.Run("restore collision", func(t *testing.T) {
+	t.Run("destination substitution restore collision", func(t *testing.T) {
 		fixtureRoot, fixtureParent, held := moveFixture(t, "collision")
-		_, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "collision", fixtureParent, "collision-target", held, rename, nil, func() {
-			_ = os.Rename(filepath.Join(fixtureRoot, "collision-target"), filepath.Join(fixtureRoot, "old"))
-			_ = os.Mkdir(filepath.Join(fixtureRoot, "collision-target"), 0o700)
+		if err := os.WriteFile(filepath.Join(fixtureRoot, "collision", "original"), []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		heldInfo, err := held.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		racingRename := func(a int, b string, c int, d string) error {
+			calls++
+			if calls == 2 {
+				if err := os.Mkdir(filepath.Join(fixtureRoot, "collision"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(fixtureRoot, "collision", "competitor"), []byte("competitor"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return filewrite.RenameNoReplace(a, b, c, d, nil)
+		}
+		_, err = MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "collision", fixtureParent, "collision-target", held, racingRename, nil, func() {
+			if err := os.Rename(filepath.Join(fixtureRoot, "collision-target"), filepath.Join(fixtureRoot, "original-held")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(fixtureRoot, "collision-target"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(fixtureRoot, "collision-target", "substitute"), []byte("substitute"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		})
 		if !errors.Is(err, ErrDirectoryMoveIdentityChanged) {
 			t.Fatalf("restore collision = %v", err)
+		}
+		if info, statErr := held.Stat(); statErr != nil || !os.SameFile(heldInfo, info) {
+			t.Fatalf("borrowed identity changed: %v", statErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(fixtureRoot, "collision", "competitor")); readErr != nil || string(got) != "competitor" {
+			t.Fatalf("source overwritten = %q, %v", got, readErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(fixtureRoot, "collision-target", "substitute")); readErr != nil || string(got) != "substitute" {
+			t.Fatalf("destination overwritten = %q, %v", got, readErr)
 		}
 		_ = held.Close()
 	})
