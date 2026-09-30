@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -74,37 +73,7 @@ func withOptionalClaimFence(projectsRoot, worktree string, require bool) (claimF
 }
 
 func observeUsage(discriminator string, input, output *int64, cost *float64, currency, providerRef string) (*LocalUsageEvidence, error) {
-	discriminator = strings.TrimSpace(discriminator)
-	if discriminator == "" {
-		if input == nil && output == nil && cost == nil && currency == "" && providerRef == "" {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("--usage-discriminator is required when usage fields are supplied")
-	}
-	switch discriminator {
-	case "provider_reported", "estimated", "unavailable":
-	default:
-		return nil, fmt.Errorf("usage discriminator must be provider_reported, estimated, or unavailable")
-	}
-	usage := &LocalUsageEvidence{
-		Discriminator: discriminator,
-		InputTokens:   input,
-		OutputTokens:  output,
-		EstimatedCost: cost,
-		Currency:      strings.TrimSpace(currency),
-		ProviderRef:   strings.TrimSpace(providerRef),
-	}
-	if input != nil || output != nil {
-		total := int64(0)
-		if input != nil {
-			total += *input
-		}
-		if output != nil {
-			total += *output
-		}
-		usage.TotalTokens = &total
-	}
-	return usage, nil
+	return worktreeclaims.ObserveUsage(discriminator, input, output, cost, currency, providerRef)
 }
 
 // LogInitOptions configures wb worktree log init.
@@ -395,20 +364,7 @@ func LogRefresh(ctx context.Context, options LogRefreshOptions) (LogVerbResult, 
 }
 
 func aheadBehind(ctx context.Context, worktree, targetSHA string) (int, int, error) {
-	out, err := git(ctx, worktree, "rev-list", "--left-right", "--count", "HEAD..."+targetSHA)
-	if err != nil {
-		return 0, 0, err
-	}
-	fields := strings.Fields(strings.TrimSpace(out))
-	if len(fields) != 2 {
-		return 0, 0, fmt.Errorf("unexpected ahead/behind output %q", out)
-	}
-	ahead, err1 := strconv.Atoi(fields[0])
-	behind, err2 := strconv.Atoi(fields[1])
-	if err1 != nil || err2 != nil {
-		return 0, 0, fmt.Errorf("parse ahead/behind %q", out)
-	}
-	return ahead, behind, nil
+	return worktreeclaims.GitEvidencePorts{Git: git}.AheadBehind(ctx, worktree, targetSHA)
 }
 
 // LogIntegrateOptions configures wb worktree log integrate.
@@ -525,16 +481,7 @@ func resolveLogBase(worktree, requested string) string {
 }
 
 func branchPublished(ctx context.Context, worktree string) (bool, error) {
-	branch, err := git(ctx, worktree, "branch", "--show-current")
-	if err != nil {
-		return false, err
-	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return false, nil
-	}
-	_, err = git(ctx, worktree, "rev-parse", "--verify", "refs/remotes/origin/"+branch)
-	return err == nil, nil
+	return worktreeclaims.GitEvidencePorts{Git: git}.BranchPublished(ctx, worktree)
 }
 
 // LogHandoffOptions configures wb worktree log handoff.
@@ -1038,13 +985,10 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 }
 
 func mustCountOutbox(worktree string) int {
-	count, _ := countLocalOutbox(worktree)
-	return count
+	return worktreeclaims.MustCountOutbox(worktree, countLocalOutbox)
 }
-
 func ptrLocalGit(evidence LocalGitEvidence) *LocalGitEvidence {
-	copyEvidence := evidence
-	return &copyEvidence
+	return worktreeclaims.PtrLocalGit(evidence)
 }
 
 func copyDir(src, dest string) error {

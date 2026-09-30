@@ -23,6 +23,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 const externalHandoffEvidenceVersion = 1
@@ -34,23 +35,7 @@ var (
 	readBoundedRelativeRegularReadAll = io.ReadAll
 )
 
-// workLogExternalHandoffEvidence is immutable, transport-neutral lineage that
-// links the source terminal and target active claim without manufacturing a
-// source-local successor claim.
-type workLogExternalHandoffEvidence struct {
-	Version                int    `json:"version"`
-	Protocol               string `json:"protocol,omitempty"`
-	HandoffID              string `json:"handoff_id"`
-	MemberID               string `json:"member_id,omitempty"`
-	RequestDigest          string `json:"request_digest"`
-	PredecessorWBSessionID string `json:"predecessor_wb_session_id"`
-	SuccessorWBSessionID   string `json:"successor_wb_session_id"`
-	SourceMachine          string `json:"source_machine"`
-	TargetMachine          string `json:"target_machine"`
-	SourceWorkLogReference string `json:"source_work_log_reference"`
-	TargetWorkLogReference string `json:"target_work_log_reference"`
-	SuccessorTmuxName      string `json:"successor_tmux_name"`
-}
+type workLogExternalHandoffEvidence = worktreeclaims.ExternalHandoffEvidence
 
 func sameExternalHandoffEvidence(first, second *workLogExternalHandoffEvidence) bool {
 	if first == nil || second == nil {
