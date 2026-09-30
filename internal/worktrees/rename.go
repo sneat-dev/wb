@@ -16,7 +16,6 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/unixcompat"
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // SecureRenameGitHelperArgument selects the private child that runs the
@@ -512,219 +511,7 @@ type renamePlan struct {
 // descriptor-relative no-replace rename, repairs Git's administrative gitdir
 // pointer from that held destination, and verifies the final registration.
 func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
-	normalized, err := normalizeRenameOptions(options)
-	if err != nil {
-		return RenameOutcome{}, err
-	}
-	resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
-	if err != nil {
-		return RenameOutcome{}, err
-	}
-	normalized.WorkLog, err = PrepareWorkLogOptions(normalized.ProjectsRoot, normalized.NewTask, normalized.WorkLog)
-	if err != nil {
-		return RenameOutcome{}, err
-	}
-	if normalized.Apply {
-		if err := requireGitFilesystemCapability(); err != nil {
-			return RenameOutcome{}, err
-		}
-	}
-	now := normalized.Now()
-	if normalized.ReportDir == "" && normalized.Apply {
-		normalized.ReportDir = DefaultRenameReportDir(resolution.Write.Home, now)
-	}
-
-	listed, err := ListWithDiagnostics(ctx, ListOptions{
-		ProjectsRoot: normalized.ProjectsRoot,
-		Task:         normalized.OldTask,
-		Base:         normalized.Base,
-		Filter:       normalized.Filter,
-		GitHub:       false,
-	})
-	if err != nil {
-		return RenameOutcome{}, err
-	}
-	if len(listed.Results) == 0 && len(listed.Diagnostics) == 0 {
-		return RenameOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.OldTask)
-	}
-	plans := make([]renamePlan, len(listed.Results))
-	destinationReason := ""
-	sharedTaskDestinations := make(map[string]bool)
-	for index, entry := range listed.Results {
-		branch, baseRevision, branchErr := resolveRenameBranch(ctx, normalized, entry)
-		if branchErr != nil {
-			return RenameOutcome{}, branchErr
-		}
-		placement, placementErr := ResolveWorktreePlacement(ctx, normalized.ProjectsRoot, entry.CanonicalDir, baseRevision)
-		if placementErr != nil {
-			return RenameOutcome{}, placementErr
-		}
-		newWorktreeDir, pathErr := placement.Path(normalized.NewTask, entry.Repository)
-		if pathErr != nil {
-			return RenameOutcome{}, pathErr
-		}
-		collisionPath := newWorktreeDir
-		if !placement.RepositoryLocal {
-			collisionPath = filepath.Join(placement.Root, normalized.NewTask)
-			if sharedTaskDestinations[collisionPath] {
-				collisionPath = ""
-			} else {
-				sharedTaskDestinations[collisionPath] = true
-			}
-		}
-		if collisionPath != "" {
-			if _, statErr := os.Lstat(collisionPath); statErr == nil {
-				destinationReason = fmt.Sprintf("destination task already exists: %s", collisionPath)
-			} else if !errors.Is(statErr, os.ErrNotExist) {
-				return RenameOutcome{}, fmt.Errorf("inspect destination task %s: %w", collisionPath, statErr)
-			}
-		}
-		eligible, reason := renameEligibility(entry)
-		plans[index] = renamePlan{entry: entry, destinationRoot: placement.Root, destinationLocal: placement.RepositoryLocal, baseRevision: baseRevision, result: RenameResult{
-			OldTask: normalized.OldTask, NewTask: normalized.NewTask,
-			Repository: entry.Repository, CanonicalDir: entry.CanonicalDir,
-			OldWorktreeDir: entry.WorktreeDir,
-			NewWorktreeDir: newWorktreeDir,
-			OldBranch:      entry.Branch, NewBranch: branch, Base: normalized.Base,
-			Eligible: eligible, Reason: reason,
-		}}
-	}
-	blockRenameTask(plans, listed.Diagnostics, destinationReason)
-
-	outcome := RenameOutcome{Results: collectRenameResults(plans), Diagnostics: listed.Diagnostics}
-	if !normalized.Apply {
-		return outcome, nil
-	}
-
-	fail := func(renameErr error) (RenameOutcome, error) {
-		if normalized.ReportDir != "" {
-			path, reportErr := writeRenameReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics)
-			if reportErr != nil {
-				return outcome, fmt.Errorf("%w; write failed rename report: %v", renameErr, reportErr)
-			}
-			outcome.ReportPath = path
-		}
-		return outcome, renameErr
-	}
-	if normalized.ReportDir != "" {
-		if _, reportErr := writeRenameReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics); reportErr != nil {
-			return outcome, reportErr
-		}
-	}
-
-	anyEligible := false
-	for _, plan := range plans {
-		if plan.result.Eligible {
-			anyEligible = true
-			break
-		}
-	}
-	if !anyEligible {
-		return fail(fmt.Errorf("no repository under task %q is eligible to rename: %s", normalized.OldTask, firstRenameReason(plans)))
-	}
-
-	// WB_HOME owns the task lock for every placement. Physical local roots are
-	// per-repository and must never grow independent locks, otherwise a create
-	// in one canonical repository can race a rename in another.
-	oldOperation, err := prepareOperationRoot(resolution.Write.Home, normalized.OldTask, nil)
-	if err != nil {
-		return fail(fmt.Errorf("open task %q: %w", normalized.OldTask, err))
-	}
-	defer oldOperation.close()
-	oldLock, err := acquireLockAt(oldOperation.Directory, normalized.OldTask)
-	if err != nil {
-		return fail(fmt.Errorf("lock task %q: %w", normalized.OldTask, err))
-	}
-	defer func() { _ = oldLock.release() }()
-
-	// Preflight every repository while the source task lock is held before
-	// creating the destination or terminalizing the first claim. This prevents
-	// a second-repository branch/fetch failure from leaving a half-recycled
-	// coordinated task.
-	if normalized.beforeRenamePreflight != nil {
-		normalized.beforeRenamePreflight()
-	}
-	for index := range plans {
-		if !plans[index].result.Eligible {
-			continue
-		}
-		if preflightErr := preflightRename(ctx, normalized, &plans[index]); preflightErr != nil {
-			outcome.Results = collectRenameResults(plans)
-			return fail(preflightErr)
-		}
-	}
-	// Inspect the destination before this transaction creates any new-task
-	// control-plane entry. This is the collision verdict reported to callers;
-	// a second inspection under the destination lock below closes the create
-	// race without letting our own lock or prompt reservation impersonate a
-	// foreign task.
-	newInventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{
-		ProjectsRoot: normalized.ProjectsRoot, Task: normalized.NewTask, Base: normalized.Base, GitHub: false,
-	})
-	if inventoryErr != nil {
-		return fail(fmt.Errorf("inspect destination task %q: %w", normalized.NewTask, inventoryErr))
-	}
-	if len(newInventory.Results) > 0 || len(newInventory.Diagnostics) > 0 {
-		return fail(fmt.Errorf("destination task already exists: %s", normalized.NewTask))
-	}
-	newOperation, err := prepareOperationRoot(resolution.Write.Home, normalized.NewTask, nil)
-	if err != nil {
-		return fail(err)
-	}
-	defer newOperation.close()
-	newLock, err := acquireLockAt(newOperation.Directory, normalized.NewTask)
-	if err != nil {
-		return fail(fmt.Errorf("lock task %q: %w", normalized.NewTask, err))
-	}
-	defer func() { _ = newLock.release() }()
-	newInventory, inventoryErr = ListWithDiagnostics(ctx, ListOptions{
-		ProjectsRoot: normalized.ProjectsRoot, Task: normalized.NewTask, Base: normalized.Base, GitHub: false,
-	})
-	if inventoryErr != nil {
-		return fail(fmt.Errorf("inspect destination task %q while locked: %w", normalized.NewTask, inventoryErr))
-	}
-	if len(newInventory.Results) > 0 || len(newInventory.Diagnostics) > 0 {
-		return fail(fmt.Errorf("destination task already exists: %s", normalized.NewTask))
-	}
-	// The prompt reservation follows both destination inventories. It is durable
-	// WB_HOME state for this destination effort, so treating it as occupancy
-	// would make rename refuse on its own transaction. The held destination lock
-	// prevents a concurrent create from changing the empty verdict now.
-	if err := reservePreApplyRenameWorkLog(resolution.Write.Home, normalized.OldTask, normalized.NewTask, normalized.WorkLog); err != nil {
-		return fail(fmt.Errorf("reserve new private Work Log prompt: %w", err))
-	}
-	if normalized.afterPreApplyReservation != nil {
-		if err := normalized.afterPreApplyReservation(); err != nil {
-			return fail(fmt.Errorf("after pre-apply rename reservation: %w", err))
-		}
-	}
-	for index := range plans {
-		if !plans[index].result.Eligible {
-			continue
-		}
-		if applyErr := applyRename(ctx, resolution.Write.Home, normalized, &plans[index]); applyErr != nil {
-			rollbackErr := rollbackAppliedRenames(ctx, resolution.Write.Home, plans[:index])
-			outcome.Results = collectRenameResults(plans)
-			if rollbackErr != nil {
-				applyErr = fmt.Errorf("%w; coordinated rollback failed: %v", applyErr, rollbackErr)
-			}
-			return fail(applyErr)
-		}
-	}
-	outcome.Results = collectRenameResults(plans)
-
-	// Keep the now-possibly-empty old task root in place while its descriptor
-	// lock is live, exactly like Cleanup does: removing it after releasing the
-	// lock would open an ABA window where a concurrent create makes a new,
-	// unreachable task directory at the same pathname. A filtered rename that
-	// leaves sibling repositories behind needs the root to stay anyway.
-	if normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeRenameReport(normalized, now, "applied", outcome.Results, outcome.Diagnostics)
-		if err != nil {
-			return outcome, err
-		}
-	}
-	return outcome, nil
+	return renameWithPorts(options, productionRenameFacadePorts(ctx))
 }
 
 // rollbackAppliedRenames reverses every repository already moved by this
@@ -854,27 +641,11 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 	}
 
 	// Recheck safety immediately before mutating under the source task lock.
-	refreshed, err := inspectLifecycleWorktree(
-		ctx, options.ProjectsRoot, "", wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot, Local: plan.entry.Local},
-		// Rename never consults GitHub, so no landing receipt applies here.
-		// renameEligibility already refuses an adopted worktree, so this is
-		// never reached for one; a nested, non-external recheck is correct.
-		options.OldTask, plan.entry.WorktreeDir, options.Base, "", false, false, false, inspectPolicy{},
-	)
+	// Rename never consults GitHub and adopted worktrees fail eligibility, so
+	// this uses the same nested, non-external proof as coordinated preflight.
+	refreshed, err := proveRenameSource(ctx, options, plan, renameApplyProof, productionRenameSourceProofPorts())
 	if err != nil {
-		return fmt.Errorf("recheck %s before renaming: %w", plan.entry.Repository, err)
-	}
-	if !refreshed.Clean {
-		return fmt.Errorf("rename safety changed for %s: worktree has local changes", refreshed.Repository)
-	}
-	if refreshed.HeadSHA != plan.entry.HeadSHA {
-		return fmt.Errorf("rename safety changed for %s: branch head moved", refreshed.Repository)
-	}
-	if err := verifyRecycleState(ctx, plan.entry.WorktreeDir, options.PreserveCachePaths); err != nil {
-		return fmt.Errorf("prepare %s for recycle: %w", refreshed.Repository, err)
-	}
-	if refreshed.HeadSHA != plan.refreshed.HeadSHA {
-		return fmt.Errorf("rename safety changed for %s after coordinated preflight", refreshed.Repository)
+		return err
 	}
 	priorProjection, projectionErr := readWorkLogProjectionForClaim(home, plan.entry.WorktreeDir)
 	plan.priorProjection = priorProjection
@@ -892,36 +663,13 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 			resetRenameResultAfterRollback(plan)
 		}
 	}()
-	if err := sealWorkLogForRecycle(home, plan.entry.WorktreeDir, refreshed.HeadSHA, "recycled"); err != nil {
-		return fmt.Errorf("seal previous work log for %s: %w", refreshed.Repository, err)
-	}
-	plan.sealed = true
-	if err := removeWorkLogProjection(plan.entry.WorktreeDir); err != nil {
+	if err := sealPriorRenameClaimAndRemoveProjection(plan, refreshed,
+		productionRenameClaimCutoverPorts(home, plan.entry.WorktreeDir)); err != nil {
 		return err
 	}
-	currentRemoteHead, err := remoteBranchHead(ctx, plan.entry.CanonicalDir, plan.entry.Branch)
-	if err != nil {
-		return fmt.Errorf("recheck remote branch before recycling %s: %w", plan.entry.Repository, err)
-	}
-	if currentRemoteHead != plan.remoteHead || (currentRemoteHead != "" && currentRemoteHead != refreshed.HeadSHA) {
-		return fmt.Errorf("recycle safety changed for %s: remote branch moved from %q to %q", plan.entry.Repository, plan.remoteHead, currentRemoteHead)
-	}
-	if currentRemoteHead != "" {
-		if !options.DeleteRemote {
-			return fmt.Errorf("origin/%s still exists; recycle requires explicit --remote retirement", plan.entry.Branch)
-		}
-		canonical, openErr := openCanonicalRepository(plan.entry.CanonicalDir)
-		if openErr != nil {
-			return openErr
-		}
-		deleteErr := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
-			"push", "--force-with-lease=refs/heads/"+plan.entry.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+plan.entry.Branch)
-		canonical.close()
-		if deleteErr != nil {
-			return fmt.Errorf("retire old remote branch %s at %s: %w", plan.entry.Branch, refreshed.HeadSHA, deleteErr)
-		}
-		plan.remoteDeleted = true
-		plan.result.OldRemoteDeleted = true
+	if err := retireRenameRemote(options, plan, refreshed,
+		productionRenameRemoteRetirementPorts(ctx, plan)); err != nil {
+		return err
 	}
 
 	if err := prepareRenamePhysicalDestination(ctx, options.NewTask, plan); err != nil {
@@ -961,45 +709,7 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 	}
 	plan.result.PreservedCachePaths = append([]string(nil), options.PreserveCachePaths...)
 
-	if checkoutErr := runSecureRenameGit(ctx, plan.entry.CanonicalDir, plan.destinationRoot, plan.result.NewWorktreeDir,
-		"checkout", "-b", plan.result.NewBranch, plan.baseRevision); checkoutErr != nil {
-		return fmt.Errorf("check out new branch %s in %s: %w", plan.result.NewBranch, plan.result.NewWorktreeDir, checkoutErr)
-	}
-	plan.newBranchCreated = true
-
-	if _, guardErr := Guard(ctx, plan.result.NewWorktreeDir, GuardOptions{ProjectsRoot: options.ProjectsRoot, Base: options.Base}); guardErr != nil {
-		return fmt.Errorf("renamed worktree %s failed guard: %w", plan.result.NewWorktreeDir, guardErr)
-	}
-	canonical, openErr := openCanonicalRepository(plan.entry.CanonicalDir)
-	if openErr != nil {
-		return openErr
-	}
-	deleted, _, deleteErr := deleteOldBranchIfSafe(
-		ctx, canonical, plan.entry.Branch, refreshed.HeadSHA, plan.result.NewBranch, options.Base, options.Force,
-	)
-	canonical.close()
-	if deleteErr != nil {
-		return deleteErr
-	}
-	if !deleted {
-		return fmt.Errorf("old branch %q was not deleted; recycle is incomplete", plan.entry.Branch)
-	}
-	plan.oldBranchDeleted = true
-	plan.result.OldBranchDeleted = true
-	if options.beforeRenameBind != nil {
-		if err := options.beforeRenameBind(plan.entry.Repository); err != nil {
-			return fmt.Errorf("bind preflight for %s: %w", plan.entry.Repository, err)
-		}
-	}
-	if _, logErr := recordWorkLog(home, options.NewTask, CreateResult{
-		Repository: plan.entry.Repository, CanonicalDir: plan.entry.CanonicalDir,
-		WorktreeDir: plan.result.NewWorktreeDir, Branch: plan.result.NewBranch, Base: options.Base,
-		BaseSHA: plan.baseRevision, Action: "recycled",
-	}, options.WorkLog); logErr != nil {
-		return fmt.Errorf("bind recycled worktree to a new work log: %w", logErr)
-	}
-	plan.result.Applied = true
-	return nil
+	return finishRenameMember(options, plan, productionRenameFinishPorts(ctx, home, options, plan, refreshed))
 }
 
 // prepareRenamePhysicalDestination opens the destination through descriptors
@@ -1009,15 +719,12 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 // still belongs to WB_HOME and is held by Rename.
 func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
 	if plan.destinationLocal {
-		rootPath, root, err := openLocalRenameDestination(ctx, plan)
+		root, err := openRenameDestinationRoot(ctx, plan, renameDestinationMove)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = root.Close() }()
-		if rootPath != plan.destinationRoot || !directoryStillMatches(rootPath, root) {
-			return fmt.Errorf("local rename destination root changed before move: %s", plan.destinationRoot)
-		}
-		return requireAbsentNoFollowChild(int(root.Fd()), task)
+		return requireLocalRenameDestinationAbsent(root, task)
 	}
 
 	// The destination's relative shape below the shared root is
@@ -1034,7 +741,7 @@ func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *re
 	}
 	parent := filepath.ToSlash(filepath.Join(parts[1 : len(parts)-1]...))
 	repository := parts[len(parts)-1]
-	root, err := openSharedRenameDestinationRoot(plan, "before move")
+	root, err := openRenameDestinationRoot(ctx, plan, renameDestinationMove)
 	if err != nil {
 		return err
 	}
@@ -1043,11 +750,9 @@ func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *re
 	if err != nil {
 		return fmt.Errorf("create shared rename task destination: %w", err)
 	}
+	// The secure open returns a nonnegative descriptor on nil error; os.NewFile
+	// returns nil only for a negative descriptor on Unix (Go os/file_unix.go).
 	taskDirectory := os.NewFile(uintptr(taskFD), "wb-rename-shared-task")
-	if taskDirectory == nil {
-		_ = unix.Close(taskFD)
-		return fmt.Errorf("wrap shared rename task destination")
-	}
 	defer func() { _ = taskDirectory.Close() }()
 	parentDirectory, _, err := openRelativeParentDirectory(taskDirectory, filepath.Join(plan.destinationRoot, task), parent)
 	if err != nil {
@@ -1061,27 +766,26 @@ func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *re
 // before the first source claim is sealed. It deliberately leaves the final
 // checkout name absent; moveWorktree owns that no-replace publication.
 func preflightRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
-	if plan.destinationLocal {
-		rootPath, root, err := openLocalRenameDestination(ctx, plan)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = root.Close() }()
-		if rootPath != plan.destinationRoot || !directoryStillMatches(rootPath, root) {
-			return fmt.Errorf("local rename destination root changed during preflight: %s", plan.destinationRoot)
-		}
-		return requireAbsentNoFollowChild(int(root.Fd()), task)
-	}
-	root, err := openSharedRenameDestinationRoot(plan, "during preflight")
+	root, err := openRenameDestinationRoot(ctx, plan, renameDestinationPreflight)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	if plan.destinationLocal {
+		return requireLocalRenameDestinationAbsent(root, task)
+	}
+	return probeRenameSharedDestination(root, unix.Mkdirat, unix.Unlinkat)
+}
+
+// probeRenameSharedDestination proves write access before any source claim is
+// sealed. The per-invocation operations let fault tests verify both failure
+// edges without changing process-wide filesystem state.
+func probeRenameSharedDestination(root *os.File, mkdir func(int, string, uint32) error, unlink func(int, string, int) error) error {
 	probe := ".wb-rename-probe-" + fmt.Sprintf("%d", time.Now().UnixNano())
-	if err := unix.Mkdirat(int(root.Fd()), probe, 0o700); err != nil {
+	if err := mkdir(int(root.Fd()), probe, 0o700); err != nil {
 		return fmt.Errorf("verify shared rename destination write access: %w", err)
 	}
-	if err := unix.Unlinkat(int(root.Fd()), probe, unix.AT_REMOVEDIR); err != nil {
+	if err := unlink(int(root.Fd()), probe, unix.AT_REMOVEDIR); err != nil {
 		return fmt.Errorf("remove shared rename destination probe: %w", err)
 	}
 	return nil
@@ -1116,23 +820,8 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 	if plan.moved {
 		currentPath = plan.result.NewWorktreeDir
 	}
-	// If a fresh claim was partially or fully bound, archive it before removing
-	// its projection. Failure here stops rollback rather than losing evidence.
-	projection, projectionErr := readWorkLogProjectionForReadOnlyClaim(currentPath)
-	if projectionErr != nil && !errors.Is(projectionErr, errWorkLogProjectionNotFound) {
-		return fmt.Errorf("inspect fresh recycle projection before rollback: %w", projectionErr)
-	}
-	if projectionErr == nil && projection.ClaimID != plan.priorProjection.ClaimID {
-		head, headErr := git(ctx, currentPath, "rev-parse", "HEAD")
-		if headErr != nil {
-			return headErr
-		}
-		if err := sealWorkLogForRecycle(home, currentPath, head, "recycle_failed"); err != nil {
-			return err
-		}
-		if err := removeWorkLogProjection(currentPath); err != nil {
-			return err
-		}
+	if err := retireFreshRenameClaimOnRollback(plan, productionRenameRollbackClaimPorts(ctx, home, currentPath)); err != nil {
+		return err
 	}
 	if plan.oldBranchDeleted {
 		canonical, openErr := openCanonicalRepository(plan.entry.CanonicalDir)
@@ -1146,30 +835,8 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 		}
 	}
 	if plan.remoteDeleted {
-		remoteHead, err := remoteBranchHead(ctx, plan.entry.CanonicalDir, plan.entry.Branch)
-		if err != nil {
-			return fmt.Errorf("inspect remote before recycle rollback: %w", err)
-		}
-		if remoteHead != "" {
-			return fmt.Errorf("refuse to restore remote branch %s: another actor created it at %s", plan.entry.Branch, remoteHead)
-		}
-		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
-		if err != nil {
+		if err := restoreRetiredRenameRemote(plan, productionRenameRemoteRestorePorts(ctx, plan)); err != nil {
 			return err
-		}
-		restoreErr := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
-			"push", "--force-with-lease=refs/heads/"+plan.entry.Branch+":", "origin",
-			plan.entry.HeadSHA+":refs/heads/"+plan.entry.Branch)
-		canonical.close()
-		if restoreErr != nil {
-			return fmt.Errorf("restore retired remote branch %s at %s: %w", plan.entry.Branch, plan.entry.HeadSHA, restoreErr)
-		}
-		restoredHead, err := remoteBranchHead(ctx, plan.entry.CanonicalDir, plan.entry.Branch)
-		if err != nil {
-			return err
-		}
-		if restoredHead != plan.entry.HeadSHA {
-			return fmt.Errorf("restored remote branch %s is %s, expected %s", plan.entry.Branch, restoredHead, plan.entry.HeadSHA)
 		}
 	}
 	if plan.moved {
@@ -1186,24 +853,8 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 			return fmt.Errorf("move failed recycle back to source: %w", err)
 		}
 	}
-	if exists, err := localBranchExists(ctx, plan.entry.CanonicalDir, plan.result.NewBranch); err != nil {
+	if err := removeFailedRenameBranch(plan, productionRenameFailedBranchPorts(ctx, plan)); err != nil {
 		return err
-	} else if exists {
-		canonical, openErr := openCanonicalRepository(plan.entry.CanonicalDir)
-		if openErr != nil {
-			return openErr
-		}
-		newHead, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+plan.result.NewBranch)
-		if err == nil && newHead == plan.baseRevision {
-			_, err = gitCanonical(ctx, canonical, "update-ref", "-d", "refs/heads/"+plan.result.NewBranch, plan.baseRevision)
-		}
-		canonical.close()
-		if err != nil {
-			return err
-		}
-		if newHead != plan.baseRevision {
-			return fmt.Errorf("refuse to remove failed recycle branch %s: expected %s, found %s", plan.result.NewBranch, plan.baseRevision, newHead)
-		}
 	}
 	if plan.hadProjection {
 		if err := recoverFailedRecycleClaim(home, plan.entry.WorktreeDir, plan.entry.HeadSHA, plan.priorProjection); err != nil {
@@ -1227,72 +878,37 @@ func resetRenameResultAfterRollback(plan *renamePlan) {
 }
 
 func preflightRename(ctx context.Context, options RenameOptions, plan *renamePlan) error {
-	refreshed, err := inspectLifecycleWorktree(ctx, options.ProjectsRoot, "",
-		wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot, Local: plan.entry.Local}, options.OldTask,
-		plan.entry.WorktreeDir, options.Base, "", false, false, false, inspectPolicy{})
+	return preflightRenameWithPorts(ctx, options, plan, productionRenamePreflightEntryPorts())
+}
+
+type renamePreflightEntryPorts struct {
+	SourceProof   func(context.Context, RenameOptions, *renamePlan) (ListResult, error)
+	OpenCanonical func(string) (*canonicalRepository, error)
+}
+
+func productionRenamePreflightEntryPorts() renamePreflightEntryPorts {
+	return renamePreflightEntryPorts{
+		SourceProof: func(ctx context.Context, options RenameOptions, plan *renamePlan) (ListResult, error) {
+			return proveRenameSource(ctx, options, plan, renamePreflightProof, productionRenameSourceProofPorts())
+		},
+		OpenCanonical: openCanonicalRepository,
+	}
+}
+
+func preflightRenameWithPorts(ctx context.Context, options RenameOptions, plan *renamePlan, ports renamePreflightEntryPorts) error {
+	refreshed, err := ports.SourceProof(ctx, options, plan)
 	if err != nil {
-		return fmt.Errorf("preflight %s: %w", plan.entry.Repository, err)
+		return err
 	}
-	if !refreshed.Clean || refreshed.HeadSHA != plan.entry.HeadSHA {
-		return fmt.Errorf("preflight %s: worktree/head changed", plan.entry.Repository)
-	}
-	if err := verifyRecycleState(ctx, refreshed.WorktreeDir, options.PreserveCachePaths); err != nil {
-		return fmt.Errorf("preflight %s: %w", plan.entry.Repository, err)
-	}
-	canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
+	canonical, err := ports.OpenCanonical(plan.entry.CanonicalDir)
 	if err != nil {
 		return err
 	}
 	defer canonical.close()
-	baseRevision, err := synchronizeCanonical(ctx, canonical, plan.entry.Repository, options.Base)
-	if err != nil {
-		return fmt.Errorf("fetch base before recycling %s: %w", plan.entry.Repository, err)
-	}
-	if baseRevision != plan.baseRevision {
-		return fmt.Errorf("origin/%s advanced for %s during rename preflight from %s to %s; rerun so every branch policy and collision check is pinned to one exact base", options.Base, plan.entry.Repository, plan.baseRevision, baseRevision)
-	}
-	branch, branchErr := deriveBranchName(ctx, branchNamingOptions{
-		Task: options.NewTask, ExactBranch: options.Branch, ExactBranchChosen: options.BranchChosen,
-		CLIPrefix: options.BranchPrefix, CLIPrefixChosen: options.BranchPrefixChosen,
-		Canonical: canonical, BaseRevision: baseRevision, Base: options.Base,
-	})
-	if branchErr != nil {
-		return branchErr
-	}
-	if branch != plan.result.NewBranch {
-		return fmt.Errorf("branch policy changed for %s during rename preflight from %q to %q; rerun so the planned report is exact", plan.entry.Repository, plan.result.NewBranch, branch)
-	}
-	if exists, existsErr := localBranchExistsCanonical(ctx, canonical, plan.result.NewBranch); existsErr != nil {
-		return existsErr
-	} else if exists {
-		return fmt.Errorf("branch %q already exists in %s; choose another --branch", plan.result.NewBranch, plan.entry.Repository)
-	}
-	merged, err := isAncestor(ctx, plan.entry.CanonicalDir, refreshed.HeadSHA, "origin/"+options.Base)
+	baseRevision, remoteHead, err := proveRenamePreflightPolicy(options, plan, refreshed,
+		productionRenamePreflightPolicyPorts(ctx, options, plan, refreshed, canonical))
 	if err != nil {
 		return err
-	}
-	if !merged && !options.Force {
-		return fmt.Errorf("branch %q is not integrated into origin/%s; use `wb worktree abort --disposition handoff|not_landed`, or explicitly authorize discard before recycle", refreshed.Branch, options.Base)
-	}
-	remoteHead, err := remoteBranchHead(ctx, plan.entry.CanonicalDir, refreshed.Branch)
-	if err != nil {
-		return fmt.Errorf("inspect old remote branch before recycling %s: %w", plan.entry.Repository, err)
-	}
-	if remoteHead != "" && remoteHead != refreshed.HeadSHA {
-		return fmt.Errorf("refuse to recycle %s: origin/%s is %s, expected exact old head %s", refreshed.Repository, refreshed.Branch, remoteHead, refreshed.HeadSHA)
-	}
-	if remoteHead != "" && !options.DeleteRemote {
-		return fmt.Errorf("origin/%s remains cleanup backlog; rerun recycle with --remote", refreshed.Branch)
-	}
-	resolution, resolveErr := wbhome.Resolve(options.ProjectsRoot)
-	if resolveErr != nil {
-		return resolveErr
-	}
-	if err := preflightWorkLogSeal(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
-		return fmt.Errorf("preflight Work Log for %s: %w", plan.entry.Repository, err)
-	}
-	if err := preflightRenamePhysicalDestination(ctx, options.NewTask, plan); err != nil {
-		return fmt.Errorf("preflight destination for %s: %w", plan.entry.Repository, err)
 	}
 	plan.refreshed = refreshed
 	plan.baseRevision = baseRevision

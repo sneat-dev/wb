@@ -211,6 +211,20 @@ Against `4ba6cf7e`, the original group has **118 fewer uncovered statements** an
 
 After this measured checkpoint, reviewed narrow fixes `7664f9e7` and `4f1a01b3` were accumulated in local integration commit `202c5614`: Rename rollback refuses invalid projection evidence and restores the recorded SHA instead of a mutable local ref; Abort forwards its required remote permission to discarded-backlog recovery. All four new native regressions passed in the integrated checkout. Those later changes have no new broad coverage measurement yet. The next cohesive Rename and Abort/discard refactors are implementing in separate isolated lanes, with complete changed-body coverage required before their integration. Publication remains deferred.
 
+### Verified local checkpoint after Rename and Abort
+
+At clean source `44e7a45e7246f92958bdafe9729c4d14156b89d4`, the reviewed Rename and Abort/discard domain refactors and session canonical-opening guard cleanup are accumulated locally. Rename shares admission, member planning, publication and rollback proofs in four cohesive files; Abort shares member observation and exact-ref actions while preserving discard/recovery ordering. Native regressions verify malformed projection refusal, restoration of the recorded remote SHA, and explicit remote permission during discarded-backlog recovery. The refactors improve testability and proof reuse but introduce fault-injection ports; they are not a large production-code reduction.
+
+The same 12-package, e2e-enabled shared test passed using a freshly built, clean-source WB binary. Complete Go AST comparisons verify **43 changed or added live functions since `9e147a8c`, covering 816/816 statements**, and **147 since `d4aba76d`, covering 3,008/3,008 statements**. Focused race, vet and quality guards passed with the domain batches; repository-pinned lint passed on the combined source. Normal commit hooks were used. Canonical normalized evidence is `/private/tmp/wb-44e7a45e-summary.json`; the profile and timing log are `/private/tmp/wb-44e7a45e-shared.coverage.out` and `/private/tmp/wb-44e7a45e-shared.jsonl`. The profile SHA-256 is `687169d2bf2c623fda9aef3aa41e54cf23f18118493965e984b00126e49ab3ea`.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| Original 11-package worktree group | 19,979 / 21,483 | 92.9991% | 1,504 |
+| `internal/worktrees` facade | 15,060 / 16,564 | 90.9201% | 1,504 |
+| Expanded group, including `internal/gitcli` | 20,066 / 21,570 | 93.0274% | 1,504 |
+
+Against `9e147a8c`, the original group has **177 fewer uncovered statements** and **118 more total statements**. All 11 supporting packages remain fully covered. Since `d4aba76d`, uncovered statements fell from 2,006 to 1,504, a reduction of 502. These measurements cover the worktree group, not the whole CLI; a passing shared test and lint result do not establish full CI green. The repository-pinned dead-code gate still reports exactly the same 321 inherited findings: a symbol comparison against `9e147a8c` shows no additions or removals. No baseline was raised. Descriptor ownership/error-path tests and session clone/publication recovery are the next isolated batches. An adversarial descriptor test also reproduced an exclude-file write through symlinked Git metadata; its separately reviewed bounded fix will reuse descriptor-based file operations. Publication remains deferred.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.

@@ -96,11 +96,12 @@ func OpenAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, cr
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("secure directory path must be absolute: %s", path)
 	}
-	fd, err := opener.OpenRoot(string(filepath.Separator))
+	root := filepath.VolumeName(path) + string(filepath.Separator)
+	fd, err := opener.OpenRoot(root)
 	if err != nil {
 		return nil, fmt.Errorf("open filesystem root for secure directory %s: %w", path, err)
 	}
-	if path == string(filepath.Separator) {
+	if path == root {
 		directory := os.NewFile(uintptr(fd), "wb-secure-directory")
 		if directory == nil {
 			_ = unix.Close(fd)
@@ -108,7 +109,7 @@ func OpenAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, cr
 		}
 		return directory, nil
 	}
-	for _, segment := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+	for _, segment := range strings.Split(strings.TrimPrefix(path, root), string(filepath.Separator)) {
 		var next int
 		if create {
 			next, err = OpenOrCreateNoFollowDirectoryWith(opener, fd, segment)
