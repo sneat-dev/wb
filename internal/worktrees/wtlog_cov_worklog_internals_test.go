@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", WorkLogOptions{}); err == nil || !strings.Contains(err.Error(), "already has an original prompt") {
 		t.Fatalf("archive without supplied bytes error = %v", err)
 	}
-	same := WorkLogOptions{originalPromptContents: body}
+	same := WorkLogOptions{snapshot: worktreeclaims.PromptSnapshot{Contents: body}}
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", same); err != nil {
 		t.Fatalf("identical prompt bytes rejected without metadata: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", same); err != nil {
 		t.Fatalf("identical prompt bytes with metadata rejected: %v", err)
 	}
-	different := WorkLogOptions{originalPromptContents: []byte("other bytes\n")}
+	different := WorkLogOptions{snapshot: worktreeclaims.PromptSnapshot{Contents: []byte("other bytes\n")}}
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", different); err == nil || !strings.Contains(err.Error(), "different original prompt bytes") {
 		t.Fatalf("different prompt bytes error = %v", err)
 	}

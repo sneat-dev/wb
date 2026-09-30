@@ -65,7 +65,7 @@ func TestWorkLogCoverageBatchPublicationAndPromptReuse(t *testing.T) {
 	}
 
 	extended, err := workLogOptionsForClaimExtension(fixture.home, fixture.options, fixture.outcome.claim)
-	if err != nil || extended.EffortID != fixture.outcome.claim.EffortID || len(extended.originalPromptContents) == 0 {
+	if err != nil || extended.EffortID != fixture.outcome.claim.EffortID || len(extended.snapshot.Contents) == 0 {
 		t.Fatalf("extended options = %#v, %v", extended, err)
 	}
 	if err := corroborateExistingRunPrompt(fixture.home, fixture.outcome.EffortID, fixture.outcome.RunID, fixture.options); err != nil {

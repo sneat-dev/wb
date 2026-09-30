@@ -16,8 +16,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	// Aliased: this file already uses "provenance" as a local variable name
 	// for model provenance (modelProvenanceCallerDeclared/-Unknown), unrelated
@@ -29,6 +27,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
@@ -87,9 +86,6 @@ var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 var errImmutableTerminalConflict = errors.New("immutable terminal conflicts with requested transition")
 
 var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
-var credentialAssignment = regexp.MustCompile(`(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*\S+`)
-var credentialTokenMarker = regexp.MustCompile(`(?i)(^|[^a-z0-9])(sk-[a-z0-9_-]{8,}|akia[a-z0-9]{12,}|aiza[a-z0-9_-]{12,}|sk_[a-z0-9_-]{16,}|rk_live_[a-z0-9_-]{16,}|gh[opusr]_[a-z0-9_-]{16,}|github_pat_[a-z0-9_-]{16,}|glpat-[a-z0-9_-]{16,}|xox[abpr]-[a-z0-9_-]{16,}|npm_[a-z0-9_-]{24,}|pypi-[a-z0-9_-]{16,})`)
-var bearerCredential = regexp.MustCompile(`(?i)(^|[^a-z0-9])bearer\s+[a-z0-9._~+/=-]{16,}`)
 
 const (
 	modelProvenanceRuntimeObserved = "runtime_observed"
@@ -123,12 +119,8 @@ type WorkLogOptions struct {
 	// created. Empty for a normal create.
 	AcquiredVia string
 
-	// originalPromptContents is an immutable preflight snapshot. Keeping it in
-	// the options passed through one create/recycle call closes the usual
-	// stat/read/use race: recordWorkLog never reopens a path whose bytes may
-	// have changed after preflight.
-	originalPromptContents []byte
-	originalPromptDigest   string
+	// snapshot is private local input, never part of a public projection.
+	snapshot worktreeclaims.PromptSnapshot
 }
 
 // ClaimExecutionIdentity is the creator-supplied identity for one new claim.
@@ -255,12 +247,7 @@ type ExecutionIdentityCorrectionResult struct {
 	OutboxPath   string            `json:"outbox_path"`
 }
 
-type workLogPromptMetadata struct {
-	Version         int       `json:"version"`
-	SHA256          string    `json:"sha256"`
-	SourceReference string    `json:"source_reference"`
-	CapturedAt      time.Time `json:"captured_at"`
-}
+type workLogPromptMetadata = worktreeclaims.PromptMetadata
 
 type workLogTerminalRecord struct {
 	workLogClaim
@@ -655,43 +642,25 @@ type legacyClaimMigration struct {
 // corroborates an existing run's immutable prompt archive so reusing a Run ID
 // with different bytes is rejected before worktree creation.
 func PrepareWorkLogOptions(projectsRoot, task string, options WorkLogOptions) (WorkLogOptions, error) {
-	now := time.Now().UTC()
-	effort, run, err := normalizeWorkLogOptions(task, options, now)
+	prepared, err := claimOptionsPorts().PrepareOptions(projectsRoot, task, toClaimOptions(options))
 	if err != nil {
 		return WorkLogOptions{}, err
 	}
-	options.EffortID = effort
-	options.RunID = run
-	if err := snapshotOriginalPrompt(&options); err != nil {
-		return WorkLogOptions{}, err
-	}
-	home, err := wbhome.Root(projectsRoot)
-	if err != nil {
-		return WorkLogOptions{}, err
-	}
-	if err := corroborateExistingRunPrompt(home, effort, run, options); err != nil {
-		return WorkLogOptions{}, err
-	}
-	return options, nil
+	return fromClaimOptions(prepared), nil
 }
 
 // PreflightWorkLogOptions remains the pure, path-independent validation used
 // by callers that have not resolved a projects root yet. Mutation paths use
 // PrepareWorkLogOptions so an existing run is corroborated as well.
 func PreflightWorkLogOptions(task string, options WorkLogOptions) error {
-	effort, run, err := normalizeWorkLogOptions(task, options, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	options.EffortID, options.RunID = effort, run
-	return snapshotOriginalPrompt(&options)
+	return claimOptionsPorts().PreflightOptions(task, toClaimOptions(options))
 }
 
 // originalPromptStdinMarker is recorded as this option's SourceReference when
 // the exact prompt bytes were captured in memory (from stdin) rather than
 // opened from an external file, so the private archive metadata never claims
 // a path that does not exist.
-const originalPromptStdinMarker = "(stdin)"
+const originalPromptStdinMarker = worktreeclaims.OriginalPromptStdinMarker
 
 // WithOriginalPromptFromStdin captures prompt bytes the caller already holds
 // in memory — read once from stdin, never staged to any file — as this
@@ -702,177 +671,39 @@ const originalPromptStdinMarker = "(stdin)"
 // concurrent caller to corrupt: the private archive WB writes later is
 // byte-for-byte these exact contents.
 func (options WorkLogOptions) WithOriginalPromptFromStdin(content []byte) (WorkLogOptions, error) {
-	if len(bytes.TrimSpace(content)) == 0 {
-		return WorkLogOptions{}, fmt.Errorf("--original-prompt-file - requires non-empty stdin so the private Work Log can retain the exact originating request")
+	converted, err := toClaimOptions(options).WithOriginalPromptFromStdin(content)
+	if err != nil {
+		return WorkLogOptions{}, err
 	}
-	digest := sha256.Sum256(content)
-	options.OriginalPrompt = originalPromptStdinMarker
-	options.originalPromptContents = append([]byte(nil), content...)
-	options.originalPromptDigest = hex.EncodeToString(digest[:])
-	return options, nil
+	return fromClaimOptions(converted), nil
 }
 
 func snapshotOriginalPrompt(options *WorkLogOptions) error {
-	if len(options.originalPromptContents) != 0 {
-		digest := sha256.Sum256(options.originalPromptContents)
-		if options.originalPromptDigest != hex.EncodeToString(digest[:]) || strings.TrimSpace(options.OriginalPrompt) == "" {
-			return fmt.Errorf("prepared original prompt snapshot is internally inconsistent")
-		}
-		return nil
+	converted := toClaimOptions(*options)
+	err := claimOptionsPorts().SnapshotOriginalPrompt(&converted)
+	if err == nil {
+		*options = fromClaimOptions(converted)
 	}
-	prompt := strings.TrimSpace(options.OriginalPrompt)
-	if prompt == "" {
-		if options.RequireOriginalPrompt {
-			return fmt.Errorf("--original-prompt-file is required so the private Work Log can retain the exact originating request")
-		}
-		return nil
-	}
-	absolute, err := filepath.Abs(prompt)
-	if err != nil {
-		return fmt.Errorf("resolve original prompt %s before mutation: %w", prompt, err)
-	}
-	file, err := os.Open(absolute)
-	if err != nil {
-		return fmt.Errorf("open original prompt %s before mutation: %w", prompt, err)
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect original prompt %s: %w", prompt, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("original prompt %s must be a regular file", prompt)
-	}
-	contents, err := io.ReadAll(file)
-	if err != nil {
-		return fmt.Errorf("read original prompt %s before mutation: %w", prompt, err)
-	}
-	if len(bytes.TrimSpace(contents)) == 0 {
-		return fmt.Errorf("original prompt %s must not be empty", prompt)
-	}
-	digest := sha256.Sum256(contents)
-	options.OriginalPrompt = absolute
-	options.originalPromptContents = append([]byte(nil), contents...)
-	options.originalPromptDigest = hex.EncodeToString(digest[:])
-	return nil
+	return err
 }
 
 func corroborateExistingRunPrompt(home, effort, run string, options WorkLogOptions) error {
-	runDir, _, err := openWorkLogRun(home, effort, run, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect existing work-log run before mutation: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	archived, promptErr := readBytesAt(runDir, "original-prompt.txt")
-	var metadata workLogPromptMetadata
-	metadataErr := readJSONAt(runDir, "original-prompt.json", &metadata)
-	if promptErr == nil {
-		if len(options.originalPromptContents) == 0 {
-			return fmt.Errorf("work-log run %s/%s already has an original prompt; provide the same --original-prompt-file", effort, run)
-		}
-		if !bytes.Equal(archived, options.originalPromptContents) {
-			return fmt.Errorf("work-log run %s/%s is already bound to different original prompt bytes", effort, run)
-		}
-		digest := sha256.Sum256(archived)
-		want := hex.EncodeToString(digest[:])
-		if metadataErr == nil && (metadata.Version != 1 || metadata.SHA256 != want) {
-			return fmt.Errorf("work-log run %s/%s prompt metadata does not match its immutable archive", effort, run)
-		}
-		if metadataErr != nil && !errors.Is(metadataErr, os.ErrNotExist) {
-			return fmt.Errorf("inspect existing prompt metadata: %w", metadataErr)
-		}
-		return nil
-	}
-	if !errors.Is(promptErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect existing original prompt: %w", promptErr)
-	}
-	if metadataErr == nil || !errors.Is(metadataErr, os.ErrNotExist) {
-		if metadataErr != nil {
-			return fmt.Errorf("inspect existing prompt metadata: %w", metadataErr)
-		}
-		return fmt.Errorf("work-log run %s/%s has prompt metadata without its immutable archive", effort, run)
-	}
-	// Once a run index or claim exists, an absent prompt is evidence from an
-	// older/partial writer. Never guess that a newly supplied file was the
-	// original request and silently rewrite history.
-	if _, err := readBytesAt(runDir, "run.json"); err == nil {
-		return fmt.Errorf("work-log run %s/%s already exists without an immutable original prompt", effort, run)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err == nil {
-		defer func() { _ = claims.Close() }()
-		if names, readErr := claims.Readdirnames(1); readErr == nil && len(names) != 0 {
-			return fmt.Errorf("work-log run %s/%s already has a claim without an immutable original prompt", effort, run)
-		} else if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return readErr
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return claimOptionsPorts().CorroborateExistingRunPrompt(home, effort, run, toClaimOptions(options))
 }
 
-func normalizeWorkLogOptions(task string, options WorkLogOptions, now time.Time) (effort, run string, err error) {
-	if err := validateNewExecutionIdentity(ClaimExecutionIdentity{Model: options.Model, CLI: options.CLI, Provider: options.Provider}); err != nil {
-		return "", "", err
-	}
-	effort = strings.TrimSpace(options.EffortID)
-	if effort == "" {
-		effort = task
-	}
-	run = strings.TrimSpace(options.RunID)
-	if run == "" {
-		run = "wb-" + now.Format("20060102T150405.000000000Z")
-	}
-	if !validSafeSegment(effort) {
-		return "", "", fmt.Errorf("work-log effort id %q must be one safe path segment", effort)
-	}
-	if !validSafeSegment(run) {
-		return "", "", fmt.Errorf("work-log run id %q must be one safe path segment", run)
-	}
-	if _, err := NormalizeTaskSummary(options.TaskSummary); err != nil {
-		return "", "", err
-	}
-	return effort, run, nil
+func normalizeWorkLogOptions(task string, options WorkLogOptions, now time.Time) (string, string, error) {
+	return claimOptionsPorts().NormalizeOptions(task, toClaimOptions(options), now)
 }
 
 // MaxTaskSummaryRunes keeps this public coordination hint compact rather than
 // allowing it to become a second prompt channel.
-const MaxTaskSummaryRunes = 240
+const MaxTaskSummaryRunes = worktreeclaims.MaxTaskSummaryRunes
 
 // NormalizeTaskSummary validates an optional public task summary. The scanner
 // rejects obvious credential forms as defense in depth; it cannot classify
 // arbitrary prose, so callers must still keep the field non-sensitive.
 func NormalizeTaskSummary(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", nil
-	}
-	if strings.ContainsAny(value, "\r\n") || !utf8.ValidString(value) {
-		return "", errors.New("--summary must be one printable line")
-	}
-	if utf8.RuneCountInString(value) > MaxTaskSummaryRunes {
-		return "", fmt.Errorf("--summary must be at most %d characters", MaxTaskSummaryRunes)
-	}
-	for _, char := range value {
-		if unicode.IsControl(char) {
-			return "", errors.New("--summary must be one printable line")
-		}
-	}
-	lower := strings.ToLower(value)
-	if bearerCredential.MatchString(lower) || credentialAssignment.MatchString(lower) || containsCredentialMarker(lower) {
-		return "", errors.New("--summary must not contain a credential")
-	}
-	return value, nil
-}
-
-func containsCredentialMarker(lower string) bool {
-	return credentialTokenMarker.MatchString(lower)
+	return worktreeclaims.NormalizeTaskSummary(value)
 }
 
 func validateNewExecutionIdentity(identity ClaimExecutionIdentity) error {
@@ -1630,7 +1461,7 @@ func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim w
 	if err := snapshotOriginalPrompt(&prepared); err != nil {
 		return err
 	}
-	if len(prepared.originalPromptContents) == 0 {
+	if len(prepared.snapshot.Contents) == 0 {
 		return nil
 	}
 	prepared.RequireOriginalPrompt = false
@@ -1663,7 +1494,7 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 	if strings.TrimSpace(requested.TaskSummary) == "" {
 		requested.TaskSummary = claim.TaskSummary
 	}
-	if len(requested.originalPromptContents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
+	if len(requested.snapshot.Contents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
 		requested.RequireOriginalPrompt = false
 		if err := snapshotOriginalPrompt(&requested); err != nil {
 			return WorkLogOptions{}, err
@@ -1684,8 +1515,8 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 	}
 	digest := sha256.Sum256(contents)
 	requested.OriginalPrompt = filepath.Join(runPath, "original-prompt.txt")
-	requested.originalPromptContents = contents
-	requested.originalPromptDigest = hex.EncodeToString(digest[:])
+	requested.snapshot.Contents = contents
+	requested.snapshot.Digest = hex.EncodeToString(digest[:])
 	return requested, nil
 }
 
@@ -1694,7 +1525,7 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 // same bytes and rejects a conflicting writer through immutable no-replace
 // publication.
 func reserveOriginalPromptArchive(home, task string, options WorkLogOptions) error {
-	if len(options.originalPromptContents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
 		return nil
 	}
 	effort, run, err := normalizeWorkLogOptions(task, options, time.Now().UTC())
@@ -1747,7 +1578,7 @@ type preApplyRenameReservationCandidate struct {
 // recoverable without deleting its immutable prompt archive. The normal claim
 // publication remains later in applyRename, once a real checkout exists.
 func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLogOptions) error {
-	if len(options.originalPromptContents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
 		return nil
 	}
 	if err := reserveOriginalPromptArchive(home, newTask, options); err != nil {
@@ -1764,7 +1595,7 @@ func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLog
 	defer func() { _ = runDir.Close() }()
 	reservation := preApplyRenameReservation{
 		Version: 1, OldTask: oldTask, NewTask: newTask, EffortID: effort, RunID: run,
-		PromptSHA256: options.originalPromptDigest, ReservedAt: time.Now().UTC(),
+		PromptSHA256: options.snapshot.Digest, ReservedAt: time.Now().UTC(),
 	}
 	if reservation.PromptSHA256 == "" {
 		return fmt.Errorf("pre-apply rename reservation has no immutable prompt digest")
@@ -1961,17 +1792,17 @@ func terminalizePreApplyRenameReservation(home string, candidate preApplyRenameR
 }
 
 func ensureOriginalPromptArchive(runDir *os.File, options WorkLogOptions, now time.Time) (archive, digest string, err error) {
-	if len(options.originalPromptContents) == 0 {
+	if len(options.snapshot.Contents) == 0 {
 		if err := snapshotOriginalPrompt(&options); err != nil {
 			return "", "", err
 		}
 	}
-	if len(options.originalPromptContents) == 0 {
+	if len(options.snapshot.Contents) == 0 {
 		return "", "", nil
 	}
 	archive = "original-prompt.txt"
-	digest = options.originalPromptDigest
-	if err := writeBytesImmutableAt(runDir, archive, options.originalPromptContents, 0o600, true); err != nil {
+	digest = options.snapshot.Digest
+	if err := writeBytesImmutableAt(runDir, archive, options.snapshot.Contents, 0o600, true); err != nil {
 		return "", "", fmt.Errorf("archive original prompt: %w", err)
 	}
 	var existing workLogPromptMetadata
@@ -3611,4 +3442,34 @@ func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) 
 // deterministically.
 func writeBytesAtomicInjected(directory, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
 	return filewrite.WriteBytesAtomicInjected(directory, name, content, mode, inj)
+}
+
+func toClaimOptions(options WorkLogOptions) worktreeclaims.Options {
+	return worktreeclaims.Options{
+		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
+		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
+		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
+		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
+		Snapshot: options.snapshot,
+	}
+}
+func fromClaimOptions(options worktreeclaims.Options) WorkLogOptions {
+	return WorkLogOptions{
+		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
+		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
+		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
+		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
+		snapshot: options.Snapshot,
+	}
+}
+func claimOptionsPorts() worktreeclaims.OptionsPorts {
+	return worktreeclaims.OptionsPorts{
+		Root: wbhome.Root, OpenRun: openWorkLogRun, ReadBytesAt: readBytesAt,
+		ReadJSONAt: readJSONAt, OpenPrivateChild: openPrivateChild,
+		ValidateIdentity: func(identity worktreeclaims.ExecutionIdentity) error {
+			return validateNewExecutionIdentity(ClaimExecutionIdentity{Model: identity.Model, CLI: identity.CLI, Provider: identity.Provider})
+		},
+	}
 }

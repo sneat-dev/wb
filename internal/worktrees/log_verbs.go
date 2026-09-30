@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // LogVerbResult is the public receipt returned by mutating log verbs.
@@ -43,10 +44,7 @@ type claimFence struct {
 }
 
 func resolveWorktreeRoot(ctx context.Context, path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		path = "."
-	}
-	return RepositoryRootFor(ctx, path)
+	return claimRecoveryPorts().ResolveWorktreeRoot(ctx, path)
 }
 
 func withOptionalClaimFence(projectsRoot, worktree string, require bool) (claimFence, error) {
@@ -523,15 +521,7 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 }
 
 func resolveLogBase(worktree, requested string) string {
-	if base := strings.TrimSpace(requested); base != "" {
-		return base
-	}
-	if manifest, err := ReadManifest(worktree); err == nil {
-		if base := strings.TrimSpace(manifest.Base); base != "" {
-			return base
-		}
-	}
-	return "main"
+	return claimRecoveryPorts().ResolveLogBase(worktree, requested)
 }
 
 func branchPublished(ctx context.Context, worktree string) (bool, error) {
@@ -796,59 +786,35 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 }
 
 func recoverableBlankManifestClaimID(ctx context.Context, root string, manifest Manifest) (string, error) {
-	if !manifest.DependencyCampaign {
-		return "", fmt.Errorf("claim establishment is supported only for dependency-campaign manifests")
-	}
-	if strings.TrimSpace(manifest.ClaimID) != "" {
-		return "", fmt.Errorf("manifest already records ClaimID %q; refusing to establish a replacement claim", manifest.ClaimID)
-	}
-	if strings.TrimSpace(manifest.EffortID) == "" || strings.TrimSpace(manifest.Repository) == "" ||
-		strings.TrimSpace(manifest.Worktree) == "" || strings.TrimSpace(manifest.Branch) == "" ||
-		strings.TrimSpace(manifest.Base) == "" || !isGitObjectID(strings.TrimSpace(manifest.BaseSHA)) {
-		return "", fmt.Errorf("immutable campaign manifest lacks complete checkout identity; refusing claim recovery")
-	}
-	if filepath.Clean(manifest.Worktree) != filepath.Clean(root) {
-		return "", fmt.Errorf("immutable campaign manifest names worktree %q, not %q", manifest.Worktree, root)
-	}
-	evidence := observeLocalGit(ctx, root)
-	if evidence.Branch != manifest.Branch {
-		return "", fmt.Errorf("live branch %q does not match immutable campaign manifest branch %q", evidence.Branch, manifest.Branch)
-	}
-	if _, err := git(ctx, root, "merge-base", "--is-ancestor", manifest.BaseSHA, evidence.Head); err != nil {
-		return "", fmt.Errorf("live HEAD is not descended from immutable campaign base %s: %w", manifest.BaseSHA, err)
-	}
-	effort := manifest.EffortID
-	return WorkLogClaimID(effort, CreateResult{
-		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
-		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
-	}), nil
+	return claimRecoveryPorts().RecoverableBlankManifestClaimID(ctx, root, manifest)
 }
 
 func recoverBlankManifestClaim(ctx context.Context, home, root string, manifest Manifest) (WorkLogPublicationOutcome, error) {
-	claimID, err := recoverableBlankManifestClaimID(ctx, root, manifest)
-	if err != nil {
-		return WorkLogPublicationOutcome{}, err
+	return worktreeclaims.RecoverBlankManifestClaim(ctx, home, root, manifest, claimRecoveryPorts(),
+		func(home, task string, result worktreeclaims.CreationResult, options worktreeclaims.Options) (WorkLogPublicationOutcome, error) {
+			return EnsureWorkLogClaim(home, task, CreateResult{
+				Repository: result.Repository, WorktreeDir: result.WorktreeDir, Branch: result.Branch,
+				Base: result.Base, BaseSHA: result.BaseSHA,
+			}, fromClaimOptions(options))
+		})
+}
+
+func claimRecoveryPorts() worktreeclaims.RecoveryPorts {
+	return worktreeclaims.RecoveryPorts{
+		RepositoryRootFor: RepositoryRootFor,
+		ReadManifest:      ReadManifest,
+		ObserveGit: func(ctx context.Context, root string) worktreeclaims.LocalGit {
+			evidence := observeLocalGit(ctx, root)
+			return worktreeclaims.LocalGit{Branch: evidence.Branch, Head: evidence.Head}
+		},
+		Git: git,
+		ClaimID: func(effort string, result worktreeclaims.CreationResult) string {
+			return WorkLogClaimID(effort, CreateResult{
+				Repository: result.Repository, WorktreeDir: result.WorktreeDir, Branch: result.Branch,
+				Base: result.Base, BaseSHA: result.BaseSHA,
+			})
+		},
 	}
-	task := ParentEffort(manifest.EffortID)
-	if task == "" {
-		task = manifest.EffortID
-	}
-	runID := strings.TrimSpace(manifest.RunID)
-	if runID == "" {
-		runID = "recovery-" + claimID[:16]
-	}
-	model := strings.TrimSpace(manifest.Model)
-	if model == "" {
-		model = "unknown"
-	}
-	return EnsureWorkLogClaim(home, task, CreateResult{
-		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
-		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
-	}, WorkLogOptions{
-		EffortID: manifest.EffortID, RunID: runID, Initiator: manifest.Initiator,
-		AgentID: manifest.AgentID, AgentRuntime: manifest.AgentRuntime, Model: model,
-		CLI: manifest.CLI, Provider: manifest.Provider,
-	})
 }
 
 // LogFinalizeOptions configures wb worktree log finalize.
