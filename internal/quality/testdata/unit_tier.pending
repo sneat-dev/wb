@@ -346,7 +346,7 @@ internal/worktrees/supersession_test.go	25	task-18
 internal/worktrees/target_head_dedupe_integration_test.go	2	task-18
 internal/worktrees/vacant_backlog_test.go	2	task-18
 internal/worktrees/worklog_test.go	24	task-18
-internal/worktrees/worktrees_test.go	159	task-18
+internal/worktrees/worktrees_test.go	157	task-18
 internal/worktrees/wtcore_cov2_test.go	8	task-18
 internal/worktrees/wtcore_cov4_test.go	9	task-18
 internal/worktrees/wtcore_cov5_test.go	1	task-18
