@@ -91,3 +91,24 @@ func TestE2ERenameRollbackPublishesRecordedSHAWhenLocalRefAdvances(t *testing.T)
 		t.Fatalf("rename error = %v, want injected failure", renameErr)
 	}
 }
+
+//nolint:paralleltest // newGitFixture changes process-wide Git environment for native replay.
+func TestE2ERenameLocalDestinationRootMismatchIsRejectedInBothPhases(t *testing.T) {
+	fixture := newGitFixture(t)
+	base := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	plan := &renamePlan{
+		destinationLocal: true,
+		destinationRoot:  filepath.Join(fixture.canonical, "wrong-root"),
+		baseRevision:     base,
+		entry:            ListResult{CanonicalDir: fixture.canonical},
+	}
+	if err := preflightRenamePhysicalDestination(t.Context(), "new-task", plan); err == nil || !strings.Contains(err.Error(), "changed during preflight") {
+		t.Fatalf("preflight root mismatch = %v", err)
+	}
+	if err := prepareRenamePhysicalDestination(t.Context(), "new-task", plan); err == nil || !strings.Contains(err.Error(), "changed before move") {
+		t.Fatalf("move root mismatch = %v", err)
+	}
+	if _, err := os.Lstat(plan.destinationRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched destination was published: %v", err)
+	}
+}
