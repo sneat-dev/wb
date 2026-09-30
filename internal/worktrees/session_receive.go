@@ -816,9 +816,6 @@ func openOrCloneSessionReceiveCanonical(
 	if err != nil {
 		return nil, err
 	}
-	if ownerDirectory == nil {
-		return nil, fmt.Errorf("resolve canonical parent for %s", declared.Repository)
-	}
 	defer func() { _ = ownerDirectory.Close() }()
 
 	existingFD, openErr := unix.Openat(int(ownerDirectory.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
