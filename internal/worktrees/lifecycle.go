@@ -1042,25 +1042,9 @@ func (handle *cleanupWorktreeHandle) close() {
 	}
 }
 
-type githubPullRequest struct {
-	Number         int        `json:"number"`
-	URL            string     `json:"html_url"`
-	State          string     `json:"state"`
-	Base           githubRef  `json:"base"`
-	Head           githubRef  `json:"head"`
-	MergeCommitSHA string     `json:"merge_commit_sha"`
-	MergedAt       *time.Time `json:"merged_at"`
-}
-
-type githubRef struct {
-	Ref  string            `json:"ref"`
-	SHA  string            `json:"sha"`
-	Repo *githubRepository `json:"repo"`
-}
-
-type githubRepository struct {
-	FullName string `json:"full_name"`
-}
+type githubPullRequest = worktreebranches.GitHubPullRequest
+type githubRef = worktreebranches.GitHubRef
+type githubRepository = worktreebranches.GitHubRepository
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
 // Callers that present diagnostics should use ListWithDiagnostics.

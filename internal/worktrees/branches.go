@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -252,93 +250,19 @@ func retiredNamespaceSelected(sweep branchSweepOptions) bool {
 // only origin's retired namespace, then reports those tracking refs; it never
 // fetches origin/<base> or treats a stale tracking snapshot as remote truth.
 func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, generatedAt time.Time) (BranchListOutcome, error) {
-	repositories, err := discoverBranchRepositories(sweep.ProjectsRoot, sweep.Filter)
-	if err != nil {
-		return BranchListOutcome{}, fmt.Errorf("discover repositories below %s: %w", sweep.ProjectsRoot, err)
-	}
-	entries := make([]BranchEntry, 0)
-	retiredRefs := map[string]int{}
-	retiredTags := map[string]int{}
-	retiredNames := map[string]bool{}
-	retiredTagNames := map[string]bool{}
-	retiredRemoteUnavailable := false
-	diagnostics := []string{fmt.Sprintf("retired namespace inventory skipped fetch of origin/%s", sweep.Base)}
-	selected, err := selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
+	result, err := branchInventoryService().InventoryRetiredNamespace(ctx, sweep.branchInventorySweep(), generatedAt)
 	if err != nil {
 		return BranchListOutcome{}, err
 	}
-	if sweep.Only != "" && sweep.Only != BranchRetired {
-		diagnostics = append(diagnostics, fmt.Sprintf("retired namespace cannot match --only %s", sweep.Only))
-		return BranchListOutcome{
-			Host: branchEvidenceHost(), GeneratedAt: generatedAt, Repository: sweep.Repository, Org: sweep.Org, Branch: sweep.Branch,
-			Base: sweep.Base, Scope: sweep.Scope, Entries: entries, Diagnostics: diagnostics,
-			Totals: tallyDispositions(entries), RetiredRefs: retiredRefs, RetiredTags: retiredTags, ElapsedMS: time.Since(generatedAt).Milliseconds(),
-		}, nil
-	}
-	for index, repository := range selected {
-		reportBranchProgress(sweep.Progress, index+1, len(selected), repository.Slug())
-		if sweep.Scope == BranchScopeLocal || sweep.Scope == BranchScopeAll {
-			refs, diagnostic := listRefs(ctx, repository.Path, "refs/heads/retired/", "")
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired local refs: %s", repository.Slug(), diagnostic))
-			} else {
-				retiredRefs[BranchScopeLocal] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeLocal)
-			}
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, false, true)
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired local tags: %s", repository.Slug(), diagnostic))
-			} else {
-				retiredTags[BranchScopeLocal] += appendRetiredTagEntries(ctx, &entries, retiredTagNames, repository, sweep, tags, BranchScopeLocal)
-			}
-		}
-		if sweep.Scope == BranchScopeRemote || sweep.Scope == BranchScopeAll {
-			refs, diagnostic := listRetiredRemoteRefs(ctx, repository.Path)
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired remote refs: %s", repository.Slug(), diagnostic))
-				retiredRemoteUnavailable = true
-			} else {
-				retiredRefs[BranchScopeRemote] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeRemote)
-			}
-			tags, tagDiagnostic := listRetiredTags(ctx, repository.Path, true, true)
-			if tagDiagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired remote tags: %s", repository.Slug(), tagDiagnostic))
-				retiredRemoteUnavailable = true
-			} else {
-				retiredTags[BranchScopeRemote] += appendRetiredTagEntries(ctx, &entries, retiredTagNames, repository, sweep, tags, BranchScopeRemote)
-			}
-		}
-	}
-	sortBranchEntries(entries)
-	reportBranchSummary(sweep.Progress, tallyDispositions(entries), time.Since(generatedAt))
-	return BranchListOutcome{
-		Host: branchEvidenceHost(), GeneratedAt: generatedAt, Repository: sweep.Repository, Org: sweep.Org, Branch: sweep.Branch,
-		Base: sweep.Base, Scope: sweep.Scope, Entries: entries, Diagnostics: diagnostics,
-		Totals: tallyDispositions(entries), RetiredRefs: retiredRefs, RetiredBranches: len(retiredNames), RetiredTags: retiredTags, RetiredTagNames: len(retiredTagNames), RetiredRemoteUnavailable: retiredRemoteUnavailable, ElapsedMS: time.Since(generatedAt).Milliseconds(),
-	}, nil
+	return BranchListOutcome{Host: result.Host, GeneratedAt: result.GeneratedAt, Repository: result.Repository, Org: result.Org, Branch: result.Branch, Base: result.Base, Scope: result.Scope, Entries: result.Entries, Diagnostics: result.Diagnostics, Totals: result.Totals, ElapsedMS: result.ElapsedMS, RetiredRefs: result.RetiredRefs, RetiredBranches: result.RetiredBranches, RetiredTags: result.RetiredTags, RetiredTagNames: result.RetiredTagNames, RetiredRemoteUnavailable: result.RetiredRemoteUnavailable}, nil
 }
 
 func appendRetiredEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
-	return appendRetiredRefEntries(ctx, entries, names, repository, sweep, refs, scope, "branch")
+	return branchInventoryService().AppendRetiredEntries(ctx, entries, names, branchInventoryRepository(repository), sweep.branchInventorySweep(), refs, scope)
 }
 
 func appendRetiredTagEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
-	return appendRetiredRefEntries(ctx, entries, names, repository, sweep, refs, scope, "tag")
-}
-
-func appendRetiredRefEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope, refKind string) int {
-	start, count := len(*entries), 0
-	for _, ref := range refs {
-		if !retiredRefSelected(sweep, ref) {
-			continue
-		}
-		entry := retiredBranchEntry(repository, sweep, ref, scope, "")
-		entry.RefKind = refKind
-		*entries = append(*entries, entry)
-		names[repository.Slug()+"|"+ref.Name] = true
-		count++
-	}
-	decorateBranchCommits(ctx, repository.Path, (*entries)[start:])
-	return count
+	return branchInventoryService().AppendRetiredTagEntries(ctx, entries, names, branchInventoryRepository(repository), sweep.branchInventorySweep(), refs, scope)
 }
 
 // decorateBranchCommits reads metadata for one repository's selected refs in
@@ -346,45 +270,10 @@ func appendRetiredRefEntries(ctx context.Context, entries *[]BranchEntry, names 
 // normal disposition path without turning a fleet count into one process per
 // ref.
 func decorateBranchCommits(ctx context.Context, repositoryPath string, entries []BranchEntry) {
-	if len(entries) == 0 {
-		return
-	}
-	args := []string{"show", "-s", "--format=%H%x1f%an%x1f%s%x1e"}
-	seen := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		if entry.SHA != "" && !seen[entry.SHA] {
-			args = append(args, entry.SHA)
-			seen[entry.SHA] = true
-		}
-	}
-	if len(args) == 3 {
-		return
-	}
-	output, err := git(ctx, repositoryPath, args...)
-	if err != nil {
-		return
-	}
-	metadata := make(map[string][2]string, len(entries))
-	for _, record := range strings.Split(output, "\x1e") {
-		fields := strings.SplitN(record, "\x1f", 3)
-		if len(fields) == 3 {
-			metadata[strings.TrimSpace(fields[0])] = [2]string{strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])}
-		}
-	}
-	for index := range entries {
-		if detail, ok := metadata[entries[index].SHA]; ok {
-			entries[index].Author, entries[index].Title = detail[0], detail[1]
-		}
-	}
+	branchInventoryService().DecorateBranchCommits(ctx, repositoryPath, entries)
 }
 
-func branchEvidenceHost() string {
-	host, err := os.Hostname()
-	if err != nil || strings.TrimSpace(host) == "" {
-		return "unknown"
-	}
-	return strings.TrimSpace(host)
-}
+func branchEvidenceHost() string { return branchInventoryService().BranchEvidenceHost() }
 
 func applyListDisplayFilters(entries []BranchEntry, sweep branchSweepOptions) []BranchEntry {
 	return worktreebranches.ApplyListDisplayFilters(entries, sweep.branchPolicyOptions())
@@ -406,96 +295,18 @@ func tallyDispositions(entries []BranchEntry) map[string]int {
 // unreadable disposition for its branches without blocking the rest of the
 // sweep.
 func classifyFleetBranches(ctx context.Context, sweep branchSweepOptions) ([]BranchEntry, []string, error) {
-	entries, diagnostics, _, err := classifyFleetBranchesWithPaths(ctx, sweep)
-	return entries, diagnostics, err
+	return branchInventoryService().ClassifyFleetBranches(ctx, sweep.branchInventorySweep())
 }
 
 // classifyFleetBranchesWithPaths is classifyFleetBranches plus the
 // slug-to-local-path lookup cleanup's apply phase needs to reopen each
 // candidate's canonical repository for its recheck-before-mutation.
 func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOptions) ([]BranchEntry, []string, map[string]string, error) {
-	repositories, err := discoverBranchRepositories(sweep.ProjectsRoot, sweep.Filter)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("discover repositories below %s: %w", sweep.ProjectsRoot, err)
-	}
-	repositories, err = selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	paths := make(map[string]string, len(repositories))
-	for _, repository := range repositories {
-		paths[repository.Slug()] = repository.Path
-	}
-	inUse, diagnostic := branchInUseIndex(ctx, sweep.ProjectsRoot, sweep.Filter)
-	var diagnostics []string
-	if diagnostic != "" {
-		diagnostics = append(diagnostics, diagnostic)
-	}
-	start := time.Now()
-	var entries []BranchEntry
-	total := len(repositories)
-	for index, repository := range repositories {
-		reportBranchProgress(sweep.Progress, index+1, total, repository.Slug())
-		repositoryEntries, diagnostic := inspectRepositoryBranchesWithHeartbeat(
-			ctx, repository, sweep, inUse, index+1, total,
-			branchRepositoryHeartbeatInterval, inspectRepositoryBranches,
-		)
-		entries = append(entries, repositoryEntries...)
-		if diagnostic != "" {
-			diagnostics = append(diagnostics, diagnostic)
-		}
-	}
-	reportBranchSummary(sweep.Progress, tallyDispositions(entries), time.Since(start))
-	return entries, diagnostics, paths, nil
+	return branchInventoryService().ClassifyFleetBranchesWithPaths(ctx, sweep.branchInventorySweep())
 }
 
 func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[string]int, int, map[string]int, int, bool, []string) {
-	repositories, err := discoverBranchRepositories(sweep.ProjectsRoot, sweep.Filter)
-	if err != nil {
-		return nil, 0, nil, 0, false, []string{fmt.Sprintf("count retired branches: discover repositories: %v", err)}
-	}
-	repositories, err = selectBranchRepositories(repositories, sweep.Repository, sweep.Org)
-	if err != nil {
-		return nil, 0, nil, 0, false, []string{fmt.Sprintf("count retired branches: %v", err)}
-	}
-	names := map[string]bool{}
-	counts := map[string]int{}
-	tagNames := map[string]bool{}
-	tagCounts := map[string]int{}
-	retiredRemoteUnavailable := false
-	var diagnostics []string
-	for _, repository := range repositories {
-		if sweep.Scope == BranchScopeLocal || sweep.Scope == BranchScopeAll {
-			refs, diagnostic := listLocalRefs(ctx, repository.Path)
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired local refs: %s", repository.Slug(), diagnostic))
-			}
-			accumulateRetiredCounts(sweep, repository, refs, BranchScopeLocal, counts, names)
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, false, true)
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired local tags: %s", repository.Slug(), diagnostic))
-			}
-			accumulateRetiredCounts(sweep, repository, tags, BranchScopeLocal, tagCounts, tagNames)
-		}
-		if sweep.Scope == BranchScopeRemote || sweep.Scope == BranchScopeAll {
-			// Inventory already fetched remote refs for classification. Count the
-			// resulting tracking refs directly so a visible retired total never
-			// causes a second network fetch or hides its failure.
-			refs, diagnostic := listRefs(ctx, repository.Path, "refs/remotes/origin/", "origin/")
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote refs: %s", repository.Slug(), diagnostic))
-				retiredRemoteUnavailable = true
-			}
-			accumulateRetiredCounts(sweep, repository, refs, BranchScopeRemote, counts, names)
-			tags, diagnostic := listRetiredTags(ctx, repository.Path, true, sweep.OlderThan > 0)
-			if diagnostic != "" {
-				diagnostics = append(diagnostics, fmt.Sprintf("%s: count retired remote tags: %s", repository.Slug(), diagnostic))
-				retiredRemoteUnavailable = true
-			}
-			accumulateRetiredCounts(sweep, repository, tags, BranchScopeRemote, tagCounts, tagNames)
-		}
-	}
-	return counts, len(names), tagCounts, len(tagNames), retiredRemoteUnavailable, diagnostics
+	return branchInventoryService().CountRetiredBranches(ctx, sweep.branchInventorySweep())
 }
 
 func accumulateRetiredCounts(sweep branchSweepOptions, repository discover.Repo, refs []branchRef, scope string, counts map[string]int, names map[string]bool) {
@@ -519,26 +330,10 @@ func inspectRepositoryBranchesWithHeartbeat(
 	interval time.Duration,
 	inspect branchRepositoryInspection,
 ) ([]BranchEntry, string) {
-	if sweep.Progress == nil || interval <= 0 {
+	adapt := func(ctx context.Context, repo worktreebranches.Repository, _ worktreebranches.InventorySweep, inUse map[string]string) ([]BranchEntry, string) {
 		return inspect(ctx, repository, sweep, inUse)
 	}
-	result := make(chan branchRepositoryInspectionResult, 1)
-	started := time.Now()
-	go func() {
-		entries, diagnostic := inspect(ctx, repository, sweep, inUse)
-		result <- branchRepositoryInspectionResult{entries: entries, diagnostic: diagnostic}
-	}()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case inspected := <-result:
-			return inspected.entries, inspected.diagnostic
-		case <-ticker.C:
-			_, _ = fmt.Fprintf(sweep.Progress, "[%d/%d] still scanning %s (%s)\n",
-				index, total, repository.Slug(), time.Since(started).Round(time.Second))
-		}
-	}
+	return branchInventoryService().InspectRepositoryBranchesWithHeartbeat(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), inUse, index, total, interval, adapt)
 }
 
 func discoverBranchRepositories(projectsRoot, filter string) ([]discover.Repo, error) {
@@ -559,22 +354,30 @@ func discoverBranchRepositories(projectsRoot, filter string) ([]discover.Repo, e
 }
 
 func selectBranchRepositories(repositories []discover.Repo, repositorySlug, org string) ([]discover.Repo, error) {
-	selected := make([]discover.Repo, 0, len(repositories))
+	leaf := make([]worktreebranches.Repository, 0, len(repositories))
 	for _, repository := range repositories {
-		owner, _, _ := strings.Cut(repository.Slug(), "/")
-		if (repositorySlug == "" || repository.Slug() == repositorySlug) && (org == "" || owner == org) {
-			selected = append(selected, repository)
-		}
+		leaf = append(leaf, branchInventoryRepository(repository))
 	}
-	if repositorySlug != "" && len(selected) == 0 {
-		return nil, fmt.Errorf("selected repository %q was not discovered", repositorySlug)
+	selected, err := worktreebranches.SelectBranchRepositories(leaf, repositorySlug, org)
+	if err != nil {
+		return nil, err
 	}
-	return selected, nil
+	bySlug := make(map[string]discover.Repo, len(repositories))
+	for _, repository := range repositories {
+		bySlug[repository.Slug()] = repository
+	}
+	result := make([]discover.Repo, 0, len(selected))
+	for _, repository := range selected {
+		result = append(result, bySlug[repository.Slug])
+	}
+	return result, nil
 }
 
 // branchInUseKey identifies one repository/branch pair claimed live by a WB
 // task, keyed exactly as ListResult reports it.
-func branchInUseKey(repository, branch string) string { return repository + "|" + branch }
+func branchInUseKey(repository, branch string) string {
+	return worktreebranches.BranchInUseKey(repository, branch)
+}
 
 // branchInUseIndex builds the fleet-wide set of branches WB itself owns right
 // now: checked out in a linked worktree, or named by a live Work Log claim.
@@ -582,123 +385,26 @@ func branchInUseKey(repository, branch string) string { return repository + "|" 
 // reports — rather than re-deriving claim state, so the two surfaces can
 // never disagree about what WB owns.
 func branchInUseIndex(ctx context.Context, projectsRoot, filter string) (map[string]string, string) {
-	outcome, err := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: projectsRoot, Filter: filter})
-	if err != nil {
-		return map[string]string{}, fmt.Sprintf("read WB worktree inventory: %v", err)
-	}
-	index := make(map[string]string, len(outcome.Results))
-	for _, result := range outcome.Results {
-		index[branchInUseKey(result.Repository, result.Branch)] = result.Task
-	}
-	return index, ""
+	return branchInventoryService().BranchInUseIndex(ctx, projectsRoot, filter)
 }
 
 func reportBranchProgress(out io.Writer, index, total int, repository string) {
-	if out == nil {
-		return
-	}
-	_, _ = fmt.Fprintf(out, "[%d/%d] scanning %s\n", index, total, repository)
+	worktreebranches.ReportBranchProgress(out, index, total, repository)
 }
 
 func reportBranchSummary(out io.Writer, totals map[string]int, elapsed time.Duration) {
-	if out == nil {
-		return
-	}
-	names := make([]string, 0, len(totals))
-	for name := range totals {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s=%d", name, totals[name]))
-	}
-	_, _ = fmt.Fprintf(out, "done in %s: %s\n", elapsed.Round(time.Millisecond), strings.Join(parts, " "))
+	worktreebranches.ReportBranchSummary(out, totals, elapsed)
 }
 
 // inspectRepositoryBranches classifies every branch in one repository. A
 // fetch failure for the exact target yields unreadable for the whole
 // repository rather than aborting the sweep.
 func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sweep branchSweepOptions, inUse map[string]string) ([]BranchEntry, string) {
-	slug := repository.Slug()
-	targetSHA, err := fetchRemoteTargetHead(ctx, repository.Path, sweep.Base)
-	if err != nil {
-		return []BranchEntry{{
-			Repository: slug, Base: sweep.Base, Disposition: BranchUnreadable,
-			Evidence: fmt.Sprintf("fetch exact origin/%s target: %v", sweep.Base, err),
-		}}, fmt.Sprintf("%s: fetch exact origin/%s target: %v", slug, sweep.Base, err)
-	}
-	canonicalHEAD, _ := git(ctx, repository.Path, "rev-parse", "--abbrev-ref", "HEAD")
-	canonicalHEAD = strings.TrimSpace(canonicalHEAD)
-
-	var entries []BranchEntry
-	var diagnostics []string
-	if sweep.Scope == BranchScopeLocal || sweep.Scope == BranchScopeAll {
-		local, diagnostic := listLocalRefs(ctx, repository.Path)
-		if diagnostic != "" {
-			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, diagnostic))
-		}
-		checkedOut, diagnostic := checkedOutLocalBranches(ctx, repository.Path)
-		if diagnostic != "" {
-			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, diagnostic))
-		}
-		pullRequestCache := map[string][]githubPullRequest{}
-		for _, ref := range local {
-			if !branchNameSelected(sweep, ref.Name) {
-				continue
-			}
-			if isRetiredBranch(ref.Name) && !sweep.IncludeRetired && sweep.Only != BranchRetired && sweep.Branch != ref.Name && sweep.Name == "" {
-				continue
-			}
-			if isRetiredBranch(ref.Name) {
-				entries = append(entries, retiredBranchEntry(repository, sweep, ref, BranchScopeLocal, targetSHA))
-			} else {
-				entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeLocal, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
-			}
-			decorateBranchCommit(ctx, repository.Path, &entries[len(entries)-1])
-		}
-	}
-	if sweep.Scope == BranchScopeRemote || sweep.Scope == BranchScopeAll {
-		remote, diagnostic := listRemoteRefs(ctx, repository.Path)
-		if diagnostic != "" {
-			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, diagnostic))
-		}
-		// Remote retirement deletes the same named ref. It therefore must see
-		// local worktrees and live claims too; a remote-only plan may never
-		// bypass an in-use guard merely because it enumerated origin refs.
-		checkedOut, checkedOutDiagnostic := checkedOutLocalBranches(ctx, repository.Path)
-		if checkedOutDiagnostic != "" {
-			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, checkedOutDiagnostic))
-		}
-		pullRequestCache := map[string][]githubPullRequest{}
-		branchPullRequestCache := map[string]branchPullRequestEvidence{}
-		for _, ref := range remote {
-			if !branchNameSelected(sweep, ref.Name) {
-				continue
-			}
-			if isRetiredBranch(ref.Name) && !sweep.IncludeRetired && sweep.Only != BranchRetired && sweep.Branch != ref.Name && sweep.Name == "" {
-				continue
-			}
-			if isRetiredBranch(ref.Name) {
-				entries = append(entries, retiredBranchEntry(repository, sweep, ref, BranchScopeRemote, targetSHA))
-			} else {
-				entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
-				entry := &entries[len(entries)-1]
-				if (sweep.WithPRs && entry.Disposition != BranchProtected && entry.Disposition != BranchUnreadable) ||
-					(sweep.Cleanup && eligibleBranchCleanupDisposition(*entry)) {
-					decorateRemoteBranchPullRequests(ctx, repository, ref, entry, branchPullRequestCache, sweep.WithPRs)
-				}
-			}
-			decorateBranchCommit(ctx, repository.Path, &entries[len(entries)-1])
-		}
-	}
-	return entries, strings.Join(diagnostics, "; ")
+	return branchInventoryService().InspectRepositoryBranches(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), inUse)
 }
 
 func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *BranchEntry) {
-	entries := []BranchEntry{*entry}
-	decorateBranchCommits(ctx, repositoryPath, entries)
-	*entry = entries[0]
+	branchInventoryService().DecorateBranchCommit(ctx, repositoryPath, entry)
 }
 
 func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
@@ -716,269 +422,37 @@ func isRetiredBranch(branch string) bool {
 // branchInUseIndex (which additionally names the owning WB task when there is
 // one).
 func checkedOutLocalBranches(ctx context.Context, repositoryPath string) (map[string]bool, string) {
-	output, err := git(ctx, repositoryPath, "worktree", "list", "--porcelain")
-	if err != nil {
-		return map[string]bool{}, fmt.Sprintf("enumerate linked worktrees: %v", err)
-	}
-	checkedOut := map[string]bool{}
-	for _, line := range strings.Split(output, "\n") {
-		if branch, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
-			checkedOut[branch] = true
-		}
-	}
-	return checkedOut, ""
+	return branchInventoryService().CheckedOutLocalBranches(ctx, repositoryPath)
 }
 
 // branchRef is one enumerated ref before classification.
 type branchRef = worktreebranches.BranchRef
 
 func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return listRefs(ctx, repositoryPath, "refs/heads/", "")
+	return branchInventoryService().ListLocalRefs(ctx, repositoryPath)
 }
 
 func listRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return fetchRemoteRefs(ctx, repositoryPath, "+refs/heads/*:refs/remotes/origin/*", "refs/remotes/origin/", "fetch --prune origin")
+	return branchInventoryService().ListRemoteRefs(ctx, repositoryPath)
 }
 
 func listRetiredRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return fetchRemoteRefs(ctx, repositoryPath, "+refs/heads/retired/*:refs/remotes/origin/retired/*", "refs/remotes/origin/retired/", "fetch --prune origin retired namespace")
-}
-
-func fetchRemoteRefs(ctx context.Context, repositoryPath, refspec, refPrefix, failureLabel string) ([]branchRef, string) {
-	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", refspec); err != nil {
-		return nil, fmt.Sprintf("%s: %v", failureLabel, err)
-	}
-	return listRefs(ctx, repositoryPath, refPrefix, "origin/")
+	return branchInventoryService().ListRetiredRemoteRefs(ctx, repositoryPath)
 }
 
 // listRetiredTags keeps remote tag inspection separate from local tags. It
 // uses ls-remote for remote scope so branch inventory never writes fetched
 // tags into the caller's local tag namespace.
 func listRetiredTags(ctx context.Context, repositoryPath string, remote, metadata bool) ([]branchRef, string) {
-	if !remote {
-		return listRefs(ctx, repositoryPath, "refs/tags/retired/", "")
-	}
-	output, err := git(ctx, repositoryPath, "ls-remote", "--tags", "--refs", "origin", "refs/tags/retired/*")
-	if err != nil {
-		return nil, fmt.Sprintf("ls-remote retired tags: %v", err)
-	}
-	refs := []branchRef{}
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || strings.HasSuffix(fields[1], "^{}") || !strings.HasPrefix(fields[1], "refs/tags/retired/") || !isGitObjectID(fields[0]) {
-			continue
-		}
-		refs = append(refs, branchRef{Name: strings.TrimPrefix(fields[1], "refs/tags/"), SHA: fields[0], UnknownDate: true})
-	}
-	if !metadata || len(refs) == 0 {
-		return refs, ""
-	}
-	// Metadata needs objects, but branch inventory is read-only with respect to
-	// the caller's clone: use one temporary bare repository and a bounded
-	// wildcard refspec rather than changing FETCH_HEAD, tags, or object storage.
-	origin, err := git(ctx, repositoryPath, "remote", "get-url", "origin")
-	if err != nil {
-		return nil, fmt.Sprintf("resolve origin for retired tags: %v", err)
-	}
-	temporary, err := os.MkdirTemp("", "wb-retired-tag-metadata-")
-	if err != nil {
-		return nil, fmt.Sprintf("create retired tag metadata repository: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(temporary) }()
-	if _, err := git(ctx, temporary, "init", "--bare"); err != nil {
-		return nil, fmt.Sprintf("initialize retired tag metadata repository: %v", err)
-	}
-	if _, err := git(ctx, temporary, "fetch", "--no-tags", strings.TrimSpace(origin), "+refs/tags/retired/*:refs/tags/retired/*"); err != nil {
-		return nil, fmt.Sprintf("fetch retired tag metadata: %v", err)
-	}
-	for i := range refs {
-		observed, err := git(ctx, temporary, "rev-parse", "refs/tags/"+refs[i].Name)
-		if err != nil || observed != refs[i].SHA {
-			return nil, fmt.Sprintf("retired tag %s changed during metadata fetch", refs[i].Name)
-		}
-		const separator = "\x1f"
-		commit, err := git(ctx, temporary, "show", "-s", "--format=%cI%x1f%an%x1f%s", "refs/tags/"+refs[i].Name+"^{commit}")
-		if err != nil {
-			return nil, fmt.Sprintf("read retired tag commit metadata: %v", err)
-		}
-		parts := strings.SplitN(commit, separator, 3)
-		if len(parts) != 3 {
-			return nil, "invalid retired tag commit metadata"
-		}
-		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
-		if err != nil {
-			return nil, fmt.Sprintf("parse retired tag commit date: %v", err)
-		}
-		refs[i].CommitterDate, refs[i].UnknownDate = parsed, false
-		refs[i].Author, refs[i].Title = strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2])
-	}
-	return refs, ""
+	return branchInventoryService().ListRetiredTags(ctx, repositoryPath, remote, metadata)
 }
 
 func listRefs(ctx context.Context, repositoryPath, refPrefix, namePrefix string) ([]branchRef, string) {
-	const separator = "\x1f"
-	format := strings.Join([]string{"%(refname:short)", "%(objectname)", "%(committerdate:iso-strict)"}, separator)
-	output, err := git(ctx, repositoryPath, "for-each-ref", "--format="+format, refPrefix)
-	if err != nil {
-		return nil, fmt.Sprintf("enumerate %s: %v", refPrefix, err)
-	}
-	var refs []branchRef
-	for _, line := range strings.Split(output, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		fields := strings.Split(line, separator)
-		if len(fields) != 3 {
-			continue
-		}
-		shortName := strings.TrimPrefix(fields[0], namePrefix)
-		if namePrefix != "" && shortName == fields[0] {
-			continue // did not carry the expected remote prefix; skip rather than misreport
-		}
-		if shortName == "HEAD" {
-			continue // origin/HEAD is a symbolic pointer, not a branch
-		}
-		committerDate, _ := time.Parse(time.RFC3339, fields[2])
-		refs = append(refs, branchRef{Name: shortName, SHA: fields[1], CommitterDate: committerDate})
-	}
-	return refs, ""
+	return branchInventoryService().ListRefs(ctx, repositoryPath, refPrefix, namePrefix)
 }
 
-func classifyBranch(
-	ctx context.Context,
-	repository discover.Repo,
-	sweep branchSweepOptions,
-	ref branchRef,
-	scope string,
-	targetSHA, canonicalHEAD string,
-	inUse map[string]string,
-	checkedOut map[string]bool,
-	pullRequestCache map[string][]githubPullRequest,
-) BranchEntry {
-	entry := BranchEntry{
-		Repository: repository.Slug(), Branch: ref.Name, Scope: scope,
-		SHA: ref.SHA, ShortSHA: shortSHA(ref.SHA), CommitterDate: ref.CommitterDate,
-		Base: sweep.Base, TargetSHA: targetSHA,
-	}
-
-	// protected, in-use, and unreadable are evaluated before contained, so a
-	// protected or claimed branch is never reported as deletable.
-	if isProtectedBranch(ref.Name, sweep.Base, canonicalHEAD) {
-		entry.Disposition = BranchProtected
-		entry.Evidence = protectedEvidence(ref.Name, sweep.Base, canonicalHEAD)
-		return entry
-	}
-	task, claimed := inUse[branchInUseKey(repository.Slug(), ref.Name)]
-	if claimed || checkedOut[ref.Name] {
-		entry.Disposition = BranchInUse
-		entry.Task = task
-		switch {
-		case claimed:
-			entry.Evidence = fmt.Sprintf("checked out or claimed by WB task %s", task)
-			entry.Reason = fmt.Sprintf("owned by wb worktree task %s; use `wb worktree cleanup %s` or `wb worktree abort %s`, never wb branch cleanup", task, task, task)
-		default:
-			entry.Evidence = "checked out in a linked worktree"
-			entry.Reason = "checked out in a linked worktree; wb branch cleanup never touches a working tree"
-		}
-		return entry
-	}
-	if sweep.SupersededBy != "" {
-		receipt, rejection := supersessionReceiptForEntry(ctx, sweep.SupersededBy, ListResult{
-			Repository: repository.Slug(), Branch: ref.Name, HeadSHA: ref.SHA,
-			Base: sweep.Base, RemoteTargetSHA: targetSHA, CanonicalDir: repository.Path,
-		})
-		if rejection == "" {
-			entry.Disposition = BranchSuperseded
-			entry.SupersededAtOrigin = true
-			entry.SupersessionReceipt, entry.SupersessionReviewer, entry.SupersessionReceiptID = sweep.SupersededBy, receipt.Approval.Actor, receipt.Approval.ReceiptID
-			digest, digestErr := supersessionFileSHA256(sweep.SupersededBy)
-			if digestErr != nil {
-				entry.Disposition, entry.Evidence = BranchUnreadable, fmt.Sprintf("digest supersession receipt: %v", digestErr)
-				return entry
-			}
-			entry.SupersessionSHA256 = digest
-			entry.Evidence = "trusted reviewer receipt binds the exact source, target, replacements, and complete residual inventory"
-			return entry
-		}
-		entry.SupersessionRejection = rejection
-	}
-
-	contained, err := isAncestor(ctx, repository.Path, ref.SHA, targetSHA)
-	if err != nil {
-		entry.Disposition = BranchUnreadable
-		entry.Evidence = fmt.Sprintf("merge-base --is-ancestor: %v", err)
-		return entry
-	}
-	if contained {
-		entry.Disposition = BranchContained
-		entry.Evidence = fmt.Sprintf("merge-base --is-ancestor %s %s", entry.ShortSHA, shortSHA(targetSHA))
-		return entry
-	}
-
-	absorbed, absorbedEvidence, uniqueCount, err := classifyAbsorbedOrUnique(ctx, repository.Path, targetSHA, ref.SHA)
-	if err != nil {
-		entry.Disposition = BranchUnreadable
-		entry.Evidence = fmt.Sprintf("git cherry: %v", err)
-		return entry
-	}
-
-	// An operator-supplied --absorbed-by pointer is checked before both patch
-	// evidence and --receipts auto-discovery: like a discovered receipt, a
-	// branch that proves out this way must never be classified absorbed in
-	// the first place (#req:absorbed-is-report-only governs only what
-	// actually becomes absorbed, not what a stronger independent proof
-	// reclassifies before that assignment happens). It reuses worktree
-	// cleanup's exact attested-absorption proof (see attestedAbsorbedReceipt)
-	// rather than a second implementation: the named commit must be exactly
-	// where the work entered the target, and merging the branch into it, and
-	// into the fetched target, must add nothing to either. A pointer that
-	// fails this proof for the current branch is an ordinary negative for
-	// THAT branch, never a hard error — a fleet sweep with an unfiltered
-	// --absorbed-by fails closed candidate by candidate, never aborts.
-	absorbedByNote := ""
-	if sweep.AbsorbedBy != "" {
-		receipt, rejection, err := classifyAttestedReceipt(ctx, repository, ref, sweep.Base, targetSHA, sweep.AbsorbedBy)
-		if err != nil {
-			entry.Disposition = BranchUnreadable
-			entry.Evidence = fmt.Sprintf("--absorbed-by verification failed: %v", err)
-			return entry
-		}
-		if receipt != nil {
-			return receiptedBranch(entry, receipt.LandingSHA, receipt.PullRequest, sweep.AbsorbedBy)
-		}
-		entry.AbsorbedByRejection = rejection
-		absorbedByNote = "; --absorbed-by: " + rejection
-	}
-
-	// A proved landing receipt outranks patch evidence in both directions: a
-	// multi-commit squash landing presents as unique (no individual patch-id
-	// survives squashing) even though every byte is in the target, and
-	// patch-id equality alone must never make a branch deletable. Any receipt
-	// failure names itself and leaves the patch-evidence disposition standing.
-	// See #req:receipted-requires-a-proved-landing.
-	receiptNote := ""
-	if sweep.Receipts {
-		receipt, note := classifyLandingReceipt(ctx, repository, ref, sweep.Base, targetSHA, pullRequestCache)
-		if receipt != nil {
-			return receiptedBranch(entry, receipt.MergeSHA, receipt, "")
-		}
-		receiptNote = "; receipt: " + note
-	}
-	if absorbed {
-		entry.Disposition = BranchAbsorbed
-		entry.Evidence = absorbedEvidence + receiptNote + absorbedByNote
-		entry.Reason = "absorbed by patch-id or tree equality only; never eligible for --apply. " +
-			"If this branch belongs to a WB task, run `wb worktree cleanup <task> --absorbed-by <pr-or-commit>`; " +
-			"if it has no worktree, run `wb branch cleanup --absorbed-by <pr-or-commit>`; " +
-			"otherwise this requires an explicit human decision"
-		// The text renderer prefers Reason over Evidence, so a named failing
-		// receipt check must ride along or the operator never sees it.
-		entry.Reason += receiptNote + absorbedByNote
-		return entry
-	}
-	entry.Disposition = BranchUnique
-	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote + absorbedByNote
-	return entry
+func classifyBranch(ctx context.Context, repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope string, targetSHA, canonicalHEAD string, inUse map[string]string, checkedOut map[string]bool, pullRequestCache map[string][]githubPullRequest) BranchEntry {
+	return branchInventoryService().ClassifyBranch(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), ref, scope, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache)
 }
 
 func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequest, absorbedBy string) BranchEntry {
@@ -994,16 +468,6 @@ func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequ
 // repository stands in for both the "worktree" and "repository" arguments the
 // shared proof expects; every check it performs runs against the canonical
 // clone's object database and touches no working tree.
-func classifyAttestedReceipt(
-	ctx context.Context,
-	repository discover.Repo,
-	ref branchRef,
-	base, targetSHA, absorbedBy string,
-) (*absorbedReceipt, string, error) {
-	return attestedAbsorbedReceipt(
-		ctx, repository.Path, repository.Path, repository.Slug(), ref.SHA, base, targetSHA, absorbedBy,
-	)
-}
 
 func shortSHA(sha string) string {
 	return worktreebranches.ShortSHA(sha)
@@ -1026,65 +490,8 @@ func protectedEvidence(branch, base, canonicalHEAD string) string {
 // disposition — a branch never becomes eligible because a check could not be
 // run. See #req:receipted-requires-a-proved-landing and
 // #req:receipted-is-opt-in-and-fails-closed.
-func classifyLandingReceipt(
-	ctx context.Context,
-	repository discover.Repo,
-	ref branchRef,
-	base, targetSHA string,
-	cache map[string][]githubPullRequest,
-) (*PullRequest, string) {
-	pullRequests, ok := cache[ref.SHA]
-	if !ok {
-		fetched, err := githubPullRequests(ctx, repository.Path, repository.Slug(), ref.SHA)
-		if err != nil {
-			return nil, fmt.Sprintf("pull-request query failed: %v", err)
-		}
-		pullRequests = fetched
-		if cache != nil {
-			cache[ref.SHA] = pullRequests
-		}
-	}
-	pullRequest := absorbingPullRequest(pullRequests, base)
-	if pullRequest == nil {
-		return nil, fmt.Sprintf("no merged pull request into %s names this head", base)
-	}
-	if !isGitObjectID(pullRequest.MergeSHA) {
-		return nil, fmt.Sprintf("merged pull request #%d carries no valid merge commit", pullRequest.Number)
-	}
-	landed, err := isAncestor(ctx, repository.Path, pullRequest.MergeSHA, targetSHA)
-	if err != nil {
-		return nil, fmt.Sprintf("landing containment check failed: %v", err)
-	}
-	if !landed {
-		return nil, fmt.Sprintf("landing commit %s of pull request #%d is not contained in the fetched target",
-			shortSHA(pullRequest.MergeSHA), pullRequest.Number)
-	}
-	// The two proof halves fail for different reasons and deserve different
-	// evidence: a branch that never fully entered its landing commit was
-	// amended while landing, while one that landed in full and fails only
-	// against the target has been overtaken — by later edits or a revert,
-	// which tree arithmetic cannot tell apart. Both stay ineligible, but the
-	// second case names the landing commit, where the content remains
-	// recoverable forever, so the remaining human decision is an informed one.
-	inLanding, err := contentContained(ctx, repository.Path, ref.SHA, pullRequest.MergeSHA)
-	if err != nil {
-		return nil, fmt.Sprintf("three-way proof failed to run: %v", err)
-	}
-	if !inLanding {
-		return nil, fmt.Sprintf(
-			"landing commit %s of pull request #%d does not carry this branch's work in full; it may have been amended while landing",
-			shortSHA(pullRequest.MergeSHA), pullRequest.Number)
-	}
-	inTarget, err := contentContained(ctx, repository.Path, ref.SHA, targetSHA)
-	if err != nil {
-		return nil, fmt.Sprintf("three-way proof failed to run: %v", err)
-	}
-	if !inTarget {
-		return nil, fmt.Sprintf(
-			"landed in full via pull request #%d, but the target has since diverged from that work — later edits and a revert are indistinguishable here; the content remains recoverable at landing commit %s",
-			pullRequest.Number, shortSHA(pullRequest.MergeSHA))
-	}
-	return pullRequest, ""
+func classifyLandingReceipt(ctx context.Context, repository discover.Repo, ref branchRef, base, targetSHA string, cache map[string][]githubPullRequest) (*PullRequest, string) {
+	return branchInventoryService().ClassifyLandingReceipt(ctx, branchInventoryRepository(repository), ref, base, targetSHA, cache)
 }
 
 // classifyAbsorbedOrUnique implements the absorbed/unique split. absorbed is
@@ -1092,28 +499,5 @@ func classifyLandingReceipt(
 // is identical to the target tree; both are patch-id/content evidence only,
 // never a landing receipt. See #req:absorbed-is-report-only.
 func classifyAbsorbedOrUnique(ctx context.Context, repositoryPath, targetSHA, branchSHA string) (absorbed bool, evidence string, uniqueCount int, err error) {
-	output, err := git(ctx, repositoryPath, "cherry", targetSHA, branchSHA)
-	if err != nil {
-		return false, "", 0, err
-	}
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "+") {
-			uniqueCount++
-		}
-	}
-	if uniqueCount == 0 {
-		return true, fmt.Sprintf("git cherry %s %s reports 0 unique patches", shortSHA(targetSHA), shortSHA(branchSHA)), 0, nil
-	}
-	branchTree, err := commitTree(ctx, repositoryPath, branchSHA)
-	if err != nil {
-		return false, "", uniqueCount, nil //nolint:nilerr // tree comparison is best-effort supplementary evidence
-	}
-	targetTree, err := commitTree(ctx, repositoryPath, targetSHA)
-	if err != nil {
-		return false, "", uniqueCount, nil //nolint:nilerr // see above
-	}
-	if branchTree == targetTree {
-		return true, fmt.Sprintf("tree %s identical to target tree %s", shortSHA(branchTree), shortSHA(targetTree)), 0, nil
-	}
-	return false, "", uniqueCount, nil
+	return branchInventoryService().ClassifyAbsorbedOrUnique(ctx, repositoryPath, targetSHA, branchSHA)
 }
