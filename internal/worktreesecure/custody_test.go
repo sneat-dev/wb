@@ -36,6 +36,20 @@ func (invalidFDOpener) Mkdir(int, string) error          { return nil }
 func (invalidFDOpener) OpenDir(int, string) (int, error) { return -1, nil }
 func (invalidFDOpener) IsSymlink(int, string) bool       { return false }
 
+type negativeRootOpener struct{}
+
+func (negativeRootOpener) OpenRoot(string) (int, error)     { return -1, nil }
+func (negativeRootOpener) Mkdir(int, string) error          { return nil }
+func (negativeRootOpener) OpenDir(int, string) (int, error) { return -1, nil }
+func (negativeRootOpener) IsSymlink(int, string) bool       { return false }
+
+type negativeChildOpener struct{ root string }
+
+func (o negativeChildOpener) OpenRoot(string) (int, error)   { return secureopen.Real{}.OpenRoot(o.root) }
+func (negativeChildOpener) Mkdir(int, string) error          { return nil }
+func (negativeChildOpener) OpenDir(int, string) (int, error) { return -1, nil }
+func (negativeChildOpener) IsSymlink(int, string) bool       { return false }
+
 func openTestDirectory(t *testing.T, path string) *os.File {
 	t.Helper()
 	directory, err := os.Open(path)
@@ -273,6 +287,12 @@ func TestCustodyOpenWithAndPrivateChild(t *testing.T) {
 	if _, err := OpenAbsoluteDirectoryNoFollowWith(opener, "/a", true); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := OpenAbsoluteDirectoryNoFollowWith(negativeRootOpener{}, string(filepath.Separator), false); err == nil || err.Error() != "wrap secure directory /" {
+		t.Fatalf("root nil wrap = %v", err)
+	}
+	if _, err := OpenAbsoluteDirectoryNoFollowWith(negativeChildOpener{root: root}, "/child", false); err == nil || err.Error() != "wrap secure directory /child" {
+		t.Fatalf("final nil wrap = %v", err)
+	}
 	boom := errors.New("boom")
 	opener = newTempRootOpener(root)
 	opener.FailCall(1, boom)
@@ -293,6 +313,9 @@ func TestCustodyOpenWithAndPrivateChild(t *testing.T) {
 	}
 	if _, err := OpenPrivateChildWith(invalidFDOpener{}, parent, "failed", true, validSegment); err == nil {
 		t.Fatal("invalid create descriptor accepted")
+	}
+	if _, err := OpenPrivateChildWith(invalidFDOpener{}, parent, "read-wrap", false, validSegment); err == nil || err.Error() != "wrap private directory read-wrap" {
+		t.Fatalf("private nil wrap = %v", err)
 	}
 	if _, err := OpenPrivateChildWith(secureopen.Real{}, parent, "missing", false, validSegment); err == nil {
 		t.Fatal("missing child accepted")

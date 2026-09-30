@@ -101,7 +101,12 @@ func OpenAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, cr
 		return nil, fmt.Errorf("open filesystem root for secure directory %s: %w", path, err)
 	}
 	if path == string(filepath.Separator) {
-		return os.NewFile(uintptr(fd), "wb-secure-directory"), nil
+		directory := os.NewFile(uintptr(fd), "wb-secure-directory")
+		if directory == nil {
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("wrap secure directory %s", path)
+		}
+		return directory, nil
 	}
 	for _, segment := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
 		var next int
@@ -123,7 +128,12 @@ func OpenAbsoluteDirectoryNoFollowWith(opener secureopen.Opener, path string, cr
 		}
 		fd = next
 	}
-	return os.NewFile(uintptr(fd), "wb-secure-directory"), nil
+	directory := os.NewFile(uintptr(fd), "wb-secure-directory")
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap secure directory %s", path)
+	}
+	return directory, nil
 }
 
 // OpenDirectoryAtNoFollow opens a single child directory under parentFD.
@@ -323,5 +333,10 @@ func OpenPrivateChildWith(opener secureopen.Opener, parent *os.File, name string
 			return nil, err
 		}
 	}
-	return os.NewFile(uintptr(fd), "wb-worklog-"+name), nil
+	file := os.NewFile(uintptr(fd), "wb-worklog-"+name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap private directory %s", name)
+	}
+	return file, nil
 }
