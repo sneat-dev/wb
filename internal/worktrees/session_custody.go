@@ -89,10 +89,28 @@ type externalTargetPreparation struct {
 	ownerEvent      LocalWorkLogEvent
 }
 
+// Publication keeps faultable journal and descriptor operations local to one
+// prepared handoff. Its default bindings are the existing durable primitives.
+type externalTargetPublicationPorts struct {
+	appendEvent func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
+	closeOutbox func(*os.File) error
+}
+
+func defaultExternalTargetPublicationPorts() externalTargetPublicationPorts {
+	return externalTargetPublicationPorts{
+		appendEvent: appendLocalEventWithoutCustody,
+		closeOutbox: (*os.File).Close,
+	}
+}
+
 // PrepareExternalSessionWorkLog publishes one deterministic external target
 // claim before launcher release. Claim identity excludes attempt/PID/time;
 // each prepared attempt appends its own idempotent owner evidence under it.
 func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionWorkLogPrepareOptions) (ExternalSessionWorkLogPrepareResult, error) {
+	return defaultExternalTargetPublicationPorts().prepare(ctx, options)
+}
+
+func (p externalTargetPublicationPorts) prepare(ctx context.Context, options ExternalSessionWorkLogPrepareOptions) (ExternalSessionWorkLogPrepareResult, error) {
 	var result ExternalSessionWorkLogPrepareResult
 	prepared, err := prepareExternalTarget(ctx, options)
 	if err != nil {
@@ -134,11 +152,11 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	if err := ensureExternalHandoverPrompt(prepared.worktree, claim.RecordedAt, options.Session, options.Request.HandoverDigest, prepared.handover); err != nil {
 		return result, err
 	}
-	prepared.receivedEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.receivedEvent)
+	prepared.receivedEvent, _, err = p.appendEvent(prepared.worktree, prepared.receivedEvent)
 	if err != nil {
 		return result, fmt.Errorf("record target Work Log receipt evidence: %w", err)
 	}
-	prepared.ownerEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.ownerEvent)
+	prepared.ownerEvent, _, err = p.appendEvent(prepared.worktree, prepared.ownerEvent)
 	if err != nil {
 		return result, fmt.Errorf("record target Work Log attempt owner: %w", err)
 	}
@@ -153,9 +171,12 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	}
 	public := preparedTargetPublicEvent(claim)
 	err = writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-claimed.json", public, true)
-	_ = outbox.Close()
+	closeErr := p.closeOutbox(outbox)
 	if err != nil {
-		return result, fmt.Errorf("publish external target Work Log outbox: %w", err)
+		return result, fmt.Errorf("publish external target Work Log outbox: %w", errors.Join(err, closeErr))
+	}
+	if closeErr != nil {
+		return result, fmt.Errorf("close external target Work Log outbox: %w", closeErr)
 	}
 	if options.hooks.afterOutbox != nil {
 		if err := options.hooks.afterOutbox(); err != nil {
@@ -504,6 +525,32 @@ func validateExternalOfferState(state sessionmove.State, request sessionmove.Req
 // carries the exact normalized fields and their digest, so headings in a user
 // handover cannot make an otherwise valid move unsealable.
 func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (ExternalSourceOfferResult, error) {
+	return defaultExternalSourceOfferPorts().ensure(options)
+}
+
+// The admitted Store.LoadUnderLock and execution descriptor remain direct in
+// ensure. Only fallible follow-on effects use these invocation-local ports.
+type externalSourceOfferPorts struct {
+	appendOffered func(ExternalSourceOfferOptions) error
+	gitStatus     func(string) (string, error)
+	appendEvent   func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
+}
+
+func defaultExternalSourceOfferPorts() externalSourceOfferPorts {
+	return externalSourceOfferPorts{
+		appendOffered: func(options ExternalSourceOfferOptions) error {
+			_, err := options.Store.AppendEventUnderLock(options.ExecutionLock, options.Request.HandoffID, options.RequestDigest,
+				sessionmove.HandoffEvent{Phase: sessionmove.PhaseOffered, At: options.Request.CreatedAt.UTC()})
+			return err
+		},
+		gitStatus: func(worktree string) (string, error) {
+			return git(context.Background(), worktree, "status", "--porcelain=v1", "--untracked-files=all")
+		},
+		appendEvent: appendLocalEventWithoutCustody,
+	}
+}
+
+func (p externalSourceOfferPorts) ensure(options ExternalSourceOfferOptions) (ExternalSourceOfferResult, error) {
 	var result ExternalSourceOfferResult
 	if options.ExecutionLock == nil {
 		return result, fmt.Errorf("external source offer repair requires retained admitted request authority")
@@ -524,8 +571,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 	}
 
 	if !offeredFound {
-		if _, err := options.Store.AppendEventUnderLock(options.ExecutionLock, options.Request.HandoffID, options.RequestDigest,
-			sessionmove.HandoffEvent{Phase: sessionmove.PhaseOffered, At: options.Request.CreatedAt.UTC()}); err != nil {
+		if err := p.appendOffered(options); err != nil {
 			return result, fmt.Errorf("repair durable offered phase: %w", err)
 		}
 	}
@@ -535,10 +581,10 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		}
 	}
 
-	sourceReference, err := sessionmove.ParseWorkLogReference(options.Request.WorkLogReference)
-	if err != nil {
-		return result, err
-	}
+	// LoadUnderLock decoded and validated the exact admitted request, and
+	// validateExternalOfferState matched it to options.Request. The parse is
+	// deterministic, so a second error check cannot be reached here.
+	sourceReference, _ := sessionmove.ParseWorkLogReference(options.Request.WorkLogReference)
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
 		return result, err
@@ -566,7 +612,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		if err := corroborateClaim(claim.Worktree, options.Request.BundleCommit, projection, claim); err != nil {
 			return result, fmt.Errorf("corroborate active source Work Log before offer repair: %w", err)
 		}
-		status, statusErr := git(context.Background(), claim.Worktree, "status", "--porcelain=v1", "--untracked-files=all")
+		status, statusErr := p.gitStatus(claim.Worktree)
 		if statusErr != nil {
 			return result, fmt.Errorf("inspect source worktree before offer repair: %w", statusErr)
 		}
@@ -578,7 +624,10 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		}
 	}
 	handover, err := requestHandoverBytes(claim.Worktree, options.Request)
-	if err != nil || !options.Request.HandoverDigest.Matches(handover) {
+	if err != nil {
+		return result, fmt.Errorf("read admitted source handover document: %w", err)
+	}
+	if !options.Request.HandoverDigest.Matches(handover) {
 		return result, fmt.Errorf("source handover document does not match admitted immutable bytes")
 	}
 
@@ -591,7 +640,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		return result, err
 	}
 	if !offerFound {
-		offer, _, err = appendLocalEventWithoutCustody(claim.Worktree, externalSourceOfferEvent(options.Request, options.RequestDigest))
+		offer, _, err = p.appendEvent(claim.Worktree, externalSourceOfferEvent(options.Request, options.RequestDigest))
 		if err != nil {
 			return result, fmt.Errorf("repair deterministic source Work Log offer: %w", err)
 		}
@@ -612,7 +661,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 		return result, err
 	}
 	if !ownerFound {
-		owner, _, err = appendLocalEventWithoutCustody(claim.Worktree, externalSourceOwnerEvent(options, claim))
+		owner, _, err = p.appendEvent(claim.Worktree, externalSourceOwnerEvent(options, claim))
 		if err != nil {
 			return result, fmt.Errorf("repair exact source session owner for handoff: %w", err)
 		}
