@@ -2,18 +2,14 @@ package worktrees
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +18,7 @@ import (
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 // RetireOptions selects one WB-managed checkout. Inspector and ArchiveRemote
@@ -1046,356 +1043,88 @@ func retireRemoveLocal(ctx context.Context, task *cleanupTaskHandle, entry ListR
 	return nil
 }
 
-// retireCaptureFile opens every parent without following symlinks. A journal
-// symlink is refused, never copied by following its target.
+// These facade adapters retain the retirement transaction and its public
+// receipt while worktreeretire owns archive capture, publication, and proof.
 func retireCaptureFile(source, destination string) (string, error) {
-	return retireCaptureFileInjected(source, destination, nil)
+	return worktreeretire.CaptureFile(source, destination)
 }
 
-// retireCaptureFileInjected is retireCaptureFile's test seam (task-9
-// PR-3): every production call site reaches it only through
-// retireCaptureFile, which always passes a nil *filewrite.Injector, so
-// production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create or close failure branch deterministically.
-// The streaming io.Copy through a hash is left bare -- no filewrite
-// primitive fits a multi-writer copy -- and the original call site never
-// called Sync, so no Sync is introduced here either.
 func retireCaptureFileInjected(source, destination string, inj *filewrite.Injector) (string, error) {
-	parent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(source), false)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = parent.Close() }()
-	fd, err := unix.Openat(int(parent.Fd()), filepath.Base(source), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return "", err
-	}
-	input := os.NewFile(uintptr(fd), source)
-	defer func() { _ = input.Close() }()
-	info, err := input.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("retirement archive refuses nonregular file %s", source)
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return "", err
-	}
-	output, err := filewrite.CreateExclusivePath(destination, 0o600, inj)
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
-	closeErr := filewrite.Close(output, destination, inj)
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return worktreeretire.CaptureFileInjected(source, destination, inj)
 }
 
 func retireCaptureTree(source, destination string, include func(string) bool, hashes map[string]string, prefix string) error {
-	root, err := openAbsoluteDirectoryNoFollow(source, false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		// WalkDir supplies only source itself and its descendants, so Rel
-		// cannot cross roots or volumes here.
-		relative, _ := filepath.Rel(source, path)
-		if relative == "." {
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("retirement archive refuses symlink %s", path)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !include(filepath.ToSlash(relative)) {
-			return nil
-		}
-		archivePath := filepath.ToSlash(filepath.Join(prefix, relative))
-		digest, err := retireCaptureFile(path, filepath.Join(destination, relative))
-		if err != nil {
-			return err
-		}
-		hashes[archivePath] = digest
-		return nil
-	})
+	return worktreeretire.CaptureTree(source, destination, include, hashes, prefix)
 }
 
-type retireArchiveManifest struct {
-	Version    int               `json:"version"`
-	Repository string            `json:"repository"`
-	Branch     string            `json:"branch"`
-	Preserve   string            `json:"preserve,omitempty"`
-	SourceSHA  string            `json:"source_sha"`
-	RetiredRef string            `json:"retired_ref"`
-	ClaimID    string            `json:"claim_id"`
-	Files      map[string]string `json:"files"`
+type retireArchiveManifest = worktreeretire.Manifest
+
+func retireArchivePorts() worktreeretire.Ports {
+	return worktreeretire.Ports{
+		ReadClaim: func(home, worktree string) (worktreeretire.Claim, error) {
+			claim, _, err := retireReadClaim(home, worktree)
+			if err != nil {
+				return worktreeretire.Claim{}, err
+			}
+			return worktreeretire.Claim{ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
+				PromptArchive: claim.PromptArchive, PromptDigest: claim.PromptDigest}, nil
+		},
+		ReadTerminal: func(home, worktree string) (*worktreeretire.Terminal, error) {
+			record, err := readWorkLogTerminalRecordReadOnly(home, worktree)
+			if err != nil || record == nil {
+				return nil, err
+			}
+			report := ""
+			if record.FinalizeReport != nil {
+				report = record.FinalizeReport.ReportPath
+			}
+			return &worktreeretire.Terminal{ClaimID: record.ClaimID, FinalCommit: record.FinalCommit, ReportPath: report}, nil
+		},
+		ReportFileName: finalizeReportFileName,
+		RemoteSHA:      retireRemoteSHA,
+		Git:            git,
+		GitBytes:       worktreeretire.GitBytes,
+		GitObjectSHA:   worktreeretire.GitObjectSHA,
+	}
 }
 
 func retirePublishArchive(ctx context.Context, home, remote string, result *RetireResult) error {
-	claim, _, err := retireReadClaim(home, result.Worktree)
-	if err != nil {
+	receipt := worktreeretire.Receipt{Task: result.Task, Repository: result.Repository, Branch: result.Branch,
+		Preserve: result.Preserve, SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef,
+		Worktree: result.Worktree, Canonical: result.Canonical, ArchiveRef: result.ArchiveRef,
+		ArchiveSHA: result.ArchiveSHA, ClaimID: result.ClaimID, EffortID: result.EffortID,
+		RunID: result.RunID, Phase: result.Phase}
+	if err := worktreeretire.PublishArchive(ctx, home, remote, &receipt, retireArchivePorts()); err != nil {
 		return err
 	}
-	if claim.ClaimID != result.ClaimID || claim.Repository != result.Repository || claim.Branch != result.Branch {
-		return fmt.Errorf("retirement archive claim identity changed")
-	}
-	working, err := os.MkdirTemp("", "wb-retirement-archive-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(working) }()
-	if _, err := git(ctx, working, "init", "--initial-branch=main"); err != nil {
-		return err
-	}
-	if _, err := git(ctx, working, "config", "user.name", "WB Retirement"); err != nil {
-		return err
-	}
-	if _, err := git(ctx, working, "config", "user.email", "wb-retirement@localhost"); err != nil {
-		return err
-	}
-	hashes := map[string]string{}
-	worktreeMeta := filepath.Join(result.Worktree, ".worktree.md")
-	if digest, err := retireCaptureFile(worktreeMeta, filepath.Join(working, "worktree", ".worktree.md")); err != nil {
-		return fmt.Errorf("capture worktree metadata: %w", err)
-	} else {
-		hashes["worktree/.worktree.md"] = digest
-	}
-	local := filepath.Join(result.Worktree, ".wb", "local")
-	if err := retireCaptureTree(local, filepath.Join(working, "worktree", ".wb", "local"), func(string) bool { return true }, hashes, "worktree/.wb/local"); err != nil {
-		return fmt.Errorf("capture local Work Log: %w", err)
-	}
-	projection := filepath.Join(result.Worktree, ".wb-worklog", "recovery.json")
-	if digest, err := retireCaptureFile(projection, filepath.Join(working, "worktree", ".wb-worklog", "recovery.json")); err != nil {
-		return fmt.Errorf("capture Work Log projection: %w", err)
-	} else {
-		hashes["worktree/.wb-worklog/recovery.json"] = digest
-	}
-	run := filepath.Join(home, "worklogs", result.EffortID, "runs", result.RunID)
-	reportName, err := finalizeReportFileName(result.Task, result.Repository)
-	if err != nil {
-		return err
-	}
-	includeRun := func(path string) bool { return retireArchiveIncludesRunPath(result.ClaimID, reportName, path) }
-	if err := retireCaptureTree(run, filepath.Join(working, "worklog", "run"), includeRun, hashes, "worklog/run"); err != nil {
-		return fmt.Errorf("capture private Work Log run: %w", err)
-	}
-	for _, mandatory := range []string{"worklog/run/run.json", "worklog/run/claims/" + result.ClaimID + ".json", "worklog/run/terminals/" + result.ClaimID + ".json"} {
-		if hashes[mandatory] == "" {
-			return fmt.Errorf("missing mandatory Work Log file %s", mandatory)
-		}
-	}
-	if claim.PromptArchive != "" {
-		if filepath.Base(claim.PromptArchive) != claim.PromptArchive || hashes["worklog/run/"+claim.PromptArchive] != claim.PromptDigest {
-			return fmt.Errorf("private prompt archive does not match immutable claim digest")
-		}
-	}
-	terminal, err := readWorkLogTerminalRecordReadOnly(home, result.Worktree)
-	if err != nil {
-		return err
-	}
-	if terminal == nil || terminal.ClaimID != result.ClaimID || terminal.FinalCommit != result.SourceSHA {
-		return fmt.Errorf("retirement terminal does not bind exact source commit")
-	}
-	if terminal.FinalizeReport != nil && terminal.FinalizeReport.ReportPath != "" {
-		if filepath.Clean(terminal.FinalizeReport.ReportPath) != filepath.Join(run, "reports", reportName) || hashes["worklog/run/reports/"+reportName] == "" {
-			return fmt.Errorf("missing referenced private Work Log report")
-		}
-	}
-	outbox := filepath.Join(home, "worklogs", result.EffortID, "outbox")
-	if err := retireCaptureTree(outbox, filepath.Join(working, "worklog", "outbox"), func(path string) bool { return strings.HasPrefix(path, result.RunID+"-"+result.ClaimID+"-") }, hashes, "worklog/outbox"); err != nil {
-		return fmt.Errorf("capture Work Log outbox: %w", err)
-	}
-	manifest := retireArchiveManifest{Version: 1, Repository: result.Repository, Branch: result.Branch, Preserve: retirePreserveMode(*result), SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef, ClaimID: result.ClaimID, Files: hashes}
-	body, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(working, "retirement.json"), append(body, '\n'), 0o600); err != nil {
-		return err
-	}
-	ref := "refs/heads/" + result.ArchiveRef
-	existing, err := retireRemoteSHA(ctx, result.Canonical, remote, ref)
-	if err != nil {
-		return err
-	}
-	if existing != "" {
-		if err := retireVerifyArchive(ctx, working, remote, ref, existing, manifest); err != nil {
-			return err
-		}
-		result.ArchiveSHA, result.Phase = existing, "archive_published"
-		return nil
-	}
-	if _, err := git(ctx, working, "add", "-A"); err != nil {
-		return err
-	}
-	if _, err := git(ctx, working, "commit", "-m", "Retire "+result.Repository+" "+result.Branch+" at "+result.SourceSHA); err != nil {
-		return err
-	}
-	sha, err := git(ctx, working, "rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	if _, err := git(ctx, working, "push", "--force-with-lease="+ref+":", remote, "HEAD:"+ref); err != nil {
-		return fmt.Errorf("publish private Work Log archive: %w", err)
-	}
-	observed, err := retireRemoteSHA(ctx, result.Canonical, remote, ref)
-	if err != nil || observed != sha {
-		return fmt.Errorf("private archive ref verification failed: %w", err)
-	}
-	if err := retireVerifyArchive(ctx, working, remote, ref, sha, manifest); err != nil {
-		return err
-	}
-	result.ArchiveSHA, result.Phase = sha, "archive_published"
+	result.ArchiveSHA, result.Phase = receipt.ArchiveSHA, receipt.Phase
 	return nil
 }
 
 func retireArchiveIncludesRunPath(claimID, reportName, path string) bool {
-	if path == "run.json" || path == "original-prompt.json" || strings.HasPrefix(path, "original-prompt.") {
-		return true
-	}
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
-		return true // run-scoped index, prompt, or migration record
-	}
-	if parts[0] == "claims" || parts[0] == "terminals" || parts[0] == "cleanups" {
-		return parts[1] == claimID+".json"
-	}
-	if parts[0] == "corrections" || parts[0] == "dirty-discard" {
-		return parts[1] == claimID
-	}
-	if parts[0] == "reports" {
-		return parts[1] == reportName
-	}
-	return false
+	return worktreeretire.ArchiveIncludesRunPath(claimID, reportName, path)
 }
 
 func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA string, expected retireArchiveManifest) error {
-	if _, err := git(ctx, working, "fetch", "--no-tags", remote, ref); err != nil {
-		return err
-	}
-	sha, err := git(ctx, working, "rev-parse", "FETCH_HEAD")
-	if err != nil || sha != expectedSHA {
-		return fmt.Errorf("private archive commit changed: %w", err)
-	}
-	sizeText, err := git(ctx, working, "cat-file", "-s", "FETCH_HEAD:retirement.json")
-	if err != nil {
-		return err
-	}
-	size, err := strconv.ParseInt(sizeText, 10, 64)
-	if err != nil || size > 16<<20 {
-		return fmt.Errorf("private archive manifest exceeds verification limit")
-	}
-	body, err := retireGitBytes(ctx, working, "show", "FETCH_HEAD:retirement.json")
-	if err != nil {
-		return err
-	}
-	var actual retireArchiveManifest
-	if err := json.Unmarshal(body, &actual); err != nil {
-		return err
-	}
-	paths, err := validateRetireArchiveManifest(expected, actual)
-	if err != nil {
-		return err
-	}
-	tree, err := git(ctx, working, "ls-tree", "-r", "-z", "--name-only", "FETCH_HEAD")
-	if err != nil {
-		return err
-	}
-	actualPaths := strings.Split(tree, "\x00")
-	var listed []string
-	for _, path := range actualPaths {
-		if path != "" {
-			listed = append(listed, path)
-		}
-	}
-	if err := validateRetireArchiveTree(expected.Files, paths, listed); err != nil {
-		return err
-	}
-	for _, path := range paths {
-		value, err := retireGitObjectSHA(ctx, working, "FETCH_HEAD:"+path)
-		if err != nil {
-			return fmt.Errorf("private archive file missing %s: %w", path, err)
-		}
-		if value != expected.Files[path] {
-			return fmt.Errorf("private archive file digest mismatch %s", path)
-		}
-	}
-	return nil
+	return worktreeretire.VerifyArchive(ctx, working, remote, ref, expectedSHA, expected, retireArchivePorts())
 }
 
 func validateRetireArchiveManifest(expected, actual retireArchiveManifest) ([]string, error) {
-	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || retireArchiveManifestPreserve(actual) != retireArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
-		return nil, fmt.Errorf("private archive manifest identity mismatch")
-	}
-	paths := make([]string, 0, len(expected.Files))
-	for path, hash := range expected.Files {
-		if actual.Files[path] != hash {
-			return nil, fmt.Errorf("private archive manifest file mismatch %s", path)
-		}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths, nil
+	return worktreeretire.ValidateArchiveManifest(expected, actual)
 }
 
 func validateRetireArchiveTree(files map[string]string, paths, listed []string) error {
-	if len(listed) != len(paths)+1 {
-		return fmt.Errorf("private archive has unlisted files")
-	}
-	for _, path := range listed {
-		if path != "retirement.json" && files[path] == "" {
-			return fmt.Errorf("private archive has unlisted file %s", path)
-		}
-	}
-	return nil
+	return worktreeretire.ValidateArchiveTree(files, paths, listed)
 }
 
 func retireArchiveManifestPreserve(manifest retireArchiveManifest) string {
-	if manifest.Preserve == "" {
-		return "branch"
-	}
-	return manifest.Preserve
+	return worktreeretire.ArchiveManifestPreserve(manifest)
 }
 
 func retireGitObjectSHA(ctx context.Context, directory, object string) (string, error) {
-	command := exec.CommandContext(ctx, "git", "-C", directory, "show", object)
-	pipe, err := command.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	if err := command.Start(); err != nil {
-		return "", err
-	}
-	hash := sha256.New()
-	_, copyErr := io.Copy(hash, pipe)
-	waitErr := command.Wait()
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if waitErr != nil {
-		return "", waitErr
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return worktreeretire.GitObjectSHA(ctx, directory, object)
 }
 
 func retireGitBytes(ctx context.Context, directory string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", directory}, args...)...)
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("read archive Git object: %w", err)
-	}
-	return output, nil
+	return worktreeretire.GitBytes(ctx, directory, args...)
 }
