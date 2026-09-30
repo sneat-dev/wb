@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 const lifecycleBacklogVersion = 1
@@ -624,7 +625,9 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {
 		return fmt.Errorf("failed-create Work Log claim does not match durable cleanup receipt")
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", "", nil); err != nil {
+	if _, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+		Claim: claim, FinalCommit: record.HeadSHA, Disposition: "create_failed",
+	}); err != nil {
 		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
 	}
 	return nil

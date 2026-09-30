@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 type orphanedClaimCandidate struct {
@@ -23,17 +25,7 @@ type orphanedClaimCandidate struct {
 // workLogOrphanedEvidence is private authority evidence retained with the
 // immutable terminal record. It says exactly what WB proved absent; it never
 // claims that the vanished checkout's bytes or final commit were inspected.
-type workLogOrphanedEvidence struct {
-	Version            int       `json:"version"`
-	ObservedAt         time.Time `json:"observed_at"`
-	Actor              string    `json:"actor"`
-	Reason             string    `json:"reason"`
-	WorktreeAbsent     bool      `json:"worktree_absent"`
-	RegistrationAbsent bool      `json:"registration_absent"`
-	LocalBranchAbsent  bool      `json:"local_branch_absent"`
-	RemoteBranchAbsent bool      `json:"remote_branch_absent"`
-	TerminalAbsent     bool      `json:"terminal_absent"`
-}
+type workLogOrphanedEvidence = worktreeproof.OrphanedEvidence
 
 func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	claimID := strings.TrimSpace(options.ClaimID)
@@ -104,7 +96,10 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 		result.Reason = err.Error()
 		return []AbortResult{result}, fmt.Errorf("orphaned claim safety changed under lock: %w", err)
 	}
-	if _, err := writeOrphanedWorkLogTerminal(candidate.home, runDir, candidate.claim, evidence); err != nil {
+	if _, err := sealWorkLogTerminal(candidate.home, runDir, worktreeclaims.TerminalSealRequest{
+		Claim: candidate.claim, Disposition: string(AbortOrphaned),
+		Evidence: worktreeclaims.TerminalEvidence{Orphaned: evidence},
+	}); err != nil {
 		return []AbortResult{result}, fmt.Errorf("seal orphaned Work Log claim: %w", err)
 	}
 	result.Applied = true

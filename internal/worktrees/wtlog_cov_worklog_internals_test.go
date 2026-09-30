@@ -172,7 +172,7 @@ func wtLogCovRemovedTerminalHome(t *testing.T) (string, string, TerminalWorkLogE
 
 	terminalClaim := claim
 	terminalClaim.Lifecycle = "terminal"
-	terminal := workLogTerminalRecord{workLogClaim: terminalClaim, FinalCommit: "final-commit",
+	terminal := workLogTerminalRecord{Claim: terminalClaim, FinalCommit: "final-commit",
 		Disposition: "removed", SealedAt: time.Now().UTC()}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {

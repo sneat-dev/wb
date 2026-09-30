@@ -747,8 +747,11 @@ func SealExternalSessionWorkLog(options ExternalSourceSealOptions) (ExternalSour
 	if err := corroborateClaim(claim.Worktree, request.BundleCommit, projection, claim); err != nil {
 		return result, fmt.Errorf("corroborate source Work Log before external seal: %w", err)
 	}
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, request.BundleCommit, "external_handoff",
-		targetReference.ClaimID, request.SuccessorWBSessionID, evidence)
+	sealedAt, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+		Claim: claim, FinalCommit: request.BundleCommit, Disposition: "external_handoff",
+		SuccessorClaimID: targetReference.ClaimID, SuccessorAgentID: request.SuccessorWBSessionID,
+		Evidence: worktreeclaims.TerminalEvidence{ExternalHandoff: evidence},
+	})
 	if err != nil {
 		return result, err
 	}
@@ -887,7 +890,7 @@ func validateExistingExternalTerminal(runDir *os.File, claim workLogClaim, reque
 	}
 	wantClaim := claim
 	wantClaim.Lifecycle = "terminal"
-	if !reflect.DeepEqual(terminal.workLogClaim, wantClaim) || terminal.FinalCommit != request.BundleCommit ||
+	if !reflect.DeepEqual(terminal.Claim, wantClaim) || terminal.FinalCommit != request.BundleCommit ||
 		terminal.Disposition != "external_handoff" || terminal.SuccessorClaimID != target.ClaimID ||
 		terminal.SuccessorAgentID != request.SuccessorWBSessionID || terminal.SealedAt.IsZero() ||
 		!sameExternalHandoffEvidence(terminal.ExternalHandoff, evidence) {

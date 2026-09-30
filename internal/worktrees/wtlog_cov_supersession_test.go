@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"strings"
 	"testing"
 )
@@ -392,18 +393,18 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 func TestWtLogCovSameSupersessionReceipt(t *testing.T) {
 	t.Parallel()
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app"}
-	if !sameSupersessionReceipt(nil, nil) {
+	if !worktreeproof.SameSupersessionReceipt(nil, nil) {
 		t.Fatal("two nil receipts should match")
 	}
-	if sameSupersessionReceipt(left, nil) || sameSupersessionReceipt(nil, left) {
+	if worktreeproof.SameSupersessionReceipt(left, nil) || worktreeproof.SameSupersessionReceipt(nil, left) {
 		t.Fatal("nil and non-nil receipts must not match")
 	}
 	right := &SupersessionReceipt{Version: 1, Repository: "acme/app"}
-	if !sameSupersessionReceipt(left, right) {
+	if !worktreeproof.SameSupersessionReceipt(left, right) {
 		t.Fatal("equal receipts should match")
 	}
 	right.Repository = "acme/other"
-	if sameSupersessionReceipt(left, right) {
+	if worktreeproof.SameSupersessionReceipt(left, right) {
 		t.Fatal("different receipts must not match")
 	}
 }

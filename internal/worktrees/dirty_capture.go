@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // Dirty captures are deliberately bounded. A discard command is not allowed
@@ -27,12 +28,7 @@ const (
 // DirtyWorktreeEvidence is the public, non-sensitive receipt for a dirty
 // capture. It contains no path or source bytes; the exact bytes live below the
 // private Work Log run directory.
-type DirtyWorktreeEvidence struct {
-	SHA256 string `json:"sha256"`
-	Bytes  int64  `json:"bytes"`
-	Files  int    `json:"files"`
-}
-
+type DirtyWorktreeEvidence = worktreeproof.DirtyWorktreeEvidence
 type dirtyCaptureEntry struct {
 	Path   string `json:"path"`
 	Kind   string `json:"kind"`

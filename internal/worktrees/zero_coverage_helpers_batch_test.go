@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,11 +65,11 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 	}
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app", Task: "old"}
 	right := *left
-	if !sameSupersessionReceipt(nil, nil) || sameSupersessionReceipt(left, nil) || !sameSupersessionReceipt(left, &right) {
+	if !worktreeproof.SameSupersessionReceipt(nil, nil) || worktreeproof.SameSupersessionReceipt(left, nil) || !worktreeproof.SameSupersessionReceipt(left, &right) {
 		t.Fatal("supersession receipt equality mishandled nil or equal values")
 	}
 	right.Task = "new"
-	if sameSupersessionReceipt(left, &right) {
+	if worktreeproof.SameSupersessionReceipt(left, &right) {
 		t.Fatal("different supersession receipts were equal")
 	}
 

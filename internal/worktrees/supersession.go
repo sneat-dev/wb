@@ -118,6 +118,3 @@ func validateDependencyManifest(delta SupersessionDependencyDelta, contents []by
 func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte) (string, bool, error) {
 	return worktreebranches.DependencyManifestValue(delta, contents)
 }
-func sameSupersessionReceipt(left, right *SupersessionReceipt) bool {
-	return worktreebranches.SameSupersessionReceipt(left, right)
-}

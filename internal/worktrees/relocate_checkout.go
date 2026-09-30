@@ -58,7 +58,7 @@ func claimForRelocation(home, worktree string) (workLogClaim, *workLogTerminalRe
 		return workLogClaim{}, nil, terminalErr
 	}
 	if terminal != nil {
-		return terminal.workLogClaim, terminal, nil
+		return terminal.Claim, terminal, nil
 	}
 	// Neither active nor terminal corroborated (no projection, corrupted
 	// evidence, ...): the active-claim error is the actionable one to report.

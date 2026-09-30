@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,7 +178,7 @@ func TestListActiveClaimSummariesIsCompactFilteredAndExcludesSealedClaims(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, outcome.claim, strings.Repeat("a", 40), "landed", "", "", nil); err != nil {
+	if _, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{Claim: outcome.claim, FinalCommit: strings.Repeat("a", 40), Disposition: "landed"}); err != nil {
 		_ = runDir.Close()
 		t.Fatal(err)
 	}

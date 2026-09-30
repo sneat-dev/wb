@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,10 +141,7 @@ func TestWorkLogCoverageBatchCorrectionsAndTerminalBoundaries(t *testing.T) {
 		t.Fatalf("corrected identity = %#v/%#v, %v", identity, corrections, err)
 	}
 	finalCommit := strings.Repeat("b", 40)
-	sealedAt, err := writeWorkLogTerminalWithEvidence(
-		fixture.home, runDir, fixture.outcome.claim, finalCommit, "landed", "", "",
-		nil, nil, nil, nil, nil,
-	)
+	sealedAt, err := sealWorkLogTerminal(fixture.home, runDir, worktreeclaims.TerminalSealRequest{Claim: fixture.outcome.claim, FinalCommit: finalCommit, Disposition: "landed"})
 	if err != nil || sealedAt.IsZero() {
 		t.Fatalf("terminal = %s, %v", sealedAt, err)
 	}
@@ -166,12 +164,8 @@ func TestWorkLogCoverageBatchCorrectionsAndTerminalBoundaries(t *testing.T) {
 		Task: fixture.task, Repository: fixture.result.Repository, Worktree: fixture.worktree,
 		Branch: fixture.result.Branch, Base: fixture.result.Base, FinalCommit: finalCommit,
 	}
-	if base, err := validateRemovedTerminalWorkLog(fixture.home, expectation); err == nil || base != "" {
+	if base, err := terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(fixture.home, expectation); err == nil || base != "" {
 		t.Fatalf("landed terminal accepted as removed evidence: base=%q err=%v", base, err)
-	}
-	matches := 0
-	if _, err := validateRemovedTerminalWorkLogRun(fixture.home, expectation, "missing-run", &matches); err == nil {
-		t.Fatal("missing terminal run was accepted")
 	}
 
 	entry := ListResult{OpenPullRequest: &PullRequest{URL: "https://example.test/pull/1"}}
@@ -195,7 +189,7 @@ func TestWorkLogCoverageBatchFilesystemRefusals(t *testing.T) {
 	if err := removeWorkLogProjection(blocking); err == nil {
 		t.Fatal("projection removal accepted a file as worktree")
 	}
-	if _, err := validateRemovedTerminalWorkLog(blocking, TerminalWorkLogExpectation{Task: "task"}); err == nil {
+	if _, err := terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(blocking, TerminalWorkLogExpectation{Task: "task", Repository: "acme/app", Worktree: "/tmp/removed", Branch: "wb/task", FinalCommit: "commit"}); err == nil {
 		t.Fatal("terminal validation accepted a file as WB home")
 	}
 }

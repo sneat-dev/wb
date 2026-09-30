@@ -190,7 +190,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		view.Notes = append(view.Notes, "no active work-log projection; this checkout may predate Hybrid Work Log create")
 	} else if projection.Lifecycle == "terminal" {
 		if terminal, terminalErr := readWorkLogTerminalRecord(home, root); terminalErr == nil && terminal != nil {
-			claim := terminal.workLogClaim
+			claim := terminal.Claim
 			view.Claim = newWorkLogClaimView(claim, claim.Repository, claim.Worktree, "")
 			view.Terminal = &WorkLogTerminalView{
 				Disposition: terminal.Disposition, FinalCommit: terminal.FinalCommit, SealedAt: terminal.SealedAt,
