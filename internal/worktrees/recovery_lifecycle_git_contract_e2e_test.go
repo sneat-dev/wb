@@ -12,7 +12,7 @@ import (
 )
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestTransferAbsentDestinationProofs(t *testing.T) {
+func TestE2ETransferAbsentDestinationProofs(t *testing.T) {
 	for _, scenario := range []string{"origin changed", "remote head changed", "fetched branch missing"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -38,7 +38,7 @@ func TestTransferAbsentDestinationProofs(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferPlanningRefusals(t *testing.T) {
+func TestE2ERepositoryTransferPlanningRefusals(t *testing.T) {
 	for _, scenario := range []string{"fetch ambiguous", "push ambiguous", "source identity changed", "remote absent", "quarantine occupied", "destination stat denied"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -90,7 +90,7 @@ func TestRepositoryTransferPlanningRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
+func TestE2ERepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
 	fixture := newRepositoryTransferFixture(t)
 	fixture.moveRemote(t)
 	fixture.cloneDestination(t)
@@ -116,7 +116,7 @@ func TestRepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestDisposableDestinationRefusals(t *testing.T) {
+func TestE2EDisposableDestinationRefusals(t *testing.T) {
 	for _, scenario := range []string{"fetch ambiguous", "push ambiguous", "push identity", "linked worktree", "wrong branch", "wrong head", "remote refs unavailable"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -152,7 +152,7 @@ func TestDisposableDestinationRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferCleanupInterruptions(t *testing.T) {
+func TestE2ERepositoryTransferCleanupInterruptions(t *testing.T) {
 	for _, scenario := range []string{"intent publication denied", "retirement paused", "terminal publication paused", "restored terminal denied"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestRepositoryTransferCleanupInterruptions(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestDiscardedBacklogProofRefusals(t *testing.T) {
+func TestE2EDiscardedBacklogProofRefusals(t *testing.T) {
 	for _, scenario := range []string{"backlog absent", "invalid record", "nonterminal record", "local branch remains", "malformed neighbor"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -261,7 +261,7 @@ func TestDiscardedBacklogProofRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestTaskBoundLocalStageRecovery(t *testing.T) {
+func TestE2ETaskBoundLocalStageRecovery(t *testing.T) {
 	for _, scenario := range []string{"empty unregistered", "registered checkout", "destination occupied"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -314,7 +314,7 @@ func TestTaskBoundLocalStageRecovery(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferAfterMoveFailures(t *testing.T) {
+func TestE2ERepositoryTransferAfterMoveFailures(t *testing.T) {
 	for _, scenario := range []string{"quarantine contents unreadable", "terminal receipt unwritable", "quarantine moved before restore", "source moved before publish"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
