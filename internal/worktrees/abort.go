@@ -319,7 +319,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		if abortRepositoryExcludedByFilter(filter, record.Repository, record.WorktreeDir) {
 			continue
 		}
-		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, record, false); err != nil {
+		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, record, options.DeleteRemote); err != nil {
 			return results, err
 		}
 		for resultIndex := range results {
