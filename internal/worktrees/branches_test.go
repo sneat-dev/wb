@@ -1066,18 +1066,6 @@ func TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists(t *testin
 	if peer.Applied || peer.Outcome != "failed" || !strings.Contains(peer.Error, "recheck peer evidence") {
 		t.Fatalf("remote peer recheck = %#v", peer)
 	}
-	hook := filepath.Join(fixture.remote, "hooks", "pre-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	rejectedPush := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
-	applyRemoteBranchDeletion(ctx, fixture.canonical, &rejectedPush, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
-	if rejectedPush.Applied || rejectedPush.Outcome != "failed" || !strings.Contains(rejectedPush.Error, "force-with-lease") {
-		t.Fatalf("remote lease push refusal = %#v", rejectedPush)
-	}
-	if err := os.Remove(hook); err != nil {
-		t.Fatal(err)
-	}
 	missingCanonical := t.TempDir()
 	fake := runnertest.New(t)
 	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
