@@ -28,6 +28,7 @@ import (
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreelanding"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
 	"github.com/sneat-dev/wb/internal/worktreeproof"
@@ -662,15 +663,7 @@ type CleanupOutcome struct {
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
 // explicitly named interrupted task lock a cleanup command inspected.
-type InterruptedLockRecovery struct {
-	Task          string `json:"task"`
-	WorktreesRoot string `json:"worktrees_root"`
-	Path          string `json:"path"`
-	PID           int    `json:"pid"`
-	Disposition   string `json:"disposition"`
-	Applied       bool   `json:"applied"`
-	Reason        string `json:"reason,omitempty"`
-}
+type InterruptedLockRecovery = worktreeclaims.InterruptedLockRecovery
 
 type cleanupReport struct {
 	GeneratedAt  time.Time                `json:"generated_at"`
@@ -5283,247 +5276,65 @@ func preflightCleanupRepository(
 	return refreshed, nil
 }
 
-func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	return acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, false)
-}
-
-// acquireCleanupTaskAtOrCreate creates only the WB_HOME coordination shell
-// when an older/manual local checkout has no prior lifecycle metadata there.
-// The returned descriptors remain held for the full transaction.
-func acquireCleanupTaskAtOrCreate(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	task, err := acquireCleanupTaskAt(worktreesRoot, taskName)
-	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		return task, err
-	}
-	home := filepath.Dir(filepath.Clean(worktreesRoot))
-	op, prepareErr := prepareOperationRoot(home, taskName, nil)
-	if prepareErr != nil {
-		return nil, prepareErr
-	}
-	lock, lockErr := acquireLockAt(op.Directory, taskName)
-	if lockErr != nil {
-		op.close()
-		return nil, lockErr
-	}
-	return &cleanupTaskHandle{worktreesPath: filepath.Clean(worktreesRoot), taskPath: op.Path, worktrees: op.Worktrees, task: op.Directory, lock: lock}, nil
-}
-
-// purgeTerminalTaskLockDebris removes every retired operation lock left
-// directly under a task directory, immediately after this cleanup
-// transaction released its own — but only when the directory now holds
-// nothing except retired locks: no owner-namespace directory, no live
-// `.lock`, nothing else. That is exactly what a genuinely terminal task
-// leaves behind release after release: `.wb-retired-lock-*` is created only
-// so a *later* operation on the very same task directory can reclaim it (see
-// claimRetiredLock), and a task nobody ever touches again just accumulates
-// them forever. removeEmptyParent has by this point already retired every
-// owner directory that became empty, so a task whose last repository just
-// finished cleanup normally satisfies the all-retired-locks test below.
-//
-// It is deliberately best-effort and never returns an error: a live `.lock`
-// created by a concurrent operation in the narrow window after release
-// simply fails the "every entry is a retired lock" test and the directory is
-// left untouched, to be reclaimed normally by that operation or swept later
-// by `wb worktree cleanup --retire-shells`. It never inspects, let alone
-// deletes, anything that is not a plain, single-link `.wb-retired-lock-*`
-// entry this package itself could have created (see
-// exclusivelyOwnedLockIdentity for the same reasoning).
-func purgeTerminalTaskLockDebris(task *cleanupTaskHandle) {
-	if task == nil || task.task == nil {
-		return
-	}
-	if _, err := task.task.Seek(0, 0); err != nil {
-		return
-	}
-	entries, err := task.task.ReadDir(-1)
-	if err != nil {
-		return
-	}
-	retired := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, ".wb-retired-lock-") {
-			return // an owner directory, a live .lock, or anything else: not terminal.
-		}
-		retired = append(retired, name)
-	}
-	for _, name := range retired {
-		var stat unix.Stat_t
-		if statErr := unix.Fstatat(int(task.task.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
-			continue
-		}
-		if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
-			continue // never remove anything that is not an ordinary WB-owned lock retirement.
-		}
-		_ = unix.Unlinkat(int(task.task.Fd()), name, 0)
-	}
-}
-
-// acquireCleanupTaskAtReclaimingInterrupted is the resume-only form. See
-// acquireLockAtReclaimingInterrupted for why reclaiming an interrupted lock is
-// restricted to a caller that can describe and revalidate exactly what the
-// interruption left behind.
-func acquireCleanupTaskAtReclaimingInterrupted(
-	worktreesRoot, taskName string, reclaimInterrupted bool,
-) (*cleanupTaskHandle, error) {
-	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
-	if err != nil {
-		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", worktreesRoot, err)
-	}
-	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-cleanup-task",
-		"open cleanup task "+taskName+" without following links", "wrap cleanup task "+taskName)
-	if err != nil {
-		_ = worktrees.Close()
-		return nil, err
-	}
-	handle := &cleanupTaskHandle{
-		worktreesPath: worktreesRoot,
-		taskPath:      filepath.Join(worktreesRoot, taskName),
-		worktrees:     worktrees,
-		task:          task,
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	lock, err := acquireLockAtReclaimingInterrupted(task, reclaimInterrupted, taskName)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("lock cleanup task %s: %w", taskName, err)
-	}
-	handle.lock = lock
-	return handle, nil
-}
-
-// reclaimNamedInterruptedCleanupTask opens only one exact named task directory
-// below a resolver-recognized WB root. It never scans or reclaims any sibling
-// task. The retained descriptor is kept through cleanup, which makes a late
-// replacement fail closed rather than turning validation into a pathname race.
-func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
-	// A default-local or relocated-shared checkout keeps its task lock in
-	// WB_HOME, not below its physical checkout root. Search the distinct logical
-	// lock roots so an explicit recovery reaches the same inode normal cleanup
-	// and Create serialize through. Legacy layouts retain their physical root.
-	roots := make([]string, 0, 1)
-	seenRoots := make(map[string]bool)
-	for _, layout := range resolution.Read {
-		root := filepath.Clean(lifecycleTaskLockRoot(resolution.Write.Home, layout))
-		if seenRoots[root] {
-			continue
-		}
-		seenRoots[root] = true
-		worktrees, err := openAbsoluteDirectoryNoFollow(root, false)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, nil, fmt.Errorf("open recovery worktrees root %s: %w", root, err)
-		}
-		fd, openErr := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-		_ = worktrees.Close()
-		if openErr != nil {
-			if errors.Is(openErr, unix.ENOENT) {
-				continue
-			}
-			return nil, nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, openErr)
-		}
-		_ = unix.Close(fd)
-		roots = append(roots, root)
-	}
-	if len(roots) != 1 {
-		return nil, nil, fmt.Errorf("interrupted recovery for task %q requires exactly one WB task directory, found %d", taskName, len(roots))
-	}
-	handle, err := acquireCleanupTaskAtReclaimingInterruptedLock(roots[0], taskName)
-	if err != nil {
-		return nil, nil, err
-	}
-	pid, validateErr := interruptedTaskLockPID(handle.lock.file, taskName)
-	if validateErr != nil {
-		handle.preserveLock()
-		handle.close()
-		return nil, nil, validateErr
-	}
-	recovery := &InterruptedLockRecovery{
-		Task: taskName, WorktreesRoot: roots[0], Path: filepath.Join(roots[0], taskName, ".lock"),
-		PID: pid, Disposition: "validated", Reason: "exact interrupted lock has a conclusively dead owner PID",
-	}
-	return handle, recovery, nil
-}
-
-// acquireCleanupTaskAtReclaimingInterruptedLock deliberately bypasses retired
-// lock reuse: an explicit recovery may touch only an existing `.lock` proven
-// to match the named task, never a similarly named retirement.
-func acquireCleanupTaskAtReclaimingInterruptedLock(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
-	if err != nil {
-		return nil, fmt.Errorf("open recovery worktrees root %s: %w", worktreesRoot, err)
-	}
-	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-recovery-task",
-		"open recovery task "+taskName+" without following links", "wrap recovery task "+taskName)
-	if err != nil {
-		_ = worktrees.Close()
-		return nil, err
-	}
-	handle := &cleanupTaskHandle{worktreesPath: worktreesRoot, taskPath: filepath.Join(worktreesRoot, taskName), worktrees: worktrees, task: task}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	lock, err := reclaimInterruptedLock(task, true)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("recover interrupted cleanup task %s: %w", taskName, err)
-	}
-	handle.lock = lock
-	return handle, nil
-}
-
-func (handle *cleanupTaskHandle) preserveLock() {
-	if handle == nil || handle.lock.file == nil {
-		return
-	}
-	_ = handle.lock.file.Close()
-	handle.lock = operationLock{}
-}
-
-func (handle *cleanupTaskHandle) validateHeldLock() error {
-	if handle == nil || handle.task == nil || handle.lock.file == nil ||
-		!lockEntryStillMatches(handle.task, ".lock", handle.lock.identity) {
-		return fmt.Errorf("interrupted cleanup lock changed after recovery")
-	}
-	return nil
-}
-
-func validateRecoveredCleanupLock(recovered bool, handle *cleanupTaskHandle) error {
-	if !recovered {
+func cleanupTaskFromClaim(task *worktreeclaims.CleanupTask) *cleanupTaskHandle {
+	if task == nil {
 		return nil
 	}
-	return handle.validateHeldLock()
+	return &cleanupTaskHandle{worktreesPath: task.WorktreesPath, taskPath: task.TaskPath, worktrees: task.Worktrees, task: task.Task, lock: facadeLockFromClaim(task.Lock)}
 }
-
+func cleanupTaskToClaim(task *cleanupTaskHandle) *worktreeclaims.CleanupTask {
+	if task == nil {
+		return nil
+	}
+	return &worktreeclaims.CleanupTask{WorktreesPath: task.worktreesPath, TaskPath: task.taskPath, Worktrees: task.worktrees, Task: task.task, Lock: claimLockFromFacade(task.lock)}
+}
+func cleanupLockPorts() worktreeclaims.CleanupLockPorts {
+	return worktreeclaims.CleanupLockPorts{
+		PID: os.Getpid, ProcessIsDead: processIsDead,
+		PrepareTask: func(home, name string) (*worktreeclaims.CleanupTask, error) {
+			op, err := prepareOperationRoot(home, name, nil)
+			if err != nil {
+				return nil, err
+			}
+			if op.Home != nil {
+				_ = op.Home.Close()
+			}
+			return &worktreeclaims.CleanupTask{WorktreesPath: filepath.Join(home, "worktrees"), TaskPath: op.Path, Worktrees: op.Worktrees, Task: op.Directory}, nil
+		},
+	}
+}
+func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAt(worktreesRoot, taskName)
+	return cleanupTaskFromClaim(task), err
+}
+func acquireCleanupTaskAtOrCreate(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAtOrCreate(worktreesRoot, taskName)
+	return cleanupTaskFromClaim(task), err
+}
+func purgeTerminalTaskLockDebris(task *cleanupTaskHandle) {
+	worktreeclaims.PurgeTerminalTaskLockDebris(cleanupTaskToClaim(task))
+}
+func acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName string, reclaimInterrupted bool) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, reclaimInterrupted)
+	return cleanupTaskFromClaim(task), err
+}
+func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
+	task, recovery, err := cleanupLockPorts().ReclaimNamedInterruptedCleanupTask(resolution, taskName)
+	return cleanupTaskFromClaim(task), recovery, err
+}
+func (handle *cleanupTaskHandle) preserveLock() {
+	task := cleanupTaskToClaim(handle)
+	task.PreserveLock()
+	handle.lock = facadeLockFromClaim(task.Lock)
+}
+func (handle *cleanupTaskHandle) validateHeldLock() error {
+	return cleanupTaskToClaim(handle).ValidateHeldLock()
+}
+func validateRecoveredCleanupLock(recovered bool, handle *cleanupTaskHandle) error {
+	return worktreeclaims.ValidateRecoveredCleanupLock(recovered, cleanupTaskToClaim(handle))
+}
 func interruptedTaskLockPID(file *os.File, task string) (int, error) {
-	if file == nil {
-		return 0, fmt.Errorf("interrupted task %q lock descriptor is unavailable", task)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("seek interrupted task %q lock: %w", task, err)
-	}
-	contents, err := io.ReadAll(io.LimitReader(file, 4097))
-	if err != nil || len(contents) > 4096 {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	lines := strings.Split(string(contents), "\n")
-	if len(lines) != 3 || lines[2] != "" || lines[0] != "operation="+task {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	pid, err := strconv.Atoi(strings.TrimPrefix(lines[1], "pid="))
-	if err != nil || pid <= 0 || lines[1] != fmt.Sprintf("pid=%d", pid) {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	if !processIsDead(pid) {
-		return 0, fmt.Errorf("interrupted task %q lock owner PID %d is live or ambiguous", task, pid)
-	}
-	return pid, nil
+	return worktreeclaims.InterruptedTaskLockPID(file, task, processIsDead)
 }
 
 // SecureCleanupGitHelperArgument selects the private WB child process that

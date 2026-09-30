@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/secureopen"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 func openTestPrivateDirectory(t *testing.T, root string) *os.File {
@@ -112,10 +113,10 @@ func TestOpenWorkLogRunRejectsAnUnsafeEffortOrRunIdentity(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	if _, _, err := openWorkLogRunWith(secureopen.Real{}, root, "../escape", "run", false); err == nil {
+	if _, _, err := worktreeclaims.OpenWorkLogRunWith(secureopen.Real{}, root, "../escape", "run", false, validSafeSegment); err == nil {
 		t.Fatalf("openWorkLogRunWith with an unsafe effort = nil, want an error")
 	}
-	if _, _, err := openWorkLogRunWith(secureopen.Real{}, root, "effort", "../escape", false); err == nil {
+	if _, _, err := worktreeclaims.OpenWorkLogRunWith(secureopen.Real{}, root, "effort", "../escape", false, validSafeSegment); err == nil {
 		t.Fatalf("openWorkLogRunWith with an unsafe run = nil, want an error")
 	}
 }
@@ -128,7 +129,7 @@ func TestOpenWorkLogRunCreatesTheFullNestedPath(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	run, path, err := openWorkLogRunWith(secureopen.Real{}, home, "effort1", "run1", true)
+	run, path, err := worktreeclaims.OpenWorkLogRunWith(secureopen.Real{}, home, "effort1", "run1", true, validSafeSegment)
 	if err != nil {
 		t.Fatalf("openWorkLogRunWith(create=true) = %v, want nil", err)
 	}
@@ -147,7 +148,7 @@ func TestOpenWorkLogRunReportsAHomeDirectoryOpenFailure(t *testing.T) {
 	t.Parallel()
 	home := filepath.Join(t.TempDir(), "absent-home")
 
-	if _, _, err := openWorkLogRunWith(secureopen.Real{}, home, "effort1", "run1", false); err == nil {
+	if _, _, err := worktreeclaims.OpenWorkLogRunWith(secureopen.Real{}, home, "effort1", "run1", false, validSafeSegment); err == nil {
 		t.Fatalf("openWorkLogRunWith with a missing home (create=false) = nil, want an error")
 	}
 }
@@ -177,7 +178,7 @@ func TestOpenWorkLogRunStopsAtTheFirstFailingLevelAndClosesIntermediateHandles(t
 			boom := errors.New("boom at " + level)
 			opener.FailCall(callNum, boom)
 
-			_, _, err := openWorkLogRunWith(opener, "/home", "effort1", "run1", true)
+			_, _, err := worktreeclaims.OpenWorkLogRunWith(opener, "/home", "effort1", "run1", true, validSafeSegment)
 			if !errors.Is(err, boom) {
 				t.Fatalf("level %s: err = %v, want it to wrap boom", level, err)
 			}

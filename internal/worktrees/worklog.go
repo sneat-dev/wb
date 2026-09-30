@@ -3084,57 +3084,11 @@ func removeLegacyWorkLogProjection(worktree string) error {
 	return root.Sync()
 }
 
-// openWorkLogRun's fd-relative opens go through secureopen.Real, the
-// production Opener; openWorkLogRunWith below takes an explicit Opener so a
-// test can substitute secureopen.Fake instead, the seam spec/plans/
-// coverage-to-100 lane cov-seam-fs added.
 func openWorkLogRun(home, effort, run string, create bool) (*os.File, string, error) {
-	return openWorkLogRunWith(secureopen.Real{}, home, effort, run, create)
+	return worktreeclaims.OpenWorkLogRun(home, effort, run, create, validSafeSegment)
 }
-
-func openWorkLogRunWith(opener secureopen.Opener, home, effort, run string, create bool) (*os.File, string, error) {
-	if !validSafeSegment(effort) || !validSafeSegment(run) {
-		return nil, "", fmt.Errorf("invalid work-log effort/run identity")
-	}
-	homeDir, err := openAbsoluteDirectoryNoFollowWith(opener, home, create)
-	if err != nil {
-		return nil, "", err
-	}
-	defer func() { _ = homeDir.Close() }()
-	current := homeDir
-	for _, segment := range []string{"worklogs", effort, "runs", run} {
-		next, openErr := openPrivateChildWith(opener, current, segment, create)
-		if current != homeDir {
-			_ = current.Close()
-		}
-		if openErr != nil {
-			return nil, "", openErr
-		}
-		current = next
-	}
-	return current, filepath.Join(home, "worklogs", effort, "runs", run), nil
-}
-
 func openWorkLogOutbox(home, effort string, create bool) (*os.File, error) {
-	if !validSafeSegment(effort) {
-		return nil, fmt.Errorf("invalid work-log effort identity")
-	}
-	homeDir, err := openAbsoluteDirectoryNoFollow(home, create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = homeDir.Close() }()
-	worklogs, err := openPrivateChild(homeDir, "worklogs", create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = worklogs.Close() }()
-	effortDir, err := openPrivateChild(worklogs, effort, create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = effortDir.Close() }()
-	return openPrivateChild(effortDir, "outbox", create)
+	return worktreeclaims.OpenWorkLogOutbox(home, effort, create, validSafeSegment)
 }
 
 // openPrivateChild's fd-relative opens go through secureopen.Real, the
@@ -3150,31 +3104,9 @@ func openPrivateChildWith(opener secureopen.Opener, parent *os.File, name string
 }
 
 func lockClaim(runDir *os.File, claimID string) (func(), error) {
-	locks, err := openPrivateChild(runDir, "locks", true)
-	if err != nil {
-		return nil, fmt.Errorf("open claim-lock directory: %w", err)
-	}
-	fd, err := unix.Openat(int(locks.Fd()), claimID+".lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
-	if errors.Is(err, unix.EEXIST) {
-		// Two first-time claimers can race the lock-file publication. Separate
-		// create from open so the loser deterministically opens the winner's
-		// no-follow regular entry instead of Darwin returning a transient ENOENT
-		// from concurrent O_CREAT|O_NOFOLLOW calls.
-		fd, err = unix.Openat(int(locks.Fd()), claimID+".lock", unix.O_RDWR|unix.O_NOFOLLOW, 0)
-	}
-	_ = locks.Close()
-	if err != nil {
-		return nil, fmt.Errorf("open claim-lock file: %w", err)
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
-	}
-	return func() { _ = unix.Flock(fd, unix.LOCK_UN); _ = unix.Close(fd) }, nil
+	return worktreeclaims.LockClaim(runDir, claimID, validSafeSegment)
 }
 
-// lockedWorkLogRun owns the run descriptor and its claim fence together.
-// Release the fence before closing the directory it protects.
 type lockedWorkLogRun struct {
 	directory *os.File
 	path      string
@@ -3182,21 +3114,14 @@ type lockedWorkLogRun struct {
 }
 
 func openLockedWorkLogRun(home, effort, run, claimID string, create bool) (*lockedWorkLogRun, error) {
-	directory, path, err := openWorkLogRun(home, effort, run, create)
+	locked, err := worktreeclaims.OpenLockedWorkLogRun(home, effort, run, claimID, create, validSafeSegment)
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := lockClaim(directory, claimID)
-	if err != nil {
-		_ = directory.Close()
-		return nil, err
-	}
-	return &lockedWorkLogRun{directory: directory, path: path, unlock: unlock}, nil
+	return &lockedWorkLogRun{directory: locked.Directory, path: locked.Path, unlock: locked.Unlock}, nil
 }
-
 func (run *lockedWorkLogRun) close() {
-	run.unlock()
-	_ = run.directory.Close()
+	(&worktreeclaims.LockedWorkLogRun{Directory: run.directory, Path: run.path, Unlock: run.unlock}).Close()
 }
 
 func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent bool) error {
@@ -3246,11 +3171,11 @@ func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) 
 }
 
 func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
-	return readPrivateRecordAt[workLogClaim](runDir, "claims", claimID+".json")
+	return worktreeclaims.ReadWorkLogClaimAt[workLogClaim](runDir, claimID, validSafeSegment)
 }
 
 func readWorkLogTerminalAt(runDir *os.File, claimID string) (workLogTerminalRecord, error) {
-	return readPrivateRecordAt[workLogTerminalRecord](runDir, "terminals", claimID+".json")
+	return worktreeclaims.ReadWorkLogTerminalAt[workLogTerminalRecord](runDir, claimID, validSafeSegment)
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
