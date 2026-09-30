@@ -3985,7 +3985,6 @@ type operationLock struct {
 }
 
 type managedLockIdentity struct{ device, inode uint64 }
-type moveExpectedLockHooks struct{ afterMove, afterOpen, beforeRestore func() }
 
 type HeldOperationLock = worktreeclaims.HeldOperationLock
 
@@ -3999,9 +3998,6 @@ func facadeLockFromClaim(lock worktreeclaims.OperationLock) operationLock {
 	device, inode := identity.Components()
 	return operationLock{directory: directory, file: file, identity: managedLockIdentity{device: device, inode: inode}, beforeRelease: beforeRelease, interrupted: interrupted}
 }
-func claimLockIdentity(identity managedLockIdentity) worktreeclaims.ManagedLockIdentity {
-	return worktreeclaims.NewManagedLockIdentity(identity.device, identity.inode)
-}
 func acquireLockAt(operationDirectory *os.File, operation string) (operationLock, error) {
 	lock, err := worktreeclaims.AcquireLockAt(operationDirectory, operation, os.Getpid())
 	return facadeLockFromClaim(lock), err
@@ -4013,41 +4009,7 @@ func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 	lock, err := worktreeclaims.AcquireLockAtReclaimingInterrupted(operationDirectory, reclaimInterrupted, operation, os.Getpid())
 	return facadeLockFromClaim(lock), err
 }
-func writeOperationLockMetadata(file *os.File, operation string) error {
-	return worktreeclaims.WriteOperationLockMetadata(file, operation, os.Getpid())
-}
-func holdOperationLock(file *os.File) error { return worktreeclaims.HoldOperationLock(file) }
-func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
-	lock, err := worktreeclaims.ReclaimInterruptedLock(operationDirectory, reclaimInterrupted)
-	return facadeLockFromClaim(lock), err
-}
-func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
-	return worktreeclaims.ClaimRetiredLock(directory)
-}
 func (lock operationLock) release() error { return claimLockFromFacade(lock).Release() }
-func lockEntryStillMatches(directory *os.File, name string, expected managedLockIdentity) bool {
-	return worktreeclaims.LockEntryStillMatches(directory, name, claimLockIdentity(expected))
-}
-func lockIdentity(file *os.File) (managedLockIdentity, error) {
-	identity, err := worktreeclaims.LockIdentity(file)
-	device, inode := identity.Components()
-	return managedLockIdentity{device: device, inode: inode}, err
-}
-func exclusivelyOwnedLockIdentity(file *os.File) (managedLockIdentity, error) {
-	identity, err := worktreeclaims.ExclusivelyOwnedLockIdentity(file)
-	device, inode := identity.Components()
-	return managedLockIdentity{device: device, inode: inode}, err
-}
-func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity, hooks ...moveExpectedLockHooks) (*os.File, error) {
-	var converted []worktreeclaims.MoveExpectedLockHooks
-	if len(hooks) > 0 {
-		converted = append(converted, worktreeclaims.MoveExpectedLockHooks{AfterMove: hooks[0].afterMove, AfterOpen: hooks[0].afterOpen, BeforeRestore: hooks[0].beforeRestore})
-	}
-	return worktreeclaims.MoveExpectedLockNoReplace(directory, fromName, toName, claimLockIdentity(expected), converted...)
-}
-func quarantineLockEntry(directory *os.File, expected managedLockIdentity) error {
-	return worktreeclaims.QuarantineLockEntry(directory, claimLockIdentity(expected))
-}
 
 func canonicalDirMatchesRepository(projectsRoot, repository, dir string) bool {
 	return worktreeclaims.CanonicalDirMatchesRepository(projectsRoot, repository, dir)

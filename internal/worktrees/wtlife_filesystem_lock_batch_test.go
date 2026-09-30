@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 func TestWtLifeCovFilesystemLockBatchPreparationFailures(t *testing.T) {
@@ -267,11 +268,11 @@ func TestWtLifeCovFilesystemLockBatchMetadataAndIdentity(t *testing.T) {
 	t.Cleanup(func() { _ = file.Close() })
 
 	for _, operation := range []string{"", "bad\noperation", "bad\roperation", "bad\x00operation"} {
-		if err := writeOperationLockMetadata(file, operation); err == nil {
+		if err := worktreeclaims.WriteOperationLockMetadata(file, operation, os.Getpid()); err == nil {
 			t.Fatalf("invalid operation %q accepted", operation)
 		}
 	}
-	if err := writeOperationLockMetadata(file, " coverage-batch "); err != nil {
+	if err := worktreeclaims.WriteOperationLockMetadata(file, " coverage-batch ", os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
 	content, err := os.ReadFile(path)
@@ -284,43 +285,43 @@ func TestWtLifeCovFilesystemLockBatchMetadataAndIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = closed.Close()
-	if err := writeOperationLockMetadata(closed, "closed"); err == nil || !strings.Contains(err.Error(), "initialize worktree operation lock") {
+	if err := worktreeclaims.WriteOperationLockMetadata(closed, "closed", os.Getpid()); err == nil || !strings.Contains(err.Error(), "initialize worktree operation lock") {
 		t.Fatalf("closed metadata error = %v", err)
 	}
-	if err := holdOperationLock(closed); err == nil || !strings.Contains(err.Error(), "hold secure worktree operation lock") {
+	if err := worktreeclaims.HoldOperationLock(closed); err == nil || !strings.Contains(err.Error(), "hold secure worktree operation lock") {
 		t.Fatalf("closed flock error = %v", err)
 	}
 
-	if _, err := lockIdentity(nil); err == nil {
+	if _, err := worktreeclaims.LockIdentity(nil); err == nil {
 		t.Fatal("nil lock identity accepted")
 	}
-	if _, err := exclusivelyOwnedLockIdentity(nil); err == nil {
+	if _, err := worktreeclaims.ExclusivelyOwnedLockIdentity(nil); err == nil {
 		t.Fatal("nil exclusive lock identity accepted")
 	}
-	if _, err := lockIdentity(closed); err == nil {
+	if _, err := worktreeclaims.LockIdentity(closed); err == nil {
 		t.Fatal("closed lock identity accepted")
 	}
-	if _, err := exclusivelyOwnedLockIdentity(closed); err == nil {
+	if _, err := worktreeclaims.ExclusivelyOwnedLockIdentity(closed); err == nil {
 		t.Fatal("closed exclusive lock identity accepted")
 	}
 	directory := wtLifeCovOpenDirectory(t, root)
-	if _, err := lockIdentity(directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if _, err := worktreeclaims.LockIdentity(directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("directory lock identity error = %v", err)
 	}
-	if _, err := exclusivelyOwnedLockIdentity(directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if _, err := worktreeclaims.ExclusivelyOwnedLockIdentity(directory); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("directory exclusive lock identity error = %v", err)
 	}
-	identity, err := lockIdentity(file)
+	identity, err := worktreeclaims.LockIdentity(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !lockEntryStillMatches(directory, "lock", identity) || lockEntryStillMatches(directory, "missing", identity) {
+	if !worktreeclaims.LockEntryStillMatches(directory, "lock", identity) || worktreeclaims.LockEntryStillMatches(directory, "missing", identity) {
 		t.Fatal("lock entry identity classification failed")
 	}
 	if err := os.Link(path, filepath.Join(root, "lock-link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exclusivelyOwnedLockIdentity(file); err == nil || !strings.Contains(err.Error(), "2 links") {
+	if _, err := worktreeclaims.ExclusivelyOwnedLockIdentity(file); err == nil || !strings.Contains(err.Error(), "2 links") {
 		t.Fatalf("hard-linked lock identity error = %v", err)
 	}
 }
@@ -339,10 +340,10 @@ func TestWtLifeCovFilesystemLockBatchHoldContention(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = second.Close() })
-	if err := holdOperationLock(first); err != nil {
+	if err := worktreeclaims.HoldOperationLock(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := holdOperationLock(second); !errors.Is(err, errOperationLockHeld) {
+	if err := worktreeclaims.HoldOperationLock(second); !errors.Is(err, errOperationLockHeld) {
 		t.Fatalf("contended lock error = %v", err)
 	}
 }
@@ -355,13 +356,13 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 		t.Parallel()
 		root := t.TempDir()
 		directory := wtLifeCovOpenDirectory(t, root)
-		if _, err := reclaimInterruptedLock(directory, false); err == nil {
+		if _, err := worktreeclaims.ReclaimInterruptedLock(directory, false); err == nil {
 			t.Fatal("missing lock was reclaimed")
 		}
 		if err := os.Mkdir(filepath.Join(root, ".lock"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reclaimInterruptedLock(directory, true); err == nil {
+		if _, err := worktreeclaims.ReclaimInterruptedLock(directory, true); err == nil {
 			t.Fatal("directory lock was reclaimed")
 		}
 		if err := os.Remove(filepath.Join(root, ".lock")); err != nil {
@@ -370,20 +371,21 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, ".lock"), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reclaimInterruptedLock(directory, true); !errors.Is(err, errOperationLockHeld) {
+		if _, err := worktreeclaims.ReclaimInterruptedLock(directory, true); !errors.Is(err, errOperationLockHeld) {
 			t.Fatalf("empty lock error = %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(root, ".lock"), []byte("operation=old\npid=1\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reclaimInterruptedLock(directory, false); err == nil || !strings.Contains(err.Error(), "was interrupted") {
+		if _, err := worktreeclaims.ReclaimInterruptedLock(directory, false); err == nil || !strings.Contains(err.Error(), "was interrupted") {
 			t.Fatalf("unapproved reclaim error = %v", err)
 		}
-		lock, err := reclaimInterruptedLock(directory, true)
-		if err != nil || !lock.interrupted {
+		lock, err := worktreeclaims.ReclaimInterruptedLock(directory, true)
+		_, file, _, _, interrupted := lock.Components()
+		if err != nil || !interrupted {
 			t.Fatalf("approved reclaim = %#v, %v", lock, err)
 		}
-		_ = lock.file.Close()
+		_ = file.Close()
 	})
 
 	t.Run("retired claims", func(t *testing.T) {
@@ -396,7 +398,7 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = closed.Close()
-		if _, _, err := claimRetiredLock(closed); err == nil || !strings.Contains(err.Error(), "rewind secure operation directory") {
+		if _, _, err := worktreeclaims.ClaimRetiredLock(closed); err == nil || !strings.Contains(err.Error(), "rewind secure operation directory") {
 			t.Fatalf("closed retired-lock directory error = %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(root, ".wb-retired-lock-hard"), []byte("retired"), 0o600); err != nil {
@@ -405,7 +407,7 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 		if err := os.Link(filepath.Join(root, ".wb-retired-lock-hard"), filepath.Join(root, "foreign-link")); err != nil {
 			t.Fatal(err)
 		}
-		if claimed, reused, err := claimRetiredLock(directory); err != nil || reused || claimed != nil {
+		if claimed, reused, err := worktreeclaims.ClaimRetiredLock(directory); err != nil || reused || claimed != nil {
 			t.Fatalf("hard-linked retirement claim = %v, %t, %v", claimed, reused, err)
 		}
 		if err := os.WriteFile(filepath.Join(root, ".wb-retired-lock-good"), []byte("retired"), 0o600); err != nil {
@@ -414,13 +416,13 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, ".lock"), []byte("active"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if claimed, reused, err := claimRetiredLock(directory); err != nil || reused || claimed != nil {
+		if claimed, reused, err := worktreeclaims.ClaimRetiredLock(directory); err != nil || reused || claimed != nil {
 			t.Fatalf("active-lock collision claim = %v, %t, %v", claimed, reused, err)
 		}
 		if err := os.Remove(filepath.Join(root, ".lock")); err != nil {
 			t.Fatal(err)
 		}
-		claimed, reused, err := claimRetiredLock(directory)
+		claimed, reused, err := worktreeclaims.ClaimRetiredLock(directory)
 		if err != nil || !reused || claimed == nil {
 			t.Fatalf("retired lock claim = %v, %t, %v", claimed, reused, err)
 		}
@@ -431,7 +433,7 @@ func TestWtLifeCovFilesystemLockBatchReclaimAndClaim(t *testing.T) {
 func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 	t.Parallel()
 
-	newFixture := func(t *testing.T) (string, *os.File, managedLockIdentity) {
+	newFixture := func(t *testing.T) (string, *os.File, worktreeclaims.ManagedLockIdentity) {
 		t.Helper()
 		root := t.TempDir()
 		if err := os.WriteFile(filepath.Join(root, "source"), []byte("source"), 0o600); err != nil {
@@ -442,7 +444,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		identity, err := lockIdentity(file)
+		identity, err := worktreeclaims.LockIdentity(file)
 		_ = file.Close()
 		if err != nil {
 			t.Fatal(err)
@@ -454,8 +456,9 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		_, directory, identity := newFixture(t)
-		identity.inode++
-		if _, err := moveExpectedLockNoReplace(directory, "source", "target", identity); !errors.Is(err, errDirectoryMoveIdentityChanged) {
+		device, inode := identity.Components()
+		identity = worktreeclaims.NewManagedLockIdentity(device, inode+1)
+		if _, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity); !errors.Is(err, errDirectoryMoveIdentityChanged) {
 			t.Fatalf("mismatched lock move error = %v", err)
 		}
 	})
@@ -467,7 +470,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "target"), []byte("target"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := moveExpectedLockNoReplace(directory, "source", "target", identity); !errors.Is(err, unix.EEXIST) {
+		if _, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity); !errors.Is(err, unix.EEXIST) {
 			t.Fatalf("lock move collision error = %v", err)
 		}
 	})
@@ -476,7 +479,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		root, directory, identity := newFixture(t)
-		_, err := moveExpectedLockNoReplace(directory, "source", "target", identity, moveExpectedLockHooks{afterMove: func() {
+		_, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity, worktreeclaims.MoveExpectedLockHooks{AfterMove: func() {
 			if renameErr := os.Rename(filepath.Join(root, "target"), filepath.Join(root, "moved-away")); renameErr != nil {
 				t.Fatal(renameErr)
 			}
@@ -490,7 +493,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		root, directory, identity := newFixture(t)
-		moved, err := moveExpectedLockNoReplace(directory, "source", "target", identity, moveExpectedLockHooks{afterMove: func() {
+		moved, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity, worktreeclaims.MoveExpectedLockHooks{AfterMove: func() {
 			if writeErr := os.WriteFile(filepath.Join(root, "source"), []byte("successor"), 0o600); writeErr != nil {
 				t.Fatal(writeErr)
 			}
@@ -505,7 +508,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		root, directory, identity := newFixture(t)
-		moved, err := moveExpectedLockNoReplace(directory, "source", "target", identity, moveExpectedLockHooks{afterMove: func() {
+		moved, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity, worktreeclaims.MoveExpectedLockHooks{AfterMove: func() {
 			if renameErr := os.Rename(filepath.Join(root, "target"), filepath.Join(root, "expected-away")); renameErr != nil {
 				t.Fatal(renameErr)
 			}
@@ -525,8 +528,8 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		root, directory, identity := newFixture(t)
-		moved, err := moveExpectedLockNoReplace(directory, "source", "target", identity, moveExpectedLockHooks{
-			afterMove: func() {
+		moved, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity, worktreeclaims.MoveExpectedLockHooks{
+			AfterMove: func() {
 				if renameErr := os.Rename(filepath.Join(root, "target"), filepath.Join(root, "expected-away")); renameErr != nil {
 					t.Fatal(renameErr)
 				}
@@ -534,7 +537,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 					t.Fatal(writeErr)
 				}
 			},
-			beforeRestore: func() {
+			BeforeRestore: func() {
 				if writeErr := os.WriteFile(filepath.Join(root, "source"), []byte("successor"), 0o600); writeErr != nil {
 					t.Fatal(writeErr)
 				}
@@ -552,7 +555,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		_, directory, identity := newFixture(t)
-		moved, err := moveExpectedLockNoReplace(directory, "source", "target", identity, moveExpectedLockHooks{afterOpen: func() {
+		moved, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity, worktreeclaims.MoveExpectedLockHooks{AfterOpen: func() {
 			_ = directory.Close()
 		}})
 		if moved != nil || err == nil || !strings.Contains(err.Error(), "inspect operation lock source after move") {
@@ -564,7 +567,7 @@ func TestWtLifeCovFilesystemLockBatchMoveLockRaces(t *testing.T) {
 
 		t.Parallel()
 		_, directory, identity := newFixture(t)
-		moved, err := moveExpectedLockNoReplace(directory, "source", "target", identity)
+		moved, err := worktreeclaims.MoveExpectedLockNoReplace(directory, "source", "target", identity)
 		if err != nil || moved == nil {
 			t.Fatalf("successful lock move = %v, %v", moved, err)
 		}
@@ -590,7 +593,7 @@ func TestWtLifeCovFilesystemLockBatchAcquireAndQuarantine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := quarantineLockEntry(directory, managedLockIdentity{}); !errors.Is(err, errDirectoryMoveIdentityChanged) {
+	if err := worktreeclaims.QuarantineLockEntry(directory, worktreeclaims.ManagedLockIdentity{}); !errors.Is(err, errDirectoryMoveIdentityChanged) {
 		t.Fatalf("mismatched quarantine error = %v", err)
 	}
 	if err := lock.release(); err != nil {

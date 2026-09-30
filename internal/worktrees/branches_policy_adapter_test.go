@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
+
+// A type change on either side must fail compilation of this facade test.
+var _ = func(value *PullRequest) *worktreebranches.PullRequest { return value }
 
 func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	t.Parallel()
