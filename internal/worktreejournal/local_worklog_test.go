@@ -97,19 +97,20 @@ func TestJournalStoreAppendReplayRepairAndConcurrency(t *testing.T) {
 				errs <- err
 				return
 			}
+			var workerErr error
 			defer func() {
 				if err := dir.Close(); err != nil {
-					errs <- err
+					workerErr = errors.Join(workerErr, fmt.Errorf("close worker directory: %w", err))
 				}
+				errs <- workerErr
 			}()
 			unlock, err := store.LockLocalWorkLog(dir)
 			if err != nil {
-				errs <- err
+				workerErr = err
 				return
 			}
 			defer unlock()
-			_, _, err = store.AppendLocalEventUnderLock(root, dir, LocalWorkLogEvent{Version: 1, Type: LocalEventSteer, ID: fmt.Sprintf("worker-%d", i)})
-			errs <- err
+			_, _, workerErr = store.AppendLocalEventUnderLock(root, dir, LocalWorkLogEvent{Version: 1, Type: LocalEventSteer, ID: fmt.Sprintf("worker-%d", i)})
 		}(i)
 	}
 	wg.Wait()

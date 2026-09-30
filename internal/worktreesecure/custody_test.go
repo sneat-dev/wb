@@ -117,9 +117,9 @@ func TestCustodyBasicClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	duplicateClosed := false
+	duplicateCloseAttempted := false
 	t.Cleanup(func() {
-		if !duplicateClosed {
+		if !duplicateCloseAttempted {
 			if err := duplicate.Close(); err != nil {
 				t.Errorf("close duplicate directory: %v", err)
 			}
@@ -128,10 +128,10 @@ func TestCustodyBasicClassification(t *testing.T) {
 	if !DirectoryStillMatches(root, duplicate) {
 		t.Fatal("duplicate identity mismatch")
 	}
+	duplicateCloseAttempted = true
 	if err := duplicate.Close(); err != nil {
 		t.Fatal(err)
 	}
-	duplicateClosed = true
 	if _, err := DuplicateDirectoryDescriptor(duplicate, "closed"); err == nil {
 		t.Fatal("closed descriptor duplicated")
 	}
