@@ -329,6 +329,9 @@ func (p Ports) AppendPrompt(worktree string, header PromptHeader, body []byte) (
 
 	slug := PromptSlug(header.Slug, body)
 	name := fmt.Sprintf(promptOrdinalFmt+"-%s.md", header.Seq, slug)
+	if !promptFileName.MatchString(name) {
+		return "", fmt.Errorf("derived prompt file name %q is not valid", name)
+	}
 	encode := p.EncodePromptHeader
 	if encode == nil {
 		encode = func(value PromptHeader) ([]byte, error) { return yaml.Marshal(value) }

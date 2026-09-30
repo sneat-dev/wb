@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -599,5 +600,42 @@ func TestClaimsBindingTieBreak(t *testing.T) {
 	got, err := p.ListRegisteredPullRequestBindings("")
 	if err != nil || len(got) != 2 || got[0].ClaimID != "a" {
 		t.Fatalf("tie-break: %+v %v", got, err)
+	}
+}
+
+func TestClaimsPromptOrdinalStopsAtFourDigits(t *testing.T) {
+	root := testCanonicalTemp(t)
+	p := testPorts()
+	count := 9999
+	p.ReadNames = func(*os.File) ([]string, error) {
+		names := make([]string, count)
+		for ordinal := range names {
+			names[ordinal] = fmt.Sprintf("%04d-prompt.md", ordinal)
+		}
+		return names, nil
+	}
+	p.ReadBytesAt = func(_ *os.File, name string) ([]byte, error) {
+		ordinal, err := strconv.Atoi(name[:4])
+		if err != nil {
+			return nil, err
+		}
+		return []byte(fmt.Sprintf("---\nseq: %d\nsource: agent_declared\n---\n\nbody\n", ordinal)), nil
+	}
+	written := ""
+	p.WriteBytesImmutableAt = func(_ *os.File, name string, _ []byte, _ os.FileMode, _ bool) error {
+		written = name
+		return nil
+	}
+	name, err := p.AppendPrompt(root, PromptHeader{Source: PromptSourceAgent}, []byte("last valid prompt"))
+	if err != nil || !strings.HasPrefix(name, "9999-") || written != name {
+		t.Fatalf("last valid ordinal: %q, written %q, err %v", name, written, err)
+	}
+	count = 10000
+	written = ""
+	if name, err := p.AppendPrompt(root, PromptHeader{Source: PromptSourceAgent}, []byte("overflow")); err == nil || !strings.Contains(err.Error(), "derived prompt file name") || name != "" {
+		t.Fatalf("accepted five-digit ordinal: %q, %v", name, err)
+	}
+	if written != "" {
+		t.Fatalf("overflow wrote %q", written)
 	}
 }
