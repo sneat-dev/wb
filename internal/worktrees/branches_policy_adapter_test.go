@@ -11,6 +11,9 @@ import (
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
+// A type change on either side must fail compilation of this facade test.
+var _ = func(value *PullRequest) *worktreebranches.PullRequest { return value }
+
 func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
