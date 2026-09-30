@@ -199,15 +199,7 @@ type branchSweepOptions struct {
 	IncludeRetired bool
 }
 
-// Leave one second of scheduling margin below the public ten-second ceiling.
-const branchRepositoryHeartbeatInterval = 9 * time.Second
-
 type branchRepositoryInspection func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string)
-
-type branchRepositoryInspectionResult struct {
-	entries    []BranchEntry
-	diagnostic string
-}
 
 func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOutcome, error) {
 	started := time.Now()

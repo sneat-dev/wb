@@ -10,8 +10,6 @@ import (
 // ClaimPullRequestBinding is the durable sidecar fact for an active claim.
 type ClaimPullRequestBinding = worktreeclaims.ClaimPullRequestBinding
 
-const pullRequestBindingSuffix = worktreeclaims.PullRequestBindingSuffix
-
 // RegisteredPullRequestBinding identifies a binding and its active claim.
 type RegisteredPullRequestBinding = worktreeclaims.RegisteredPullRequestBinding
 

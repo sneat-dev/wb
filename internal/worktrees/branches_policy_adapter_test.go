@@ -73,8 +73,8 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 		t.Fatal("nil facade plan should return empty nonnil slice")
 	}
 	// Type aliases preserve the exact DTO identity and JSON tags through the facade.
-	var same *worktreebranches.PullRequest = pr
-	if same != pr {
+	same, ok := any(pr).(*worktreebranches.PullRequest)
+	if !ok || same != pr {
 		t.Fatal("PR alias changed pointer identity")
 	}
 	raw, err := json.Marshal(BranchCleanupResult{BranchEntry: entry, Outcome: "planned"})

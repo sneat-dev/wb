@@ -14,8 +14,6 @@ import (
 const heartbeatName = worktreeclaims.HeartbeatName
 const DefaultSessionFreshness = worktreeclaims.DefaultSessionFreshness
 
-type heartbeatRecord = worktreeclaims.HeartbeatRecord
-
 func TouchHeartbeat(worktree, command string) { heartbeatPorts().TouchHeartbeat(worktree, command) }
 func HeartbeatAt(worktree string) time.Time   { return heartbeatPorts().HeartbeatAt(worktree) }
 func LastActivity(ctx context.Context, result ListResult) time.Time {
