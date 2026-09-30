@@ -1869,12 +1869,38 @@ func (p advancedCleanupPorts) acceptAdvancedCleanupTerminal(home, worktree, fina
 	return nil
 }
 
-// transferWorkLogClaim seals exactly one old claim and atomically rebinds the
-// projection to one deterministic active successor. Dirty tracked state is
-// intentionally untouched: handoff/not_landed is a control-plane transition,
-// not discard. A crash before the final projection write is retryable because
-// terminal and successor identities are immutable and deterministic.
+// transferClaimPorts scopes the ordered private writes to one transfer.
+type transferClaimPorts struct {
+	readProjectionForClaim func(string, string) (workLogProjection, error)
+	openRun                func(string, string, string, string, bool) (*lockedWorkLogRun, error)
+	readProjection         func(string) (workLogProjection, error)
+	openChild              func(*os.File, string, bool) (*os.File, error)
+	readJSON               func(*os.File, string, any) error
+	corroborate            func(string, string, workLogProjection, workLogClaim) error
+	sealTerminal           func(string, *os.File, worktreeclaims.TerminalSealRequest) (time.Time, error)
+	writeImmutable         func(*os.File, string, any, bool) error
+	openOutbox             func(string, string, bool) (*os.File, error)
+	writeProjection        func(string, workLogProjection) error
+}
+
+func defaultTransferClaimPorts() transferClaimPorts {
+	return transferClaimPorts{
+		readProjectionForClaim: readWorkLogProjectionForClaim, openRun: openLockedWorkLogRun,
+		readProjection: readWorkLogProjection, openChild: openPrivateChild,
+		readJSON: readJSONAt, corroborate: corroborateClaim,
+		sealTerminal: sealWorkLogTerminal, writeImmutable: writeJSONImmutableAt,
+		openOutbox: openWorkLogOutbox, writeProjection: writeWorkLogProjection,
+	}
+}
+
+// transferWorkLogClaim seals exactly one old claim and rebinds the projection
+// to one deterministic active successor. Dirty tracked state is untouched.
+// A crash before the projection write is retryable from immutable identities.
 func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor string, identity ClaimExecutionIdentity) error {
+	return defaultTransferClaimPorts().transferWorkLogClaim(home, worktree, finalCommit, disposition, successor, identity)
+}
+
+func (p transferClaimPorts) transferWorkLogClaim(home, worktree, finalCommit, disposition, successor string, identity ClaimExecutionIdentity) error {
 	successor = strings.TrimSpace(successor)
 	if successor == "" || len(successor) > 200 || strings.ContainsAny(successor, "\x00\r\n") {
 		return fmt.Errorf("one successor agent/session ID is required for %s", disposition)
@@ -1882,34 +1908,34 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err := validateNewExecutionIdentity(identity); err != nil {
 		return err
 	}
-	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	projection, err := p.readProjectionForClaim(home, worktree)
 	if err != nil {
 		return err
 	}
-	locked, err := openLockedWorkLogRun(home, projection.EffortID, projection.RunID, projection.ClaimID, false)
+	locked, err := p.openRun(home, projection.EffortID, projection.RunID, projection.ClaimID, false)
 	if err != nil {
 		return err
 	}
 	defer locked.close()
 	runDir := locked.directory
-	currentProjection, err := readWorkLogProjection(worktree)
+	currentProjection, err := p.readProjection(worktree)
 	if err != nil || currentProjection != projection {
 		return fmt.Errorf("work-log projection changed while waiting for claim fence")
 	}
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claims, err := p.openChild(runDir, "claims", false)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = claims.Close() }()
 	var claim workLogClaim
-	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
+	if err := p.readJSON(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
-	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
+	if err := p.corroborate(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
 	successorClaimID := declaredSuccessorWorkLogClaimID(claim.ClaimID, successor, disposition, identity)
-	sealedAt, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+	sealedAt, err := p.sealTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: claim, FinalCommit: finalCommit, Disposition: disposition,
 		SuccessorClaimID: successorClaimID, SuccessorAgentID: successor,
 	})
@@ -1918,18 +1944,18 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	}
 	successorClaim := newSuccessorWorkLogClaim(claim, successorClaimID, sealedAt, successor, disposition, identity)
 	claimName, outboxName, event, nextProjection := activeClaimPublication(successorClaim, disposition, projection)
-	if err := writeJSONImmutableAt(claims, claimName, successorClaim, true); err != nil {
+	if err := p.writeImmutable(claims, claimName, successorClaim, true); err != nil {
 		return fmt.Errorf("write immutable successor claim: %w", err)
 	}
-	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
+	outbox, err := p.openOutbox(home, claim.EffortID, true)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = outbox.Close() }()
-	if err := writeJSONImmutableAt(outbox, outboxName, event, true); err != nil {
+	if err := p.writeImmutable(outbox, outboxName, event, true); err != nil {
 		return fmt.Errorf("write successor outbox: %w", err)
 	}
-	return writeWorkLogProjection(worktree, nextProjection)
+	return p.writeProjection(worktree, nextProjection)
 }
 
 // recoverFailedRecycleClaim gives a checkout moved back to its original path
