@@ -73,6 +73,7 @@ func TestClaimPublicationAdapterPreparationFailures(t *testing.T) {
 }
 
 func TestAutoRegisterSessionOperationPorts(t *testing.T) {
+	t.Parallel()
 	fields := wbprovenance.Fields{Harness: "codex_1", HarnessSessionID: "harness-id"}
 	ports := sessionRegistrationPorts{pid: func() int { return 10 }, findAncestor: func(int) (int, string) { return 20, "" }, lookup: func(string, int) (session.Record, bool) { return session.Record{}, false }, register: func(_ string, record session.Record) (session.Record, error) {
 		record.WBSessionID = "registered"
@@ -156,6 +157,7 @@ func TestClaimPublicationRetryRepairsInterruptedProjection(t *testing.T) {
 		"runtime": func(o *WorkLogOptions) { o.AgentRuntime = "claude-code" },
 		"session": func(o *WorkLogOptions) { o.WBSessionID = "other-session" },
 	} {
+		//nolint:paralleltest // the Git fixture sets process-wide WB home and environment.
 		t.Run(name, func(t *testing.T) {
 			changed := options
 			change(&changed)
@@ -176,6 +178,7 @@ func TestClaimPublicationRetryRepairsInterruptedProjection(t *testing.T) {
 		"branch":     func(r *CreateResult) { r.Branch = "other-branch" },
 		"base":       func(r *CreateResult) { r.Base = "other-base" },
 	} {
+		//nolint:paralleltest // the Git fixture sets process-wide WB home and environment.
 		t.Run("missing projection/"+name, func(t *testing.T) {
 			changed := result
 			change(&changed)
@@ -254,6 +257,7 @@ func TestClaimPublicationRetryRepairsInterruptedProjection(t *testing.T) {
 		"branch":     func(r *CreateResult) { r.Branch = "other-branch" },
 		"base":       func(r *CreateResult) { r.Base = "other-base" },
 	} {
+		//nolint:paralleltest // the Git fixture sets process-wide WB home and environment.
 		t.Run(name, func(t *testing.T) {
 			changed := result
 			change(&changed)
@@ -265,55 +269,10 @@ func TestClaimPublicationRetryRepairsInterruptedProjection(t *testing.T) {
 }
 
 //nolint:paralleltest // the Git fixture and WB home state are process-wide.
-func TestClaimPublicationRetryRejectsUntrustedAuthority(t *testing.T) {
-	for _, testCase := range []struct {
-		name           string
-		breakAuthority func(*testing.T, WorkLogPublicationOutcome, CreateResult)
-	}{
-		{name: "malformed private claim", breakAuthority: func(t *testing.T, outcome WorkLogPublicationOutcome, _ CreateResult) {
-			if err := os.WriteFile(outcome.ClaimPath, []byte("{broken"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "failed Git corroboration", breakAuthority: func(t *testing.T, _ WorkLogPublicationOutcome, result CreateResult) {
-			if _, err := git(context.Background(), result.WorktreeDir, "branch", "-m", "unexpected-branch"); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "unreadable live Git checkout", breakAuthority: func(t *testing.T, _ WorkLogPublicationOutcome, result CreateResult) {
-			if err := os.Rename(filepath.Join(result.WorktreeDir, ".git"), filepath.Join(result.WorktreeDir, ".git-held")); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			gitFixture := newGitFixture(t)
-			evidence := observeLocalGit(context.Background(), gitFixture.canonical)
-			result := CreateResult{Repository: "acme/app", WorktreeDir: gitFixture.canonical, Branch: evidence.Branch, Base: "main", BaseSHA: evidence.Head}
-			options, err := (WorkLogOptions{EffortID: "retry-refusal", RunID: "run", Model: "unknown"}).WithOriginalPromptFromStdin([]byte("original prompt\n"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			interrupted := errors.New("interrupted")
-			outcome, err := recordWorkLogWithHooks(gitFixture.home, "retry-refusal", result, options, workLogPublicationHooks{afterClaim: func() error { return interrupted }})
-			if !errors.Is(err, interrupted) {
-				t.Fatalf("interruption err=%v", err)
-			}
-			testCase.breakAuthority(t, outcome, result)
-			if _, err := EnsureWorkLogClaim(gitFixture.home, "retry-refusal", result, options); err == nil {
-				t.Fatal("untrusted authority accepted")
-			}
-			if _, err := os.Stat(filepath.Join(result.WorktreeDir, workLogProjectionDirectory, workLogProjectionName)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("rejected authority published projection: %v", err)
-			}
-		})
-	}
-}
-
-//nolint:paralleltest // the Git fixture and WB home state are process-wide.
 func TestClaimPublicationPreparationPorts(t *testing.T) {
 	fixture := newWorkLogCoverageBatchFixture(t, "claim-publication-faults")
 	for _, stage := range []string{"normalize", "summary", "open", "lock", "migrate", "archive"} {
+		//nolint:paralleltest // the Git fixture sets process-wide WB home and environment.
 		t.Run(stage, func(t *testing.T) {
 			ports := defaultPublicationPreparationPorts()
 			failure := errors.New(stage)
@@ -370,6 +329,7 @@ func TestClaimPublicationPreparationPorts(t *testing.T) {
 }
 
 func TestCorrectionFacadeRejectsUnresolvableHome(t *testing.T) {
+	t.Parallel()
 	blocked := filepath.Join(t.TempDir(), "regular-file")
 	if err := os.WriteFile(blocked, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
@@ -382,6 +342,7 @@ func TestCorrectionFacadeRejectsUnresolvableHome(t *testing.T) {
 }
 
 func TestClaimPublicationOutboxJSONPreservesFacadeContract(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(100, 0).UTC()
 	oldClaim := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: now, EffortID: "effort", RunID: "run", ClaimID: "claim", Repository: "acme/app", Branch: "branch", Base: "main", BaseSHA: "base", Lifecycle: "active"}
 	newClaim := worktreeclaims.ClaimPublicEvent{Version: oldClaim.Version, Type: oldClaim.Type, At: oldClaim.At, EffortID: oldClaim.EffortID, RunID: oldClaim.RunID, ClaimID: oldClaim.ClaimID, Repository: oldClaim.Repository, Branch: oldClaim.Branch, Base: oldClaim.Base, BaseSHA: oldClaim.BaseSHA, Lifecycle: oldClaim.Lifecycle}

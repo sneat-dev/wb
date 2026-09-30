@@ -3,6 +3,7 @@ package worktrees
 import "testing"
 
 func TestClaimsPreflightAdapter(t *testing.T) {
+	t.Parallel()
 	if err := PreflightWorkLogOptions("task", WorkLogOptions{Model: "model", RunID: "run"}); err != nil {
 		t.Fatal(err)
 	}
@@ -12,6 +13,7 @@ func TestClaimsPreflightAdapter(t *testing.T) {
 }
 
 func TestClaimsBindingAdapterRejectsInvalidRoot(t *testing.T) {
+	t.Parallel()
 	if _, err := claimBindingPorts().Homes("\x00"); err == nil {
 		t.Fatal("accepted invalid projects root")
 	}

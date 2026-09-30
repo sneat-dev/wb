@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // SetInvokedCommand changes package-wide command identity.
 func TestClaimsIdentityAndHeartbeatAdapters(t *testing.T) {
 	prior := InvokedCommand()
 	t.Cleanup(func() { SetInvokedCommand(prior) })
@@ -21,6 +22,7 @@ func TestClaimsIdentityAndHeartbeatAdapters(t *testing.T) {
 }
 
 func TestClaimsParkedOwnerHandoffAdapter(t *testing.T) {
+	t.Parallel()
 	claim := workLogClaim{AcquiredVia: "parked_session_resume", Repository: "owner/repo", AgentID: "successor",
 		ExternalHandoff: &workLogExternalHandoffEvidence{HandoffID: "handoff", MemberID: "member", RequestDigest: "digest", PredecessorWBSessionID: "source", SourceWorkLogReference: "source-ref", TargetWorkLogReference: "target-ref"}}
 	got, ok := legacyHandoffFromClaim(claim, nil)

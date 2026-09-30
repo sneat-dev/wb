@@ -9,6 +9,7 @@ import (
 
 // Each compatibility name remains callable while the journal implementation lives in its leaf.
 func TestJournalFacadeAdapters(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	journal, err := openJournalDirectory(worktree, true)
 	if err != nil {

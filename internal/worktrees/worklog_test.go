@@ -25,6 +25,7 @@ import (
 // so normalizeHarnessRuntime maps known prefixes directly. All accepted
 // NormalizeRuntime aliases use one of those same prefixes.
 func TestNormalizeHarnessRuntimeMapsKnownPrefixes(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"claude-code_2-1-276_agent": "claude-code",
 		"claude-code":               "claude-code",
@@ -36,6 +37,7 @@ func TestNormalizeHarnessRuntimeMapsKnownPrefixes(t *testing.T) {
 	}
 	for raw, want := range cases {
 		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
 			if got := normalizeHarnessRuntime(raw); got != want {
 				t.Fatalf("normalizeHarnessRuntime(%q) = %q, want %q", raw, got, want)
 			}

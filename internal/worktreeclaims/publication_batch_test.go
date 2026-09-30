@@ -24,11 +24,13 @@ func testDirectory(t *testing.T) *os.File {
 }
 
 func TestPublicationClaimStageReceipts(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	claim := Claim{EffortID: "effort", RunID: "run", ClaimID: "claim", Worktree: "worktree", RecordedAt: time.Unix(100, 0).UTC()}
 	stages := []string{"open-claims", "write-claim", "after-claim", "run-index", "projection", "journal", "after-projection", "open-outbox", "write-outbox", "success"}
 	for _, failure := range stages {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			calls := []string{}
 			step := func(name string) error {
 				calls = append(calls, name)
@@ -99,6 +101,7 @@ func TestPublicationClaimStageReceipts(t *testing.T) {
 }
 
 func TestActiveClaimReadPorts(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	fail := ""
 	calls := []string{}
@@ -159,6 +162,7 @@ func TestActiveClaimReadPorts(t *testing.T) {
 }
 
 func TestLocalJournalOperationPorts(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	failure := ""
 	custody := 0
@@ -249,6 +253,7 @@ func TestLocalJournalOperationPorts(t *testing.T) {
 }
 
 func TestGitAndUsageEvidencePorts(t *testing.T) {
+	t.Parallel()
 	values := map[string]string{"branch": " feature ", "rev-parse": " head ", "status": " M file "}
 	ports := LocalJournalPorts{Git: func(_ context.Context, _ string, args ...string) (string, error) {
 		if value, ok := values[args[0]]; ok {
@@ -337,6 +342,7 @@ func TestGitAndUsageEvidencePorts(t *testing.T) {
 }
 
 func TestHistoricalInspectionPorts(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	errStrict := errors.New("strict")
 	event := worktreejournal.LocalWorkLogEvent{Type: worktreejournal.LocalEventHandoff, Result: "completed", Message: "parked successor proved live; target member custody completed", Extra: map[string]any{}}
@@ -433,6 +439,7 @@ func TestHistoricalInspectionPorts(t *testing.T) {
 }
 
 func TestPublicationRetryUsesCorroboratedAuthority(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	old := Claim{Version: 2, EffortID: "effort", RunID: "run", ClaimID: "claim", Worktree: "worktree", Model: "unknown", RecordedAt: time.Unix(100, 0).UTC(), WBSessionID: "original"}
 	requested := old
@@ -538,6 +545,7 @@ func TestPublicationRetryUsesCorroboratedAuthority(t *testing.T) {
 }
 
 func TestPublicationRejectsConflictingRunClaims(t *testing.T) {
+	t.Parallel()
 	directory := testDirectory(t)
 	requested := Claim{ClaimID: strings.Repeat("b", 64), Worktree: "/checkout", RecordedAt: time.Unix(200, 0).UTC()}
 	otherID := strings.Repeat("a", 64)

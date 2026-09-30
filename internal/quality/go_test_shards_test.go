@@ -57,6 +57,7 @@ func record(t *testing.T, name string) { t.Helper(); f, err := os.OpenFile(os.Ge
 	}
 }
 
+//nolint:paralleltest // this real sharded-run fixture uses t.Setenv for process-wide fake-go controls.
 func TestRunShardedCoverageRestrictsSelectedPackageScope(t *testing.T) {
 	module := t.TempDir()
 	logPath := filepath.Join(module, "runs.log")

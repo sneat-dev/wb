@@ -7,6 +7,7 @@ import (
 )
 
 func TestWorkLogFilewriteAdapters(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	directory, err := os.Open(directoryPath)
 	if err != nil {

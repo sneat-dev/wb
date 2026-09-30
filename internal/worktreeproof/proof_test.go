@@ -11,6 +11,7 @@ import (
 )
 
 func TestObjectIDsAndParsers(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	sha256 := strings.Repeat("b", 64)
 	for _, value := range []string{sha, sha256} {
@@ -55,6 +56,7 @@ func TestObjectIDsAndParsers(t *testing.T) {
 }
 
 func TestCommitQueries(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	parent := strings.Repeat("b", 40)
 	calls := 0
@@ -97,6 +99,7 @@ func TestCommitQueries(t *testing.T) {
 }
 
 func TestAncestryMemoAndFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	called := 0
 	run := func(context.Context, string, string, string) (int, error) { called++; return 0, nil }
@@ -134,6 +137,7 @@ func TestAncestryMemoAndFailures(t *testing.T) {
 }
 
 func TestAgeAndOwner(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	created := now.Add(-2 * time.Hour)
 	fields := &AgeFields{}
@@ -163,6 +167,7 @@ func TestAgeAndOwner(t *testing.T) {
 }
 
 func TestReceiptIdentitiesAndPullRequest(t *testing.T) {
+	t.Parallel()
 	absorbed := AbsorbedConflictReceipt{ReceiptPath: "/receipt", ID: "id", Status: "landed", Lane: "lane", Repository: "org/repo", Target: "main", TargetSHA: "target"}
 	absorbed.Candidate.Task = "candidate"
 	absorbed.Candidate.SHA = "sha"

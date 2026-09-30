@@ -56,6 +56,7 @@ func createdManifest(root string) Manifest {
 	return Manifest{Version: 1, EffortID: "feature.one", ParentEffort: "feature", EffortKind: EffortKindTask, Repository: "acme/app", Worktree: root, Branch: "feature/one", Base: "main", BaseSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC(), Provenance: ProvenanceCreated}
 }
 func TestClaimsManifestPromptReplayAndMalformedRefusal(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	p := testPorts()
 	m := createdManifest(root)
@@ -111,6 +112,7 @@ func TestClaimsManifestPromptReplayAndMalformedRefusal(t *testing.T) {
 	}
 }
 func TestClaimsPromptSequenceRejectsMalformedAndConcurrentAppend(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	p := testPorts()
 	const n = 8
@@ -152,6 +154,7 @@ func TestClaimsPromptSequenceRejectsMalformedAndConcurrentAppend(t *testing.T) {
 	}
 }
 func TestClaimsBindingLookup(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0700); err != nil {
@@ -189,6 +192,7 @@ func TestClaimsBindingLookup(t *testing.T) {
 	}
 }
 func TestClaimsRecoveryUsesExactIdentity(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	manifest := createdManifest(root)
 	manifest.DependencyCampaign = true
@@ -234,6 +238,7 @@ func TestClaimsRecoveryUsesExactIdentity(t *testing.T) {
 	}
 }
 func TestClaimsOptionsSnapshotAndCredentialMarkers(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "prompt.txt")
 	contents := []byte(" exact request\n")
 	if err := os.WriteFile(file, contents, 0600); err != nil {
@@ -268,6 +273,7 @@ func TestClaimsOptionsSnapshotAndCredentialMarkers(t *testing.T) {
 }
 
 func TestClaimsBindingErrorsAndOrdering(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	claimPath := filepath.Join(root, "c.json")
 	_ = os.WriteFile(claimPath, []byte("{}"), 0600)
@@ -350,6 +356,7 @@ func TestClaimsBindingErrorsAndOrdering(t *testing.T) {
 }
 
 func TestClaimsOptionsErrorPaths(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	prompt := filepath.Join(root, "prompt")
 	if err := os.WriteFile(prompt, []byte("exact"), 0600); err != nil {
@@ -418,6 +425,7 @@ func TestClaimsOptionsErrorPaths(t *testing.T) {
 }
 
 func TestClaimsRecoveryRefusals(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	m := createdManifest(root)
 	m.DependencyCampaign = true
@@ -437,6 +445,7 @@ func TestClaimsRecoveryRefusals(t *testing.T) {
 	}{{"incomplete", func(x *Manifest) { x.BaseSHA = "bad" }}, {"wrong root", func(x *Manifest) { x.Worktree = root + "-other" }}, {"wrong branch", func(x *Manifest) { x.Branch = "other" }}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			bad := m
 			tc.mutate(&bad)
 			if _, err := p.RecoverableBlankManifestClaimID(context.Background(), root, bad); err == nil {
@@ -473,6 +482,7 @@ func TestClaimsRecoveryRefusals(t *testing.T) {
 }
 
 func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	p := testPorts()
 	p.EncodeManifest = func(Manifest) ([]byte, error) { return nil, errors.New("encode") }
@@ -518,6 +528,7 @@ func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
 }
 
 func TestClaimsInjectedSnapshotAndArchiveReadFailures(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	file := filepath.Join(root, "prompt")
 	if err := os.WriteFile(file, []byte("request"), 0600); err != nil {
@@ -583,6 +594,7 @@ func TestClaimsInjectedSnapshotAndArchiveReadFailures(t *testing.T) {
 }
 
 func TestClaimsBindingTieBreak(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	p := BindingPorts{Homes: func(string) ([]string, error) { return []string{root}, nil }, Walk: func(_ string, visit func(*os.File, string, string)) error {
 		d, err := os.Open(root)
@@ -604,6 +616,7 @@ func TestClaimsBindingTieBreak(t *testing.T) {
 }
 
 func TestClaimsPromptOrdinalStopsAtFourDigits(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	p := testPorts()
 	count := 9999

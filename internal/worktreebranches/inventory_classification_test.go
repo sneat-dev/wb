@@ -10,6 +10,7 @@ import (
 )
 
 func TestInventoryClassificationReceiptsAndSupersession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sha := strings.Repeat("a", 40)
 	target := strings.Repeat("b", 40)

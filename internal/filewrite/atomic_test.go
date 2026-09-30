@@ -9,6 +9,7 @@ import (
 )
 
 func TestAtomicCodecsReadWriteAndRejectInvalidInput(t *testing.T) {
+	t.Parallel()
 	directory := openTestDir(t)
 	payload := map[string]string{"hello": "world"}
 
@@ -98,6 +99,7 @@ func TestAtomicCodecsReadWriteAndRejectInvalidInput(t *testing.T) {
 }
 
 func TestReadAtRefusesSymlink(t *testing.T) {
+	t.Parallel()
 	directory := openTestDir(t)
 	target := filepath.Join(t.TempDir(), "target")
 	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
@@ -112,6 +114,7 @@ func TestReadAtRefusesSymlink(t *testing.T) {
 }
 
 func TestWriteBytesImmutableAtPreservesCompetingWriterContracts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		winner     []byte
@@ -122,6 +125,7 @@ func TestWriteBytesImmutableAtPreservesCompetingWriterContracts(t *testing.T) {
 		{name: "matching content converges", winner: []byte("shared"), idempotent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			directory := openTestDir(t)
 			content := []byte("shared")
 			if tc.wantErr {
@@ -154,8 +158,10 @@ func TestWriteBytesImmutableAtPreservesCompetingWriterContracts(t *testing.T) {
 }
 
 func TestWriteBytesImmutableAtInjectedFailures(t *testing.T) {
+	t.Parallel()
 	for _, step := range []Step{StepOpenOrCreate, StepWrite, StepSync, StepClose, StepRenameNoReplace, StepDirSync} {
 		t.Run(string(step), func(t *testing.T) {
+			t.Parallel()
 			directory := openTestDir(t)
 			err := WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, &Injector{Step: step, Err: errBoom}, nil)
 			if !errors.Is(err, errBoom) {
@@ -173,8 +179,10 @@ func TestWriteBytesImmutableAtInjectedFailures(t *testing.T) {
 }
 
 func TestWriteBytesAtomicAtInjectedFailures(t *testing.T) {
+	t.Parallel()
 	for _, step := range []Step{StepOpenOrCreate, StepWrite, StepSync, StepClose, StepRename, StepDirSync} {
 		t.Run(string(step), func(t *testing.T) {
+			t.Parallel()
 			directory := openTestDir(t)
 			err := WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, &Injector{Step: step, Err: errBoom})
 			if !errors.Is(err, errBoom) {
@@ -192,8 +200,10 @@ func TestWriteBytesAtomicAtInjectedFailures(t *testing.T) {
 }
 
 func TestWriteBytesAtomicInjectedFailures(t *testing.T) {
+	t.Parallel()
 	for _, step := range []Step{StepOpenOrCreate, StepChmod, StepWrite, StepSync, StepClose, StepRename, StepOpenDirectory, StepDirSync} {
 		t.Run(string(step), func(t *testing.T) {
+			t.Parallel()
 			directory := t.TempDir()
 			err := WriteBytesAtomicInjected(directory, "f", []byte("x"), 0o600, &Injector{Step: step, Err: errBoom})
 			if !errors.Is(err, errBoom) {

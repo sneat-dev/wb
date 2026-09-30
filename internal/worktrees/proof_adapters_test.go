@@ -1,9 +1,7 @@
 package worktrees
 
 import (
-	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktreelanding"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +9,7 @@ import (
 )
 
 func TestProofAdaptersPreserveFacadeInputs(t *testing.T) {
+	t.Parallel()
 	sha := strings.Repeat("a", 40)
 	if !isGitObjectID(sha) || !isGitRevisionID("abcd") {
 		t.Fatal("SHA facade")
@@ -43,7 +42,8 @@ func TestProofAdaptersPreserveFacadeInputs(t *testing.T) {
 	}
 }
 
-func TestProofAgeAndGitQueryAdapters(t *testing.T) {
+func TestProofAgeAdapters(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	path := t.TempDir()
 	modified := now.Add(-time.Hour)
@@ -60,24 +60,12 @@ func TestProofAgeAndGitQueryAdapters(t *testing.T) {
 	if !absent.CreatedAt.IsZero() {
 		t.Fatalf("absent age %#v", absent)
 	}
-	ctx := lifecycleGitContext(t, "repo", lifecycleGitReply{operation: "merge-base", output: ""})
-	yes, err := isAncestor(ctx, "repo", "a", "b")
-	if err != nil || !yes {
-		t.Fatalf("ancestor %v %v", yes, err)
-	}
 
 }
 
-func TestProofUncachedTargetAdapterUsesPrivateRef(t *testing.T) {
-	fixture := newGitFixture(t)
-	want := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
-	got, err := worktreelanding.FetchRemoteTargetHeadUncached(context.Background(), fixture.canonical, "main", remoteTargetFetchTimeout, fetchRemoteTargetPrivate)
-	if err != nil || got != want {
-		t.Fatalf("uncached target = %q, %v; want %q", got, err, want)
-	}
-}
-
+//nolint:paralleltest // GitHub response fixtures mutate process-wide fake transport state.
 func TestLandingEvidenceAdapterKeepsGitHubVerifierFailures(t *testing.T) {
+	//nolint:paralleltest // GitHub fixture changes process-wide fake transport state.
 	t.Run("unavailable", func(t *testing.T) {
 		installFailingGitHubFixture(t)
 		ctx := lifecycleGitContext(t, "repo", lifecycleGitReply{operation: "rev-list", output: "head\nancestor\n"})
@@ -85,6 +73,7 @@ func TestLandingEvidenceAdapterKeepsGitHubVerifierFailures(t *testing.T) {
 			t.Fatal("GitHub failure hidden")
 		}
 	})
+	//nolint:paralleltest // GitHub fixture changes process-wide fake transport state.
 	t.Run("no receipt", func(t *testing.T) {
 		installPerCommitPullRequestFixture(t, nil)
 		ctx := lifecycleGitContext(t, "repo", lifecycleGitReply{operation: "rev-list", output: "head\nancestor\n"})

@@ -14,6 +14,7 @@ import (
 )
 
 func TestClaimsIdentityStateAndEnv(t *testing.T) {
+	t.Parallel()
 	var state IdentityState
 	values := map[string]string{EnvAgentRuntime: " codex ", EnvAgentID: " worker ", EnvAgentPID: "123", EnvAgentModel: " model ", EnvSessionID: " session "}
 	env := IdentityFromEnv(func(key string) string { return values[key] })
@@ -48,6 +49,7 @@ func TestClaimsIdentityStateAndEnv(t *testing.T) {
 	}
 }
 func TestClaimsOwnerRepeatedCustodyAndWarnings(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	var mu sync.Mutex
 	events := []worktreejournal.LocalWorkLogEvent{}
@@ -113,6 +115,7 @@ func TestClaimsOwnerRepeatedCustodyAndWarnings(t *testing.T) {
 	}
 }
 func TestClaimsHeartbeatSignalsAndDirectoryScope(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	journal := filepath.Join(root, ".wb", "local")
 	if err := os.MkdirAll(journal, 0700); err != nil {
@@ -152,6 +155,7 @@ func TestClaimsHeartbeatSignalsAndDirectoryScope(t *testing.T) {
 	}
 }
 func TestClaimsPortableClaimIdentityAndRoutes(t *testing.T) {
+	t.Parallel()
 	result := CreationResult{Repository: "owner/repo", Branch: "feature", Base: "main", BaseSHA: strings.Repeat("a", 40)}
 	first := WorkLogClaimID("effort", result)
 	result.WorktreeDir = "/another/location"
@@ -192,6 +196,7 @@ func TestClaimsPortableClaimIdentityAndRoutes(t *testing.T) {
 }
 
 func TestClaimsHeartbeatFaultPorts(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	open := func(string, bool) (*os.File, error) { return os.Open(root) }
 	p := HeartbeatPorts{OpenJournal: open, ReadBytesAt: func(*os.File, string) ([]byte, error) { return nil, os.ErrNotExist }, WriteAtomicAt: func(*os.File, string, []byte, os.FileMode) error { return nil }, Now: func() time.Time { return time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) }, PID: func() int { return 1 },
@@ -235,6 +240,7 @@ func TestClaimsHeartbeatFaultPorts(t *testing.T) {
 }
 
 func TestClaimsChangedFilePorcelainCases(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	rename := filepath.Join(root, "new.txt")
 	if err := os.WriteFile(rename, []byte("new"), 0600); err != nil {
@@ -249,6 +255,7 @@ func TestClaimsChangedFilePorcelainCases(t *testing.T) {
 }
 
 func TestClaimsOwnerFaultsAndLegacyInspection(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	warnings := &OwnerWarnings{}
 	warnings.NoteUndeclared(root)

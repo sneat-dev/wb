@@ -71,6 +71,7 @@ func physicalTempDir(t *testing.T) string {
 func validSegment(s string) bool { return s != "" && s != "." && s != ".." && filepath.Base(s) == s }
 
 func TestCustodyBasicClassification(t *testing.T) {
+	t.Parallel()
 	root := physicalTempDir(t)
 	if CloseIncompleteFiles(nil) != true || CloseIncompleteFiles() != false {
 		t.Fatal("incomplete group classification")
@@ -138,6 +139,7 @@ func TestCustodyBasicClassification(t *testing.T) {
 }
 
 func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
+	t.Parallel()
 	root := physicalTempDir(t)
 	parent := openTestDirectory(t, root)
 	if _, err := OpenAbsoluteDirectoryNoFollow("relative", false); err == nil {
@@ -306,6 +308,7 @@ func TestCustodyDirectoryOpenAndIdentity(t *testing.T) {
 }
 
 func TestCustodyOpenWithAndPrivateChild(t *testing.T) {
+	t.Parallel()
 	root := physicalTempDir(t)
 	opener := newTempRootOpener(root)
 	if _, err := OpenAbsoluteDirectoryNoFollowWith(opener, "/a", true); err != nil {
@@ -369,6 +372,7 @@ func TestCustodyOpenWithAndPrivateChild(t *testing.T) {
 }
 
 func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
+	t.Parallel()
 	root := physicalTempDir(t)
 	parent := openTestDirectory(t, root)
 	if err := os.Mkdir(filepath.Join(root, "source"), 0o700); err != nil {
@@ -422,6 +426,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		return fixtureRoot, fixtureParent, held
 	}
 	t.Run("after authorization and hook", func(t *testing.T) {
+		t.Parallel()
 		fixtureRoot, fixtureParent, held := moveFixture(t, "hook")
 		called := false
 		moved, err := MoveExpectedDirectoryNoReplace(fixtureParent, "hook", fixtureParent, "hook-target", held, rename, func() { called = true }, func() {})
@@ -433,6 +438,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		_ = fixtureRoot
 	})
 	t.Run("destination disappears", func(t *testing.T) {
+		t.Parallel()
 		fixtureRoot, fixtureParent, held := moveFixture(t, "gone")
 		_, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "gone", fixtureParent, "gone-target", held, rename, nil, func() { _ = os.Rename(filepath.Join(fixtureRoot, "gone-target"), filepath.Join(fixtureRoot, "away")) })
 		if err == nil {
@@ -441,6 +447,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		_ = held.Close()
 	})
 	t.Run("source returns", func(t *testing.T) {
+		t.Parallel()
 		fixtureRoot, fixtureParent, held := moveFixture(t, "again")
 		if err := os.WriteFile(filepath.Join(fixtureRoot, "again", "original"), []byte("original"), 0o600); err != nil {
 			t.Fatal(err)
@@ -477,6 +484,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		_ = held.Close()
 	})
 	t.Run("expected closes", func(t *testing.T) {
+		t.Parallel()
 		_, fixtureParent, held := moveFixture(t, "closed")
 		_, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "closed", fixtureParent, "closed-target", held, rename, nil, func() { _ = held.Close() })
 		if !errors.Is(err, ErrDirectoryMoveIdentityChanged) {
@@ -484,6 +492,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		}
 	})
 	t.Run("source descriptor closes", func(t *testing.T) {
+		t.Parallel()
 		fromRoot := physicalTempDir(t)
 		toRoot := physicalTempDir(t)
 		from := openTestDirectory(t, fromRoot)
@@ -502,6 +511,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		_ = held.Close()
 	})
 	t.Run("rename fails", func(t *testing.T) {
+		t.Parallel()
 		_, fixtureParent, held := moveFixture(t, "rename-failure")
 		if _, err := MoveExpectedDirectoryNoReplaceAuthorized(fixtureParent, "rename-failure", fixtureParent, "target", held, func(int, string, int, string) error { return errors.New("rename") }, nil); err == nil {
 			t.Fatal("rename failure accepted")
@@ -509,6 +519,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		_ = held.Close()
 	})
 	t.Run("restore fails", func(t *testing.T) {
+		t.Parallel()
 		_, fixtureParent, held := moveFixture(t, "restore-failure")
 		calls := 0
 		restoreFailure := func(a int, b string, c int, d string) error {
@@ -524,6 +535,7 @@ func TestCustodyMoveExpectedDirectoryNoReplace(t *testing.T) {
 		}
 	})
 	t.Run("destination substitution restore collision", func(t *testing.T) {
+		t.Parallel()
 		fixtureRoot, fixtureParent, held := moveFixture(t, "collision")
 		if err := os.WriteFile(filepath.Join(fixtureRoot, "collision", "original"), []byte("original"), 0o600); err != nil {
 			t.Fatal(err)

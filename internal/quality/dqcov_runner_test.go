@@ -25,7 +25,8 @@ func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
 	}
 }
 
-func TestDqCovRunCoverageWithOptionsUsesSelectedPackageScope(t *testing.T) {
+//nolint:paralleltest // dqCovSetGoEnv changes process-wide fake-go controls for this subprocess fixture.
+func TestRunCoverageUsesSelectedPackageScope(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	commandLog := filepath.Join(module, "go.log")
@@ -45,12 +46,14 @@ func TestDqCovRunCoverageWithOptionsUsesSelectedPackageScope(t *testing.T) {
 	}
 }
 
-func TestDqCovRunCoverageWithOptionsRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
+//nolint:paralleltest // nested cases use dqCovSetGoEnv to change process-wide fake-go controls.
+func TestRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
 	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
 		for name, options := range map[string]RunOptions{
 			"ordinary": {GoTestPackages: []string{pattern}},
 			"sharded":  {GoTestShards: 2, GoShardPackages: []string{"./serial"}, GoTestPackages: []string{pattern}},
 		} {
+			//nolint:paralleltest // dqCovSetGoEnv changes process-wide fake-go controls for each case.
 			t.Run(name+"/"+pattern, func(t *testing.T) {
 				module := t.TempDir()
 				dqCovFakeGo(t, module)
@@ -67,7 +70,8 @@ func TestDqCovRunCoverageWithOptionsRejectsFlagShapedPackagePatternsBeforeSubpro
 	}
 }
 
-func TestDqCovValidateGoCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *testing.T) {
+func TestValidateCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *testing.T) {
+	t.Parallel()
 	if err := ValidateGoCoveragePackagePatterns([]string{"./internal/worktrees", "github.com/sneat-dev/wb/internal/quality"}); err != nil {
 		t.Fatalf("valid package patterns = %v", err)
 	}
@@ -76,7 +80,8 @@ func TestDqCovValidateGoCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *
 	}
 }
 
-func TestDqCovCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
+func TestCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		options RunOptions
@@ -87,6 +92,7 @@ func TestDqCovCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
 		{name: "selected sharded scope", options: RunOptions{GoTestShards: 2, GoShardPackages: []string{"./one"}, GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two (2 process-isolated shards for ./one)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := coverageCommandDescription(tc.options); got != tc.want {
 				t.Fatalf("description = %q, want %q", got, tc.want)
 			}

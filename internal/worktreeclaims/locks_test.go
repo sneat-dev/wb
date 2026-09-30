@@ -20,6 +20,7 @@ func openLockDirectory(t *testing.T) (*os.File, string) {
 	return directory, path
 }
 func TestClaimsOperationLockDescriptorAndRetirement(t *testing.T) {
+	t.Parallel()
 	directory, path := openLockDirectory(t)
 	lock, err := AcquireLockAt(directory, "task", 12345)
 	if err != nil {
@@ -47,6 +48,7 @@ func TestClaimsOperationLockDescriptorAndRetirement(t *testing.T) {
 	}
 }
 func TestClaimsOperationLockInterruptedAndPreserve(t *testing.T) {
+	t.Parallel()
 	directory, path := openLockDirectory(t)
 	if err := os.WriteFile(filepath.Join(path, ".lock"), []byte("operation=task\npid=999999\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -71,6 +73,7 @@ func TestClaimsOperationLockInterruptedAndPreserve(t *testing.T) {
 	}
 }
 func TestClaimsOperationLockIdentityAndMove(t *testing.T) {
+	t.Parallel()
 	directory, path := openLockDirectory(t)
 	source := filepath.Join(path, "source")
 	if err := os.WriteFile(source, []byte("x"), 0600); err != nil {
@@ -112,6 +115,7 @@ func TestClaimsOperationLockIdentityAndMove(t *testing.T) {
 	}
 }
 func TestClaimsWorkLogLockAndRecoveryRead(t *testing.T) {
+	t.Parallel()
 	home := testCanonicalTemp(t)
 	valid := func(s string) bool { return s != "" && !strings.ContainsAny(s, "/\\") && s != ".." }
 	run, err := OpenLockedWorkLogRun(home, "effort", "run", "claim", true, valid)
@@ -150,6 +154,7 @@ func TestClaimsWorkLogLockAndRecoveryRead(t *testing.T) {
 	_ = outbox.Close()
 }
 func TestClaimsCleanupLockAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	root := testCanonicalTemp(t)
 	worktreesRoot := filepath.Join(root, "worktrees")
 	if err := os.MkdirAll(filepath.Join(worktreesRoot, "task"), 0700); err != nil {
@@ -195,6 +200,7 @@ func TestClaimsCleanupLockAndDiagnostics(t *testing.T) {
 	}
 }
 func TestClaimsRepositoryRegistrationLock(t *testing.T) {
+	t.Parallel()
 	directory, _ := openLockDirectory(t)
 	now := time.Now
 	held, err := AcquireRepositoryRegistrationLock(directory, func() error { return nil }, now, time.Sleep, time.Second)

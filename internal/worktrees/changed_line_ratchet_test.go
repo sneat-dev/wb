@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
+//nolint:paralleltest // custodyWorktree sets process-wide WB home environment.
 func TestChangedLineRatchetRepairsFailClosedWhenJournalCannotBeRewritten(t *testing.T) {
 	store := localJournalStore()
 	store.WriteJournal = func(*os.File, string, []byte, os.FileMode) error {
@@ -35,6 +36,7 @@ func TestChangedLineRatchetRepairsFailClosedWhenJournalCannotBeRewritten(t *test
 			},
 		},
 	} {
+		//nolint:paralleltest // custodyWorktree sets process-wide WB home environment.
 		t.Run(tc.name, func(t *testing.T) {
 			worktree := custodyWorktree(t)
 			first := LocalWorkLogEvent{ID: "stable", Type: LocalEventHandoff, At: time.Unix(100, 0).UTC(), Message: "stable"}

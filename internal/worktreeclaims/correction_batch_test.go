@@ -99,9 +99,11 @@ func correctionFixture(t *testing.T, failure string) (CorrectionPorts, Correctio
 }
 
 func TestCorrectionOperationFaultBoundaries(t *testing.T) {
+	t.Parallel()
 	stages := []string{"open-run", "lock", "open-claims", "read-claim", "open-corrections", "appeared", "read-existing", "write-correction", "project-after", "open-outbox", "write-outbox", "success"}
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			ports, options := correctionFixture(t, stage)
 			result, err := ports.CorrectExecutionIdentity("home", options)
 			if stage == "success" {
@@ -116,6 +118,7 @@ func TestCorrectionOperationFaultBoundaries(t *testing.T) {
 }
 
 func TestCorrectionReadAndProjectionFaultBoundaries(t *testing.T) {
+	t.Parallel()
 	ports, options := correctionFixture(t, "")
 	if _, err := ports.CurrentExecutionIdentity("home", Claim{EffortID: "effort", RunID: "run", ClaimID: testCorrectionClaimID}); err != nil {
 		t.Fatal(err)
@@ -130,6 +133,7 @@ func TestCorrectionReadAndProjectionFaultBoundaries(t *testing.T) {
 	}
 	for _, stage := range []string{"open", "names", "read", "no-field", "bad-model", "bad-route", "fork"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			p, _ := correctionFixture(t, "")
 			event := IdentityCorrection{Version: 1, Type: "worktree.execution_identity_corrected", CorrectionID: "event", ClaimID: testCorrectionClaimID, Sequence: 1, At: time.Unix(1, 0).UTC(), Actor: "actor", Reason: "reason", Model: options.Model}
 			if stage == "no-field" {
