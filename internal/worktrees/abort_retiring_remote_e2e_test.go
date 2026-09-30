@@ -10,41 +10,10 @@ import (
 	"testing"
 )
 
-func strandedDiscardedAbort(t *testing.T, fixture *gitFixture, task string) lifecycleBacklogRecord {
-	t.Helper()
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := created[0]
-	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "work.txt"), []byte("retained work\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, result.WorktreeDir, "add", "work.txt")
-	gitTest(t, result.WorktreeDir, "commit", "-m", "retained work")
-	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
-	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
-	if err := sealDiscardedWorkLogAfterAbsorbedByProof(fixture.home, result.WorktreeDir, head, nil); err != nil {
-		t.Fatal(err)
-	}
-	record := newLifecycleBacklogRecord(fixture.projectsRoot, ListResult{
-		Task: task, Repository: "acme/app", CanonicalDir: fixture.canonical,
-		WorktreesRoot: filepath.Join(fixture.canonical, ".worktrees"), WorktreeDir: result.WorktreeDir,
-		Branch: result.Branch, Base: "main", HeadSHA: head, RemoteHeadSHA: head, Local: true,
-	}, string(AbortDiscarded))
-	if err := persistLifecycleBacklog(fixture.home, &record, lifecycleStageRetiringRemote); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "worktree", "remove", "--force", result.WorktreeDir)
-	return record
-}
-
 //nolint:paralleltest // native Git fixtures configure process-wide Git and WB environment.
 func TestE2EAbortDiscardedResumesRetiringRemoteUnderExactLease(t *testing.T) {
 	fixture := newGitFixture(t)
-	record := strandedDiscardedAbort(t, fixture, "abort-retiring-remote")
+	record := strandAtRetiringRemoteDisposition(t, fixture, "abort-retiring-remote", string(AbortDiscarded))
 	results, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: record.Task,
 		Disposition: AbortDiscarded, DeleteRemote: true, Apply: true,
@@ -63,7 +32,7 @@ func TestE2EAbortDiscardedResumesRetiringRemoteUnderExactLease(t *testing.T) {
 //nolint:paralleltest // native Git fixtures configure process-wide Git and WB environment.
 func TestE2EAbortDiscardedRefusesAdvancedRetiringRemote(t *testing.T) {
 	fixture := newGitFixture(t)
-	record := strandedDiscardedAbort(t, fixture, "abort-retiring-advanced")
+	record := strandAtRetiringRemoteDisposition(t, fixture, "abort-retiring-advanced", string(AbortDiscarded))
 	gitTest(t, fixture.canonical, "fetch", "origin", record.Branch)
 	gitTest(t, fixture.canonical, "branch", "-f", "advanced-abort-probe", "FETCH_HEAD")
 	worktree := filepath.Join(t.TempDir(), "advance")

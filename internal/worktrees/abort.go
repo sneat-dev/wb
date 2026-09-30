@@ -129,6 +129,10 @@ type AbortResult struct {
 // present) are retained in the private Work Log archive and the archive/outbox
 // is durable.
 func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
+	return abortWithPorts(ctx, options, productionAbortPorts())
+}
+
+func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts) ([]AbortResult, error) {
 	projectsRoot, task, base, _, err := normalizeListOptions(ListOptions{ProjectsRoot: options.ProjectsRoot, Task: options.Task, Base: options.Base})
 	if err != nil {
 		return nil, err
@@ -171,7 +175,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	if strings.TrimSpace(options.ClaimID) != "" || strings.TrimSpace(options.Actor) != "" || strings.TrimSpace(options.Reason) != "" {
 		return nil, fmt.Errorf("--claim, --actor, and --reason are valid only with the orphaned disposition")
 	}
-	resolution, err := wbhome.Resolve(projectsRoot)
+	resolution, err := ports.resolve(projectsRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -186,11 +190,11 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		// place, while the durable backlog is still authoritative for retiring
 		// the exact branch. Include those physical roots even though no live
 		// task remains for List to discover.
-		localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot, "")
+		localLayouts, _ := ports.discoverLocal(ctx, projectsRoot, "")
 		for _, layout := range localLayouts {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
-		configuredLayouts, configErr := appendConfiguredSharedWorktreesLayout(nil)
+		configuredLayouts, configErr := ports.configuredLayouts(nil)
 		if configErr != nil {
 			return nil, configErr
 		}
@@ -198,7 +202,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
 		var quarantined []LifecycleBacklogQuarantine
-		backlog, quarantined, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
+		backlog, quarantined, err = ports.loadBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
 		if err != nil {
 			return nil, err
 		}
@@ -208,7 +212,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// and `wb worktree gc` names abort as the way to retire one. Reading the
 	// inventory without it would make the named command fail on the exact
 	// shape it was named for.
-	listed, err := ListWithDiagnostics(ctx, ListOptions{
+	listed, err := ports.list(ctx, ListOptions{
 		ProjectsRoot: projectsRoot, Task: task, Base: base, IncludeDetached: true,
 		AbsorbedBy: options.AbsorbedBy, GitHub: options.AbsorbedBy != "",
 	})
@@ -217,7 +221,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	}
 	if len(listed.Results) == 0 && len(backlog) == 0 {
 		if options.Disposition == AbortDiscarded {
-			reservationResults, found, reservationErr := abortPreApplyRenameReservations(resolution, task, options)
+			reservationResults, found, reservationErr := ports.reservations(resolution, task, options)
 			if reservationErr != nil {
 				return reservationResults, reservationErr
 			}
@@ -288,7 +292,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 				continue
 			}
 			if results[i].Eligible {
-				recovery, workLogErr := preflightAbortWorkLog(resolution.Write.Home, options, results[i].ListResult)
+				recovery, workLogErr := ports.preflightWorkLog(resolution.Write.Home, options, results[i].ListResult)
 				if workLogErr != nil {
 					results[i].Eligible = false
 					results[i].Reason = "preflight aborted Work Log: " + workLogErr.Error()
@@ -296,7 +300,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 				}
 				results[i].WorkLogRecoveryPlanned = recovery
 			}
-			evidence, captureErr := dirtyWorktreeEvidence(ctx, results[i].WorktreeDir)
+			evidence, captureErr := ports.dirtyEvidence(ctx, results[i].WorktreeDir)
 			if captureErr != nil {
 				results[i].Eligible = false
 				results[i].Reason = captureErr.Error()
@@ -319,7 +323,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		if abortRepositoryExcludedByFilter(filter, record.Repository, record.WorktreeDir) {
 			continue
 		}
-		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, record, options.DeleteRemote); err != nil {
+		if err := ports.resumeBacklog(ctx, resolution.Write.Home, record, options.DeleteRemote); err != nil {
 			return results, err
 		}
 		for resultIndex := range results {
@@ -347,7 +351,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return results, nil
 	}
 	lockRoot := lifecycleTaskLockRoot(resolution.Write.Home, abortResultLayout(resolution, results[0].ListResult))
-	taskHandle, err := acquireCleanupTaskAtOrCreate(lockRoot, results[0].Task)
+	taskHandle, err := ports.acquireTask(lockRoot, results[0].Task)
 	if err != nil {
 		return results, err
 	}
@@ -363,7 +367,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		if results[i].Excluded {
 			continue
 		}
-		refreshed, remoteHead, dirty, recovery, preflightErr := preflightAbortRepository(ctx, projectsRoot, options, taskHandle, results[i], resolution.Write.Home)
+		refreshed, remoteHead, dirty, recovery, preflightErr := ports.preflightMember(ctx, projectsRoot, options, taskHandle, results[i], resolution.Write.Home)
 		if preflightErr != nil {
 			return results, preflightErr
 		}
@@ -378,10 +382,10 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		}
 		result := &results[i]
 		if options.Disposition == AbortDiscarded {
-			if err := applyDiscardedAbort(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
+			if err := ports.applyDiscarded(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err
 			}
-		} else if err := transferWorkLogClaim(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor, options.SuccessorIdentity); err != nil {
+		} else if err := ports.transferWorkLog(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor, options.SuccessorIdentity); err != nil {
 			return results, fmt.Errorf("transfer resumable work log for %s: %w", result.Repository, err)
 		}
 		result.Applied = true
@@ -497,255 +501,6 @@ func preApplyReservationShellOnly(task *cleanupTaskHandle) error {
 		return fmt.Errorf("pre-apply reservation task shell contains %s; preserve it for explicit recovery", entry.Name())
 	}
 	return nil
-}
-
-func preflightAbortRepository(
-	ctx context.Context,
-	projectsRoot string,
-	options AbortOptions,
-	task *cleanupTaskHandle,
-	result AbortResult,
-	home string,
-) (ListResult, string, *DirtyWorktreeEvidence, bool, error) {
-	worktree, err := openCleanupWorktree(task, CleanupResult{ListResult: result.ListResult})
-	if err != nil {
-		return ListResult{}, "", nil, false, err
-	}
-	defer worktree.close()
-	if err := worktree.validate(); err != nil {
-		return ListResult{}, "", nil, false, err
-	}
-	refreshed, err := inspectLifecycleWorktree(
-		ctx,
-		projectsRoot,
-		home,
-		wbhome.Layout{WorktreesRoot: result.WorktreesRoot, Local: result.Local},
-		result.Task,
-		result.WorktreeDir,
-		result.Base,
-		options.AbsorbedBy,
-		options.AbsorbedBy != "",
-		false,
-		result.External,
-		inspectPolicy{includeDetached: true},
-	)
-	if err != nil {
-		return ListResult{}, "", nil, false, fmt.Errorf("preflight abort %s: %w", result.Repository, err)
-	}
-	if err := worktree.validate(); err != nil {
-		return ListResult{}, "", nil, false, err
-	}
-	if refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch || refreshed.Repository != result.Repository {
-		return ListResult{}, "", nil, false, fmt.Errorf("abort safety changed for %s: checkout identity or branch head moved", result.Repository)
-	}
-	if err := absorbedAbortSafety(result.ListResult, refreshed, options.AbsorbedBy); err != nil {
-		return ListResult{}, "", nil, false, fmt.Errorf("abort safety changed for %s: %w", result.Repository, err)
-	}
-	canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
-	if err != nil {
-		return ListResult{}, "", nil, false, fmt.Errorf("open abort canonical repository %s: %w", refreshed.CanonicalDir, err)
-	}
-	defer canonical.close()
-	if err := canonical.validate(); err != nil {
-		return ListResult{}, "", nil, false, err
-	}
-	remoteHead := ""
-	if options.Disposition == AbortDiscarded && refreshed.Branch != "" {
-		remoteHead, err = remoteBranchHead(ctx, refreshed.CanonicalDir, refreshed.Branch)
-		if err != nil {
-			return ListResult{}, "", nil, false, fmt.Errorf("inspect remote branch before discarding %s: %w", refreshed.Repository, err)
-		}
-		if remoteHead != "" && remoteHead != refreshed.HeadSHA {
-			return ListResult{}, "", nil, false, fmt.Errorf("refuse to discard %s: origin/%s is %s, expected exact local head %s", refreshed.Repository, refreshed.Branch, remoteHead, refreshed.HeadSHA)
-		}
-	}
-	recovery, err := preflightAbortWorkLog(home, options, refreshed)
-	if err != nil {
-		return ListResult{}, "", nil, false, fmt.Errorf("preflight aborted Work Log for %s: %w", refreshed.Repository, err)
-	}
-	var dirty *DirtyWorktreeEvidence
-	if options.Disposition == AbortDiscarded {
-		evidence, err := dirtyWorktreeEvidence(ctx, refreshed.WorktreeDir)
-		if err != nil {
-			return ListResult{}, "", nil, false, fmt.Errorf("capture dirty worktree evidence for %s: %w", refreshed.Repository, err)
-		}
-		dirty = &evidence
-		if result.DirtyCapture != nil && !dirtyCaptureMatches(*result.DirtyCapture, evidence) {
-			return ListResult{}, "", nil, false, dirtyCaptureChangedError(*result.DirtyCapture, evidence)
-		}
-	}
-	return refreshed, remoteHead, dirty, recovery, nil
-}
-
-func applyDiscardedAbort(
-	ctx context.Context,
-	projectsRoot string,
-	options AbortOptions,
-	task *cleanupTaskHandle,
-	home string,
-	result *AbortResult,
-) error {
-	worktree, err := openCleanupWorktree(task, CleanupResult{ListResult: result.ListResult})
-	if err != nil {
-		return err
-	}
-	defer worktree.close()
-	if options.beforeAbortRemoval != nil {
-		options.beforeAbortRemoval(result.WorktreeDir)
-	}
-	if err := worktree.validate(); err != nil {
-		return err
-	}
-	// This is deliberately at the last destructive boundary. A dirty checkout
-	// is removable only after captureAndPersistDirtyWorktree has retained the
-	// exact bytes and the Work Log seal below is durable; --force is then
-	// required because Git's ordinary remove refuses any dirty checkout.
-	refreshed, err := inspectLifecycleWorktree(
-		ctx,
-		projectsRoot,
-		home,
-		wbhome.Layout{WorktreesRoot: result.WorktreesRoot, Local: result.Local},
-		result.Task,
-		result.WorktreeDir,
-		result.Base,
-		options.AbsorbedBy,
-		options.AbsorbedBy != "",
-		false,
-		result.External,
-		inspectPolicy{includeDetached: true},
-	)
-	if err != nil {
-		return fmt.Errorf("recheck discarded worktree %s: %w", result.Repository, err)
-	}
-	if refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch {
-		return fmt.Errorf("abort safety changed for %s immediately before removal: branch head moved", result.Repository)
-	}
-	if err := absorbedAbortSafety(result.ListResult, refreshed, options.AbsorbedBy); err != nil {
-		return fmt.Errorf("abort safety changed for %s immediately before removal: %w", result.Repository, err)
-	}
-	if err := worktree.validate(); err != nil {
-		return err
-	}
-	remoteHead := ""
-	if refreshed.Branch != "" {
-		remoteHead, err = remoteBranchHead(ctx, refreshed.CanonicalDir, refreshed.Branch)
-		if err != nil {
-			return fmt.Errorf("recheck remote branch before discarding %s: %w", refreshed.Repository, err)
-		}
-	}
-	if remoteHead != result.RemoteHeadSHA || (remoteHead != "" && remoteHead != refreshed.HeadSHA) {
-		return fmt.Errorf("abort safety changed for %s: remote branch moved from %q to %q", refreshed.Repository, result.RemoteHeadSHA, remoteHead)
-	}
-	canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
-	if err != nil {
-		return fmt.Errorf("open abort canonical repository %s: %w", refreshed.CanonicalDir, err)
-	}
-	defer canonical.close()
-	if err := canonical.validate(); err != nil {
-		return err
-	}
-	observed, captureErr := dirtyWorktreeEvidence(ctx, refreshed.WorktreeDir)
-	if captureErr != nil {
-		return fmt.Errorf("inspect dirty worktree for %s before discard: %w", result.Repository, captureErr)
-	}
-	if result.DirtyCapture != nil && !dirtyCaptureMatches(*result.DirtyCapture, observed) {
-		return dirtyCaptureChangedError(*result.DirtyCapture, observed)
-	}
-	if !refreshed.Clean {
-		dirty, captureErr := captureAndPersistDirtyWorktree(ctx, home, refreshed.WorktreeDir, result.DirtyCapture)
-		if captureErr != nil {
-			return fmt.Errorf("capture dirty worktree for %s before discard: %w", result.Repository, captureErr)
-		}
-		result.DirtyCapture = dirty
-	} else {
-		result.DirtyCapture = nil
-	}
-	if result.WorkLogRecoveryPlanned {
-		if err := recoverLegacyMissingClaimForAbort(home, options, refreshed); err != nil {
-			return fmt.Errorf("recover legacy missing Work Log claim for %s: %w", refreshed.Repository, err)
-		}
-		result.WorkLogRecovered = true
-	}
-	// The private archive/outbox is durable before remote or local Git state
-	// is retired. A failed later step is therefore a visible cleanup backlog,
-	// never an evidence-free disappearance.
-	//
-	// This function (applyDiscardedAbort) only ever runs for
-	// options.Disposition == AbortDiscarded. A worktree may already have an
-	// immutable "landed" terminal from an earlier `wb worktree log finalize
-	// --apply` whose branch was then rebased onto a moved target and landed
-	// as a merge commit (S63): --absorbed-by's proof above already verified
-	// that exact landing, so sealDiscardedWorkLogAfterAbsorbedByProof composes
-	// with the same additive authorization cleanup uses instead of refusing.
-	// A worktree with no existing terminal (the ordinary abort case) is
-	// unaffected: its first, ordinary seal attempt succeeds immediately.
-	if err := sealDiscardedWorkLogAfterAbsorbedByProof(home, refreshed.WorktreeDir, refreshed.HeadSHA, result.DirtyCapture); err != nil {
-		return fmt.Errorf("seal discarded work log for %s: %w", refreshed.Repository, err)
-	}
-	backlogRecord := newLifecycleBacklogRecord(projectsRoot, refreshed, string(AbortDiscarded))
-	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageSealed); err != nil {
-		return err
-	}
-	result.BacklogID = backlogRecord.ID
-	if remoteHead != "" {
-		if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageRetiringRemote); err != nil {
-			return err
-		}
-		if err := worktree.validate(); err != nil {
-			return err
-		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir,
-			"push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
-			return fmt.Errorf("delete discarded remote branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
-		}
-		result.RemoteDeleted = true
-		if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageRemoteRetired); err != nil {
-			return err
-		}
-	}
-	if err := worktree.validate(); err != nil {
-		return err
-	}
-	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageRemovingWorktree); err != nil {
-		return err
-	}
-	if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir,
-		"worktree", "remove", "--force", refreshed.WorktreeDir); err != nil {
-		return fmt.Errorf("remove discarded worktree %s: %w", refreshed.WorktreeDir, err)
-	}
-	result.WorktreeGone = true
-	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageWorktreeRemoved); err != nil {
-		return err
-	}
-	if options.afterAbortWorktreeRemoval != nil {
-		if err := options.afterAbortWorktreeRemoval(refreshed.WorktreeDir); err != nil {
-			return fmt.Errorf("after discarded worktree removal for %s: %w", refreshed.Repository, err)
-		}
-	}
-	if err := task.validate(); err != nil {
-		return err
-	}
-	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
-		return err
-	}
-	// A detached checkout has no ref of its own; removing the checkout is the
-	// whole of its retirement.
-	if refreshed.Branch != "" {
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-			return fmt.Errorf("delete discarded branch %s: %w", refreshed.Branch, err)
-		}
-		result.BranchDeleted = true
-	}
-	if refreshed.External {
-		owner, repository, splitErr := splitRepository(refreshed.Repository)
-		if splitErr != nil {
-			return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
-		}
-		if err := removeAdoptedRegistration(task, owner, repository); err != nil {
-			return err
-		}
-	}
-	return persistLifecycleBacklog(home, &backlogRecord, lifecycleStageComplete)
 }
 
 func (d AbortDisposition) String() string { return strings.TrimSpace(string(d)) }
