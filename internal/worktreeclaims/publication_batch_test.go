@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,9 @@ func TestPublicationClaimStageReceipts(t *testing.T) {
 				return nil
 			}
 			ports := PublicationPorts{
+				ReadClaimAt:         func(*os.File, string) (Claim, error) { return Claim{}, os.ErrNotExist },
+				ReadClaimNames:      func(*os.File) ([]string, error) { return nil, nil },
+				CorroborateExisting: func(Claim) error { return nil },
 				OpenPrivateChild: func(_ *os.File, name string, _ bool) (*os.File, error) {
 					if err := step("open-claims"); err != nil {
 						return nil, err
@@ -425,5 +429,162 @@ func TestHistoricalInspectionPorts(t *testing.T) {
 		} else if !errors.Is(err, errStrict) {
 			t.Fatalf("%s err=%v", kind, err)
 		}
+	}
+}
+
+func TestPublicationRetryUsesCorroboratedAuthority(t *testing.T) {
+	directory := testDirectory(t)
+	old := Claim{Version: 2, EffortID: "effort", RunID: "run", ClaimID: "claim", Worktree: "worktree", Model: "unknown", RecordedAt: time.Unix(100, 0).UTC(), WBSessionID: "original"}
+	requested := old
+	requested.RecordedAt = time.Unix(200, 0).UTC()
+	requested.WBSessionID = "retry"
+	if !SamePublicationRequest(old, requested, "") {
+		t.Fatal("same request refused")
+	}
+	if SamePublicationRequest(old, requested, "retry") {
+		t.Fatal("different caller-selected session accepted")
+	}
+	altered := old
+	altered.Model = "different"
+	if SamePublicationRequest(altered, requested, "") {
+		t.Fatal("different model accepted")
+	}
+	altered = old
+	altered.RecordedAt = time.Time{}
+	if SamePublicationRequest(altered, requested, "") {
+		t.Fatal("undated claim accepted")
+	}
+	existing := old
+	readError := error(nil)
+	corroborateError := error(nil)
+	writeError := error(nil)
+	readCount := 0
+	claimWrites := 0
+	eventAt := time.Time{}
+	ports := PublicationPorts{
+		ReadClaimNames:   func(*os.File) ([]string, error) { return nil, nil },
+		OpenPrivateChild: func(*os.File, string, bool) (*os.File, error) { return os.Open(directory.Name()) },
+		ReadClaimAt: func(*os.File, string) (Claim, error) {
+			readCount++
+			if readError != nil {
+				return Claim{}, readError
+			}
+			return existing, nil
+		},
+		CorroborateExisting: func(Claim) error { return corroborateError },
+		WriteJSONImmutableAt: func(_ *os.File, name string, value any, _ bool) error {
+			if name == "claim.json" {
+				claimWrites++
+				return writeError
+			}
+			eventAt = value.(ClaimPublicEvent).At
+			return nil
+		},
+		EnsureRunIndex: func(*os.File, string, string) error { return nil }, WriteProjection: func(string, Projection) error { return nil }, WriteCreationJournal: func(claim Claim) error {
+			if !claim.RecordedAt.Equal(old.RecordedAt) {
+				t.Fatalf("journal timestamp %s", claim.RecordedAt)
+			}
+			return nil
+		},
+		OpenOutbox: func(string, string, bool) (*os.File, error) { return os.Open(directory.Name()) },
+	}
+	receipt, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{})
+	if err != nil || claimWrites != 0 || !receipt.Claim.RecordedAt.Equal(old.RecordedAt) || !eventAt.Equal(old.RecordedAt) {
+		t.Fatalf("receipt=%+v writes=%d eventAt=%s err=%v", receipt, claimWrites, eventAt, err)
+	}
+	existing.Model = "different"
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("changed identity accepted")
+	}
+	existing = old
+	corroborateError = errors.New("git mismatch")
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("uncorroborated claim accepted")
+	}
+	corroborateError = nil
+	readError = errors.New("corrupt record")
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("unreadable claim accepted")
+	}
+	readError = os.ErrNotExist
+	writeError = errors.New("no replace")
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("write failure without authority accepted")
+	}
+	readError = nil
+	readCount = 0
+	ports.ReadClaimAt = func(*os.File, string) (Claim, error) {
+		readCount++
+		if readCount == 1 {
+			return Claim{}, os.ErrNotExist
+		}
+		return existing, nil
+	}
+	receipt, err = ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{})
+	if err != nil || !receipt.Claim.RecordedAt.Equal(old.RecordedAt) {
+		t.Fatalf("concurrent first writer receipt=%+v err=%v", receipt, err)
+	}
+	existing.Model = "changed"
+	readCount = 0
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("conflicting concurrent first writer accepted")
+	}
+	existing = old
+	readCount = 0
+	corroborateError = errors.New("git mismatch")
+	if _, err := ports.PublishClaim("home", directory, "runpath", requested, PublicationHooks{}); err == nil {
+		t.Fatal("uncorroborated concurrent claim accepted")
+	}
+}
+
+func TestPublicationRejectsConflictingRunClaims(t *testing.T) {
+	directory := testDirectory(t)
+	requested := Claim{ClaimID: strings.Repeat("b", 64), Worktree: "/checkout", RecordedAt: time.Unix(200, 0).UTC()}
+	otherID := strings.Repeat("a", 64)
+	names := []string{otherID + ".json"}
+	listErr := error(nil)
+	readErr := error(nil)
+	other := Claim{ClaimID: otherID, Worktree: requested.Worktree}
+	ports := PublicationPorts{
+		OpenPrivateChild: func(*os.File, string, bool) (*os.File, error) { return os.Open(directory.Name()) },
+		ReadClaimNames:   func(*os.File) ([]string, error) { return names, listErr },
+		ReadClaimAt: func(_ *os.File, id string) (Claim, error) {
+			if id == requested.ClaimID {
+				return Claim{}, os.ErrNotExist
+			}
+			return other, readErr
+		},
+		WriteJSONImmutableAt: func(*os.File, string, any, bool) error { return nil },
+		EnsureRunIndex:       func(*os.File, string, string) error { return nil },
+		WriteProjection:      func(string, Projection) error { return nil },
+		WriteCreationJournal: func(Claim) error { return nil },
+		OpenOutbox:           func(string, string, bool) (*os.File, error) { return os.Open(directory.Name()) },
+	}
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); err == nil {
+		t.Fatal("same worktree accepted under different claim ID")
+	}
+	listErr = errors.New("list failure")
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); !errors.Is(err, listErr) {
+		t.Fatalf("list err=%v", err)
+	}
+	listErr = nil
+	names = []string{"." + otherID + ".json.tmp-scratch", "unsafe.json"}
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); err == nil {
+		t.Fatal("unsafe entry accepted")
+	}
+	names = []string{otherID + ".json"}
+	readErr = errors.New("read failure")
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); !errors.Is(err, readErr) {
+		t.Fatalf("read err=%v", err)
+	}
+	readErr = nil
+	other.ClaimID = "forged-identity"
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); err == nil {
+		t.Fatal("mismatched claim filename and identity accepted")
+	}
+	other.ClaimID = otherID
+	other.Worktree = "/other-checkout"
+	if _, err := ports.PublishClaim("home", directory, "run", requested, PublicationHooks{}); err != nil {
+		t.Fatalf("other checkout blocked: %v", err)
 	}
 }
