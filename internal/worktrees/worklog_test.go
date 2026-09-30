@@ -19,12 +19,12 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-// TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime pins
+// TestNormalizeHarnessRuntimeMapsKnownPrefixes pins
 // wb#645's review Major 2: AI_AGENT carries a raw, versioned value ("claude-
 // code_2-1-276_agent") that sessionlaunch.NormalizeRuntime rejects outright,
-// so normalizeHarnessRuntime maps a known prefix first and only falls back to
-// NormalizeRuntime's own exact aliases for anything the prefix table misses.
-func TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime(t *testing.T) {
+// so normalizeHarnessRuntime maps known prefixes directly. All accepted
+// NormalizeRuntime aliases use one of those same prefixes.
+func TestNormalizeHarnessRuntimeMapsKnownPrefixes(t *testing.T) {
 	cases := map[string]string{
 		"claude-code_2-1-276_agent": "claude-code",
 		"claude-code":               "claude-code",

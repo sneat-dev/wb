@@ -238,7 +238,7 @@ func TestActiveClaimReadersPreserveImmutableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, projection, claimPath, err := activeWorkLogClaimWithMode(home, worktree, true)
+	claim, projection, claimPath, err := activeClaimPorts().ActiveWorkLogClaimWithMode(home, worktree, true)
 	if err != nil || claim.ClaimID == "" || claimPath == "" || projection.Lifecycle != "active" {
 		t.Fatalf("active claim = %#v, %#v, %q, %v", claim, projection, claimPath, err)
 	}

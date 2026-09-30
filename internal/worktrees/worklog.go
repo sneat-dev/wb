@@ -129,113 +129,19 @@ type ClaimExecutionIdentity struct {
 	Provider string
 }
 
-// workLogProjection is an untrusted pointer. It contains no path, prompt,
-// repository, branch, or model data and is never used without loading and
-// corroborating the immutable private claim.
-type workLogProjection struct {
-	Version   int    `json:"version"`
-	EffortID  string `json:"effort_id"`
-	RunID     string `json:"run_id"`
-	ClaimID   string `json:"claim_id"`
-	Lifecycle string `json:"lifecycle"`
-}
+type workLogProjection = worktreeclaims.Projection
 
-type workLogClaim struct {
-	Version         int                             `json:"version"`
-	EffortID        string                          `json:"effort_id"`
-	RunID           string                          `json:"run_id"`
-	ClaimID         string                          `json:"claim_id"`
-	Task            string                          `json:"task"`
-	Repository      string                          `json:"repository"`
-	Worktree        string                          `json:"worktree"`
-	Branch          string                          `json:"branch"`
-	Base            string                          `json:"base"`
-	BaseSHA         string                          `json:"base_sha"`
-	Lifecycle       string                          `json:"lifecycle"`
-	RecordedAt      time.Time                       `json:"recorded_at"`
-	Initiator       string                          `json:"initiator,omitempty"`
-	AgentID         string                          `json:"agent_id,omitempty"`
-	AgentRuntime    string                          `json:"agent_runtime,omitempty"`
-	Model           string                          `json:"model,omitempty"`
-	ModelProvenance string                          `json:"model_provenance,omitempty"`
-	ModelDeclaredBy string                          `json:"model_declared_by,omitempty"`
-	CLI             string                          `json:"cli,omitempty"`
-	Provider        string                          `json:"provider,omitempty"`
-	TaskSummary     string                          `json:"task_summary,omitempty"`
-	WBSessionID     string                          `json:"wb_session_id,omitempty"`
-	PromptArchive   string                          `json:"prompt_archive,omitempty"` // run-relative
-	PromptDigest    string                          `json:"prompt_sha256,omitempty"`
-	ParentClaimID   string                          `json:"parent_claim_id,omitempty"`
-	AcquiredVia     string                          `json:"acquired_via,omitempty"`
-	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+type workLogClaim = worktreeclaims.Claim
 
-	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
-	// only, read at zero cost from the environment by
-	// internal/provenance.FromEnv, never a prompt or response body. Additive
-	// and omitempty, so an older WB reading this claim sees nothing new and a
-	// claim written before this change decodes with every one of them empty
-	// — no schema version bump was needed for that.
-	//
-	// HarnessSessionID is stable across every subagent one harness session
-	// dispatches, unlike WBSessionID above, which every subagent shares
-	// because it derives from the orchestrator's PID.
-	HarnessSessionID string `json:"harness_session_id,omitempty"`
-	Harness          string `json:"harness,omitempty"`
-	EffortLevel      string `json:"effort_level,omitempty"`
-	// ToolUseID identifies the exact tool call that created this claim, set
-	// by the agent guard's export prefix (internal/agentguard, wb#637) when
-	// this claim was created from a subagent's Bash call.
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	// WBVersion is the wb binary that wrote this claim.
-	WBVersion string `json:"wb_version,omitempty"`
-}
-
-// workLogIdentityCorrection is immutable evidence. Field presence, rather
-// than an empty value convention, makes clearing optional fields auditable.
-type workLogIdentityCorrection struct {
-	Version       int       `json:"version"`
-	Type          string    `json:"type"`
-	CorrectionID  string    `json:"correction_id"`
-	ClaimID       string    `json:"claim_id"`
-	Sequence      int       `json:"sequence"`
-	PredecessorID string    `json:"predecessor_id,omitempty"`
-	At            time.Time `json:"at"`
-	Actor         string    `json:"actor"`
-	Reason        string    `json:"reason"`
-	Initiator     string    `json:"initiator,omitempty"`
-	Model         *string   `json:"model,omitempty"`
-	CLI           *string   `json:"cli,omitempty"`
-	Provider      *string   `json:"provider,omitempty"`
-}
+type workLogIdentityCorrection = worktreeclaims.IdentityCorrection
 
 // ExecutionIdentity is the current, projected view of immutable claim and
 // correction history. CLI/provider are deliberately independent and never
 // inferred from model or one another.
 type ExecutionIdentity = worktreeclaims.ExecutionIdentity
 
-// CorrectExecutionIdentityOptions changes only explicitly selected fields.
-// Nil means leave unchanged; a pointer to "" clears CLI/provider. Model cannot
-// be cleared: use the explicit value "unknown" instead.
-type CorrectExecutionIdentityOptions struct {
-	ProjectsRoot string
-	EffortID     string
-	RunID        string
-	ClaimID      string
-	EventID      string
-	Actor        string
-	Reason       string
-	Initiator    string
-	Model        *string
-	CLI          *string
-	Provider     *string
-}
-
-type ExecutionIdentityCorrectionResult struct {
-	ClaimID      string            `json:"claim_id"`
-	CorrectionID string            `json:"correction_id"`
-	Identity     ExecutionIdentity `json:"identity"`
-	OutboxPath   string            `json:"outbox_path"`
-}
+type CorrectExecutionIdentityOptions = worktreeclaims.CorrectionOptions
+type ExecutionIdentityCorrectionResult = worktreeclaims.CorrectionResult
 
 type workLogPromptMetadata = worktreeclaims.PromptMetadata
 
@@ -767,10 +673,9 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 			claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
 			return WorkLogPublicationOutcome{}, fmt.Errorf("existing active Work Log claim does not match the operation checkout identity")
 		}
-		requestedSummary, summaryErr := NormalizeTaskSummary(options.TaskSummary)
-		if summaryErr != nil {
-			return WorkLogPublicationOutcome{}, summaryErr
-		}
+		// NormalizeOptions already validated this pure summary; only its
+		// whitespace normalization is needed for the comparison.
+		requestedSummary := strings.TrimSpace(options.TaskSummary)
 		if requestedSummary != "" && claim.TaskSummary != requestedSummary {
 			return WorkLogPublicationOutcome{}, errors.New("existing active Work Log claim has a different immutable task summary")
 		}
@@ -812,11 +717,24 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 // walk.
 var findHarnessAncestorForClaim = session.FindHarnessAncestor
 
+type sessionRegistrationPorts struct {
+	pid          func() int
+	findAncestor func(int) (int, string)
+	lookup       func(string, int) (session.Record, bool)
+	register     func(string, session.Record) (session.Record, error)
+}
+
 func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (session.Record, bool) {
+	return autoRegisterSessionFromEnvWithPorts(home, fields, sessionRegistrationPorts{
+		pid: os.Getpid, findAncestor: findHarnessAncestorForClaim, lookup: session.Lookup, register: session.Register,
+	})
+}
+
+func autoRegisterSessionFromEnvWithPorts(home string, fields wbprovenance.Fields, ports sessionRegistrationPorts) (session.Record, bool) {
 	if fields.HarnessSessionID == "" && fields.Harness == "" {
 		return session.Record{}, false
 	}
-	ancestorPID, ancestorRuntime := findHarnessAncestorForClaim(os.Getpid())
+	ancestorPID, ancestorRuntime := ports.findAncestor(ports.pid())
 	if ancestorPID <= 0 {
 		return session.Record{}, false
 	}
@@ -831,7 +749,7 @@ func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (sessio
 	// so a claim created while that PID's session was parked silently took
 	// over the parked row's WBSessionID and overwrote its Runtime/Model with
 	// the new claim's, corrupting a session someone will resume later.
-	if existing, live := session.Lookup(dir, ancestorPID); live {
+	if existing, live := ports.lookup(dir, ancestorPID); live {
 		return existing, true
 	} else if existing.Lifecycle == "parked" || existing.Lifecycle == "resumed" {
 		return session.Record{}, false
@@ -843,7 +761,7 @@ func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (sessio
 	if runtime == "" {
 		runtime = session.Unknown
 	}
-	registered, err := session.Register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown})
+	registered, err := ports.register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown})
 	if err != nil {
 		return session.Record{}, false
 	}
@@ -854,8 +772,8 @@ func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (sessio
 // closed runtime names, or "" when it cannot be told (wb#645 review Major 2).
 // AI_AGENT is not one of those closed names itself — Claude Code's own value
 // has carried a version and role suffix ("claude-code_2-1-276_agent") — so a
-// known prefix is checked first, then sessionlaunch.NormalizeRuntime's own
-// exact aliases as a fallback for anything this prefix table misses. The raw
+// known prefix is checked first. NormalizeRuntime's accepted aliases all have
+// one of these prefixes, so a fallback cannot add another valid runtime. The raw
 // value is never lost: recordWorkLogWithHooks still stores it verbatim in the
 // claim's own Harness field, this function only decides what goes into the
 // session registry's Runtime field, which sessionlaunch's own callers
@@ -872,36 +790,53 @@ func normalizeHarnessRuntime(rawHarness string) string {
 	case strings.HasPrefix(lower, "codex"):
 		return sessionlaunch.RuntimeCodex
 	}
-	if normalized, err := sessionlaunch.NormalizeRuntime("", trimmed); err == nil {
-		return normalized
-	}
 	return ""
 }
 
+type publicationPreparationPorts struct {
+	normalizeOptions    func(string, WorkLogOptions, time.Time) (string, string, error)
+	normalizeSummary    func(string) (string, error)
+	openRun             func(string, string, string, bool) (*os.File, string, error)
+	migrateLegacy       func(*os.File, string, string, string, string) error
+	ensurePromptArchive func(*os.File, WorkLogOptions, time.Time) (string, string, error)
+	autoRegister        func(string, wbprovenance.Fields) (session.Record, bool)
+}
+
+func defaultPublicationPreparationPorts() publicationPreparationPorts {
+	return publicationPreparationPorts{
+		normalizeOptions: normalizeWorkLogOptions, normalizeSummary: NormalizeTaskSummary,
+		openRun: openWorkLogRun, migrateLegacy: migrateLegacySingletonClaim,
+		ensurePromptArchive: ensureOriginalPromptArchive, autoRegister: autoRegisterSessionFromEnv,
+	}
+}
 func recordWorkLogWithHooks(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks) (WorkLogPublicationOutcome, error) {
+	return recordWorkLogWithPreparation(home, task, result, options, hooks, defaultPublicationPreparationPorts())
+}
+
+func recordWorkLogWithPreparation(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks, preparation publicationPreparationPorts) (WorkLogPublicationOutcome, error) {
 	var outcome WorkLogPublicationOutcome
 	now := time.Now().UTC()
-	effort, run, err := normalizeWorkLogOptions(task, options, now)
+	effort, run, err := preparation.normalizeOptions(task, options, now)
 	if err != nil {
 		return outcome, err
 	}
-	taskSummary, err := NormalizeTaskSummary(options.TaskSummary)
+	taskSummary, err := preparation.normalizeSummary(options.TaskSummary)
 	if err != nil {
 		return outcome, err
 	}
 	outcome.EffortID, outcome.RunID = effort, run
 	claimID := workLogClaimID(effort, result)
 	outcome.ClaimID = claimID
-	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
+	runDir, runPath, err := preparation.openRun(home, effort, run, true)
 	if err != nil {
 		return outcome, err
 	}
 	defer func() { _ = runDir.Close() }()
-	if err := migrateLegacySingletonClaim(runDir, runPath, home, effort, run); err != nil {
+	if err := preparation.migrateLegacy(runDir, runPath, home, effort, run); err != nil {
 		return outcome, fmt.Errorf("migrate legacy singleton claim: %w", err)
 	}
 
-	promptArchive, promptDigest, err := ensureOriginalPromptArchive(runDir, options, now)
+	promptArchive, promptDigest, err := preparation.ensurePromptArchive(runDir, options, now)
 	if err != nil {
 		return outcome, err
 	}
@@ -927,7 +862,7 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		// rather than a separate step an agent has to remember. Best-effort:
 		// a registration failure never blocks the claim it would have
 		// enriched.
-		if registered, ok := autoRegisterSessionFromEnv(home, fields); ok {
+		if registered, ok := preparation.autoRegister(home, fields); ok {
 			sessionID = registered.WBSessionID
 		}
 	}
@@ -948,92 +883,47 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		AcquiredVia:      strings.TrimSpace(options.AcquiredVia),
 		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
 		EffortLevel: fields.EffortLevel, ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion}
-	claims, err := openPrivateChild(runDir, "claims", true)
-	if err != nil {
-		return outcome, err
+	ports := worktreeclaims.PublicationPorts{
+		OpenPrivateChild:     openPrivateChild,
+		WriteJSONImmutableAt: writeJSONImmutableAt,
+		EnsureRunIndex:       ensureWorkLogRunIndex,
+		WriteProjection:      writeWorkLogProjection,
+		WriteCreationJournal: func(published worktreeclaims.Claim) error {
+			return writeCreationJournal(effort, run, claimID, result, options, now)
+		},
+		OpenOutbox: openWorkLogOutbox,
 	}
-	defer func() { _ = claims.Close() }()
-	claimName := claimID + ".json"
-	if err := writeJSONImmutableAt(claims, claimName, claim, true); err != nil {
-		return outcome, fmt.Errorf("write immutable work-log claim: %w", err)
+	receipt, err := ports.PublishClaim(home, runDir, runPath, claim, worktreeclaims.PublicationHooks{
+		AfterClaim:      hooks.afterClaim,
+		AfterProjection: hooks.afterProjection,
+	})
+	outcome.ClaimPath = receipt.ClaimPath
+	outcome.ClaimWritten = receipt.ClaimWritten
+	outcome.ProjectionWritten = receipt.ProjectionWritten
+	outcome.OutboxWritten = receipt.OutboxWritten
+	if receipt.ClaimWritten {
+		outcome.claim = claim
 	}
-	outcome.ClaimPath = filepath.Join(runPath, "claims", claimName)
-	outcome.ClaimWritten = true
-	outcome.claim = claim
-	if hooks.afterClaim != nil {
-		if err := hooks.afterClaim(); err != nil {
-			return outcome, fmt.Errorf("after immutable work-log claim publication: %w", err)
-		}
-	}
-	if err := ensureWorkLogRunIndex(runDir, effort, run); err != nil {
-		return outcome, err
-	}
-	projection := workLogProjection{Version: 1, EffortID: effort, RunID: run, ClaimID: claimID, Lifecycle: "active"}
-	if err := writeWorkLogProjection(result.WorktreeDir, projection); err != nil {
-		return outcome, err
-	}
-	outcome.ProjectionWritten = true
-	if err := writeCreationJournal(effort, run, claimID, result, options, now); err != nil {
-		return outcome, err
-	}
-	if hooks.afterProjection != nil {
-		if err := hooks.afterProjection(); err != nil {
-			return outcome, fmt.Errorf("after work-log recovery projection publication: %w", err)
-		}
-	}
-	outbox, err := openWorkLogOutbox(home, effort, true)
-	if err != nil {
-		return outcome, err
-	}
-	defer func() { _ = outbox.Close() }()
-	event := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: now, EffortID: effort,
-		RunID: run, ClaimID: claimID, Repository: claim.Repository, Branch: claim.Branch,
-		Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: "active"}
-	if err := writeJSONImmutableAt(outbox, run+"-"+claimID+"-claimed.json", event, true); err != nil {
-		return outcome, err
-	}
-	outcome.OutboxWritten = true
-	return outcome, nil
+	return outcome, err
 }
 
 // activeWorkLogClaim resolves the worktree's untrusted projection through its
 // immutable private claim and live Git identity. A missing projection denotes
 // a legacy pre-Work-Log checkout; every other mismatch is a hard resume error.
+func activeClaimPorts() worktreeclaims.ActiveClaimPorts {
+	return worktreeclaims.ActiveClaimPorts{
+		ReadProjectionForClaim: readWorkLogProjectionForClaim,
+		ReadProjectionReadOnly: readWorkLogProjectionForReadOnlyClaim,
+		Corroborate:            corroborateProjectionWithPrivateClaim,
+		OpenRun:                openWorkLogRun,
+		ReadClaimAt:            readWorkLogClaimAt,
+	}
+}
 func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection, string, error) {
-	return activeWorkLogClaimWithMode(home, worktree, false)
+	return activeClaimPorts().ActiveWorkLogClaim(home, worktree)
 }
-
 func activeWorkLogClaimReadOnly(home, worktree string) (workLogClaim, workLogProjection, string, error) {
-	return activeWorkLogClaimWithMode(home, worktree, true)
-}
-
-func activeWorkLogClaimWithMode(home, worktree string, readOnly bool) (workLogClaim, workLogProjection, string, error) {
-	var projection workLogProjection
-	var err error
-	if readOnly {
-		projection, err = readWorkLogProjectionForReadOnlyClaim(worktree)
-	} else {
-		projection, err = readWorkLogProjectionForClaim(home, worktree)
-	}
-	if err != nil {
-		return workLogClaim{}, workLogProjection{}, "", err
-	}
-	if projection.Lifecycle != "active" {
-		return workLogClaim{}, projection, "", fmt.Errorf("work-log projection is %s, not active", projection.Lifecycle)
-	}
-	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
-		return workLogClaim{}, projection, "", fmt.Errorf("corroborate active work-log claim: %w", err)
-	}
-	runDir, runPath, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return workLogClaim{}, projection, "", err
-	}
-	defer func() { _ = runDir.Close() }()
-	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
-	if err != nil {
-		return workLogClaim{}, projection, "", err
-	}
-	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
+	return activeClaimPorts().ActiveWorkLogClaimReadOnly(home, worktree)
 }
 
 // readWorkLogTerminalRecord resolves the worktree's untrusted projection the
@@ -1086,198 +976,36 @@ func readWorkLogTerminalRecordWithMode(home, worktree string, readOnly bool) (*w
 // claim, so it remains usable after the worktree was terminalized or removed.
 // The caller supplies a stable event ID; retrying it is idempotent, including
 // recovery from a crash after the correction and before its outbox receipt.
+func correctionPorts() worktreeclaims.CorrectionPorts {
+	return worktreeclaims.CorrectionPorts{
+		OpenRun:              openWorkLogRun,
+		LockClaim:            lockClaim,
+		OpenPrivateChild:     openPrivateChild,
+		ReadJSONAt:           readJSONAt,
+		WriteJSONImmutableAt: writeJSONImmutableAt,
+		OpenOutbox:           openWorkLogOutbox,
+		ValidSafeSegment:     validSafeSegment,
+		ReadNames:            func(directory *os.File) ([]string, error) { return directory.Readdirnames(-1) },
+		Now:                  time.Now,
+	}
+}
+
 func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (ExecutionIdentityCorrectionResult, error) {
-	var result ExecutionIdentityCorrectionResult
 	if err := validateCorrectionIdentity(options); err != nil {
-		return result, err
+		return ExecutionIdentityCorrectionResult{}, err
 	}
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
-		return result, err
+		return ExecutionIdentityCorrectionResult{}, err
 	}
-	runDir, _, err := openWorkLogRun(home, options.EffortID, options.RunID, false)
-	if err != nil {
-		return result, fmt.Errorf("open correction Work Log run: %w", err)
-	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, options.ClaimID)
-	if err != nil {
-		return result, fmt.Errorf("lock correction claim: %w", err)
-	}
-	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return result, fmt.Errorf("open correction claims: %w", err)
-	}
-	var claim workLogClaim
-	err = readJSONAt(claims, options.ClaimID+".json", &claim)
-	_ = claims.Close()
-	if err != nil {
-		return result, fmt.Errorf("read immutable claim %s: %w", options.ClaimID, err)
-	}
-	if claim.ClaimID != options.ClaimID || claim.EffortID != options.EffortID || claim.RunID != options.RunID || (claim.Version != 1 && claim.Version != 2) {
-		return result, fmt.Errorf("claim does not match the supplied Work Log identity")
-	}
-	identity, corrections, err := projectExecutionIdentity(runDir, claim)
-	if err != nil {
-		return result, fmt.Errorf("project identity before correction: %w", err)
-	}
-	for _, correction := range corrections {
-		if correction.CorrectionID == options.EventID {
-			if !sameCorrectionRequest(correction, options) {
-				return result, fmt.Errorf("correction event ID %q already denotes different immutable evidence", options.EventID)
-			}
-			return writeCorrectionOutbox(home, claim, correction, identity)
-		}
-	}
-	previous := ""
-	if len(corrections) != 0 {
-		previous = corrections[len(corrections)-1].CorrectionID
-	}
-	event := workLogIdentityCorrection{Version: 1, Type: "worktree.execution_identity_corrected", CorrectionID: options.EventID,
-		ClaimID: claim.ClaimID, Sequence: len(corrections) + 1, PredecessorID: previous, At: time.Now().UTC(),
-		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), Initiator: strings.TrimSpace(options.Initiator), Model: normalizedPointer(options.Model), CLI: normalizedPointer(options.CLI), Provider: normalizedPointer(options.Provider)}
-	correctionsDir, err := openWorkLogCorrections(runDir, claim.ClaimID, true)
-	if err != nil {
-		return result, fmt.Errorf("open correction history: %w", err)
-	}
-	defer func() { _ = correctionsDir.Close() }()
-	name := event.CorrectionID + ".json"
-	if _, readErr := readIdentityCorrection(correctionsDir, name); readErr == nil {
-		return result, fmt.Errorf("correction event ID %q appeared concurrently; retry the exact command", event.CorrectionID)
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return result, readErr
-	} else if err := writeJSONImmutableAt(correctionsDir, name, event, false); err != nil {
-		return result, fmt.Errorf("append immutable execution-identity correction: %w", err)
-	}
-	identity, _, err = projectExecutionIdentity(runDir, claim)
-	if err != nil {
-		return result, fmt.Errorf("project identity after correction: %w", err)
-	}
-	return writeCorrectionOutbox(home, claim, event, identity)
-}
-
-func writeCorrectionOutbox(home string, claim workLogClaim, event workLogIdentityCorrection, identity ExecutionIdentity) (ExecutionIdentityCorrectionResult, error) {
-	var result ExecutionIdentityCorrectionResult
-	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
-	if err != nil {
-		return result, fmt.Errorf("open correction outbox: %w", err)
-	}
-	defer func() { _ = outbox.Close() }()
-	public := workLogPublicEvent{Version: 1, Type: event.Type, At: event.At, EffortID: claim.EffortID,
-		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
-		Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: claim.Lifecycle, CorrectionID: event.CorrectionID}
-	outboxName := claim.RunID + "-" + claim.ClaimID + "-identity-" + event.CorrectionID + ".json"
-	if err := writeJSONImmutableAt(outbox, outboxName, public, true); err != nil {
-		return result, fmt.Errorf("write execution-identity correction outbox receipt: %w", err)
-	}
-	return ExecutionIdentityCorrectionResult{ClaimID: claim.ClaimID, CorrectionID: event.CorrectionID,
-		Identity: identity, OutboxPath: filepath.Join(home, "worklogs", claim.EffortID, "outbox", outboxName)}, nil
-}
-
-func normalizedPointer(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	copy := strings.TrimSpace(*value)
-	return &copy
-}
-
-func sameCorrectionRequest(correction workLogIdentityCorrection, options CorrectExecutionIdentityOptions) bool {
-	return correction.Actor == strings.TrimSpace(options.Actor) && correction.Reason == strings.TrimSpace(options.Reason) && correction.Initiator == strings.TrimSpace(options.Initiator) &&
-		sameStringPointer(correction.Model, normalizedPointer(options.Model)) && sameStringPointer(correction.CLI, normalizedPointer(options.CLI)) && sameStringPointer(correction.Provider, normalizedPointer(options.Provider))
-}
-func sameStringPointer(left, right *string) bool {
-	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
+	return correctionPorts().CorrectExecutionIdentity(home, options)
 }
 
 func openWorkLogCorrections(runDir *os.File, claimID string, create bool) (*os.File, error) {
-	if !validClaimID(claimID) {
-		return nil, fmt.Errorf("invalid correction claim ID")
-	}
-	root, err := openPrivateChild(runDir, "corrections", create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-	return openPrivateChild(root, claimID, create)
+	return correctionPorts().OpenWorkLogCorrections(runDir, claimID, create)
 }
-
-func readIdentityCorrection(directory *os.File, name string) (workLogIdentityCorrection, error) {
-	var correction workLogIdentityCorrection
-	err := readJSONAt(directory, name, &correction)
-	return correction, err
-}
-
-// projectExecutionIdentity proves there is one linear, complete correction
-// chain. It deliberately uses sequence/predecessor, not timestamp ordering.
 func projectExecutionIdentity(runDir *os.File, claim workLogClaim) (ExecutionIdentity, []workLogIdentityCorrection, error) {
-	identity := identityFromClaim(claim)
-	directory, err := openWorkLogCorrections(runDir, claim.ClaimID, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return identity, nil, nil
-	}
-	if err != nil {
-		return ExecutionIdentity{}, nil, err
-	}
-	defer func() { _ = directory.Close() }()
-	names, err := directory.Readdirnames(-1)
-	if err != nil {
-		return ExecutionIdentity{}, nil, err
-	}
-	sort.Strings(names)
-	corrections := make([]workLogIdentityCorrection, 0, len(names))
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".json") || !validSafeSegment(strings.TrimSuffix(name, ".json")) {
-			return ExecutionIdentity{}, nil, fmt.Errorf("malformed execution-identity correction filename %q", name)
-		}
-		correction, err := readIdentityCorrection(directory, name)
-		if err != nil {
-			return ExecutionIdentity{}, nil, err
-		}
-		if correction.Version != 1 || correction.Type != "worktree.execution_identity_corrected" || correction.ClaimID != claim.ClaimID ||
-			correction.CorrectionID != strings.TrimSuffix(name, ".json") || correction.Sequence < 1 || correction.At.IsZero() ||
-			strings.TrimSpace(correction.Actor) == "" || strings.TrimSpace(correction.Reason) == "" {
-			return ExecutionIdentity{}, nil, fmt.Errorf("malformed execution-identity correction %q", name)
-		}
-		if correction.Model == nil && correction.CLI == nil && correction.Provider == nil {
-			return ExecutionIdentity{}, nil, fmt.Errorf("execution-identity correction %q changes no field", name)
-		}
-		if correction.Model != nil && (strings.TrimSpace(*correction.Model) == "" || !validExecutionIdentifier(*correction.Model, true)) {
-			return ExecutionIdentity{}, nil, fmt.Errorf("execution-identity correction %q has invalid model", name)
-		}
-		for _, value := range []*string{correction.CLI, correction.Provider} {
-			if value != nil && *value != "" && !validExecutionIdentifier(*value, false) {
-				return ExecutionIdentity{}, nil, fmt.Errorf("execution-identity correction %q has invalid route", name)
-			}
-		}
-		corrections = append(corrections, correction)
-	}
-	sort.Slice(corrections, func(i, j int) bool { return corrections[i].Sequence < corrections[j].Sequence })
-	previous := ""
-	for index, correction := range corrections {
-		if correction.Sequence != index+1 || correction.PredecessorID != previous {
-			return ExecutionIdentity{}, nil, fmt.Errorf("execution-identity correction chain is forked, incomplete, or cyclic")
-		}
-		if correction.Model != nil {
-			identity.Model = *correction.Model
-			identity.ModelDeclaredBy = correction.Actor
-			if identity.Model == "unknown" {
-				identity.ModelProvenance = modelProvenanceUnknown
-			} else {
-				identity.ModelProvenance = modelProvenanceCallerDeclared
-			}
-		}
-		if correction.CLI != nil {
-			identity.CLI = *correction.CLI
-		}
-		if correction.Provider != nil {
-			identity.Provider = *correction.Provider
-		}
-		identity.CorrectionIDs = append(identity.CorrectionIDs, correction.CorrectionID)
-		previous = correction.CorrectionID
-	}
-	return identity, corrections, nil
+	return correctionPorts().ProjectExecutionIdentity(runDir, claim)
 }
 
 func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim workLogClaim) error {
@@ -1322,13 +1050,7 @@ func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim w
 }
 
 func currentExecutionIdentity(home string, claim workLogClaim) (ExecutionIdentity, error) {
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
-	if err != nil {
-		return ExecutionIdentity{}, err
-	}
-	defer func() { _ = runDir.Close() }()
-	identity, _, err := projectExecutionIdentity(runDir, claim)
-	return identity, err
+	return correctionPorts().CurrentExecutionIdentity(home, claim)
 }
 
 // workLogOptionsForClaimExtension reuses one existing coordinated run when a
