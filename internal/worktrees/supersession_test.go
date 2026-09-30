@@ -493,3 +493,12 @@ func completeSupersessionReceipt(result CreateResult, task string, sourceCommits
 func dependencyTestPullRequest(head string) *PullRequest {
 	return &PullRequest{Number: 17, URL: "https://github.com/acme/app/pull/17", Repository: "acme/app", HeadSHA: head}
 }
+
+func TestSupersessionApplyEmptyPathPreservesEntry(t *testing.T) {
+	t.Parallel()
+	entry := ListResult{SupersededAtOrigin: true, SupersessionReceipt: "existing"}
+	applySupersessionReceipt(context.Background(), " ", &entry)
+	if !entry.SupersededAtOrigin || entry.SupersessionReceipt != "existing" {
+		t.Fatalf("empty receipt path changed lifecycle evidence: %#v", entry)
+	}
+}
