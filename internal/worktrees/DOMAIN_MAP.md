@@ -103,6 +103,26 @@ The batch explicitly excludes ambient custody, owner/session authentication, his
 
 Later claims/worklog slices follow the state model already recorded in the TSV: immutable claim publication and corrections, lock ownership/reclaim, terminal validation and acceptance, projection/view, reservation recovery, and legacy migration. Retirement follows archive/capture, verification, publication receipts, recovery, then GC. Branch work keeps supersession separate from claim reconciliation and deletion. Session work keeps receive recovery separate from custody and park/checkpoint. These boundaries are stable; only their current coverage totals are refreshed as completed work changes the profile.
 
+## Execution checkpoint: 2026-09-30
+
+The dependency queue above describes the earlier `324b0f86` baseline. These domain slices have since been completed locally and independently reviewed:
+
+| Domain slice | Original bodies | Verification |
+| --- | ---: | --- |
+| Journal storage and repair | 21 | Leaf 304/304 statements; retained adapters covered. |
+| Neutral proof and landing walk | 31 | Leaves 194/194 statements; retained adapters covered. |
+| Claim manifest, prompt, and binding | 42 | Leaf 608/608 statements, including prompt-ordinal overflow refusal. |
+| Claim identity, custody, and heartbeat | 46 | Combined claims leaf 944/944 statements at that checkpoint. |
+| Branch inventory and classification | 37 | Moved bodies and changed adapters covered; real-Git and race checks passed. |
+| Descriptor-anchored claim/cleanup locks | 41 | New moved-code files 543/543 statements; retained target adapters covered; nine test-only facade wrappers removed. |
+| Quarantine decisions and decoded peer policy | Domain seam from 30 candidates | Changed leaf functions and retained adapters covered; mutation and durable report transactions remain in the facade. |
+
+The combined package-only gate at `27ed43844feeac6bbe8ff84f2274312cc4c82aec` passed: **15,236/17,632 statements (86.4111%)**, leaving **2,396 uncovered** in `internal/worktrees`. Its immediate predecessor gate at `fad5cddc` left 2,480 uncovered; this batch reduced the facade backlog by 84. Extracted statements leave this package's denominator, so these percentages are not a whole-repository coverage series. Focused leaf counts above are checkpoint-specific and overlap across cumulative claims profiles; do not sum them.
+
+Focused `mode: set` profiles combined across test selections can contain repeated block rows. Count each source block once by location and statement count, with execution counts ORed across runs. For the lock checkpoint, this gives 409 unique blocks and 543/543 statements across `locks.go`, `cleanup_lock.go`, `repository_registration_lock.go`, `lockdiag.go`, and `worklog_lock.go`; raw repeated rows are not additional source statements.
+
+The reviewed combined result and subsequent test-only lint fixes are accumulated on local `coverage-refactor` at `c26a52c8`. Next coherent slices are immutable claim publication/correction and landing PR receipt verification. Both implementation lanes start from that same commit. Local commits are accumulated before publication; the coordinator owns integration. Each batch must provide its exact moved/retained/deleted function inventory and focused coverage evidence before review. Batch focused checks, then share one package-only gate across compatible reviewed batches.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
