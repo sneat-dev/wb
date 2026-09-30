@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,12 +58,12 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 	home := t.TempDir()
 	claim, _ := wtLogCovReconciliationClaim(t.TempDir())
 	record := reconciliationRecordForClaim(claim)
-	created, err := createBranchReconciliationRecord(home, claim, record)
+	created, err := reconciliationClaimPorts().CreateRecord(home, claim, record)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = created.Close() })
-	got, replay, err := readBranchReconciliationRecord(home, claim, record.EventID)
+	got, replay, err := reconciliationClaimPorts().ReadRecord(home, claim, record.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +79,10 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 	if !os.SameFile(createdInfo, replayInfo) || got.ClaimID != record.ClaimID || got.Stage != record.Stage {
 		t.Fatalf("replayed record %#v from a different private directory", got)
 	}
-	if err := corroborateReconciliationRecord(got, claim, claim.Worktree, LogRecoverOptions{
+	if err := worktreeclaims.CorroborateReconciliationRecord(got, claim, reconciliationRequest(claim.Worktree, LogRecoverOptions{
 		EventID: record.EventID, ReconcileBranch: record.LiveBranch, ExpectedHead: record.ExpectedHead,
 		Actor: record.Actor, Reason: record.Reason,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("replayed record lost immutable identity: %v", err)
 	}
 	_, projection := wtLogCovReconciliationClaim(claim.Worktree)
@@ -93,7 +94,7 @@ func TestBranchReconciliationRecordCreateAndReplayUseSamePrivateDirectory(t *tes
 		runner.Result{CombinedOutput: record.ExpectedHead + "\n"}, nil)
 	gitQueries.ExpectArgv([]string{"git", "-C", claim.Worktree, "status", "--porcelain"},
 		runner.Result{}, nil)
-	event := reconciliationEvent(withGitRunner(context.Background(), gitQueries), claim.Worktree, got)
+	event := reconciliationEvent(got, observeLocalGit(withGitRunner(context.Background(), gitQueries), claim.Worktree))
 	if gitQueries.CallCount() != 3 || event.Git == nil || event.Git.Branch != record.LiveBranch || event.Git.Head != record.ExpectedHead {
 		t.Fatalf("replayed event did not retain fake-observed Git evidence: %#v", event.Git)
 	}
@@ -148,7 +149,7 @@ func TestBranchReconciliationDirectoryRejectsBrokenPrivatePath(t *testing.T) {
 
 			home := filepath.Join(t.TempDir(), "home")
 			tc.setup(t, home)
-			if directory, err := openBranchReconciliationEvent(home, claim, "event-1", true); err == nil {
+			if directory, err := reconciliationClaimPorts().OpenEvent(home, claim, "event-1", true); err == nil {
 				_ = directory.Close()
 				t.Fatal("broken private path was opened for creation")
 			}
@@ -165,13 +166,13 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 	if err := os.WriteFile(homeFile, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if directory, err := createBranchReconciliationRecord(homeFile, claim, record); err == nil {
+	if directory, err := reconciliationClaimPorts().CreateRecord(homeFile, claim, record); err == nil {
 		_ = directory.Close()
 		t.Fatal("record creation accepted a file as its home")
 	}
 
 	home := t.TempDir()
-	directory, err := openBranchReconciliationEvent(home, claim, record.EventID, true)
+	directory, err := reconciliationClaimPorts().OpenEvent(home, claim, record.EventID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,15 +181,15 @@ func TestBranchReconciliationRecordWritersRejectFailedStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = run.Close()
-	if err := os.Mkdir(filepath.Join(runPath, "branch-reconciliations", record.EventID, branchReconciliationRecordName), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(runPath, "branch-reconciliations", record.EventID, worktreeclaims.ReconciliationRecordName), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	_ = directory.Close()
-	if created, err := createBranchReconciliationRecord(home, claim, record); err == nil {
+	if created, err := reconciliationClaimPorts().CreateRecord(home, claim, record); err == nil {
 		_ = created.Close()
 		t.Fatal("record creation replaced a directory at the record path")
 	}
-	if _, opened, err := readBranchReconciliationRecord(home, claim, record.EventID); err == nil {
+	if _, opened, err := reconciliationClaimPorts().ReadRecord(home, claim, record.EventID); err == nil {
 		_ = opened.Close()
 		t.Fatal("record replay accepted a directory as JSON")
 	}
@@ -220,14 +221,14 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	if _, _, err := reconciliationClaim(home, worktree); err == nil {
+	if _, _, err := reconciliationClaimPorts().ReadClaim(home, worktree); err == nil {
 		t.Fatal("claim read succeeded without a private run")
 	}
 	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := reconciliationClaim(home, worktree); err == nil {
+	if _, _, err := reconciliationClaimPorts().ReadClaim(home, worktree); err == nil {
 		t.Fatal("claim read succeeded without immutable claim JSON")
 	}
 	claims, err := openPrivateChild(run, "claims", true)
@@ -241,10 +242,10 @@ func TestBranchReconciliationClaimReaderRejectsMissingAndAlteredClaims(t *testin
 	}
 	_ = claims.Close()
 	_ = run.Close()
-	if _, _, err := reconciliationClaim(home, worktree); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if _, _, err := reconciliationClaimPorts().ReadClaim(home, worktree); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("altered immutable claim read error = %v", err)
 	}
-	if err := corroborateReconciliationClaimShape(worktree, projection, altered); err == nil {
+	if err := worktreeclaims.ValidateReconciliationClaimShape(worktree, projection, altered); err == nil {
 		t.Fatal("altered claim passed direct identity validation")
 	}
 }
@@ -331,7 +332,7 @@ func TestBranchReconciliationRejectsInvalidInputBeforeReadingGit(t *testing.T) {
 		t.Fatal("unmanaged worktree had lifecycle evidence")
 	}
 	if err := revalidateReconciliationStage(context.Background(), LogRecoverOptions{ProjectsRoot: t.TempDir()},
-		t.TempDir(), claim, reconciliationRecordForClaim(claim)); err == nil {
+		t.TempDir(), claim, reconciliationRecordForClaim(claim), reconciliationLifecycleEvidence); err == nil {
 		t.Fatal("unmanaged worktree passed stage revalidation")
 	}
 }
