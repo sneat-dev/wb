@@ -39,6 +39,8 @@ type qualityOptions struct {
 	testShards             int
 	shardPackages          []string
 	explicitGoTestSharding bool
+	packagePatterns        []string
+	explicitGoTestPackages bool
 	coverageProfile        string
 	minimumCoverage        float64
 	// changed selects the per-change coverage ratchet
@@ -73,6 +75,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			options.explicitGoTestSharding = coverageShardingExplicit(cmd)
+			options.explicitGoTestPackages = coveragePackagesExplicit(cmd)
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
@@ -136,7 +139,8 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, json, or summary (summary requires --report-dir)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write coverage.md and coverage.yaml to this directory")
 	command.Flags().IntVar(&options.testShards, "test-shards", 1, "process-isolated shards for every explicit --shard-package")
-	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name; other module packages still run once (repeatable)")
+	command.Flags().StringArrayVar(&options.packagePatterns, "package", nil, "restrict coverage to explicit Go package patterns; packages outside this scope are not tested (repeatable)")
+	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package within the --package scope safe to shard by top-level test name; selected packages not named here run once (repeatable)")
 	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
 	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
@@ -163,6 +167,12 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 		if options.explicitGoTestSharding {
 			return fmt.Errorf("--ci cannot be combined with --test-shards or --shard-package")
 		}
+		if options.explicitGoTestPackages {
+			return fmt.Errorf("--ci cannot be combined with --package")
+		}
+	}
+	if options.changed && options.explicitGoTestPackages {
+		return fmt.Errorf("--changed cannot be combined with --package")
 	}
 	if options.changed && options.explicitGoTestSharding {
 		return fmt.Errorf("--changed cannot be combined with --test-shards or --shard-package")
@@ -184,6 +194,19 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 	}
 	if len(options.shardPackages) > 0 && options.fleet {
 		return fmt.Errorf("--shard-package is repository-specific and cannot be combined with --fleet")
+	}
+	if options.explicitGoTestPackages {
+		for _, pattern := range options.packagePatterns {
+			if strings.TrimSpace(pattern) == "" {
+				return fmt.Errorf("--package must not be empty")
+			}
+		}
+		if options.fleet {
+			return fmt.Errorf("--package is repository-specific and cannot be combined with --fleet")
+		}
+		if options.resume {
+			return fmt.Errorf("--package cannot be combined with --resume")
+		}
 	}
 	if options.changed {
 		if options.target == "" {
@@ -790,10 +813,15 @@ func coverageShardingExplicit(command *cobra.Command) bool {
 	return command.Flags().Changed("test-shards") || command.Flags().Changed("shard-package")
 }
 
+func coveragePackagesExplicit(command *cobra.Command) bool {
+	return command.Flags().Changed("package")
+}
+
 func coverageOptionsForCommand(options qualityOptions) quality.RunOptions {
 	runOptions := runOptions(options)
 	runOptions.GoTestShards = options.testShards
 	runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
+	runOptions.GoTestPackages = append([]string(nil), options.packagePatterns...)
 	runOptions.ExplicitGoTestSharding = options.explicitGoTestSharding
 	runOptions.CoverageProfile = options.coverageProfile
 	return runOptions

@@ -181,10 +181,11 @@ func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path s
 }
 
 func coverageCommandDescription(options RunOptions) string {
+	packages := strings.Join(goCoveragePackagePatterns(options), ",")
 	if options.GoTestShards > 1 {
-		return fmt.Sprintf("go test -coverprofile … ./... (%d process-isolated shards for %s)", options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+		return fmt.Sprintf("go test -coverprofile … %s (%d process-isolated shards for %s)", packages, options.GoTestShards, strings.Join(options.GoShardPackages, ","))
 	}
-	return "go test -coverprofile … ./..."
+	return fmt.Sprintf("go test -coverprofile … %s", packages)
 }
 
 // NewCoverageReport aggregates reports in deterministic repository order.

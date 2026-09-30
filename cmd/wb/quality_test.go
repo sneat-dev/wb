@@ -60,10 +60,15 @@ func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
 		{name: "CI with changed", options: qualityOptions{testShards: 1, ci: true, changed: true}, want: "--ci cannot be combined with --changed"},
 		{name: "CI with resume", options: qualityOptions{testShards: 1, ci: true, resume: true}, want: "--ci cannot be combined with --resume"},
 		{name: "CI with coverage profile", options: qualityOptions{testShards: 1, ci: true, coverageProfile: "profile.cov"}, want: "--ci cannot be combined with --coverage-profile"},
+		{name: "CI with package filter", options: qualityOptions{testShards: 1, ci: true, explicitGoTestPackages: true, packagePatterns: []string{"./internal/worktrees"}}, want: "--ci cannot be combined with --package"},
 		{name: "changed without target", options: qualityOptions{testShards: 1, changed: true}, want: "requires --target"},
 		{name: "changed with fleet", options: qualityOptions{testShards: 1, changed: true, target: "main", fleet: true}, want: "repository-specific"},
 		{name: "changed with resume", options: qualityOptions{testShards: 1, changed: true, target: "main", resume: true}, want: "cannot be combined with --resume"},
 		{name: "changed with test-shards", options: qualityOptions{testShards: 2, shardPackages: []string{"./internal/worktrees"}, explicitGoTestSharding: true, changed: true, target: "main"}, want: "cannot be combined with --test-shards"},
+		{name: "changed with package filter", options: qualityOptions{testShards: 1, changed: true, target: "main", explicitGoTestPackages: true, packagePatterns: []string{"./internal/worktrees"}}, want: "--changed cannot be combined with --package"},
+		{name: "fleet with package filter", options: qualityOptions{testShards: 1, fleet: true, explicitGoTestPackages: true, packagePatterns: []string{"./internal/worktrees"}}, want: "--package is repository-specific and cannot be combined with --fleet"},
+		{name: "resume with package filter", options: qualityOptions{testShards: 1, resume: true, explicitGoTestPackages: true, packagePatterns: []string{"./internal/worktrees"}}, want: "--package cannot be combined with --resume"},
+		{name: "empty package filter", options: qualityOptions{testShards: 1, explicitGoTestPackages: true, packagePatterns: []string{""}}, want: "--package must not be empty"},
 		{name: "changed invalid format", options: qualityOptions{testShards: 1, changed: true, target: "main", format: "summary"}, want: "changed supports --format markdown or json only"},
 		{name: "target without changed", options: qualityOptions{testShards: 1, target: "main"}, want: "--target requires --changed"},
 		{name: "baseline-file without changed", options: qualityOptions{testShards: 1, baselineFile: "baseline.json"}, want: "--baseline-file requires --changed"},
@@ -110,8 +115,11 @@ func TestCoverageOptionsForCommandRecordsExplicitSharding(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			command := newCoverageCmd(&invocation{})
-			if usage := command.Flags().Lookup("shard-package").Usage; !strings.Contains(usage, "other module packages still run once") {
+			if usage := command.Flags().Lookup("shard-package").Usage; !strings.Contains(usage, "within the --package scope") || !strings.Contains(usage, "selected packages not named here run once") {
 				t.Fatalf("shard-package help = %q", usage)
+			}
+			if usage := command.Flags().Lookup("package").Usage; !strings.Contains(usage, "restrict coverage") {
+				t.Fatalf("package help = %q", usage)
 			}
 			if err := command.ParseFlags(tc.args); err != nil {
 				t.Fatal(err)
@@ -145,14 +153,36 @@ func TestCoverageCmdExplicitShardingWinsRepositoryPolicy(t *testing.T) {
 		return quality.RepositoryCoverage{Repository: name, Path: path, Status: quality.StatusPassed}
 	}
 	if _, _, err := cwCovExec(t, repository, func() *cobra.Command { return newCoverageCmd(&invocation{}) }, repository,
-		"--format", "json", "--test-shards", "4", "--shard-package", "./internal/worktrees"); err != nil {
+		"--format", "json", "--package", "./internal/worktrees", "--test-shards", "4", "--shard-package", "./internal/worktrees"); err != nil {
 		t.Fatalf("coverage command = %v", err)
 	}
 	if captured.GoTestShards != 4 || strings.Join(captured.GoShardPackages, ",") != "./internal/worktrees" {
 		t.Fatalf("captured sharding = %+v", captured)
 	}
+	if got := strings.Join(captured.GoTestPackages, ","); got != "./internal/worktrees" {
+		t.Fatalf("captured package scope = %q", got)
+	}
 	if len(captured.GoLintCommands) != 1 || strings.Join(captured.GoLintCommands[0], " ") != "go vet ./..." {
 		t.Fatalf("captured lint policy = %#v", captured.GoLintCommands)
+	}
+}
+
+func TestCoverageCmdRejectsPackageFilterInUnsupportedModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "CI", args: []string{"--ci", "--package", "./internal/worktrees"}, want: "--ci cannot be combined with --package"},
+		{name: "changed", args: []string{"--changed", "--target", "main", "--package", "./internal/worktrees"}, want: "--changed cannot be combined with --package"},
+		{name: "fleet", args: []string{"--fleet", "--package", "./internal/worktrees"}, want: "--package is repository-specific and cannot be combined with --fleet"},
+		{name: "resume", args: []string{"--resume", "--package", "./internal/worktrees"}, want: "--package cannot be combined with --resume"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newCoverageCmd(&invocation{}) }, tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("coverage %v = %v, want %q", tc.args, err, tc.want)
+			}
+		})
 	}
 }
 

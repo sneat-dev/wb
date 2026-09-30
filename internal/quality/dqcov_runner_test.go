@@ -25,6 +25,44 @@ func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
 	}
 }
 
+func TestDqCovRunCoverageWithOptionsUsesSelectedPackageScope(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	commandLog := filepath.Join(module, "go.log")
+	dqCovSetGoEnv(t, map[string]string{
+		"DQCOV_GO_LOG":           commandLog,
+		"DQCOV_GO_WRITE_PROFILE": "1",
+	})
+	if _, _, err := runCoverageWithOptions(context.Background(), RunOptions{GoTestPackages: []string{"./selected"}}, module, filepath.Join(module, "coverage.out")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command := string(raw); !strings.Contains(command, "./selected") || strings.Contains(command, "./...") {
+		t.Fatalf("go test command = %q, want only selected package", command)
+	}
+}
+
+func TestDqCovCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options RunOptions
+		want    string
+	}{
+		{name: "default scope", want: "go test -coverprofile … ./..."},
+		{name: "selected scope", options: RunOptions{GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two"},
+		{name: "selected sharded scope", options: RunOptions{GoTestShards: 2, GoShardPackages: []string{"./one"}, GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two (2 process-isolated shards for ./one)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := coverageCommandDescription(tc.options); got != tc.want {
+				t.Fatalf("description = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves an explicit
 // logical check deadline (not only the per-shard attempt deadline) terminates
 // the run and is named in the returned error.

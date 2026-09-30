@@ -57,6 +57,41 @@ func record(t *testing.T, name string) { t.Helper(); f, err := os.OpenFile(os.Ge
 	}
 }
 
+func TestRunShardedCoverageRestrictsSelectedPackageScope(t *testing.T) {
+	module := t.TempDir()
+	logPath := filepath.Join(module, "runs.log")
+	t.Setenv("WB_SHARD_TEST_LOG", logPath)
+	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/scope\n\ngo 1.24\n")
+	for _, name := range []string{"ordinary", "serial", "excluded"} {
+		writeGoShardFixturePackage(t, module, name, "package "+name+"\nfunc Covered() int { return 1 }\n", `package `+name+`
+import ("os"; "testing")
+func TestCovered(t *testing.T) {
+	if Covered() != 1 { t.Fatal("covered") }
+	f, err := os.OpenFile(os.Getenv("WB_SHARD_TEST_LOG"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil { t.Fatal(err) }
+	defer f.Close()
+	if _, err := f.WriteString("`+name+`\n"); err != nil { t.Fatal(err) }
+}
+`)
+	}
+	profile := filepath.Join(module, "merged.cov")
+	if output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, profile, []string{"./serial"}, 2, "", "", 0, 0, 0, nil, []string{"./ordinary", "./serial"}); err != nil {
+		t.Fatalf("run selected sharded coverage: %v\n%s", err, output)
+	}
+	rawLog, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := strings.Fields(string(rawLog))
+	sort.Strings(runs)
+	if want := []string{"ordinary", "serial"}; !reflect.DeepEqual(runs, want) {
+		t.Fatalf("selected test runs = %v, want %v", runs, want)
+	}
+	if _, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "outside.cov"), []string{"./excluded"}, 2, "", "", 0, 0, 0, nil, []string{"./ordinary", "./serial"}); err == nil || !strings.Contains(err.Error(), "outside selected package scope") {
+		t.Fatalf("outside selected package error = %v", err)
+	}
+}
+
 func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
 	t.Parallel()
 	profile := filepath.Join("tmp", "coverage.out")

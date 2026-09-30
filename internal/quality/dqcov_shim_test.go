@@ -56,6 +56,7 @@ case "$1" in
     exit 0
     ;;
   test)
+    if [ -n "$DQCOV_GO_LOG" ]; then printf '%s\n' "$*" >> "$DQCOV_GO_LOG"; fi
     if [ "$mode" = list ]; then
       if [ -n "$DQCOV_GO_DISCOVER_FAIL" ]; then printf '%s\n' "$DQCOV_GO_DISCOVER_FAIL" >&2; exit 1; fi
       printf '%s\n' "$DQCOV_GO_TEST_LIST"

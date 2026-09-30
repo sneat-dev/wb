@@ -47,8 +47,11 @@ type RunOptions struct {
 	// process invokes it again.
 	GoTestShards int
 	// GoShardPackages are module-relative package patterns such as
-	// ./internal/worktrees. Packages not named here still run exactly once.
+	// ./internal/worktrees. Selected packages not named here still run exactly once.
 	GoShardPackages []string
+	// GoTestPackages limits coverage to these module-relative Go package
+	// patterns. An empty slice retains the default whole-module ./... scope.
+	GoTestPackages []string
 	// ExplicitGoTestSharding records that the caller selected GoTestShards and
 	// GoShardPackages on the command line. Repository policy remains validated
 	// and supplies lint commands, but cannot silently broaden this selection.
