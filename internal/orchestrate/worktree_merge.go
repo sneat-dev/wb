@@ -4892,6 +4892,10 @@ func mergeOperationSuffix(operation string) string {
 }
 
 func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDir, lane string, except ...string) (*WorktreeMergeReceipt, error) {
+	return activeWorktreeMergeLaneReceiptWithRunner(ctx, projectsRoot, reportsDir, lane, defaultRunner, except...)
+}
+
+func activeWorktreeMergeLaneReceiptWithRunner(ctx context.Context, projectsRoot, reportsDir, lane string, remoteRunner runner.Runner, except ...string) (*WorktreeMergeReceipt, error) {
 	entries, err := os.ReadDir(reportsDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -4997,6 +5001,27 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			}
 			if unpublishedFailureAcknowledged {
 				continue
+			}
+			// A prepare-time conflict releases this lane only after proving its
+			// candidate was not published. Publication fields can be lost after
+			// an ambiguous push, so the receipt alone is not enough evidence.
+			if receipt.Status == WorktreeMergeConflict && receipt.Phase == WorktreeMergePhasePrepare &&
+				receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" && receipt.Candidate.Branch != "" {
+				if _, adopted, adoptionErr := adoptedPublishedCandidate(ctx, receipt); adoptionErr != nil {
+					return nil, fmt.Errorf("validate published-candidate adoption for %s: %w", receipt.ReceiptPath, adoptionErr)
+				} else if !adopted {
+					canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+					if canonicalErr != nil {
+						return nil, canonicalErr
+					}
+					remote, _, remoteErr := runCommand(ctx, remoteRunner, 0, 0, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+					if remoteErr != nil {
+						return nil, fmt.Errorf("verify unpublished conflict candidate %s: %w", receipt.ReceiptPath, remoteErr)
+					}
+					if strings.TrimSpace(remote) == "" {
+						continue
+					}
+				}
 			}
 			return &receipt, nil
 		}

@@ -196,6 +196,12 @@ refreshes its own lane. A lane record that cannot be parsed refuses the same
 way a live owner does, naming the corrupt file, rather than being treated as
 free. This is the mechanical enforcement of "one landing owner per repository
 and target branch" — see `[[land-work-dont-queue-it]]`.
+An unpublished prepare-time conflict releases receipt-based lane ownership after
+the prepare stops and WB verifies its candidate branch is absent remotely: its
+receipt and sources remain available for repair, while another source may
+prepare and land. Published or land-phase conflicts still hold the lane, and
+the live-session guard remains exclusive. If remote publication cannot be
+checked, the receipt keeps holding the lane.
 
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
 landing uses the repository-approved merge method, with merge commits preferred
