@@ -142,6 +142,22 @@ Next is the terminal authority and removed-history domain: replace the long seal
 
 Reachable operating-system failures must retain error propagation even when the receiver is newly created. In particular, `exec.Cmd.StdoutPipe` allocates an OS pipe and can fail; a fresh command does not make that error unreachable. Remove error branches only with a concrete proof about the operation and its inputs, not to make coverage pass.
 
+### Queued retirement transaction and recovery slice
+
+Read-only analysis at `3c7bfa8c` selects the durable retirement transaction after the active terminal/history and relocation batches. This is a proposal, not an implemented extraction. The existing `internal/worktreeretire` archive service provides a destination and shared archive proofs; extracting another group of already-covered archive helpers would miss the remaining transaction failures.
+
+The cutover should share the report, phase progression, and receipt/deletion proof handling in `Retire` and `retireResumeRemoved`. Candidate bodies are `readRetireReport`, `writeRetireReport`/`writeRetireReportInjected`, `retirePublishSource`, `retireVerifyReceipts`, and `retireDeleteOriginal`, with their report/ref helpers. Retarget the source-commit, intent-validation, archive-publication, and local-removal calls through operation-local ports. Inventory the final moved, retained, and deleted bodies before implementation; avoid copying transaction logic into a leaf while leaving a second implementation in the facade.
+
+Keep inventory, task locking, held checkout/canonical identity, PR and remote-owner checks, ignored-file checks, live Git corroboration, and secure local removal in `worktrees`. The CLI continues to call `worktrees.Retire`; preserve the public `worktrees.RetireOptions` and `worktrees.RetireResult` Go API and JSON shape if DTO ownership changes. Preserve these phase constraints:
+
+- Persist commit intent before committing; accept replay only for the recorded parent, tree, and message.
+- Publish the source with its existing absent-ref lease and verify it, and corroborate the private archive before persisting deletion intent.
+- Atomically delete the exact original ref with its proof tag and verify both before removing the checkout and exact local branch.
+- Accept an existing source ref or deletion proof on retry only at the exact recorded SHA.
+- Removed-checkout recovery requires one matching report, immutable claim/terminal evidence, and absence of both checkout and registration.
+
+Use one shared phase fixture for fault injection and one native Git replay journey; reuse archive service fixtures instead of recreating them for each caller. Cover every moved or refactored body fully, then include the compatible batch in a shared package checkpoint. The historical `dd1d74ea` profile recorded 51 missed statements in `Retire`, 17 in `retireResumeRemoved`, and seven in `retireRemoveLocal`. These are selection evidence, not current coverage measurements. `Create` also had 51 misses but combines multi-repository registration and rollback; `cleanupRun.applyCleanupTask` had 31 within shared cleanup authority. Retirement offers the clearer existing service boundary and reusable recovery proofs.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
