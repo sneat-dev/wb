@@ -135,3 +135,41 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesReboundPath(t *testing.T) {
 		t.Fatal("canonical root preparation did not reject rebound path")
 	}
 }
+
+func TestE2EPrepareCanonicalWorktreesRootRefusesSymlinkedGitInfo(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "canonical")
+	info := filepath.Join(root, ".git", "info")
+	if err := os.MkdirAll(info, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := openCanonicalRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+	parked := filepath.Join(root, ".git", "info-parked")
+	if err := os.Rename(info, parked); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, info); err != nil {
+		t.Fatal(err)
+	}
+	ctx := withCanonicalGitInterceptor(t.Context(), func(_ context.Context, _ []string, _ func() ([]byte, error)) ([]byte, error) {
+		return nil, nil
+	})
+	_, directory, err := prepareCanonicalWorktreesRoot(ctx, canonical, strings.Repeat("a", 40))
+	if directory != nil {
+		_ = directory.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "open canonical Git info directory") || directory != nil {
+		t.Fatalf("symlinked canonical Git info: directory=%v err=%v", directory, err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "exclude")); !os.IsNotExist(err) {
+		t.Fatalf("symlinked Git info wrote outside canonical: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".worktrees")); !os.IsNotExist(err) {
+		t.Fatalf("symlinked Git info created .worktrees: %v", err)
+	}
+}

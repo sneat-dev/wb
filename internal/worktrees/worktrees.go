@@ -2568,7 +2568,7 @@ func prepareCanonicalWorktreesRoot(ctx context.Context, canonical *canonicalRepo
 	if strings.TrimSpace(entry) != "" {
 		return "", nil, fmt.Errorf("canonical repository %s tracks .worktrees at fetched base %s; WB refuses to create a local worktree root there", canonical.path, revision)
 	}
-	if _, err := checkoutmarker.EnsureExclude(filepath.Join(canonical.path, ".git", "info", "exclude")); err != nil {
+	if _, err := checkoutmarker.EnsureExcludeForGitDir(canonical.common); err != nil {
 		return "", nil, fmt.Errorf("exclude canonical .worktrees root from Git status: %w", err)
 	}
 	fd, err := openOrCreateNoFollowDirectory(int(canonical.root.Fd()), ".worktrees")
