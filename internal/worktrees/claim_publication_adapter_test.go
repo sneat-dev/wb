@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -133,9 +134,186 @@ func TestClaimPublicationAdapterFirstPublication(t *testing.T) {
 }
 
 //nolint:paralleltest // the Git fixture and WB home state are process-wide.
+func TestClaimPublicationRetryRepairsInterruptedProjection(t *testing.T) {
+	gitFixture := newGitFixture(t)
+	evidence := observeLocalGit(context.Background(), gitFixture.canonical)
+	result := CreateResult{Repository: "acme/app", WorktreeDir: gitFixture.canonical, Branch: evidence.Branch, Base: "main", BaseSHA: evidence.Head}
+	options, err := (WorkLogOptions{EffortID: "publication-retry", RunID: "run", Model: "unknown", AgentRuntime: "codex", WBSessionID: "original-session"}).WithOriginalPromptFromStdin([]byte("original exact prompt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupted := errors.New("interrupted after claim")
+	first, err := recordWorkLogWithHooks(gitFixture.home, "publication-retry", result, options, workLogPublicationHooks{afterClaim: func() error { return interrupted }})
+	if !errors.Is(err, interrupted) || !first.ClaimWritten || first.ProjectionWritten || first.OutboxWritten {
+		t.Fatalf("interrupted publication=%+v err=%v", first, err)
+	}
+	original := first.claim
+	if original.RecordedAt.IsZero() || original.WBSessionID != "original-session" {
+		t.Fatalf("missing original authority: %+v", original)
+	}
+	for name, change := range map[string]func(*WorkLogOptions){
+		"model":   func(o *WorkLogOptions) { o.Model = "gpt-6-sol" },
+		"runtime": func(o *WorkLogOptions) { o.AgentRuntime = "claude-code" },
+		"session": func(o *WorkLogOptions) { o.WBSessionID = "other-session" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := options
+			change(&changed)
+			if _, err := EnsureWorkLogClaim(gitFixture.home, "publication-retry", result, changed); err == nil {
+				t.Fatal("different caller-selected identity accepted")
+			}
+		})
+	}
+	changedPrompt, err := options.WithOriginalPromptFromStdin([]byte("different exact prompt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureWorkLogClaim(gitFixture.home, "publication-retry", result, changedPrompt); err == nil {
+		t.Fatal("different prompt accepted")
+	}
+	for name, change := range map[string]func(*CreateResult){
+		"repository": func(r *CreateResult) { r.Repository = "acme/other" },
+		"branch":     func(r *CreateResult) { r.Branch = "other-branch" },
+		"base":       func(r *CreateResult) { r.Base = "other-base" },
+	} {
+		t.Run("missing projection/"+name, func(t *testing.T) {
+			changed := result
+			change(&changed)
+			if _, err := EnsureWorkLogClaim(gitFixture.home, "publication-retry", changed, options); err == nil {
+				t.Fatal("different checkout identity published a second claim")
+			}
+		})
+	}
+	firstReached := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondOpened := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		_, repairErr := recordWorkLogWithPreparation(gitFixture.home, "publication-retry", result, options,
+			workLogPublicationHooks{afterClaim: func() error { close(firstReached); <-releaseFirst; return nil }}, defaultPublicationPreparationPorts())
+		results <- repairErr
+	}()
+	select {
+	case <-firstReached: // the first retry holds the claim fence during publication
+	case repairErr := <-results:
+		t.Fatalf("first retry did not reach claim fence: %v", repairErr)
+	}
+	secondPorts := defaultPublicationPreparationPorts()
+	openRun := secondPorts.openRun
+	secondPorts.openRun = func(home, effort, run string, create bool) (*os.File, string, error) {
+		dir, path, openErr := openRun(home, effort, run, create)
+		close(secondOpened)
+		return dir, path, openErr
+	}
+	go func() {
+		_, repairErr := recordWorkLogWithPreparation(gitFixture.home, "publication-retry", result, options,
+			workLogPublicationHooks{}, secondPorts)
+		results <- repairErr
+	}()
+	select {
+	case <-secondOpened: // the second retry has reached the operation before its fence
+	case repairErr := <-results:
+		close(releaseFirst)
+		t.Fatalf("second retry did not open its run: %v", repairErr)
+	}
+	select {
+	case err := <-results:
+		close(releaseFirst)
+		t.Fatalf("retry passed held claim fence: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	for range 2 {
+		if repairErr := <-results; repairErr != nil {
+			t.Fatalf("concurrent retry: %v", repairErr)
+		}
+	}
+	claim, _, _, err := activeWorkLogClaim(gitFixture.home, result.WorktreeDir)
+	if err != nil || !reflect.DeepEqual(claim, original) {
+		t.Fatalf("repaired authority=%+v original=%+v err=%v", claim, original, err)
+	}
+	manifest, err := ReadManifest(result.WorktreeDir)
+	if err != nil || !manifest.CreatedAt.Equal(original.RecordedAt) || manifest.AgentRuntime != original.AgentRuntime || manifest.Model != original.Model {
+		t.Fatalf("repaired manifest=%+v err=%v", manifest, err)
+	}
+	prompts, err := ListPrompts(result.WorktreeDir)
+	if err != nil || len(prompts) != 1 || !prompts[0].At.Equal(original.RecordedAt) {
+		t.Fatalf("repaired prompt headers=%+v err=%v", prompts, err)
+	}
+	outbox, err := openWorkLogOutbox(gitFixture.home, original.EffortID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = outbox.Close() }()
+	var event workLogPublicEvent
+	if err := readJSONAt(outbox, original.RunID+"-"+original.ClaimID+"-claimed.json", &event); err != nil || !event.At.Equal(original.RecordedAt) {
+		t.Fatalf("repaired outbox=%+v err=%v", event, err)
+	}
+	for name, change := range map[string]func(*CreateResult){
+		"repository": func(r *CreateResult) { r.Repository = "acme/other" },
+		"branch":     func(r *CreateResult) { r.Branch = "other-branch" },
+		"base":       func(r *CreateResult) { r.Base = "other-base" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := result
+			change(&changed)
+			if _, err := EnsureWorkLogClaim(gitFixture.home, "publication-retry", changed, options); err == nil {
+				t.Fatal("different checkout identity accepted")
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // the Git fixture and WB home state are process-wide.
+func TestClaimPublicationRetryRejectsUntrustedAuthority(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		breakAuthority func(*testing.T, WorkLogPublicationOutcome, CreateResult)
+	}{
+		{name: "malformed private claim", breakAuthority: func(t *testing.T, outcome WorkLogPublicationOutcome, _ CreateResult) {
+			if err := os.WriteFile(outcome.ClaimPath, []byte("{broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "failed Git corroboration", breakAuthority: func(t *testing.T, _ WorkLogPublicationOutcome, result CreateResult) {
+			if _, err := git(context.Background(), result.WorktreeDir, "branch", "-m", "unexpected-branch"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unreadable live Git checkout", breakAuthority: func(t *testing.T, _ WorkLogPublicationOutcome, result CreateResult) {
+			if err := os.Rename(filepath.Join(result.WorktreeDir, ".git"), filepath.Join(result.WorktreeDir, ".git-held")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			gitFixture := newGitFixture(t)
+			evidence := observeLocalGit(context.Background(), gitFixture.canonical)
+			result := CreateResult{Repository: "acme/app", WorktreeDir: gitFixture.canonical, Branch: evidence.Branch, Base: "main", BaseSHA: evidence.Head}
+			options, err := (WorkLogOptions{EffortID: "retry-refusal", RunID: "run", Model: "unknown"}).WithOriginalPromptFromStdin([]byte("original prompt\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			interrupted := errors.New("interrupted")
+			outcome, err := recordWorkLogWithHooks(gitFixture.home, "retry-refusal", result, options, workLogPublicationHooks{afterClaim: func() error { return interrupted }})
+			if !errors.Is(err, interrupted) {
+				t.Fatalf("interruption err=%v", err)
+			}
+			testCase.breakAuthority(t, outcome, result)
+			if _, err := EnsureWorkLogClaim(gitFixture.home, "retry-refusal", result, options); err == nil {
+				t.Fatal("untrusted authority accepted")
+			}
+			if _, err := os.Stat(filepath.Join(result.WorktreeDir, workLogProjectionDirectory, workLogProjectionName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected authority published projection: %v", err)
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // the Git fixture and WB home state are process-wide.
 func TestClaimPublicationPreparationPorts(t *testing.T) {
 	fixture := newWorkLogCoverageBatchFixture(t, "claim-publication-faults")
-	for _, stage := range []string{"normalize", "summary", "open", "migrate", "archive"} {
+	for _, stage := range []string{"normalize", "summary", "open", "lock", "migrate", "archive"} {
 		t.Run(stage, func(t *testing.T) {
 			ports := defaultPublicationPreparationPorts()
 			failure := errors.New(stage)
@@ -146,6 +324,8 @@ func TestClaimPublicationPreparationPorts(t *testing.T) {
 				ports.normalizeSummary = func(string) (string, error) { return "", failure }
 			case "open":
 				ports.openRun = func(string, string, string, bool) (*os.File, string, error) { return nil, "", failure }
+			case "lock":
+				ports.lockClaim = func(*os.File, string) (func(), error) { return nil, failure }
 			case "migrate":
 				ports.migrateLegacy = func(*os.File, string, string, string, string) error { return failure }
 			case "archive":
@@ -171,6 +351,21 @@ func TestClaimPublicationPreparationPorts(t *testing.T) {
 	outcome, err := recordWorkLogWithPreparation(newGit.home, "claim-publication-auto-register", newResult, newOptions, workLogPublicationHooks{}, ports)
 	if err != nil || !outcome.ClaimWritten || outcome.claim.WBSessionID != "registered-by-port" {
 		t.Fatalf("claim=%+v err=%v", outcome, err)
+	}
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{WBSessionID: "live-registered", Registered: true}, true
+	})
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	registeredGit := newGitFixture(t)
+	registeredEvidence := observeLocalGit(context.Background(), registeredGit.canonical)
+	registeredResult := CreateResult{Repository: "acme/app", WorktreeDir: registeredGit.canonical, Branch: registeredEvidence.Branch, Base: "main", BaseSHA: registeredEvidence.Head}
+	registeredOptions, err := (WorkLogOptions{EffortID: "registered-publication", RunID: "run", Model: "unknown", WBSessionID: "stale-caller-option"}).WithOriginalPromptFromStdin([]byte("use the live session\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredOutcome, err := recordWorkLogWithPreparation(registeredGit.home, "registered-publication", registeredResult, registeredOptions, workLogPublicationHooks{}, defaultPublicationPreparationPorts())
+	if err != nil || registeredOutcome.claim.WBSessionID != "live-registered" {
+		t.Fatalf("registered authority=%+v err=%v", registeredOutcome, err)
 	}
 }
 

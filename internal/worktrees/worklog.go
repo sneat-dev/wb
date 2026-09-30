@@ -797,6 +797,7 @@ type publicationPreparationPorts struct {
 	normalizeOptions    func(string, WorkLogOptions, time.Time) (string, string, error)
 	normalizeSummary    func(string) (string, error)
 	openRun             func(string, string, string, bool) (*os.File, string, error)
+	lockClaim           func(*os.File, string) (func(), error)
 	migrateLegacy       func(*os.File, string, string, string, string) error
 	ensurePromptArchive func(*os.File, WorkLogOptions, time.Time) (string, string, error)
 	autoRegister        func(string, wbprovenance.Fields) (session.Record, bool)
@@ -805,7 +806,7 @@ type publicationPreparationPorts struct {
 func defaultPublicationPreparationPorts() publicationPreparationPorts {
 	return publicationPreparationPorts{
 		normalizeOptions: normalizeWorkLogOptions, normalizeSummary: NormalizeTaskSummary,
-		openRun: openWorkLogRun, migrateLegacy: migrateLegacySingletonClaim,
+		openRun: openWorkLogRun, lockClaim: lockClaim, migrateLegacy: migrateLegacySingletonClaim,
 		ensurePromptArchive: ensureOriginalPromptArchive, autoRegister: autoRegisterSessionFromEnv,
 	}
 }
@@ -832,6 +833,14 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 		return outcome, err
 	}
 	defer func() { _ = runDir.Close() }()
+	// A crash retry may need to recreate several derivatives from the same
+	// immutable claim. Fence that sequence so two retries cannot race while
+	// writing the projection, journal, and outbox.
+	unlock, err := preparation.lockClaim(runDir, claimID)
+	if err != nil {
+		return outcome, err
+	}
+	defer unlock()
 	if err := preparation.migrateLegacy(runDir, runPath, home, effort, run); err != nil {
 		return outcome, fmt.Errorf("migrate legacy singleton claim: %w", err)
 	}
@@ -845,12 +854,14 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 	if model == "unknown" {
 		provenance = modelProvenanceUnknown
 	}
-	sessionID := strings.TrimSpace(options.WBSessionID)
+	callerSessionID := strings.TrimSpace(options.WBSessionID)
+	sessionID := callerSessionID
 	// A live resolver is authoritative whenever present; callers cannot make
 	// an admitted agent claim point at a different session by supplying a
 	// stale or forged WorkLogOptions value.
 	if identity, ok := RegisteredIdentity(); ok {
 		sessionID = strings.TrimSpace(identity.WBSessionID)
+		callerSessionID = sessionID
 	}
 	fields := wbprovenance.FromEnv()
 	if sessionID == "" {
@@ -884,12 +895,32 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
 		EffortLevel: fields.EffortLevel, ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion}
 	ports := worktreeclaims.PublicationPorts{
-		OpenPrivateChild:     openPrivateChild,
+		OpenPrivateChild: openPrivateChild,
+		ReadClaimAt:      readWorkLogClaimAt,
+		ReadClaimNames: func(claims *os.File) ([]string, error) {
+			return claims.Readdirnames(-1)
+		},
+		RequiredSessionID: callerSessionID,
+		CorroborateExisting: func(existing worktreeclaims.Claim) error {
+			head, err := git(context.Background(), existing.Worktree, "rev-parse", "HEAD")
+			if err != nil {
+				return err
+			}
+			projection := workLogProjection{Version: 1, EffortID: existing.EffortID, RunID: existing.RunID, ClaimID: existing.ClaimID, Lifecycle: "active"}
+			return corroborateClaim(existing.Worktree, head, projection, existing)
+		},
 		WriteJSONImmutableAt: writeJSONImmutableAt,
 		EnsureRunIndex:       ensureWorkLogRunIndex,
 		WriteProjection:      writeWorkLogProjection,
 		WriteCreationJournal: func(published worktreeclaims.Claim) error {
-			return writeCreationJournal(effort, run, claimID, result, options, now)
+			journalOptions := options
+			journalOptions.Initiator = published.Initiator
+			journalOptions.AgentID = published.AgentID
+			journalOptions.AgentRuntime = published.AgentRuntime
+			journalOptions.Model = published.Model
+			journalOptions.CLI = published.CLI
+			journalOptions.Provider = published.Provider
+			return writeCreationJournal(effort, run, claimID, result, journalOptions, published.RecordedAt)
 		},
 		OpenOutbox: openWorkLogOutbox,
 	}
@@ -902,7 +933,7 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 	outcome.ProjectionWritten = receipt.ProjectionWritten
 	outcome.OutboxWritten = receipt.OutboxWritten
 	if receipt.ClaimWritten {
-		outcome.claim = claim
+		outcome.claim = receipt.Claim
 	}
 	return outcome, err
 }
