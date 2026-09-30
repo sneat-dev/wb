@@ -3166,10 +3166,6 @@ func readJSONAt(directory *os.File, name string, target any) error {
 	return filewrite.ReadJSONAt(directory, name, target)
 }
 
-func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) {
-	return worktreesecure.ReadPrivateRecordAt[T](runDir, child, name, validSafeSegment)
-}
-
 func readWorkLogClaimAt(runDir *os.File, claimID string) (workLogClaim, error) {
 	return worktreeclaims.ReadWorkLogClaimAt[workLogClaim](runDir, claimID, validSafeSegment)
 }

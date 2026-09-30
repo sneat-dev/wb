@@ -116,7 +116,7 @@ func TestRepositoryRegistrationLockContentionIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Release()
+	t.Cleanup(func() { _ = held.Release() })
 	clock := time.Now()
 	now := func() time.Time { return clock }
 	sleep := func(delay time.Duration) { clock = clock.Add(delay) }
@@ -283,7 +283,7 @@ func TestWorkLogLockRejectsUnsafePathAndMissingRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer run.Close()
+	t.Cleanup(func() { _ = run.Close() })
 	if _, err := ReadWorkLogClaimAt[map[string]any](run, "missing", valid); err == nil {
 		t.Fatal("missing claim accepted")
 	}
@@ -355,7 +355,7 @@ func TestCleanupCreateOnlyPreparesMissingShell(t *testing.T) {
 		}
 		directory, err := os.Open(path)
 		if err != nil {
-			worktrees.Close()
+			_ = worktrees.Close()
 			return nil, err
 		}
 		return &CleanupTask{WorktreesPath: worktreesRoot, TaskPath: path, Worktrees: worktrees, Task: directory}, nil
@@ -536,7 +536,7 @@ func TestRetiredLockClaimReportsMoveIdentityAndReadFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer directory.Close()
+	t.Cleanup(func() { _ = directory.Close() })
 	retired := filepath.Join(root, ".wb-retired-lock-test")
 	if err := os.WriteFile(retired, []byte("retired"), 0o600); err != nil {
 		t.Fatal(err)
@@ -585,7 +585,7 @@ func TestOperationLockRejectsRetiredDirectoryAndMetadataWriteFaults(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	t.Cleanup(func() { _ = file.Close() })
 	for _, test := range []struct {
 		name  string
 		ports LockMetadataPorts
@@ -599,7 +599,7 @@ func TestOperationLockRejectsRetiredDirectoryAndMetadataWriteFaults(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer opened.Close()
+			defer func() { _ = opened.Close() }()
 			ports := test.ports
 			if ports.AfterTruncate != nil {
 				ports.AfterTruncate = func() { _ = opened.Close() }
@@ -687,7 +687,7 @@ func TestClaimFenceReportsKernelLockFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer run.Close()
+	t.Cleanup(func() { _ = run.Close() })
 	if _, err := LockClaim(run, "claim", valid, ClaimLockPorts{AfterOpen: func(fd int) { _ = unix.Close(fd) }}); err == nil {
 		t.Fatal("closed claim descriptor accepted")
 	}
@@ -809,7 +809,7 @@ func TestHeldOperationLockRefusesLiveHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Release()
+	t.Cleanup(func() { _ = first.Release() })
 	if _, err := AcquireOperationLock(directory, false, 2); !errors.Is(err, ErrOperationLockHeld) {
 		t.Fatalf("live holder = %v", err)
 	}

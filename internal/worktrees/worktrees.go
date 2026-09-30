@@ -3467,10 +3467,6 @@ func openOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
 	return worktreesecure.OpenOrCreateNoFollowDirectory(parentFD, name)
 }
 
-func openOrCreateNoFollowDirectoryWith(opener secureopen.Opener, parentFD int, name string) (int, error) {
-	return worktreesecure.OpenOrCreateNoFollowDirectoryWith(opener, parentFD, name)
-}
-
 func requireAbsentNoFollowChild(parentFD int, name string) error {
 	return worktreesecure.RequireAbsentNoFollowChild(parentFD, name)
 }

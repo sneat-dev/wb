@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
-	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
@@ -72,11 +71,7 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	if got := planBranchCleanup(nil, branchSweepOptions{}); got == nil {
 		t.Fatal("nil facade plan should return empty nonnil slice")
 	}
-	// Type aliases preserve the exact DTO identity and JSON tags through the facade.
-	var same *worktreebranches.PullRequest = pr
-	if same != pr {
-		t.Fatal("PR alias changed pointer identity")
-	}
+	// The receipt retains the exact PR pointer; JSON tags also survive the facade.
 	raw, err := json.Marshal(BranchCleanupResult{BranchEntry: entry, Outcome: "planned"})
 	if err != nil || !strings.Contains(string(raw), `"receipt_pull_request"`) || strings.Contains(string(raw), `"skip_reason"`) {
 		t.Fatalf("facade JSON shape: %s %v", raw, err)

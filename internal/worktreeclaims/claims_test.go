@@ -172,7 +172,7 @@ func TestClaimsBindingLookup(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			defer d.Close()
+			defer func() { _ = d.Close() }()
 			visit(d, "claim", "task")
 			visit(d, "absent", "other")
 			return nil
@@ -278,7 +278,7 @@ func TestClaimsBindingErrorsAndOrdering(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer d.Close()
+		defer func() { _ = d.Close() }()
 		visit(d, "c", "z")
 		return nil
 	}, ReadJSONAt: filewrite.ReadJSONAt}
@@ -323,7 +323,7 @@ func TestClaimsBindingErrorsAndOrdering(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer d.Close()
+		defer func() { _ = d.Close() }()
 		for _, id := range []string{"c", "a", "b"} {
 			visit(d, id, id)
 		}
@@ -493,7 +493,7 @@ func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	p = testPorts()
 	p.ReadNames = func(*os.File) ([]string, error) { return nil, errors.New("read names") }
 	if _, err := p.ListPromptsIn(dir); err == nil || !strings.Contains(err.Error(), "read prompt sequence") {
@@ -508,7 +508,7 @@ func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lockDir.Close()
+	defer func() { _ = lockDir.Close() }()
 	if _, err := LockJournalSequenceWith(lockDir, ".lock-chmod", LockOps{Chmod: func(int, uint32) error { return errors.New("chmod") }}); err == nil || err.Error() != "chmod" {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestClaimsBindingTieBreak(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer d.Close()
+		defer func() { _ = d.Close() }()
 		visit(d, "z", "task")
 		visit(d, "a", "task")
 		return nil

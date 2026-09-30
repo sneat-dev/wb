@@ -14,7 +14,7 @@ func TestJournalFacadeAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 	fd, err := openJournalComponent(int(journal.Fd()), worklogDirectory, true)
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +24,7 @@ func TestJournalFacadeAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	event := LocalWorkLogEvent{Version: 1, ID: "facade", Type: LocalEventSteer, At: time.Unix(10, 0).UTC()}
 	if err := validateLocalEventForSequence(event, nil); err != nil {
 		t.Fatal(err)

@@ -46,7 +46,7 @@ func (p HeartbeatPorts) TouchHeartbeat(worktree, command string) {
 	if err != nil {
 		return
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	record := HeartbeatRecord{At: p.Now().UTC(), Command: strings.TrimSpace(command), PID: p.PID()}
 	encoded, err := json.Marshal(record)
 	if err != nil {
@@ -59,7 +59,7 @@ func (p HeartbeatPorts) HeartbeatAt(worktree string) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	raw, err := p.ReadBytesAt(directory, HeartbeatName)
 	if err != nil {
 		return time.Time{}
@@ -123,7 +123,7 @@ func (p HeartbeatPorts) NewestWorkLogEventTime(worktree string) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	newest := time.Time{}
 	rewind := p.Rewind
 	if rewind == nil {
