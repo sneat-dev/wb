@@ -714,24 +714,12 @@ func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
 		}
 	}
 	var publication *createdWorktreePublication
-	if err := addWorktreeAtSecureDestination(
-		state.ctx, state.canonical, physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository,
-		branch, spec.Branch, spec.Commit, branchExists,
-		nil, // beforeAdd
-		nil, // afterStageDirectoryCreated
-		nil, // afterStageValidation
-		nil, // afterStageVerification
-		nil, // afterDestinationValidation
-		nil, // afterCheckoutAuthorization
-		nil, // afterCheckoutMove
-		nil, // afterPublishedAuthorization
-		nil, // afterRegistrationLockAcquired
-		nil, // afterRepair
-		nil, // beforeStagedWorktreeOpen
-		state.afterTargetStagedAdd,
-		nil, // beforeRepair
-		&publication,
-	); err != nil {
+	if err := addWorktreeAtSecureDestination(state.ctx, securePublicationRequest{
+		canonical: state.canonical, operationRoot: physicalOperation.Path, operationDirectory: physicalOperation.Directory,
+		parent: physicalParent, repository: physicalRepository, branch: branch, base: spec.Branch,
+		baseRevision: spec.Commit, branchExists: branchExists, publication: &publication,
+		hooks: securePublicationHooks{afterStagedAdd: state.afterTargetStagedAdd},
+	}); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("create pinned target worktree: %w", err)
 	}
 	state.publication = publication
