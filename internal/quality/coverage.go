@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -256,26 +255,25 @@ func goModules(root string) ([]string, error) {
 }
 
 func profileTotals(path string) (statements, covered int, err error) {
-	contents, err := os.ReadFile(path)
+	blocks, err := ParseCoverageProfile(path)
 	if err != nil {
 		return 0, 0, err
 	}
-	for lineNumber, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
-		if lineNumber == 0 && strings.HasPrefix(line, "mode: ") {
-			continue
+	if len(blocks) == 0 {
+		// A header-only profile is valid when the instrumented module has no
+		// statements. An empty or whitespace-only file is not a profile.
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return 0, 0, err
 		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
+		if !strings.HasPrefix(strings.TrimSpace(string(contents)), "mode: ") {
+			return 0, 0, fmt.Errorf("invalid coverage profile %s at line 1", path)
 		}
-		count, countErr := strconv.ParseInt(fields[2], 10, 64)
-		statementCount, statementErr := strconv.Atoi(fields[1])
-		if countErr != nil || statementErr != nil {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
-		}
-		statements += statementCount
-		if count > 0 {
-			covered += statementCount
+	}
+	for _, block := range blocks {
+		statements += block.Statements
+		if block.Count > 0 {
+			covered += block.Statements
 		}
 	}
 	return statements, covered, nil

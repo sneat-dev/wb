@@ -38,8 +38,8 @@ type coverageBlockLocation struct {
 
 // ParseCoverageProfile reads a Go coverage profile (`mode: ...` header
 // followed by `file:startLine.startCol,endLine.endCol numStmt count` rows)
-// into unique source blocks, preserving line ranges that profileTotals
-// collapses into a single aggregate. Repeated blocks from instrumented test
+// into unique source blocks, preserving line ranges for callers that need more
+// than profileTotals' aggregate. Repeated blocks from instrumented test
 // binaries combine execution counts according to the profile mode.
 func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	file, err := os.Open(profilePath)
