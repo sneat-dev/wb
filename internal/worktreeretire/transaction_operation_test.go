@@ -122,11 +122,12 @@ func TestTransactionPhaseFaultsReplayFromDurableReceipt(t *testing.T) {
 			if len(f.reports) == 0 {
 				t.Fatal("no durable receipt before interruption")
 			}
-			if phase == "source_committed" {
+			switch phase {
+			case "source_committed":
 				if partial.Phase != "commit_intent" || f.reports[0].Phase != "commit_intent" {
 					t.Fatalf("missing exact commit intent: %+v", partial)
 				}
-			} else if phase == "original_delete_intent" || phase == "original_delete_pushed" {
+			case "original_delete_intent", "original_delete_pushed":
 				if partial.DeleteIntentSHA != f.result.OriginalRemoteSHA {
 					t.Fatalf("missing exact deletion intent: %+v", partial)
 				}
