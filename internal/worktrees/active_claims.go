@@ -222,9 +222,5 @@ func openDirectDirectoryNoFollow(path string) (*os.File, error) {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), "wb-active-private-directory")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("wrap active Work Log directory")
-	}
 	return file, nil
 }

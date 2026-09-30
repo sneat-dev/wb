@@ -605,11 +605,6 @@ func openCanonicalRepositoryFromOwnedRoot(path string, root *os.File, gitDirecto
 		return nil, fmt.Errorf("open canonical Git directory without following links: %w", err)
 	}
 	common := os.NewFile(uintptr(gitFD), gitDirectoryName)
-	if common == nil {
-		_ = unix.Close(gitFD)
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap canonical Git directory")
-	}
 	canonical := &canonicalRepository{path: path, root: root, common: common}
 	if err := canonical.validate(); err != nil {
 		canonical.close()
@@ -2557,11 +2552,6 @@ func prepareOperationRootAt(worktreesRoot, operation string) (preparedOperationR
 		return preparedOperationRoot{}, err
 	}
 	directory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
-	if directory == nil {
-		_ = unix.Close(operationFD)
-		_ = root.Close()
-		return preparedOperationRoot{}, fmt.Errorf("wrap secure worktree operation directory")
-	}
 	return preparedOperationRoot{Path: filepath.Join(worktreesRoot, operation), Worktrees: root, Directory: directory}, nil
 }
 
@@ -2586,10 +2576,6 @@ func prepareCanonicalWorktreesRoot(ctx context.Context, canonical *canonicalRepo
 		return "", nil, fmt.Errorf("create canonical .worktrees root: %w", err)
 	}
 	directory := os.NewFile(uintptr(fd), "wb-canonical-worktrees-root")
-	if directory == nil {
-		_ = unix.Close(fd)
-		return "", nil, fmt.Errorf("wrap canonical .worktrees root")
-	}
 	path := filepath.Join(canonical.path, ".worktrees")
 	if !directoryStillMatches(path, directory) {
 		_ = directory.Close()
@@ -2690,10 +2676,6 @@ func openRelativeParentDirectory(base *os.File, basePath, parent string) (*os.Fi
 			_ = current.Close()
 		}
 		directory := os.NewFile(uintptr(fd), "wb-worktree-parent")
-		if directory == nil {
-			_ = unix.Close(fd)
-			return nil, "", fmt.Errorf("wrap secure worktree parent directory %s", segment)
-		}
 		current, currentPath, owned = directory, filepath.Join(currentPath, segment), true
 	}
 	return current, currentPath, nil
