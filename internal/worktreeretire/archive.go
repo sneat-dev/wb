@@ -363,8 +363,22 @@ func ArchiveManifestPreserve(manifest Manifest) string {
 
 func GitObjectSHA(ctx context.Context, directory, object string) (string, error) {
 	command := exec.CommandContext(ctx, "git", "-C", directory, "show", object)
-	// A fresh exec.Cmd has no Stdout attached, so StdoutPipe cannot fail.
-	pipe, _ := command.StdoutPipe()
+	return gitObjectSHAWithCommand(command)
+}
+
+// gitObjectCommand keeps the command and its pipe together so a failed pipe
+// creation cannot start the process or reach the streaming hash.
+type gitObjectCommand interface {
+	StdoutPipe() (io.ReadCloser, error)
+	Start() error
+	Wait() error
+}
+
+func gitObjectSHAWithCommand(command gitObjectCommand) (string, error) {
+	pipe, err := command.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
 	if err := command.Start(); err != nil {
 		return "", err
 	}

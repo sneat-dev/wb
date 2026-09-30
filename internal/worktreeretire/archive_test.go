@@ -240,6 +240,35 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 
+type fakeGitObjectCommand struct {
+	pipeErr    error
+	startCalls int
+	waitCalls  int
+}
+
+func (command *fakeGitObjectCommand) StdoutPipe() (io.ReadCloser, error) {
+	return nil, command.pipeErr
+}
+
+func (command *fakeGitObjectCommand) Start() error {
+	command.startCalls++
+	return nil
+}
+
+func (command *fakeGitObjectCommand) Wait() error {
+	command.waitCalls++
+	return nil
+}
+
+func TestGitObjectPipeFailureStopsBeforeStartAndHash(t *testing.T) {
+	pipeErr := errors.New("pipe descriptors exhausted")
+	command := &fakeGitObjectCommand{pipeErr: pipeErr}
+	got, err := gitObjectSHAWithCommand(command)
+	if got != "" || !errors.Is(err, pipeErr) || command.startCalls != 0 || command.waitCalls != 0 {
+		t.Fatalf("pipe failure = (digest %q, error %v, starts %d, waits %d)", got, err, command.startCalls, command.waitCalls)
+	}
+}
+
 func TestCaptureAndGitObjectFailureBoundaries(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
