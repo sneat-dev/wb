@@ -225,6 +225,13 @@ func TestOpenReadOnlyOpensAnExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenReadOnly: %v", err)
 	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("inspect close-on-exec flag: %v", err)
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		t.Fatal("OpenReadOnly did not set close-on-exec")
+	}
 	_ = unix.Close(fd)
 }
 

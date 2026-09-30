@@ -64,7 +64,7 @@ func WriteBytesImmutableAtInjected(directory *os.File, name string, content []by
 
 // ReadAt reads one non-symlinked entry below an already-open directory.
 func ReadAt(directory *os.File, name string) ([]byte, error) {
-	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	fd, err := OpenReadOnly(int(directory.Fd()), name, nil)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) {
 			return nil, os.ErrNotExist
