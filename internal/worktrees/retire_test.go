@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
@@ -291,7 +292,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 				t.Fatalf("resume changed identity: partial=%#v finished=%#v", partial, finished)
 			}
 			if phase == "source_committed" {
-				if finished.IntentParentSHA != partial.SourceSHA || finished.RetiredRef != retiredBranchDestination(partial.IntentAt, partial.Branch, finished.SourceSHA) {
+				if finished.IntentParentSHA != partial.SourceSHA || finished.RetiredRef != worktreebranches.RetiredBranchDestination(partial.IntentAt, partial.Branch, finished.SourceSHA) {
 					t.Fatalf("resume did not honor durable commit intent: partial=%#v finished=%#v", partial, finished)
 				}
 			} else if finished.SourceSHA != partial.SourceSHA || finished.RetiredRef != partial.RetiredRef {

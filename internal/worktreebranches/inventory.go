@@ -62,6 +62,10 @@ type InventoryPorts struct {
 	Discover            func(string) ([]Repository, error)
 	ListInUse           func(context.Context, string, string) ([]BranchUse, error)
 	Git                 worktreeproof.GitQuery
+	CheckedOut          func(context.Context, string) (map[string]bool, string)
+	InUse               func(context.Context, string, string) (map[string]string, string)
+	OpenHeadPull        func(context.Context, string, string, string, string) (*PullRequest, error)
+	OpenBasePull        func(context.Context, string, string, string) (*PullRequest, error)
 	FetchTarget         func(context.Context, string, string) (string, error)
 	IsAncestor          func(context.Context, string, string, string) (bool, error)
 	ContentContained    func(context.Context, string, string, string) (bool, error)

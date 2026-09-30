@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func writeAndCommit(t *testing.T, dir, name, content, message string) string {
@@ -275,7 +276,7 @@ func TestReviewedCleanupOptionsAndPlanFailClosed(t *testing.T) {
 		{Repository: "acme/app", Branch: "feature/x", Scope: BranchScopeRemote, Disposition: "", SupersededAtOrigin: true},
 		{Repository: "acme/app", Branch: "feature/y", Scope: BranchScopeRemote, Disposition: BranchSuperseded, SupersededAtOrigin: true},
 	}
-	planned := planBranchCleanup(entries, branchSweepOptions{})
+	planned := worktreebranches.PlanBranchCleanup(entries, branchSweepOptions{}.branchPolicyOptions())
 	if planned[0].Eligible {
 		t.Fatal("empty disposition was eligible for reviewed cleanup")
 	}
@@ -365,7 +366,7 @@ func TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination(t *testing.T) 
 }
 
 func TestRetiredBranchDestinationFlattensTheSourceName(t *testing.T) {
-	got := retiredBranchDestination(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC), "feature/old/name", "0123456789abcdef")
+	got := worktreebranches.RetiredBranchDestination(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC), "feature/old/name", "0123456789abcdef")
 	if got != "retired/20260923-feature-old-name-0123456789ab" {
 		t.Fatalf("destination = %q", got)
 	}
@@ -849,7 +850,7 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 
 	// Advance feature/moves now, simulating a race after planning.
 	gitTest(t, fixture.canonical, "checkout", "feature/moves")
@@ -931,7 +932,7 @@ func TestBranchCleanupUnreadableSkipRowNamesRepositoryAndUnderlyingReason(t *tes
 		t.Fatalf("evidence = %q, want it to name the failed fetch", entry.Evidence)
 	}
 
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 	if len(results) != 1 {
 		t.Fatalf("cleanup results = %d, want exactly 1", len(results))
 	}

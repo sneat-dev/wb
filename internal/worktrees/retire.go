@@ -21,6 +21,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // RetireOptions selects one WB-managed checkout. Inspector and ArchiveRemote
@@ -151,7 +152,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		Branch: entry.Branch, Preserve: options.Preserve, OriginalRemoteSHA: remoteSHA, SourceSHA: entry.HeadSHA, ClaimID: claim.ClaimID, EffortID: claim.EffortID, RunID: claim.RunID, Phase: "planned"}
 	result.ReportPath = retireReportPath(resolution.Write.Home, result)
 	if !options.Apply {
-		result.RetiredRef = retiredBranchDestination(options.Now(), entry.Branch, entry.HeadSHA)
+		result.RetiredRef = worktreebranches.RetiredBranchDestination(options.Now(), entry.Branch, entry.HeadSHA)
 		result.ArchiveRef = retireArchiveRef(result)
 		return result, nil
 	}
@@ -240,7 +241,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 				}
 			}
 			result.SourceSHA = current
-			result.RetiredRef = retiredBranchDestination(result.IntentAt, result.Branch, current)
+			result.RetiredRef = worktreebranches.RetiredBranchDestination(result.IntentAt, result.Branch, current)
 			result.ArchiveRef = retireArchiveRef(result)
 			result.Phase = "committed"
 			if err := writeRetireReport(result); err != nil {
@@ -280,7 +281,7 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		if committed {
 			date = result.IntentAt
 		}
-		result.RetiredRef = retiredBranchDestination(date, result.Branch, result.SourceSHA)
+		result.RetiredRef = worktreebranches.RetiredBranchDestination(date, result.Branch, result.SourceSHA)
 		result.ArchiveRef = retireArchiveRef(result)
 		result.Phase = "committed"
 		if err := writeRetireReport(result); err != nil {
@@ -866,7 +867,7 @@ func readRetireReport(path string) (RetireResult, error) {
 		return result, fmt.Errorf("invalid retired ref date")
 	}
 	date, err := time.Parse("20060102", stem[:8])
-	if err != nil || result.RetiredRef != retiredBranchDestination(date, result.Branch, result.SourceSHA) {
+	if err != nil || result.RetiredRef != worktreebranches.RetiredBranchDestination(date, result.Branch, result.SourceSHA) {
 		return result, fmt.Errorf("retirement receipt ref does not bind branch and commit")
 	}
 	return result, nil

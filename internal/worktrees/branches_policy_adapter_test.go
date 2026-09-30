@@ -44,10 +44,10 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	if !isProtectedBranch("main", "main", "other") || protectedEvidence("main", "main", "other") != `is the base branch "main"` {
 		t.Fatal("facade protection diverged")
 	}
-	if !scopeIncludesRemote(BranchScopeAll) || !peerEvidenceSafeDisposition(BranchUnique) {
+	if !worktreebranches.ScopeIncludesRemote(BranchScopeAll) || !worktreebranches.PeerEvidenceSafeDisposition(BranchUnique) {
 		t.Fatal("facade scope or peer policy diverged")
 	}
-	if got := retiredBranchDestination(now, "feature/one", ref.SHA); got != "retired/20260930-feature-one-123456789012" {
+	if got := worktreebranches.RetiredBranchDestination(now, "feature/one", ref.SHA); got != "retired/20260930-feature-one-123456789012" {
 		t.Fatalf("facade retirement destination: %s", got)
 	}
 	entries := []BranchEntry{{Repository: "z", Branch: "b", Scope: BranchScopeLocal, Disposition: BranchContained}, {Repository: "a", Branch: "a", Scope: BranchScopeRemote, Disposition: BranchReceipted}}
@@ -59,17 +59,17 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	if entries[0].Repository != "a" || !reflect.DeepEqual(tallyDispositions(entries), map[string]int{BranchContained: 1, BranchReceipted: 1}) {
 		t.Fatalf("facade sort or totals: %+v", entries)
 	}
-	if !eligibleBranchCleanupDisposition(entry) || skipReasonForDisposition(BranchEntry{Evidence: "reason"}) != "reason" {
+	if !worktreebranches.EligibleBranchCleanupDisposition(entry) || worktreebranches.SkipReasonForDisposition(BranchEntry{Evidence: "reason"}) != "reason" {
 		t.Fatal("facade eligibility or reason diverged")
 	}
-	if !remotePullRequestEvidenceUnavailable([]BranchEntry{{Scope: BranchScopeRemote, Disposition: BranchContained, PullRequestQueryFailed: true}}, branchSweepOptions{Scope: BranchScopeAll}) {
+	if !worktreebranches.RemotePullRequestEvidenceUnavailable([]BranchEntry{{Scope: BranchScopeRemote, Disposition: BranchContained, PullRequestQueryFailed: true}}, branchSweepOptions{Scope: BranchScopeAll}.branchPolicyOptions()) {
 		t.Fatal("facade remote evidence guard diverged")
 	}
-	plan := planBranchCleanup([]BranchEntry{{Scope: BranchScopeLocal, Disposition: BranchContained}}, branchSweepOptions{Scope: BranchScopeLocal})
-	if len(plan) != 1 || !plan[0].Eligible || !reflect.DeepEqual(tallyCleanupOutcomes(plan), map[string]int{"planned": 1}) {
+	plan := worktreebranches.PlanBranchCleanup([]BranchEntry{{Scope: BranchScopeLocal, Disposition: BranchContained}}, branchSweepOptions{Scope: BranchScopeLocal}.branchPolicyOptions())
+	if len(plan) != 1 || !plan[0].Eligible || !reflect.DeepEqual(worktreebranches.TallyCleanupOutcomes(plan), map[string]int{"planned": 1}) {
 		t.Fatalf("facade cleanup plan: %+v", plan)
 	}
-	if got := planBranchCleanup(nil, branchSweepOptions{}); got == nil {
+	if got := worktreebranches.PlanBranchCleanup(nil, branchSweepOptions{}.branchPolicyOptions()); got == nil {
 		t.Fatal("nil facade plan should return empty nonnil slice")
 	}
 	// Type aliases preserve the exact DTO identity and JSON tags through the facade.

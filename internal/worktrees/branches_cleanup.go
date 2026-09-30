@@ -92,11 +92,11 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 	if options.SupersededBy != "" && (options.Repository == "" || options.Branch == "") {
 		return BranchCleanupOptions{}, errors.New("--superseded-by requires exact --repo owner/name and --branch ref selectors")
 	}
-	if options.SupersededBy != "" && scopeIncludesRemote(options.Scope) && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
+	if options.SupersededBy != "" && worktreebranches.ScopeIncludesRemote(options.Scope) && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
 		return BranchCleanupOptions{}, errors.New("reviewed remote retirement requires --peer-evidence and --require-host")
 	}
 	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
-		if !scopeIncludesRemote(options.Scope) || options.Repository == "" || options.Branch == "" {
+		if !worktreebranches.ScopeIncludesRemote(options.Scope) || options.Repository == "" || options.Branch == "" {
 			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host require exact remote scope, --repo owner/name, and --branch ref")
 		}
 		if len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0 {
@@ -114,10 +114,6 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 		options.ReportDir = filepath.Clean(absolute)
 	}
 	return options, nil
-}
-
-func scopeIncludesRemote(scope string) bool {
-	return worktreebranches.ScopeIncludesRemote(scope)
 }
 
 // DefaultBranchCleanupReportDir mirrors DefaultCleanupReportDir's naming
@@ -152,12 +148,12 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 	}
 	sortBranchEntries(entries)
 
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 
 	if !normalized.Apply {
 		return BranchCleanupOutcome{
 			Base: normalized.Base, Scope: normalized.Scope, Apply: false,
-			Results: results, Diagnostics: diagnostics, Totals: tallyCleanupOutcomes(results),
+			Results: results, Diagnostics: diagnostics, Totals: worktreebranches.TallyCleanupOutcomes(results),
 			ElapsedMS: time.Since(started).Milliseconds(),
 		}, nil
 	}
@@ -191,7 +187,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		if _, writeErr := writeBranchCleanupReport(reportDir, normalized, now, results); writeErr != nil {
 			return BranchCleanupOutcome{}, writeErr
 		}
-		return BranchCleanupOutcome{Base: normalized.Base, Scope: normalized.Scope, Apply: true, Results: results, Diagnostics: diagnostics, Totals: tallyCleanupOutcomes(results), ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds()}, nil
+		return BranchCleanupOutcome{Base: normalized.Base, Scope: normalized.Scope, Apply: true, Results: results, Diagnostics: diagnostics, Totals: worktreebranches.TallyCleanupOutcomes(results), ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds()}, nil
 	}
 	normalized.ReportDir = reportDir
 	applyBranchCleanup(ctx, results, paths, normalized, now)
@@ -202,50 +198,9 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 
 	return BranchCleanupOutcome{
 		Base: normalized.Base, Scope: normalized.Scope, Apply: true,
-		Results: results, Diagnostics: diagnostics, Totals: tallyCleanupOutcomes(results),
+		Results: results, Diagnostics: diagnostics, Totals: worktreebranches.TallyCleanupOutcomes(results),
 		ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds(),
 	}, nil
-}
-
-// planBranchCleanup decides, for every classified branch, whether it is
-// eligible for deletion. Contained branches always qualify; receipted ones
-// qualify only when the run enabled --receipts (they cannot arise otherwise).
-// absorbed, unique, protected, in-use, and unreadable are always reported,
-// never eligible. A remote candidate additionally requires pull-request
-// evidence:
-// an open PR refuses it outright, and evidence WB could not obtain refuses
-// every remote candidate in the run, never only the ones it touched.
-func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []BranchCleanupResult {
-	return worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
-}
-
-func eligibleBranchCleanupDisposition(entry BranchEntry) bool {
-	return worktreebranches.EligibleBranchCleanupDisposition(entry)
-}
-
-// skipReasonForDisposition prefers the entry's own tailored Reason, then its
-// classification Evidence, before falling back to a generic disposition
-// message. contained/absorbed/in-use dispositions already carry a tailored
-// Reason. unreadable, unique, and protected never do — they carry only the
-// Evidence gathered while classifying them (for example the exact `git
-// fetch` failure that made a repository's whole branch set unreadable). That
-// Evidence is exactly what `wb branch list` already prints for the same
-// entry, so dropping it here silently discarded the one actionable detail an
-// operator needs to act on a skip row.
-func skipReasonForDisposition(entry BranchEntry) string {
-	return worktreebranches.SkipReasonForDisposition(entry)
-}
-
-// remotePullRequestEvidenceUnavailable reports whether WB could not query
-// pull-request evidence for at least one remote contained candidate. Any
-// failure fails the whole remote scope closed for this run, never only the
-// branch that happened to be queried first.
-func remotePullRequestEvidenceUnavailable(entries []BranchEntry, sweep branchSweepOptions) bool {
-	return worktreebranches.RemotePullRequestEvidenceUnavailable(entries, sweep.branchPolicyOptions())
-}
-
-func tallyCleanupOutcomes(results []BranchCleanupResult) map[string]int {
-	return worktreebranches.TallyCleanupOutcomes(results)
 }
 
 // applyBranchCleanup deletes every eligible candidate after repeating its
