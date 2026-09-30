@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
 	"github.com/sneat-dev/wb/internal/worktreeproof"
@@ -77,40 +76,30 @@ func findAbsorbedConflictCleanupProof(
 		return nil, "", nil
 	}
 	reportsDir := filepath.Join(home, "reports", "worktree-merge")
-	entries, readDirErr := os.ReadDir(reportsDir)
-	if readDirErr != nil {
-		if os.IsNotExist(readDirErr) {
-			return nil, "", nil
-		}
-		return nil, "", fmt.Errorf("read worktree-merge reports %s: %w", reportsDir, readDirErr)
-	}
 	cleanWorktree := filepath.Clean(worktreeDir)
-	for _, dirEntry := range entries {
-		name := dirEntry.Name()
-		if dirEntry.IsDir() || !strings.HasSuffix(name, ".json") || strings.Contains(name, ".ack.json") {
-			continue
-		}
-		receiptPath := filepath.Join(reportsDir, name)
-		receiptBytes, readErr := os.ReadFile(receiptPath)
-		if readErr != nil {
-			continue
-		}
+	readDirErr := forEachWorktreeMergeReceipt(home, func(receiptPath string, receiptBytes []byte) bool {
 		var receipt absorbedConflictReceipt
 		if jsonErr := json.Unmarshal(receiptBytes, &receipt); jsonErr != nil {
-			continue
+			return false
 		}
 		if receipt.ReceiptPath != receiptPath || receipt.Candidate.Task != task ||
 			filepath.Clean(receipt.Candidate.Worktree) != cleanWorktree {
-			continue
+			return false
 		}
 		// Exactly one receipt can name this task/worktree as its candidate
 		// (the merger lane is exclusive), so the first structural match is
 		// the only one that matters.
 		matchedReceiptPath = receiptPath
 		proof, err = validateAbsorbedConflictAcknowledgementSidecar(ctx, canonicalDir, receiptPath, receipt, entryBranch, entryHeadSHA, remoteTargetSHA)
-		return proof, matchedReceiptPath, err
+		return true
+	})
+	if readDirErr != nil {
+		if os.IsNotExist(readDirErr) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("read worktree-merge reports %s: %w", reportsDir, readDirErr)
 	}
-	return nil, "", nil
+	return proof, matchedReceiptPath, err
 }
 
 func validateAbsorbedConflictAcknowledgementSidecar(
