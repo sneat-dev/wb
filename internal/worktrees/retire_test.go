@@ -16,6 +16,42 @@ import (
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
 
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
+func TestRetireArchiveReadOnlyProjectionAdapters(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "retire-archive-adapter", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	ports := retireArchivePorts()
+	claim, err := ports.ReadClaim(fixture.home, worktree)
+	if err != nil || claim.ClaimID == "" || claim.Repository != "acme/app" || claim.Branch != "retire-archive-adapter" {
+		t.Fatalf("claim projection = (%+v, %v)", claim, err)
+	}
+	if terminal, err := ports.ReadTerminal(fixture.home, worktree); err != nil || terminal != nil {
+		t.Fatalf("active terminal projection = (%+v, %v)", terminal, err)
+	}
+	if _, err := ports.ReadClaim(fixture.home, filepath.Join(fixture.projectsRoot, "missing")); err == nil {
+		t.Fatal("missing claim accepted")
+	}
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Result: "failure", Apply: true, Report: []byte("archive report")}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := ports.ReadTerminal(fixture.home, worktree)
+	if err != nil || terminal == nil || terminal.ClaimID != claim.ClaimID || terminal.ReportPath == "" {
+		t.Fatalf("terminal projection = (%+v, %v)", terminal, err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".wb-worklog", "recovery.json"), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if terminal, err := ports.ReadTerminal(fixture.home, worktree); err == nil || terminal != nil {
+		t.Fatalf("malformed terminal projection = (%+v, %v)", terminal, err)
+	}
+}
+
+//nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
 func TestRetireCommitSourceDoesNotCommitBeforeDurableIntent(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
