@@ -55,7 +55,11 @@ func TestE2ESessionReceiveCanonicalClonePreservesPublicationBoundary(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer owner.Close()
+			defer func() {
+				if err := owner.Close(); err != nil {
+					t.Errorf("close owner directory: %v", err)
+				}
+			}()
 			declaredRemote := fixture.remote
 			if tc.prepare != nil {
 				declaredRemote = tc.prepare(t, fixture, owner)
@@ -178,7 +182,11 @@ func TestE2ESessionReceiveInterruptedRecoveryRefusesUnboundStates(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer operationDirectory.Close()
+			defer func() {
+				if err := operationDirectory.Close(); err != nil {
+					t.Errorf("close operation directory: %v", err)
+				}
+			}()
 			ctx := context.Background()
 			if tc.gitFailure || tc.badPostList {
 				listCalls := 0
@@ -394,7 +402,11 @@ func TestE2ESessionReceiveCanonicalCloneFaultBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer owner.Close()
+			defer func() {
+				if err := owner.Close(); err != nil {
+					t.Errorf("close owner directory: %v", err)
+				}
+			}()
 			parsed, err := gitremote.Parse(fixture.remote)
 			if err != nil {
 				t.Fatal(err)
@@ -534,7 +546,11 @@ func TestE2ESessionReceiveInterruptedRecoveryFaultBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer operationDirectory.Close()
+			defer func() {
+				if err := operationDirectory.Close(); err != nil {
+					t.Errorf("close operation directory: %v", err)
+				}
+			}()
 			ports := productionSessionReceivePublicationPorts()
 			tc.change(t, &ports)
 			reused, err := recoverInterruptedSessionReceivePublicationWithPorts(context.Background(), canonical, operationRoot, operationDirectory, parent, name, finalPath, spec.PinBranch, spec.Commit, tc.moved, ports)

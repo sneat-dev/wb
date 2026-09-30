@@ -50,7 +50,7 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesReboundPath(t *testing.T) {
 	writerFD := -1
 	fifoPath := exclude
 	joined := false
-	defer func() {
+	t.Cleanup(func() {
 		released := false
 		if writerFD >= 0 {
 			_, _ = unix.Write(writerFD, []byte(patterns))
@@ -88,7 +88,7 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesReboundPath(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-	}()
+	})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		select {
@@ -147,7 +147,7 @@ func TestE2EPrepareCanonicalWorktreesRootRefusesSymlinkedGitInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer canonical.close()
+	t.Cleanup(canonical.close)
 	parked := filepath.Join(root, ".git", "info-parked")
 	if err := os.Rename(info, parked); err != nil {
 		t.Fatal(err)
