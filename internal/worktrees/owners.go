@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
 )
 
 const LocalEventOwner = "owner_attached"
@@ -17,29 +18,13 @@ const LocalEventOwner = "owner_attached"
 // OwnerRegistration is immutable evidence that a particular agent session
 // attached itself to a worktree. It is intentionally append-only: a later
 // session never overwrites the creator or a previous owner.
-type OwnerRegistration struct {
-	Agent     string `json:"agent,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Effort    string `json:"effort,omitempty"`
-	Initiator string `json:"initiator,omitempty"`
-	// PID is the declared agent session's process, never WB's own. WB is a
-	// short-lived CLI: its PID is dead moments after it would be written, and
-	// once recycled it would report an abandoned worktree as active. An
-	// absent PID therefore reads as unknown, which is the honest answer.
-	PID int `json:"pid,omitempty"`
-	// WBVersion and Command are always populated, because WB always knows
-	// them. They give a worktree provenance even when no agent identity was
-	// declared.
-	WBVersion string    `json:"wb_version,omitempty"`
-	Command   string    `json:"command,omitempty"`
-	At        time.Time `json:"at"`
-}
+type OwnerRegistration = worktreejournal.OwnerRegistration
 
 // sameCustody reports whether two registrations describe the same session
 // doing the same kind of work. It deliberately ignores At and Effort: a
 // session writing ten times should leave one custody record, not ten, but a
 // changed model or a WB upgrade is worth a new entry.
-func (o OwnerRegistration) sameCustody(other OwnerRegistration) bool {
+func sameCustody(o, other OwnerRegistration) bool {
 	return o.Agent == other.Agent &&
 		o.PID == other.PID &&
 		o.Model == other.Model &&
@@ -99,7 +84,7 @@ func RecordCustody(worktree, effort, command string, identity AgentIdentity) err
 		Effort: effort, PID: identity.PID, Initiator: MutationInitiator(),
 		WBVersion: buildinfo.Version(), Command: command,
 	}
-	if found && previous.sameCustody(candidate) {
+	if found && sameCustody(previous, candidate) {
 		return nil
 	}
 	if candidate.Effort == "" && found {

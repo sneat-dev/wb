@@ -13,31 +13,28 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
-//nolint:paralleltest // replaces the package-level atomic journal rewrite seam.
 func TestChangedLineRatchetRepairsFailClosedWhenJournalCannotBeRewritten(t *testing.T) {
-	previous := rewriteLocalEventJournalAtomicWrite
-	rewriteLocalEventJournalAtomicWrite = func(*os.File, string, []byte, os.FileMode) error {
+	store := localJournalStore()
+	store.WriteJournal = func(*os.File, string, []byte, os.FileMode) error {
 		return errors.New("injected journal rewrite failure")
 	}
-	t.Cleanup(func() { rewriteLocalEventJournalAtomicWrite = previous })
 	for _, tc := range []struct {
 		name string
 		call func(string, *os.File) error
 	}{
 		{
 			name: "append", call: func(worktree string, directory *os.File) error {
-				_, _, err := appendLocalEventUnderLock(worktree, directory, LocalWorkLogEvent{ID: "new", Type: LocalEventHandoff, At: time.Now().UTC(), Message: "new"})
+				_, _, err := store.AppendLocalEventUnderLock(worktree, directory, LocalWorkLogEvent{ID: "new", Type: LocalEventHandoff, At: time.Now().UTC(), Message: "new"})
 				return err
 			},
 		},
 		{
 			name: "projection", call: func(worktree string, _ *os.File) error {
-				_, err := repairCurrentLocalProjection(worktree)
+				_, err := store.RepairCurrentLocalProjection(worktree)
 				return err
 			},
 		},
 	} {
-		//nolint:paralleltest // Each case replaces the package-level atomic journal rewrite seam.
 		t.Run(tc.name, func(t *testing.T) {
 			worktree := custodyWorktree(t)
 			first := LocalWorkLogEvent{ID: "stable", Type: LocalEventHandoff, At: time.Unix(100, 0).UTC(), Message: "stable"}

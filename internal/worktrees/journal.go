@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,8 +29,8 @@ import (
 // policy; excluding their parent would silently swallow newly added policy
 // files, which is the kind of bug that costs an hour to find.
 const (
-	journalRootDirectory  = ".wb"
-	journalLocalDirectory = "local"
+	journalRootDirectory  = worktreejournal.JournalRootDirectory
+	journalLocalDirectory = worktreejournal.JournalLocalDirectory
 	journalExcludeRule    = "/.wb/local/"
 
 	manifestName      = "manifest.yaml"
@@ -234,90 +235,16 @@ func CheckAdmission(worktree string, mode AdmissionMode) Admission {
 // with O_NOFOLLOW at every level, so neither .wb nor local can be swapped for a
 // symlink pointing outside the worktree between checks.
 func openJournalDirectory(worktree string, create bool) (*os.File, error) {
-	root, err := openAbsoluteDirectoryNoFollow(worktree, false)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-
-	wbFD, err := openJournalComponent(int(root.Fd()), journalRootDirectory, create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = unix.Close(wbFD) }()
-
-	localFD, err := openJournalComponent(wbFD, journalLocalDirectory, create)
-	if err != nil {
-		return nil, err
-	}
-	// Only the WB-owned directory is tightened, and only when this call
-	// created it: fchmod is a metadata write, and the read path opened the
-	// descriptor O_RDONLY, so a sandbox that denies writes outside the
-	// workspace would report a read as a denied write. The repository's own
-	// .wb holds tracked policy files whose mode belongs to the repository, not
-	// to WB either way.
-	if create {
-		if err := unix.Fchmod(localFD, 0o700); err != nil {
-			_ = unix.Close(localFD)
-			return nil, err
-		}
-	}
-	directory := os.NewFile(uintptr(localFD), "wb-journal")
-	if directory == nil {
-		_ = unix.Close(localFD)
-		return nil, fmt.Errorf("wrap work-log journal directory")
-	}
-	path := filepath.Join(worktree, journalRootDirectory, journalLocalDirectory)
-	if !directoryStillMatches(path, directory) {
-		_ = directory.Close()
-		return nil, fmt.Errorf("work-log journal directory path changed: %s", path)
-	}
-	return directory, nil
+	return worktreejournal.OpenJournalDirectory(worktree, create)
 }
 
 func openJournalComponent(parentFD int, name string, create bool) (int, error) {
-	var fd int
-	var err error
-	if create {
-		fd, err = openOrCreateNoFollowDirectory(parentFD, name)
-	} else {
-		fd, err = unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	}
-	if errors.Is(err, unix.ENOENT) {
-		return 0, os.ErrNotExist
-	}
-	if err != nil {
-		return 0, fmt.Errorf("open work-log journal component %s: %w", name, err)
-	}
-	return fd, nil
+	return worktreejournal.OpenJournalComponent(parentFD, name, create)
 }
 
 // openJournalSubdirectory opens prompts/ or worklog/ below the journal root.
 func openJournalSubdirectory(worktree, name string, create bool) (*os.File, error) {
-	journal, err := openJournalDirectory(worktree, create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = journal.Close() }()
-
-	fd, err := openJournalComponent(int(journal.Fd()), name, create)
-	if err != nil {
-		return nil, err
-	}
-	// Creating path only, for the same reason as openJournalDirectory: the read
-	// path's descriptor is O_RDONLY and fchmod on it is a metadata write.
-	if create {
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			_ = unix.Close(fd)
-			return nil, err
-		}
-	}
-	directory := os.NewFile(uintptr(fd), "wb-journal-"+name)
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap work-log journal %s directory", name)
-	}
-	return directory, nil
+	return worktreejournal.OpenJournalSubdirectory(worktree, name, create)
 }
 
 // ensureJournalExclude adds the single `/.wb/local/` rule to the repository's
