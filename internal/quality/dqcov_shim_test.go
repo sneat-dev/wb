@@ -48,6 +48,7 @@ for a in "$@"; do
     -coverprofile=*) profile="${a#-coverprofile=}" ;;
   esac
 done
+if [ -n "$DQCOV_GO_LOG" ]; then printf '%s\n' "$*" >> "$DQCOV_GO_LOG"; fi
 case "$1" in
   list)
     if [ -n "$DQCOV_GO_LIST_STDERR" ]; then printf '%s\n' "$DQCOV_GO_LIST_STDERR" >&2; fi
@@ -56,7 +57,6 @@ case "$1" in
     exit 0
     ;;
   test)
-    if [ -n "$DQCOV_GO_LOG" ]; then printf '%s\n' "$*" >> "$DQCOV_GO_LOG"; fi
     if [ "$mode" = list ]; then
       if [ -n "$DQCOV_GO_DISCOVER_FAIL" ]; then printf '%s\n' "$DQCOV_GO_DISCOVER_FAIL" >&2; exit 1; fi
       printf '%s\n' "$DQCOV_GO_TEST_LIST"

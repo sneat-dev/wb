@@ -73,8 +73,12 @@ type plannedGoCoveragePackage struct {
 }
 
 func runCoverageWithOptions(ctx context.Context, options RunOptions, module, profilePath string) (string, int, error) {
+	packagePatterns := goCoveragePackagePatterns(options)
+	if err := ValidateGoCoveragePackagePatterns(packagePatterns); err != nil {
+		return "", 0, err
+	}
 	if options.GoTestShards <= 1 && len(options.GoShardPackages) == 0 {
-		arguments := goCoverageArguments(profilePath, goCoveragePackagePatterns(options)...)
+		arguments := goCoverageArguments(profilePath, packagePatterns...)
 		return runWithOptions(ctx, options, module, "go", arguments...)
 	}
 	if options.GoTestShards < 2 {
@@ -98,7 +102,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if discoveryTimeout <= 0 {
 		discoveryTimeout = shardAttemptTimeout
 	}
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, goCoveragePackagePatterns(options))
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, packagePatterns)
 	if errors.Is(context.Cause(checkCtx), errLogicalCheckTimeout) {
 		return output, attempts, fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
@@ -110,6 +114,21 @@ func goCoveragePackagePatterns(options RunOptions) []string {
 		return []string{"./..."}
 	}
 	return append([]string(nil), options.GoTestPackages...)
+}
+
+// ValidateGoCoveragePackagePatterns rejects values that `go test` could
+// interpret as flags instead of the package patterns callers intend to scope.
+func ValidateGoCoveragePackagePatterns(patterns []string) error {
+	for _, pattern := range patterns {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			return fmt.Errorf("--package must not be empty")
+		}
+		if strings.HasPrefix(trimmed, "-") {
+			return fmt.Errorf("--package %q must not start with '-'", pattern)
+		}
+	}
+	return nil
 }
 
 func runShardedCoverage(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int) (string, error) {

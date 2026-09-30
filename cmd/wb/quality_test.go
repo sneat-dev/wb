@@ -186,6 +186,16 @@ func TestCoverageCmdRejectsPackageFilterInUnsupportedModes(t *testing.T) {
 	}
 }
 
+func TestCoverageCmdRejectsFlagShapedPackagePatterns(t *testing.T) {
+	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
+		t.Run(pattern, func(t *testing.T) {
+			if _, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newCoverageCmd(&invocation{}) }, "--package="+pattern); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+				t.Fatalf("ordinary coverage package %q = %v, want flag-shaped package rejection", pattern, err)
+			}
+		})
+	}
+}
+
 func TestCoverageCmdRejectsExplicitShardingInCIAndChangedModes(t *testing.T) {
 	for _, tc := range []struct {
 		name string

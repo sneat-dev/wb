@@ -45,6 +45,37 @@ func TestDqCovRunCoverageWithOptionsUsesSelectedPackageScope(t *testing.T) {
 	}
 }
 
+func TestDqCovRunCoverageWithOptionsRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
+	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
+		for name, options := range map[string]RunOptions{
+			"ordinary": {GoTestPackages: []string{pattern}},
+			"sharded":  {GoTestShards: 2, GoShardPackages: []string{"./serial"}, GoTestPackages: []string{pattern}},
+		} {
+			t.Run(name+"/"+pattern, func(t *testing.T) {
+				module := t.TempDir()
+				dqCovFakeGo(t, module)
+				commandLog := filepath.Join(module, "go.log")
+				dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LOG": commandLog})
+				if _, _, err := runCoverageWithOptions(context.Background(), options, module, filepath.Join(module, "coverage.out")); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+					t.Fatalf("package %q error = %v, want flag-shaped package rejection", pattern, err)
+				}
+				if _, err := os.Stat(commandLog); !os.IsNotExist(err) {
+					t.Fatalf("flag-shaped package %q started a subprocess: stat log = %v", pattern, err)
+				}
+			})
+		}
+	}
+}
+
+func TestDqCovValidateGoCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *testing.T) {
+	if err := ValidateGoCoveragePackagePatterns([]string{"./internal/worktrees", "github.com/sneat-dev/wb/internal/quality"}); err != nil {
+		t.Fatalf("valid package patterns = %v", err)
+	}
+	if err := ValidateGoCoveragePackagePatterns([]string{""}); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty package pattern error = %v", err)
+	}
+}
+
 func TestDqCovCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

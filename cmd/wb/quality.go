@@ -196,10 +196,8 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 		return fmt.Errorf("--shard-package is repository-specific and cannot be combined with --fleet")
 	}
 	if options.explicitGoTestPackages {
-		for _, pattern := range options.packagePatterns {
-			if strings.TrimSpace(pattern) == "" {
-				return fmt.Errorf("--package must not be empty")
-			}
+		if err := quality.ValidateGoCoveragePackagePatterns(options.packagePatterns); err != nil {
+			return err
 		}
 		if options.fleet {
 			return fmt.Errorf("--package is repository-specific and cannot be combined with --fleet")
