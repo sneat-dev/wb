@@ -19,6 +19,11 @@ func TestE2EReviewedBranchForkProofPrecedesRemoteDeletion(t *testing.T) {
 	fixture := newGitFixture(t)
 	ctx := context.Background()
 	installMergedPullRequestFixturesWithMerge(t, nil, nil, time.Time{})
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/contained-reject")
+	containedHead := writeAndCommit(t, fixture.canonical, "contained.txt", "landed\n", "contained work")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "-m", "merge contained work", "feature/contained-reject")
+	gitTest(t, fixture.canonical, "push", "origin", "main", "feature/contained-reject")
 	gitTest(t, fixture.canonical, "checkout", "-b", "feature/reviewed-fork")
 	reviewedHead := writeAndCommit(t, fixture.canonical, "reviewed.txt", "unmerged\n", "reviewed residual")
 	gitTest(t, fixture.canonical, "push", "origin", "feature/reviewed-fork")
@@ -59,8 +64,16 @@ func TestE2EReviewedBranchForkProofPrecedesRemoteDeletion(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	hook := filepath.Join(fixture.remote, "hooks", "pre-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	contained := BranchCleanupResult{BranchEntry: BranchEntry{
+		Repository: "acme/app", Branch: "feature/contained-reject", Base: "main", Scope: BranchScopeRemote,
+		SHA: containedHead, Disposition: BranchContained,
+	}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &contained, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if contained.Applied || contained.Outcome != "failed" || !strings.Contains(contained.Error, "force-with-lease") || remoteBranchForTest(t, fixture.canonical, contained.Branch) != containedHead {
+		t.Fatalf("contained remote lease refusal = %#v", contained)
 	}
 	reviewed.Outcome, reviewed.Error = "", ""
 	applyRemoteBranchDeletion(ctx, fixture.canonical, &reviewed, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
