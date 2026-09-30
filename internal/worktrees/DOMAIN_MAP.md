@@ -195,6 +195,22 @@ The next two independently reviewed domain plans are implementing in isolated la
 
 Each lane must fully cover every changed/moved/retained body before integration. Prefer shared fake phase-fault fixtures plus native identity/replay journeys, and share the next broad checkpoint after compatible reviewed batches. Commits accumulate locally; remote publication remains deferred. Historical graph/TSV columns below are not refreshed by this coverage run.
 
+### Verified local checkpoint after cleanup and reconciliation
+
+At clean source `9e147a8cd6d6d6f04f4f7c329aa047df273aee23`, cleanup member application/recovery and claim/branch reconciliation are independently reviewed and integrated locally. Cleanup shares member proofs and exact-ref actions while retaining phase-specific authority; its report handles preserved, detached, and unobserved refs accurately and credits deletion only when it occurs. Reconciliation shares restricted claim/record storage in claims, repairs replay after an effect succeeds but its stage write fails, and checks recorded Git identity and claim/live-ref authority before accepting later saved stages. Review found and corrected two replay authority gaps before integration.
+
+The same 12-package, e2e-enabled shared command passed in **16 minutes 19 seconds**, with the freshly built WB binary bound to this exact source. The facade reported 975.533 seconds, including coverage reporting; this was not a race run. Canonical normalized evidence is `/private/tmp/wb-9e147a8c-summary.json`, with the profile and timing log at `/private/tmp/wb-9e147a8c-shared.coverage.out` and `/private/tmp/wb-9e147a8c-shared.jsonl`. The profile SHA-256 is `1f0aaa15ba26d598c74c7a0fc905ff4ba7c1e853d21d81e08324eb745c4ab13b`. Complete Go AST comparisons identify **38 changed or added live functions since `4ba6cf7e`, covering 765/765 statements**, and **104 since `d4aba76d`, covering 2,192/2,192 statements**. The reconciliation lane's additional 11 unchanged retained targets were separately covered; they are not counted as changed bodies. Focused race, vet, pinned lint and six quality guards passed for both domains.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| Original 11-package worktree group | 19,684 / 21,365 | 92.1320% | 1,681 |
+| `internal/worktrees` facade | 14,765 / 16,446 | 89.7787% | 1,681 |
+| Expanded group, including `internal/gitcli` | 19,771 / 21,452 | 92.1639% | 1,681 |
+
+Against `4ba6cf7e`, the original group has **118 fewer uncovered statements** and **167 more total statements**. All 11 supporting packages remain fully covered; claims is now 2,162/2,162. This remains worktree-group coverage, not whole-CLI coverage. The pinned dead-code gate is still red with 321 unbaselined functions; exact symbol comparisons against the pre-batch target show no additions or removals. No baseline was raised, and these test and coverage results do not establish a fully green branch.
+
+After this measured checkpoint, reviewed narrow fixes `7664f9e7` and `4f1a01b3` were accumulated in local integration commit `202c5614`: Rename rollback refuses invalid projection evidence and restores the recorded SHA instead of a mutable local ref; Abort forwards its required remote permission to discarded-backlog recovery. All four new native regressions passed in the integrated checkout. Those later changes have no new broad coverage measurement yet. The next cohesive Rename and Abort/discard refactors are implementing in separate isolated lanes, with complete changed-body coverage required before their integration. Publication remains deferred.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
