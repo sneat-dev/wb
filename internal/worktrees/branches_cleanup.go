@@ -128,6 +128,20 @@ func DefaultBranchCleanupReportDir(home string, now time.Time) string {
 // absorbed disposition, and remote deletion fails closed without pull-request
 // evidence. See spec/features/branch-hygiene/README.md.
 func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCleanupOutcome, error) {
+	return branchCleanupWithPorts(ctx, options, branchCleanupCoordinatorPorts{
+		resolveHome: wbhome.Resolve,
+		writeReport: writeBranchCleanupReport,
+	})
+}
+
+// These per-call collaborators expose only coordinator faults that cannot be
+// induced safely after inventory classification has already succeeded.
+type branchCleanupCoordinatorPorts struct {
+	resolveHome func(string) (wbhome.Resolution, error)
+	writeReport func(string, BranchCleanupOptions, time.Time, []BranchCleanupResult) (string, error)
+}
+
+func branchCleanupWithPorts(ctx context.Context, options BranchCleanupOptions, ports branchCleanupCoordinatorPorts) (BranchCleanupOutcome, error) {
 	started := time.Now()
 	normalized, err := normalizeBranchCleanupOptions(options)
 	if err != nil {
@@ -160,7 +174,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 
 	reportDir := normalized.ReportDir
 	if reportDir == "" {
-		resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
+		resolution, err := ports.resolveHome(normalized.ProjectsRoot)
 		if err != nil {
 			return BranchCleanupOutcome{}, fmt.Errorf("resolve WB home for branch cleanup report: %w", err)
 		}
@@ -171,7 +185,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 	}
 	// durable-audit: the plan is written before the first destructive Git
 	// operation, then rewritten as each candidate's outcome is known.
-	reportPath, err := writeBranchCleanupReport(reportDir, normalized, now, results)
+	reportPath, err := ports.writeReport(reportDir, normalized, now, results)
 	if err != nil {
 		return BranchCleanupOutcome{}, err
 	}
@@ -184,7 +198,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 				results[index].Error = err.Error()
 			}
 		}
-		if _, writeErr := writeBranchCleanupReport(reportDir, normalized, now, results); writeErr != nil {
+		if _, writeErr := ports.writeReport(reportDir, normalized, now, results); writeErr != nil {
 			return BranchCleanupOutcome{}, writeErr
 		}
 		return BranchCleanupOutcome{Base: normalized.Base, Scope: normalized.Scope, Apply: true, Results: results, Diagnostics: diagnostics, Totals: worktreebranches.TallyCleanupOutcomes(results), ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds()}, nil
@@ -192,7 +206,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 	normalized.ReportDir = reportDir
 	applyBranchCleanup(ctx, results, paths, normalized, now)
 
-	if _, err := writeBranchCleanupReport(reportDir, normalized, now, results); err != nil {
+	if _, err := ports.writeReport(reportDir, normalized, now, results); err != nil {
 		return BranchCleanupOutcome{}, err
 	}
 
@@ -251,25 +265,51 @@ type reviewedBranchRecoveryManifest struct {
 // source clone, then proves the bundle restores that exact head into a new
 // empty repository before deletion is permitted.
 func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string, result BranchCleanupResult) (string, error) {
+	return archiveReviewedBranchWithIO(ctx, reportDir, repositoryPath, result, reviewedBranchArchiveIO{
+		mkdirAll: os.MkdirAll, mkdirTemp: os.MkdirTemp, chmod: os.Chmod,
+		syncAncestors: syncDirectoryAndAncestors, syncDirectory: syncDirectory,
+		syncFile: syncFile, git: git, fileSHA256: fileSHA256,
+		copyFileSHA256: copyFileSHA256, writeDurableFile: writeDurableFile,
+		now: time.Now,
+	})
+}
+
+// reviewedBranchArchiveIO is local to one archive attempt. Tests replace one
+// operation at a time; production retains the same Git and durable I/O calls.
+type reviewedBranchArchiveIO struct {
+	mkdirAll         func(string, os.FileMode) error
+	mkdirTemp        func(string, string) (string, error)
+	chmod            func(string, os.FileMode) error
+	syncAncestors    func(string) error
+	syncDirectory    func(string) error
+	syncFile         func(string) error
+	git              func(context.Context, string, ...string) (string, error)
+	fileSHA256       func(string) (string, error)
+	copyFileSHA256   func(string, string) (string, error)
+	writeDurableFile func(string, []byte, os.FileMode) error
+	now              func() time.Time
+}
+
+func archiveReviewedBranchWithIO(ctx context.Context, reportDir, repositoryPath string, result BranchCleanupResult, io reviewedBranchArchiveIO) (string, error) {
 	if err := validateBranchCleanupReportDir(ctx, reportDir, map[string]string{result.Repository: repositoryPath}); err != nil {
 		return "", err
 	}
 	key := strings.NewReplacer("/", "_", "\\", "_").Replace(result.Repository + "--" + result.Branch + "-")
 	recoveryRoot := filepath.Join(reportDir, "recovery")
-	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
+	if err := io.mkdirAll(recoveryRoot, 0o700); err != nil {
 		return "", err
 	}
-	if err := syncDirectoryAndAncestors(recoveryRoot); err != nil {
+	if err := io.syncAncestors(recoveryRoot); err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(recoveryRoot, key)
+	dir, err := io.mkdirTemp(recoveryRoot, key)
 	if err != nil {
 		return "", err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := io.chmod(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := syncDirectory(recoveryRoot); err != nil {
+	if err := io.syncDirectory(recoveryRoot); err != nil {
 		return "", err
 	}
 	bundle := filepath.Join(dir, "source.bundle")
@@ -277,57 +317,57 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 	if result.Scope == BranchScopeRemote {
 		sourceRef = "refs/remotes/origin/" + result.Branch
 	}
-	if _, err := git(ctx, repositoryPath, "bundle", "create", bundle, sourceRef); err != nil {
+	if _, err := io.git(ctx, repositoryPath, "bundle", "create", bundle, sourceRef); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(bundle, 0o600); err != nil {
+	if err := io.chmod(bundle, 0o600); err != nil {
 		return "", err
 	}
-	if err := syncFile(bundle); err != nil {
+	if err := io.syncFile(bundle); err != nil {
 		return "", err
 	}
-	bundleDigest, err := fileSHA256(bundle)
+	bundleDigest, err := io.fileSHA256(bundle)
 	if err != nil {
 		return "", err
 	}
 	copyPath := filepath.Join(dir, "supersession.json")
-	receiptDigest, err := copyFileSHA256(result.SupersessionReceipt, copyPath)
+	receiptDigest, err := io.copyFileSHA256(result.SupersessionReceipt, copyPath)
 	if err != nil {
 		return "", err
 	}
 	if result.SupersessionSHA256 == "" || receiptDigest != result.SupersessionSHA256 {
 		return "", errors.New("supersession receipt bytes changed after planning")
 	}
-	verify, err := os.MkdirTemp("", "wb-reviewed-branch-verify-")
+	verify, err := io.mkdirTemp("", "wb-reviewed-branch-verify-")
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(verify) }()
-	if _, err := git(ctx, verify, "init", "--bare"); err != nil {
+	if _, err := io.git(ctx, verify, "init", "--bare"); err != nil {
 		return "", err
 	}
-	if _, err := git(ctx, verify, "fetch", bundle, sourceRef+":refs/heads/recovery"); err != nil {
+	if _, err := io.git(ctx, verify, "fetch", bundle, sourceRef+":refs/heads/recovery"); err != nil {
 		return "", err
 	}
-	restored, err := git(ctx, verify, "rev-parse", "refs/heads/recovery")
+	restored, err := io.git(ctx, verify, "rev-parse", "refs/heads/recovery")
 	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(restored) != result.SHA {
 		return "", fmt.Errorf("restored head %s does not match %s", strings.TrimSpace(restored), result.SHA)
 	}
-	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: receiptDigest, Bundle: "source.bundle", BundleSHA256: bundleDigest, RestoredHead: strings.TrimSpace(restored), VerifiedAt: time.Now().UTC()}
+	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: receiptDigest, Bundle: "source.bundle", BundleSHA256: bundleDigest, RestoredHead: strings.TrimSpace(restored), VerifiedAt: io.now().UTC()}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	if err := writeDurableFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
+	if err := io.writeDurableFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
 		return "", err
 	}
-	if err := syncDirectory(dir); err != nil {
+	if err := io.syncDirectory(dir); err != nil {
 		return "", err
 	}
-	if err := syncDirectory(recoveryRoot); err != nil {
+	if err := io.syncDirectory(recoveryRoot); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -362,7 +402,10 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 		return
 	}
 	defer canonical.close()
-	if _, err := gitCanonical(ctx, canonical, "update-ref", "-d", "refs/heads/"+result.Branch, currentSHA); err != nil {
+	if err := invokeCleanupExactRefDelete(cleanupLocalRef, result.Branch, currentSHA, func(args ...string) error {
+		_, runErr := gitCanonical(ctx, canonical, args...)
+		return runErr
+	}); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("compare-and-delete refs/heads/%s: %v", result.Branch, err)
 		return
 	}
@@ -498,8 +541,9 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 			return
 		}
 	}
-	pushSpec := "--force-with-lease=refs/heads/" + result.Branch + ":" + observedSHA
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", pushSpec, "origin", ":refs/heads/"+result.Branch); err != nil {
+	if err := invokeCleanupExactRefDelete(cleanupRemoteRef, result.Branch, observedSHA, func(args ...string) error {
+		return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", args...)
+	}); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("force-with-lease delete refs/heads/%s: %v", result.Branch, err)
 		return
 	}

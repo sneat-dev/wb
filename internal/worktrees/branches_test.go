@@ -3,12 +3,15 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
@@ -168,6 +171,58 @@ func TestArchiveReviewedBranchRestoresExactHeadOutsideSourceClone(t *testing.T) 
 	}
 	if manifest.RestoredHead != head || manifest.VerifiedAt.IsZero() {
 		t.Fatalf("manifest does not record independent restore verification: %#v", manifest)
+	}
+	if manifest.Head != head || manifest.BundleSHA256 == "" || manifest.ReceiptSHA256 != digest || manifest.Receipt != "supersession.json" {
+		t.Fatalf("manifest lost exact recovery identities: %#v", manifest)
+	}
+	for _, name := range []string{"source.bundle", "supersession.json", "manifest.json"} {
+		path := filepath.Join(dir, name)
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("archive file %s mode=%v", name, info.Mode())
+		}
+	}
+	if info, statErr := os.Stat(dir); statErr != nil {
+		t.Fatal(statErr)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("recovery directory mode=%v", info.Mode())
+	}
+	if content, readErr := os.ReadFile(filepath.Join(dir, "supersession.json")); readErr != nil || string(content) != "{}\n" {
+		t.Fatalf("copied receipt content=%q err=%v", content, readErr)
+	}
+	results := []BranchCleanupResult{{BranchEntry: BranchEntry{
+		Repository: "acme/app", Branch: "feature/recovery", Base: "missing-target", Scope: BranchScopeLocal,
+		SHA: head, TargetSHA: head, SupersededAtOrigin: true, SupersessionReceipt: receipt, SupersessionSHA256: digest,
+	}, Eligible: true, Outcome: "planned"}}
+	applyBranchCleanup(context.Background(), results, map[string]string{"acme/app": fixture.canonical},
+		BranchCleanupOptions{ReportDir: t.TempDir()}, time.Now())
+	if results[0].RecoveryBundle == "" || results[0].Applied || results[0].Outcome != "failed" {
+		t.Fatalf("archive-before-delete result = %#v", results[0])
+	}
+	if _, err := os.Stat(filepath.Join(results[0].RecoveryBundle, "manifest.json")); err != nil {
+		t.Fatalf("archive was not durable before target refusal: %v", err)
+	}
+	ref, err := os.ReadFile(filepath.Join(fixture.canonical, ".git", "refs", "heads", "feature", "recovery"))
+	if err != nil || strings.TrimSpace(string(ref)) != head {
+		t.Fatalf("failed apply changed the source ref: %q, %v", ref, err)
+	}
+	if _, err := archiveReviewedBranch(context.Background(), t.TempDir(), fixture.canonical, BranchCleanupResult{
+		BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery", SHA: strings.Repeat("0", 40), TargetSHA: head,
+			SupersessionReceipt: receipt, SupersessionSHA256: digest},
+	}); err == nil || !strings.Contains(err.Error(), "restored head") {
+		t.Fatalf("wrong planned head was archived: %v", err)
+	}
+	if err := os.WriteFile(receipt, []byte("changed after planning\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveReviewedBranch(context.Background(), t.TempDir(), fixture.canonical, BranchCleanupResult{
+		BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery", SHA: head, TargetSHA: head,
+			SupersessionReceipt: receipt, SupersessionSHA256: digest},
+	}); err == nil || !strings.Contains(err.Error(), "receipt bytes changed") {
+		t.Fatalf("changed receipt was archived: %v", err)
 	}
 }
 
@@ -857,6 +912,27 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 	writeAndCommit(t, fixture.canonical, "race.txt", "v2\n", "advanced after plan")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	gitTest(t, fixture.canonical, "push", "origin", "feature/moves")
+	blockedAttempted := false
+	for _, candidate := range results {
+		if candidate.Branch != "feature/stays" {
+			continue
+		}
+		blockedAttempted = true
+		blocked := candidate
+		blockedContext := withCanonicalGitInterceptor(ctx, func(_ context.Context, args []string, run func() ([]byte, error)) ([]byte, error) {
+			if len(args) > 0 && args[0] == "update-ref" {
+				return nil, errors.New("injected local compare-and-delete failure")
+			}
+			return run()
+		})
+		applyLocalBranchDeletion(blockedContext, fixture.canonical, &blocked, options)
+		if blocked.Applied || blocked.Outcome != "failed" || !strings.Contains(blocked.Error, "compare-and-delete") {
+			t.Fatalf("local CAS failure was not reported: %#v", blocked)
+		}
+	}
+	if !blockedAttempted {
+		t.Fatal("contained sibling was unavailable for local CAS failure proof")
+	}
 
 	applyBranchCleanup(ctx, results, paths, options, time.Now())
 
@@ -964,11 +1040,107 @@ func TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists(t *testin
 	installMergedPullRequestFixturesWithMerge(t, nil, nil, time.Time{}) // empty gh payload: no PR at all
 
 	gitTest(t, fixture.canonical, "checkout", "-b", "feature/clean-remote")
-	writeAndCommit(t, fixture.canonical, "clean.txt", "v1\n", "clean remote work")
+	head := writeAndCommit(t, fixture.canonical, "clean.txt", "v1\n", "clean remote work")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	gitTest(t, fixture.canonical, "merge", "--no-ff", "-m", "merge feature/clean-remote", "feature/clean-remote")
 	gitTest(t, fixture.canonical, "push", "origin", "main", "feature/clean-remote")
-
+	mainRef, err := os.ReadFile(filepath.Join(fixture.canonical, ".git", "refs", "heads", "main"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "main", Base: "main", Scope: BranchScopeRemote, SHA: strings.TrimSpace(string(mainRef)), Disposition: BranchContained}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &protected, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if protected.Applied || protected.Outcome != "failed" || !strings.Contains(protected.Error, "protected") {
+		t.Fatalf("remote default-branch guard = %#v", protected)
+	}
+	unproved := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchReceipted}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &unproved, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if unproved.Applied || unproved.Outcome != "failed" || !strings.Contains(unproved.Error, "no landing commit") {
+		t.Fatalf("remote receipt proof guard = %#v", unproved)
+	}
+	peer := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &peer, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Repository: "acme/app", Branch: peer.Branch,
+		PeerEvidence: []string{filepath.Join(t.TempDir(), "missing-peer.json")}, RequireHosts: []string{"peer"}, Now: time.Now,
+	})
+	if peer.Applied || peer.Outcome != "failed" || !strings.Contains(peer.Error, "recheck peer evidence") {
+		t.Fatalf("remote peer recheck = %#v", peer)
+	}
+	hook := filepath.Join(fixture.remote, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rejectedPush := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &rejectedPush, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if rejectedPush.Applied || rejectedPush.Outcome != "failed" || !strings.Contains(rejectedPush.Error, "force-with-lease") {
+		t.Fatalf("remote lease push refusal = %#v", rejectedPush)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	missingCanonical := t.TempDir()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
+	expectExactRetirementTargetAt(fake, missingCanonical, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "ls-remote", "--heads", "origin", "refs/heads/feature/clean-remote"}, runner.Result{CombinedOutput: head + "\trefs/heads/feature/clean-remote\n"}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "rev-parse", "--abbrev-ref", "HEAD"}, runner.Result{CombinedOutput: "main\n"}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "worktree", "list", "--porcelain"}, runner.Result{}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "merge-base", "--is-ancestor", head, retirementTarget}, runner.Result{}, nil)
+	missing := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
+	applyRemoteBranchDeletion(withGitRunner(ctx, fake), missingCanonical, &missing, BranchCleanupOptions{})
+	if missing.Applied || missing.Outcome != "failed" || !strings.Contains(missing.Error, "open canonical repository") {
+		t.Fatalf("missing canonical refusal = %#v", missing)
+	}
+	peerOptions := BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true, OlderThan: 0,
+		Repository: "acme/app", Branch: "feature/clean-remote", ReportDir: t.TempDir(),
+		PeerEvidence: []string{filepath.Join(t.TempDir(), "missing-peer.json")}, RequireHosts: []string{"peer"}, Now: time.Now,
+	}
+	peerOutcome, err := BranchCleanup(ctx, peerOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var peerRefused bool
+	for _, result := range peerOutcome.Results {
+		if result.Branch == "feature/clean-remote" && result.Outcome == "failed" && strings.Contains(result.Error, "read peer evidence") {
+			peerRefused = true
+		}
+	}
+	if !peerRefused || peerOutcome.ReportPath == "" || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("peer refusal did not preserve the exact remote head: %#v", peerOutcome)
+	}
+	writes := 0
+	peerOptions.ReportDir = t.TempDir()
+	_, err = branchCleanupWithPorts(ctx, peerOptions, branchCleanupCoordinatorPorts{
+		writeReport: func(dir string, options BranchCleanupOptions, at time.Time, results []BranchCleanupResult) (string, error) {
+			writes++
+			if writes == 2 {
+				return "", errors.New("injected peer rewrite failure")
+			}
+			return writeBranchCleanupReport(dir, options, at, results)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected peer rewrite failure") || writes != 2 || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("peer report rewrite: writes=%d err=%v", writes, err)
+	}
+	_, err = BranchCleanup(ctx, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true,
+		ReportDir: fixture.canonical, Repository: "acme/app", Branch: "feature/clean-remote",
+	})
+	if err == nil || !strings.Contains(err.Error(), "inside source repository") || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("report-inside-source refusal: %v", err)
+	}
+	_, err = branchCleanupWithPorts(ctx, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true,
+		ReportDir: t.TempDir(), Repository: "acme/app", Branch: "feature/clean-remote",
+	}, branchCleanupCoordinatorPorts{
+		writeReport: func(string, BranchCleanupOptions, time.Time, []BranchCleanupResult) (string, error) {
+			return "", errors.New("injected first report failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected first report failure") || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("report-before-remote-deletion refusal: %v", err)
+	}
 	outcome, err := BranchCleanup(ctx, BranchCleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: "remote", Apply: true, OlderThan: 0,
 	})
