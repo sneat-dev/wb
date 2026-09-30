@@ -70,6 +70,44 @@ func TestMergeLaneClaimIncludesRebatchedCandidate(t *testing.T) {
 	}
 }
 
+func TestActiveMergeLaneConflictReleaseRequiresUnpublishedPrepare(t *testing.T) {
+	t.Parallel()
+	lane := worktreeMergeLaneID("acme/repo", "main")
+	for _, test := range []struct {
+		name      string
+		phase     WorktreeMergePhase
+		published string
+		pr        string
+		landing   string
+		wantHeld  bool
+	}{
+		{name: "unpublished prepare"},
+		{name: "published candidate", published: "published-sha", wantHeld: true},
+		{name: "pull request", pr: "https://example.test/pr/1", wantHeld: true},
+		{name: "land phase", phase: WorktreeMergePhaseLand, wantHeld: true},
+		{name: "landed sha", landing: "landed-sha", wantHeld: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reports := t.TempDir()
+			path := filepath.Join(reports, lane+".json")
+			phase := test.phase
+			if phase == "" {
+				phase = WorktreeMergePhasePrepare
+			}
+			writeMergeLaneReceipt(t, path, WorktreeMergeReceipt{
+				SchemaVersion: WorktreeMergeSchemaVersion, ReceiptPath: path, Lane: lane,
+				Repository: "acme/repo", Target: "main", Phase: phase, Status: WorktreeMergeConflict,
+				PublishedCandidateSHA: test.published, PullRequest: test.pr, LandingSHA: test.landing,
+			})
+			active, err := activeWorktreeMergeLaneReceipt(context.Background(), reports, reports, lane)
+			if err != nil || (active != nil) != test.wantHeld {
+				t.Fatalf("active lane = %+v, %v; want held=%t", active, err, test.wantHeld)
+			}
+		})
+	}
+}
+
 func writeMergeLaneReceipt(t *testing.T, path string, receipt WorktreeMergeReceipt) {
 	t.Helper()
 	contents, err := json.Marshal(receipt)

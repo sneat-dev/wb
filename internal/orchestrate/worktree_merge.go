@@ -4929,6 +4929,14 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			receiptLane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
 		}
 		if receiptLane == lane && receipt.Status != WorktreeMergeComplete {
+			// A prepare-time conflict has not touched the remote target and is
+			// terminal for lane ownership, even though its receipt and sources
+			// remain available for a later repair. Do not skip a conflict that
+			// reached publication or the land phase.
+			if receipt.Status == WorktreeMergeConflict && receipt.Phase == WorktreeMergePhasePrepare &&
+				receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" {
+				continue
+			}
 			// A valid immutable missing-cleanup acknowledgement proves the old
 			// landed receipt's assets are already terminal. It releases lane
 			// ownership even when nobody resumed the historical receipt merely to
