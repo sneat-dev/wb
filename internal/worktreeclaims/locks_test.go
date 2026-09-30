@@ -83,7 +83,7 @@ func TestClaimsOperationLockIdentityAndMove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	identity, err := ExclusivelyOwnedLockIdentity(file)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestClaimsOperationLockIdentityAndMove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = linked.Close() }()
+	t.Cleanup(func() { _ = linked.Close() })
 	if _, err := ExclusivelyOwnedLockIdentity(linked); err == nil {
 		t.Fatal("accepted hard link")
 	}

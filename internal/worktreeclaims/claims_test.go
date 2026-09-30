@@ -503,7 +503,7 @@ func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = dir.Close() }()
+	t.Cleanup(func() { _ = dir.Close() })
 	p = testPorts()
 	p.ReadNames = func(*os.File) ([]string, error) { return nil, errors.New("read names") }
 	if _, err := p.ListPromptsIn(dir); err == nil || !strings.Contains(err.Error(), "read prompt sequence") {
@@ -518,7 +518,7 @@ func TestClaimsInjectedJournalFailureBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lockDir.Close() }()
+	t.Cleanup(func() { _ = lockDir.Close() })
 	if _, err := LockJournalSequenceWith(lockDir, ".lock-chmod", LockOps{Chmod: func(int, uint32) error { return errors.New("chmod") }}); err == nil || err.Error() != "chmod" {
 		t.Fatalf("chmod: %v", err)
 	}
