@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,51 +39,63 @@ type RetireOptions struct {
 	afterPhase       func(string) error // deterministic interruption point for integration tests
 }
 
-// RetireResult is also the durable resume receipt. It contains only identities
-// and hashes; prompt and journal bytes are written only to the private repo.
-type RetireResult struct {
-	Version           int       `json:"version"`
-	Task              string    `json:"task"`
-	Repository        string    `json:"repository"`
-	ArchiveRepository string    `json:"archive_repository"`
-	Worktree          string    `json:"worktree"`
-	Canonical         string    `json:"canonical"`
-	WorktreesRoot     string    `json:"worktrees_root"`
-	Local             bool      `json:"local"`
-	Branch            string    `json:"branch"`
-	Preserve          string    `json:"preserve,omitempty"`
-	OriginalRemoteSHA string    `json:"original_remote_sha,omitempty"`
-	DeleteIntentSHA   string    `json:"delete_intent_sha,omitempty"`
-	SourceSHA         string    `json:"source_sha"`
-	IntentParentSHA   string    `json:"intent_parent_sha,omitempty"`
-	IntentTreeSHA     string    `json:"intent_tree_sha,omitempty"`
-	IntentMessage     string    `json:"intent_message,omitempty"`
-	IntentAt          time.Time `json:"intent_at,omitempty"`
-	RetiredRef        string    `json:"retired_ref"`
-	ArchiveRef        string    `json:"archive_ref"`
-	ArchiveSHA        string    `json:"archive_sha,omitempty"`
-	ClaimID           string    `json:"claim_id"`
-	EffortID          string    `json:"effort_id"`
-	RunID             string    `json:"run_id"`
-	Phase             string    `json:"phase"`
-	ReportPath        string    `json:"report_path,omitempty"`
+// RetireResult is the public durable retirement receipt. Its JSON shape is
+// owned by worktreeretire so apply and removed-checkout recovery share it.
+type RetireResult = worktreeretire.Transaction
+
+// retireEntryPorts is scoped to one call. It makes the facade's preflight and
+// held-checkout failure boundaries testable without replacing package globals.
+type retireEntryPorts struct {
+	absoluteRoot  func(string) (string, error)
+	resolve       func(string) (wbhome.Resolution, error)
+	inventory     func(context.Context, ListOptions) (ListOutcome, error)
+	checkOwner    func(ListResult) error
+	archivePlan   func(context.Context, string, RetiredArchiveInspector) (RetiredArchivePlan, error)
+	checkPR       func(context.Context, ListResult, RetireOptions) error
+	readClaim     func(string, string) (workLogClaim, workLogProjection, error)
+	checkIgnored  func(context.Context, string) error
+	remoteSHA     func(context.Context, string, string, string) (string, error)
+	readReport    func(string) (RetireResult, error)
+	checkAncestor func(context.Context, string, string, string) error
+	acquireTask   func(string, string) (*cleanupTaskHandle, error)
+	validateTask  func(*cleanupTaskHandle) error
+	openWorktree  func(*cleanupTaskHandle, CleanupResult) (*cleanupWorktreeHandle, error)
+	validateHeld  func(*cleanupWorktreeHandle) error
+	ownerViews    func(string) ([]OwnerView, error)
+	git           func(context.Context, string, ...string) (string, error)
+}
+
+func productionRetireEntryPorts() retireEntryPorts {
+	return retireEntryPorts{
+		absoluteRoot: absoluteProjectsRoot, resolve: wbhome.Resolve, inventory: ListWithDiagnostics,
+		checkOwner: retireCheckOwner, archivePlan: PlanRetiredArchivePreflight,
+		checkPR: retireCheckPR, readClaim: retireReadClaim, checkIgnored: retireCheckIgnored,
+		remoteSHA: retireRemoteSHA, readReport: readRetireReport, checkAncestor: retireCheckRemoteAncestor,
+		acquireTask:  acquireCleanupTaskAtOrCreate,
+		validateTask: (*cleanupTaskHandle).validate, openWorktree: openCleanupWorktree,
+		validateHeld: (*cleanupWorktreeHandle).validate, ownerViews: ownerViews, git: git,
+	}
 }
 
 func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
+	return retireWithEntryPorts(ctx, options, productionRetireEntryPorts())
+}
+
+func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports retireEntryPorts) (RetireResult, error) {
 	var err error
 	options, err = normalizeRetireOptions(options)
 	if err != nil {
 		return RetireResult{}, err
 	}
-	root, err := absoluteProjectsRoot(options.ProjectsRoot)
+	root, err := ports.absoluteRoot(options.ProjectsRoot)
 	if err != nil {
 		return RetireResult{}, err
 	}
-	resolution, err := wbhome.Resolve(root)
+	resolution, err := ports.resolve(root)
 	if err != nil {
 		return RetireResult{}, err
 	}
-	inventory, err := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: root, Task: options.Task, Filter: options.Repository, Workers: 1})
+	inventory, err := ports.inventory(ctx, ListOptions{ProjectsRoot: root, Task: options.Task, Filter: options.Repository, Workers: 1})
 	if err != nil {
 		return RetireResult{}, err
 	}
@@ -95,10 +106,10 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if resumeRemoved {
 		return retireResumeRemoved(ctx, resolution.Write.Home, options)
 	}
-	if err := retireCheckOwner(entry); err != nil {
+	if err := ports.checkOwner(entry); err != nil {
 		return RetireResult{}, err
 	}
-	archivePlan, err := PlanRetiredArchivePreflight(ctx, entry.Repository, options.Inspect)
+	archivePlan, err := ports.archivePlan(ctx, entry.Repository, options.Inspect)
 	if err != nil {
 		return RetireResult{}, err
 	}
@@ -117,30 +128,30 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if options.OpenPullRequests == nil {
 		options.OpenPullRequests = retireOpenPullRequests
 	}
-	if err := retireCheckPR(ctx, entry, options); err != nil {
+	if err := ports.checkPR(ctx, entry, options); err != nil {
 		return RetireResult{}, err
 	}
-	claim, projection, err := retireReadClaim(resolution.Write.Home, entry.WorktreeDir)
+	claim, projection, err := ports.readClaim(resolution.Write.Home, entry.WorktreeDir)
 	if err != nil {
 		return RetireResult{}, fmt.Errorf("retirement requires a corroborated active Work Log: %w", err)
 	}
 	if claim.Task != entry.Task || claim.Repository != entry.Repository || claim.Branch != entry.Branch || projection.ClaimID != claim.ClaimID {
 		return RetireResult{}, fmt.Errorf("work log claim does not bind the selected checkout")
 	}
-	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
+	if err := ports.checkIgnored(ctx, entry.WorktreeDir); err != nil {
 		return RetireResult{}, err
 	}
-	remoteSHA, err := retireRemoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch)
+	remoteSHA, err := ports.remoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch)
 	if err != nil {
 		return RetireResult{}, err
 	}
 	priorPath := retireReportPath(resolution.Write.Home, RetireResult{Task: entry.Task, Repository: entry.Repository})
-	prior, priorErr := readRetireReport(priorPath)
+	prior, priorErr := ports.readReport(priorPath)
 	if priorErr != nil && !errors.Is(priorErr, os.ErrNotExist) {
 		return RetireResult{}, priorErr
 	}
 	if errors.Is(priorErr, os.ErrNotExist) {
-		if err := retireCheckRemoteAncestor(ctx, entry.CanonicalDir, remoteSHA, entry.HeadSHA); err != nil {
+		if err := ports.checkAncestor(ctx, entry.CanonicalDir, remoteSHA, entry.HeadSHA); err != nil {
 			return RetireResult{}, err
 		}
 	}
@@ -153,218 +164,67 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		result.ArchiveRef = retireArchiveRef(result)
 		return result, nil
 	}
-	task, err := acquireCleanupTaskAtOrCreate(result.WorktreesRoot, options.Task)
+	task, err := ports.acquireTask(result.WorktreesRoot, options.Task)
 	if err != nil {
 		return RetireResult{}, fmt.Errorf("acquire retirement task lock: %w", err)
 	}
 	defer task.close()
 	defer func() { _ = task.lock.release() }()
-	if err := task.validate(); err != nil {
+	if err := ports.validateTask(task); err != nil {
 		return RetireResult{}, err
 	}
 	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
 		return RetireResult{}, fmt.Errorf("retirement remote owner recheck: %w", err)
 	}
-	heldWorktree, err := openCleanupWorktree(task, CleanupResult{ListResult: entry})
+	heldWorktree, err := ports.openWorktree(task, CleanupResult{ListResult: entry})
 	if err != nil {
 		return RetireResult{}, err
 	}
 	defer heldWorktree.close()
-	if err := heldWorktree.validate(); err != nil {
+	if err := ports.validateHeld(heldWorktree); err != nil {
 		return RetireResult{}, err
 	}
-	freshOwners, err := ownerViews(entry.WorktreeDir)
+	freshOwners, err := ports.ownerViews(entry.WorktreeDir)
 	if err != nil {
 		return RetireResult{}, err
 	}
 	entry.Owners = freshOwners
-	if err := retireCheckOwner(entry); err != nil {
+	if err := ports.checkOwner(entry); err != nil {
 		return RetireResult{}, err
 	}
 	// Recheck under the held task lock. The first observation is for dry-run and
 	// admission; all destructive steps use the second observation.
-	current, err := git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
+	current, err := ports.git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
 	if err != nil || current != entry.HeadSHA {
 		return RetireResult{}, fmt.Errorf("checkout HEAD changed before retirement")
 	}
-	branch, err := git(ctx, entry.WorktreeDir, "branch", "--show-current")
+	branch, err := ports.git(ctx, entry.WorktreeDir, "branch", "--show-current")
 	if err != nil || branch != entry.Branch {
 		return RetireResult{}, fmt.Errorf("checkout branch changed before retirement")
 	}
-	if observed, err := retireRemoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch); err != nil || observed != remoteSHA {
+	if observed, err := ports.remoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch); err != nil || observed != remoteSHA {
 		return RetireResult{}, fmt.Errorf("original remote branch changed before retirement: %w", err)
 	}
 	if priorErr != nil {
-		if err := retireCheckRemoteAncestor(ctx, entry.CanonicalDir, remoteSHA, current); err != nil {
+		if err := ports.checkAncestor(ctx, entry.CanonicalDir, remoteSHA, current); err != nil {
 			return RetireResult{}, err
 		}
 	}
-	if err := retireCheckPR(ctx, entry, options); err != nil {
+	if err := ports.checkPR(ctx, entry, options); err != nil {
 		return RetireResult{}, err
 	}
-	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
+	if err := ports.checkIgnored(ctx, entry.WorktreeDir); err != nil {
 		return RetireResult{}, err
 	}
-	if priorErr == nil {
+	priorExists := priorErr == nil
+	if priorExists {
 		if err := corroborateRetireResumeReceipt(prior, result, options.Preserve, remoteSHA); err != nil {
 			return RetireResult{}, err
 		}
 		result = prior
-		if result.Phase == "commit_intent" {
-			if current == result.IntentParentSHA {
-				committed, err := retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, result.IntentMessage, func(tree, message string) error {
-					if tree != result.IntentTreeSHA || message != result.IntentMessage {
-						return fmt.Errorf("staged source changed after retirement commit intent")
-					}
-					return nil
-				})
-				if err != nil {
-					return result, err
-				}
-				if !committed {
-					return result, fmt.Errorf("retirement commit intent lost its staged changes")
-				}
-				current, err = git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
-				if err != nil {
-					return result, err
-				}
-			}
-			if err := retireValidateIntentCommit(ctx, entry.WorktreeDir, result, current); err != nil {
-				return result, err
-			}
-			if options.afterPhase != nil {
-				if err := options.afterPhase("source_committed"); err != nil {
-					return result, err
-				}
-			}
-			result.SourceSHA = current
-			result.RetiredRef = worktreebranches.RetiredBranchDestination(result.IntentAt, result.Branch, current)
-			result.ArchiveRef = retireArchiveRef(result)
-			result.Phase = "committed"
-			if err := writeRetireReport(result); err != nil {
-				return result, err
-			}
-		} else if current != result.SourceSHA {
-			return RetireResult{}, fmt.Errorf("checkout moved after recorded retirement commit")
-		}
-	} else {
-		if err := heldWorktree.validate(); err != nil {
-			return RetireResult{}, err
-		}
-		committed, err := retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, options.Message, func(tree, message string) error {
-			result.IntentParentSHA = entry.HeadSHA
-			result.IntentTreeSHA = tree
-			result.IntentMessage = message
-			result.IntentAt = options.Now().UTC()
-			result.Phase = "commit_intent"
-			return writeRetireReport(result)
-		})
-		if err != nil {
-			return RetireResult{}, err
-		}
-		if committed && options.afterPhase != nil {
-			if err := options.afterPhase("source_committed"); err != nil {
-				return result, err
-			}
-		}
-		result.SourceSHA, err = git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
-		if err != nil {
-			return RetireResult{}, err
-		}
-		if clean, cleanErr := cleanWorktree(ctx, entry.WorktreeDir); cleanErr != nil || !clean {
-			return RetireResult{}, fmt.Errorf("source checkout is dirty after retirement commit: %w", cleanErr)
-		}
-		date := options.Now()
-		if committed {
-			date = result.IntentAt
-		}
-		result.RetiredRef = worktreebranches.RetiredBranchDestination(date, result.Branch, result.SourceSHA)
-		result.ArchiveRef = retireArchiveRef(result)
-		result.Phase = "committed"
-		if err := writeRetireReport(result); err != nil {
-			return RetireResult{}, err
-		}
 	}
-	if err := retirePublishSource(ctx, &result); err != nil {
-		return result, err
-	}
-	if err := writeRetireReport(result); err != nil {
-		return result, err
-	}
-	if options.afterPhase != nil {
-		if err := options.afterPhase(result.Phase); err != nil {
-			return result, err
-		}
-	}
-	if err := sealWorkLogForRecycle(resolution.Write.Home, entry.WorktreeDir, result.SourceSHA, "retired"); err != nil {
-		return result, fmt.Errorf("seal retirement Work Log: %w", err)
-	}
-	if err := retireCheckPrivateArchive(ctx, result, options.Inspect); err != nil {
-		return result, err
-	}
-	if err := retirePublishArchive(ctx, resolution.Write.Home, options.ArchiveRemote, &result); err != nil {
-		return result, err
-	}
-	if err := writeRetireReport(result); err != nil {
-		return result, err
-	}
-	if options.afterPhase != nil {
-		if err := options.afterPhase(result.Phase); err != nil {
-			return result, err
-		}
-	}
-	if err := retireVerifyReceipts(ctx, entry.CanonicalDir, options.ArchiveRemote, result); err != nil {
-		return result, err
-	}
-	if err := retireCheckPrivateArchive(ctx, result, options.Inspect); err != nil {
-		return result, err
-	}
-	if err := retireCheckPR(ctx, entry, options); err != nil {
-		return result, err
-	}
-	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
-		return result, fmt.Errorf("retirement remote owner final recheck: %w", err)
-	}
-	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
-		return result, err
-	}
-	if result.OriginalRemoteSHA != "" && result.DeleteIntentSHA == "" {
-		current, err := retireRemoteSHA(ctx, result.Canonical, "origin", "refs/heads/"+result.Branch)
-		if err != nil || current != result.OriginalRemoteSHA {
-			return result, fmt.Errorf("original remote branch disappeared or moved before deletion intent: %w", err)
-		}
-		proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", retireDeletionProofRef(result))
-		if err != nil || proof != "" {
-			return result, fmt.Errorf("retirement deletion proof ref is already present or cannot be inspected: %w", err)
-		}
-		result.DeleteIntentSHA = result.OriginalRemoteSHA
-		if err := writeRetireReport(result); err != nil {
-			return result, err
-		}
-		if options.afterPhase != nil {
-			if err := options.afterPhase("original_delete_intent"); err != nil {
-				return result, err
-			}
-		}
-	}
-	if err := retireDeleteOriginal(ctx, &result, options.afterPhase); err != nil {
-		return result, err
-	}
-	if err := writeRetireReport(result); err != nil {
-		return result, err
-	}
-	if options.afterPhase != nil {
-		if err := options.afterPhase(result.Phase); err != nil {
-			return result, err
-		}
-	}
-	if err := retireRemoveLocal(ctx, task, entry, &result, options.afterPhase); err != nil {
-		return result, err
-	}
-	if err := writeRetireReport(result); err != nil {
-		return result, err
-	}
-	return result, nil
+	operation := retireTransactionOperation(options, resolution.Write.Home, entry, task, heldWorktree)
+	return operation.ApplyTransaction(ctx, result, priorExists, current, options.Message)
 }
 
 func corroborateRetireResumeReceipt(prior, planned RetireResult, preserve, remoteSHA string) error {
@@ -529,8 +389,41 @@ func retireValidateIntentCommit(ctx context.Context, worktree string, intent Ret
 // no inventory row. The held receipt and two freshly observed remote refs are
 // enough to finish only that last local step.
 func retireResumeRemoved(ctx context.Context, home string, options RetireOptions) (RetireResult, error) {
+	return retireResumeRemovedWithPorts(ctx, home, options, productionRetireRemovedPorts())
+}
+
+type retireRemovedPorts struct {
+	readDir       func(string) ([]os.DirEntry, error)
+	readReport    func(string) (RetireResult, error)
+	validateClaim func(string, RetireResult) error
+	archivePlan   func(context.Context, string, RetiredArchiveInspector) (RetiredArchivePlan, error)
+	acquireTask   func(string, string) (*cleanupTaskHandle, error)
+	validateTask  func(*cleanupTaskHandle) error
+	remote        worktreeretire.TransactionPorts
+	lstat         func(string) (os.FileInfo, error)
+	git           func(context.Context, string, ...string) (string, error)
+	openCanonical func(string) (*canonicalRepository, error)
+	branchExists  func(context.Context, string, string) (bool, error)
+	deleteBranch  func(context.Context, *canonicalRepository, RetireResult) error
+	writeReport   func(RetireResult) error
+}
+
+func productionRetireRemovedPorts() retireRemovedPorts {
+	return retireRemovedPorts{
+		readDir: os.ReadDir, readReport: readRetireReport, validateClaim: retireValidateRemovedClaim,
+		archivePlan: PlanRetiredArchivePreflight, acquireTask: acquireCleanupTaskAtOrCreate,
+		validateTask: (*cleanupTaskHandle).validate, remote: retireTransactionPorts(),
+		lstat: os.Lstat, git: git, openCanonical: openCanonicalRepository,
+		branchExists: localBranchExists, writeReport: writeRetireReport,
+		deleteBranch: func(ctx context.Context, canonical *canonicalRepository, result RetireResult) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+result.Branch, result.SourceSHA)
+		},
+	}
+}
+
+func retireResumeRemovedWithPorts(ctx context.Context, home string, options RetireOptions, ports retireRemovedPorts) (RetireResult, error) {
 	directory := filepath.Join(home, "reports", "worktree-retire", options.Task)
-	entries, err := os.ReadDir(directory)
+	entries, err := ports.readDir(directory)
 	if err != nil {
 		return RetireResult{}, fmt.Errorf("no managed checkout or retirement receipt for %s: %w", options.Task, err)
 	}
@@ -547,33 +440,30 @@ func retireResumeRemoved(ctx context.Context, home string, options RetireOptions
 	if len(reports) != 1 {
 		return RetireResult{}, fmt.Errorf("removed retirement requires exactly one receipt; found %d", len(reports))
 	}
-	result, err := readRetireReport(reports[0])
+	result, err := ports.readReport(reports[0])
 	if err != nil {
 		return RetireResult{}, err
 	}
-	if options.Repository != "" && result.Repository != options.Repository {
-		return RetireResult{}, fmt.Errorf("retirement receipt repository mismatch")
+	if err := worktreeretire.ValidateRemovedReceipt(result, reports[0], options.Task, options.Repository); err != nil {
+		return RetireResult{}, err
 	}
-	if result.Task != options.Task || result.ReportPath != reports[0] || result.Phase != "original_deleted" && result.Phase != "complete" {
-		return RetireResult{}, fmt.Errorf("retirement receipt does not authorize removed-checkout resume")
-	}
-	if err := retireValidateRemovedClaim(home, result); err != nil {
+	if err := ports.validateClaim(home, result); err != nil {
 		return result, err
 	}
-	archivePlan, err := PlanRetiredArchivePreflight(ctx, result.Repository, options.Inspect)
+	archivePlan, err := ports.archivePlan(ctx, result.Repository, options.Inspect)
 	if err != nil || archivePlan.Outcome != "planned" || archivePlan.ArchiveRepository != result.ArchiveRepository {
 		return RetireResult{}, fmt.Errorf("private archive preflight no longer holds")
 	}
 	if options.ArchiveRemote == "" {
 		options.ArchiveRemote = "git@github.com:" + result.ArchiveRepository + ".git"
 	}
-	task, err := acquireCleanupTaskAtOrCreate(result.WorktreesRoot, result.Task)
+	task, err := ports.acquireTask(result.WorktreesRoot, result.Task)
 	if err != nil {
 		return result, err
 	}
 	defer task.close()
 	defer func() { _ = task.lock.release() }()
-	if err := task.validate(); err != nil {
+	if err := ports.validateTask(task); err != nil {
 		return result, err
 	}
 	if options.RemoteOwnership == nil {
@@ -582,45 +472,36 @@ func retireResumeRemoved(ctx context.Context, home string, options RetireOptions
 	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
 		return result, fmt.Errorf("retirement remote owner recheck: %w", err)
 	}
-	if err := retireVerifyReceipts(ctx, result.Canonical, options.ArchiveRemote, result); err != nil {
+	operation := worktreeretire.Operation{Remote: ports.remote, ArchiveRemote: options.ArchiveRemote, WriteReport: ports.writeReport}
+	if err := operation.VerifyRemovedRemote(ctx, result); err != nil {
 		return result, err
 	}
-	if source, err := retireRemoteSHA(ctx, result.Canonical, "origin", "refs/heads/"+result.Branch); err != nil || source != "" {
-		return result, fmt.Errorf("original remote branch remains or changed: %w", err)
-	}
-	if result.OriginalRemoteSHA != "" {
-		proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", retireDeletionProofRef(result))
-		if err != nil || proof != result.SourceSHA {
-			return result, fmt.Errorf("original remote branch deletion proof changed: %w", err)
-		}
-	}
-	if _, err := os.Lstat(result.Worktree); !errors.Is(err, os.ErrNotExist) {
+	if _, err := ports.lstat(result.Worktree); !errors.Is(err, os.ErrNotExist) {
 		return result, fmt.Errorf("checkout path still exists or cannot be inspected: %w", err)
 	}
-	registered, err := git(ctx, result.Canonical, "worktree", "list", "--porcelain")
+	registered, err := ports.git(ctx, result.Canonical, "worktree", "list", "--porcelain")
 	if err != nil {
 		return result, err
 	}
 	if strings.Contains(registered, "worktree "+result.Worktree+"\n") {
 		return result, fmt.Errorf("checkout is still registered")
 	}
-	canonical, err := openCanonicalRepository(result.Canonical)
+	canonical, err := ports.openCanonical(result.Canonical)
 	if err != nil {
 		return result, err
 	}
 	defer canonical.close()
-	if exists, err := localBranchExists(ctx, result.Canonical, result.Branch); err != nil {
+	if exists, err := ports.branchExists(ctx, result.Canonical, result.Branch); err != nil {
 		return result, err
 	} else if exists {
-		if sha, err := git(ctx, result.Canonical, "rev-parse", "refs/heads/"+result.Branch); err != nil || sha != result.SourceSHA {
+		if sha, err := ports.git(ctx, result.Canonical, "rev-parse", "refs/heads/"+result.Branch); err != nil || sha != result.SourceSHA {
 			return result, fmt.Errorf("local source branch changed: %w", err)
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+result.Branch, result.SourceSHA); err != nil {
+		if err := ports.deleteBranch(ctx, canonical, result); err != nil {
 			return result, err
 		}
 	}
-	result.Phase = "complete"
-	if err := writeRetireReport(result); err != nil {
+	if err := operation.CompleteRemoved(&result); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -699,20 +580,31 @@ func retireRemoteSHA(ctx context.Context, directory, remote, ref string) (string
 }
 
 func retireCommitSource(ctx context.Context, canonical string, held *cleanupWorktreeHandle, message string, prepared func(tree, message string) error) (bool, error) {
+	return retireCommitSourceWithPorts(message, prepared, retireCommitPorts{
+		gitHeld: func(args ...string) ([]byte, error) {
+			if err := held.validate(); err != nil {
+				return nil, err
+			}
+			return runSecureRenameGitBytesWithHeldWorktree(ctx, canonical, held.parentPath, held.worktreePath, held.worktree, args...)
+		},
+		checkUntracked: func(path string) error { return retireCheckUntrackedPath(held.worktreePath, path) },
+	})
+}
+
+type retireCommitPorts struct {
+	gitHeld        func(...string) ([]byte, error)
+	checkUntracked func(string) error
+}
+
+func retireCommitSourceWithPorts(message string, prepared func(tree, message string) error, ports retireCommitPorts) (bool, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		message = "Retire worktree source changes"
 	}
-	gitHeld := func(args ...string) ([]byte, error) {
-		if err := held.validate(); err != nil {
-			return nil, err
-		}
-		return runSecureRenameGitBytesWithHeldWorktree(ctx, canonical, held.parentPath, held.worktreePath, held.worktree, args...)
-	}
 	// Check every path that could introduce file bytes before touching the
 	// index. --others expands untracked directories to actual files.
 	for _, args := range [][]string{{"diff", "--name-only", "-z", "--diff-filter=ACMR"}, {"diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"}, {"ls-files", "--others", "--exclude-standard", "-z"}} {
-		paths, err := gitHeld(args...)
+		paths, err := ports.gitHeld(args...)
 		if err != nil {
 			return false, err
 		}
@@ -724,21 +616,21 @@ func retireCommitSource(ctx context.Context, canonical string, held *cleanupWork
 				return false, fmt.Errorf("refusing secret-looking source commit path %q", path)
 			}
 			if args[0] == "ls-files" {
-				if err := retireCheckUntrackedPath(held.worktreePath, path); err != nil {
+				if err := ports.checkUntracked(path); err != nil {
 					return false, err
 				}
 			}
 		}
 	}
-	if _, err := gitHeld("add", "-A"); err != nil {
+	if _, err := ports.gitHeld("add", "-A"); err != nil {
 		return false, err
 	}
-	_, _ = gitHeld("reset", "-q", "--", ".worktree.md")
-	paths, err := gitHeld("diff", "--cached", "--name-only", "-z")
+	_, _ = ports.gitHeld("reset", "-q", "--", ".worktree.md")
+	paths, err := ports.gitHeld("diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return false, err
 	}
-	secretPaths, err := gitHeld("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+	secretPaths, err := ports.gitHeld("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
 	if err != nil {
 		return false, err
 	}
@@ -750,7 +642,7 @@ func retireCommitSource(ctx context.Context, canonical string, held *cleanupWork
 	if len(paths) == 0 {
 		return false, nil
 	}
-	tree, err := gitHeld("write-tree")
+	tree, err := ports.gitHeld("write-tree")
 	if err != nil {
 		return false, err
 	}
@@ -759,7 +651,7 @@ func retireCommitSource(ctx context.Context, canonical string, held *cleanupWork
 			return false, err
 		}
 	}
-	if _, err := gitHeld("commit", "-m", message); err != nil {
+	if _, err := ports.gitHeld("commit", "-m", message); err != nil {
 		return false, fmt.Errorf("commit source with hooks: %w", err)
 	}
 	return true, nil
@@ -790,242 +682,159 @@ func retireLooksLikeSecretPath(path string) bool {
 	return base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") || strings.HasPrefix(base, "id_ecdsa") || base == ".worktree.md"
 }
 
-func retireArchiveRef(result RetireResult) string {
-	_, repository, _ := strings.Cut(result.Repository, "/")
-	return "retired/" + repository + "/" + strings.TrimPrefix(result.RetiredRef, "retired/")
-}
+func retireArchiveRef(result RetireResult) string { return worktreeretire.ArchiveRef(result) }
 
-func retirePreserveMode(result RetireResult) string {
-	if result.Preserve == "" {
-		return "branch"
-	}
-	return result.Preserve
-}
+func retirePreserveMode(result RetireResult) string { return worktreeretire.PreserveMode(result) }
 
-func retireSourceRef(result RetireResult) string {
-	if retirePreserveMode(result) == "tag" {
-		return "refs/tags/" + result.RetiredRef
-	}
-	return "refs/heads/" + result.RetiredRef
-}
+func retireSourceRef(result RetireResult) string { return worktreeretire.SourceRef(result) }
 
 func retireReportPath(home string, result RetireResult) string {
-	owner, repository, _ := strings.Cut(result.Repository, "/")
-	return filepath.Join(home, "reports", "worktree-retire", result.Task, owner+"-"+repository+".json")
+	return worktreeretire.ReportPath(home, result)
 }
 
-func readRetireReport(path string) (RetireResult, error) {
-	var result RetireResult
-	parent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(path), false)
-	if err != nil {
-		return result, err
-	}
-	defer func() { _ = parent.Close() }()
-	fd, err := unix.Openat(int(parent.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return result, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return result, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
-		return result, fmt.Errorf("invalid retirement receipt file")
-	}
-	body, err := io.ReadAll(file)
-	if err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return result, err
-	}
-	if result.Version != 1 || !isGitObjectID(result.SourceSHA) || (result.Preserve != "" && result.Preserve != "branch" && result.Preserve != "tag") {
-		return result, fmt.Errorf("invalid retirement receipt")
-	}
-	if result.DeleteIntentSHA != "" && (result.DeleteIntentSHA != result.OriginalRemoteSHA || !isGitObjectID(result.DeleteIntentSHA)) {
-		return result, fmt.Errorf("invalid retirement original-ref deletion intent")
-	}
-	if (result.Phase == "original_deleted" || result.Phase == "complete") && result.OriginalRemoteSHA != "" && result.DeleteIntentSHA != result.OriginalRemoteSHA {
-		return result, fmt.Errorf("retirement deletion receipt has no durable intent")
-	}
-	if result.Phase == "commit_intent" {
-		if result.SourceSHA != result.IntentParentSHA || !isGitObjectID(result.IntentTreeSHA) || result.IntentMessage == "" || result.IntentAt.IsZero() || result.RetiredRef != "" || result.ArchiveRef != "" || result.DeleteIntentSHA != "" {
-			return result, fmt.Errorf("invalid retirement commit intent")
-		}
-		return result, nil
-	}
-	if !strings.HasPrefix(result.RetiredRef, "retired/") || result.ArchiveRef != retireArchiveRef(result) {
-		return result, fmt.Errorf("invalid retirement receipt")
-	}
-	stem := strings.TrimPrefix(result.RetiredRef, "retired/")
-	if len(stem) < 9 {
-		return result, fmt.Errorf("invalid retired ref date")
-	}
-	date, err := time.Parse("20060102", stem[:8])
-	if err != nil || result.RetiredRef != worktreebranches.RetiredBranchDestination(date, result.Branch, result.SourceSHA) {
-		return result, fmt.Errorf("retirement receipt ref does not bind branch and commit")
-	}
-	return result, nil
-}
+func readRetireReport(path string) (RetireResult, error) { return worktreeretire.ReadReport(path) }
 
-func writeRetireReport(result RetireResult) error {
-	return writeRetireReportInjected(result, nil)
-}
+func writeRetireReport(result RetireResult) error { return worktreeretire.WriteReport(result) }
 
-// writeRetireReportInjected is writeRetireReport's test seam (task-9
-// PR-3): every production call site reaches it only through
-// writeRetireReport, which always passes a nil *filewrite.Injector, so
-// production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create/chmod/write/sync/close/rename failure branch
-// deterministically.
+// writeRetireReportInjected keeps the existing filewrite failure seam at the
+// facade boundary while the leaf owns durable report persistence.
 func writeRetireReportInjected(result RetireResult, inj *filewrite.Injector) error {
-	if err := os.MkdirAll(filepath.Dir(result.ReportPath), 0o700); err != nil {
-		return err
-	}
-	body, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(result.ReportPath), ".retire-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer func() { _ = os.Remove(temporaryName) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, append(body, '\n'), temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryName, result.ReportPath, inj)
+	return worktreeretire.WriteReportInjected(result, inj)
 }
 
 func retirePublishSource(ctx context.Context, result *RetireResult) error {
-	ref := retireSourceRef(*result)
-	current, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
-	if err != nil {
-		return err
-	}
-	if current != "" && current != result.SourceSHA {
-		return fmt.Errorf("retired remote ref has conflicting commit")
-	}
-	if current == "" {
-		canonical, err := openCanonicalRepository(result.Canonical)
-		if err != nil {
-			return err
-		}
-		defer canonical.close()
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--force-with-lease="+ref+":", "origin", result.SourceSHA+":"+ref); err != nil {
-			return fmt.Errorf("publish retired source ref: %w", err)
-		}
-	}
-	verified, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
-	if err != nil || verified != result.SourceSHA {
-		return fmt.Errorf("retired source ref verification failed: %w", err)
-	}
-	result.Phase = "source_published"
-	return nil
+	return worktreeretire.PublishSource(ctx, result, retireTransactionPorts())
 }
 
 func retireVerifyReceipts(ctx context.Context, canonical, archiveRemote string, result RetireResult) error {
-	retired, err := retireRemoteSHA(ctx, canonical, "origin", retireSourceRef(result))
-	if err != nil || retired != result.SourceSHA {
-		return fmt.Errorf("retired source receipt changed: %w", err)
-	}
-	archive, err := retireRemoteSHA(ctx, canonical, archiveRemote, "refs/heads/"+result.ArchiveRef)
-	if err != nil || archive != result.ArchiveSHA {
-		return fmt.Errorf("private archive receipt changed: %w", err)
-	}
-	return nil
+	return worktreeretire.VerifyReceipts(ctx, canonical, archiveRemote, result, retireTransactionPorts())
 }
 
 func retireDeletionProofRef(result RetireResult) string {
-	return "refs/tags/wb-retirement-deleted/" + strings.TrimPrefix(result.RetiredRef, "retired/")
+	return worktreeretire.DeletionProofRef(result)
 }
 
 func retireDeleteOriginal(ctx context.Context, result *RetireResult, afterPhase func(string) error) error {
-	ref := "refs/heads/" + result.Branch
-	current, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
-	if err != nil {
-		return err
+	return worktreeretire.DeleteOriginal(ctx, result, afterPhase, retireTransactionPorts())
+}
+
+// The three remote ports bind proof decisions to the facade's exact canonical
+// repository handle and existing secure Git mutation helper.
+func retireTransactionPorts() worktreeretire.TransactionPorts {
+	return worktreeretire.TransactionPorts{
+		RemoteSHA: retireRemoteSHA,
+		PublishSourceRef: func(ctx context.Context, result RetireResult, ref string) error {
+			canonical, err := openCanonicalRepository(result.Canonical)
+			if err != nil {
+				return err
+			}
+			defer canonical.close()
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--force-with-lease="+ref+":", "origin", result.SourceSHA+":"+ref)
+		},
+		DeleteAndTag: func(ctx context.Context, result RetireResult, ref, proofRef string) error {
+			canonical, err := openCanonicalRepository(result.Canonical)
+			if err != nil {
+				return err
+			}
+			defer canonical.close()
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--atomic", "--force-with-lease="+ref+":"+result.OriginalRemoteSHA, "--force-with-lease="+proofRef+":", "origin", ":"+ref, result.SourceSHA+":"+proofRef)
+		},
 	}
-	if result.OriginalRemoteSHA != "" && result.DeleteIntentSHA != result.OriginalRemoteSHA {
-		return fmt.Errorf("original remote deletion has no durable exact-SHA intent")
+}
+
+func retireTransactionOperation(options RetireOptions, home string, entry ListResult, task *cleanupTaskHandle, heldWorktree *cleanupWorktreeHandle) worktreeretire.Operation {
+	return worktreeretire.Operation{
+		Remote: retireTransactionPorts(), ArchiveRemote: options.ArchiveRemote,
+		Now: options.Now, AfterPhase: options.afterPhase, WriteReport: writeRetireReport,
+		Apply: worktreeretire.ApplyPorts{
+			ValidateHeld: heldWorktree.validate,
+			CommitSource: func(ctx context.Context, message string, before func(string, string) error) (bool, error) {
+				return retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, message, before)
+			},
+			ValidateIntentCommit: func(ctx context.Context, result RetireResult, head string) error {
+				return retireValidateIntentCommit(ctx, entry.WorktreeDir, result, head)
+			},
+			CurrentHead: func(ctx context.Context) (string, error) { return git(ctx, entry.WorktreeDir, "rev-parse", "HEAD") },
+			Clean:       func(ctx context.Context) (bool, error) { return cleanWorktree(ctx, entry.WorktreeDir) },
+			SealWorkLog: func(result RetireResult) error {
+				return sealWorkLogForRecycle(home, entry.WorktreeDir, result.SourceSHA, "retired")
+			},
+			CheckPrivateArchive: func(ctx context.Context, result RetireResult) error {
+				return retireCheckPrivateArchive(ctx, result, options.Inspect)
+			},
+			PublishArchive: func(ctx context.Context, result *RetireResult) error {
+				return retirePublishArchive(ctx, home, options.ArchiveRemote, result)
+			},
+			BeforeDeletion: func(ctx context.Context) error {
+				if err := retireCheckPR(ctx, entry, options); err != nil {
+					return err
+				}
+				if err := options.RemoteOwnership(ctx, options.Task); err != nil {
+					return fmt.Errorf("retirement remote owner final recheck: %w", err)
+				}
+				return retireCheckIgnored(ctx, entry.WorktreeDir)
+			},
+			RemoveLocal: func(ctx context.Context, result *RetireResult) error {
+				return retireRemoveLocal(ctx, task, entry, result, options.afterPhase)
+			},
+		},
 	}
-	proofRef := retireDeletionProofRef(*result)
-	proof, err := retireRemoteSHA(ctx, result.Canonical, "origin", proofRef)
-	if err != nil {
-		return err
-	}
-	switch {
-	case result.OriginalRemoteSHA == "" && current == "" && proof == "":
-		// A source branch that never existed remotely needs no delete proof.
-	case current == result.OriginalRemoteSHA && current != "" && proof == "":
-		canonical, err := openCanonicalRepository(result.Canonical)
-		if err != nil {
-			return err
-		}
-		defer canonical.close()
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--atomic", "--force-with-lease="+ref+":"+current, "--force-with-lease="+proofRef+":", "origin", ":"+ref, result.SourceSHA+":"+proofRef); err != nil {
-			return fmt.Errorf("delete original remote branch with exact lease and atomic proof: %w", err)
-		}
-	case current == "" && result.OriginalRemoteSHA != "" && proof == result.SourceSHA:
-		// A retry can prove that WB's atomic delete created this exact marker.
-	default:
-		return fmt.Errorf("original remote branch or deletion proof changed before exact-lease deletion")
-	}
-	verified, err := retireRemoteSHA(ctx, result.Canonical, "origin", ref)
-	if err != nil || verified != "" {
-		return fmt.Errorf("original branch deletion verification failed: %w", err)
-	}
-	if result.OriginalRemoteSHA != "" {
-		verifiedProof, err := retireRemoteSHA(ctx, result.Canonical, "origin", proofRef)
-		if err != nil || verifiedProof != result.SourceSHA {
-			return fmt.Errorf("atomic original deletion proof verification failed: %w", err)
-		}
-	}
-	if current != "" && afterPhase != nil {
-		if err := afterPhase("original_delete_pushed"); err != nil {
-			return err
-		}
-	}
-	result.Phase = "original_deleted"
-	return nil
 }
 
 func retireRemoveLocal(ctx context.Context, task *cleanupTaskHandle, entry ListResult, result *RetireResult, afterPhase func(string) error) error {
-	worktree, err := openCleanupWorktree(task, CleanupResult{ListResult: entry})
+	return retireRemoveLocalWithPorts(ctx, task, entry, result, afterPhase, productionRetireLocalRemovalPorts())
+}
+
+type retireLocalRemovalPorts struct {
+	openWorktree   func(*cleanupTaskHandle, CleanupResult) (*cleanupWorktreeHandle, error)
+	validateHeld   func(*cleanupWorktreeHandle) error
+	openCanonical  func(string) (*canonicalRepository, error)
+	head           func(context.Context, string) (string, error)
+	clean          func(context.Context, string) (bool, error)
+	removeWorktree func(context.Context, *canonicalRepository, *cleanupWorktreeHandle, string) error
+	deleteBranch   func(context.Context, *canonicalRepository, RetireResult) error
+	removeParent   func(*cleanupWorktreeHandle) error
+}
+
+func productionRetireLocalRemovalPorts() retireLocalRemovalPorts {
+	return retireLocalRemovalPorts{
+		openWorktree: openCleanupWorktree, validateHeld: (*cleanupWorktreeHandle).validate,
+		openCanonical: openCanonicalRepository,
+		head: func(ctx context.Context, worktree string) (string, error) {
+			return git(ctx, worktree, "rev-parse", "HEAD")
+		},
+		clean: cleanWorktree,
+		removeWorktree: func(ctx context.Context, canonical *canonicalRepository, worktree *cleanupWorktreeHandle, path string) error {
+			return runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, path, "worktree", "remove", path)
+		},
+		deleteBranch: func(ctx context.Context, canonical *canonicalRepository, result RetireResult) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+result.Branch, result.SourceSHA)
+		},
+		removeParent: func(worktree *cleanupWorktreeHandle) error { return worktree.removeEmptyParent(nil, nil) },
+	}
+}
+
+func retireRemoveLocalWithPorts(ctx context.Context, task *cleanupTaskHandle, entry ListResult, result *RetireResult, afterPhase func(string) error, ports retireLocalRemovalPorts) error {
+	worktree, err := ports.openWorktree(task, CleanupResult{ListResult: entry})
 	if err != nil {
 		return err
 	}
 	defer worktree.close()
-	if err := worktree.validate(); err != nil {
+	if err := ports.validateHeld(worktree); err != nil {
 		return err
 	}
-	canonical, err := openCanonicalRepository(result.Canonical)
+	canonical, err := ports.openCanonical(result.Canonical)
 	if err != nil {
 		return err
 	}
 	defer canonical.close()
-	if head, err := git(ctx, result.Worktree, "rev-parse", "HEAD"); err != nil || head != result.SourceSHA {
+	if head, err := ports.head(ctx, result.Worktree); err != nil || head != result.SourceSHA {
 		return fmt.Errorf("checkout moved before removal")
 	}
-	if clean, err := cleanWorktree(ctx, result.Worktree); err != nil || !clean {
+	if clean, err := ports.clean(ctx, result.Worktree); err != nil || !clean {
 		return fmt.Errorf("checkout changed before removal: %w", err)
 	}
-	if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, result.Worktree, "worktree", "remove", result.Worktree); err != nil {
+	if err := ports.removeWorktree(ctx, canonical, worktree, result.Worktree); err != nil {
 		return err
 	}
 	if afterPhase != nil {
@@ -1033,10 +842,10 @@ func retireRemoveLocal(ctx context.Context, task *cleanupTaskHandle, entry ListR
 			return err
 		}
 	}
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+result.Branch, result.SourceSHA); err != nil {
+	if err := ports.deleteBranch(ctx, canonical, *result); err != nil {
 		return err
 	}
-	if err := worktree.removeEmptyParent(nil, nil); err != nil {
+	if err := ports.removeParent(worktree); err != nil {
 		return err
 	}
 	result.Phase = "complete"

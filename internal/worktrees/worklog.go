@@ -352,9 +352,6 @@ func validateCorrectionIdentity(options CorrectExecutionIdentityOptions) error {
 func ValidExecutionIdentifier(value string, allowUnknown bool) bool {
 	return worktreeclaims.ValidExecutionIdentifier(value, allowUnknown)
 }
-func validExecutionIdentifier(value string, allowUnknown bool) bool {
-	return worktreeclaims.ValidExecutionIdentifier(value, allowUnknown)
-}
 func declaredBy(options WorkLogOptions) string {
 	return worktreeclaims.DeclaredBy(toClaimOptions(options))
 }
