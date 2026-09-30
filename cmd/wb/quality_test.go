@@ -92,6 +92,32 @@ func TestCoverageRunOptionsUseRepositoryQualityPolicy(t *testing.T) {
 	}
 }
 
+func TestCoverageOptionsForCommandRecordsExplicitSharding(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "omitted flags use policy", want: false},
+		{name: "test shards flag", args: []string{"--test-shards", "4"}, want: true},
+		{name: "shard package flag", args: []string{"--test-shards", "4", "--shard-package", "./internal/worktrees"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := newCoverageCmd(&invocation{})
+			if err := command.ParseFlags(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			options := coverageOptionsForCommand(command, qualityOptions{
+				testShards:    4,
+				shardPackages: []string{"./internal/worktrees"},
+			})
+			if options.ExplicitGoTestSharding != tc.want {
+				t.Fatalf("ExplicitGoTestSharding = %t, want %t", options.ExplicitGoTestSharding, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
 	repository := t.TempDir()
 	policyPath := filepath.Join(repository, ".wb", "quality.yaml")

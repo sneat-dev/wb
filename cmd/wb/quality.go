@@ -112,10 +112,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 			}
 			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), inv.nonInteractive), "coverage", len(targets))
 			progress.start()
-			runOptions := runOptions(options)
-			runOptions.GoTestShards = options.testShards
-			runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
-			runOptions.CoverageProfile = options.coverageProfile
+			runOptions := coverageOptionsForCommand(cmd, options)
 			runOptions.Progress = progress.report
 			reports := runCoverageTargets(targets, options.parallel, runOptions)
 			progress.finish()
@@ -786,6 +783,15 @@ func checkNames(checks []quality.Check) []string {
 
 func runOptions(options qualityOptions) quality.RunOptions {
 	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry, CoverageDiagnosticsDir: options.reportDir}
+}
+
+func coverageOptionsForCommand(command *cobra.Command, options qualityOptions) quality.RunOptions {
+	runOptions := runOptions(options)
+	runOptions.GoTestShards = options.testShards
+	runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
+	runOptions.ExplicitGoTestSharding = command.Flags().Changed("test-shards") || command.Flags().Changed("shard-package")
+	runOptions.CoverageProfile = options.coverageProfile
+	return runOptions
 }
 
 func checksForProfile(profile string) ([]quality.Check, error) {

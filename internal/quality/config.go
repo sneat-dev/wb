@@ -70,8 +70,10 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 			}
 			seen[packagePath] = true
 		}
-		base.GoTestShards = config.GoTest.Shards
-		base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
+		if !base.ExplicitGoTestSharding {
+			base.GoTestShards = config.GoTest.Shards
+			base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
+		}
 	}
 	for commandIndex, command := range config.GoLint.Commands {
 		if len(command) == 0 {

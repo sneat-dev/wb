@@ -49,6 +49,10 @@ type RunOptions struct {
 	// GoShardPackages are module-relative package patterns such as
 	// ./internal/worktrees. Packages not named here still run exactly once.
 	GoShardPackages []string
+	// ExplicitGoTestSharding records that the caller selected GoTestShards and
+	// GoShardPackages on the command line. Repository policy remains validated
+	// and supplies lint commands, but cannot silently broaden this selection.
+	ExplicitGoTestSharding bool
 	// GoLintCommands replaces the default `go vet ./...` lint step with the
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.
