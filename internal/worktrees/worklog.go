@@ -3549,12 +3549,7 @@ func (run *lockedWorkLogRun) close() {
 }
 
 func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent bool) error {
-	content, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	content = append(content, '\n')
-	return writeBytesImmutableAt(directory, name, content, 0o600, idempotent)
+	return filewrite.WriteJSONImmutableAt(directory, name, value, idempotent, writeBytesImmutableAtBeforeRename)
 }
 
 // writeBytesImmutableAtBeforeRename is a test-only seam. It is a no-op in
@@ -3569,7 +3564,7 @@ func writeJSONImmutableAt(directory *os.File, name string, value any, idempotent
 var writeBytesImmutableAtBeforeRename = func(*os.File, string) {}
 
 func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool) error {
-	return writeBytesImmutableAtInjected(directory, name, content, mode, idempotent, nil)
+	return filewrite.WriteBytesImmutableAt(directory, name, content, mode, idempotent, writeBytesImmutableAtBeforeRename)
 }
 
 // writeBytesImmutableAtInjected is writeBytesImmutableAt's test seam
@@ -3584,86 +3579,15 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 // create/write/sync/close/rename-no-replace/dir-sync failure branch
 // deterministically.
 func writeBytesImmutableAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool, inj *filewrite.Injector) error {
-	if strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
-		return fmt.Errorf("unsafe immutable filename %q", name)
-	}
-	if existing, err := readBytesAt(directory, name); err == nil {
-		if idempotent && bytes.Equal(existing, content) {
-			return nil
-		}
-		return fmt.Errorf("immutable file already exists: %s", name)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
-		writeBytesImmutableAtBeforeRename(directory, name)
-		if err := filewrite.RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-			if existing, readErr := readBytesAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	})
-}
-
-// writeBytesWithTemporaryAtInjected owns the temporary file through
-// publication. The callback may return false, nil only after verifying an
-// immutable idempotent collision; that removes the temporary entry and skips
-// SyncDir because this invocation published nothing.
-func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector, publish func(string) (bool, error)) error {
-	temporary := "." + name + ".tmp-" + randomHexToken(12)
-	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
-	if err != nil {
-		return err
-	}
-	file := os.NewFile(uintptr(fd), temporary)
-	cleanup := true
-	defer func() {
-		_ = file.Close()
-		if cleanup {
-			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
-		}
-	}()
-	if err := filewrite.Write(file, content, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Sync(file, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Close(file, temporary, inj); err != nil {
-		return err
-	}
-	published, err := publish(temporary)
-	if err != nil {
-		return err
-	}
-	if !published {
-		return nil
-	}
-	cleanup = false
-	return filewrite.SyncDir(directory, inj)
+	return filewrite.WriteBytesImmutableAtInjected(directory, name, content, mode, idempotent, inj, writeBytesImmutableAtBeforeRename)
 }
 
 func readBytesAt(directory *os.File, name string) ([]byte, error) {
-	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), name)
-	defer func() { _ = file.Close() }()
-	return io.ReadAll(file)
+	return filewrite.ReadAt(directory, name)
 }
 
 func readJSONAt(directory *os.File, name string, target any) error {
-	content, err := readBytesAt(directory, name)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(content, target)
+	return filewrite.ReadJSONAt(directory, name, target)
 }
 
 func readPrivateRecordAt[T any](runDir *os.File, child, name string) (T, error) {
@@ -3689,23 +3613,15 @@ func readWorkLogTerminalAt(runDir *os.File, claimID string) (workLogTerminalReco
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
-	content, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
-	}
-	return writeBytesAtomic(filepath.Dir(path), filepath.Base(path), append(content, '\n'), mode)
+	return filewrite.WriteJSONAtomic(path, value, mode)
 }
 
 func writeJSONAtomicAt(directory *os.File, name string, value any, mode os.FileMode) error {
-	content, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeBytesAtomicAt(directory, name, append(content, '\n'), mode)
+	return filewrite.WriteJSONAtomicAt(directory, name, value, mode)
 }
 
 func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os.FileMode) error {
-	return writeBytesAtomicAtInjected(directory, name, content, mode, nil)
+	return filewrite.WriteBytesAtomicAt(directory, name, content, mode)
 }
 
 // writeBytesAtomicAtInjected is writeBytesAtomicAt's test seam (task-9
@@ -3720,19 +3636,11 @@ func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 // create/write/sync/close/rename/dir-sync failure branch
 // deterministically.
 func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
-	if directory == nil || strings.Contains(name, "/") || name == "" || name == "." || name == ".." {
-		return fmt.Errorf("unsafe atomic filename %q", name)
-	}
-	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
-		if err := filewrite.RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-			return false, err
-		}
-		return true, nil
-	})
+	return filewrite.WriteBytesAtomicAtInjected(directory, name, content, mode, inj)
 }
 
 func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) error {
-	return writeBytesAtomicInjected(directory, name, content, mode, nil)
+	return filewrite.WriteBytesAtomic(directory, name, content, mode)
 }
 
 // writeBytesAtomicInjected is writeBytesAtomic's test seam (task-9 PR-3):
@@ -3742,37 +3650,5 @@ func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) 
 // create/chmod/write/sync/close/rename/dir-sync failure branch
 // deterministically.
 func writeBytesAtomicInjected(directory, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(directory, "."+name+".tmp-*", inj)
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer func() { _ = os.Remove(temporaryName) }()
-	if err := filewrite.ChmodFile(temporary, mode, temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, content, temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
-		return err
-	}
-	if err := filewrite.Rename(temporaryName, filepath.Join(directory, name), inj); err != nil {
-		return err
-	}
-	dir, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	return filewrite.SyncDir(dir, inj)
+	return filewrite.WriteBytesAtomicInjected(directory, name, content, mode, inj)
 }

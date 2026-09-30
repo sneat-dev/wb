@@ -77,6 +77,9 @@ const (
 	// separate from StepSync so a test can fail the directory fsync
 	// without also failing the regular file's own fsync.
 	StepDirSync Step = "dir_sync"
+	// StepOpenDirectory covers opening the parent directory for the final
+	// durability sync in a path-based atomic write.
+	StepOpenDirectory Step = "open_directory"
 	// StepRename covers a path-based os.Rename publish -- the sequence
 	// this package's cmd/wb call sites use in place of the fd-relative
 	// Linkat every internal/sessionpark/internal/sessionmove call site
