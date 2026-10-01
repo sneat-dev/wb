@@ -142,10 +142,8 @@ type launchAttempt struct {
 }
 
 func (state *launchState) savePlan(plan launchPlan) (launchPlan, sessionmove.Digest, bool, error) {
-	raw, err := encodeLaunchJSON(plan)
-	if err != nil {
-		return launchPlan{}, "", false, err
-	}
+	// launchPlan contains only integer/string fields and a string slice.
+	raw, _ := encodeLaunchJSON(plan)
 	created, err := state.publish("", "plan.json", raw)
 	if err != nil {
 		return launchPlan{}, "", false, fmt.Errorf("persist immutable launch plan: %w", err)
@@ -521,10 +519,7 @@ func openLaunchState(root, handoffID string, create bool) (*launchState, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open launch handoff directory: %w", err)
 	}
-	handoff, err := fileForFD(handoffFD, "wb-session-launch-handoff")
-	if err != nil {
-		return nil, err
-	}
+	handoff := os.NewFile(uintptr(handoffFD), "wb-session-launch-handoff")
 	return openLaunchStateFromHandoff(handoffID, handoff, create)
 }
 
@@ -541,10 +536,7 @@ func openLaunchStateFromHandoff(handoffID string, handoff *os.File, create bool)
 	if err != nil {
 		return fail(err)
 	}
-	state.launch, err = fileForFD(launchFD, "wb-session-launch-directory")
-	if err != nil {
-		return fail(err)
-	}
+	state.launch = os.NewFile(uintptr(launchFD), "wb-session-launch-directory")
 	attemptsFD, childErr := openPrivateDirectoryAt(int(state.launch.Fd()), attemptsDirectoryName, create)
 	if childErr != nil {
 		if !create && errors.Is(childErr, os.ErrNotExist) {
@@ -552,10 +544,7 @@ func openLaunchStateFromHandoff(handoffID string, handoff *os.File, create bool)
 		}
 		return fail(childErr)
 	}
-	state.attempts, childErr = fileForFD(attemptsFD, "wb-session-launch-attempts")
-	if childErr != nil {
-		return fail(childErr)
-	}
+	state.attempts = os.NewFile(uintptr(attemptsFD), "wb-session-launch-attempts")
 	return state, nil
 }
 
@@ -603,10 +592,7 @@ func (state *launchState) openAttempt(attemptID string) (*launchAttempt, error) 
 		return nil, err
 	}
 	attempt := &launchAttempt{state: state, id: attemptID, index: index}
-	attempt.root, err = fileForFD(rootFD, "wb-session-launch-attempt")
-	if err != nil {
-		return nil, err
-	}
+	attempt.root = os.NewFile(uintptr(rootFD), "wb-session-launch-attempt")
 	fail := func(err error) (*launchAttempt, error) {
 		_ = attempt.Close()
 		return nil, err
@@ -615,18 +601,12 @@ func (state *launchState) openAttempt(attemptID string) (*launchAttempt, error) 
 	if err != nil {
 		return fail(err)
 	}
-	attempt.ready, err = fileForFD(readyFD, "wb-session-launch-attempt-ready")
-	if err != nil {
-		return fail(err)
-	}
+	attempt.ready = os.NewFile(uintptr(readyFD), "wb-session-launch-attempt-ready")
 	execFD, err := openPrivateDirectoryAt(int(attempt.root.Fd()), execDirectoryName, false)
 	if err != nil {
 		return fail(err)
 	}
-	attempt.exec, err = fileForFD(execFD, "wb-session-launch-attempt-exec")
-	if err != nil {
-		return fail(err)
-	}
+	attempt.exec = os.NewFile(uintptr(execFD), "wb-session-launch-attempt-exec")
 	return attempt, nil
 }
 
@@ -634,19 +614,20 @@ func (state *launchState) openAttempt(attemptID string) (*launchAttempt, error) 
 // latest already-claimed attempt. Any artifact or unknown entry makes the
 // crash window ambiguous and therefore non-recoverable.
 func (state *launchState) openOrRecoverClaimedAttempt(attemptID string) (*launchAttempt, error) {
+	return state.recoverClaimedAttempt(attemptID, openPrivateDirectoryAt, readAttemptDirectory, nil)
+}
+
+func (state *launchState) recoverClaimedAttempt(attemptID string, openDirectory func(int, string, bool) (int, error), readDirectory func(*os.File) ([]os.DirEntry, error), inj *filewrite.Injector) (*launchAttempt, error) {
 	if _, err := parseAttemptID(attemptID); err != nil {
 		return nil, err
 	}
-	rootFD, err := openPrivateDirectoryAt(int(state.attempts.Fd()), attemptID, false)
+	rootFD, err := openDirectory(int(state.attempts.Fd()), attemptID, false)
 	if err != nil {
 		return nil, err
 	}
-	root, err := fileForFD(rootFD, "wb-session-launch-attempt-recovery")
-	if err != nil {
-		return nil, err
-	}
+	root := os.NewFile(uintptr(rootFD), "wb-session-launch-attempt-recovery")
 	defer func() { _ = root.Close() }()
-	entries, err := root.ReadDir(-1)
+	entries, err := readDirectory(root)
 	if err != nil {
 		return nil, err
 	}
@@ -654,15 +635,12 @@ func (state *launchState) openOrRecoverClaimedAttempt(attemptID string) (*launch
 		if entry.Name() != readyDirectoryName && entry.Name() != execDirectoryName {
 			return nil, fmt.Errorf("claimed attempt %s has ambiguous artifact %q", attemptID, entry.Name())
 		}
-		childFD, err := openPrivateDirectoryAt(int(root.Fd()), entry.Name(), false)
+		childFD, err := openDirectory(int(root.Fd()), entry.Name(), false)
 		if err != nil {
 			return nil, err
 		}
-		child, err := fileForFD(childFD, "wb-session-launch-attempt-recovery-child")
-		if err != nil {
-			return nil, err
-		}
-		childEntries, readErr := child.ReadDir(-1)
+		child := os.NewFile(uintptr(childFD), "wb-session-launch-attempt-recovery-child")
+		childEntries, readErr := readDirectory(child)
 		_ = child.Close()
 		if readErr != nil {
 			return nil, readErr
@@ -672,46 +650,43 @@ func (state *launchState) openOrRecoverClaimedAttempt(attemptID string) (*launch
 		}
 	}
 	for _, child := range []string{readyDirectoryName, execDirectoryName} {
-		childFD, err := openPrivateDirectoryAt(int(root.Fd()), child, true)
+		childFD, err := openDirectory(int(root.Fd()), child, true)
 		if err != nil {
 			return nil, err
 		}
 		_ = unix.Close(childFD)
 	}
-	if err := root.Sync(); err != nil {
+	if err := filewrite.SyncDir(root, inj); err != nil {
 		return nil, err
 	}
 	return state.openAttempt(attemptID)
 }
 
 func (state *launchState) createAttempt() (*launchAttempt, error) {
+	return state.createAttemptWithOperations(newLauncherAttemptID, unix.Mkdirat, openPrivateDirectoryAt, nil)
+}
+
+func (state *launchState) createAttemptWithOperations(newID func(uint64) string, mkdirAt func(int, string, uint32) error, openDirectory func(int, string, bool) (int, error), inj *filewrite.Injector) (*launchAttempt, error) {
 	refs, err := state.listAttempts()
 	if err != nil {
 		return nil, err
 	}
 	index := uint64(len(refs) + 1)
 	for tries := 0; tries < 100; tries++ {
-		var random [16]byte
-		if _, err := rand.Read(random[:]); err != nil {
-			return nil, err
-		}
-		attemptID := fmt.Sprintf("%06d-%s", index, hex.EncodeToString(random[:]))
-		if err := unix.Mkdirat(int(state.attempts.Fd()), attemptID, 0o700); err != nil {
+		attemptID := newID(index)
+		if err := mkdirAt(int(state.attempts.Fd()), attemptID, 0o700); err != nil {
 			if errors.Is(err, unix.EEXIST) {
 				continue
 			}
 			return nil, fmt.Errorf("claim launcher attempt: %w", err)
 		}
-		rootFD, err := openPrivateDirectoryAt(int(state.attempts.Fd()), attemptID, false)
+		rootFD, err := openDirectory(int(state.attempts.Fd()), attemptID, false)
 		if err != nil {
 			return nil, err
 		}
-		root, err := fileForFD(rootFD, "wb-session-launch-attempt")
-		if err != nil {
-			return nil, err
-		}
+		root := os.NewFile(uintptr(rootFD), "wb-session-launch-attempt")
 		for _, child := range []string{readyDirectoryName, execDirectoryName} {
-			childFD, childErr := openPrivateDirectoryAt(int(root.Fd()), child, true)
+			childFD, childErr := openDirectory(int(root.Fd()), child, true)
 			if childErr != nil {
 				_ = root.Close()
 				return nil, childErr
@@ -720,7 +695,7 @@ func (state *launchState) createAttempt() (*launchAttempt, error) {
 			_ = unix.Close(childFD)
 		}
 		_ = root.Close()
-		if err := state.attempts.Sync(); err != nil {
+		if err := filewrite.SyncDir(state.attempts, inj); err != nil {
 			return nil, err
 		}
 		return state.openAttempt(attemptID)
@@ -806,10 +781,14 @@ func (attempt *launchAttempt) directory(child string) (*os.File, error) {
 }
 
 func (attempt *launchAttempt) preReleaseProcessEvidence() (int, bool, error) {
+	return attempt.preReleaseProcessEvidenceWithEntries(readAttemptDirectory)
+}
+
+func (attempt *launchAttempt) preReleaseProcessEvidenceWithEntries(readEntries func(*os.File) ([]os.DirEntry, error)) (int, bool, error) {
 	if _, err := attempt.ready.Seek(0, io.SeekStart); err != nil {
 		return 0, false, err
 	}
-	readyEntries, err := attempt.ready.ReadDir(-1)
+	readyEntries, err := readEntries(attempt.ready)
 	if err != nil {
 		return 0, false, err
 	}
@@ -825,7 +804,7 @@ func (attempt *launchAttempt) preReleaseProcessEvidence() (int, bool, error) {
 	if _, err := attempt.exec.Seek(0, io.SeekStart); err != nil {
 		return 0, false, err
 	}
-	execEntries, err := attempt.exec.ReadDir(-1)
+	execEntries, err := readEntries(attempt.exec)
 	if err != nil {
 		return 0, false, err
 	}
@@ -848,6 +827,10 @@ func (attempt *launchAttempt) preReleaseProcessEvidence() (int, bool, error) {
 }
 
 func openPrivateDirectoryAt(parentFD int, name string, create bool) (int, error) {
+	return openPrivateDirectoryWithStat(parentFD, name, create, unix.Fstat)
+}
+
+func openPrivateDirectoryWithStat(parentFD int, name string, create bool, statFile func(int, *unix.Stat_t) error) (int, error) {
 	if create {
 		if err := unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 			return -1, fmt.Errorf("create private launch directory %s: %w", name, err)
@@ -858,7 +841,7 @@ func openPrivateDirectoryAt(parentFD int, name string, create bool) (int, error)
 		return -1, fmt.Errorf("open private launch directory %s: %w", name, err)
 	}
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	if err := statFile(fd, &stat); err != nil {
 		_ = unix.Close(fd)
 		return -1, err
 	}
@@ -867,15 +850,6 @@ func openPrivateDirectoryAt(parentFD int, name string, create bool) (int, error)
 		return -1, fmt.Errorf("launch directory %s must be one private 0700 directory", name)
 	}
 	return fd, nil
-}
-
-func fileForFD(fd int, name string) (*os.File, error) {
-	file := os.NewFile(uintptr(fd), name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap %s", name)
-	}
-	return file, nil
 }
 
 func (state *launchState) read(child, name string) ([]byte, error) {
@@ -895,27 +869,28 @@ func (attempt *launchAttempt) read(child, name string) ([]byte, error) {
 }
 
 func readLaunchArtifact(directory *os.File, name string) ([]byte, error) {
+	return readLaunchArtifactWithOperations(directory, name, unix.Fstat, io.ReadAll)
+}
+
+func readLaunchArtifactWithOperations(directory *os.File, name string, statFile func(int, *unix.Stat_t) error, readAll func(io.Reader) ([]byte, error)) ([]byte, error) {
 	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	file, err := fileForFD(fd, "wb-session-launch-artifact")
-	if err != nil {
-		return nil, err
-	}
+	file := os.NewFile(uintptr(fd), "wb-session-launch-artifact")
 	defer func() { _ = file.Close() }()
 	if err := validatePrivateLaunchFile(fd, name, maxLaunchArtifactBytes); err != nil {
 		return nil, err
 	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
+	var metadata unix.Stat_t
+	if err := statFile(fd, &metadata); err != nil {
 		return nil, err
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxLaunchArtifactBytes+1))
+	raw, err := readAll(io.LimitReader(file, maxLaunchArtifactBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > maxLaunchArtifactBytes || int64(len(raw)) != stat.Size {
+	if len(raw) > maxLaunchArtifactBytes || int64(len(raw)) != metadata.Size {
 		return nil, fmt.Errorf("launch artifact %s is oversized or changed while being read", name)
 	}
 	return raw, nil
@@ -951,23 +926,22 @@ func publishLaunchArtifact(directory *os.File, name string, raw []byte) (bool, e
 // unix.Openat call used, and filewrite.LinkNoReplace calls exactly the
 // original unix.Linkat(directoryFD, temporaryName, directoryFD, name, 0).
 func publishLaunchArtifactInjected(directory *os.File, name string, raw []byte, inj *filewrite.Injector) (bool, error) {
+	return publishLaunchArtifactWithUnlink(directory, name, raw, inj, unix.Unlinkat)
+}
+
+func publishLaunchArtifactWithUnlink(directory *os.File, name string, raw []byte, inj *filewrite.Injector, unlink func(int, string, int) error) (bool, error) {
 	if len(raw) > maxLaunchArtifactBytes {
 		return false, fmt.Errorf("launch artifact exceeds %d bytes", maxLaunchArtifactBytes)
 	}
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return false, err
-	}
+	// crypto/rand.Read fills the buffer or terminates the process.
+	_, _ = rand.Read(random[:])
 	temporaryName := ".pending-" + hex.EncodeToString(random[:])
 	fd, err := filewrite.CreateExclusive(int(directory.Fd()), temporaryName, 0o600, inj)
 	if err != nil {
 		return false, err
 	}
-	temporary, err := fileForFD(fd, "wb-session-launch-pending")
-	if err != nil {
-		_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
-		return false, err
-	}
+	temporary := os.NewFile(uintptr(fd), "wb-session-launch-pending")
 	closed := false
 	linked := false
 	defer func() {
@@ -1001,7 +975,7 @@ func publishLaunchArtifactInjected(directory *os.File, name string, raw []byte, 
 		}
 		return false, err
 	}
-	if err := unix.Unlinkat(int(directory.Fd()), temporaryName, 0); err != nil {
+	if err := unlink(int(directory.Fd()), temporaryName, 0); err != nil {
 		return false, err
 	}
 	linked = true
@@ -1065,19 +1039,9 @@ func (fence *execFence) Close() error {
 	return unlockErr
 }
 
-// fenceFileForFD wraps fileForFD for acquireExecFence's own use. It exists as
-// a seam (rather than calling fileForFD directly) so a test can exercise the
-// wrap-failure branch below deterministically: fileForFD's own nil-file case
-// only fires for a negative fd, which acquireExecFence's real call site never
-// produces (its fd always comes from a successful unix.Openat), so that
-// branch is otherwise unreachable through the public API.
-var fenceFileForFD = fileForFD
-
 func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
-	directory, err := attempt.directory(execDirectoryName)
-	if err != nil {
-		return nil, err
-	}
+	// The fence always belongs to the fixed exec directory.
+	directory := attempt.exec
 	name := strconv.Itoa(pid) + ".lock"
 	fd, err := unix.Openat(int(directory.Fd()), name,
 		unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
@@ -1092,20 +1056,19 @@ func (attempt *launchAttempt) acquireExecFence(pid int) (*execFence, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("acquire launcher exec-success fence for PID %d: %w", pid, err)
 	}
-	file, err := fenceFileForFD(fd, "wb-session-launch-exec-fence")
-	if err != nil {
-		return nil, err
-	}
+	file := os.NewFile(uintptr(fd), "wb-session-launch-exec-fence")
 	return &execFence{File: file}, nil
 }
 
 // execFenceHeld reports whether the private WB wrapper still holds the
 // exclusive CLOEXEC fence. Successful Exec atomically changes this to false.
 func (attempt *launchAttempt) execFenceHeld(pid int) (bool, error) {
-	directory, err := attempt.directory(execDirectoryName)
-	if err != nil {
-		return false, err
-	}
+	return attempt.execFenceHeldWithFlock(pid, unix.Flock)
+}
+
+func (attempt *launchAttempt) execFenceHeldWithFlock(pid int, flock func(int, int) error) (bool, error) {
+	// The fence always belongs to the fixed exec directory.
+	directory := attempt.exec
 	name := strconv.Itoa(pid) + ".lock"
 	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -1115,13 +1078,13 @@ func (attempt *launchAttempt) execFenceHeld(pid int) (bool, error) {
 	if err := validatePrivateLaunchFile(fd, name, 0); err != nil {
 		return false, err
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
 			return true, nil
 		}
 		return false, err
 	}
-	if err := unix.Flock(fd, unix.LOCK_UN); err != nil {
+	if err := flock(fd, unix.LOCK_UN); err != nil {
 		return false, err
 	}
 	return false, nil
@@ -1223,3 +1186,12 @@ func equalReady(left, right launcherReady) bool {
 	rightRaw, rightErr := encodeLaunchJSON(right)
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftRaw, rightRaw)
 }
+
+func newLauncherAttemptID(index uint64) string {
+	var random [16]byte
+	// crypto/rand.Read fills the buffer or terminates the process.
+	_, _ = rand.Read(random[:])
+	return fmt.Sprintf("%06d-%s", index, hex.EncodeToString(random[:]))
+}
+
+func readAttemptDirectory(directory *os.File) ([]os.DirEntry, error) { return directory.ReadDir(-1) }

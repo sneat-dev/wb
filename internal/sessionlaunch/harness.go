@@ -97,15 +97,13 @@ func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string)
 		}
 		args = append(args, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "codex", Args: args}, nil
-	case RuntimeClaudeCode:
+	default: // NormalizeRuntime admits only Codex or Claude Code.
 		args := make([]string, 0, 5)
 		if model != "" {
 			args = append(args, "--model", model)
 		}
 		args = append(args, "--name", authority.SuccessorWBSessionID, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "claude", Args: args}, nil
-	default:
-		return HarnessSpec{}, fmt.Errorf("requested harness %q is unsupported; supported harnesses are %q and %q", runtime, RuntimeCodex, RuntimeClaudeCode)
 	}
 }
 
