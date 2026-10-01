@@ -1,20 +1,20 @@
-import { MediaMatcher } from '@angular/cdk/layout'
-import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, afterNextRender, inject, input, output, signal, viewChild } from '@angular/core'
-import { Glyph } from '../list/glyph'
-
-/** Below this width the panel is a full-screen sheet; the same as the list's narrow layout. */
-export const SHEET_QUERY = '(max-width: 47.99rem)'
+import { DOCUMENT } from '@angular/common'
+import { ChangeDetectionStrategy, Component, ElementRef, afterNextRender, effect, inject, input, output, viewChild } from '@angular/core'
+import { Glyph } from '../control/glyph'
+import { GLYPH_X } from '../control/glyphs'
+import { SheetMode } from './sheet-mode'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), summary, input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
 /**
  * The host of the master-detail panel: a region beside the list that holds
- * whatever is projected into it, with a close button. On a phone it is a
- * full-screen sheet and then a modal dialog: Tab stays inside it. Esc closes it
- * through the shell's keyboard (the list registers the panel there), so this
- * component only says that it wants closing. `focusOnOpen` moves the focus into
- * the panel when it appears, for a selection the operator just made; a deep link
- * does not take the focus.
+ * whatever is projected into it, with a close button. Beside the list the focus
+ * stays in the list (`j` and `k` keep browsing and the panel follows) and Tab
+ * reaches the panel next. On a phone it is a full-screen modal dialog: the focus
+ * moves into it when it opens, Tab stays inside it, the page behind does not
+ * scroll and the list is inert (the list sets that). Esc closes it through the
+ * shell's keyboard (the list registers the panel there), so this component only
+ * says that it wants closing.
  */
 @Component({
   selector: 'app-side-panel',
@@ -26,25 +26,30 @@ const FOCUSABLE = 'a[href], button:not([disabled]), summary, input, select, text
 export class SidePanel {
   /** What assistive technology calls the panel. */
   readonly label = input.required<string>()
-  readonly focusOnOpen = input(false)
   readonly closed = output<void>()
 
   private readonly panel = viewChild.required<ElementRef<HTMLElement>>('panel')
-  /** Whether the panel is the phone's full-screen sheet. */
-  protected readonly sheet = signal(false)
+  protected readonly sheet = inject(SheetMode).active
+  protected readonly cross = GLYPH_X
 
   constructor() {
-    // The media query, not the observer of the layout module, which would bring its rxjs operators into the first page.
-    const media = inject(MediaMatcher).matchMedia(SHEET_QUERY)
-    const changed = (event: { matches: boolean }) => this.sheet.set(event.matches)
-    this.sheet.set(media.matches)
-    media.addListener(changed)
-    inject(DestroyRef).onDestroy(() => media.removeListener(changed))
+    const body = inject(DOCUMENT).body
     afterNextRender(() => {
-      if (this.focusOnOpen()) this.panel().nativeElement.focus()
+      if (this.sheet()) this.focus()
+    })
+    // The page behind a sheet does not scroll.
+    effect((onCleanup) => {
+      if (!this.sheet()) return
+      const before = body.style.overflow
+      body.style.overflow = 'hidden'
+      onCleanup(() => (body.style.overflow = before))
     })
   }
 
+  /** Moves the focus into the panel. */
+  focus(): void {
+    this.panel().nativeElement.focus()
+  }
   /** In the sheet, Tab wraps from the last control to the first and back. */
   protected trap(event: KeyboardEvent): void {
     if (!this.sheet() || event.key !== 'Tab') return

@@ -1,12 +1,9 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { FleetStore, TaskView, Worktree, WorktreePanel, agentDetailLink, agentTitle, repositoryDetailLink, routeLabel, taskDetailLink } from '@cockpit/fleet-data'
 import { CodeIndexPanel } from '@cockpit/ui/code-index-panel'
+import { webAddress } from '@cockpit/ui/control'
 import { PanelContent, PanelFact, PanelRelated } from '@cockpit/ui/panel'
-
-/** A pull request's address when it is a secure web address, else none (the page links nothing it has not checked). */
-function webAddress(url: string | undefined): string | undefined {
-  return url?.startsWith('https://') ? url : undefined
-}
+import { pullRequestsOf } from './worktree-pull-requests'
 
 /**
  * One worktree's content: the side panel of the Worktrees list and the page of
@@ -53,10 +50,11 @@ export class WorktreePanelView {
   })
 
   protected readonly related = computed<PanelRelated[]>(() => {
-    const { pullRequests, agents, task } = (this.data() as { view: WorktreePanel }).view.related
+    const { agents, task } = (this.data() as { view: WorktreePanel }).view.related
+    const pullRequests = pullRequestsOf(this.store.document(), this.id())
     return [
       { title: 'Task', items: [{ text: `${(task as TaskView).name} (${(task as TaskView).stateInfo.label})`, link: taskDetailLink((task as TaskView).name) }] },
-      { title: 'Pull requests', items: pullRequests.map((pr) => ({ text: `#${pr.number}${pr.state ? ` ${pr.state}` : ''}`, href: webAddress(pr.url) })) },
+      { title: 'Pull requests', items: pullRequests.map((pr) => ({ text: `#${pr.number}${pr.state ? ` ${pr.state}` : ''}`, href: webAddress(pr.url) ?? undefined })) },
       { title: 'Agents', items: agents.map((agent) => ({ text: agentTitle(agent), link: agentDetailLink(agent.id) })) },
     ]
   })

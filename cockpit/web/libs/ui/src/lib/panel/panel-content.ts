@@ -1,9 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core'
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { AppLink, PanelCommand } from '@cockpit/fleet-data'
+import { CopyCommandList } from '../control/copy-command-list'
+import { Glyph } from '../control/glyph'
 import { AgeText } from '../list/age-text'
-import { CopyButton } from '../list/copy-button'
-import { Glyph } from '../list/glyph'
+import { CopyIcon } from '../list/copy-icon'
+import { ListAnnouncer } from '../list/list-announcer'
+import { GLYPH_OPEN } from '../list/list-glyphs'
 
 /** One fact of a panel's summary. */
 export interface PanelFact {
@@ -41,12 +44,12 @@ export interface PanelRelated {
  * (the default slot), the action area (`[panelActions]`, which task 13 fills
  * and which vanishes while empty), the "Copy command" entries, and the
  * collapsed "Raw data" block, which renders the entries exactly as the read
- * model sent them only once it is opened. Leave `commands` empty where a
- * projected `[panelCommands]` list takes their place.
+ * model sent them only once it is opened.
  */
 @Component({
   selector: 'app-panel-content',
-  imports: [RouterLink, AgeText, CopyButton, Glyph],
+  imports: [RouterLink, AgeText, CopyIcon, CopyCommandList, Glyph],
+  providers: [ListAnnouncer],
   templateUrl: './panel-content.html',
   styleUrl: './panel-content.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -64,6 +67,8 @@ export class PanelContent {
   /** The detail page, not the side panel: it has no border and its own width. */
   readonly page = input(false)
 
+  protected readonly announcer = inject(ListAnnouncer)
+  protected readonly open = GLYPH_OPEN
   protected readonly rawOpen = signal(false)
   protected readonly json = computed(() => JSON.stringify(this.raw(), null, 2))
 }

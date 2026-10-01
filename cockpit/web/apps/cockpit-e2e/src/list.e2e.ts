@@ -8,7 +8,7 @@ import { watch } from './support'
 const { document: fleet } = performanceFixture()
 const first = fleet.worktrees[0]
 
-const listRows = (page: Page) => page.locator('[role=row][aria-rowindex]')
+const listRows = (page: Page) => page.locator('[role=row][data-index]')
 const grid = (page: Page) => page.getByRole('grid')
 
 async function stubFixture(page: Page, delayMs = 0) {
@@ -20,7 +20,7 @@ async function stubFixture(page: Page, delayMs = 0) {
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
 }
 
-test('at most 60 rows are in the DOM at 1080 px with 600 worktrees, under a header that stays while the rows move', async ({ page }) => {
+test('at most 60 rows are in the DOM at 1080 px with 600 worktrees, however far the list is scrolled, under a header that stays', async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1080 })
   await stubFixture(page)
   const expectClean = await watch(page)
@@ -34,13 +34,27 @@ test('at most 60 rows are in the DOM at 1080 px with 600 worktrees, under a head
   await expect(page.locator('.count')).toHaveText('600 of 600')
 
   const before = await listRows(page).first().getAttribute('aria-rowindex')
-  await page.locator('.viewport').evaluate((list) => (list.scrollTop = 9000))
-  await expect(listRows(page).first()).not.toHaveAttribute('aria-rowindex', before as string)
-  expect(await listRows(page).count()).toBeLessThanOrEqual(60)
+  for (const top of [9000, 4000, 'end'] as const) {
+    await page.locator('.viewport').evaluate((list, to) => (list.scrollTop = to === 'end' ? list.scrollHeight : to), top)
+    await expect(listRows(page).first()).not.toHaveAttribute('aria-rowindex', before as string)
+    expect(await listRows(page).count()).toBeLessThanOrEqual(60)
+  }
+  // At the very end the last row is there and fills the viewport to its bottom.
+  await expect(listRows(page).last()).toHaveAttribute('aria-rowindex', '601')
   const head = (await page.locator('.head').boundingBox())!
   const list = (await page.locator('.viewport').boundingBox())!
   expect(Math.abs(head.y - list.y)).toBeLessThan(4)
   await expectClean()
+})
+
+test('on a cold load the rows fill the viewport as soon as the data arrives, with no scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await stubFixture(page, 600)
+  await page.goto('/cockpit/worktrees')
+  await expect(listRows(page).first()).toBeVisible()
+  const viewport = (await page.locator('.viewport').boundingBox())!
+  const last = (await listRows(page).last().boundingBox())!
+  expect(last.y + last.height).toBeGreaterThanOrEqual(viewport.y + viewport.height - 2)
 })
 
 test('filtering shows its result within one animation frame, and the address follows', async ({ page }) => {
@@ -88,19 +102,70 @@ test('j, k, Enter and Esc move through the rows and open and close the panel, an
   await page.keyboard.press('k')
   await expect(page.locator('.row.focused')).toHaveAttribute('aria-rowindex', '3')
   await page.keyboard.press('Enter')
-  const second = (await page.locator('.row.focused .task').textContent())!
+  const second = (await page.locator('.row.focused a.name').textContent())!
   await expect(page).toHaveURL(/[?&]sel=/)
   const panel = page.getByRole('complementary')
   await expect(panel).toBeVisible()
   await expect(panel.getByRole('heading', { level: 2 })).toHaveText(second)
-  // The list is still there beside it, with the selected row marked.
-  await expect(listRows(page).first()).toBeVisible()
+  // Beside the list the focus stays in the list, which keeps browsing: the panel follows.
+  await expect(grid(page)).toBeFocused()
+  await page.keyboard.press('j')
+  await expect(panel.getByRole('heading', { level: 2 })).not.toHaveText(second)
+  await page.keyboard.press('Enter')
+  await expect(panel).toBeFocused()
+  await grid(page).focus()
   await expect(page.locator('.row.selected')).toHaveCount(1)
   await page.keyboard.press('Escape')
   await expect(panel).toBeHidden()
   await expect(page).not.toHaveURL(/sel=/)
   await expect(grid(page)).toBeFocused()
+  await expect(page.locator('.row.focused')).toHaveAttribute('aria-rowindex', '4')
   await expectClean()
+})
+
+test('the back button restores each earlier state: filter, chip, sort and selection', async ({ page }) => {
+  await stubFixture(page)
+  await page.goto('/cockpit/worktrees')
+  await expect(listRows(page).first()).toBeVisible()
+  const filter = page.getByRole('textbox', { name: 'Filter worktrees' })
+  await filter.fill('fix')
+  await expect(page).toHaveURL(/q=fix/)
+  await page.getByRole('button', { name: 'Unpushed', exact: true }).click()
+  await expect(page).toHaveURL(/chips=unpushed/)
+  const unfiltered = (await page.locator('.count').textContent())!
+  await expect(page.locator('.count')).not.toHaveText(unfiltered)
+  const withChip = await page.locator('.count').textContent()
+  await page.getByRole('button', { name: 'Machine', exact: true }).click()
+  await expect(page).toHaveURL(/sort=machine/)
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+  await expect(page).toHaveURL(/sel=/)
+  await page.goBack()
+  await expect(page).not.toHaveURL(/sel=/)
+  await expect(page.getByRole('complementary')).toBeHidden()
+  await page.goBack()
+  await expect(page).not.toHaveURL(/sort=/)
+  await expect(page.locator('.count')).toHaveText(withChip!)
+  await page.goBack()
+  await expect(page).not.toHaveURL(/chips=/)
+  await expect(page.getByRole('button', { name: 'Unpushed', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await expect(filter).toHaveValue('fix')
+  await page.goForward()
+  await expect(page).toHaveURL(/chips=unpushed/)
+  await expect(page.getByRole('button', { name: 'Unpushed', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('o opens the focused row\'s page and c copies its name', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await stubFixture(page)
+  await page.goto('/cockpit/worktrees')
+  await expect(listRows(page).first()).toBeVisible()
+  await grid(page).focus()
+  const name = (await page.locator('.row.focused a.name').textContent())!
+  await page.keyboard.press('c')
+  await expect(page.locator('section > [role=status]')).toHaveText(`Copied ${name}`)
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(name)
+  await page.keyboard.press('o')
+  await expect(page).toHaveURL(/\/cockpit\/worktrees\/wt-/)
 })
 
 test('/ focuses the filter, Esc clears it and then closes the panel, and nothing fires while typing or composing', async ({ page }) => {
@@ -136,7 +201,7 @@ test('the panel shows the summary, the related entities and the commands, with R
   const panel = page.getByRole('complementary')
   await expect(panel.getByRole('heading', { level: 2 })).toHaveText(first.task)
   await expect(panel.getByText('Copy command', { exact: true })).toBeVisible()
-  const raw = panel.locator('details')
+  const raw = panel.locator('details.raw')
   await expect(raw).not.toHaveAttribute('open', '')
   await expect(panel.locator('pre')).toHaveCount(0)
   await raw.locator('summary').click()
@@ -149,13 +214,14 @@ test('the panel is a full-screen sheet on a phone, and Esc closes it', async ({ 
   await page.setViewportSize({ width: 390, height: 844 })
   await stubFixture(page)
   await page.goto('/cockpit/worktrees')
-  await listRows(page).first().locator('[role=gridcell]').last().click()
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
   const sheet = page.getByRole('dialog')
   await expect(sheet).toBeVisible()
   const box = (await sheet.boundingBox())!
   expect(box.width).toBeGreaterThanOrEqual(389)
   expect(box.height).toBeGreaterThanOrEqual(843)
   await expect(sheet).toBeFocused()
+  await expect(page.locator('section.list')).toHaveAttribute('inert', '')
   await page.keyboard.press('Escape')
   await expect(sheet).toBeHidden()
   const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
@@ -168,5 +234,5 @@ test('the detail route renders the same content as the panel, ending with Raw da
   const content = page.locator('app-worktree-panel')
   await expect(content.getByRole('heading', { level: 2 })).toHaveText(first.task)
   await expect(content.locator('section').last()).toHaveAttribute('aria-label', 'Raw data')
-  await expect(content.locator('details')).not.toHaveAttribute('open', '')
+  await expect(content.locator('details.raw')).not.toHaveAttribute('open', '')
 })

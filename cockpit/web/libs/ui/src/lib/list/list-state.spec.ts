@@ -2,6 +2,9 @@ import { emptyListQuery } from '@cockpit/fleet-data'
 import {
   ADDRESS_KEYS,
   ListColumn,
+  MAX_RENDERED_ROWS,
+  addressKey,
+  isEmptyCell,
   MAX_COLUMNS,
   addressChange,
   describeFilters,
@@ -17,6 +20,9 @@ describe('addressChange', () => {
   it('names all six parameters, null for each that is not set', () => {
     expect(addressChange(emptyListQuery())).toEqual({ q: null, sort: null, dir: null, machine: null, chips: null, sel: null })
     expect(ADDRESS_KEYS).toEqual(['q', 'sort', 'dir', 'machine', 'chips', 'sel'])
+    expect(addressChange({ q: 'fix', machines: [], chips: [] }, 'left')).toEqual({ 'left.q': 'fix', 'left.sort': null, 'left.dir': null, 'left.machine': null, 'left.chips': null, 'left.sel': null })
+    expect(addressKey('', 'q')).toBe('q')
+    expect(addressKey('a', 'q')).toBe('a.q')
     expect(addressChange({ q: 'fix', sort: 'activity', dir: 'asc', machines: ['a,b'], chips: ['pr', 'gone'], sel: 'w1' })).toEqual({
       q: 'fix',
       sort: 'activity',
@@ -75,6 +81,12 @@ describe('visibleColumns', () => {
   it('hides a column that is empty for every row, and keeps one that is empty for some', () => {
     const columns = [column('a'), column('b', { empty: (n) => n > 0 }), column('c', { empty: (n) => n > 1 })]
     expect(visibleColumns(columns, [1, 2]).map((c) => c.id)).toEqual(['a', 'c'])
+    // A column with a value that is empty for every row is hidden too, without an `empty` rule.
+    const valued = [column('v', { value: (n) => (n > 5 ? 'x' : undefined) }), column('w', { value: () => '' }), column('u', { value: () => 'x' })]
+    expect(visibleColumns(valued, [1, 2]).map((c) => c.id)).toEqual(['u'])
+    expect(visibleColumns(valued, [1, 9]).map((c) => c.id)).toEqual(['v', 'u'])
+    expect(isEmptyCell(column('z', { empty: () => true, value: () => 'x' }), 1)).toBe(true)
+    expect(isEmptyCell(column('z'), 1)).toBe(false)
     expect(visibleColumns(columns, [0, 2]).map((c) => c.id)).toEqual(['a', 'b', 'c'])
   })
 
@@ -99,6 +111,12 @@ describe('virtualWindow', () => {
     expect(virtualWindow(3200, 320, 600, 32, 8)).toEqual({ first: 92, last: 118 })
     expect(virtualWindow(0, 320, 5, 32, 8)).toEqual({ first: 0, last: 5 })
     expect(virtualWindow(0, 320, 0)).toEqual({ first: 0, last: 0 })
+  })
+
+  it('never renders more than the cap, however tall the viewport', () => {
+    expect(MAX_RENDERED_ROWS).toBe(80)
+    const { first, last } = virtualWindow(0, 4000, 600)
+    expect(last - first).toBe(MAX_RENDERED_ROWS)
   })
 
   it('clamps a scroll position that is past the end of a list that shrank', () => {

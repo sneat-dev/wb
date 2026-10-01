@@ -78,8 +78,7 @@ dd {
   color: var(--text-3);
 }
 
-.related,
-.commands {
+.related {
   display: grid;
   gap: var(--space-1);
   margin: 0;
@@ -93,42 +92,8 @@ dd {
   align-items: center;
 }
 
-.commands li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-}
-
-.command-title {
-  color: var(--text-2);
-  font-size: var(--fs-xs);
-}
-
-.command-line {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
-}
-
-code,
 pre {
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-}
-
-code {
-  flex: 1;
-  min-width: 0;
-  padding: var(--space-1) var(--space-2);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-sunken);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.note {
   font-size: var(--fs-xs);
 }
 

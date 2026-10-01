@@ -5,61 +5,67 @@ Components the Cockpit pages share. Import each from its own entry point, never 
 
 | Entry point | What it holds |
 |---|---|
-| `@cockpit/ui/list` | `ListView` (`<app-list>`), `ListCell`, `ListPanelTemplate`, `ListColumn`, `ListChip`, `AgeText`, `RepoName`, `CountLink`, `CopyButton`, `provideListShortcuts` |
+| `@cockpit/ui/list` | `ListView` (`<app-list>`), `ListCell`, `ListPanelTemplate`, `ListColumn`, and the cells: `IdentityCell`, `OwnerStateCell`, `PrCell`, `MachineCell`, `CodeIndexCell`, `AgeText`, `RepoName`, `CountLink`, `CopyIcon` |
+| `@cockpit/ui/list-host` | `LIST_SHORTCUTS`, which the application provides once (`{ provide: LIST_SHORTCUTS, useExisting: Shortcuts }` in app.config) |
 | `@cockpit/ui/panel` | `SidePanel`, `PanelContent` with `PanelFact`, `PanelRelated` |
+| `@cockpit/ui/control` | the control surface: state badge, sync badges, PR chip, machine chip, relative time and `UiClock`, copy-command list, action slot |
 | `@cockpit/ui/code-index-label`, `/code-index-panel`, `/route-label`, `/count` | the single components of those names |
 
-None of `list` and `panel` uses PrimeNG. Tokens come from `apps/cockpit/src/styles/tokens.css`.
+None of `list`, `panel` and `control` uses PrimeNG. Tokens come from `apps/cockpit/src/styles/tokens.css`.
 
-## A list page in about 40 lines
+## A list page in about 25 lines
 
-`<app-list>` does the filter box (the grammar of REQ:list-filter-and-matcher), the machine and quick-filter
-chips, sortable headers, the "37 of 438" count, virtual one-line rows under a sticky header, `j` `k` Enter Esc,
-the empty and no-match states, the placeholder rows, the side panel and the whole address state
-(`q`, `sort`, `dir`, `machine`, `chips`, `sel`). The page gives rows, columns, chips and templates; filtering,
-sorting and the vocabulary come from `@cockpit/fleet-data`.
+`<app-list>` does the filter box (the grammar of REQ:list-filter-and-matcher), the machine chips and the page's
+quick-filter chips (their words are in `page-defaults.ts`, keyed by page and chip id, until the vocabulary carries
+them), sortable headers, the "37 of 438" count, virtual one-line rows under a sticky header, the keys `j` `k`
+PageUp PageDown Home End Enter `o` (open the entity's page) `c` (copy its name) Esc, the empty and no-match
+states, the placeholder rows, the side panel and the whole address state (`q`, `sort`, `dir`, `machine`, `chips`,
+`sel`; `prefix` renames them for a second list on one page). The page gives its `page` id, the columns, and
+templates for the cells that are more than text and for the panel; the noun, the rows, the chips, the address of
+an entity's page and the name `c` copies come from the page id; matching, sorting and the link vocabulary
+from `@cockpit/fleet-data`. The list is one tab stop: the links and buttons in its rows are out of the tab order.
 
 ```ts
 @Component({
   selector: 'app-worktrees-page',
-  imports: [ListView, ListCell, ListPanelTemplate, AgeText, WorktreePanelView],
+  imports: [ListView, ListCell, ListPanelTemplate, IdentityCell, OwnerStateCell, AgeText, WorktreePanelView],
   templateUrl: './worktrees-page.html',
-  providers: [provideListShortcuts(Shortcuts)], // `/` and Esc reach this list (shell/shortcuts)
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class WorktreesPage {
-  protected readonly store = inject(FleetStore)
-  protected readonly rows = computed(() => this.store.model().worktreeRows) // ListRow<Worktree>[]
-  protected readonly chips: ListChip[] = [{ id: 'active', label: 'Active' }, { id: 'unpushed', label: 'Unpushed', hint: 'this machine only' }]
   protected readonly columns: ListColumn<Worktree>[] = [
-    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 132, text: (w) => w.task },
-    { id: 'branch', header: 'Branch', width: 'fill', empty: (w) => w.branch === w.task, drop: 'phone' }, // hidden while uniform
-    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, keep: 6 },
+    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 132, value: (w) => w.task },
+    { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, drop: 'phone' },
+    { id: 'state', header: 'State', sort: 'state', width: 230, value: (w) => w.owner_state ?? 'unknown' },
+    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96 },
   ]
 }
 ```
 
 ```html
-<app-list page="worktrees" noun="worktrees" [rows]="rows()" [columns]="columns" [chips]="chips">
-  <ng-template appCell="worktree" let-w>{{ w.task }}</ng-template>
-  <ng-template appCell="branch" let-w>{{ w.branch }}</ng-template>
+<app-list page="worktrees" [columns]="columns">
+  <ng-template appCell="worktree" let-w><app-identity-cell [name]="w.task" [secondary]="repoName(w)" copyLabel="Copy task name" /></ng-template>
+  <ng-template appCell="state" let-w><app-owner-state-cell [worktree]="w" /></ng-template>
   <ng-template appCell="activity" let-w><app-age [at]="w.last_activity_at" /></ng-template>
   <ng-template appListPanel let-w><app-worktree-panel [id]="w.id" /></ng-template>
 </app-list>
 ```
 
-* `page` is a `ListPageId`; its chips, sort ids, `sel` key and default sort are the vocabulary's. Every chip
-  the page lists must be one of `VOCABULARY[page].chips`.
-* A column's `empty` says a row's value is empty or the default; a column that is so for every visible row is
-  hidden. At most 7 columns show: past that the lowest `keep` goes first. `drop` removes a column on a
-  narrow list (`narrow`, a panel beside it) or a phone (`phone`). `text` is the cell's `title` while it
-  truncates; a cell with its own markup sets its own.
-* Cells: `app-age` (relative time, exact time in `title`, muted over 30 days), `app-repo-name` (muted
-  `owner/`, strong name, host only when the fleet has two), `app-count-link` (a count as a link from the
-  fleet-data link helpers, or plain text with the reason as its `title`), `app-copy-button` (full value to
-  the clipboard; `[tabbable]="false"` inside a row).
-* `resolve` finds a row from `sel` when the id is not the row's (the merged Repositories rows);
-  `panelLabel` names the panel for assistive technology.
+* A column's `value(item)` is its text: the default content of a cell with no template, its `title` while it
+  truncates, and what makes it empty. `empty(item)` adds a default that counts as empty (a branch equal to its
+  task); a column that is empty for every visible row is hidden, and a fleet of one machine hides Machine.
+  At most 7 columns show: past that the lowest `keep` goes first. `drop` removes a column on a narrow list
+  (`narrow`, a panel beside it) or a phone (`phone`).
+* Cells: `app-identity-cell` (strong name, muted secondary, copy icon, the name optionally a link),
+  `app-owner-state-cell` (owner badge and sync badges), `app-pr-cell` (the control surface's PR chip),
+  `app-machine-cell` (its machine chip), `app-code-index-cell`, `app-age` (relative time against the shared
+  `UiClock`, exact time in `title`, muted over 30 days), `app-repo-name`, `app-count-link` (a count as a
+  link from the fleet-data link helpers, or plain text with the reason as its `title`), `app-copy-icon`
+  (full value to the clipboard, shown on the hovered or focused row and always on touch, one live region for
+  the whole list). A row passes no clock down.
+* `extraChips` adds chips the vocabulary cannot list (the Agents `runtime-<name>`); `resolve` finds a row from
+  `sel` when the id is not the row's (the merged Repositories rows); `panelLabel` names the panel.
+* A selection that was open and is gone shows "no longer in the fleet" in the panel and offers close.
 
 ## The panel and the detail page
 
@@ -69,9 +75,9 @@ the read model sent it, only once opened). The side panel (`<app-side-panel>`, w
 the detail route are two hosts of one component: `worktree-panel.ts` is the pattern, and `worktree-page.ts`
 renders it with `[page]="true"`.
 
-* Task 13 puts its action slot into the content's `[panelActions]` projection (the region takes no
-  space while empty) and its copy-command list in place of the `commands` input: pass `commands` only while
-  the built-in list (title, command, copy button, "edit the placeholder first", "run on mac") is wanted.
-* On a phone the panel is a full-screen modal dialog and keeps Tab inside it; beside the list it is a
-  complementary region. A selection the operator makes moves the focus into the panel; Esc closes it and
-  returns the focus to the list; a pasted `?sel=` opens it without taking the focus.
+* The panel renders the control surface's copy-command list from the `commands` input, and its action slot goes
+  into the `[panelActions]` projection (a region that takes no space while empty).
+* On a phone the panel is a full-screen modal dialog: the focus moves into it, Tab stays inside, the page behind
+  does not scroll and the list is inert. Beside the list the focus stays in the list: `j` and `k` keep browsing
+  and the panel follows, Enter on the open row (or Tab) moves into the panel, Esc closes it and returns the
+  focus to the row that was open. A pasted `?sel=` opens it and scrolls the row into view without taking the focus.

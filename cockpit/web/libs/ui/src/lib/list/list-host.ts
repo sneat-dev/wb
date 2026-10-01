@@ -1,4 +1,4 @@
-import { InjectionToken, Provider, Type } from '@angular/core'
+import { InjectionToken } from '@angular/core'
 
 /** What a list hands the shell so `/` and Esc reach its filter box (the shell's `FilterTarget`). */
 export interface ListFilterTarget {
@@ -11,9 +11,8 @@ export interface ListFilterTarget {
 
 /**
  * The part of the shell's keyboard a list uses: the shell's `Shortcuts` service
- * satisfies it, and each page provides it (`provideListShortcuts`), so this
- * library never imports the application. With none provided a list still works
- * and the shell's keys just do not reach it.
+ * satisfies it, and the application provides it once, so this library never
+ * imports the application.
  */
 export interface ListShortcuts {
   registerFilter(target: ListFilterTarget): () => void
@@ -21,12 +20,5 @@ export interface ListShortcuts {
   registerPanel(close: () => boolean): () => void
 }
 
-export const LIST_SHORTCUTS = new InjectionToken<ListShortcuts>('list shortcuts', {
-  providedIn: 'root',
-  factory: () => ({ registerFilter: () => () => undefined, registerPanel: () => () => undefined }),
-})
-
-/** What a list page lists in its `providers`: `provideListShortcuts(Shortcuts)`, with the shell's service. */
-export function provideListShortcuts(shortcuts: Type<ListShortcuts>): Provider {
-  return { provide: LIST_SHORTCUTS, useExisting: shortcuts }
-}
+/** Provided once, by the application (`{ provide: LIST_SHORTCUTS, useExisting: Shortcuts }`): a list cannot be created without it. */
+export const LIST_SHORTCUTS = new InjectionToken<ListShortcuts>('list shortcuts')

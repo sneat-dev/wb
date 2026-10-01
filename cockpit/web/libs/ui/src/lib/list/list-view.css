@@ -23,138 +23,6 @@
   container-type: inline-size;
 }
 
-.toolbar {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.filter-line {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-}
-
-.filter {
-  display: flex;
-  flex: 1;
-  gap: var(--space-1);
-  align-items: center;
-  max-width: 40rem;
-  min-width: 0;
-  height: 2rem;
-  padding: 0 var(--space-1) 0 var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-}
-
-.filter:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.lead {
-  color: var(--text-3);
-}
-
-.filter-input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-  outline: none;
-}
-
-.filter-input::placeholder {
-  color: var(--text-3);
-}
-
-.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-}
-
-.icon:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.count {
-  margin-left: auto;
-  color: var(--text-2);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
-.hint {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-sunken);
-  color: var(--text-2);
-  font-size: var(--fs-xs);
-}
-
-code {
-  font-family: var(--font-mono);
-  color: var(--text);
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-4);
-}
-
-.chip-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.toggle {
-  height: 1.5rem;
-  padding: 0 var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--text-2);
-  cursor: pointer;
-  font-size: var(--fs-xs);
-  line-height: 1;
-}
-
-.toggle:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-/* A pressed chip says so in its weight and a check, not only in its colour. */
-.toggle[aria-pressed='true'] {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: var(--fw-semibold);
-}
-
-.toggle[aria-pressed='true']::before {
-  content: '✓ ';
-}
-
 .viewport {
   max-height: calc(100dvh - 14rem);
   min-height: 10rem;
@@ -304,4 +172,35 @@ code {
   .drop-phone {
     display: none;
   }
+}
+
+.open-cell {
+  display: flex;
+  flex: 0 0 2rem;
+  justify-content: center;
+  padding: 0;
+}
+
+.open {
+  display: inline-flex;
+  padding: 0.25rem;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+}
+
+.open:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+/* The page button shows with the hovered, focused or selected row, and always where there is no hover. */
+@media (hover: hover) {
+  .row:not(:hover, .focused, .selected) .open {
+    opacity: 0;
+  }
+}
+
+.gone {
+  margin: 0;
+  color: var(--text-2);
 }

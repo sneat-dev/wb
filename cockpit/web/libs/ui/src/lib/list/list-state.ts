@@ -6,10 +6,15 @@ import { ListPageId, ListQuery, VOCABULARY, defaultDirection, listQueryParams } 
 /** The six address parameters of a list (REQ:list-quick-filters-sort-and-url-state). */
 export const ADDRESS_KEYS = ['q', 'sort', 'dir', 'machine', 'chips', 'sel'] as const
 
-/** The height of a row, which is also the height of a skeleton row. */
+/** The name of an address parameter of a list with a `prefix` (two lists on one page): `a.q`; with none, `q`. */
+export const addressKey = (prefix: string, key: string): string => (prefix === '' ? key : `${prefix}.${key}`)
+
+/** The height of a row, which is also the height of a skeleton row; the list binds `--row-h` from it. */
 export const ROW_HEIGHT = 32
-/** Rows rendered above and below the visible ones. */
-export const OVERSCAN = 8
+/** Rows rendered above and below the visible ones: enough that dragging the scrollbar does not show a gap before the next frame. */
+export const OVERSCAN = 12
+/** The most rows ever rendered, on however tall a viewport (REQ:bounded-row-elements). */
+export const MAX_RENDERED_ROWS = 80
 /** At most this many columns show by default (REQ:default-columns-are-few). */
 export const MAX_COLUMNS = 7
 
@@ -23,10 +28,13 @@ export interface ListColumn<T> {
   width: number | 'fill'
   /** For a `fill` column, its share of what is left (default 1). */
   grow?: number
-  /** True for a row whose value is empty or the default; a column that is so for every visible row is hidden. */
+  /**
+   * The cell's text: its default content, its `title` while it truncates, and what makes it empty. A cell
+   * with rich content gives a template as well and keeps this for the title and for the empty rule.
+   */
+  value?: (item: T) => string | undefined
+  /** True for a row whose value is the default, besides an absent or empty `value`; a column that is so for every visible row is hidden. */
   empty?: (item: T) => boolean
-  /** The full text of the cell, which is its `title` while the cell truncates. */
-  text?: (item: T) => string | undefined
   /** What the header's `title` says. */
   hint?: string
   /** When more than 7 columns would show, the lowest `keep` goes first (default 5). */
@@ -47,9 +55,14 @@ export interface ListChip {
 }
 
 /** The address change of a list state: every one of the six parameters, null for one that is not set. */
-export function addressChange(query: ListQuery): Record<string, string | null> {
+export function addressChange(query: ListQuery, prefix = ''): Record<string, string | null> {
   const params = listQueryParams(query)
-  return Object.fromEntries(ADDRESS_KEYS.map((key) => [key, params[key] ?? null]))
+  return Object.fromEntries(ADDRESS_KEYS.map((key) => [addressKey(prefix, key), params[key] ?? null]))
+}
+
+/** Whether a cell is empty: the column says so, or it has a `value` function and that gives nothing. */
+export function isEmptyCell<T>(column: ListColumn<T>, item: T): boolean {
+  return (column.empty?.(item) ?? false) || (column.value !== undefined && (column.value(item) ?? '') === '')
 }
 
 /** The sort and direction a list shows: the address's, or the page's default. */
@@ -81,7 +94,7 @@ export function toggled(items: readonly string[], item: string): string[] {
  * With no rows nothing is hidden, so the header does not change while it waits.
  */
 export function visibleColumns<T>(columns: readonly ListColumn<T>[], items: readonly T[], max = MAX_COLUMNS): ListColumn<T>[] {
-  const shown = columns.filter((column) => items.length === 0 || column.empty === undefined || !items.every(column.empty))
+  const shown = columns.filter((column) => items.length === 0 || !items.every((item) => isEmptyCell(column, item)))
   const dropped = new Set(
     shown
       .map((column, index) => ({ column, index }))
@@ -97,7 +110,7 @@ export function virtualWindow(scrollTop: number, height: number, total: number, 
   // A list that shrank can still hold a scroll position past its end until the browser clamps it.
   const top = Math.min(scrollTop, Math.max(0, total * rowHeight - height))
   const first = Math.max(0, Math.floor(top / rowHeight) - overscan)
-  const last = Math.min(total, Math.ceil((top + height) / rowHeight) + overscan)
+  const last = Math.min(total, first + MAX_RENDERED_ROWS, Math.ceil((top + height) / rowHeight) + overscan)
   return { first, last }
 }
 

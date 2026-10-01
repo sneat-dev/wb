@@ -7,6 +7,6 @@
   [attr.aria-label]="label()"
   (keydown)="trap($event)"
 >
-  <button type="button" class="close" aria-label="Close panel" title="Close (Esc)" (click)="closed.emit()"><app-glyph name="x" /></button>
+  <button type="button" class="close" aria-label="Close panel" title="Close (Esc)" (click)="closed.emit()"><app-glyph [paths]="cross" /></button>
   <div class="scroll"><ng-content /></div>
 </aside>

@@ -1,7 +1,8 @@
 import { MediaMatcher } from '@angular/cdk/layout'
 import { Component } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { SHEET_QUERY, SidePanel } from './side-panel'
+import { SHEET_QUERY } from './sheet-mode'
+import { SidePanel } from './side-panel'
 
 @Component({
   imports: [SidePanel],
@@ -41,17 +42,38 @@ describe('SidePanel', () => {
     expect(closed).toHaveBeenCalledTimes(1)
   })
 
-  it('takes the focus when it opens for a selection the operator made, and not for a pasted address', async () => {
+  it('takes the focus when it opens as a phone sheet, not beside the list, and moves it on request', async () => {
     phone(false)
-    const quiet = TestBed.createComponent(SidePanel)
-    quiet.componentRef.setInput('label', 'x')
-    await quiet.whenStable()
-    expect(document.activeElement).not.toBe(quiet.nativeElement.querySelector('aside'))
-    const asked = TestBed.createComponent(SidePanel)
-    asked.componentRef.setInput('label', 'x')
-    asked.componentRef.setInput('focusOnOpen', true)
-    await asked.whenStable()
-    expect(document.activeElement).toBe(asked.nativeElement.querySelector('aside'))
+    const beside = TestBed.createComponent(SidePanel)
+    beside.componentRef.setInput('label', 'x')
+    await beside.whenStable()
+    expect(document.activeElement).not.toBe(beside.nativeElement.querySelector('aside'))
+    beside.componentInstance.focus()
+    expect(document.activeElement).toBe(beside.nativeElement.querySelector('aside'))
+    TestBed.resetTestingModule()
+    phone(true)
+    const sheet = TestBed.createComponent(SidePanel)
+    sheet.componentRef.setInput('label', 'x')
+    await sheet.whenStable()
+    expect(document.activeElement).toBe(sheet.nativeElement.querySelector('aside'))
+  })
+
+  it('stops the page behind a sheet from scrolling, and restores it when closed', async () => {
+    phone(true)
+    document.body.style.overflow = 'auto'
+    const fixture = TestBed.createComponent(SidePanel)
+    fixture.componentRef.setInput('label', 'x')
+    await fixture.whenStable()
+    expect(document.body.style.overflow).toBe('hidden')
+    fixture.destroy()
+    expect(document.body.style.overflow).toBe('auto')
+    document.body.style.overflow = ''
+    TestBed.resetTestingModule()
+    phone(false)
+    const beside = TestBed.createComponent(SidePanel)
+    beside.componentRef.setInput('label', 'x')
+    await beside.whenStable()
+    expect(document.body.style.overflow).toBe('')
   })
 
   it('becomes the sheet when the screen narrows, becomes a region again when it widens, and stops listening when destroyed', async () => {
@@ -67,7 +89,7 @@ describe('SidePanel', () => {
     listeners.forEach((listener) => listener({ matches: false }))
     await fixture.whenStable()
     expect(aside.getAttribute('role')).toBe('complementary')
-    fixture.destroy()
+    TestBed.resetTestingModule()
     expect(listeners.size).toBe(0)
   })
 

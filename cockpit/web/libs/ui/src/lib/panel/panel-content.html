@@ -4,7 +4,7 @@
     <div class="title">
       <h2 tabindex="-1">{{ heading() }}</h2>
       @if (copyHeading()) {
-        <app-copy-button [value]="heading()" [label]="'Copy ' + kind().toLowerCase() + ' name'" />
+        <app-copy-icon [value]="heading()" [label]="'Copy ' + kind().toLowerCase() + ' name'" />
       }
     </div>
   </header>
@@ -21,7 +21,7 @@
           {{ fact.text }}
         }
         @if (fact.copy && fact.text) {
-          <app-copy-button [value]="fact.text" [label]="'Copy ' + fact.label.toLowerCase()" />
+          <app-copy-icon [value]="fact.text" [label]="'Copy ' + fact.label.toLowerCase()" />
         }
       </dd>
     }
@@ -36,7 +36,7 @@
             @if (item.link) {
               <a [routerLink]="item.link.path" [queryParams]="item.link.query">{{ item.text }}</a>
             } @else if (item.href) {
-              <a [href]="item.href" target="_blank" rel="noopener noreferrer">{{ item.text }} <app-glyph name="external" /></a>
+              <a [href]="item.href" target="_blank" rel="noopener noreferrer">{{ item.text }} <app-glyph [paths]="open" /></a>
             } @else {
               {{ item.text }}
             }
@@ -52,29 +52,7 @@
 
   <section class="block actions" aria-label="Actions"><ng-content select="[panelActions]" /></section>
 
-  @if (commands().length > 0) {
-    <section class="block" aria-label="Copy command">
-      <h3>Copy command</h3>
-      <ul class="commands">
-        @for (entry of commands(); track entry.title) {
-          <li>
-            <span class="command-title">{{ entry.title }}</span>
-            @if (entry.command.ok) {
-              <span class="command-line">
-                <code [attr.title]="entry.command.text">{{ entry.command.text }}</code>
-                <app-copy-button [value]="entry.command.text" [label]="'Copy command: ' + entry.title" />
-              </span>
-              @if (entry.command.label || entry.command.needsEdit) {
-                <span class="muted note">{{ entry.command.label }}{{ entry.command.label && entry.command.needsEdit ? ' · ' : '' }}{{ entry.command.needsEdit ? 'edit the placeholder first' : '' }}</span>
-              }
-            } @else {
-              <span class="muted note">Not available: {{ entry.command.reason }}</span>
-            }
-          </li>
-        }
-      </ul>
-    </section>
-  }
+  <app-copy-command-list [entries]="commands()" />
 
   <section class="block" aria-label="Raw data">
     <details class="raw" (toggle)="rawOpen.set(details.open)" #details>
@@ -84,4 +62,5 @@
       }
     </details>
   </section>
+  <span class="visually-hidden" role="status">{{ announcer.message() }}</span>
 </article>

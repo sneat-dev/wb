@@ -1,49 +1,20 @@
 <div class="layout" [class.with-panel]="panelOpen()">
-  <section class="list" [attr.aria-label]="noun()">
-    <div class="toolbar">
-      <div class="filter-line">
-        <div class="filter">
-          <app-glyph class="lead" name="search" />
-          <input
-            #filterBox
-            class="filter-input"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            [attr.aria-label]="'Filter ' + noun()"
-            placeholder="Filter: words, sneat-*/*-go, -excluded, field:value"
-            [attr.aria-describedby]="hintOpen() ? id + '-hint' : null"
-            [value]="text()"
-            (input)="setText(filterBox.value)"
-          />
-          @if (text() !== '') {
-            <button type="button" class="icon" aria-label="Clear the filter text" title="Clear the filter text" (click)="clearText(); filterBox.focus()"><app-glyph name="x" /></button>
-          }
-          <button type="button" class="icon" aria-label="How the filter works" [attr.aria-expanded]="hintOpen()" (click)="hintOpen.set(!hintOpen())"><app-glyph name="help" /></button>
-        </div>
-        <span class="count tnum" role="status">{{ result().rows.length }} of {{ result().total }}</span>
-      </div>
-      @if (hintOpen()) {
-        <p class="hint" role="note" [id]="id + '-hint'">
-          <code>fix ci</code> every word must match &middot; <code>sneat-*/*-go</code> <code>*</code> any run, <code>?</code> one character &middot; <code>-wb</code> leaves out &middot; <code>"fix ci"</code> keeps the space<br />
-          <code>field:value</code> searches one field: {{ fields() }}. A quoted value is matched whole. Not case sensitive; no regular expressions.
-        </p>
-      }
-      <div class="chips">
-        <div class="chip-group" role="group" aria-label="Quick filters">
-          @for (chip of chips(); track chip.id) {
-            <button type="button" class="toggle" [attr.aria-pressed]="query().chips.includes(chip.id)" [attr.title]="chip.hint ?? null" (click)="toggleChip(chip.id)">{{ chip.label }}</button>
-          }
-        </div>
-        @if (machines().length > 0) {
-          <div class="chip-group" role="group" aria-label="Machines">
-            @for (machine of machines(); track machine.id) {
-              <button type="button" class="toggle" [attr.aria-pressed]="query().machines.includes(machine.id)" (click)="toggleMachine(machine.id)">{{ machine.label }}</button>
-            }
-          </div>
-        }
-      </div>
-    </div>
+  <section class="list" [attr.aria-label]="noun()" [attr.inert]="sheet() && panelOpen() ? '' : null">
+    <app-list-toolbar
+      [id]="id"
+      [noun]="noun()"
+      [text]="text()"
+      [fields]="fields()"
+      [shown]="result().rows.length"
+      [total]="result().total"
+      [chips]="chips()"
+      [activeChips]="query().chips"
+      [machines]="machines()"
+      [activeMachines]="query().machines"
+      (edited)="setText($event)"
+      (chipToggled)="toggleChip($event)"
+      (machineToggled)="toggleMachine($event)"
+    />
 
     <div
       #viewport
@@ -52,20 +23,21 @@
       tabindex="0"
       [attr.aria-label]="noun()"
       [attr.aria-rowcount]="result().rows.length + 1"
+      [attr.aria-colcount]="shown().length + 1"
       [attr.aria-activedescendant]="activeId()"
       [attr.aria-busy]="skeleton()"
       (scroll)="scrolled()"
       (click)="clicked($event)"
       (keydown)="keydown($event)"
     >
-      <div class="head" role="row">
+      <div class="head" role="row" aria-rowindex="1">
         @for (column of shown(); track column.id) {
           <div class="cell" role="columnheader" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
             @if (column.sort; as sortId) {
               <button type="button" class="sort" (click)="sortBy(sortId)">
                 {{ column.header }}
                 @if (sort().sort === sortId) {
-                  <app-glyph [name]="sort().dir === 'asc' ? 'arrow-up' : 'arrow-down'" />
+                  <app-glyph [paths]="sort().dir === 'asc' ? up : down" />
                 }
               </button>
             } @else {
@@ -73,6 +45,7 @@
             }
           </div>
         }
+        <div class="cell open-cell" role="columnheader" aria-label="Open page"></div>
       </div>
 
       @if (skeleton()) {
@@ -83,7 +56,7 @@
         </div>
       } @else if (result().rows.length === 0) {
         <div class="empty" role="status">
-          @if (rows().length === 0) {
+          @if (items().length === 0) {
             <span>Nothing has been observed yet: no {{ noun() }}.</span>
           } @else {
             <span>No {{ noun() }} match {{ nothingMatched() }}.</span>
@@ -105,25 +78,33 @@
                 [attr.data-index]="item.index"
               >
                 @for (column of shown(); track column.id) {
-                  <div class="cell" role="gridcell" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.title]="column.text?.(item.row.item) ?? null">
+                  <div class="cell" role="gridcell" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.title]="column.value?.(item.row.item) ?? null">
                     @if (cellOf(column.id); as template) {
                       <ng-container [ngTemplateOutlet]="template" [ngTemplateOutletContext]="{ $implicit: item.row.item, row: item.row }" />
+                    } @else {
+                      {{ column.value?.(item.row.item) }}
                     }
                   </div>
                 }
+                <div class="cell open-cell" role="gridcell">
+                  <a class="open" tabindex="-1" [routerLink]="detail(item.row.item).path" [queryParams]="detail(item.row.item).query" [attr.aria-label]="'Open ' + name(item.row.item)" [attr.title]="'Open the page (o)'"><app-glyph [paths]="open" /></a>
+                </div>
               </div>
             }
           </div>
         </div>
       }
     </div>
+    <span class="visually-hidden" role="status">{{ announcer.message() }}</span>
   </section>
 
   @if (panelTemplate(); as panel) {
     @if (selected(); as row) {
-      <app-side-panel [label]="panelLabel()(row.item)" [focusOnOpen]="focusPanel()" (closed)="closePanel()">
+      <app-side-panel [label]="panelLabel()(row.item)" (closed)="closePanel()">
         <ng-container [ngTemplateOutlet]="panel.template" [ngTemplateOutletContext]="{ $implicit: row.item, row: row }" />
       </app-side-panel>
+    } @else if (vanished()) {
+      <app-side-panel label="Details" (closed)="closePanel()"><p class="gone">This is no longer in the fleet.</p></app-side-panel>
     }
   }
 </div>

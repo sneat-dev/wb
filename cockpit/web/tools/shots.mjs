@@ -41,8 +41,8 @@ async function runStep(page, step) {
   const argument = colon < 0 ? '' : step.slice(colon + 1)
   if (kind === 'filter') await page.getByRole('textbox', { name: /^Filter/ }).fill(argument)
   else if (kind === 'chip') await page.getByRole('button', { name: argument, exact: true }).click()
-  // The last cell is the time: a click there selects the row (the first cell is a link to the page).
-  else if (kind === 'row') await page.locator('[role=row][aria-rowindex]').nth(Number(argument)).locator('[role=gridcell]').last().click()
+  // The last cell but the open button is the time: a click there selects the row.
+  else if (kind === 'row') await page.locator('[role=row][data-index]').nth(Number(argument)).locator('[role=gridcell]:not(.open-cell)').last().click()
   else if (kind === 'raw') await page.getByText('Raw data', { exact: true }).click()
   await page.waitForTimeout(200)
 }

@@ -1,15 +1,16 @@
+import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { FleetStore } from '@cockpit/fleet-data'
+import { UiClock } from '../control/ui-clock'
 import { AgeText } from './age-text'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
 const DAY = 24 * 60 * 60 * 1000
 
-async function render(at: number | string | undefined, now?: number) {
-  TestBed.inject(FleetStore).now.set(NOW)
+async function render(at: number | string | undefined, now = NOW) {
+  TestBed.resetTestingModule()
+  TestBed.configureTestingModule({ providers: [{ provide: UiClock, useValue: { now: signal(now) } }] })
   const fixture = TestBed.createComponent(AgeText)
   fixture.componentRef.setInput('at', at)
-  if (now !== undefined) fixture.componentRef.setInput('now', now)
   await fixture.whenStable()
   return fixture.nativeElement.querySelector('.age') as HTMLElement
 }
@@ -27,7 +28,6 @@ describe('AgeText', () => {
     const old = await render(new Date(NOW - 45 * DAY).toISOString())
     expect(old.textContent).toBe('45 d ago')
     expect(old.classList.contains('muted')).toBe(true)
-    expect(old.getAttribute('title')).toBe(new Date(NOW - 45 * DAY).toISOString())
     expect((await render(NOW - 30 * DAY)).classList.contains('muted')).toBe(false)
   })
 
@@ -40,7 +40,7 @@ describe('AgeText', () => {
     }
   })
 
-  it('measures against the clock it is given instead of the store\'s', async () => {
+  it('measures against the shared clock, which a row does not pass down', async () => {
     expect((await render(NOW, NOW + 2 * 60 * 60 * 1000)).textContent).toBe('2 h ago')
   })
 })

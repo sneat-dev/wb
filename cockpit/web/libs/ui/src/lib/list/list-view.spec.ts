@@ -1,3 +1,4 @@
+import { MediaMatcher } from '@angular/cdk/layout'
 import { Component, computed, inject } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { By } from '@angular/platform-browser'
@@ -5,72 +6,80 @@ import { Router, provideRouter } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
 import { FleetDocument, FleetStore, ListRow, Worktree } from '@cockpit/fleet-data'
 import { fleetDocument, performanceFixture, worktree } from '@cockpit/fleet-data/testing'
+import { ClipboardWriter } from '../control/clipboard'
 import { ListCell, ListPanelTemplate } from './list-cell'
 import { LIST_SHORTCUTS, ListFilterTarget } from './list-host'
-import { ListChip, ListColumn } from './list-state'
+import { ListColumn } from './list-state'
 import { SKELETON_ROWS, ListView } from './list-view'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
 const DAY = 24 * 60 * 60 * 1000
 const ago = (days: number) => new Date(NOW - days * DAY).toISOString()
 
-const CHIPS: ListChip[] = [
-  { id: 'unpushed', label: 'Unpushed', hint: 'this machine only' },
-  { id: 'gone', label: 'Upstream gone' },
-  { id: 'pr', label: 'Pull request' },
-]
-
 const COLUMNS: ListColumn<Worktree>[] = [
-  { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 100, text: (w) => w.task },
-  { id: 'branch', header: 'Branch', width: 'fill', empty: (w) => w.branch === w.task, text: (w) => w.branch, drop: 'phone', hint: 'The branch' },
-  { id: 'machine', header: 'Machine', sort: 'machine', width: 90, drop: 'narrow', align: 'end' },
+  { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
+  { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, drop: 'phone', hint: 'The branch' },
+  { id: 'machine', header: 'Machine', sort: 'machine', width: 90, drop: 'narrow', align: 'end', value: (w) => w.machine },
   { id: 'activity', header: 'Last activity', sort: 'activity', width: 100 },
 ]
 
+/** How many times a row's own cell has been evaluated: a poll that changes nothing must not add to it. */
+const counter = { renders: 0 }
+
 @Component({
   imports: [ListView, ListCell, ListPanelTemplate],
-  template: `<app-list page="worktrees" noun="worktrees" [rows]="rows()" [columns]="columns" [chips]="chips" [panelLabel]="label">
-    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
-    <ng-template appCell="branch" let-w>{{ w.branch }}</ng-template>
+  template: `<app-list page="worktrees" [columns]="columns" [panelLabel]="label" [prefix]="prefix">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ tick(w) }}</a></ng-template>
     <ng-template appCell="machine" let-w><button type="button" class="inner">{{ w.machine }}</button></ng-template>
-    <ng-template appListPanel let-w><p class="panel-body">Panel of {{ w.task }}</p></ng-template>
+    <ng-template appListPanel let-w><p class="panel-body">Panel of {{ w.task }}</p><button type="button" class="panel-button">in panel</button></ng-template>
   </app-list>`,
 })
 class Host {
-  protected readonly store = inject(FleetStore)
-  protected readonly rows = computed(() => this.store.model().worktreeRows)
   protected readonly columns = COLUMNS
-  protected readonly chips = CHIPS
+  protected readonly prefix = ''
   protected readonly label = (w: Worktree) => `Worktree ${w.task}`
+  protected tick(w: Worktree): string {
+    counter.renders++
+    return w.task
+  }
+}
+
+@Component({
+  imports: [ListView, ListCell, ListPanelTemplate],
+  template: `<app-list page="worktrees" [columns]="columns" prefix="a">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
+    <ng-template appListPanel let-w>{{ w.task }}</ng-template>
+  </app-list>`,
+})
+class PrefixHost {
+  protected readonly columns = COLUMNS
 }
 
 @Component({
   imports: [ListView, ListCell],
-  template: `<app-list page="worktrees" noun="worktrees" [rows]="rows()" [columns]="columns" [chips]="chips" [resolve]="resolve">
-    <ng-template appCell="worktree" let-w>{{ w.task }}</ng-template>
+  template: `<app-list page="worktrees" [rows]="rows()" [columns]="columns" [resolve]="resolve">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
   </app-list>`,
 })
 class NoPanelHost {
   protected readonly store = inject(FleetStore)
   protected readonly rows = computed(() => this.store.model().worktreeRows)
   protected readonly columns = COLUMNS
-  protected readonly chips = CHIPS
   protected readonly resolve = (rows: readonly ListRow<Worktree>[], sel: string) => rows.find((row) => row.item.task === sel)
 }
 
 @Component({
   imports: [ListView, ListCell, ListPanelTemplate],
-  template: `<app-list page="worktrees" noun="worktrees" [rows]="rows()" [columns]="columns" [chips]="chips">
-    <ng-template appCell="worktree" let-w>{{ w.task }}</ng-template>
+  template: `<app-list page="worktrees" [columns]="columns">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
     <ng-template appListPanel let-w>{{ w.task }}</ng-template>
   </app-list>`,
 })
 class PlainHost {
-  protected readonly store = inject(FleetStore)
-  protected readonly rows = computed(() => this.store.model().worktreeRows)
   protected readonly columns = COLUMNS
-  protected readonly chips = CHIPS
 }
+
+type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost
 
 function documentOf(): FleetDocument {
   return fleetDocument({
@@ -91,11 +100,22 @@ let filterTarget: ListFilterTarget | undefined
 let closePanel: (() => boolean) | undefined
 const unregistered = { filter: vi.fn(), panel: vi.fn() }
 
-async function open(url: string, document: FleetDocument = documentOf(), host: typeof Host | typeof NoPanelHost | typeof PlainHost = Host) {
+interface Options {
+  document?: FleetDocument
+  host?: AHost
+  phone?: boolean
+  copy?: (text: string) => Promise<boolean>
+}
+
+async function open(url: string, options: Options = {}) {
+  const { document = documentOf(), host = Host, phone = false, copy = async () => true } = options
   TestBed.resetTestingModule()
+  counter.renders = 0
   TestBed.configureTestingModule({
     providers: [
       provideRouter([{ path: 'list', component: host }]),
+      { provide: ClipboardWriter, useValue: { copy } },
+      { provide: MediaMatcher, useValue: { matchMedia: (media: string) => ({ matches: phone, media, addListener: () => undefined, removeListener: () => undefined }) } },
       {
         provide: LIST_SHORTCUTS,
         useValue: {
@@ -124,18 +144,22 @@ async function open(url: string, document: FleetDocument = documentOf(), host: t
     store,
     root,
     router: TestBed.inject(Router),
-    list: () => harness.fixture.debugElement.query(By.directive(ListView)).componentInstance as { result: () => unknown },
+    list: () => harness.fixture.debugElement.query(By.directive(ListView)).componentInstance as { result: () => unknown; focused: () => number },
     viewport: root.querySelector('.viewport') as HTMLElement,
     input: root.querySelector('input') as HTMLInputElement,
     settle: () => harness.fixture.whenStable(),
   }
 }
 
-const rowElements = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('[role=row][aria-rowindex]')]
+type Page = Awaited<ReturnType<typeof open>>
+
+const rowElements = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('[role=row][aria-rowindex]')].filter((row) => row.dataset['index'] !== undefined)
 const tasks = (root: HTMLElement) => rowElements(root).map((row) => row.querySelector('.task')?.textContent)
 const frame = () => new Promise((done) => setTimeout(done, 40))
 const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
 const button = (root: HTMLElement, name: string) => [...root.querySelectorAll('button')].find((candidate) => text(candidate) === name) as HTMLButtonElement
+const headers = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('.head [role=columnheader]:not(.open-cell)')]
+const focusedTask = (root: HTMLElement) => text(root.querySelector('.row.focused .task'))
 
 function keydown(target: Element, key: string, init: KeyboardEventInit = {}): KeyboardEvent {
   const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init })
@@ -143,43 +167,66 @@ function keydown(target: Element, key: string, init: KeyboardEventInit = {}): Ke
   return event
 }
 
-async function type(page: Awaited<ReturnType<typeof open>>, value: string) {
+async function type(page: Page, value: string) {
   page.input.value = value
   page.input.dispatchEvent(new Event('input', { bubbles: true }))
   await page.settle()
 }
 
+class FakeObserver {
+  static last: FakeObserver
+  disconnect = vi.fn()
+  observe = vi.fn()
+  constructor(readonly callback: () => void) {
+    FakeObserver.last = this
+  }
+}
+
 describe('ListView', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('lists the rows in the default order under a header, with the count, and one line per row with the full value in its title', async () => {
     const { root } = await open('/list')
     expect(tasks(root)).toEqual(DEFAULT_ORDER)
     expect(text(root.querySelector('.count'))).toBe('6 of 6')
-    expect([...root.querySelectorAll('[role=columnheader]')].map(text)).toEqual(['Worktree', 'Branch', 'Machine', 'Last activity'])
-    // The long name is truncated by CSS, never wrapped, and its title holds all of it.
+    expect(headers(root).map(text)).toEqual(['Worktree', 'Branch', 'Machine', 'Last activity'])
     const long = rowElements(root)[3].querySelector('[role=gridcell]') as HTMLElement
     expect(long.getAttribute('title')).toBe('x'.repeat(200))
+    // A column with no value has no title, and a cell with no template shows its value.
     expect(rowElements(root)[0].querySelectorAll('[role=gridcell]')[3].hasAttribute('title')).toBe(false)
+    expect(text(rowElements(root)[0].querySelectorAll('[role=gridcell]')[1])).toBe('topic')
     expect(root.querySelector('.viewport')?.getAttribute('aria-rowcount')).toBe('7')
+    expect(root.querySelector('.viewport')?.getAttribute('aria-colcount')).toBe('5')
+    expect(root.querySelector('.head')?.getAttribute('aria-rowindex')).toBe('1')
     expect(rowElements(root)[0].getAttribute('aria-rowindex')).toBe('2')
     expect(root.querySelector('app-side-panel')).toBeNull()
+    expect((root.querySelector('app-list') as HTMLElement).style.getPropertyValue('--row-h')).toBe('32px')
   })
 
   it('marks which columns drop first, and how a header reads and sorts', async () => {
     const page = await open('/list')
-    const root = page.root
-    const headers = [...root.querySelectorAll<HTMLElement>('[role=columnheader]')]
-    expect(headers.map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
-    expect(headers[1].getAttribute('title')).toBe('The branch')
-    expect(headers[1].classList.contains('drop-phone')).toBe(true)
-    expect(headers[2].classList.contains('drop-narrow')).toBe(true)
-    expect(headers[2].classList.contains('end')).toBe(true)
-    expect(headers[0].style.minWidth).toBe('100px')
-    expect(headers[3].style.minWidth).toBe('')
-    // A fill column shares what is left by its grow; a fixed one shrinks before it would push a fill column under its minimum.
+    const columns = headers(page.root)
+    expect(columns.map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
+    expect(columns[1].getAttribute('title')).toBe('The branch')
+    expect(columns[1].classList.contains('drop-phone')).toBe(true)
+    expect(columns[2].classList.contains('drop-narrow')).toBe(true)
+    expect(columns[2].classList.contains('end')).toBe(true)
+    expect(columns[0].style.minWidth).toBe('100px')
+    expect(columns[3].style.minWidth).toBe('')
     const list = page.list() as unknown as { style: (column: ListColumn<Worktree>) => string }
     expect(COLUMNS.map((column) => list.style(column))).toEqual(['3 1 0', '1 1 0', '0 1 90px', '0 1 100px'])
+  })
+
+  it('takes the noun, the chips and their words from the page alone', async () => {
+    const { root } = await open('/list')
+    expect(root.querySelector('.viewport')?.getAttribute('aria-label')).toBe('worktrees')
+    const chips = [...root.querySelectorAll('[aria-label="Quick filters"] button')].map(text)
+    expect(chips).toEqual(['Active', 'Orphaned', 'Unpushed', 'Upstream gone', 'Pull request', 'Idle 30 d+', 'Safe to clean', 'Look first'])
+    expect(button(root, 'Unpushed').getAttribute('title')).toContain('this machine')
+    expect(button(root, 'Active').hasAttribute('title')).toBe(false)
   })
 
   // cockpit-views#ac:filter-state-lives-in-the-address
@@ -198,34 +245,45 @@ describe('ListView', () => {
     expect(history.mock.calls[0][1]).toMatchObject({ replaceUrl: true, queryParamsHandling: 'merge' })
   })
 
-  it('toggles a quick filter and a machine, each in the address, and says which are pressed', async () => {
+  it('writes a toggled chip at once and drops the queued write of the text, which the chip carries', async () => {
     const page = await open('/list')
-    const unpushed = button(page.root, 'Unpushed')
-    expect(unpushed.getAttribute('aria-pressed')).toBe('false')
-    expect(unpushed.getAttribute('title')).toBe('this machine only')
-    expect(button(page.root, 'Pull request').hasAttribute('title')).toBe(false)
-    unpushed.click()
+    const history = vi.spyOn(page.router, 'navigate')
+    await type(page, 'fix')
+    button(page.root, 'Active').click()
+    await frame()
+    await page.settle()
+    expect(history).toHaveBeenCalledTimes(1)
+    expect(page.router.url).toBe('/list?q=fix&chips=active')
+  })
+
+  it('toggles a quick filter and a machine, each in the address, and the rows are the ones that satisfy them', async () => {
+    const page = await open('/list')
+    button(page.root, 'Unpushed').click()
     await page.settle()
     expect(page.router.url).toBe('/list?chips=unpushed')
     expect(tasks(page.root)).toEqual(['fix-ci'])
-    expect(unpushed.getAttribute('aria-pressed')).toBe('true')
+    expect(button(page.root, 'Unpushed').getAttribute('aria-pressed')).toBe('true')
     button(page.root, 'beta').click()
     await page.settle()
     expect(page.router.url).toBe('/list?chips=unpushed&machine=mach-beta')
     expect(tasks(page.root)).toEqual([])
-    unpushed.click()
+    button(page.root, 'Unpushed').click()
     await page.settle()
+    expect(tasks(page.root)).toEqual(['far-task', 'beta-task'])
     button(page.root, 'beta').click()
     await page.settle()
     expect(page.router.url).toBe('/list')
     expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
+    button(page.root, 'Upstream gone').click()
+    await page.settle()
+    expect(tasks(page.root)).toEqual(['zeta'])
   })
 
   it('offers the machine chips only when there is more than one machine, or one is selected', async () => {
     const single = { ...documentOf(), machines: [documentOf().machines[0]] }
-    const one = await open('/list', single)
+    const one = await open('/list', { document: single })
     expect(one.root.querySelector('[aria-label=Machines]')).toBeNull()
-    const selected = await open('/list?machine=mach-alpha', single)
+    const selected = await open('/list?machine=mach-alpha', { document: single })
     expect(selected.root.querySelector('[aria-label=Machines]')).not.toBeNull()
   })
 
@@ -241,53 +299,97 @@ describe('ListView', () => {
     button(page.root, 'Machine').click()
     await page.settle()
     expect(page.router.url).toBe('/list?sort=machine&dir=asc')
-    const headers = [...page.root.querySelectorAll('[role=columnheader]')]
-    expect(headers[2].getAttribute('aria-sort')).toBe('ascending')
-    expect(headers[3].getAttribute('aria-sort')).toBe('none')
-    expect(headers[2].querySelector('app-glyph')).not.toBeNull()
-    expect(headers[3].querySelector('app-glyph')).toBeNull()
+    const columns = headers(page.root)
+    expect(columns[2].getAttribute('aria-sort')).toBe('ascending')
+    expect(columns[3].getAttribute('aria-sort')).toBe('none')
+    expect(columns[2].querySelector('app-glyph')).not.toBeNull()
+    expect(columns[3].querySelector('app-glyph')).toBeNull()
     expect(tasks(page.root).slice(0, 4)).toEqual(['fix-ci', 'add-search', 'x'.repeat(200), 'zeta'])
   })
 
-  it('selects a row by click, opens the panel beside the list, and back removes the selection', async () => {
+  // cockpit-views#ac:filter-state-lives-in-the-address (back and forward)
+  it('restores each earlier state when the address goes back: the filter, a chip, a sort and a selection', async () => {
     const page = await open('/list')
-    const history = vi.spyOn(page.router, 'navigate')
+    const states = ['/list?q=fix', '/list?q=fix&chips=unpushed', '/list?q=fix&chips=unpushed&sort=machine&dir=asc', '/list?q=fix&chips=unpushed&sort=machine&dir=asc&sel=w1']
     await type(page, 'fix')
     await frame()
     await page.settle()
+    button(page.root, 'Unpushed').click()
+    await page.settle()
+    button(page.root, 'Machine').click()
+    await page.settle()
     ;(rowElements(page.root)[0].querySelectorAll('[role=gridcell]')[3] as HTMLElement).click()
     await page.settle()
-    expect(page.router.url).toBe('/list?q=fix&sel=w1')
-    // A selection is a history entry of its own, so back removes it.
+    expect(page.router.url).toBe(states[3])
+    // What the back button does at each step: the address of the entry before.
+    for (const url of [states[2], states[1], states[0], '/list']) {
+      await page.router.navigateByUrl(url)
+      await page.settle()
+      expect(page.input.value).toBe(url === '/list' ? '' : 'fix')
+      expect(button(page.root, 'Unpushed').getAttribute('aria-pressed')).toBe(String(url.includes('chips')))
+      expect(headers(page.root)[2].getAttribute('aria-sort')).toBe(url.includes('sort=machine') ? 'ascending' : 'none')
+      expect(page.root.querySelector('app-side-panel')).toBeNull()
+    }
+    expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
+    await page.router.navigateByUrl(states[3])
+    await page.settle()
+    expect(tasks(page.root)).toEqual(['fix-ci'])
+    expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of fix-ci')
+  })
+
+  it('selects a row by click and opens the panel beside the list as a history entry, then moves between rows without adding one', async () => {
+    const page = await open('/list')
+    const history = vi.spyOn(page.router, 'navigate')
+    ;(rowElements(page.root)[0].querySelectorAll('[role=gridcell]')[3] as HTMLElement).click()
+    await page.settle()
+    expect(page.router.url).toBe('/list?sel=w2')
     expect(history.mock.calls.at(-1)?.[1]).toMatchObject({ replaceUrl: false })
     const panel = page.root.querySelector('app-side-panel') as HTMLElement
-    expect(text(panel.querySelector('.panel-body'))).toBe('Panel of fix-ci')
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Worktree fix-ci')
-    // The list stays, with the selected row marked.
+    expect(text(panel.querySelector('.panel-body'))).toBe('Panel of add-search')
+    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Worktree add-search')
     expect(rowElements(page.root)[0].getAttribute('aria-selected')).toBe('true')
     expect(rowElements(page.root)[0].classList.contains('selected')).toBe(true)
     expect(page.root.querySelector('.layout')?.classList.contains('with-panel')).toBe(true)
-    // What the back button does: the address of the entry before.
-    await page.router.navigateByUrl('/list?q=fix')
+    // Another row replaces the entry; closing is an entry of its own.
+    ;(rowElements(page.root)[1].querySelectorAll('[role=gridcell]')[3] as HTMLElement).click()
     await page.settle()
-    expect(page.router.url).toBe('/list?q=fix')
-    expect(page.root.querySelector('app-side-panel')).toBeNull()
-    expect(page.root.querySelector('.layout')?.classList.contains('with-panel')).toBe(false)
+    expect(page.router.url).toBe('/list?sel=w5')
+    expect(history.mock.calls.at(-1)?.[1]).toMatchObject({ replaceUrl: true })
+    expect(closePanel?.()).toBe(true)
+    await page.settle()
+    expect(history.mock.calls.at(-1)?.[1]).toMatchObject({ replaceUrl: false })
+    expect(page.router.url).toBe('/list')
   })
 
-  it('does not select a row for a click on a link or a button in it', async () => {
+  it('does not select a row for a click on a link or a button in it, on the header, or on the empty space', async () => {
     const page = await open('/list')
     page.root.querySelector<HTMLElement>('.task')?.addEventListener('click', (event) => event.preventDefault())
     page.root.querySelector<HTMLElement>('.task')?.click()
     page.root.querySelector<HTMLElement>('.inner')?.click()
-    // Nor for a click on the header or the empty space.
     page.root.querySelector<HTMLElement>('.head')?.click()
     page.viewport.click()
     await page.settle()
     expect(page.router.url).toBe('/list')
   })
 
-  it('opens a pasted address in the same state, the panel included, without taking the focus', async () => {
+  it('has one tab stop: the list, with the links and buttons of its rows out of the tab order', async () => {
+    const page = await open('/list')
+    const controls = [...page.root.querySelectorAll<HTMLElement>('.row a, .row button')]
+    expect(controls.length).toBeGreaterThan(10)
+    expect(controls.every((control) => control.getAttribute('tabindex') === '-1')).toBe(true)
+    expect(page.viewport.getAttribute('tabindex')).toBe('0')
+  })
+
+  it('offers each row\'s own page as a button at the row end, out of the tab order', async () => {
+    const page = await open('/list')
+    const open_ = rowElements(page.root)[0].querySelector('a.open') as HTMLAnchorElement
+    expect(open_.getAttribute('href')).toBe('/worktrees/w2')
+    expect(open_.getAttribute('aria-label')).toBe('Open add-search')
+    expect(open_.getAttribute('tabindex')).toBe('-1')
+    expect(page.root.querySelector('.head .open-cell')?.getAttribute('aria-label')).toBe('Open page')
+  })
+
+  it('opens a pasted address in the same state, the panel included, without taking the focus, with the selected row in view', async () => {
     const page = await open('/list?q=zeta&chips=gone&machine=mach-alpha&sort=machine&dir=desc&sel=w5')
     expect(page.input.value).toBe('zeta')
     expect(tasks(page.root)).toEqual(['zeta'])
@@ -296,16 +398,24 @@ describe('ListView', () => {
     expect(button(page.root, 'alpha').getAttribute('aria-pressed')).toBe('true')
     expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of zeta')
     expect(document.activeElement).not.toBe(page.root.querySelector('aside'))
-    // The selected row is the one the keyboard starts on.
     expect(rowElements(page.root)[0].classList.contains('focused')).toBe(true)
   })
 
-  it('ignores a bad sort, a chip the page does not list and a selection that names no entry', async () => {
-    const page = await open('/list?sort=bogus&chips=nonsense&sel=nope')
+  it('ignores a bad sort, a chip the page does not list, a machine the fleet does not have and a selection that names no entry', async () => {
+    const page = await open('/list?sort=bogus&chips=nonsense&sel=nope&machine=mach-nope')
     expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
     expect(text(page.root.querySelector('.count'))).toBe('6 of 6')
     expect(page.root.querySelector('app-side-panel')).toBeNull()
-    expect([...page.root.querySelectorAll('[role=columnheader]')].map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
+    expect(headers(page.root).map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
+    expect(button(page.root, 'alpha').getAttribute('aria-pressed')).toBe('false')
+    const known = await open('/list?machine=mach-beta')
+    expect(tasks(known.root)).toEqual(['far-task', 'beta-task'])
+  })
+
+  it('keeps a machine in the address while the fleet is not yet known', async () => {
+    const page = await open('/list?machine=mach-beta', { document: fleetDocument({ machines: [], worktrees: [] }) })
+    expect(page.root.querySelector('[aria-label=Machines]')).toBeNull()
+    expect(page.router.url).toBe('/list?machine=mach-beta')
   })
 
   it('catches the address up when it changes underneath, as the back button does', async () => {
@@ -316,42 +426,90 @@ describe('ListView', () => {
     expect(tasks(page.root)).toEqual(['fix-ci'])
   })
 
+  it('does not take an address that carries what the list itself is writing for news, but takes any other mid-navigation', async () => {
+    const page = await open('/list')
+    let release: () => void = () => undefined
+    const held = new Promise<void>((done) => (release = done))
+    const navigate = page.router.navigate.bind(page.router)
+    vi.spyOn(page.router, 'navigate').mockImplementation(async (...args) => {
+      await held
+      return navigate(...args)
+    })
+    await type(page, 'fix')
+    await frame()
+    // The address changes underneath to the text being written: no news.
+    await page.router.navigateByUrl('/list?q=fix')
+    await page.settle()
+    expect(page.input.value).toBe('fix')
+    // Another address (back to an earlier entry) while the write is held is news.
+    await page.router.navigateByUrl('/list?q=zeta')
+    await page.settle()
+    expect(page.input.value).toBe('zeta')
+    release()
+    await frame()
+    await page.settle()
+  })
+
+  it('keeps two lists on one page apart with a prefix', async () => {
+    const page = await open('/list?q=zeta&a.q=fix', { host: PrefixHost })
+    expect(page.input.value).toBe('fix')
+    expect(tasks(page.root)).toEqual(['fix-ci'])
+    await type(page, 'fix-')
+    await frame()
+    await page.settle()
+    expect(page.router.url).toBe('/list?q=zeta&a.q=fix-')
+    ;(rowElements(page.root)[0].querySelectorAll('[role=gridcell]')[3] as HTMLElement).click()
+    await page.settle()
+    expect(page.router.url).toContain('a.sel=')
+  })
+
   // cockpit-views#ac:rows-are-one-line-and-virtual, cockpit-views#ac:list-never-exceeds-60-row-elements
-  it('renders only a window of the rows, whatever their number, and moves it as the list scrolls under a header that stays', async () => {
+  it('renders only a window of the rows, whatever their number, and moves it as the list scrolls to the very end', async () => {
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(864)
     const big = performanceFixture().document
-    const page = await open('/list', big)
+    const page = await open('/list', { document: big })
     const count = rowElements(page.root).length
     expect(big.worktrees).toHaveLength(600)
     expect(count).toBeGreaterThan(20)
-    expect(count).toBeLessThanOrEqual(60)
+    expect(count).toBeLessThanOrEqual(80)
     expect(page.viewport.getAttribute('aria-rowcount')).toBe('601')
     expect((page.root.querySelector('.body') as HTMLElement).style.height).toBe(`${600 * 32}px`)
-    const first = rowElements(page.root)[0].getAttribute('aria-rowindex')
-    expect(first).toBe('2')
-    Object.defineProperty(page.viewport, 'scrollTop', { value: 6400, writable: true, configurable: true })
+    expect(rowElements(page.root)[0].getAttribute('aria-rowindex')).toBe('2')
+    Object.defineProperty(page.viewport, 'scrollTop', { value: 600 * 32, writable: true, configurable: true })
     page.viewport.dispatchEvent(new Event('scroll'))
     await page.settle()
-    const scrolled = rowElements(page.root)
-    expect(scrolled.length).toBeLessThanOrEqual(60)
-    expect(Number(scrolled[0].getAttribute('aria-rowindex'))).toBeGreaterThan(150)
-    expect((page.root.querySelector('.window') as HTMLElement).style.transform).toMatch(/translateY\(\d+px\)/)
+    const end = rowElements(page.root)
+    expect(end.length).toBeLessThanOrEqual(80)
+    expect(end.at(-1)?.getAttribute('aria-rowindex')).toBe('601')
     expect(page.root.querySelector('.head')).not.toBeNull()
-    // A resize measures again.
-    window.dispatchEvent(new Event('resize'))
+  })
+
+  it('measures again when the viewport changes size, as when data replaces the placeholders, and stops watching with the list', async () => {
+    vi.stubGlobal('ResizeObserver', FakeObserver)
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(100)
+    const big = performanceFixture().document
+    const page = await open('/list', { document: big })
+    const before = rowElements(page.root).length
+    expect(FakeObserver.last.observe).toHaveBeenCalledWith(page.viewport)
+    // The viewport grew once the data arrived: the observer says so, and the window follows with no scroll.
+    height.mockReturnValue(1000)
+    FakeObserver.last.callback()
     await page.settle()
-    expect(rowElements(page.root).length).toBeLessThanOrEqual(60)
+    expect(rowElements(page.root).length).toBeGreaterThan(before)
+    const last = rowElements(page.root).at(-1) as HTMLElement
+    expect(Number(last.dataset['index']) * 32 + 32).toBeGreaterThanOrEqual(1000 - 32)
+    page.harness.fixture.destroy()
+    expect(FakeObserver.last.disconnect).toHaveBeenCalled()
   })
 
   it('measures its own height, or the window\'s while it has none', async () => {
     const page = await open('/list')
-    // jsdom has no layout: the height is the window's.
     expect(rowElements(page.root)).toHaveLength(6)
     expect(window.innerHeight).toBeGreaterThan(0)
   })
 
   // cockpit-views#ac:side-panel-opens-and-closes
-  it('moves the focused row with j and k, opens the panel with Enter and closes it with Esc, returning to the list', async () => {
+  it('moves the focused row with j and k, opens the panel with Enter, and Esc closes it returning to the row that was open', async () => {
     const page = await open('/list')
     page.viewport.focus()
     const focused = () => rowElements(page.root).findIndex((row) => row.classList.contains('focused'))
@@ -369,20 +527,99 @@ describe('ListView', () => {
     await page.settle()
     expect(focused()).toBe(0)
     keydown(page.viewport, 'j')
-    keydown(page.viewport, 'j')
-    keydown(page.viewport, 'k')
     expect(keydown(page.viewport, 'Enter').defaultPrevented).toBe(true)
     await page.settle()
     expect(page.router.url).toBe('/list?sel=w5')
     expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of zeta')
-    // The operator selected it, so the focus moved into the panel.
-    expect(document.activeElement).toBe(page.root.querySelector('aside'))
+    // Beside the list the focus stays in the list; the panel is for Tab or a second Enter.
+    expect(document.activeElement).toBe(page.viewport)
     expect(closePanel?.()).toBe(true)
     await page.settle()
     expect(page.router.url).toBe('/list')
     expect(page.root.querySelector('app-side-panel')).toBeNull()
     expect(document.activeElement).toBe(page.viewport)
+    expect(focused()).toBe(1)
     expect(closePanel?.()).toBe(false)
+  })
+
+  it('keeps browsing with j and k while the panel is open: the panel follows, the focus stays, Enter moves into the panel', async () => {
+    const page = await open('/list?sel=w2')
+    page.viewport.focus()
+    const history = vi.spyOn(page.router, 'navigate')
+    keydown(page.viewport, 'j')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sel=w5')
+    expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of zeta')
+    expect(history.mock.calls.at(-1)?.[1]).toMatchObject({ replaceUrl: true })
+    expect(document.activeElement).toBe(page.viewport)
+    keydown(page.viewport, 'Enter')
+    await page.settle()
+    expect(document.activeElement).toBe(page.root.querySelector('aside'))
+    // Tab reaches the panel next in the document order: its controls follow the list.
+    expect(page.root.querySelector('.panel-button')).not.toBeNull()
+  })
+
+  it('keeps the keyboard on the same row across polls and minutes, falls back to the nearest row when it goes, and holds it across Esc', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(864)
+    const big = performanceFixture().document
+    const page = await open('/list', { document: big })
+    page.viewport.focus()
+    for (let i = 0; i < 300; i++) keydown(page.viewport, 'j')
+    await page.settle()
+    expect(page.list().focused()).toBe(300)
+    const name = focusedTask(page.root)
+    expect(name).not.toBe('')
+    // A poll with a new document, and a new minute: still on that row, not the first.
+    page.store.document.set({ ...big })
+    page.store.now.set(NOW + 5 * 60_000)
+    await page.settle()
+    expect(page.list().focused()).toBe(300)
+    expect(focusedTask(page.root)).toBe(name)
+    // Open it, move on, close: the keyboard is on the row that was last focused.
+    keydown(page.viewport, 'Enter')
+    await page.settle()
+    expect(closePanel?.()).toBe(true)
+    await page.settle()
+    expect(page.list().focused()).toBe(300)
+    // The row goes: the keyboard lands near where it was.
+    const gone = page.root.querySelector('.row.focused .task')?.textContent
+    page.store.document.set({ ...big, worktrees: big.worktrees.filter((w) => w.task !== gone) })
+    await page.settle()
+    expect(page.list().focused()).toBe(300)
+    expect(focusedTask(page.root)).not.toBe(gone)
+    page.store.document.set({ ...big, worktrees: big.worktrees.slice(0, 10) })
+    await page.settle()
+    expect(page.list().focused()).toBe(9)
+  })
+
+  it('moves a page at a time with PageUp and PageDown, to the ends with Home and End', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(320)
+    const page = await open('/list', { document: performanceFixture().document })
+    page.viewport.focus()
+    keydown(page.viewport, 'PageDown')
+    expect(page.list().focused()).toBe(9)
+    keydown(page.viewport, 'PageUp')
+    expect(page.list().focused()).toBe(0)
+    keydown(page.viewport, 'End')
+    expect(page.list().focused()).toBe(599)
+    keydown(page.viewport, 'Home')
+    expect(page.list().focused()).toBe(0)
+  })
+
+  it('opens the focused row\'s page with o, and copies its name with c, saying so through the one live region', async () => {
+    const copy = vi.fn(async () => true)
+    const page = await open('/list', { copy })
+    page.viewport.focus()
+    const navigate = vi.spyOn(page.router, 'navigateByUrl')
+    keydown(page.viewport, 'o')
+    expect(navigate).toHaveBeenCalledWith('/worktrees/w2')
+    keydown(page.viewport, 'c')
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith('add-search'))
+    await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copied add-search'))
+    copy.mockResolvedValue(false)
+    keydown(page.viewport, 'c')
+    await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copy failed'))
+    expect(page.root.querySelectorAll('.row [role=status]')).toHaveLength(0)
   })
 
   it('stops at the first and last row, and leaves keys that are not its own alone', async () => {
@@ -397,7 +634,6 @@ describe('ListView', () => {
       expect(keydown(page.viewport, 'k', init).defaultPrevented).toBe(false)
     }
     expect(keydown(page.viewport, 'x').defaultPrevented).toBe(false)
-    // A key typed in a link inside a row belongs to the link.
     keydown(page.root.querySelector('.task') as Element, 'k')
     await page.settle()
     expect(focused()).toBe(5)
@@ -406,7 +642,7 @@ describe('ListView', () => {
 
   it('scrolls the focused row into view', async () => {
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(320)
-    const page = await open('/list', performanceFixture().document)
+    const page = await open('/list', { document: performanceFixture().document })
     page.viewport.focus()
     for (let i = 0; i < 15; i++) keydown(page.viewport, 'j')
     await page.settle()
@@ -414,11 +650,20 @@ describe('ListView', () => {
     expect(page.viewport.getAttribute('aria-activedescendant')).not.toBeNull()
   })
 
-  it('has no active row, and does nothing on Enter or j, while nothing is listed', async () => {
-    const page = await open('/list', fleetDocument({ worktrees: [] }))
+  it('scrolls a selection of the address into view, as a deep link and back from a page do', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(320)
+    const big = performanceFixture().document
+    const page = await open('/list', { document: big })
+    const id = (page.list().result() as { rows: { id: string }[] }).rows[400].id
+    const deep = await open(`/list?sel=${id}`, { document: big })
+    expect(deep.viewport.scrollTop).toBeGreaterThan(400 * 32 - 320)
+    expect(deep.root.querySelector('.row.selected')).not.toBeNull()
+  })
+
+  it('has no active row, and does nothing on Enter, o, c or j, while nothing is listed', async () => {
+    const page = await open('/list', { document: fleetDocument({ worktrees: [] }) })
     page.viewport.focus()
-    keydown(page.viewport, 'j')
-    keydown(page.viewport, 'Enter')
+    for (const key of ['j', 'Enter', 'o', 'c']) keydown(page.viewport, key)
     await page.settle()
     expect(page.router.url).toBe('/list')
     expect(page.viewport.hasAttribute('aria-activedescendant')).toBe(false)
@@ -431,7 +676,6 @@ describe('ListView', () => {
     expect(target.element).toBe(page.input)
     target.focus()
     expect(document.activeElement).toBe(page.input)
-    // An empty filter says so, and the shell lets Esc close the panel instead.
     expect(target.isEmpty()).toBe(true)
     await type(page, 'fix')
     expect(target.isEmpty()).toBe(false)
@@ -444,76 +688,11 @@ describe('ListView', () => {
     expect(unregistered.panel).toHaveBeenCalled()
   })
 
-  it('keeps what the operator does while the address is still catching up with what they typed', async () => {
-    const page = await open('/list')
-    page.input.value = 'fix'
-    page.input.dispatchEvent(new Event('input', { bubbles: true }))
-    // The frame writes the address; clear before it arrives.
-    await frame()
-    ;(filterTarget as ListFilterTarget).clear()
-    page.input.value = 'fix'
-    page.input.dispatchEvent(new Event('input', { bubbles: true }))
-    ;(filterTarget as ListFilterTarget).clear()
-    await frame()
-    await page.settle()
-    await frame()
-    await page.settle()
-    expect(page.input.value).toBe('')
-    expect(page.router.url).toBe('/list')
-    expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
-  })
-
-  it('does not take an address that arrives mid-navigation for news: what was typed stays until the navigation ends', async () => {
-    const page = await open('/list')
-    let release: () => void = () => undefined
-    const held = new Promise<void>((done) => (release = done))
-    const navigate = page.router.navigate.bind(page.router)
-    vi.spyOn(page.router, 'navigate').mockImplementation(async (...args) => {
-      await held
-      return navigate(...args)
-    })
-    await type(page, 'fix')
-    await frame()
-    // The address changes underneath while the list's own navigation is still held.
-    await page.router.navigateByUrl('/list?q=zeta')
-    await page.settle()
-    expect(page.input.value).toBe('fix')
-    release()
-    await frame()
-    await page.settle()
-    expect(page.router.url).toBe('/list?q=fix')
-    expect(tasks(page.root)).toEqual(['fix-ci'])
-  })
-
-  it('clears the filter text with its own button, and explains the grammar on request', async () => {
-    const page = await open('/list')
-    expect(page.root.querySelector('button[aria-label="Clear the filter text"]')).toBeNull()
-    await type(page, 'zeta')
-    ;(page.root.querySelector('button[aria-label="Clear the filter text"]') as HTMLElement).click()
-    await page.settle()
-    expect(page.input.value).toBe('')
-    expect(document.activeElement).toBe(page.input)
-    const help = page.root.querySelector('button[aria-label="How the filter works"]') as HTMLElement
-    expect(page.root.querySelector('.hint')).toBeNull()
-    help.click()
-    await page.settle()
-    const hint = page.root.querySelector('.hint') as HTMLElement
-    expect(help.getAttribute('aria-expanded')).toBe('true')
-    expect(page.input.getAttribute('aria-describedby')).toBe(hint.id)
-    expect(text(hint)).toContain('sneat-*/*-go')
-    expect(text(hint)).toContain('branch, machine, repo, state, task')
-    help.click()
-    await page.settle()
-    expect(page.root.querySelector('.hint')).toBeNull()
-    expect(page.input.hasAttribute('aria-describedby')).toBe(false)
-  })
-
   // cockpit-views#ac:empty-states-offer-clear
   it('names the filter that matched nothing and clears it with "Clear filters"', async () => {
     const page = await open('/list?q=zzz&chips=pr&machine=mach-beta&sort=machine&sel=w1')
     expect(tasks(page.root)).toEqual([])
-    const empty = page.root.querySelector('.empty') as HTMLElement
-    expect(text(empty)).toContain('No worktrees match the filter “zzz” and the Pull request filter and machine beta.')
+    expect(text(page.root.querySelector('.empty'))).toContain('No worktrees match the filter “zzz” and the Pull request filter and machine beta.')
     expect(text(page.root.querySelector('.count'))).toBe('0 of 6')
     button(page.root, 'Clear filters').click()
     await page.settle()
@@ -523,7 +702,7 @@ describe('ListView', () => {
   })
 
   it('says nothing has been observed yet when there is nothing at all', async () => {
-    const page = await open('/list', fleetDocument({ worktrees: [] }))
+    const page = await open('/list', { document: fleetDocument({ worktrees: [] }) })
     expect(text(page.root.querySelector('.empty'))).toBe('Nothing has been observed yet: no worktrees.')
     expect(button(page.root, 'Clear filters')).toBeUndefined()
     expect(text(page.root.querySelector('.count'))).toBe('0 of 0')
@@ -552,48 +731,88 @@ describe('ListView', () => {
   it('hides a column that is the same default for every visible row, and shows it when one row differs', async () => {
     const same = documentOf()
     same.worktrees = same.worktrees.map((w) => ({ ...w, branch: w.task }))
-    const hidden = await open('/list', same)
-    expect([...hidden.root.querySelectorAll('[role=columnheader]')].map(text)).toEqual(['Worktree', 'Machine', 'Last activity'])
+    const hidden = await open('/list', { document: same })
+    expect(headers(hidden.root).map(text)).toEqual(['Worktree', 'Machine', 'Last activity'])
     same.worktrees[1] = { ...same.worktrees[1], branch: 'topic' }
-    const shown = await open('/list', same)
-    expect([...shown.root.querySelectorAll('[role=columnheader]')].map(text)).toEqual(['Worktree', 'Branch', 'Machine', 'Last activity'])
+    const shown = await open('/list', { document: same })
+    expect(headers(shown.root).map(text)).toEqual(['Worktree', 'Branch', 'Machine', 'Last activity'])
   })
 
   // cockpit-views#ac:no-recompute-when-unchanged
-  it('does not filter and sort again for a poll that changes nothing, only for a new minute', async () => {
+  it('renders no row again for a poll that changes nothing, or a new clock reading within the minute', async () => {
     const page = await open('/list')
-    const before = page.list().result()
+    // Development mode checks each binding twice; let that settle before counting.
+    page.harness.detectChanges()
+    const before = counter.renders
+    expect(before).toBeGreaterThanOrEqual(6)
+    page.store.document.set(page.store.document())
     page.store.now.set(NOW + 20_000)
     await page.settle()
-    expect(page.list().result()).toBe(before)
-    expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
-    page.store.now.set(NOW + 2 * 60_000)
+    page.store.now.set(NOW + 50_000)
     await page.settle()
-    expect(page.list().result()).not.toBe(before)
+    expect(counter.renders).toBe(before)
+    expect(tasks(page.root)).toEqual(DEFAULT_ORDER)
+  })
+
+  it('reads the clock only for a filter that asks for ages', async () => {
+    const page = await open('/list?q=age:<1d')
+    expect(tasks(page.root)).toEqual([])
+    // Two days later the 1 d old row is older than a day for good, and ten minutes later nothing else changes: the bucket moves, the rows do not.
+    const result = page.list().result()
+    page.store.now.set(NOW + 5 * 60_000)
+    await page.settle()
+    expect(page.list().result()).not.toBe(result)
+    const chip = await open('/list?chips=idle30')
+    expect(tasks(chip.root)).toEqual(['far-task'])
+  })
+
+  it('shows "no longer in the fleet" in the panel of a selection that was there and has gone, and offers to close it', async () => {
+    const page = await open('/list?sel=w2')
+    expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of add-search')
+    page.store.document.set({ ...documentOf(), worktrees: documentOf().worktrees.filter((w) => w.id !== 'w2') })
+    await page.settle()
+    expect(text(page.root.querySelector('app-side-panel .gone'))).toBe('This is no longer in the fleet.')
+    expect(page.router.url).toBe('/list?sel=w2')
+    expect(closePanel?.()).toBe(true)
+    await page.settle()
+    expect(page.router.url).toBe('/list')
+    expect(page.root.querySelector('app-side-panel')).toBeNull()
+  })
+
+  it('is a modal sheet on a phone: focus goes in even for a pasted address, the list is inert, and Esc closes it', async () => {
+    const page = await open('/list?sel=w2', { phone: true })
+    const aside = page.root.querySelector('aside') as HTMLElement
+    expect(aside.getAttribute('role')).toBe('dialog')
+    expect(document.activeElement).toBe(aside)
+    expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(true)
+    expect(closePanel?.()).toBe(true)
+    await page.settle()
+    expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(false)
+    const beside = await open('/list?sel=w2')
+    expect(beside.root.querySelector('section.list')?.hasAttribute('inert')).toBe(false)
   })
 
   it('finds a selection with the page\'s own resolver, and opens no panel when the page has none', async () => {
-    const page = await open('/list?sel=zeta', documentOf(), NoPanelHost)
+    const page = await open('/list?sel=zeta', { host: NoPanelHost })
     expect(page.root.querySelector('app-side-panel')).toBeNull()
     expect(page.root.querySelector('.layout')?.classList.contains('with-panel')).toBe(false)
     expect(rowElements(page.root).find((row) => row.classList.contains('selected'))?.textContent).toContain('zeta')
   })
 
   it('calls the panel Details when the page names it no better', async () => {
-    const page = await open('/list?sel=w1', documentOf(), PlainHost)
+    const page = await open('/list?sel=w1', { host: PlainHost })
     expect(page.root.querySelector('aside')?.getAttribute('aria-label')).toBe('Details')
   })
 
-  it('renders on its own over an empty fleet', async () => {
+  it('renders on its own over an empty fleet, with the rows of its page', async () => {
     TestBed.resetTestingModule()
-    TestBed.configureTestingModule({ providers: [provideRouter([])] })
+    TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: LIST_SHORTCUTS, useValue: { registerFilter: () => () => undefined, registerPanel: () => () => undefined } }] })
     const fixture = TestBed.createComponent(ListView)
     fixture.componentRef.setInput('page', 'machines')
-    fixture.componentRef.setInput('noun', 'machines')
-    fixture.componentRef.setInput('rows', [])
     fixture.componentRef.setInput('columns', [])
-    fixture.componentRef.setInput('chips', [])
+    fixture.componentRef.setInput('extraChips', [{ id: 'runtime-x', label: 'X' }])
     await fixture.whenStable()
     expect(text(fixture.nativeElement.querySelector('.count'))).toBe('0 of 0')
+    expect(text(fixture.nativeElement.querySelector('[aria-label="Quick filters"]'))).toBe('Stale Outdated X')
   })
 })

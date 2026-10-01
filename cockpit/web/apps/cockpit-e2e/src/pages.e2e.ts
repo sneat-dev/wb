@@ -8,7 +8,7 @@ import { fleet, now, stub, watch } from './support'
 
 const rows = (page: Page) => page.locator('tbody tr')
 // The shared list (the Worktrees page) has no table: its rows are ARIA rows of a virtual grid.
-const listRows = (page: Page) => page.locator('[role=row][aria-rowindex]')
+const listRows = (page: Page) => page.locator('[role=row][data-index]')
 
 test('every page lists its collection, cached rows show route and age, and the machine filter works', async ({ page }) => {
   await stub(page)
@@ -72,7 +72,8 @@ test('a count shows its entities on hover or focus and opens exactly them, in da
   await expect(card).toBeHidden()
 
   await count.locator('a').click()
-  await expect(page).toHaveURL(/\/cockpit\/worktrees\?repository=repo-cli$/)
+  // The legacy `repository` link becomes a visible filter.
+  await expect(page).toHaveURL(/\/cockpit\/worktrees\?q=repo:%22specscore%2Fspecscore-cli%22$/)
   await expect(listRows(page)).toHaveCount(2)
   await expect(listRows(page).nth(0)).toContainText('add-search')
   await expect(listRows(page).nth(1)).toContainText('fix-index')
@@ -122,12 +123,12 @@ test('the Worktrees page shows fresh, stale with its count, and never', async ({
   const expectClean = await watch(page)
   await page.goto('/cockpit/worktrees')
   await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()
-  const indexCell = (task: string) => listRows(page).filter({ hasText: task }).locator('app-code-index-label')
+  const indexCell = (task: string) => listRows(page).filter({ hasText: task }).locator('app-code-index-cell')
   await expect(indexCell('at-head')).toContainText('fresh')
   await expect(indexCell('behind')).toContainText('stale, 3 behind')
-  await expect(indexCell('unindexed')).toHaveText('never')
+  await expect(indexCell('unindexed')).toContainText('never')
   // A checkout whose freshness is not known shows a dash, not a guess.
-  await expect(indexCell('elsewhere')).toHaveText('—')
+  await expect(indexCell('elsewhere')).toContainText('—')
   // The receipt's age is visible text, not only a tooltip.
   await expect(indexCell('at-head')).toContainText('just now')
   await expectClean()

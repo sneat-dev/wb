@@ -52,7 +52,7 @@
 @media (max-width: 47.99rem) {
   .panel {
     position: fixed;
-    z-index: 60;
+    z-index: 40;
     inset: 0;
     max-height: none;
     border: 0;

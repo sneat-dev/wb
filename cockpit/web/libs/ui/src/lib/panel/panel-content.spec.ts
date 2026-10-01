@@ -1,7 +1,7 @@
 import { Component } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { provideRouter } from '@angular/router'
-import { Clipboard } from '@angular/cdk/clipboard'
+import { ClipboardWriter } from '../control/clipboard'
 import { PanelCommand, taskDetailLink } from '@cockpit/fleet-data'
 import { PanelContent } from './panel-content'
 
@@ -53,7 +53,7 @@ describe('PanelContent', () => {
     expect(text(root.querySelector('.kind'))).toBe('Worktree')
     expect([...root.querySelectorAll('dt')].map(text)).toEqual(['Task', 'Branch', 'Last activity', 'Source', 'Plain'])
     expect(root.querySelector('dd a')?.getAttribute('href')).toBe('/tasks/detail?task=fix-ci')
-    expect(root.querySelectorAll('dd app-copy-button')).toHaveLength(1)
+    expect(root.querySelectorAll('dd app-copy-icon')).toHaveLength(1)
     expect(root.querySelector('dd[title="the branch"]')).not.toBeNull()
     expect(root.querySelectorAll('dd')[3].classList.contains('muted')).toBe(true)
     expect(text(root.querySelectorAll('dd')[2])).toMatch(/ ago$/)
@@ -62,10 +62,11 @@ describe('PanelContent', () => {
     expect(external.getAttribute('href')).toBe('https://github.com/a/b/pull/1')
     expect(text(root.querySelector('[aria-label="Agents"]'))).toContain('None')
     expect(root.querySelector('section.actions')).not.toBeNull()
-    expect(root.querySelectorAll('[aria-label="Copy command"] li')).toHaveLength(5)
-    expect(text(root.querySelector('.command-title'))).toBe('List worktrees')
-    expect(text(root.querySelector('.commands code'))).toBe("wb worktree list 'fix-ci'")
-    expect([...root.querySelectorAll('.note')].map(text)).toEqual(['run on mac · edit the placeholder first', 'edit the placeholder first', 'run on mac', 'Not available: the name starts with a dash'])
+    // The "Copy command" entries are the control surface's list.
+    expect(root.querySelectorAll('app-copy-command-list li')).toHaveLength(5)
+    expect(text(root.querySelector('app-copy-command-list .title'))).toBe('List worktrees')
+    expect(text(root.querySelector('app-copy-command-list code'))).toBe("wb worktree list 'fix-ci'")
+    expect(text(root.querySelector('app-copy-command-list .refused'))).toContain('the name starts with a dash')
     const details = root.querySelector('details') as HTMLDetailsElement
     expect(details.open).toBe(false)
     expect(root.querySelector('pre')).toBeNull()
@@ -87,21 +88,35 @@ describe('PanelContent', () => {
     expect(root.querySelector('pre')).toBeNull()
   })
 
-  it('offers copy buttons that copy the full value, on the heading, a fact and a command', async () => {
-    const copy = vi.fn(() => true)
+  it('offers copy icons that copy the full value, on the heading and a fact, and says Copied once, in the panel\'s own live region', async () => {
+    const copy = vi.fn(async () => true)
     TestBed.resetTestingModule()
-    TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: Clipboard, useValue: { copy } }] })
+    TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: ClipboardWriter, useValue: { copy } }] })
     const fixture = TestBed.createComponent(PanelContent)
     fixture.componentRef.setInput('kind', 'Branch')
     fixture.componentRef.setInput('heading', 'a-long-branch-name')
     fixture.componentRef.setInput('copyHeading', true)
     fixture.componentRef.setInput('facts', [{ label: 'Session', text: 'sess-1234567890', copy: true }])
-    fixture.componentRef.setInput('commands', [COMMANDS[0]])
     await fixture.whenStable()
-    const buttons = [...fixture.nativeElement.querySelectorAll('button.copy')] as HTMLButtonElement[]
-    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy branch name', 'Copy session', 'Copy command: List worktrees'])
-    for (const button of buttons) button.click()
-    expect(copy.mock.calls.map((call) => call[0])).toEqual(['a-long-branch-name', 'sess-1234567890', "wb worktree list 'fix-ci'"])
+    const icons = [...fixture.nativeElement.querySelectorAll('app-copy-icon button')] as HTMLButtonElement[]
+    expect(icons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy branch name', 'Copy session'])
+    for (const icon of icons) icon.click()
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledTimes(2))
+    expect(copy.mock.calls.map((call) => call[0])).toEqual(['a-long-branch-name', 'sess-1234567890'])
+    await vi.waitFor(() => expect(fixture.nativeElement.querySelector('article > [role=status]').textContent).toBe('Copied'))
+  })
+
+  it('shows a raw entry that looks like HTML as text, never as markup', async () => {
+    const hostile = { id: 'w1', task: '<img src=x onerror=alert(1)>', note: '</pre><script>alert(2)</script>' }
+    const { fixture, root } = await render({ raw: [hostile], facts: [{ label: 'Task', text: hostile.task }], heading: hostile.task })
+    const details = root.querySelector('details') as HTMLDetailsElement
+    details.open = true
+    details.dispatchEvent(new Event('toggle'))
+    await fixture.whenStable()
+    expect(root.querySelector('img, script')).toBeNull()
+    expect(root.querySelector('pre')?.textContent).toContain('<img src=x onerror=alert(1)>')
+    expect(root.querySelector('pre')?.textContent).toContain('</pre><script>alert(2)</script>')
+    expect(text(root.querySelector('h2'))).toBe(hostile.task)
   })
 
   it('is the page when asked, with the same content', async () => {
@@ -120,7 +135,7 @@ describe('PanelContent', () => {
     expect(text(root.querySelector('section.actions button'))).toBe('Land')
   })
 
-  it('has no commands section when there are none, for a projected list to take over', async () => {
+  it('has no commands section when there are none', async () => {
     const { root } = await render({})
     expect(root.querySelector('[aria-label="Copy command"]')).toBeNull()
   })

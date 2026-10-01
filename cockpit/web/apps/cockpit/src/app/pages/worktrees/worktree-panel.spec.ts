@@ -13,7 +13,7 @@ function render(id: string, page = false, extra: Record<string, unknown> = {}) {
   store.document.set(
     fleetDocument({
       worktrees: [{ ...worktree('w1', 'r1', 'alpha'), task: 'fix-ci', branch: 'topic', ...extra }],
-      pull_requests: [pullRequest('p1', 'r1', 'w1', { number: 5 }), pullRequest('p2', 'r1', 'w1', { number: 6, state: undefined, url: 'http://insecure.example/6' })],
+      pull_requests: [pullRequest('p1', 'r1', 'w1', { number: 5 }), pullRequest('p2', 'r1', 'w1', { number: 6, state: undefined, url: 'javascript:alert(1)' })],
       agents: [run('run-1', 'running', { worktrees: ['w1'] })],
     }),
   )
@@ -28,7 +28,7 @@ describe('WorktreePanelView', () => {
     expect((await render('nope')).querySelector('app-panel-content')).toBeNull()
   })
 
-  it('relates the worktree to its task, its pull requests (an address only when it is secure) and its agents', async () => {
+  it('relates the worktree to its task, its pull requests (an address only when it is a web address) and its agents', async () => {
     const root = await render('w1')
     expect(text(root.querySelector('[aria-label="Task"] li'))).toContain('fix-ci (')
     expect([...root.querySelectorAll('[aria-label="Pull requests"] li')].map(text)).toEqual(['#5 open', '#6'])
