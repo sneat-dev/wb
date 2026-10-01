@@ -28,6 +28,7 @@ export default defineConfig({
         'tools/check-component-specs.mjs',
         'tools/finish-build.mjs',
         'tools/serve-dist.mjs',
+        'tools/journey-guard.mjs',
         '**/test-setup.ts',
         '**/*.d.ts',
         'apps/*/src/main.ts',

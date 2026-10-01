@@ -186,13 +186,15 @@ the repository and worktree pages.
 **Id:** task-9
 **Verifies:** cockpit#ac:whole-journey-e2e
 **Depends-On:** 3, 6, 8
-**Status:** planning
+**Status:** complete
 
 One Playwright test against a real daemon on a temporary projects root: run
 `wb cockpit`, follow the printed URL, assert the Dashboard as owner, hover
 and click the worktree count, assert the filtered table, clear the cookie,
 reload, and assert that lists load while the README asks for an owner
-session. No reloads or manual steps beyond those the journey names.
+session. No reloads or manual steps beyond those the journey names. The journey
+runs on Linux in CI only, because on macOS the daemon is a launchd service with
+one fixed label per user.
 
 ## Open Questions
 

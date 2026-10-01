@@ -143,7 +143,23 @@ func TestGitCommandThatSpawnsAChildHoldingStdoutIsReapedOnTimeout(t *testing.T) 
 		returned <- err
 	}()
 	// The timeout is a cancellation once the stand-in has started its child.
-	waitFor(t, "the child to start", func() bool { _, err := os.Stat(pidFile); return err == nil })
+	// Fail fast with the real error if the command ends before the child is seen, and allow a loaded machine 30s.
+	childDeadline := time.Now().Add(30 * time.Second)
+	var early error
+	for seen := false; !seen; {
+		select {
+		case early = <-returned:
+			t.Fatalf("the command returned before its child started: %v", early)
+		default:
+		}
+		if _, err := os.Stat(pidFile); err == nil {
+			seen = true
+		} else if time.Now().After(childDeadline) {
+			t.Fatal("timed out waiting for the child to start")
+		} else {
+			time.Sleep(time.Millisecond)
+		}
+	}
 	time.Sleep(50 * time.Millisecond)
 	started := time.Now()
 	cancel()

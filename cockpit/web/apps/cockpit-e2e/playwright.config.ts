@@ -6,6 +6,8 @@ const port = Number(process.env['COCKPIT_E2E_PORT'] || '4300')
 export default defineConfig({
   testDir: './src',
   testMatch: '**/*.e2e.ts',
+  // The journey needs Go and runs under its own config (playwright.journey.config.ts).
+  testIgnore: '**/journey/**',
   outputDir: '../../test-results',
   reporter: process.env['CI'] ? 'github' : 'list',
   use: { baseURL: `http://127.0.0.1:${port}` },

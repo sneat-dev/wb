@@ -62,6 +62,8 @@ daemon. It MUST obtain an owner login (REQ:owner-session) and print the login
 URL. It opens the platform browser only in text format on an interactive
 desktop session.
 
+`--listen <host:port>` names the loopback address of the daemon to start (default `127.0.0.1:8766`); without it a daemon already running on this machine is used wherever it listens. A running daemon recorded on a different address is never replaced: the command refuses and names that address. Non-loopback addresses are refused before anything starts.
+
 `--hosted` resolves the hosted Cockpit URL instead and starts no daemon. The
 hosted URL is the single configuration value `cockpit.hosted_url`, whose
 default is `https://sneat.dev/wb/cockpit/`; no other code path may spell that

@@ -15,6 +15,9 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
 `json`.
 
+`cockpit` also has the command-specific `--listen <host:port>` (loopback only; names the
+address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format` and `--json`.
+
 `coverage baseline <coverage-profile>` (the per-change coverage ratchet's
 baseline publisher) is also command-specific: `--module` (the Go module
 root, default `.`), `--sha` (the commit the profile was measured at, for

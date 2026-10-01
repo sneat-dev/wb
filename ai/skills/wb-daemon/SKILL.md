@@ -30,7 +30,11 @@ over the owner channel and prints `/cockpit/session/login?code=...`. That code i
 a single-use owner credential valid for 60 seconds, and an agent running it
 would put it in its transcript. The browser opens only in text format, on an
 interactive session whose stdout is a terminal. `--hosted` uses
-`cockpit.hosted_url` from wb.yaml and starts no daemon.
+`cockpit.hosted_url` from wb.yaml and starts no daemon. Without `--listen` it
+uses a daemon already running here wherever it listens, else starts one on
+`127.0.0.1:8766`. `--listen <host:port>` (loopback only) names the address to start
+on; it never moves a running daemon: if one is recorded on another address the
+command refuses and names it (use `--listen` with that address, or stop it first).
 
 Start and inspect the local read-only API and embedded dashboard:
 

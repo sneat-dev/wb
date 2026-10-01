@@ -25,7 +25,7 @@ func cockpitTestDependencies(t *testing.T, opened *[]string, mints *int) cockpit
 		open:       func(target string) error { *opened = append(*opened, target); return nil },
 		isTerminal: func(any) bool { return true },
 		configPath: func() string { return filepath.Join(t.TempDir(), "wb.yaml") },
-		local: func(_ context.Context, _ daemonDependencies, _ string, mint bool) (cockpitLocalSession, error) {
+		local: func(_ context.Context, _ daemonDependencies, _, _ string, mint bool) (cockpitLocalSession, error) {
 			session := cockpitLocalSession{Listen: "127.0.0.1:8766"}
 			if mint {
 				*mints++
@@ -66,8 +66,8 @@ func TestCockpitPrintsAStartWarningToStderr(t *testing.T) {
 	var mints int
 	deps := cockpitTestDependencies(t, &opened, &mints)
 	inner := deps.local
-	deps.local = func(ctx context.Context, d daemonDependencies, root string, mint bool) (cockpitLocalSession, error) {
-		session, err := inner(ctx, d, root, mint)
+	deps.local = func(ctx context.Context, d daemonDependencies, root, listen string, mint bool) (cockpitLocalSession, error) {
+		session, err := inner(ctx, d, root, listen, mint)
 		session.Warning = "provenance mismatch"
 		return session, err
 	}
@@ -96,7 +96,7 @@ func TestCockpitBrowserOpensOnlyForAnInteractiveTerminal(t *testing.T) {
 		deps := cockpitTestDependencies(t, &opened, &mints)
 		deps.isTerminal = func(any) bool { return test.terminal }
 		if len(test.args) > 0 {
-			deps.local = func(context.Context, daemonDependencies, string, bool) (cockpitLocalSession, error) {
+			deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 				return cockpitLocalSession{}, errors.New("unexpected daemon contact")
 			}
 		}
@@ -122,7 +122,7 @@ func TestCockpitUsesTheCanonicalIPv6Origin(t *testing.T) {
 	var opened []string
 	var mints int
 	deps := cockpitTestDependencies(t, &opened, &mints)
-	deps.local = func(context.Context, daemonDependencies, string, bool) (cockpitLocalSession, error) {
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 		return cockpitLocalSession{Listen: "[::1]:9000", Code: "c", Path: cockpit.LoginPath}, nil
 	}
 	if _, _, err := runCockpit(t, &invocation{}, deps); err != nil {
@@ -161,7 +161,7 @@ func TestCockpitHostedUsesTheConfiguredURLAndStartsNoDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps.configPath = func() string { return path }
-	deps.local = func(context.Context, daemonDependencies, string, bool) (cockpitLocalSession, error) {
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 		return cockpitLocalSession{}, errors.New("unexpected daemon start")
 	}
 	stdout, _, err := runCockpit(t, &invocation{}, deps, "--hosted")
@@ -200,14 +200,14 @@ func TestCockpitErrorsPrintNoPartialURL(t *testing.T) {
 	var opened []string
 	var mints int
 	deps := cockpitTestDependencies(t, &opened, &mints)
-	deps.local = func(context.Context, daemonDependencies, string, bool) (cockpitLocalSession, error) {
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 		return cockpitLocalSession{}, errors.New("daemon down")
 	}
 	stdout, _, err := runCockpit(t, &invocation{}, deps)
 	if err == nil || !strings.Contains(err.Error(), "daemon down") || stdout != "" || len(opened) != 0 {
 		t.Fatalf("err = %v, stdout = %q, opened = %v", err, stdout, opened)
 	}
-	deps.local = func(context.Context, daemonDependencies, string, bool) (cockpitLocalSession, error) {
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 		return cockpitLocalSession{Listen: "no-port"}, nil
 	}
 	stdout, _, err = runCockpit(t, &invocation{}, deps)
@@ -264,7 +264,7 @@ func TestCockpitLocalFromDaemonStartsWithoutMintingForJSON(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.localClient = func(string, string) (*http.Client, error) { return nil, errors.New("must not connect") }
-	session, err := cockpitLocalFromDaemon(context.Background(), deps, root, false)
+	session, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, false)
 	if err != nil || session.Listen == "" || session.Code != "" {
 		t.Fatalf("session = %+v, err = %v", session, err)
 	}
@@ -338,19 +338,19 @@ func TestCockpitLocalFromDaemonRefusesBadMintResponses(t *testing.T) {
 	deps.localClient = func(string, string) (*http.Client, error) {
 		return &http.Client{Transport: cockpitRewriteTransport{target: server.URL}}, nil
 	}
-	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, true); err == nil || !strings.Contains(err.Error(), "boom") {
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want the daemon's refusal", err)
 	}
 	status, body = http.StatusOK, `{}`
-	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, true); err == nil || !strings.Contains(err.Error(), "no code") {
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "no code") {
 		t.Fatalf("err = %v, want a no-code error", err)
 	}
 	status, body = http.StatusOK, `{"code":"c","path":"/elsewhere"}`
-	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, true); err == nil || !strings.Contains(err.Error(), "/elsewhere") {
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "/elsewhere") {
 		t.Fatalf("err = %v, want a login-path error", err)
 	}
 	deps.localClient = func(string, string) (*http.Client, error) { return nil, errors.New("no socket") }
-	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, true); err == nil || !strings.Contains(err.Error(), "no socket") {
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "no socket") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -388,7 +388,7 @@ func TestCockpitLocalFromDaemonReportsStartFailures(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.executable = func() (string, error) { return "", errors.New("no executable") }
-	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, true); err == nil || !strings.Contains(err.Error(), "start local daemon") {
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "start local daemon") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -415,5 +415,132 @@ func TestCockpitReportsAStdoutWriteFailure(t *testing.T) {
 	command.SetOut(cockpitFailingWriter{})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "stdout closed") || len(opened) != 0 {
 		t.Fatalf("err = %v, opened = %v", err, opened)
+	}
+}
+
+func TestCockpitListenFlag(t *testing.T) {
+	// Default unchanged: the stock address reaches the daemon start.
+	var opened []string
+	var mints int
+	deps := cockpitTestDependencies(t, &opened, &mints)
+	var gotListen string
+	deps.local = func(_ context.Context, _ daemonDependencies, _, listen string, mint bool) (cockpitLocalSession, error) {
+		gotListen = listen
+		if listen == "" {
+			listen = daemonDefaultListen
+		}
+		return cockpitLocalSession{Listen: listen, Code: map[bool]string{true: "c1"}[mint], Path: cockpit.LoginPath}, nil
+	}
+	// No flag: the command leaves the choice to the daemon lookup (empty), which defaults below.
+	if _, _, err := runCockpit(t, &invocation{}, deps, "--json"); err != nil || gotListen != "" {
+		t.Fatalf("unset listen = %q, err = %v", gotListen, err)
+	}
+	// A custom loopback address reaches Start and builds the printed URL.
+	stdout, _, err := runCockpit(t, &invocation{}, deps, "--listen", "127.0.0.1:43211")
+	if err != nil || gotListen != "127.0.0.1:43211" || stdout != "cockpit: http://127.0.0.1:43211/cockpit/session/login?code=c1\n" {
+		t.Fatalf("listen = %q, stdout = %q, err = %v", gotListen, stdout, err)
+	}
+	// JSON output carries the right origin.
+	stdout, _, err = runCockpit(t, &invocation{}, deps, "--listen=127.0.0.1:43211", "--json")
+	var result cockpitOpenResult
+	if jsonErr := json.Unmarshal([]byte(stdout), &result); err != nil || jsonErr != nil || result.URL != "http://127.0.0.1:43211/cockpit/" {
+		t.Fatalf("stdout = %q, err = %v, %v", stdout, err, jsonErr)
+	}
+	// A non-loopback address is refused before anything starts.
+	gotListen = ""
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
+		t.Fatal("daemon contacted for a non-loopback address")
+		return cockpitLocalSession{}, nil
+	}
+	for _, bad := range []string{"0.0.0.0:9000", "example.com:80", "nope", ""} {
+		if _, _, err := runCockpit(t, &invocation{}, deps, "--listen", bad); err == nil || !strings.Contains(err.Error(), "--listen") {
+			t.Fatalf("%q: err = %v", bad, err)
+		}
+	}
+}
+
+func TestCockpitLocalFromDaemonStartsOnTheRequestedListen(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	session, err := cockpitLocalFromDaemon(context.Background(), deps, root, "127.0.0.1:43999", false)
+	if err != nil || session.Listen != "127.0.0.1:43999" {
+		t.Fatalf("session = %+v, err = %v", session, err)
+	}
+}
+
+// startedDaemon starts a fake daemon on listen and returns the dependencies and
+// a counter of further start calls.
+func startedDaemon(t *testing.T, listen string) (daemonDependencies, string, *int) {
+	t.Helper()
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	if _, err := newDaemonController(deps, root).Start(context.Background(), listen); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	inner := deps.start
+	deps.start = func(executable string, args []string, log string) (int, error) {
+		starts++
+		return inner(executable, args, log)
+	}
+	return deps, root, &starts
+}
+
+func TestCockpitNeverReplacesARunningDaemonOnAnotherAddress(t *testing.T) {
+	deps, root, starts := startedDaemon(t, "127.0.0.1:43001")
+	_, err := cockpitLocalFromDaemon(context.Background(), deps, root, "127.0.0.1:43002", false)
+	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:43001") || !strings.Contains(err.Error(), "--listen 127.0.0.1:43001") || *starts != 0 {
+		t.Fatalf("err = %v, starts = %d", err, *starts)
+	}
+	if state, _, _ := newDaemonController(deps, root).store.Load(); state.Listen != "127.0.0.1:43001" {
+		t.Fatalf("the running daemon's record changed: %+v", state)
+	}
+}
+
+func TestCockpitReusesARunningDaemonWhereverItListens(t *testing.T) {
+	deps, root, starts := startedDaemon(t, "127.0.0.1:43001")
+	session, err := cockpitLocalFromDaemon(context.Background(), deps, root, "", false)
+	if err != nil || session.Listen != "127.0.0.1:43001" || *starts != 0 {
+		t.Fatalf("session = %+v, err = %v, starts = %d", session, err, *starts)
+	}
+	session, err = cockpitLocalFromDaemon(context.Background(), deps, root, "127.0.0.1:43001", false)
+	if err != nil || session.Listen != "127.0.0.1:43001" || *starts != 0 {
+		t.Fatalf("same address: session = %+v, err = %v, starts = %d", session, err, *starts)
+	}
+}
+
+func TestCockpitStartsOnTheRequestedOrDefaultAddressWhenNothingRuns(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	session, err := cockpitLocalFromDaemon(context.Background(), deps, root, "", false)
+	if err != nil || session.Listen != daemonDefaultListen {
+		t.Fatalf("default: session = %+v, err = %v", session, err)
+	}
+	// The recorded daemon is no longer alive: a stale record does not block another address.
+	state, _, err := newDaemonController(deps, root).store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.stop(state.PID, daemon.SupervisorNone, ""); err != nil {
+		t.Fatal(err)
+	}
+	session, err = cockpitLocalFromDaemon(context.Background(), deps, root, "127.0.0.1:43003", false)
+	if err != nil || session.Listen != "127.0.0.1:43003" {
+		t.Fatalf("stale record: session = %+v, err = %v", session, err)
+	}
+}
+
+func TestCockpitReportsAnUnreadableDaemonRecord(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	path := mustDaemonPath(t, daemonStatePath, root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, "", false); err == nil || !strings.Contains(err.Error(), "daemon record") {
+		t.Fatalf("err = %v", err)
 	}
 }
