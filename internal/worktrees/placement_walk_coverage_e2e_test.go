@@ -183,3 +183,61 @@ func TestE2EPlacementWalkReadFailuresStayScoped(t *testing.T) {
 		t.Fatalf("residue sweep should silently skip unreadable branches: %+v", got)
 	}
 }
+
+func TestE2EPlacementWalkSilentlySkipsVanishedTask(t *testing.T) {
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	root := filepath.Join(projectsRoot, ".worktrees")
+	taskRoot := filepath.Join(root, "removed-task")
+	if err := os.MkdirAll(taskRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(taskRoot); err != nil {
+		t.Fatal(err)
+	}
+	listing := &layoutListing{ctx: context.Background(), projectsRoot: projectsRoot,
+		home: filepath.Join(projectsRoot, ".wb"), layout: wbhome.Layout{WorktreesRoot: root}}
+	listing.walkTasks(entries)
+	if len(listing.pending) != 0 || len(listing.diagnostics) != 0 || len(listing.artifacts) != 0 || len(listing.purged) != 0 {
+		t.Fatalf("vanished task produced listing output: pending=%+v diagnostics=%+v artifacts=%+v purged=%+v",
+			listing.pending, listing.diagnostics, listing.artifacts, listing.purged)
+	}
+}
+
+//nolint:paralleltest // seedCloneAt sets process-wide Git environment.
+func TestE2EPlacementAmbiguousCanonicalFallbackStaysNonblocking(t *testing.T) {
+	projectsRoot := t.TempDir()
+	root := filepath.Join(projectsRoot, ".worktrees")
+	candidate := filepath.Join(root, "legacy-task", "acme", "app")
+	if err := os.MkdirAll(candidate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	github := newHostLevelClone(t, projectsRoot, "github.com", "acme", "app")
+	gitlab := newHostLevelClone(t, projectsRoot, "gitlab.com", "acme", "app")
+	if _, err := CanonicalRepositoryPath(projectsRoot, "acme/app"); err == nil || !strings.Contains(err.Error(), "more than one host") {
+		t.Fatalf("ambiguous canonical repository was accepted: %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := &layoutListing{ctx: context.Background(), projectsRoot: projectsRoot,
+		home: filepath.Join(projectsRoot, ".wb"), layout: wbhome.Layout{WorktreesRoot: root}}
+	listing.walkTasks(entries)
+	if len(listing.pending) != 0 || len(listing.diagnostics) != 1 {
+		t.Fatalf("ambiguous non-Git candidate inspection = pending=%+v diagnostics=%+v", listing.pending, listing.diagnostics)
+	}
+	diagnostic := listing.diagnostics[0]
+	if diagnostic.Path != candidate || !diagnostic.NonBlocking || !strings.Contains(diagnostic.Message, "foreign non-Git debris") {
+		t.Fatalf("ambiguous canonical fallback diagnostic = %+v", diagnostic)
+	}
+	for _, path := range []string{candidate, filepath.Join(github, ".git"), filepath.Join(gitlab, ".git")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("read-only listing removed %q: %v", path, err)
+		}
+	}
+}
