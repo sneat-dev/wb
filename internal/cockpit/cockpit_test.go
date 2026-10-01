@@ -215,3 +215,54 @@ func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 		}
 	}
 }
+
+// cockpit#req:strict-content-security-policy: every response under the page
+// prefix carries exactly one strict policy, including those Cockpit writes
+// before the application handler runs.
+func TestEveryPageResponseCarriesTheStrictPolicy(t *testing.T) {
+	t.Parallel()
+	server := newServer(Options{CanonicalHost: "127.0.0.1"}, web.HandlerFor(fstest.MapFS{}))
+	handler := dashboard.NewHandler(dashboard.Options{
+		ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 1, SchedulerGeneration: 2, Mounts: server.Mounts(),
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	send := func(method, host, target, origin string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, target, nil)
+		request.Host = host
+		if origin != "" {
+			request.Header.Set("Origin", origin)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for _, test := range []struct {
+		name                      string
+		method, host, target, org string
+		status                    int
+	}{
+		{"foreign host", "GET", "attacker.example:8766", "/cockpit/", "", 421},
+		{"POST on an alias", "POST", "localhost:8766", "/cockpit/", "", 421},
+		{"alias redirect", "GET", "localhost:8766", "/cockpit/", "", 307},
+		{"foreign origin", "GET", "127.0.0.1:8766", "/cockpit/", "https://attacker.example", 403},
+		{"login failure", "GET", "127.0.0.1:8766", LoginPath + "?code=nope", "", 401},
+		{"not-built page", "GET", "127.0.0.1:8766", "/cockpit/", "", 200},
+	} {
+		recorder := send(test.method, test.host, test.target, test.org)
+		values := recorder.Header().Values("Content-Security-Policy")
+		if recorder.Code != test.status || len(values) != 1 {
+			t.Errorf("%s: status %d with %d policies %q, want %d with one", test.name, recorder.Code, len(values), values, test.status)
+			continue
+		}
+		policy := values[0]
+		if strings.Contains(policy, "unsafe-") || !strings.HasPrefix(policy, "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-") || !strings.HasSuffix(policy, "frame-ancestors 'self'") {
+			t.Errorf("%s: policy = %q", test.name, policy)
+		}
+	}
+	// An API response keeps the dashboard's policy: it is never a document.
+	api := send("GET", "127.0.0.1:8766", "/api/v1/cockpit/fleet", "")
+	want := "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"
+	if got := api.Header().Values("Content-Security-Policy"); len(got) != 1 || got[0] != want {
+		t.Errorf("api policy = %q, want unchanged %q", got, want)
+	}
+}

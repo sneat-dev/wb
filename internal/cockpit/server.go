@@ -155,9 +155,22 @@ func (server *Server) Mounts() map[string]http.Handler {
 	server.frozen = true
 	server.registration.Unlock()
 	return map[string]http.Handler{
-		PagePrefix: Guard(server.canonical, http.HandlerFunc(server.servePage)),
+		PagePrefix: pagePolicy(Guard(server.canonical, http.HandlerFunc(server.servePage))),
 		APIPrefix:  Guard(server.canonical, http.HandlerFunc(server.serveAPI)),
 	}
+}
+
+// pagePolicy sets the strict page Content-Security-Policy before next writes
+// anything, so every response under PagePrefix carries it whichever code path
+// answers (the guard's 421 and redirect, a refusal, the login exchange). The
+// application handler replaces it with its own nonce-matched policy. It is
+// not applied to APIPrefix: those responses are JSON or redirects, never
+// documents, so a page policy there would govern nothing.
+func pagePolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Security-Policy", web.FreshPolicy())
+		next.ServeHTTP(writer, request)
+	})
 }
 
 // MountsWith returns Cockpit's mounts added to others (the hub's, which is nil

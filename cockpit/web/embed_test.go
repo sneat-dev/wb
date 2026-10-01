@@ -246,3 +246,11 @@ func TestEndToEndServerSendsTheDaemonsPolicy(t *testing.T) {
 		t.Fatalf("tools/lib/serve-dist.mjs does not contain the policy %q", want)
 	}
 }
+
+func TestFreshPolicyIsThePageShapeWithANewNonceEachTime(t *testing.T) {
+	t.Parallel()
+	first, second := FreshPolicy(), FreshPolicy()
+	if first == second || strings.Contains(first, "unsafe-") || !strings.Contains(first, "script-src 'self'; style-src 'self' 'nonce-") {
+		t.Errorf("FreshPolicy = %q then %q", first, second)
+	}
+}

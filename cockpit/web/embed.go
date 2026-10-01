@@ -46,6 +46,11 @@ func PolicyFor(nonce string) string {
 		"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 }
 
+// FreshPolicy is PolicyFor with a new random nonce, for a response the
+// application handler does not write: it is what lets the code that answers
+// ahead of Handler carry the same policy shape.
+func FreshPolicy() string { return PolicyFor(rand.Text()) }
+
 const notBuiltPage = "Cockpit was not built into this wb binary. " +
 	"Run `pnpm install && pnpm build` in cockpit/web, then rebuild wb.\n"
 
