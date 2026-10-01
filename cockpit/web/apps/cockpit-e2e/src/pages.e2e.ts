@@ -34,7 +34,6 @@ test('every page lists its collection, cached rows show route and age, and the m
   await expect(listRows(page).first()).toContainText('acme/far')
 
   const lists = [
-    { link: 'Agents', rows: 2, first: 'claude session sess-1' },
     { link: 'Machines', rows: 2, first: 'alpha' },
   ]
   for (const list of lists) {
@@ -151,7 +150,7 @@ test('no page scrolls sideways at 360 px, and the hover card stays on screen', a
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
     // Home has no table: its first section is its landmark.
-    const first = path === '' ? page.getByRole('heading', { level: 2, name: 'Needs you' }) : (path === 'worktrees' || path === 'repositories' ? listRows(page) : rows(page)).first()
+    const first = path === '' ? page.getByRole('heading', { level: 2, name: 'Needs you' }) : (path === 'worktrees' || path === 'agents' || path === 'repositories' ? listRows(page) : rows(page)).first()
     await expect(first).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)

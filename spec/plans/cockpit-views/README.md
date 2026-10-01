@@ -267,7 +267,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-17
 **Verifies:** cockpit-views#ac:agents-list-describes-the-work, cockpit-views#ac:agent-label-fallback, cockpit-views#ac:agent-detail-links-its-work, cockpit-views#ac:default-sorts
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build the Agents page (human labels, activity badge or "state not reported", cached agents with age and no action, the dispatched-run and session "Copy command" entries), and the agent panel and `/agents/:id`.
 

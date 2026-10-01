@@ -48,10 +48,10 @@ describe('shotPlan', () => {
     )
   })
 
-  it('adds the list and its side panel on Worktrees, Tasks and Repositories, each with the steps that reach it', () => {
+  it('adds the list and its side panel on Worktrees, Tasks, Repositories and Agents, each with the steps that reach it', () => {
     const lists = shots.filter((shot) => shot.steps)
     expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
-    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories']))
+    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories', '/agents']))
     expect(lists.filter((shot) => shot.name.startsWith('repositories')).every((shot) => shot.url === '/repositories')).toBe(true)
     expect(lists.map((shot) => shot.file)).toContain('repositories-panel-dark-360.png')
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')
