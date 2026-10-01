@@ -3,9 +3,11 @@
 package main
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -255,5 +257,247 @@ func TestAwaitLaunchdReadyReturnsFalseWhenDeadlinePasses(t *testing.T) {
 		if d != 50*time.Millisecond {
 			t.Fatalf("awaitLaunchdReady slept %v, want every wait to be the 50ms poll step", slept)
 		}
+	}
+}
+
+// installLaunchdPlistFixture points $HOME at a fresh directory and, when
+// plist is non-nil, installs it at the launch agent path there, so the guard
+// reads a fixture and never the founder's real ~/Library/LaunchAgents. It
+// returns that path.
+func installLaunchdPlistFixture(t *testing.T, plist []byte) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	path, err := daemonLaunchdPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plist == nil {
+		return path
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func launchdPlistFixtureFor(root, listen string) []byte {
+	return launchdPlistBytes("/usr/local/bin/wb", []string{"--projects-root", root, "daemon", "serve", "--listen", listen, "--managed-start"}, "/tmp/wb.log")
+}
+
+// launchEnv is a controller whose start seam and launchctl seam both record
+// every call, with the production darwin guard wired in against the fixture
+// $HOME, so a refusal is proven to leave launchd, the plist and the lifecycle
+// record untouched.
+type launchGuardFixture struct {
+	controller daemonController
+	root       string
+	plistPath  string
+	plist      []byte
+	starts     *int
+	launchctl  *[][]string
+}
+
+// newLaunchGuardFixture installs the plist that plistFor builds for the
+// controller's own projects root (nil: no plist at all).
+func newLaunchGuardFixture(t *testing.T, plistFor func(root string) []byte) launchGuardFixture {
+	t.Helper()
+	root := daemonTestRoot(t)
+	var plist []byte
+	if plistFor != nil {
+		plist = plistFor(root)
+	}
+	plistPath := installLaunchdPlistFixture(t, plist)
+	launchctl := fakeLaunchctl(t, nil)
+	deps := daemonTestDependencies(t, root)
+	starts := 0
+	inner := deps.start
+	deps.start = func(executable string, args []string, logPath string) (int, error) {
+		starts++
+		return inner(executable, args, logPath)
+	}
+	deps.checkOtherRoot = daemonCheckOtherRoot
+	return launchGuardFixture{controller: newDaemonController(deps, root), root: root, plistPath: plistPath, plist: plist, starts: &starts, launchctl: launchctl}
+}
+
+func (fixture launchGuardFixture) assertNothingChanged(t *testing.T) {
+	t.Helper()
+	if *fixture.starts != 0 || len(*fixture.launchctl) != 0 {
+		t.Fatalf("a refused start reached the process start (%d) or launchctl (%#v)", *fixture.starts, *fixture.launchctl)
+	}
+	if _, found, err := fixture.controller.store.Load(); err != nil || found {
+		t.Fatalf("a refused start wrote lifecycle state: found=%t err=%v", found, err)
+	}
+	after, err := os.ReadFile(fixture.plistPath)
+	if err != nil || string(after) != string(fixture.plist) {
+		t.Fatalf("a refused start changed the plist: %v\n%s", err, after)
+	}
+}
+
+func TestDaemonStartRefusesWhenTheLaunchAgentServesAnotherProjectsRoot(t *testing.T) {
+	other := t.TempDir()
+	fixture := newLaunchGuardFixture(t, func(string) []byte { return launchdPlistFixtureFor(other, "127.0.0.1:18766") })
+
+	_, err := fixture.controller.Start(context.Background(), daemonDefaultListen)
+
+	if err == nil {
+		t.Fatal("a start for another projects root must be refused")
+	}
+	for _, want := range []string{other, "127.0.0.1:18766", "--replace-other-root", fixture.root} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not mention %q", err, want)
+		}
+	}
+	fixture.assertNothingChanged(t)
+}
+
+func TestDaemonStartWithReplaceOtherRootProceedsPastAnotherProjectsRoot(t *testing.T) {
+	other := t.TempDir()
+	fixture := newLaunchGuardFixture(t, func(string) []byte { return launchdPlistFixtureFor(other, "127.0.0.1:18766") })
+
+	result, err := fixture.controller.withReplaceOtherRoot(true).Start(context.Background(), daemonDefaultListen)
+
+	if err != nil || !result.Reachable {
+		t.Fatalf("explicit replacement = %#v, %v", result, err)
+	}
+	if *fixture.starts != 1 {
+		t.Fatalf("start calls = %d, want 1", *fixture.starts)
+	}
+}
+
+func TestDaemonStartProceedsWhenTheLaunchAgentServesTheSameProjectsRoot(t *testing.T) {
+	fixture := newLaunchGuardFixture(t, func(root string) []byte { return launchdPlistFixtureFor(root, daemonDefaultListen) })
+
+	if _, err := fixture.controller.Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatalf("same-root start refused: %v", err)
+	}
+	if *fixture.starts != 1 {
+		t.Fatalf("start calls = %d, want 1", *fixture.starts)
+	}
+}
+
+func TestDaemonStartProceedsWhenNoLaunchAgentIsRegistered(t *testing.T) {
+	fixture := newLaunchGuardFixture(t, nil)
+
+	if _, err := fixture.controller.Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatalf("start with no plist refused: %v", err)
+	}
+	if *fixture.starts != 1 {
+		t.Fatalf("start calls = %d, want 1", *fixture.starts)
+	}
+}
+
+func TestDaemonStartRefusesAnUnreadableLaunchAgentFileAndNamesIt(t *testing.T) {
+	fixture := newLaunchGuardFixture(t, func(string) []byte { return []byte("this is not a property list") })
+
+	_, err := fixture.controller.Start(context.Background(), daemonDefaultListen)
+
+	if err == nil || !strings.Contains(err.Error(), fixture.plistPath) || !strings.Contains(err.Error(), "--replace-other-root") {
+		t.Fatalf("malformed plist refusal = %v", err)
+	}
+	fixture.assertNothingChanged(t)
+}
+
+func TestDaemonStartWithReplaceOtherRootProceedsPastAnUnreadableLaunchAgentFile(t *testing.T) {
+	fixture := newLaunchGuardFixture(t, func(string) []byte { return []byte("not a plist") })
+
+	if _, err := fixture.controller.withReplaceOtherRoot(true).Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatalf("explicit replacement of an unreadable file refused: %v", err)
+	}
+}
+
+func TestDaemonStartTreatsASymlinkedSpellingOfTheSameRootAsTheSameRoot(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "projects-link")
+	fixture := newLaunchGuardFixture(t, func(root string) []byte {
+		if err := os.Symlink(root, link); err != nil {
+			t.Fatal(err)
+		}
+		return launchdPlistFixtureFor(link+"/", daemonDefaultListen)
+	})
+
+	if _, err := fixture.controller.Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatalf("a symlinked spelling of the same root was refused: %v", err)
+	}
+}
+
+func TestCheckLaunchdRootOwnershipReportsAnUnreadablePlistPath(t *testing.T) {
+	directory := t.TempDir()
+	// A directory where the file should be: present, but not readable as one.
+	err := checkLaunchdRootOwnership(directory, "/tmp/root", false, "/home/x")
+	if err == nil || !strings.Contains(err.Error(), directory) {
+		t.Fatalf("unreadable plist path = %v", err)
+	}
+}
+
+func TestParseLaunchdServiceRootReadsBothArgumentSpellingsAndTheDefaultRoot(t *testing.T) {
+	const prologue = xml.Header + `<plist version="1.0"><dict>`
+	cases := []struct {
+		name, body, wantRoot, wantListen string
+	}{
+		{"equals spellings", `<key>ProgramArguments</key><array><string>wb</string><string>--projects-root=/a/b</string><string>--listen=127.0.0.1:1</string></array>`, "/a/b", "127.0.0.1:1"},
+		{"separate spellings", `<key>ProgramArguments</key><array><string>wb</string><string>--projects-root</string><string>/a/c</string><string>--listen</string><string>127.0.0.1:2</string></array>`, "/a/c", "127.0.0.1:2"},
+		{"no root reads the unit environment", `<key>ProgramArguments</key><array><string>wb</string></array><key>EnvironmentVariables</key><dict><key>OTHER</key><string>x</string><key>` + wbhome.EnvOverride + `</key><string>/env/root</string></dict>`, "/env/root", daemonDefaultListen},
+		{"no root and no environment reads the default root", `<key>ProgramArguments</key><array><string>wb</string></array><key>RunAtLoad</key><true/>`, "/home/x/projects", daemonDefaultListen},
+	}
+	for _, tc := range cases {
+		got, err := parseLaunchdServiceRoot([]byte(prologue+tc.body+`</dict></plist>`), "/home/x")
+		if err != nil || got.ProjectsRoot != tc.wantRoot || got.Listen != tc.wantListen {
+			t.Errorf("%s: got %#v, %v; want root %q listen %q", tc.name, got, err, tc.wantRoot, tc.wantListen)
+		}
+	}
+}
+
+func TestParseLaunchdServiceRootRejectsPlistsItCannotUnderstand(t *testing.T) {
+	const open = xml.Header + `<plist version="1.0">`
+	for name, document := range map[string]string{
+		"not xml":                  "garbage",
+		"wrong root element":       xml.Header + `<other><dict/></other>`,
+		"top-level array":          open + `<array/></plist>`,
+		"key without value":        open + `<dict><key>Label</key></dict></plist>`,
+		"entry that is not a key":  open + `<dict><string>a</string><string>b</string></dict></plist>`,
+		"no program arguments":     open + `<dict><key>Label</key><string>x</string></dict></plist>`,
+		"arguments not an array":   open + `<dict><key>ProgramArguments</key><string>wb</string></dict></plist>`,
+		"non-string argument":      open + `<dict><key>ProgramArguments</key><array><true/></array></dict></plist>`,
+		"environment not a dict":   open + `<dict><key>EnvironmentVariables</key><string>x</string><key>ProgramArguments</key><array/></dict></plist>`,
+		"environment odd children": open + `<dict><key>EnvironmentVariables</key><dict><key>A</key></dict></dict></plist>`,
+	} {
+		if _, err := parseLaunchdServiceRoot([]byte(document), "/home/x"); err == nil {
+			t.Errorf("%s: parsed without error", name)
+		}
+	}
+}
+
+func TestDaemonCheckOtherRootReadsTheFixtureHomePlist(t *testing.T) {
+	other := t.TempDir()
+	installLaunchdPlistFixture(t, launchdPlistFixtureFor(other, daemonDefaultListen))
+
+	if err := daemonCheckOtherRoot(t.TempDir(), false); err == nil || !strings.Contains(err.Error(), other) {
+		t.Fatalf("production guard = %v", err)
+	}
+	if err := daemonCheckOtherRoot(t.TempDir(), true); err != nil {
+		t.Fatalf("production guard with replace = %v", err)
+	}
+}
+
+func TestDaemonCheckOtherRootReportsAnUnresolvableHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	if err := daemonCheckOtherRoot("/tmp/root", false); err == nil {
+		t.Fatal("expected an error when the home directory cannot be resolved")
+	}
+}
+
+// A root that does not exist yet cannot be symlink-resolved; it is compared by
+// its cleaned spelling, so a redundant spelling of it is still the same root.
+func TestCheckLaunchdRootOwnershipComparesAMissingRootByItsCleanedSpelling(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-created")
+	plistPath := installLaunchdPlistFixture(t, launchdPlistFixtureFor(missing+"/sub/..", daemonDefaultListen))
+
+	if err := checkLaunchdRootOwnership(plistPath, missing, false, "/home/x"); err != nil {
+		t.Fatalf("same missing root refused: %v", err)
+	}
+	if err := checkLaunchdRootOwnership(plistPath, missing+"-other", false, "/home/x"); err == nil {
+		t.Fatal("a different missing root must be refused")
 	}
 }

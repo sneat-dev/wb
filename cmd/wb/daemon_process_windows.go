@@ -67,3 +67,8 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 func signalDaemonContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithCancel(parent)
 }
+
+// daemonCheckOtherRoot is a no-op off macOS: only launchd registers one
+// fixed-label service per user that a start for another projects root could
+// remove.
+func daemonCheckOtherRoot(string, bool) error { return nil }

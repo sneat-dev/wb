@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -81,6 +82,155 @@ func daemonLaunchdTarget() string {
 
 func launchdTargetFor(label string) string {
 	return fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
+}
+
+// plistNode is one element of a launchd property list, read generically: a
+// <dict> is a flat run of <key>, value children, an <array> a run of values.
+type plistNode struct {
+	XMLName  xml.Name
+	Text     string      `xml:",chardata"`
+	Children []plistNode `xml:",any"`
+}
+
+// launchdServiceRoot is what an installed plist says about the daemon it runs.
+type launchdServiceRoot struct {
+	// ProjectsRoot is the --projects-root argument, or the default root the
+	// daemon would resolve when the unit carries none.
+	ProjectsRoot string
+	// Listen is the --listen argument, or the daemon's default address.
+	Listen string
+}
+
+// parseLaunchdServiceRoot reads a launchd plist's ProgramArguments (and, for a
+// unit without --projects-root, its WB_PROJECTS_ROOT environment entry) with a
+// real XML parse. A plist that is not a dict with a ProgramArguments array of
+// strings is an error: the caller must not overwrite what it cannot read.
+//
+// A unit with no --projects-root is read as the default root, because that is
+// what the daemon it starts resolves: WB_PROJECTS_ROOT from the unit's own
+// environment, else ~/projects (see defaultProjectsRoot). A launchd job starts
+// with a minimal environment, so the unit's own environment is the only one
+// that applies.
+func parseLaunchdServiceRoot(data []byte, home string) (launchdServiceRoot, error) {
+	var document plistNode
+	if err := xml.Unmarshal(data, &document); err != nil {
+		return launchdServiceRoot{}, err
+	}
+	if document.XMLName.Local != "plist" || len(document.Children) != 1 || document.Children[0].XMLName.Local != "dict" {
+		return launchdServiceRoot{}, errors.New("not a property list with one top-level dict")
+	}
+	entries := document.Children[0].Children
+	if len(entries)%2 != 0 {
+		return launchdServiceRoot{}, errors.New("dict has a key without a value")
+	}
+	var arguments []string
+	haveArguments := false
+	environmentRoot := ""
+	for index := 0; index < len(entries); index += 2 {
+		key, value := entries[index], entries[index+1]
+		if key.XMLName.Local != "key" {
+			return launchdServiceRoot{}, errors.New("dict entry does not start with a key")
+		}
+		switch strings.TrimSpace(key.Text) {
+		case "ProgramArguments":
+			if value.XMLName.Local != "array" {
+				return launchdServiceRoot{}, errors.New("ProgramArguments is not an array")
+			}
+			for _, argument := range value.Children {
+				if argument.XMLName.Local != "string" {
+					return launchdServiceRoot{}, errors.New("ProgramArguments holds a non-string")
+				}
+				arguments = append(arguments, argument.Text)
+			}
+			haveArguments = true
+		case "EnvironmentVariables":
+			if value.XMLName.Local != "dict" || len(value.Children)%2 != 0 {
+				return launchdServiceRoot{}, errors.New("EnvironmentVariables is not a dict")
+			}
+			for pair := 0; pair < len(value.Children); pair += 2 {
+				if strings.TrimSpace(value.Children[pair].Text) == wbhome.EnvOverride {
+					environmentRoot = strings.TrimSpace(value.Children[pair+1].Text)
+				}
+			}
+		}
+	}
+	if !haveArguments {
+		return launchdServiceRoot{}, errors.New("no ProgramArguments")
+	}
+	result := launchdServiceRoot{Listen: daemonDefaultListen}
+	for index := 1; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch {
+		case argument == "--projects-root" && index+1 < len(arguments):
+			index++
+			result.ProjectsRoot = arguments[index]
+		case strings.HasPrefix(argument, "--projects-root="):
+			result.ProjectsRoot = strings.TrimPrefix(argument, "--projects-root=")
+		case argument == "--listen" && index+1 < len(arguments):
+			index++
+			result.Listen = arguments[index]
+		case strings.HasPrefix(argument, "--listen="):
+			result.Listen = strings.TrimPrefix(argument, "--listen=")
+		}
+	}
+	if strings.TrimSpace(result.ProjectsRoot) == "" {
+		result.ProjectsRoot = environmentRoot
+		if result.ProjectsRoot == "" {
+			result.ProjectsRoot = filepath.Join(home, "projects")
+		}
+	}
+	return result, nil
+}
+
+// canonicalProjectsRoot cleans a projects root and resolves symlinks in it. A
+// root that does not exist (or cannot be resolved) is compared by its cleaned
+// spelling instead.
+func canonicalProjectsRoot(root string) string {
+	cleaned := filepath.Clean(root)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
+}
+
+// checkLaunchdRootOwnership refuses a start for projects root `root` when the
+// plist at plistPath belongs to a different projects root, or cannot be
+// understood, unless replace is set. It only reads: it never writes the plist,
+// runs launchctl, or touches lifecycle state, so a refusal changes nothing. No
+// plist at all means nothing is registered, and the start proceeds.
+func checkLaunchdRootOwnership(plistPath, root string, replace bool, home string) error {
+	data, err := os.ReadFile(plistPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	remedy := fmt.Sprintf("to replace it explicitly, run `wb daemon start --replace-other-root --projects-root %s` (or pass --replace-other-root to `wb daemon restart`)", root)
+	if err == nil {
+		var existing launchdServiceRoot
+		if existing, err = parseLaunchdServiceRoot(data, home); err == nil {
+			if replace || canonicalProjectsRoot(existing.ProjectsRoot) == canonicalProjectsRoot(root) {
+				return nil
+			}
+			return fmt.Errorf("refusing to replace the WB launch agent %s: it is registered for projects root %s (listening on %s), not %s, and starting here would remove it; %s",
+				daemonLaunchdLabel, existing.ProjectsRoot, existing.Listen, root, remedy)
+		}
+	}
+	if replace {
+		return nil
+	}
+	return fmt.Errorf("refusing to overwrite the WB launch agent file %s: it could not be read or understood (%v), so the projects root it serves is unknown; %s", plistPath, err, remedy)
+}
+
+// daemonCheckOtherRoot is the production checkOtherRoot: it reads the
+// installed launch agent's plist and refuses to replace one registered for a
+// different projects root unless replace is set.
+func daemonCheckOtherRoot(root string, replace bool) error {
+	plistPath, err := daemonLaunchdPath()
+	if err != nil {
+		return err
+	}
+	// daemonLaunchdPath has just resolved the home directory, so this cannot fail.
+	home, _ := os.UserHomeDir()
+	return checkLaunchdRootOwnership(plistPath, root, replace, home)
 }
 
 func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
