@@ -29,9 +29,13 @@ type HerdrActivity struct {
 
 // DefaultHerdrActivity reads the herdr found through HERDR_BIN_PATH or PATH,
 // with the herdr call bounded by activityTimeout.
-func DefaultHerdrActivity() HerdrActivity {
+func DefaultHerdrActivity() HerdrActivity { return herdrActivityIn(herdr.OSLookupEnv) }
+
+// herdrActivityIn is HerdrActivity over the herdr that lookup's environment
+// names (the production lookup is the process environment).
+func herdrActivityIn(lookup herdr.EnvLookup) HerdrActivity {
 	return HerdrActivity{Open: func() (HerdrLister, error) {
-		client, err := herdr.NewClient(herdr.OSLookupEnv, herdr.WithTimeout(activityTimeout))
+		client, err := herdr.NewClient(lookup, herdr.WithTimeout(activityTimeout))
 		if err != nil {
 			return nil, err
 		}

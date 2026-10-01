@@ -208,23 +208,24 @@ func TestHerdrActivityMapsStatusesAndNeverGuesses(t *testing.T) {
 	}
 }
 
-// TestDefaultHerdrActivityOpensTheResolvedBinaryWithoutRunningIt covers the
-// production Open: with no herdr it fails, and with a binary named by
-// HERDR_BIN_PATH it returns a client without running the binary.
-func TestDefaultHerdrActivityOpensTheResolvedBinaryWithoutRunningIt(t *testing.T) {
+// TestHerdrActivityOpensTheResolvedBinaryWithoutRunningIt covers the production
+// Open: with no herdr it fails, and with a binary named by HERDR_BIN_PATH it
+// returns a client without running the binary.
+func TestHerdrActivityOpensTheResolvedBinaryWithoutRunningIt(t *testing.T) {
+	t.Parallel()
 	binary := filepath.Join(t.TempDir(), "herdr")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(binary, []byte("not run"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HERDR_BIN_PATH", binary)
-	lister, err := DefaultHerdrActivity().Open()
-	if err != nil || lister == nil {
+	named := herdrActivityIn(func(key string) (string, bool) { return binary, key == "HERDR_BIN_PATH" })
+	if lister, err := named.Open(); err != nil || lister == nil {
 		t.Fatalf("open = %v, %v", lister, err)
 	}
-	t.Setenv("HERDR_BIN_PATH", filepath.Join(t.TempDir(), "absent"))
-	t.Setenv("PATH", t.TempDir())
-	if lister, err := DefaultHerdrActivity().Open(); err == nil || lister != nil {
-		t.Errorf("open with no herdr = %v, %v", lister, err)
+	if lister, err := herdrActivityIn(nil).Open(); err == nil || lister != nil {
+		t.Errorf("open with no environment = %v, %v", lister, err)
+	}
+	if DefaultHerdrActivity().Open == nil {
+		t.Error("the default has no opener")
 	}
 }
 
