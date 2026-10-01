@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Approved
 ---
 
 # Feature: Cockpit actions
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cockpit-actions?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cockpit-actions?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cockpit-actions?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cockpit-actions?op=request-change) |
-**Status:** Draft
+**Status:** Approved
 **Source Ideas:** wb-cockpit
 
 ## Summary

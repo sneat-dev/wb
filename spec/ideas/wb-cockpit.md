@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/idea-specification
-status: Specifying
+status: Specified
 ---
 # Idea: WB Cockpit — the operational control plane for an AI-assisted development fleet
 
-**Status:** Specifying
+**Status:** Specified
 **Date:** 2026-10-01
 **Owner:** alex
 **Promotes To:** cockpit, cockpit-actions, work-loss-risk

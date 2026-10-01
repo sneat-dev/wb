@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Approved
 ---
 
 # Feature: Work-loss risk
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/work-loss-risk?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/work-loss-risk?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/work-loss-risk?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/work-loss-risk?op=request-change) |
-**Status:** Draft
+**Status:** Approved
 **Source Ideas:** wb-cockpit
 
 ## Summary
