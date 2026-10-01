@@ -1,20 +1,7 @@
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core'
 import { AppLink, ageLink, hrefOf } from '@cockpit/fleet-data'
-import {
-  ActionActivation,
-  ActionSlot,
-  ChartSpec,
-  ChartView,
-  CopyCommandList,
-  MachineChip,
-  OwnerSignIn,
-  PrChip,
-  RelativeTime,
-  StateBadge,
-  SyncBadges,
-  HorizontalBarsSpec,
-  machineMetricSpecs,
-} from '@cockpit/ui'
+import { ActionActivation, ActionSlot, CopyCommandList, MachineChip, OwnerSignIn, PrChip, RelativeTime, StateBadge, SyncBadges } from '@cockpit/ui/control'
+import { ChartSpec, ChartView, HorizontalBarsSpec, machineMetricSpecs } from '@cockpit/ui/chart'
 import {
   BADGE_ROWS,
   GALLERY_AGE_BUCKETS,

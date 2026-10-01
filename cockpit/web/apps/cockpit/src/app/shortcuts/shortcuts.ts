@@ -12,6 +12,8 @@ export interface FilterTarget {
   element: HTMLElement
   focus(): void
   clear(): void
+  /** Whether the box holds no text; an empty focused filter lets Esc through to the side panel. */
+  isEmpty?(): boolean
 }
 
 /** Closes the page's side panel when it is open and says whether it did. */
@@ -21,7 +23,7 @@ const EDITABLE = 'input, textarea, select, [contenteditable=""], [contenteditabl
 
 /** Whether keys typed at `target` belong to the element: an input, a text area or editable content. */
 export function isEditable(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest(EDITABLE) !== null
+  return target instanceof Element && (target.closest(EDITABLE) !== null || (target as HTMLElement).isContentEditable === true)
 }
 
 /**
@@ -73,6 +75,8 @@ export class Shortcuts {
   }
 
   handle(event: KeyboardEvent): void {
+    // Composing text with an input method: its keys, Esc and Enter included, belong to the composition.
+    if (event.isComposing || event.keyCode === 229) return
     const modifier = event.metaKey || event.ctrlKey
     if (modifier && !event.altKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
@@ -80,10 +84,10 @@ export class Shortcuts {
       return
     }
     if (event.key === 'Escape') {
-      if (this.escape()) event.preventDefault()
+      if (!event.defaultPrevented && this.escape()) event.preventDefault()
       return
     }
-    if (modifier || event.altKey || event.isComposing || isEditable(event.target) || this.shell.modalOpen()) return
+    if (modifier || event.altKey || isEditable(event.target) || this.shell.modalOpen()) return
     if (this.waiting) {
       this.endSequence()
       const link = PAGE_LINKS.find((candidate) => candidate.key === event.key)
@@ -113,10 +117,11 @@ export class Shortcuts {
       this.shell.closeSheet()
       // The overlay leaves the page on the next render; until then its input would still be
       // the target of the next key, which is then typed into it instead of being a shortcut.
-      ;(this.doc.activeElement as HTMLElement).blur()
+      ;(this.doc.activeElement as HTMLElement | null)?.blur()
       return true
     }
-    if (this.filter && this.doc.activeElement === this.filter.element) {
+    // A focused filter with text in it is cleared first; an empty one leaves Esc to the panel.
+    if (this.filter && this.doc.activeElement === this.filter.element && this.filter.isEmpty?.() !== true) {
       this.filter.clear()
       return true
     }

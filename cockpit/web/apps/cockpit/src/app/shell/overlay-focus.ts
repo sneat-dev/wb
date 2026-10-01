@@ -3,9 +3,22 @@ import { DestroyRef, Directive, ElementRef, afterNextRender, inject } from '@ang
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-/** Gives the focus back to `element`, when there is an element that can take it. */
+/** Gives the focus back to `element`, when there is an element that can take it: one still on the page. */
 export function restoreFocus(element: Element | null): void {
-  if (element instanceof HTMLElement) element.focus()
+  if (element instanceof HTMLElement && element.isConnected) element.focus()
+}
+
+/** What each open overlay will give the focus back to. */
+const RETURN_TO = new WeakMap<Element, Element | null>()
+
+/**
+ * Where the focus goes back to when an overlay opened with `active` focused ends. When that is inside
+ * another overlay (the palette opened over the sheet) it is what that overlay will give back, since
+ * the other overlay may be gone by then.
+ */
+export function returnTarget(active: Element | null): Element | null {
+  const outer = active?.closest('[appOverlayFocus]')
+  return outer && RETURN_TO.has(outer) ? (RETURN_TO.get(outer) as Element | null) : active
 }
 
 /**
@@ -20,9 +33,10 @@ export function restoreFocus(element: Element | null): void {
 })
 export class OverlayFocus {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement
-  private readonly previous = inject(DOCUMENT).activeElement
+  private readonly previous = returnTarget(inject(DOCUMENT).activeElement)
 
   constructor() {
+    RETURN_TO.set(this.host, this.previous)
     afterNextRender(() => (this.host.querySelector<HTMLElement>('[data-autofocus]') ?? this.host).focus())
     inject(DestroyRef).onDestroy(() => restoreFocus(this.previous))
   }

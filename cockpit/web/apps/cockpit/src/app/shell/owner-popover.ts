@@ -1,6 +1,6 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, ElementRef, Injector, afterNextRender, effect, inject, viewChild } from '@angular/core'
-import { OwnerSignIn } from '@cockpit/ui'
+import { OwnerSignIn } from '@cockpit/ui/control'
 import { ShellState } from './shell-state'
 
 /**

@@ -1,6 +1,6 @@
 import { AgeTerm, FleetModel, MachineMetrics, MetricsSample, PanelCommand, PullRequest, RegistryAction, Machine, branchCleanup, pullRequestCreate, worktreeList } from '@cockpit/fleet-data'
 import { agent, machine, pullRequest, registryAction, repository, run, worktree } from '@cockpit/fleet-data/testing'
-import type { BadgeKind } from '@cockpit/ui'
+import type { BadgeKind } from '@cockpit/ui/control'
 
 // The data of the gallery (the preview build's page that shows every
 // control-surface component in every state): fixtures from the fleet-data

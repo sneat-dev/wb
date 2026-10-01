@@ -1,6 +1,11 @@
 import {
+  Agent,
   AppLink,
   FleetModel,
+  MachineView,
+  MergedRepository,
+  TaskView,
+  Worktree,
   ListPageId,
   ListRow,
   MatchEnv,
@@ -72,12 +77,13 @@ function rank(terms: readonly Term[], subject: Subject): number {
   return total
 }
 
+type Described = Pick<PaletteResult, 'label' | 'detail' | 'link'>
+
 interface Candidate {
   id: string
-  label: string
-  detail: string
-  link: AppLink
   subject: Subject
+  /** Built only for the results that are shown: matching a thousand rows builds no label. */
+  describe: () => Described
 }
 
 function group(kind: PaletteKind, candidates: readonly Candidate[], page: ListPageId | 'branch', terms: readonly Term[], now: number): PaletteGroup | undefined {
@@ -96,104 +102,137 @@ function group(kind: PaletteKind, candidates: readonly Candidate[], page: ListPa
     kind,
     title: info.title,
     icon: info.icon,
-    results: matching.slice(0, RESULTS_PER_KIND).map(({ candidate }) => ({ id: `${kind}:${candidate.id}`, kind, label: candidate.label, detail: candidate.detail, link: candidate.link })),
+    results: matching.slice(0, RESULTS_PER_KIND).map(({ candidate }) => ({ id: `${kind}:${candidate.id}`, kind, ...candidate.describe() })),
     more: Math.max(0, matching.length - RESULTS_PER_KIND),
   }
 }
 
-const rows = <T>(source: readonly ListRow<T>[], describe: (row: ListRow<T>) => Omit<Candidate, 'id' | 'subject'>, alsoBare: (row: ListRow<T>) => string[] = () => []): Candidate[] =>
-  source.map((row) => ({ id: row.id, subject: { ...row.subject, bare: [...row.subject.bare, ...alsoBare(row)] }, ...describe(row) }))
+/** How each kind of entity reads in the palette: its label, its detail and where it opens. */
+function describers(model: FleetModel) {
+  return {
+    task: (row: ListRow<TaskView>): Described => ({
+      label: row.item.name,
+      detail: [row.item.stateInfo.label, ...row.item.repositories.slice(0, 2)].join(' · '),
+      link: taskDetailLink(row.item.name),
+    }),
+    repository: (row: ListRow<MergedRepository>): Described => ({
+      label: row.item.slug,
+      detail: [...new Set(row.item.checkouts.map((checkout) => checkout.machine))].join(', '),
+      link: repositoryDetailLink(row.item.host, row.item.slug),
+    }),
+    worktree: (row: ListRow<Worktree>): Described => ({
+      label: row.item.task,
+      detail: `${row.item.branch} · ${model.repositoryName(row.item.repository)}`,
+      link: worktreeDetailLink(row.item.id),
+    }),
+    branch: (worktree: Worktree): Described => ({
+      label: worktree.branch,
+      detail: `${model.repositoryName(worktree.repository)} · ${worktree.task}`,
+      link: worktreeDetailLink(worktree.id),
+    }),
+    agent: (row: ListRow<Agent>): Described => ({
+      label: agentLabel(row.item),
+      detail: [model.tasksOfAgent(row.item)[0], row.item.repository === undefined ? undefined : model.repositoryName(row.item.repository), row.item.machine].filter((part) => part).join(' · '),
+      link: agentDetailLink(row.item.id),
+    }),
+    machine: (row: ListRow<MachineView>): Described => ({
+      label: row.item.machine.machine,
+      detail: row.item.local ? `${row.item.state}, this machine` : row.item.state,
+      link: machineDetailLink(row.item.machine.id),
+    }),
+  }
+}
+
+const rows = <T>(source: readonly ListRow<T>[], describe: (row: ListRow<T>) => Described, alsoBare?: (row: ListRow<T>) => string[]): Candidate[] =>
+  source.map((row) => ({
+    id: row.id,
+    subject: alsoBare ? { ...row.subject, bare: [...row.subject.bare, ...alsoBare(row)] } : row.subject,
+    describe: () => describe(row),
+  }))
+
+const branchKey = (worktree: Worktree) => `${worktree.repository}|${worktree.branch}`
+
+/** An agent is also found by its session or run id, which is what the operator holds. */
+const agentIds = (row: ListRow<Agent>): string[] => [row.item.session_id, row.item.run_id].filter((id): id is string => id !== undefined).map((id) => id.toLowerCase())
 
 /**
  * The palette's results for `text`, grouped by kind with at most 8 each: the
  * entities of the fleet document (the branches are those of the worktrees it
  * lists; the lazily loaded branches of a repository page are not searched),
  * matched with the same matcher as the list filters. No text gives no groups.
+ * Matching comes first; a label and detail are built only for what is shown.
  */
 export function searchPalette(model: FleetModel, text: string, now: number): PaletteGroup[] {
   const terms = parseQuery(text)
   if (terms.length === 0) return []
+  const describe = describers(model)
   const worktreeRows = model.worktreeRows
   const branches: Candidate[] = []
   const seen = new Set<string>()
   for (const row of worktreeRows) {
     const worktree = row.item
-    const key = `${worktree.repository}|${worktree.branch}`
+    const key = branchKey(worktree)
     if (worktree.branch === '' || seen.has(key)) continue
     seen.add(key)
-    const repository = model.repositoryName(worktree.repository)
+    const repository = model.repositoryName(worktree.repository).toLowerCase()
     branches.push({
       id: key,
-      label: worktree.branch,
-      detail: `${repository} · ${worktree.task}`,
-      link: worktreeDetailLink(worktree.id),
+      describe: () => describe.branch(worktree),
       subject: {
-        bare: [worktree.branch.toLowerCase(), repository.toLowerCase()],
-        fields: { branch: [worktree.branch.toLowerCase()], repo: [repository.toLowerCase()], task: [worktree.task.toLowerCase()] },
+        bare: [worktree.branch.toLowerCase(), repository],
+        fields: { branch: [worktree.branch.toLowerCase()], repo: [repository], task: [worktree.task.toLowerCase()] },
         ...(row.subject.activityAt === undefined ? {} : { activityAt: row.subject.activityAt }),
       },
     })
   }
   const groups = [
-    group(
-      'task',
-      rows(model.taskRows, (row) => ({
-        label: row.item.name,
-        detail: [row.item.stateInfo.label, ...row.item.repositories.slice(0, 2)].join(' · '),
-        link: taskDetailLink(row.item.name),
-      })),
-      'tasks',
-      terms,
-      now,
-    ),
-    group(
-      'repository',
-      rows(model.repositoryRows, (row) => ({
-        label: row.item.slug,
-        detail: [...new Set(row.item.checkouts.map((checkout) => checkout.machine))].join(', '),
-        link: repositoryDetailLink(row.item.host, row.item.slug),
-      })),
-      'repositories',
-      terms,
-      now,
-    ),
-    group(
-      'worktree',
-      rows(worktreeRows, (row) => ({
-        label: row.item.task,
-        detail: `${row.item.branch} · ${model.repositoryName(row.item.repository)}`,
-        link: worktreeDetailLink(row.item.id),
-      })),
-      'worktrees',
-      terms,
-      now,
-    ),
+    group('task', rows(model.taskRows, describe.task), 'tasks', terms, now),
+    group('repository', rows(model.repositoryRows, describe.repository), 'repositories', terms, now),
+    group('worktree', rows(worktreeRows, describe.worktree), 'worktrees', terms, now),
     group('branch', branches, 'branch', terms, now),
-    group(
-      'agent',
-      rows(model.agentRows, (row) => ({
-        label: agentLabel(row.item),
-        detail: [model.tasksOfAgent(row.item)[0], row.item.repository === undefined ? undefined : model.repositoryName(row.item.repository), row.item.machine].filter((part) => part).join(' · '),
-        link: agentDetailLink(row.item.id),
-      }),
-      // An agent is also found by its session or run id, which is what the operator holds.
-      (row) => [row.item.session_id, row.item.run_id].filter((id): id is string => id !== undefined).map((id) => id.toLowerCase()),
-    ),
-      'agents',
-      terms,
-      now,
-    ),
-    group(
-      'machine',
-      rows(model.machineRows, (row) => ({
-        label: row.item.machine.machine,
-        detail: row.item.local ? `${row.item.state}, this machine` : row.item.state,
-        link: machineDetailLink(row.item.machine.id),
-      })),
-      'machines',
-      terms,
-      now,
-    ),
+    group('agent', rows(model.agentRows, describe.agent, agentIds), 'agents', terms, now),
+    group('machine', rows(model.machineRows, describe.machine), 'machines', terms, now),
   ]
   return groups.filter((candidate): candidate is PaletteGroup => candidate !== undefined)
+}
+
+/**
+ * The result a remembered id (`kind:entity`) is now, read from the model, so
+ * its label and detail are never what they were when it was remembered; undefined
+ * when the entity is gone.
+ */
+export function resolveResult(model: FleetModel, id: string): PaletteResult | undefined {
+  const separator = id.indexOf(':')
+  const kind = id.slice(0, separator)
+  const entity = id.slice(separator + 1)
+  const describe = describers(model)
+  const found = (described: Described | undefined): PaletteResult | undefined => (described ? { id, kind: kind as PaletteKind, ...described } : undefined)
+  switch (kind) {
+    case 'task': {
+      const row = model.taskRows.find((candidate) => candidate.id === entity)
+      return found(row && describe.task(row))
+    }
+    case 'repository': {
+      const row = model.repositoryRows.find((candidate) => candidate.id === entity)
+      return found(row && describe.repository(row))
+    }
+    case 'worktree': {
+      const row = model.worktreeRows.find((candidate) => candidate.id === entity)
+      return found(row && describe.worktree(row))
+    }
+    case 'branch': {
+      const worktree = model.worktreeRows.find((candidate) => branchKey(candidate.item) === entity)
+      return found(worktree && describe.branch(worktree.item))
+    }
+    case 'agent': {
+      const row = model.agentRows.find((candidate) => candidate.id === entity)
+      return found(row && describe.agent(row))
+    }
+    case 'machine': {
+      const row = model.machineRows.find((candidate) => candidate.id === entity)
+      return found(row && describe.machine(row))
+    }
+    default:
+      return undefined
+  }
 }

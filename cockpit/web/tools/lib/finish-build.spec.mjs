@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, initialScriptSize, initialScripts, precompress } from './finish-build.mjs'
+import { FIRST_PAGE_ENTRY, INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, firstPageScripts, initialScripts, precompress, scriptBudget } from './finish-build.mjs'
 
 let dist
 
@@ -16,11 +16,49 @@ afterEach(() => {
   rmSync(dist, { recursive: true, force: true })
 })
 
+// A built application: main imports a shared chunk statically (which re-exports a third) and a
+// prime-theme chunk and the overlays dynamically; the prime-theme chunk loads the Home page
+// chunk dynamically; Home imports a library chunk statically. `mainBytes` sizes main.
+function writeApplication({ mainBytes = 1000, homeBytes = 500, primeBytes = 700, extraIndex = '', stats = true } = {}) {
+  writeFileSync(
+    join(dist, 'index.html'),
+    `<link rel="stylesheet" href="styles-ABC.css"><app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root><link rel="modulepreload" href="chunk-SHARED.js"><script src="main-ABC.js" type="module" nonce="${NONCE_PLACEHOLDER}"></script>${extraIndex}`,
+  )
+  writeFileSync(join(dist, 'main-ABC.js'), `import{a as b}from"./chunk-SHARED.js";import"./chunk-SIDE.js";const l=()=>import("./chunk-PRIME.js");const o=()=>import("./chunk-OVERLAYS.js");${'x'.repeat(mainBytes)}`)
+  writeFileSync(join(dist, 'chunk-SHARED.js'), `export{c}from"./chunk-DEEP.js";${'y'.repeat(2000)}`)
+  writeFileSync(join(dist, 'chunk-SIDE.js'), 'export{}')
+  writeFileSync(join(dist, 'chunk-DEEP.js'), 'export const c=1')
+  writeFileSync(join(dist, 'chunk-PRIME.js'), `const h=()=>import("./chunk-HOME.js");${'p'.repeat(primeBytes)}`)
+  writeFileSync(join(dist, 'chunk-HOME.js'), `import"./chunk-LIB.js";${'h'.repeat(homeBytes)}`)
+  writeFileSync(join(dist, 'chunk-LIB.js'), 'l'.repeat(300))
+  writeFileSync(join(dist, 'chunk-OVERLAYS.js'), 'o'.repeat(900_000))
+  writeFileSync(join(dist, 'styles-ABC.css'), 'a{color:red}'.repeat(100_000))
+  if (stats) {
+    const edge = (path, kind = 'import-statement') => ({ path, kind })
+    writeFileSync(
+      join(dist, 'stats.json'),
+      JSON.stringify({
+        outputs: {
+          'main-ABC.js': { imports: [edge('chunk-SHARED.js'), edge('chunk-SIDE.js'), edge('chunk-DEEP.js'), edge('external-not-an-output.js'), edge('chunk-PRIME.js', 'dynamic-import'), edge('chunk-OVERLAYS.js', 'dynamic-import')] },
+          'chunk-SHARED.js': { imports: [edge('chunk-DEEP.js')] },
+          'chunk-SIDE.js': {},
+          'chunk-DEEP.js': {},
+          'chunk-PRIME.js': { entryPoint: 'apps/cockpit/src/app/pages/prime-theme.ts', imports: [edge('chunk-HOME.js', 'dynamic-import')] },
+          'chunk-HOME.js': { entryPoint: `apps/cockpit/src/app/${FIRST_PAGE_ENTRY}`, imports: [edge('chunk-LIB.js'), edge('chunk-LIB.js'), edge('external-not-an-output.js')] },
+          'chunk-LIB.js': {},
+          'chunk-OVERLAYS.js': { entryPoint: 'apps/cockpit/src/app/shell/overlays.ts' },
+        },
+      }),
+    )
+  }
+}
+
 it('restores the placeholder file and succeeds for a good build', () => {
-  writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}">`)
+  writeApplication()
   const lines = []
   expect(finishBuild(dist, (line) => lines.push(line))).toBe(0)
   expect(existsSync(join(dist, '.gitkeep'))).toBe(true)
+  expect(existsSync(join(dist, 'stats.json'))).toBe(false)
   expect(lines).toEqual([])
 })
 
@@ -40,18 +78,16 @@ it('fails naming the placeholder when the entry document lost it', () => {
 })
 
 it('compresses every text asset beside the original and leaves the rest', () => {
-  const script = 'export const answer = 42\n'.repeat(50)
+  writeApplication()
   mkdirSync(join(dist, 'media'), { recursive: true })
-  writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}">`.repeat(40))
-  writeFileSync(join(dist, 'main-ABCDEF12.js'), script)
   writeFileSync(join(dist, 'media', 'logo.svg'), '<svg>'.repeat(200))
   writeFileSync(join(dist, 'font.woff2'), 'binary'.repeat(200))
-  writeFileSync(join(dist, 'main-ABCDEF12.js.map'), script)
+  writeFileSync(join(dist, 'main-ABC.js.map'), 'm'.repeat(500))
   mkdirSync(join(dist, 'folder.js'))
   expect(finishBuild(dist, () => {})).toBe(0)
-  expect(gunzipSync(readFileSync(join(dist, 'main-ABCDEF12.js.gz'))).toString()).toBe(script)
+  expect(gunzipSync(readFileSync(join(dist, 'chunk-LIB.js.gz'))).toString()).toBe('l'.repeat(300))
   expect(existsSync(join(dist, 'media', 'logo.svg.gz'))).toBe(true)
-  for (const skipped of ['index.html.gz', 'font.woff2.gz', 'main-ABCDEF12.js.map.gz', 'folder.js.gz']) {
+  for (const skipped of ['index.html.gz', 'font.woff2.gz', 'main-ABC.js.map.gz', 'folder.js.gz']) {
     expect(existsSync(join(dist, skipped))).toBe(false)
   }
 })
@@ -69,60 +105,89 @@ it('counts the files it compressed', () => {
 })
 
 // cockpit-views#ac:initial-script-fits-the-budget
-function writeApplication({ mainBytes = 1000, chunkBytes = 2000, lazyBytes = 900_000 } = {}) {
-  writeFileSync(
-    join(dist, 'index.html'),
-    `<link rel="stylesheet" href="styles-ABC.css"><app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root><link rel="modulepreload" href="chunk-SHARED.js"><script src="main-ABC.js" type="module" nonce="${NONCE_PLACEHOLDER}"></script>`,
-  )
-  // main imports a shared chunk statically and a lazy one dynamically; the shared one re-exports a third.
-  writeFileSync(join(dist, 'main-ABC.js'), `import{a as b}from"./chunk-SHARED.js";import"./chunk-SIDE.js";const lazy=()=>import("./chunk-LAZY.js");${'x'.repeat(mainBytes)}`)
-  writeFileSync(join(dist, 'chunk-SHARED.js'), `export{c}from"./chunk-DEEP.js";${'y'.repeat(chunkBytes)}`)
-  writeFileSync(join(dist, 'chunk-SIDE.js'), 'export{}')
-  writeFileSync(join(dist, 'chunk-DEEP.js'), 'export const c=1')
-  writeFileSync(join(dist, 'chunk-LAZY.js'), 'z'.repeat(lazyBytes))
-  writeFileSync(join(dist, 'styles-ABC.css'), 'a{color:red}'.repeat(100_000))
-}
-
 it('counts the scripts the entry document loads, the preloads and what they import statically, and no lazy chunk or style', () => {
   writeApplication()
-  expect(initialScripts(dist)).toEqual(['chunk-DEEP.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'])
-  const size = initialScriptSize(dist)
-  expect(size.files.map((file) => file.name)).toEqual(['chunk-DEEP.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'])
-  expect(size.total).toBe(size.files.reduce((sum, file) => sum + file.bytes, 0))
-  expect(size.total).toBeLessThan(5000)
-  expect(size.budget).toBe(INITIAL_SCRIPT_BUDGET)
+  expect(initialScripts(dist)).toEqual({ files: ['chunk-DEEP.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'], problems: [] })
+})
+
+it('counts for the first page the initial scripts, the page, what it imports and the lazy chunk that loads it, and not the overlays', () => {
+  writeApplication()
+  const initial = initialScripts(dist).files
+  expect(firstPageScripts(dist, initial, FIRST_PAGE_ENTRY)).toEqual({
+    files: ['chunk-DEEP.js', 'chunk-HOME.js', 'chunk-LIB.js', 'chunk-PRIME.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'],
+    problems: [],
+  })
+  const budget = scriptBudget(dist)
+  expect(budget.problems).toEqual([])
+  expect(budget.initial.total).toBeLessThan(budget.firstPage.total)
+  expect(budget.firstPage.total).toBeLessThan(6000)
+  expect(budget.budget).toBe(INITIAL_SCRIPT_BUDGET)
   expect(INITIAL_SCRIPT_BUDGET).toBe(350_000)
 })
 
-it('ignores a script the document names but the build did not emit', () => {
-  writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root><script src="main-GONE.js" type="module"></script>`)
-  expect(initialScripts(dist)).toEqual([])
-})
-
-it('reports the size and succeeds within the budget', () => {
+it('reports both numbers and succeeds within the budget', () => {
   writeApplication()
   const lines = []
-  const failures = []
-  expect(finishBuild(dist, (line) => failures.push(line), (line) => lines.push(line))).toBe(0)
-  expect(failures).toEqual([])
+  expect(finishBuild(dist, () => {}, (line) => lines.push(line))).toBe(0)
   expect(lines).toHaveLength(1)
-  expect(lines[0]).toMatch(/^initial JavaScript \d+\.\d\d kB of 350\.00 kB \(chunk-DEEP\.js .*main-ABC\.js/)
-  expect(existsSync(join(dist, 'main-ABC.js.gz'))).toBe(true)
+  expect(lines[0]).toMatch(/^initial static JavaScript \d+\.\d\d kB; first page \(Home\) \d+\.\d\d kB of 350\.00 kB \(/)
 })
 
-it('fails the build, naming the files, when the initial JavaScript is over the budget', () => {
-  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET })
+it('fails the build, naming the files, when the first page is over the budget, even if the initial scripts are not', () => {
+  writeApplication({ primeBytes: INITIAL_SCRIPT_BUDGET })
   const failures = []
+  expect(scriptBudget(dist).initial.total).toBeLessThan(INITIAL_SCRIPT_BUDGET)
   expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
   expect(failures.join('')).toContain('over the budget of 350.00 kB')
-  expect(failures.join('')).toContain('main-ABC.js')
+  expect(failures.join('')).toContain('chunk-PRIME.js')
   expect(existsSync(join(dist, '.gitkeep'))).toBe(false)
 })
 
 it('passes at exactly the budget', () => {
-  writeApplication({ mainBytes: 0, chunkBytes: 0 })
-  const base = initialScriptSize(dist).total
-  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET - base, chunkBytes: 0 })
-  expect(initialScriptSize(dist).total).toBe(INITIAL_SCRIPT_BUDGET)
+  writeApplication({ mainBytes: 0 })
+  const base = scriptBudget(dist).firstPage.total
+  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET - base })
+  expect(scriptBudget(dist).firstPage.total).toBe(INITIAL_SCRIPT_BUDGET)
   expect(finishBuild(dist, () => {})).toBe(0)
+})
+
+describe('failing closed', () => {
+  it('fails for a script the document names but the build did not emit', () => {
+    writeApplication({ extraIndex: '<script src="main-GONE.js" type="module"></script>' })
+    const failures = []
+    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(failures.join('')).toContain('main-GONE.js')
+  })
+
+  it('fails for a script in a subdirectory or outside dist', () => {
+    mkdirSync(join(dist, 'sub'))
+    writeFileSync(join(dist, 'sub', 'x.js'), 'x')
+    for (const src of ['sub/x.js', '../x.js', '/abs.js']) {
+      writeApplication({ extraIndex: `<script src="${src}" type="module"></script>` })
+      expect(initialScripts(dist).problems.join(''), src).toContain(src)
+    }
+  })
+
+  it('fails for a static import of a chunk that is missing', () => {
+    writeApplication()
+    writeFileSync(join(dist, 'chunk-SIDE.js'), 'import"./chunk-LOST.js"')
+    expect(initialScripts(dist).problems.join('')).toContain('chunk-LOST.js')
+  })
+
+  it('fails when the document loads no script', () => {
+    writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root>`)
+    const failures = []
+    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(failures.join('')).toContain('loads no script')
+  })
+
+  it('fails without the build metafile, and when no output is the first page', () => {
+    writeApplication({ stats: false })
+    const failures = []
+    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(failures.join('')).toContain('stats.json')
+    writeApplication()
+    writeFileSync(join(dist, 'stats.json'), JSON.stringify({ outputs: { 'main-ABC.js': {} } }))
+    expect(firstPageScripts(dist, ['main-ABC.js'], FIRST_PAGE_ENTRY).problems.join('')).toContain(FIRST_PAGE_ENTRY)
+  })
 })

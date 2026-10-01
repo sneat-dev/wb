@@ -21,6 +21,8 @@ interface ChipView {
   icon: IconName
   text: string
   title: string
+  /** What a screen reader hears when the state changes: it never holds the ticking numbers. */
+  announce: string
 }
 
 /**
@@ -31,10 +33,11 @@ interface ChipView {
 @Component({
   selector: 'app-freshness-chip',
   imports: [Icon],
-  template: `<span class="chip" [class]="'chip tone-' + view().tone" [attr.title]="view().title" role="status">
+  template: `<span class="chip" [class]="'chip tone-' + view().tone" [attr.title]="view().title" data-testid="freshness-chip">
     <app-icon [name]="view().icon" />
     <span class="chip-text">{{ view().text }}</span>
-  </span>`,
+  </span>
+  <span class="visually-hidden" role="status">{{ view().announce }}</span>`,
   styles: `
     :host {
       display: inline-flex;
@@ -59,15 +62,15 @@ export class FreshnessChip {
 
   protected readonly view = computed<ChipView>(() => {
     const store = this.store
-    if (store.schemaMismatch() !== null) return { tone: 'bad', icon: 'alert', text: 'not readable', title: 'The daemon speaks another schema version, so no data is shown.' }
-    if (!store.loaded()) return { tone: 'idle', icon: 'clock', text: 'connecting', title: 'Waiting for the daemon.' }
+    if (store.schemaMismatch() !== null) return { tone: 'bad', icon: 'alert', text: 'not readable', title: 'The daemon speaks another schema version, so no data is shown.', announce: 'The data cannot be read' }
+    if (!store.loaded()) return { tone: 'idle', icon: 'clock', text: 'connecting', title: 'Waiting for the daemon.', announce: 'Connecting to the daemon' }
     const document = store.document()
     if (document.warming_up) {
       const { scanned, total } = store.progress()
-      return { tone: 'idle', icon: 'refresh', text: `scanned ${scanned} of ${total}`, title: 'The daemon is still scanning repositories; what is listed is complete for those scanned.' }
+      return { tone: 'idle', icon: 'refresh', text: `scanned ${scanned} of ${total}`, title: 'The daemon is still scanning repositories; what is listed is complete for those scanned.', announce: 'The daemon is scanning repositories' }
     }
     const taken = Date.parse(document.snapshot_at ?? '')
-    if (Number.isNaN(taken)) return { tone: 'idle', icon: 'clock', text: 'snapshot time unknown', title: 'The document carries no snapshot time.' }
+    if (Number.isNaN(taken)) return { tone: 'idle', icon: 'clock', text: 'snapshot time unknown', title: 'The document carries no snapshot time.', announce: 'The snapshot time is unknown' }
     const age = Math.max(0, Math.floor((this.clock() - taken) / 1000))
     const interval = document.refresh_interval_seconds ?? DEFAULT_REFRESH_SECONDS
     const stale = age > 2 * interval
@@ -75,6 +78,7 @@ export class FreshnessChip {
       tone: stale ? 'warn' : 'ok',
       icon: stale ? 'alert' : 'check-circle',
       text: `updated ${ageText(age)} ago`,
+      announce: stale ? 'The snapshot is out of date' : 'The snapshot is up to date',
       title: stale ? `Older than two refresh intervals of ${interval} s: the daemon is not refreshing.` : `The snapshot is refreshed every ${interval} s.`,
     }
   })

@@ -1,3 +1,4 @@
+import { Type } from '@angular/core'
 import { Route, Routes } from '@angular/router'
 import { galleryRoutes } from './gallery/gallery-routes'
 
@@ -6,14 +7,20 @@ import { galleryRoutes } from './gallery/gallery-routes'
 // replaces the body of its file under pages/<name>/ without editing either.
 // A page keeps the exported class name its route imports.
 //
-// The routes load inside one lazy group (pages/prime-theme.ts) that provides
-// PrimeNG and its theme, so neither is part of the initial script: the shell
-// is plain Angular, and a page that needs a PrimeNG component imports it.
+// A page that still uses PrimeNG components is routed through `prime(...)`, which
+// loads pages/prime-theme.ts (PrimeNG and the Cockpit theme) only for that route:
+// the shell and every page without PrimeNG never fetch it. New pages use none.
 //
 // Titles are the page names: the document title and the visually hidden `h1`
 // of the shell. `/dashboard` is the old name of Home and shows it. A detail
 // route names its path parameter `id` where it has one: input binding would
 // otherwise hand it to the `repository` input of a list page.
+
+const prime = (path: string, title: string, load: () => Promise<Type<unknown>>): Route => ({
+  path,
+  title,
+  loadChildren: () => import('./pages/prime-theme').then((m) => m.primePage(load)),
+})
 
 const page = (path: string, title: string, loadComponent: Route['loadComponent']): Route => ({ path, title, loadComponent })
 
@@ -23,19 +30,18 @@ export const pageRoutes: Routes = [
   page('tasks', 'Tasks', () => import('./pages/tasks/tasks-page').then((m) => m.TasksPage)),
   page('tasks/new', 'New task', () => import('./pages/new-task/new-task-page').then((m) => m.NewTaskPage)),
   page('tasks/detail', 'Task', () => import('./pages/tasks/task-detail-page').then((m) => m.TaskDetailPage)),
-  page('repositories', 'Repositories', () => import('./pages/repositories/repositories-page').then((m) => m.RepositoriesPage)),
+  prime('repositories', 'Repositories', () => import('./pages/repositories/repositories-page').then((m) => m.RepositoriesPage)),
   page('repositories/:host/:owner/:name', 'Repository', () => import('./pages/repositories/repository-detail-page').then((m) => m.RepositoryDetailPage)),
   page('repositories/:id', 'Repository', () => import('./pages/repositories/repository-page').then((m) => m.RepositoryPage)),
-  page('worktrees', 'Worktrees', () => import('./pages/worktrees/worktrees-page').then((m) => m.WorktreesPage)),
+  prime('worktrees', 'Worktrees', () => import('./pages/worktrees/worktrees-page').then((m) => m.WorktreesPage)),
   page('worktrees/:id', 'Worktree', () => import('./pages/worktrees/worktree-page').then((m) => m.WorktreePage)),
-  page('agents', 'Agents', () => import('./pages/agents/agents-page').then((m) => m.AgentsPage)),
+  prime('agents', 'Agents', () => import('./pages/agents/agents-page').then((m) => m.AgentsPage)),
   page('agents/:id', 'Agent', () => import('./pages/agents/agent-detail-page').then((m) => m.AgentDetailPage)),
-  page('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
+  prime('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
   page('machines/:id', 'Machine', () => import('./pages/machines/machine-detail-page').then((m) => m.MachineDetailPage)),
+  // Empty in the production build; the preview build's gallery (gallery/gallery-routes.ts).
+  ...galleryRoutes,
   { path: '**', redirectTo: '' },
 ]
 
-// The gallery of the control surface exists only in the preview build, which replaces
-// gallery/gallery-routes.ts (an empty list) with its own file; it needs no PrimeNG, so it sits
-// outside the group that provides it. In the production build `galleryRoutes` is empty.
-export const appRoutes: Routes = [...galleryRoutes, { path: '', loadChildren: () => import('./pages/prime-theme').then((m) => m.withPrimeNg(pageRoutes)) }]
+export const appRoutes: Routes = pageRoutes

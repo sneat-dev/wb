@@ -28,7 +28,8 @@
 
   /* Lines. */
   --border: light-dark(#e2e5ea, #262b33);
-  --border-strong: light-dark(#cdd2da, #353c47);
+  /* Form fields and controls: at least 3:1 against the surface in both themes. */
+  --border-strong: light-dark(#838c99, #626b79);
 
   /* Text: primary, secondary (labels), muted (hints). All pass 4.5:1 on --surface. */
   --text: light-dark(#14171c, #e8ebf0);

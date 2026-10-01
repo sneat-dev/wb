@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 const port = Number(process.env['COCKPIT_E2E_PORT'] || '4300')
 // The preview build (dist-preview, with the control-surface gallery) is served beside the production one.
-export const previewPort = port + 1
+const previewPort = Number(process.env['COCKPIT_E2E_PREVIEW_PORT'] || port + 1)
 
 // The production build, served under /cockpit/ with the daemon's policy.
 export default defineConfig({

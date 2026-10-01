@@ -4,7 +4,7 @@ import { stub, watch } from './support'
 // The control surface against stubbed responses: the gallery of the preview
 // build (dist-preview, served beside the production build), and the sign-in card
 // of the production shell.
-const gallery = `http://127.0.0.1:${Number(process.env['COCKPIT_E2E_PORT'] || '4300') + 1}/cockpit/gallery`
+const gallery = `http://127.0.0.1:${Number(process.env['COCKPIT_E2E_PREVIEW_PORT'] || Number(process.env['COCKPIT_E2E_PORT'] || '4300') + 1)}/cockpit/gallery`
 
 test('the gallery draws every chart on a canvas under the strict policy, with a text alternative each', async ({ page }) => {
   await stub(page)

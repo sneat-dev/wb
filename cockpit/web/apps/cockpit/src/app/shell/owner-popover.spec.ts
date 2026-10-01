@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing'
-import { ClipboardWriter } from '@cockpit/ui'
+import { ClipboardWriter } from '@cockpit/ui/control'
 import { OwnerPopover } from './owner-popover'
 import { ShellState } from './shell-state'
 

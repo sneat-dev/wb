@@ -28,4 +28,10 @@ describe('PageTitleStrategy', () => {
     expect(document.title).toBe(DEFAULT_TITLE)
     expect(TestBed.inject(PageTitle).title()).toBe(DEFAULT_TITLE)
   })
+
+  it('starts as the title the page was served with, so the h1 is never empty before the first navigation', () => {
+    document.title = 'Served'
+    TestBed.resetTestingModule()
+    expect(TestBed.inject(PageTitle).title()).toBe('Served')
+  })
 })

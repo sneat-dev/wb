@@ -1,5 +1,5 @@
 import { isTerminal } from '@cockpit/fleet-data'
-import { badgeSpec } from '@cockpit/ui'
+import { badgeSpec } from '@cockpit/ui/control'
 import {
   BADGE_ROWS,
   GALLERY_AGE_BUCKETS,

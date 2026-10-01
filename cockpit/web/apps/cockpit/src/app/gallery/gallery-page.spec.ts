@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing'
-import { CHART_ENGINE, ClipboardWriter } from '@cockpit/ui'
+import { ClipboardWriter } from '@cockpit/ui/control'
+import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { GalleryPage } from './gallery-page'
 
 async function render() {

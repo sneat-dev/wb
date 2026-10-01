@@ -8,7 +8,8 @@ export const DEFAULT_TITLE = 'WB Cockpit'
 /** The name of the page on screen: the document title and the text of the hidden `h1`. */
 @Injectable({ providedIn: 'root' })
 export class PageTitle {
-  readonly title = signal('')
+  /** Starts as the document title the page was served with, so the `h1` is never empty. */
+  readonly title = signal(inject(Title).getTitle())
 }
 
 /**

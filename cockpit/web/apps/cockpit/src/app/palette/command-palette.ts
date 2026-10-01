@@ -4,7 +4,7 @@ import { FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { OverlayFocus } from '../shell/overlay-focus'
 import { ShellState } from '../shell/shell-state'
 import { Icon } from '../ui/icon'
-import { PALETTE_KINDS, PaletteGroup, PaletteResult, searchPalette } from './palette-search'
+import { PALETTE_KINDS, PaletteGroup, PaletteResult, resolveResult, searchPalette } from './palette-search'
 import { PaletteRecents } from './recents'
 
 /** Scrolls `list` the least that shows `item`, both measured from the list's own top. */
@@ -51,7 +51,8 @@ export class CommandPalette {
   private readonly list = viewChild<ElementRef<HTMLElement>>('list')
 
   protected readonly query = signal('')
-  private readonly highlighted = signal(0)
+  /** The highlighted result, by id: a poll that reorders the results does not move it to another one. */
+  private readonly highlighted = signal<string | undefined>(undefined)
 
   /** The groups shown: the matches, or the recents for an empty input. */
   protected readonly groups = computed<NumberedGroup[]>(() => {
@@ -60,8 +61,14 @@ export class CommandPalette {
     let index = 0
     return found.map((group) => ({ ...group, results: group.results.map((result) => ({ ...result, index: index++ })) }))
   })
-  protected readonly count = computed(() => this.groups().reduce((total, group) => total + group.results.length, 0))
-  protected readonly active = computed(() => Math.min(this.highlighted(), Math.max(0, this.count() - 1)))
+  private readonly flat = computed(() => this.groups().flatMap((group) => group.results))
+  protected readonly count = computed(() => this.flat().length)
+  protected readonly active = computed(() => Math.max(0, this.flat().findIndex((result) => result.id === this.highlighted())))
+  /** Said to assistive technology as the results change; the listbox itself holds only options. */
+  protected readonly status = computed(() => {
+    if (!this.searching()) return ''
+    return this.count() === 0 ? 'No results' : `${this.count()} result${this.count() === 1 ? '' : 's'}`
+  })
   protected readonly searching = computed(() => this.query().trim() !== '')
 
   constructor() {
@@ -69,15 +76,19 @@ export class CommandPalette {
     effect(() => {
       if (!this.shell.paletteOpen()) {
         this.query.set('')
-        this.highlighted.set(0)
+        this.highlighted.set(undefined)
       }
     })
   }
 
   private recentGroups(): PaletteGroup[] {
-    const items = this.recents.items()
-    if (items.length === 0) return []
-    return [{ kind: 'task', title: 'Recent', icon: 'history', results: items, more: 0 }]
+    // What was opened is read again from the model, so its label and detail are current, and what is gone is dropped.
+    const model = this.store.model()
+    const results = this.recents
+      .items()
+      .map((item) => resolveResult(model, item.id))
+      .filter((result): result is PaletteResult => result !== undefined)
+    return results.length === 0 ? [] : [{ kind: 'task', title: 'Recent', icon: 'history', results, more: 0 }]
   }
 
   protected iconOf(result: PaletteResult) {
@@ -86,27 +97,27 @@ export class CommandPalette {
 
   protected type(event: Event): void {
     this.query.set((event.target as HTMLInputElement).value)
-    this.highlighted.set(0)
+    this.highlighted.set(undefined)
   }
 
   protected key(event: KeyboardEvent): void {
+    // Enter (or an arrow) that picks or moves inside an input method's candidates is not ours.
+    if (event.isComposing || event.keyCode === 229) return
     const count = this.count()
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (count === 0) return
-      this.highlighted.set((this.active() + (event.key === 'ArrowDown' ? 1 : count - 1)) % count)
+      this.highlighted.set(this.flat()[(this.active() + (event.key === 'ArrowDown' ? 1 : count - 1)) % count].id)
       this.reveal()
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      const result = this.groups()
-        .flatMap((group) => group.results)
-        .find((candidate) => candidate.index === this.active())
+      const result = this.flat()[this.active()]
       if (result) this.open(result)
     }
   }
 
-  protected hover(index: number): void {
-    this.highlighted.set(index)
+  protected hover(id: string): void {
+    this.highlighted.set(id)
   }
 
   protected open(result: NumberedResult): void {

@@ -143,8 +143,8 @@ test('the Repositories page shows the code-index freshness of each repository', 
   await expectClean()
 })
 
-test('no page scrolls sideways at phone width, and the hover card stays on screen', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 812 })
+test('no page scrolls sideways at 360 px, and the hover card stays on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 })
   await stub(page)
   const expectClean = await watch(page)
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
@@ -157,7 +157,7 @@ test('no page scrolls sideways at phone width, and the hover card stays on scree
   await page.locator('app-count a').last().hover()
   const box = await page.locator('.count-card.open').boundingBox()
   expect(box!.x).toBeGreaterThanOrEqual(0)
-  expect(box!.x + box!.width).toBeLessThanOrEqual(375)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(360)
   await expectClean()
 })
 
@@ -167,7 +167,7 @@ test('the fleet shows while the first scan is still running', async ({ page }) =
   )
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ status: 401, json: { error: 'no' } }))
   await page.goto('/cockpit/repositories')
-  await expect(page.getByRole('status').filter({ hasText: 'scanned 3 of 40' })).toBeVisible()
+  await expect(page.getByTestId('freshness-chip').filter({ hasText: 'scanned 3 of 40' })).toBeVisible()
   await expect(page.getByText('2 pull requests could not be matched')).toBeVisible()
   await expect(rows(page)).toHaveCount(3)
   await expect(page.getByRole('link', { name: 'Code' })).toHaveCount(0)

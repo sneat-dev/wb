@@ -11,20 +11,19 @@ describe('HomePage', () => {
       title: tile.querySelector('.tile-title')?.textContent,
       count: tile.querySelector('a')?.textContent,
       href: tile.querySelector('a')?.getAttribute('href'),
-      names: [...tile.querySelectorAll('li')].map((li) => li.textContent),
     }))
     expect(tiles).toEqual([
-      { title: 'Machines', count: '2', href: '/machines', names: ['alpha', 'beta'] },
-      { title: 'Repositories', count: '2', href: '/repositories', names: ['github.com/acme/r1', 'acme/r2'] },
-      { title: 'Worktrees', count: '3', href: '/worktrees', names: ['task-w1 (branch-w1)', 'task-w2 (branch-w2)', 'task-w3 (branch-w3)'] },
-      { title: 'Agents', count: '3', href: '/agents', names: ['session s-a1', 'session s-a2', 'claude run run9'] },
-      { title: 'Running agents', count: '2', href: '/agents?state=running', names: ['session s-a1', 'claude run run9'] },
+      { title: 'Machines', count: '2', href: '/machines' },
+      { title: 'Repositories', count: '2', href: '/repositories' },
+      { title: 'Worktrees', count: '3', href: '/worktrees' },
+      { title: 'Agents', count: '3', href: '/agents' },
+      { title: 'Running agents', count: '2', href: '/agents?state=running' },
     ])
   })
 
   it('lists the machines and the most recent worktrees, with route and age', async () => {
     const { root } = await openPage('/', HomePage)
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('p-table')]
+    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
     expect(bodyRows(machines)).toEqual([
       ['alpha', 'local', '—'],
       ['beta', 'cached, 5 min ago', '—'],
@@ -41,7 +40,7 @@ describe('HomePage', () => {
     const doc = fleetDocument({ worktrees: many })
     doc.machines[0].wb_version = '1.2.3'
     const { root } = await openPage('/', HomePage, doc)
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('p-table')]
+    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
     expect(bodyRows(machines)[0][2]).toBe('1.2.3')
     expect(bodyRows(worktrees)).toHaveLength(RECENT_WORKTREES)
     expect(bodyRows(worktrees)[0][1]).toBe('r-gone')
@@ -49,7 +48,7 @@ describe('HomePage', () => {
 
   it('says when the fleet is empty', async () => {
     const { root } = await openPage('/', HomePage, fleetDocument({ machines: [], worktrees: [], repositories: [], agents: [] }))
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('p-table')]
+    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
     expect(bodyRows(machines)).toEqual([['No machines yet.']])
     expect(bodyRows(worktrees)).toEqual([['No worktrees yet.']])
     expect(root.querySelector('.tile a')?.textContent).toBe('0')
