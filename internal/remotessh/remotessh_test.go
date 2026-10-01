@@ -133,7 +133,7 @@ func TestResolveTrustedPrefersTheSystemsSSHAndRefusesOneAnotherProcessCouldRepla
 			t.Fatal(err)
 		}
 		path := filepath.Join(directory, "ssh")
-		if err := os.WriteFile(path, []byte("x"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		// The modes are set after creation, so the process's umask does not decide them.
