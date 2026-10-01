@@ -195,13 +195,13 @@ var PendingMigrationExemptions = map[string]string{
 // TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent enforces
 // that no entry below also independently creates and writes a file.
 var NotAFileWritePublishExemptions = map[string]string{
-	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":     "renames a queue job's state directory back to pending on recovery; not a file write",
-	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatch":         "renames a queue job's state directory to claim it; not a file write",
-	"internal/streams/store.go:Store.archiveLocked":                  "renames a stream's directory into an archive location; not a file write",
-	"internal/locallink/execports.go:ExecNode.Unlink":                "renames an existing backup directory back into place; not a temp-file write",
-	"internal/locallink/execports.go:ExecNode.linkInjected":          "renames/moves the previously-installed package aside and swaps in the staged replacement; task-9 PR-8 extracted its two content writes (the pending marker and the symlink backup) into writeLinkPendingMarker and writeLinkSymlinkBackup, which route through internal/filewrite -- linkInjected itself now only renames, removes, and symlinks",
-	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine": "renames a request file into a quarantine directory; not a write publish",
-	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":     "moves a managed hook after an identity check, without writing new content; not a file write",
+	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":       "renames a queue job's state directory back to pending on recovery; not a file write",
+	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatchWithUnlock": "renames a queue job's state directory to claim it; not a file write",
+	"internal/streams/store.go:Store.archiveLocked":                    "renames a stream's directory into an archive location; not a file write",
+	"internal/locallink/execports.go:ExecNode.Unlink":                  "renames an existing backup directory back into place; not a temp-file write",
+	"internal/locallink/execports.go:ExecNode.linkInjected":            "renames/moves the previously-installed package aside and swaps in the staged replacement; task-9 PR-8 extracted its two content writes (the pending marker and the symlink backup) into writeLinkPendingMarker and writeLinkSymlinkBackup, which route through internal/filewrite -- linkInjected itself now only renames, removes, and symlinks",
+	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":   "renames a request file into a quarantine directory; not a write publish",
+	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":       "moves a managed hook after an identity check, without writing new content; not a file write",
 
 	// The renameNoReplace primitive's own per-OS implementation: a thin
 	// wrapper around Renameat2/RenameatxNp, with no write of its own.
@@ -219,7 +219,6 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
 	"internal/runlog/runlog.go:appendInjected":          "O_APPEND log write (flock-guarded), not a create/publish sequence",
 	"internal/streams/events.go:FileEventLog.Append":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/lifecyclehooks/queue.go:appendReceipt":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
 }
 
 // InlineWriteSequenceViolation names one function outside

@@ -124,17 +124,29 @@ func removeDirectoryContentsAt(directory *os.File, path string, depth int) error
 	return nil
 }
 
+type residueDirectoryOpener func(parent *os.File, name, path string) (*os.File, error)
+
+// openResidueDirectoryAt shares descriptor wrapping and keeps temporary residue
+// handles out of unrelated child processes. A successful Openat returns a valid
+// descriptor, so NewFile cannot return nil here.
+func openResidueDirectoryAt(parent *os.File, name, path string) (*os.File, error) {
+	descriptor, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(descriptor), path), nil
+}
+
 // directoryEntryNames lists through a fresh descriptor rather than the retained
 // one, whose read offset belongs to the caller.
 func directoryEntryNames(directory *os.File, path string) ([]string, error) {
-	descriptor, err := unix.Openat(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	return directoryEntryNamesWithOpener(directory, path, openResidueDirectoryAt)
+}
+
+func directoryEntryNamesWithOpener(directory *os.File, path string, open residueDirectoryOpener) ([]string, error) {
+	listing, err := open(directory, ".", path)
 	if err != nil {
 		return nil, fmt.Errorf("list residue directory %s: %w", path, err)
-	}
-	listing := os.NewFile(uintptr(descriptor), path)
-	if listing == nil {
-		_ = unix.Close(descriptor)
-		return nil, fmt.Errorf("wrap residue directory %s", path)
 	}
 	defer func() { _ = listing.Close() }()
 	names, err := listing.Readdirnames(-1)
@@ -174,7 +186,11 @@ func removeResidueEntry(parent *os.File, parentPath, name string, depth int) err
 // descriptor it returns is the inode it just inspected, so a directory swapped
 // in during the walk is surfaced rather than descended into.
 func openResidueDirectory(parent *os.File, path, name string, expected unix.Stat_t) (*os.File, error) {
-	descriptor, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	return openResidueDirectoryWithOpener(parent, path, name, expected, openResidueDirectoryAt)
+}
+
+func openResidueDirectoryWithOpener(parent *os.File, path, name string, expected unix.Stat_t, open residueDirectoryOpener) (*os.File, error) {
+	directory, err := open(parent, name, path)
 	if err != nil {
 		if errors.Is(err, unix.EACCES) {
 			// Granting this would mean a chmod by name, the one step that
@@ -186,13 +202,8 @@ func openResidueDirectory(parent *os.File, path, name string, expected unix.Stat
 		}
 		return nil, fmt.Errorf("open residue directory %s: %w", path, err)
 	}
-	directory := os.NewFile(uintptr(descriptor), path)
-	if directory == nil {
-		_ = unix.Close(descriptor)
-		return nil, fmt.Errorf("wrap residue directory %s", path)
-	}
 	var opened unix.Stat_t
-	if err := unix.Fstat(descriptor, &opened); err != nil {
+	if err := unix.Fstat(int(directory.Fd()), &opened); err != nil {
 		_ = directory.Close()
 		return nil, fmt.Errorf("inspect residue directory %s: %w", path, err)
 	}

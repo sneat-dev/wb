@@ -56,6 +56,10 @@ type RepositoryMatch struct {
 // Load reads only the hooks section from the standard wb.yaml. Other WB
 // sections are deliberately ignored while fields inside hooks are strict.
 func Load(configPath string) (Config, bool, error) {
+	return loadWithIO(configPath, os.Open, yaml.Marshal)
+}
+
+func loadWithIO(configPath string, open func(string) (*os.File, error), marshal func(any) ([]byte, error)) (Config, bool, error) {
 	expected, err := validateTrustedConfig(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -63,7 +67,7 @@ func Load(configPath string) (Config, bool, error) {
 		}
 		return Config{}, false, err
 	}
-	file, err := os.Open(configPath)
+	file, err := open(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return Config{}, false, nil
 	}
@@ -98,7 +102,7 @@ func Load(configPath string) (Config, bool, error) {
 	if !found || hooksNode.Kind == 0 || hooksNode.Tag == "!!null" {
 		return Config{}, false, nil
 	}
-	raw, err := yaml.Marshal(hooksNode)
+	raw, err := marshal(hooksNode)
 	if err != nil {
 		return Config{}, false, fmt.Errorf("parse lifecycle hooks config %s: %w", configPath, err)
 	}

@@ -63,6 +63,10 @@ func (dispatcher Dispatcher) readWorkerHealth() (*WorkerHealth, error) {
 }
 
 func (dispatcher Dispatcher) startWorkerIfIdle() (bool, error) {
+	return dispatcher.startWorkerIfIdleWithUnlock((*flock.Flock).Unlock)
+}
+
+func (dispatcher Dispatcher) startWorkerIfIdleWithUnlock(unlock func(*flock.Flock) error) (bool, error) {
 	if dispatcher.LaunchWorker == nil {
 		return false, nil
 	}
@@ -82,7 +86,7 @@ func (dispatcher Dispatcher) startWorkerIfIdle() (bool, error) {
 	if !idle {
 		return false, nil
 	}
-	if err := worker.Unlock(); err != nil {
+	if err := unlock(worker); err != nil {
 		return false, fmt.Errorf("release lifecycle hook worker probe: %w", err)
 	}
 	health, err := dispatcher.readWorkerHealth()
@@ -135,6 +139,10 @@ func (dispatcher Dispatcher) recordUnseenFailure(receipt Receipt) error {
 }
 
 func (dispatcher Dispatcher) claimUnseenWarnings(limit int) ([]string, error) {
+	return dispatcher.claimUnseenWarningsWithRead(limit, os.ReadDir, os.ReadFile)
+}
+
+func (dispatcher Dispatcher) claimUnseenWarningsWithRead(limit int, readDir func(string) ([]os.DirEntry, error), read func(string) ([]byte, error)) ([]string, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -151,7 +159,7 @@ func (dispatcher Dispatcher) claimUnseenWarnings(limit int) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = lock.Unlock() }()
-	entries, err := os.ReadDir(dispatcher.unseenDir())
+	entries, err := readDir(dispatcher.unseenDir())
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +170,7 @@ func (dispatcher Dispatcher) claimUnseenWarnings(limit int) ([]string, error) {
 			continue
 		}
 		path := filepath.Join(dispatcher.unseenDir(), entry.Name())
-		raw, readErr := os.ReadFile(path)
+		raw, readErr := read(path)
 		if readErr != nil {
 			return warnings, readErr
 		}
