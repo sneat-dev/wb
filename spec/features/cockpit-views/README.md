@@ -1246,7 +1246,7 @@ Then Worktrees opens, the filter box has the focus, the typed `g w` stays as tex
 **Requirements:** cockpit-views#req:schema-version-2
 
 Scenario: Version mismatch in both directions
-Given a daemon answering `schema_version` 1, a page that expects 3 against a daemon answering 2, and a daemon answering 2 for a page that expects 2
+Given a page that expects schema version 2 and a daemon answering `schema_version` 1, one answering 3, and one answering 2
 When the application loads from each
 Then the first shows "update wb on this machine" and no data, the second shows "reload" and no data, the third renders normally, and the daemon's fleet document carries `schema_version` 2
 
