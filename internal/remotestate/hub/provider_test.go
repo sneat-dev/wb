@@ -230,3 +230,51 @@ func TestNewAcceptsALoopbackHTTPHub(t *testing.T) {
 		}
 	}
 }
+
+// TestAnOlderHubRefusingTheOptionalFieldsIsRetriedOnceWithoutThem is the old-hub
+// half of cockpit-views#ac:remote-snapshot-carries-optional-agents-and-metrics:
+// the fake hub decodes with unknown fields refused into the previous snapshot
+// model, so it answers 400 to the new fields exactly as a deployed hub does.
+func TestAnOlderHubRefusingTheOptionalFieldsIsRetriedOnceWithoutThem(t *testing.T) {
+	t.Parallel()
+	type previousModel struct {
+		SchemaVersion int                        `json:"schema_version"`
+		Login         string                     `json:"login"`
+		Machine       string                     `json:"machine"`
+		PublishedAt   time.Time                  `json:"published_at"`
+		LastSeenAt    time.Time                  `json:"last_seen_at,omitempty"`
+		RemoteStore   string                     `json:"remote_store,omitempty"`
+		Repositories  []string                   `json:"repositories"`
+		Worktrees     []machinesnapshot.Worktree `json:"worktrees"`
+	}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var old previousModel
+		if err := decoder.Decode(&old); err != nil {
+			return response(http.StatusBadRequest, `{"error":"invalid_snapshot_payload"}`), nil
+		}
+		return response(http.StatusOK, `{"login":"alice","machine":"laptop","published_at":"2026-10-01T09:00:00Z","received_at":"2026-10-01T09:00:01Z","updated":true}`), nil
+	})}
+	provider, err := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "t", Client: client, RetryDelays: []time.Duration{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	snapshot := remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: at, OS: "linux", CPUCount: 4,
+		Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}}
+
+	// Without the helper the provider's refusal is a typed status.
+	_, err = provider.Publish(context.Background(), snapshot)
+	var status remotestate.StatusCoder
+	if !errors.As(err, &status) || status.HTTPStatus() != http.StatusBadRequest || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("err = %v, want a 400 status error", err)
+	}
+	requests = 0
+	_, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot)
+	if err != nil || !errors.Is(diagnostic, remotestate.ErrOptionalFieldsDropped) || requests != 2 {
+		t.Fatalf("diagnostic=%v err=%v requests=%d", diagnostic, err, requests)
+	}
+}

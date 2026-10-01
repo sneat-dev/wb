@@ -76,3 +76,37 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 		t.Fatalf("read-model remote store = %q", converted.Snapshot.RemoteStore)
 	}
 }
+
+func TestOptionalFieldsCrossTheHostedBoundaryBothWays(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	cpu, used, total := 40.0, uint64(1), uint64(2)
+	source := remotestate.Snapshot{
+		Login: "alice", Machine: "laptop", PublishedAt: at, ProjectsRoot: "/Users/alice/private",
+		OS: "linux", Arch: "arm64", CPUCount: 8, BootTime: at.Add(-time.Hour),
+		Agents:  []remotestate.AgentState{{Kind: "session", SessionID: "wbs-1", Runtime: "claude", Model: "opus", State: "live", Activity: "working", Task: "fix", Repository: "acme/widgets", StartedAt: at}},
+		Metrics: &remotestate.MetricsSample{CPUPercent: &cpu, MemoryUsedBytes: &used, MemoryTotalBytes: &total, SampledAt: at},
+	}
+	hosted := FromRemoteSnapshot(source)
+	if err := hosted.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(hosted)
+	for _, want := range []string{`"os":"linux"`, `"cpu_count":8`, `"session_id":"wbs-1"`, `"cpu_percent":40`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("hosted snapshot lacks %s: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "/Users/alice") {
+		t.Errorf("hosted snapshot carries a path: %s", raw)
+	}
+	back := Entry(machinesnapshot.StoredSnapshot{Snapshot: hosted, ReceivedAt: at}).Snapshot
+	if back.OS != "linux" || back.Arch != "arm64" || back.CPUCount != 8 || !back.BootTime.Equal(source.BootTime) ||
+		len(back.Agents) != 1 || back.Agents[0] != source.Agents[0] || back.Metrics == nil || *back.Metrics.CPUPercent != 40 {
+		t.Fatalf("read-model entry = %+v", back)
+	}
+	bare := FromRemoteSnapshot(remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: at})
+	if bare.Agents != nil || bare.Metrics != nil || Entry(machinesnapshot.StoredSnapshot{Snapshot: bare, ReceivedAt: at}).Snapshot.Metrics != nil {
+		t.Errorf("a snapshot without optional fields gained some: %+v", bare)
+	}
+}

@@ -28,6 +28,16 @@ var (
 	ErrClaimsUnsupported = errors.New("the HTTP hub provider does not yet support remote claims")
 )
 
+// StatusError is a hub's refusal of a request with an HTTP status. It
+// satisfies remotestate.StatusCoder, so a publisher can recognise the 400 an
+// older hub answers to the optional snapshot fields it does not know.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("hub returned HTTP %d", e.Code) }
+
+// HTTPStatus is the status the hub answered with.
+func (e *StatusError) HTTPStatus() int { return e.Code }
+
 // Options configures the authenticated HTTPS provider. Exactly one of Token
 // and TokenFile must be set; the constructor never invents a credential.
 type Options struct {
@@ -259,7 +269,7 @@ func (provider *Provider) doJSON(ctx context.Context, method, path string, input
 			if requestErr != nil {
 				return fmt.Errorf("hub request failed: %w", requestErr)
 			}
-			return fmt.Errorf("hub returned HTTP %d", responseCode)
+			return &StatusError{Code: responseCode}
 		}
 		if err := provider.sleep(ctx, provider.retryDelays[attempt]); err != nil {
 			return err

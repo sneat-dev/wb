@@ -1,7 +1,9 @@
 package machinesnapshot
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +132,71 @@ func validSnapshot(at time.Time) Snapshot {
 			Task: "dashboard", Repository: "acme/widgets", Branch: "feature/dashboard",
 			PullRequest: &PullRequest{Number: 1, URL: "https://github.com/acme/widgets/pull/1"},
 		}},
+	}
+}
+
+func optionalSnapshot() Snapshot {
+	snapshot := validSnapshot(time.Now().UTC())
+	cpu, load := 40.0, 1.5
+	used, total, free, disk := uint64(1), uint64(2), uint64(3), uint64(4)
+	snapshot.OS, snapshot.Arch, snapshot.CPUCount, snapshot.BootTime = "darwin", "arm64", 10, time.Now().UTC().Add(-time.Hour)
+	snapshot.Agents = []Agent{{Kind: "run", RunID: "agt-1", Runtime: "claude", Model: "opus", State: "running", Activity: "working", Task: "fix", Repository: "acme/widgets", StartedAt: time.Now().UTC()}}
+	snapshot.Metrics = &Metrics{CPUPercent: &cpu, Load1: &load, MemoryUsedBytes: &used, MemoryTotalBytes: &total, DiskFreeBytes: &free, DiskTotalBytes: &disk, SampledAt: time.Now().UTC()}
+	return snapshot
+}
+
+func TestSnapshotAcceptsAndBoundsTheOptionalFields(t *testing.T) {
+	t.Parallel()
+	if err := optionalSnapshot().Validate(); err != nil {
+		t.Fatalf("a snapshot with every optional field: %v", err)
+	}
+	negative, huge, nan := -1.0, 101.0, math.NaN()
+	smaller, larger := uint64(1), uint64(2)
+	for name, edit := range map[string]func(*Snapshot){
+		"os":              func(s *Snapshot) { s.OS = "darwin/../x" },
+		"arch":            func(s *Snapshot) { s.Arch = strings.Repeat("a", 33) },
+		"cpu high":        func(s *Snapshot) { s.CPUCount = MaxCPUCount + 1 },
+		"cpu negative":    func(s *Snapshot) { s.CPUCount = -1 },
+		"too many agents": func(s *Snapshot) { s.Agents = make([]Agent, MaxAgents+1) },
+		"agent kind":      func(s *Snapshot) { s.Agents[0].Kind = "daemon" },
+		"agent state":     func(s *Snapshot) { s.Agents[0].State = "" },
+		"agent long":      func(s *Snapshot) { s.Agents[0].Task = strings.Repeat("x", MaxAgentTextLen+1) },
+		"agent control":   func(s *Snapshot) { s.Agents[0].Model = "a\x1bb" },
+		"agent newline":   func(s *Snapshot) { s.Agents[0].Runtime = "a\nb" },
+		"agent path":      func(s *Snapshot) { s.Agents[0].Task = "/Users/alice/private" },
+		"metrics time":    func(s *Snapshot) { s.Metrics.SampledAt = time.Time{} },
+		"metrics cpu":     func(s *Snapshot) { s.Metrics.CPUPercent = &huge },
+		"metrics load":    func(s *Snapshot) { s.Metrics.Load1 = &negative },
+		"metrics nan":     func(s *Snapshot) { s.Metrics.Load1 = &nan },
+		"memory no total": func(s *Snapshot) { s.Metrics.MemoryTotalBytes = nil },
+		"memory over":     func(s *Snapshot) { s.Metrics.MemoryUsedBytes, s.Metrics.MemoryTotalBytes = &larger, &smaller },
+		"disk no total":   func(s *Snapshot) { s.Metrics.DiskTotalBytes = nil },
+	} {
+		snapshot := optionalSnapshot()
+		edit(&snapshot)
+		if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+func TestOptionalFieldsAreOmittedFromTheWireWhenAbsent(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(validSnapshot(time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"os"`, `"arch"`, `"cpu_count"`, `"boot_time"`, `"agents"`, `"metrics"`} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("a snapshot without optional fields carries %s: %s", key, raw)
+		}
+	}
+	// Strict decoding, as the hub's handler does it, accepts the full shape.
+	full, _ := json.Marshal(optionalSnapshot())
+	decoder := json.NewDecoder(strings.NewReader(string(full)))
+	decoder.DisallowUnknownFields()
+	var decoded Snapshot
+	if err := decoder.Decode(&decoded); err != nil || len(decoded.Agents) != 1 || decoded.Metrics == nil {
+		t.Fatalf("strict decode = %+v, %v", decoded, err)
 	}
 }

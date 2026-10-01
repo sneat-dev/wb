@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"sort"
@@ -37,6 +38,9 @@ const (
 	MaxAttentionLen   = 1024
 	MaxPRURLLength    = 2048
 	MaxRemoteStoreLen = 2048
+	MaxAgents         = 200
+	MaxAgentTextLen   = 200
+	MaxCPUCount       = 65536
 
 	AttentionOwnerInactive      = "owner session is no longer active"
 	AttentionSupersessionReview = "supersession evidence requires review"
@@ -76,6 +80,43 @@ type Snapshot struct {
 	RemoteStore   string     `json:"remote_store,omitempty" firestore:"remote_store,omitempty"`
 	Repositories  []string   `json:"repositories" firestore:"repositories"`
 	Worktrees     []Worktree `json:"worktrees" firestore:"worktrees"`
+	// The optional fields below are additive (cockpit-views#req:remote-snapshot-
+	// agents-and-metrics): the hardware facts of the machine, its agents and
+	// its latest metrics sample. A publisher sends them only when it opted in
+	// (hardware always, agents and metrics by their own flags); an older hub
+	// that refuses them answers 400 and the publisher retries without them.
+	OS       string    `json:"os,omitempty" firestore:"os,omitempty"`
+	Arch     string    `json:"arch,omitempty" firestore:"arch,omitempty"`
+	CPUCount int       `json:"cpu_count,omitempty" firestore:"cpu_count,omitempty"`
+	BootTime time.Time `json:"boot_time,omitzero" firestore:"boot_time,omitempty"`
+	Agents   []Agent   `json:"agents,omitempty" firestore:"agents,omitempty"`
+	Metrics  *Metrics  `json:"metrics,omitempty" firestore:"metrics,omitempty"`
+}
+
+// Agent is one agent of the machine: the closed set of fields of the optional
+// agents list, with no path, command line or free text.
+type Agent struct {
+	Kind       string    `json:"kind" firestore:"kind"`
+	SessionID  string    `json:"session_id,omitempty" firestore:"session_id,omitempty"`
+	RunID      string    `json:"run_id,omitempty" firestore:"run_id,omitempty"`
+	Runtime    string    `json:"runtime,omitempty" firestore:"runtime,omitempty"`
+	Model      string    `json:"model,omitempty" firestore:"model,omitempty"`
+	State      string    `json:"state" firestore:"state"`
+	Activity   string    `json:"activity,omitempty" firestore:"activity,omitempty"`
+	Task       string    `json:"task,omitempty" firestore:"task,omitempty"`
+	Repository string    `json:"repository,omitempty" firestore:"repository,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitzero" firestore:"started_at,omitempty"`
+}
+
+// Metrics is the latest machine sample.
+type Metrics struct {
+	CPUPercent       *float64  `json:"cpu_percent,omitempty" firestore:"cpu_percent,omitempty"`
+	Load1            *float64  `json:"load1,omitempty" firestore:"load1,omitempty"`
+	MemoryUsedBytes  *uint64   `json:"memory_used_bytes,omitempty" firestore:"memory_used_bytes,omitempty"`
+	MemoryTotalBytes *uint64   `json:"memory_total_bytes,omitempty" firestore:"memory_total_bytes,omitempty"`
+	DiskFreeBytes    *uint64   `json:"disk_free_bytes,omitempty" firestore:"disk_free_bytes,omitempty"`
+	DiskTotalBytes   *uint64   `json:"disk_total_bytes,omitempty" firestore:"disk_total_bytes,omitempty"`
+	SampledAt        time.Time `json:"sampled_at" firestore:"sampled_at"`
 }
 
 // Worktree is the hosted dashboard projection of one WB worktree.
@@ -205,6 +246,70 @@ func (snapshot Snapshot) Validate() error {
 		if err := worktree.validate(); err != nil {
 			return fmt.Errorf("%w: worktrees[%d]: %v", ErrInvalidSnapshot, index, err)
 		}
+	}
+	if err := snapshot.validateOptional(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidSnapshot, err)
+	}
+	return nil
+}
+
+var shortName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+
+// validateOptional checks the additive hardware, agents and metrics fields.
+func (snapshot Snapshot) validateOptional() error {
+	if (snapshot.OS != "" && !shortName.MatchString(snapshot.OS)) || (snapshot.Arch != "" && !shortName.MatchString(snapshot.Arch)) {
+		return errors.New("os or arch is invalid")
+	}
+	if snapshot.CPUCount < 0 || snapshot.CPUCount > MaxCPUCount {
+		return errors.New("cpu_count is invalid")
+	}
+	if len(snapshot.Agents) > MaxAgents {
+		return fmt.Errorf("agents exceeds %d entries", MaxAgents)
+	}
+	for index, agent := range snapshot.Agents {
+		if err := agent.validate(); err != nil {
+			return fmt.Errorf("agents[%d]: %v", index, err)
+		}
+	}
+	if snapshot.Metrics != nil {
+		return snapshot.Metrics.validate()
+	}
+	return nil
+}
+
+func (agent Agent) validate() error {
+	if agent.Kind != "session" && agent.Kind != "run" {
+		return errors.New("kind must be session or run")
+	}
+	if agent.State == "" {
+		return errors.New("state is required")
+	}
+	for _, value := range []string{agent.SessionID, agent.RunID, agent.Runtime, agent.Model, agent.State, agent.Activity, agent.Task, agent.Repository} {
+		if utf8.RuneCountInString(value) > MaxAgentTextLen || !printable(value) || strings.ContainsAny(value, "\r\n") {
+			return errors.New("text is too long or contains control characters")
+		}
+		if looksLikeAbsolutePath(value) {
+			return errors.New("text must not be an absolute path")
+		}
+	}
+	return nil
+}
+
+func (metrics Metrics) validate() error {
+	if metrics.SampledAt.IsZero() {
+		return errors.New("metrics sampled_at is required")
+	}
+	for _, value := range []*float64{metrics.CPUPercent, metrics.Load1} {
+		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0) {
+			return errors.New("metrics number is invalid")
+		}
+	}
+	if metrics.CPUPercent != nil && *metrics.CPUPercent > 100 {
+		return errors.New("metrics cpu_percent is above 100")
+	}
+	if (metrics.MemoryUsedBytes != nil && (metrics.MemoryTotalBytes == nil || *metrics.MemoryUsedBytes > *metrics.MemoryTotalBytes)) ||
+		(metrics.DiskFreeBytes != nil && (metrics.DiskTotalBytes == nil || *metrics.DiskFreeBytes > *metrics.DiskTotalBytes)) {
+		return errors.New("metrics figure is above its total")
 	}
 	return nil
 }
