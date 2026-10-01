@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixtureRepo builds a tiny real git repository containing a one-package Go
@@ -1113,7 +1111,7 @@ func TestComputeBaselineAtRefFailsWhenGoTestFails(t *testing.T) {
 // branch on its own (a matched build either fails, taking the "go test
 // failed" branch above, or succeeds and always writes a well-formed
 // profile); TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
-// exercises it with a `go` shim instead.
+// exercises it by replacing the profile after a successful measurement.
 
 // TestComputeBaselineAtRefFailsWhenGitWorktreeAddFails exercises the plain
 // (non-timeout) branch of "git worktree add" failing, by making .git
@@ -1235,40 +1233,35 @@ func TestGitChangedLinesHandlesPathsWithSpaces(t *testing.T) {
 	}
 }
 
-// TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
-// exercises ComputeBaselineAtRef's ParseCoverageProfile error branch with a
-// `go` shim that fakes `go test -coverprofile` to exit 0 while writing a
-// profile ParseCoverageProfile rejects (a line with no "file:range"
-// separator) — real `go test` cannot produce this, but a hermetic shim
-// proves the branch fails closed rather than leaving it untested. Not
-// parallel-safe (t.Setenv mutates the process-wide PATH).
+// The progress callback models a profile replaced after measurement completes.
+// Baseline construction must reject it even though the measurement itself passed.
 func TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) {
+	t.Parallel()
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", fixtureBaseSource)
 	repo.writeFile("app_test.go", fixtureTestSource)
 	repo.commitAll("base")
-
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = test ]; then\n" +
-		"  for a in \"$@\"; do\n" +
-		"    case \"$a\" in -coverprofile=*) p=\"${a#-coverprofile=}\";; esac\n" +
-		"  done\n" +
-		"  printf 'mode: set\\nbadformat 1 1\\n' > \"$p\"\n" +
-		"  exit 0\n" +
-		"fi\n" +
-		"exec " + realGo + " \"$@\"\n"
-	shimDir := t.TempDir()
-	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
-		t.Fatal("want error when the measured profile fails ParseCoverageProfile's stricter parse")
+	replaced := false
+	options := RunOptions{Progress: func(event Progress) {
+		if event.State != ProgressCompleted || event.Status != StatusPassed {
+			return
+		}
+		for _, line := range strings.Split(repo.runGit("worktree", "list", "--porcelain"), "\n") {
+			if !strings.HasPrefix(line, "worktree ") {
+				continue
+			}
+			root := strings.TrimPrefix(line, "worktree ")
+			if strings.HasPrefix(filepath.Base(root), "wb-coverage-baseline-") {
+				if err := os.WriteFile(filepath.Join(root, "wb-coverage-baseline.out"), []byte("mode: set\nbadformat 1 1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				replaced = true
+			}
+		}
+	}}
+	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, options)
+	if !replaced || err == nil || !strings.Contains(err.Error(), "no coverage profile produced measuring merge base") {
+		t.Fatalf("replaced = %v, error = %v; want rejected replaced baseline profile", replaced, err)
 	}
 }
 

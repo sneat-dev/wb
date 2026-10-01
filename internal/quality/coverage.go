@@ -258,20 +258,9 @@ func goModules(root string) ([]string, error) {
 }
 
 func profileTotals(path string) (statements, covered int, err error) {
-	blocks, err := ParseCoverageProfile(path)
+	blocks, err := parseCoverageProfile(path, true)
 	if err != nil {
 		return 0, 0, err
-	}
-	if len(blocks) == 0 {
-		// A header-only profile is valid when the instrumented module has no
-		// statements. An empty or whitespace-only file is not a profile.
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return 0, 0, err
-		}
-		if !strings.HasPrefix(strings.TrimSpace(string(contents)), "mode: ") {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line 1", path)
-		}
 	}
 	for _, block := range blocks {
 		statements += block.Statements

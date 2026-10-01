@@ -47,3 +47,20 @@ func TestCleanupLockAdaptersPreserveDescriptorOwnership(t *testing.T) {
 		t.Fatal("missing lock descriptor accepted")
 	}
 }
+
+func TestCleanupLockPrepareTaskRefusesOccupiedNamespace(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	path := filepath.Join(home, "worktrees")
+	if err := os.WriteFile(path, []byte("preserve occupant"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	task, err := cleanupLockPorts().PrepareTask(home, "task")
+	if err == nil || task != nil {
+		t.Fatalf("occupied namespace prepared: %+v %v", task, err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "preserve occupant" {
+		t.Fatalf("namespace occupant changed: %q %v", contents, err)
+	}
+}
