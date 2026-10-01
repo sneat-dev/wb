@@ -1,0 +1,94 @@
+/* Cleanup, Fleet health and the charts; they share the row styles of home-page.css. */
+app-home-more {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.cleanup-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+}
+
+.cleanup-text {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.cleanup-text a {
+  font-weight: var(--fw-semibold);
+}
+
+.cleanup-chart {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.health-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.charts-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.chart-card {
+  min-height: 13rem;
+  padding: var(--space-3);
+}
+
+.home-chart-slot {
+  min-height: 13rem;
+}
+
+@media (min-width: 60rem) {
+  .charts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 52rem) {
+  .health-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .health-row .home-meta,
+  .health-row .home-action {
+    justify-content: flex-start;
+  }
+}
+
+.home-lazy-slot.reserve {
+  min-height: 13rem;
+}
+
+.chart-legend {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-left: var(--space-1);
+  border-radius: 2px;
+}
+
+.swatch.finished {
+  background: var(--chart-bar);
+}
+
+.swatch.dropped {
+  background: var(--chart-bar-muted);
+}

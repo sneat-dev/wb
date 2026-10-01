@@ -1,0 +1,32 @@
+<section class="home-section" aria-labelledby="home-cleanup-h">
+  <h2 id="home-cleanup-h" class="home-h">Cleanup</h2>
+  @if (empty()) {
+    <p class="home-calm"><app-glyph class="home-calm-idle" [paths]="ok" />Nothing to clean up.</p>
+  } @else {
+    <div class="home-card cleanup-card">
+      <div class="cleanup-line">
+        <p class="cleanup-text">
+          <a [routerLink]="cleanup().reviewLink.path" [queryParams]="cleanup().reviewLink.query">{{ cleanup().safeCount }}</a> safe to remove;
+          <a [routerLink]="look.path" [queryParams]="look.query">{{ cleanup().lookCount }}</a> need a look
+          <span class="home-reason">(indicative: the cleanup operation decides)</span>
+        </p>
+        <div class="home-action">
+          <a class="home-act" [routerLink]="cleanup().reviewLink.path" [queryParams]="cleanup().reviewLink.query">Review &amp; clean</a>
+          <app-lazy-copy idleWord="Copy template" label="Copy command template: the dry-run plan of a task's cleanup" [build]="dryRun" />
+          <button type="button" class="home-toggle" [attr.aria-expanded]="open()" aria-controls="home-cleanup-chart" (click)="toggle()">
+            <app-glyph [paths]="chevron" class="chevron" [class.open]="open()" />
+            Ages
+          </button>
+        </div>
+      </div>
+      @if (open()) {
+        <div id="home-cleanup-chart" class="cleanup-chart">
+          <app-chart [spec]="spec()" [height]="8" (bucketSelected)="go($event)" />
+          @if (cleanup().unknownAge > 0) {
+            <p class="home-note">{{ cleanup().unknownAge }} with no reported activity time are in no bar.</p>
+          }
+        </div>
+      }
+    </div>
+  }
+</section>

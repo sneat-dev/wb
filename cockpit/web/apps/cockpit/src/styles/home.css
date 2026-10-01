@@ -1,0 +1,223 @@
+/* Home's first page: "Needs you" and the pieces every section shares (cards, rows, actions). Global, not a
+   component style, because the component styles of the first page count toward its script budget
+   (REQ:initial-script-size) and the lazy sections below share these classes. */
+.home {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 72rem;
+  min-width: 0;
+}
+
+.home-section {
+  min-width: 0;
+}
+
+.home-h {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.home-count {
+  min-width: 1.25rem;
+  padding: 0 6px;
+  border: 1px solid var(--idle-border);
+  border-radius: var(--radius-pill);
+  background: var(--idle-soft);
+  color: var(--idle);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.125rem;
+  text-align: center;
+}
+
+.home-count.urgent {
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.home-count.warn {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.home-calm {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-height: var(--row-h);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+.home-calm-ok {
+  color: var(--ok);
+}
+
+.home-note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.home-card {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Only a section with rows that need the operator looks urgent. */
+.home-card.urgent {
+  border-color: var(--bad-border);
+}
+
+.home-row {
+  position: relative;
+  display: grid;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.home-row:first-child {
+  border-top: 0;
+}
+
+.home-foot {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.home-main {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.home-task {
+  margin-right: var(--space-2);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.home-reason {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
+.home-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.home-place {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.home-place code {
+  margin-left: var(--space-1);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+
+.home-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* The primary action of a row: a link that looks like a button, in the one accent. */
+.home-act {
+  display: inline-flex;
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.home-act:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.needs-row {
+  grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 20rem) 9rem;
+}
+
+@media (max-width: 52rem) {
+  .needs-row {
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .needs-row .home-meta,
+  .needs-row .home-action {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}
+
+/* A phone: the sections are cards, one per row. */
+@media (max-width: 30rem) {
+  .home {
+    gap: var(--space-4);
+  }
+
+  .home-card {
+    display: grid;
+    gap: var(--space-2);
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .home-card .home-row,
+  .home-card .home-foot {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+
+  .home-card.urgent .home-row {
+    border-color: var(--bad-border);
+  }
+
+  .needs-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .needs-row .home-meta,
+  .needs-row .home-action {
+    grid-column: 1;
+  }
+}

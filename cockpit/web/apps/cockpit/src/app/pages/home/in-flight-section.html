@@ -1,0 +1,52 @@
+<section class="home-section" aria-labelledby="home-flight-h">
+  <h2 id="home-flight-h" class="home-h">
+    In flight
+    @if (rows().length > 0) {
+      <span class="home-count">{{ rows().length }}</span>
+    }
+  </h2>
+  <div class="flight-layout">
+    <div class="flight-list">
+      @if (rows().length === 0) {
+        @if (warming()) {
+          <app-skeleton-rows [count]="1" />
+        } @else {
+          <p class="home-calm"><app-glyph class="home-calm-idle" [paths]="idle" />No agents running.</p>
+        }
+      } @else {
+        <ul class="home-card">
+          @for (row of rows(); track row.id) {
+            <li class="home-row flight-row">
+              <div class="home-main">
+                <a class="home-task flight-label" [routerLink]="row.link.path">{{ row.label }}</a>
+                <span class="home-reason">{{ row.work }}</span>
+                <div class="flight-meta">
+                  @if (many() && row.machine; as view) {
+                    <app-machine-chip [machine]="view.machine" [stale]="view.state === 'stale'" />
+                  }
+                  @if (row.remote) {
+                    <span>snapshot <app-relative-time [at]="row.observedAt" /></span>
+                  }
+                  @if (row.runningFor; as span) {
+                    <span title="How long it has run">running {{ span }}</span>
+                  }
+                </div>
+              </div>
+              <div class="home-action flight-side">
+                <app-state-badge kind="agent-activity" size="small" [value]="row.activity" [label]="row.activity ? undefined : 'state not reported'" />
+                @if (row.controllable) {
+                  <app-lazy-copy idleWord="Copy stop" label="Copy command: wb agent stop" [build]="row.stop" />
+                  <app-lazy-copy idleWord="Copy log" label="Copy command: wb agent logs" [build]="row.log" />
+                }
+              </div>
+            </li>
+          }
+        </ul>
+      }
+      @if (silent().length > 0) {
+        <p class="home-note">No agents reported on {{ silent().join(', ') }}.</p>
+      }
+    </div>
+    <app-machine-strip [model]="model()" />
+  </div>
+</section>

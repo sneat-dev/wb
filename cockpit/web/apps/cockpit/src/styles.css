@@ -1,3 +1,5 @@
+@import './styles/home.css';
+
 /* Shared by every page. A page has no visible heading of its own: the active
    tab names it (cockpit-views REQ:no-visible-page-heading). */
 .page-title {

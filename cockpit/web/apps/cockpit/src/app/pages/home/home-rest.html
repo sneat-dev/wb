@@ -1,0 +1,14 @@
+<app-ready-to-land [model]="model()" [warming]="warming()" />
+<app-in-flight [model]="model()" [warming]="warming()" />
+@if (phone()) {
+  <button type="button" class="home-more-toggle" [attr.aria-expanded]="moreOpen()" aria-controls="home-more" (click)="toggleMore()">
+    <app-glyph [paths]="chevron" class="chevron" [class.open]="moreOpen()" />
+    More
+  </button>
+}
+@if (!phone() || moreOpen()) {
+  <div id="home-more" class="home-rest">
+    <app-resume [model]="model()" />
+    <app-home-more [model]="model()" [dropped]="dropped()" />
+  </div>
+}

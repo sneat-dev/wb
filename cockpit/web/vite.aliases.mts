@@ -13,6 +13,7 @@ export const workspaceAliases = [
   { find: '@cockpit/fleet-data', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/index.ts') },
   { find: '@cockpit/ui/count', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/count/count.ts') },
   { find: '@cockpit/ui/route-label', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/route-label/route-label.ts') },
+  { find: '@cockpit/ui/state', replacement: resolve(import.meta.dirname, 'libs/ui/src/state.ts') },
   { find: '@cockpit/ui/control', replacement: resolve(import.meta.dirname, 'libs/ui/src/control.ts') },
   { find: '@cockpit/ui/chart', replacement: resolve(import.meta.dirname, 'libs/ui/src/chart.ts') },
   { find: '@cockpit/ui', replacement: resolve(import.meta.dirname, 'libs/ui/src/index.ts') },

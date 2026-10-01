@@ -1,0 +1,12 @@
+<app-cleanup [cleanup]="cleanup()" />
+@if (health().length > 0) {
+  <app-health [rows]="health()" />
+}
+<section class="home-section" aria-labelledby="home-charts-h">
+  <h2 id="home-charts-h" class="home-h">Throughput</h2>
+  @if (throughput(); as series) {
+    <app-lazy-mount [viewport]="true" [load]="loadCharts" [inputs]="{ view: series }" />
+  } @else {
+    <p class="home-calm">No charts: the daemon reports no throughput (finished and dropped work) yet.</p>
+  }
+</section>
