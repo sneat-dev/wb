@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -100,7 +101,9 @@ func TestE2ELifecycleTaskScopedLocalDiscoveryKeepsExactClaimAndFallback(t *testi
 	const task = "selected-task"
 	localRoot := filepath.Join(projects, "acme", "app", ".worktrees")
 	fallbackRoot := filepath.Join(projects, "fallback", "second", ".worktrees")
-	for _, path := range []string{filepath.Join(localRoot, task), filepath.Join(fallbackRoot, task)} {
+	// The claim-backed checkout is absent: the fallback probe cannot discover
+	// localRoot, so finding it proves the active claim is actually traversed.
+	for _, path := range []string{localRoot, filepath.Join(fallbackRoot, task)} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -169,9 +172,6 @@ func TestE2ELifecycleTaskScopedLocalDiscoveryKeepsExactClaimAndFallback(t *testi
 	if _, err := CanonicalRepositoryPath(projects, "acme/app"); err == nil || !strings.Contains(err.Error(), "more than one host") {
 		t.Fatalf("ambiguous canonical clone was accepted: %v", err)
 	}
-	if err := os.RemoveAll(filepath.Join(localRoot, task)); err != nil {
-		t.Fatal(err)
-	}
 	if layouts, diagnostics := discoverTaskScopedLocalWorktreeLayouts(projects, map[string]bool{task: true}); len(diagnostics) != 0 || len(layouts) != 1 || layouts[0].WorktreesRoot != fallbackRoot {
 		t.Fatalf("ambiguous claim chose a host: layouts=%+v diagnostics=%+v", layouts, diagnostics)
 	}
@@ -200,7 +200,9 @@ func TestE2ELifecycleRegistryClaimAndMissingCheckoutBoundaries(t *testing.T) {
 	if results, diagnostics := inspect(map[string]bool{path: true}, nil, ""); len(results) != 0 || len(diagnostics) != 0 {
 		t.Fatalf("known checkout was inspected twice: results=%+v diagnostics=%+v", results, diagnostics)
 	}
-	if results, diagnostics := inspect(map[string]bool{}, nil, "unrelated/repository"); len(results) != 0 || len(diagnostics) != 0 {
+	noGit := runnertest.New(t)
+	if results, diagnostics := listClaimedRegistryWorktrees(withGitRunner(ctx, noGit), fixture.projectsRoot, fixture.home,
+		map[string]bool{}, nil, "main", "unrelated/repository", "", false, 1, nil, inspectPolicy{}); len(results) != 0 || len(diagnostics) != 0 {
 		t.Fatalf("unselected canonical registry was inspected: results=%+v diagnostics=%+v", results, diagnostics)
 	}
 	results, diagnostics = inspect(map[string]bool{}, map[string]bool{"registry-proof": true}, "")
