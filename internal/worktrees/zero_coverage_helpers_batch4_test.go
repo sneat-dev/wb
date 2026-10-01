@@ -56,19 +56,19 @@ func TestDependencyLockfileSelectsNearestAncestor(t *testing.T) {
 	}
 	ctx := withGitRunner(context.Background(), fake)
 
-	lockfile, ok, err := dependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: " npm ", Manifest: "apps/web/package.json"})
+	lockfile, ok, err := supersessionService().DependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: " npm ", Manifest: "apps/web/package.json"})
 	if err != nil || !ok || lockfile != "apps/web/yarn.lock" {
 		t.Fatalf("nearest npm lockfile = (%q, %t, %v)", lockfile, ok, err)
 	}
-	lockfile, ok, err = dependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "npm", Manifest: "tools/package.json"})
+	lockfile, ok, err = supersessionService().DependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "npm", Manifest: "tools/package.json"})
 	if err != nil || !ok || lockfile != "pnpm-lock.yaml" {
 		t.Fatalf("root npm lockfile = (%q, %t, %v)", lockfile, ok, err)
 	}
-	lockfile, ok, err = dependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod"})
+	lockfile, ok, err = supersessionService().DependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod"})
 	if err != nil || !ok || lockfile != "go.sum" {
 		t.Fatalf("Go lockfile = (%q, %t, %v)", lockfile, ok, err)
 	}
-	lockfile, ok, err = dependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "cargo", Manifest: "Cargo.toml"})
+	lockfile, ok, err = supersessionService().DependencyLockfile(ctx, repository, target, SupersessionDependencyDelta{Ecosystem: "cargo", Manifest: "Cargo.toml"})
 	if err != nil || ok || lockfile != "" {
 		t.Fatalf("unsupported lockfile = (%q, %t, %v)", lockfile, ok, err)
 	}
@@ -81,7 +81,7 @@ func TestDependencyLockfileReportsGitFailure(t *testing.T) {
 	fake.ExpectArgv([]string{"git", "-C", repository, "ls-tree", "-r", "--name-only", "target"},
 		runner.Result{}, errors.New("injected tree failure"))
 
-	lockfile, ok, err := dependencyLockfile(withGitRunner(context.Background(), fake), repository, "target", SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod"})
+	lockfile, ok, err := supersessionService().DependencyLockfile(withGitRunner(context.Background(), fake), repository, "target", SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod"})
 	if err == nil || !strings.Contains(err.Error(), "injected tree failure") || ok || lockfile != "" {
 		t.Fatalf("failed lockfile lookup = (%q, %t, %v)", lockfile, ok, err)
 	}

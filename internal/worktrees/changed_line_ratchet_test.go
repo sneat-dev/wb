@@ -113,7 +113,7 @@ func TestChangedLineRatchetRejectsIncompleteDependencyDeltaAfterAuthenticatingSo
 		}},
 	}
 	entry := ListResult{Repository: "acme/app", HeadSHA: "head", OpenPullRequest: dependencyTestPullRequest("head")}
-	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "missing ecosystem proof") {
+	if rejection := supersessionService().ValidateDependencyDeltasReason(context.Background(), receipt, supersessionEntry(entry)); !strings.Contains(rejection, "missing ecosystem proof") {
 		t.Fatalf("dependency rejection = %q", rejection)
 	}
 }
