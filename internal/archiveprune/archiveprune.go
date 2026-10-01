@@ -108,7 +108,11 @@ type Outcome struct {
 // deletes the ones that pass every safety check. It never removes a clone it
 // has not itself confirmed archived and clean in this exact run.
 func Clean(ctx context.Context, options Options) (Outcome, error) {
-	root, err := filepath.Abs(options.ProjectsRoot)
+	return cleanWithAbs(ctx, options, filepath.Abs)
+}
+
+func cleanWithAbs(ctx context.Context, options Options, absolute func(string) (string, error)) (Outcome, error) {
+	root, err := absolute(options.ProjectsRoot)
 	if err != nil {
 		return Outcome{}, err
 	}

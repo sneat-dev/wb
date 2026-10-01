@@ -833,20 +833,32 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 // same bytes and rejects a conflicting writer through immutable no-replace
 // publication.
 func reserveOriginalPromptArchive(home, task string, options WorkLogOptions) error {
+	runDir, _, _, err := openReservedPromptRun(home, task, options)
+	if runDir != nil {
+		_ = runDir.Close()
+	}
+	return err
+}
+
+// openReservedPromptRun keeps the normalized run and its immutable archive
+// together. Callers own the returned directory; failures release it here.
+func openReservedPromptRun(home, task string, options WorkLogOptions) (*os.File, string, string, error) {
 	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
-		return nil
+		return nil, "", "", nil
 	}
 	effort, run, err := normalizeWorkLogOptions(task, options, time.Now().UTC())
 	if err != nil {
-		return err
+		return nil, "", "", err
 	}
 	runDir, _, err := openWorkLogRun(home, effort, run, true)
 	if err != nil {
-		return err
+		return nil, "", "", err
 	}
-	defer func() { _ = runDir.Close() }()
-	_, _, err = ensureOriginalPromptArchive(runDir, options, time.Now().UTC())
-	return err
+	if _, _, err := ensureOriginalPromptArchive(runDir, options, time.Now().UTC()); err != nil {
+		_ = runDir.Close()
+		return nil, "", "", err
+	}
+	return runDir, effort, run, nil
 }
 
 const preApplyRenameReservationName = "pre-apply-rename.json"
@@ -886,19 +898,12 @@ type preApplyRenameReservationCandidate struct {
 // recoverable without deleting its immutable prompt archive. The normal claim
 // publication remains later in applyRename, once a real checkout exists.
 func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLogOptions) error {
-	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+	runDir, effort, run, err := openReservedPromptRun(home, newTask, options)
+	if err != nil {
+		return err
+	}
+	if runDir == nil {
 		return nil
-	}
-	if err := reserveOriginalPromptArchive(home, newTask, options); err != nil {
-		return err
-	}
-	effort, run, err := normalizeWorkLogOptions(newTask, options, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	runDir, _, err := openWorkLogRun(home, effort, run, false)
-	if err != nil {
-		return err
 	}
 	defer func() { _ = runDir.Close() }()
 	reservation := preApplyRenameReservation{
