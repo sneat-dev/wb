@@ -173,6 +173,7 @@ func writeOrphanDraftClaim(t *testing.T, path string, claim workLogClaim) {
 
 //nolint:paralleltest // HOME is pinned to isolate the retired read layout.
 func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) {
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("one exact claim and no match", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		got, err := findOrphanedClaim(fixture.projectsRoot, fixture.claim.Task, fixture.claim.ClaimID)
@@ -192,6 +193,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("dangling matching claim path", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		if err := os.Remove(fixture.claimPath); err != nil {
@@ -210,6 +212,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("malformed matching JSON", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		bad := []byte(`{"incomplete":`)
@@ -226,6 +229,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("wrong task is ignored", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		wrong := fixture.claim
@@ -237,6 +241,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("incomplete identity is refused", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		invalid := fixture.claim
@@ -249,6 +254,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("changed valid identity has wrong digest", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		invalid := fixture.claim
@@ -261,6 +267,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 		}
 		fixture.assertNoTerminal(t)
 	})
+	//nolint:paralleltest // The fixture sets HOME and the WB root for this subtest.
 	t.Run("duplicate exact claims in distinct homes", func(t *testing.T) {
 		fixture := newOrphanLookupDraftFixture(t)
 		legacyHome := filepath.Join(fixture.userHome, ".wb")
@@ -289,6 +296,7 @@ func TestE2EFindOrphanedClaimRequiresUniqueValidImmutableIdentity(t *testing.T) 
 
 //nolint:paralleltest // HOME overrides must remain serial with other native fixtures.
 func TestE2EFindOrphanedClaimPropagatesResolverAndGlobErrors(t *testing.T) {
+	//nolint:paralleltest // t.Setenv pins HOME to isolate WB home resolution.
 	t.Run("cyclic projects root", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := filepath.Join(t.TempDir(), "cycle")
@@ -303,6 +311,7 @@ func TestE2EFindOrphanedClaimPropagatesResolverAndGlobErrors(t *testing.T) {
 			t.Fatalf("cyclic root changed: %q, %v", target, err)
 		}
 	})
+	//nolint:paralleltest // t.Setenv pins HOME to isolate WB home resolution.
 	t.Run("glob metacharacter in real projects root", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := filepath.Join(t.TempDir(), "project[")
@@ -372,6 +381,7 @@ func (fixture orphanAbsenceDraftFixture) assertImmutableAndUnsealed(t *testing.T
 
 //nolint:paralleltest // newGitFixture pins process environment for real Git.
 func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *testing.T) {
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("worktree ancestor is a regular file", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		parent := filepath.Dir(fixture.candidate.claim.Worktree)
@@ -395,6 +405,7 @@ func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *test
 		}
 		fixture.assertImmutableAndUnsealed(t)
 	})
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("invalid recorded repository coordinate", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		candidate := fixture.candidate
@@ -409,6 +420,7 @@ func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *test
 		}
 		fixture.assertImmutableAndUnsealed(t)
 	})
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("canonical Git metadata occupied after Git ref cleanup", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		gitDir := filepath.Join(fixture.git.canonical, ".git")
@@ -436,6 +448,7 @@ func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *test
 		}
 		fixture.assertImmutableAndUnsealed(t)
 	})
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("context canceled only after registration observation", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		base, cancel := context.WithCancel(context.Background())
@@ -459,6 +472,7 @@ func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *test
 		}
 		fixture.assertImmutableAndUnsealed(t)
 	})
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("remote query fails after local absence", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		injected := errors.New("injected remote query failure")
@@ -474,6 +488,7 @@ func TestE2EInspectOrphanedClaimAbsenceStopsAtExactNegativeProofBoundary(t *test
 		}
 		fixture.assertImmutableAndUnsealed(t)
 	})
+	//nolint:paralleltest // The real-Git fixture sets process environment for this subtest.
 	t.Run("terminal ancestor is a regular file", func(t *testing.T) {
 		fixture := newOrphanAbsenceDraftFixture(t)
 		parent := filepath.Dir(fixture.candidate.terminalPath)
