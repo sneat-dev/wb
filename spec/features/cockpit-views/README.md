@@ -657,7 +657,10 @@ has an SSH route (REQ:remote-ssh-fetch) the copied text is `ssh <user>@<host> <w
 <command>` (just the host when the configuration has no user), built from the same configuration with each token shell-quoted as one argument; for
 an entity on any other machine the command is labelled "run on <machine>". The SSH routes come
 from the session response's owner-only field `machine_routes` (a list of `machine_id` and `ssh`
-with `host`, an optional `user` and `wb_path`), which the daemon emits only to an owner session
+with `host`, an optional `user` and `wb_path`, which is `wb` when the configuration names no path;
+one element for each id a machine with an `ssh` section has in the fleet document, whether or not
+the daemon reads that machine and whatever `cockpit.remote_ssh` says, because nothing is run with
+them), which the daemon emits only to an owner session
 ([cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only never includes it); an
 anonymous reader has no route, so every entity on another machine is labelled "run on <machine>". Machines and the
 code-index refresh have no entry because the manifest has no command for them that the read
@@ -1166,9 +1169,12 @@ fallback-class, because no other transport would be answered differently: 503 `w
 live view of that machine is still fresh it is not a failure: nothing is replaced, no `remote_error`
 is set and the machine is asked again one interval on, with no backoff; once nothing fresh is held
 it is the failure `remote_warming_up`, REQ:remote-entries-replace-cached), 403 `export_refused` (shown as `export_refused`) and 503 `export_failed`
-(shown as `bad_payload`). After a fallback the daemon keeps using SSH for that machine for a cool-down of
-5 minutes and then tries HTTP again; while on SSH the machine entry carries the HTTP
-failure in `remote_error`, and a later HTTP success clears it. The cadence is the same
+(shown as `bad_payload`). After a fallback (HTTP failed and SSH answered) the daemon keeps using SSH
+alone for that machine, for its fleet and its metrics-only exports, for a cool-down of
+5 minutes from that export's start and then tries HTTP again; while on SSH the machine entry carries the HTTP
+failure in `remote_error`, and a later HTTP success clears it. The cool-down is for an SSH that
+answers: an export that fails within it ends it, so the next attempt asks HTTP first again, and
+when HTTP and SSH both fail the entry carries the code of the last transport tried. The cadence is the same
 for both: a fleet export once per snapshot refresh interval; while any client has requested
 that machine's metrics within the last 60 seconds, a metrics-only export every 30 seconds;
 when every transport fails the delay doubles up to 5 minutes. A slow or failing remote
@@ -1253,17 +1259,43 @@ URL.
 Serves J1, J7. For every machine in `session_move.targets` that has an `ssh` section
 (`sessionmove.SSHConfig`: `host`, `user`, `wb_path`, validated by `SSHConfig.Validate`,
 loaded as `agents.LoadRemoteTargets` loads them), the SSH exporter MUST run `ssh` through
-`internal/remotessh` (`Resolve`, `Build`, a `Runner`, `NewLimitedBuffer` and
-`SanitizeDiagnostic`; `-T`, `BatchMode=yes`, no terminal) executing `<wb_path> cockpit export
+`internal/remotessh` (`Resolve`, `BuildWith`, a `Runner`, `NewLimitedBuffer` and
+`SanitizeDiagnostic`) executing `<wb_path> cockpit export
 --format json` (with `--metrics-only` for the metrics call), or `wb` when `wb_path` is empty.
 The argument vector is built from that configuration only: it never contains text from a
-published snapshot, from a request, or from the remote's output. The call has a connect
-timeout (`remotessh.ConnectTimeoutSeconds`, 10 seconds, which `remotessh.Build` fixes), a total
-timeout of 15 seconds, stdout capped at 8 MiB, and stderr sanitised and capped
-(`remotessh.MaxDiagnosticBytes`), never forwarded to any reader and kept only in the daemon's
-own log. The SSH login already carries full shell authority on the remote, so this adds no
+published snapshot, from a request, from the remote's output or from the environment, and
+nothing is written to the command's standard input. It is exactly `-T -o BatchMode=yes -o
+ConnectTimeout=5 -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes [-l <user>] --
+<host> <wb_path> cockpit export --format json [--metrics-only]`: no terminal, no prompt, no agent,
+X11 or port forwarding, the user as a fixed `-l` pair and the host after `--` so that neither can
+be read as an option. Host key checking is left to the user's ssh configuration and is never
+switched off. The route is held to `SSHConfig.Validate` again by the exporter before anything is
+started (a host, user or `wb_path` that starts with `-` or holds a space, a control character or
+a shell character has no SSH route), and that rule keeps every remote word to characters no shell
+interprets. The local `ssh` is resolved once (`remotessh.Resolve`; a lookup that fails is made
+again at the next export). The call has a connect timeout of 5 seconds (a parameter of
+`remotessh.BuildWith`; `remotessh.Build` keeps its 10 seconds for the other callers), a total
+timeout of 15 seconds, at which the daemon's runner (`remotessh.GroupRunner`) kills the whole
+process group of `ssh`, and the export returns only once the process has been waited for; stdout
+capped at 8 MiB and read only through `fleet.DecodeEnvelope`; and stderr capped and sanitised
+(`remotessh.SanitizeDiagnostic`, `remotessh.MaxDiagnosticBytes`), never forwarded to any reader
+and kept only in the daemon's own log, one line each time a machine's failure changes. A failure
+is told by the exit status, not by text: a call that did not end with a status (no local `ssh`,
+`ssh` that cannot be executed or was killed by a signal) is `ssh_unavailable`; status 255, which
+is `ssh`'s own, is `auth_failed` when stderr holds one of four fixed OpenSSH phrases compared
+without regard to case (`Permission denied (`, `Host key verification failed`, `Too many
+authentication failures`, `No more authentication methods`) and `ssh_unavailable` otherwise;
+status 127 or 126 (the remote shell found no `wb` it can run) is `wb_missing`; status 2 (wb's
+usage code: no `cockpit export`, or not one of its flags) is `wb_too_old`, and so is an answer
+that names an export `schema_version` other than this binary's; status 1 with the typed reason
+of REQ:cockpit-export-verb on stdout is `daemon_not_running`, `export_refused`, `bad_payload`
+(for `export_failed`) or the warming rule of REQ:remote-exporter-transports (for `warming_up`);
+the total timeout is `timeout`; any other status or reason is `bad_payload`. A daemon run by
+launchd or systemd may have no SSH agent socket: the daemon does not look for one, and the login
+then fails as `auth_failed`. The SSH login already carries full shell authority on the remote, so this adds no
 privilege; the daemon never forwards request-supplied text to the remote command and the
-Cockpit never exposes remote stderr. With no `ssh` section no process is started.
+Cockpit never exposes remote stderr. With no `ssh` section, or with `cockpit.remote_ssh: false`,
+no process is started and the local `ssh` is not even looked up.
 
 #### REQ: remote-envelope-is-untrusted
 
@@ -2554,7 +2586,7 @@ Then fleet exports run once per refresh interval throughout, metrics-only export
 Scenario: A hostile snapshot and request
 Given a fake `remotessh.Runner` recording its arguments, a target whose host, user and `wb_path` are configured, a published snapshot naming a machine `vm; touch x`, and a request with a hostile machine id
 When the daemon fetches and the metrics route is requested
-Then the argument vector equals `remotessh.Build(host, user, [wb_path, "cockpit", "export", "--format", "json"])` (with `--metrics-only` for the metrics call) and nothing else, derived from configuration only, `BatchMode=yes` is set, and no value from the snapshot or request appears in it
+Then the argument vector equals `remotessh.BuildWith(options, host, user, [wb_path, "cockpit", "export", "--format", "json"])` with the transport's fixed options (a 5 second connect timeout and no forwarding; with `--metrics-only` for the metrics call) and nothing else, derived from configuration only, `BatchMode=yes` is set, nothing is written to its standard input, and no value from the snapshot or request appears in it
 
 ### AC: export-without-a-daemon-fails-and-starts-nothing
 
@@ -2736,9 +2768,11 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 - A daemon run by launchd or systemd may have no SSH agent socket, so the key used for
   `session_move.targets.<machine>.ssh` must work non-interactively (an unencrypted key or
   a key in a keychain the service can read); a failure shows as `auth_failed`.
-- `remotessh.Build` fixes the connect timeout at 10 seconds, so the connect timeout of the
-  live route is 10 seconds, not the 5 first asked for; making it a parameter is part of
-  the export task.
+- `auth_failed` is told from `ssh_unavailable` by four fixed OpenSSH phrases on stderr, because
+  `ssh` exits 255 for every failure of its own. A client that words them differently is shown as
+  `ssh_unavailable`; both codes offer the same command to try by hand.
+- A remote wb that names another export `schema_version` is `wb_too_old` over SSH and
+  `bad_payload` over HTTP. Making the HTTP transport say `wb_too_old` too is a follow-up.
 - The "Invalid PrimeUI License" watermark is a pending founder decision about the
   PrimeUI licence and is not part of this Feature.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts
