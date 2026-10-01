@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { FleetStore, TaskView, Worktree, agentDetailLink, agentTitle, repositoryDetailLink, routeLabel, taskDetailLink, webAddress } from '@cockpit/fleet-data'
-import { WorktreePanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
+import { FleetStore, PanelCommand, RegistryAction, TaskView, Worktree, agentDetailLink, agentTitle, isOpenPullRequest, repositoryDetailLink, routeLabel, taskDetailLink, webAddress } from '@cockpit/fleet-data'
+import { branchCleanup, branchList } from '@cockpit/fleet-data/commands'
+import { PullRequestPanel, WorktreePanel, buildPullRequestPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
+import { ActionSlot } from '@cockpit/ui/control'
 import { CodeIndexPanel } from '@cockpit/ui/code-index-panel'
 import { PanelContent, PanelFact, PanelRelated } from '@cockpit/ui/panel'
 
@@ -12,7 +14,7 @@ import { PanelContent, PanelFact, PanelRelated } from '@cockpit/ui/panel'
  */
 @Component({
   selector: 'app-worktree-panel',
-  imports: [PanelContent, CodeIndexPanel],
+  imports: [PanelContent, CodeIndexPanel, ActionSlot],
   templateUrl: './worktree-panel.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -20,6 +22,11 @@ export class WorktreePanelView {
   readonly id = input.required<string>()
   /** The detail page, not the side panel. */
   readonly page = input(false)
+  /**
+   * What the action registry returned, by target (`worktree:<id>`, `pull_request:<id>`). The page that has the
+   * cockpit-actions client passes it; without it, or without an entry for a target, no action area is drawn.
+   */
+  readonly registry = input<ReadonlyMap<string, readonly RegistryAction[]>>()
 
   protected readonly store = inject(FleetStore)
   /** The worktree's entry and its panel data; none for an id the document does not list. */
@@ -27,6 +34,35 @@ export class WorktreePanelView {
     const model = this.store.model()
     const entry = model.worktreeById(this.id())
     return entry === undefined ? undefined : { entry, view: buildWorktreePanel(model, entry.id) as WorktreePanel }
+  })
+
+  /** The action slots of this worktree and of its pull requests, only for entries of this machine and only where the registry offered something. */
+  protected readonly slots = computed(() => {
+    const { entry } = this.data() as { entry: Worktree }
+    const pullRequests = this.store.model().worktreePullRequests.get(entry.id) ?? []
+    const targets = [...(entry.route === 'local' ? [`worktree:${entry.id}`] : []), ...pullRequests.filter((pr) => pr.route === 'local').map((pr) => `pull_request:${pr.id}`)]
+    return targets.flatMap((target) => {
+      const actions = this.registry()?.get(target)
+      return actions && actions.length > 0 ? [{ target, actions }] : []
+    })
+  })
+
+  /** The library's worktree commands, this branch's `wb branch` commands (a dry-run plan for cleanup) and `wb pr land` for each open pull request, each labelled where it runs. */
+  protected readonly commands = computed<PanelCommand[]>(() => {
+    const { entry, view } = this.data() as { entry: Worktree; view: WorktreePanel }
+    const model = this.store.model()
+    const target = model.targetOf(entry)
+    const land = (model.worktreePullRequests.get(entry.id) ?? []).filter(isOpenPullRequest).flatMap((pr) => {
+      const panel = buildPullRequestPanel(model, pr.id) as PullRequestPanel
+      // A pull request with no repository has no command to copy.
+      return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
+    })
+    return [
+      ...view.commands,
+      { title: 'List this branch', command: branchList(view.summary.repository, view.summary.branch, target) },
+      { title: 'Plan branch cleanup (dry run)', command: branchCleanup(view.summary.repository, view.summary.branch, target) },
+      ...land,
+    ]
   })
 
   protected readonly facts = computed<PanelFact[]>(() => {

@@ -1,5 +1,12 @@
 @if (data(); as data) {
-  <app-panel-content kind="Worktree" [heading]="data.entry.task" [facts]="facts()" [related]="related()" [commands]="data.view.commands" [raw]="data.view.raw" [page]="page()">
+  <app-panel-content kind="Worktree" [heading]="data.entry.task" [facts]="facts()" [related]="related()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
+    @if (slots().length > 0) {
+      <div panelActions class="slots">
+        @for (slot of slots(); track slot.target) {
+          <app-action-slot [actions]="slot.actions" [target]="slot.target" />
+        }
+      </div>
+    }
     <app-code-index-panel [entry]="data.entry" [states]="data.entry.code_index" [provider]="store.codeIndexProvider()" [now]="store.now()" />
   </app-panel-content>
 }
