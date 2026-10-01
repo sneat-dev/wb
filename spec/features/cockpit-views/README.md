@@ -21,7 +21,7 @@ views are where the actions of [cockpit-actions](../cockpit-actions/README.md)
 live, because the Cockpit is the control panel of the fleet and not only a
 screen to read. The fleet read model changes (schema version 2) so that the
 page is small, and gains pull request state and checks, agent activity, agents
-and load from other machines, and landed-task throughput.
+and load from other machines, and sealed-work throughput.
 
 ## Problem
 
@@ -446,8 +446,9 @@ REQ:remote-error-is-visible for a remote error.
 
 Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone, Home MUST show
 two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
-"Time to land", the claim-to-landed durations of tasks landed in the last 30 days with the
-slowest five named, and "Landed per day" over the last 30 days. They are non-linking
+"Finished per day" over the last 30 days (stacked bars of `finished` and `dropped`) and
+"Time to finish" (the slowest five finished tasks named, with the `median_seconds` and
+`p90_seconds` in the caption). They are non-linking
 (REQ:every-number-is-a-link). When the block is absent the charts are not rendered. Each chart
 has a text alternative, a visually hidden table of the same numbers, and uses the theme's colours
 in light and dark. The charts never sit above sections 1 to 3.
@@ -767,8 +768,10 @@ A client's notion "running" is derived, not a field: a session `live` or a run `
 agents of one machine are capped at 200 at read and at publish, and every string is length-capped.
 
 **Throughput** (`throughput`): `window_days` int (30); `per_day` list of `date` string
-(`YYYY-MM-DD`) and `landed` int; `slowest` list of at most 5 of `task` string, `duration_seconds`
-int and `landed_at` time; `capped` bool opt. Local only.
+(`YYYY-MM-DD`), `finished` int, `dropped` int and `landed` int opt. (above zero only);
+`slowest` list of at most 5 of `task` string, `duration_seconds` int and `landed_at` time (the
+time the task was sealed); `median_seconds` int opt.; `p90_seconds` int opt.; `capped` bool opt.
+Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
@@ -956,31 +959,51 @@ machine's agents as `cached` with the age of the snapshot and with no actions.
 
 #### REQ: throughput-block
 
-The fleet document carries an optional `throughput` block: `window_days` (30),
-`per_day` (a list of `date` and `landed`, the number of tasks landed that day),
-`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`) and
-`capped` (true only when a bound below cut the scan). A collector reads this
-machine's sealed terminal records (`worktreeclaims.TerminalRecord`, the files
+The fleet document carries an optional `throughput` block that reports what this
+machine's sealed work records prove, and never guesses a merge: `window_days` (30),
+`per_day` (a list of `date`, `finished`, `dropped` and, when above zero, `landed`),
+`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`, the time
+the task was sealed), `median_seconds` and `p90_seconds` (the median and 90th
+percentile, nearest rank, of the finished durations in the window, absent when no task
+finished) and `capped` (true only when a bound below cut the scan). A collector reads
+this machine's sealed terminal records (`worktreeclaims.TerminalRecord`, the files
 `<wb home>/worklogs/<task>/runs/<run>/terminals/<claim id>.json` of every WB home the
-projects root resolves to, read-only), and counts a task as landed when its
-`worktree_disposition` is `landed`, at its `sealed_at`; the duration is `sealed_at`
-minus the claim's `recorded_at` (the claim record carries no `created_at`: its
-`recorded_at` is the time the claim was made, kept unchanged in the terminal). The
-Work Log retirement archives themselves (`worktreeretire.Manifest` and `Receipt`)
-carry no timestamps and are not the source.
+projects root resolves to, read-only) and counts each by its `worktree_disposition`, at
+its `sealed_at`; the duration is `sealed_at` minus the claim's `recorded_at` (the claim
+record carries no `created_at`: its `recorded_at` is the time the claim was made, kept
+unchanged in the terminal). The Work Log retirement archives themselves
+(`worktreeretire.Manifest` and `Receipt`) carry no timestamps and are not the source.
+
+| `worktree_disposition` | Counts as | Why |
+|---|---|---|
+| `landed` | finished, and `landed` | sealed by `wb worktree log finalize --apply` |
+| `removed` | finished | cleanup of finished work |
+| `retired` | finished | retired after archiving |
+| `recycled` | finished | the worktree was reused after the work |
+| `discarded` | dropped | work thrown away |
+| `superseded` | dropped | replaced by other work |
+| `not_landed` | dropped | finalized as a failure |
+| `orphaned` | dropped | its worktree was gone |
+| `handoff` | neither | the work continues elsewhere |
+| any other value | neither | not counted |
 
 The rules of the block:
 
 - The window is today and the 29 UTC days before it; `date` is a UTC `YYYY-MM-DD`;
-  `per_day` lists only the days with a landing, oldest first, and `slowest` the
-  longest durations first (ties: later landing, then name). Both are lists, never null.
-- A task landed in several repositories counts once on each day it landed, and
-  appears once among the slowest, with its longest duration.
-- A record is usable only when it is `landed`, has a `sealed_at` and a `recorded_at`
-  both after 1999, a `sealed_at` not before its `recorded_at`, a duration of at
-  most ten years, and a task name (else its effort id) that is not empty after
-  control and bidirectional characters are removed (the name is cut at 200
-  characters). A landing later than five seconds ahead of the clock is not counted.
+  `per_day` lists only the days with a sealing, oldest first, and `slowest` the
+  longest durations first (ties: later sealing, then name). Both are lists, never null.
+- A task counts once on each day it was sealed, in the better category: `finished` wins
+  over `dropped`, so a task sealed `removed` and `discarded` on one day is one finished
+  task. `landed` is how many of that day's finished tasks were sealed `landed` (a subset
+  of `finished`), absent when none, so a client can show it once `wb` seals landings with
+  evidence. A task finished in several repositories counts once a day, appears once among
+  the slowest and in the percentiles, with its longest finished duration.
+- `slowest`, `median_seconds` and `p90_seconds` use finished tasks only, in the window.
+- A record is usable only when its disposition is in the table (not `handoff`), it has a
+  `sealed_at` and a `recorded_at` both after 1999, a `sealed_at` not before its
+  `recorded_at`, a duration of at most ten years, and a task name (else its effort id) that
+  is not empty after control and bidirectional characters are removed (the name is cut at
+  200 characters). A sealing later than five seconds ahead of the clock is not counted.
 - When no terminal record is usable the block is omitted and the charts of
   REQ:home-charts are not shown; no value is invented. A usable record outside the
   window keeps the block, with empty lists.
@@ -989,8 +1012,16 @@ The rules of the block:
   records unread), keeps what it learns by each record's identity (path, size and
   modification time) and reads again only a record that is new or changed; when the
   UTC day changes it recomputes the window from what it holds without listing. It
-  never runs on a request. It reads at most 1,000 records in a scan and knows at
-  most 20,000; either bound sets `capped` and is logged.
+  never runs on a request.
+- It reads newest first: the candidates are sorted by file modification time, newest
+  first, and a file older than the window plus one day is not read at all (a record's
+  file is written when it is sealed, so its time is its seal time or later), so one pass
+  covers the window. The bounds are safety only: at most 5,000 records read in a scan and
+  20,000 known; either sets `capped` and is logged.
+- Listing is cached per directory: a task's `runs` directory and each run's `terminals`
+  directory are listed again only when their modification time moved or is within two
+  seconds of the listing (a record is immutable, and sealing one, or starting a run,
+  moves its directory's time), so an unchanged task costs two stats.
 - The block is local only: a machine's throughput is read from that machine, so
   `NewEnvelope` never exports it and the strict decoder refuses an envelope that
   carries one.
@@ -1815,7 +1846,7 @@ Then the first shows no Fleet health line, the second shows one line per problem
 Scenario: With and without throughput, and non-linking
 Given a document with a `throughput` block of 30 days and one without
 When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
-Then the first shows "Time to land" with the slowest five named and "Landed per day", each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
+Then the first shows "Time to finish" with the slowest five named and the median and 90th percentile in its caption, and "Finished per day" as stacked finished and dropped bars, each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
 
 ### AC: home-phone-layout
 
@@ -2240,14 +2271,14 @@ Given a publisher with `remote.publish.agents` and `remote.publish.metrics` each
 When snapshots are encoded, decoded by the old decoder and published through each hub
 Then agents and metrics are present only when their flag is true, `schema_version` is unchanged, the old decoder returns the snapshot without error and without those fields, the new hub model accepts and stores them, the older hub's 400 is followed by one retry without the optional fields and a recorded diagnostic, and the local fleet document shows that machine's agents as `cached` with the snapshot's age and no actions
 
-### AC: throughput-block-from-terminal-records
+### AC: throughput-block-from-sealed-records
 
 **Requirements:** cockpit-views#req:throughput-block
 
-Scenario: Landed, orphaned and old terminals
-Given sealed terminal records: three tasks landed on two days within 30 days with known claim creation times, one with disposition `orphaned`, and one landed 40 days ago
+Scenario: Every disposition, two days and an old record
+Given sealed terminal records on two days within 30 days: tasks sealed `landed`, `recycled` and `removed` with known claim `recorded_at` times, a task sealed `discarded` and `landed` on the same day, one `orphaned`, one `handoff`, and one landed 40 days ago
 When the collector runs twice and the fleet document is requested
-Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `slowest` of at most five tasks with `duration_seconds` equal to `sealed_at` minus the claim's `recorded_at`, excludes the orphaned and the old one, and the second run reads no record again
+Then `throughput` carries `window_days` 30, `per_day` with `finished`, `dropped` and `landed` counts for the two days (one task once a day, finished winning over dropped, `handoff` counted in neither, the old record excluded), `slowest` of at most five finished tasks with `duration_seconds` equal to `sealed_at` minus the claim's `recorded_at`, and the `median_seconds` and `p90_seconds` of the finished durations by nearest rank, and the second run reads no record again
 
 ### AC: throughput-is-omitted-without-timestamps
 
@@ -2256,7 +2287,7 @@ Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `
 Scenario: No usable record
 Given no sealed terminal record that has both a claim creation time and a sealed time
 When the fleet document is requested
-Then it has no `throughput` block and invents no value
+Then it has no `throughput` block and invents no value (a record with a `handoff` or unknown disposition, or a missing timestamp, is not usable)
 
 ### AC: sampler-fills-a-ring-buffer
 
@@ -2530,6 +2561,10 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 
 ## Open Questions
 
+- `wb worktree land` and cleanup seal most merged work as `removed` (3,410 of 3,679 terminal
+  records on the founder's machine, against 62 `landed`), so the Cockpit can report finished
+  work but not true landings. Sealing `landed` with merge evidence would let it show them: a
+  follow-up for the worktree-lifecycle Feature, not specified here.
 - On Windows the owner-process liveness read for `owner_state` cannot tell a gone process from a
   live one (`Signal(0)` is unsupported there), so a Windows machine's local worktrees read as
   `unknown` and its `boot_time` from `GetTickCount64` is not checked for 32-bit truncation.

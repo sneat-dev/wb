@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,35 @@ func sealedFile(t *testing.T, home, task, run string, n int, record worktreeclai
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if !record.SealedAt.IsZero() {
+		if err := os.Chtimes(path, record.SealedAt, record.SealedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return path
+}
+
+// settle gives every directory under dir a modification time an hour old, so
+// the source trusts a listing of it, as it does a directory nothing has sealed
+// into for a while.
+func settle(t *testing.T, dir string) {
+	t.Helper()
+	old := time.Now().Add(-time.Hour)
+	var directories []string
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && entry.IsDir() {
+			directories = append(directories, path)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := len(directories) - 1; index >= 0; index-- {
+		if err := os.Chtimes(directories[index], old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // tree lists every path under dir with its mode, size and modification time.
@@ -109,7 +138,7 @@ func TestE2ELocalTerminalsListAndReadTheRealWorkLogAndWriteNothing(t *testing.T)
 		t.Fatal(err)
 	}
 
-	source := LocalTerminals{Homes: []string{home}}
+	source := &LocalTerminals{Homes: []string{home}}
 	before := tree(t, home)
 	files, truncated, err := source.List(t.Context(), 100)
 	if err != nil || truncated {
@@ -171,7 +200,7 @@ func cancelled(t *testing.T) context.Context {
 func TestE2ELocalTerminalsWithNoWorkLogHaveNothing(t *testing.T) {
 	t.Parallel()
 	root := realTempDir(t)
-	source := LocalTerminals{Homes: []string{filepath.Join(root, "absent")}}
+	source := &LocalTerminals{Homes: []string{filepath.Join(root, "absent")}}
 	files, truncated, err := source.List(t.Context(), 10)
 	if err != nil || truncated || len(files) != 0 {
 		t.Errorf("List = %v, %v, %v", files, truncated, err)
@@ -179,51 +208,59 @@ func TestE2ELocalTerminalsWithNoWorkLogHaveNothing(t *testing.T) {
 }
 
 // TestE2EThroughputScanCostOn3000Records measures the collector on a real
-// directory of 3,000 sealed records (the real fleet has about 2,100 claims): a
-// cold scan reads every record, a warm scan within the same pass reads none, and
-// a scan after one record changed reads exactly it. The timings are logged.
+// directory of 3,000 sealed records spread over 35 days (the real fleet has
+// about 3,700): a cold scan reads only the files within the window and a day,
+// a warm scan reads none and, once the directories are settled, lists none, and
+// a record sealed into a task's terminals directory is found and read alone. The
+// timings are logged.
 func TestE2EThroughputScanCostOn3000Records(t *testing.T) {
 	t.Parallel()
 	root := realTempDir(t)
 	home := filepath.Join(root, ".wb")
 	now := time.Now().UTC()
 	const records = 3000
-	var last string
+	wantReads := 0
 	for n := range records {
 		sealed := now.Add(-time.Duration(n) * 17 * time.Minute)
-		last = sealedFile(t, home, "task-"+claimIDOf(n)[:12], "run-1", n, landedTerminal("task-"+claimIDOf(n)[:12], sealed.Add(-time.Duration(n%90)*time.Hour), sealed))
+		name := "task-" + claimIDOf(n)[:12]
+		sealedFile(t, home, name, "run-1", n, terminal(name, "removed", sealed.Add(-time.Duration(n%90)*time.Hour), sealed))
+		if sealed.After(now.Add(-readHorizon)) {
+			wantReads++
+		}
 	}
-	counting := &countingTerminals{TerminalRecords: LocalTerminals{Homes: []string{home}}}
-	collector := newThroughputCollector(counting, 0, 5000, 0, func(string, ...any) {})
+	settle(t, home)
+	counting := &countingTerminals{TerminalRecords: &LocalTerminals{Homes: []string{home}}}
+	collector := newThroughputCollector(counting, 0, 0, 0, func(string, ...any) {})
 	started := time.Now()
 	block := collector.collect(t.Context(), now)
 	cold := time.Since(started)
-	if block == nil || counting.reads != records || block.Capped {
-		t.Fatalf("cold: block %+v, reads %d", block, counting.reads)
+	if block == nil || counting.reads != wantReads || block.Capped {
+		t.Fatalf("cold: block %+v, reads %d, want %d (the files within the window and a day)", block, counting.reads, wantReads)
 	}
+	collector.scanned = time.Time{}
+	collector.collect(t.Context(), now) // lists every directory once more: the first cache fill
 	collector.scanned = time.Time{}
 	started = time.Now()
 	collector.collect(t.Context(), now)
 	warm := time.Since(started)
-	if counting.reads != records {
-		t.Fatalf("warm scan read %d records again", counting.reads-records)
+	if counting.reads != wantReads {
+		t.Fatalf("a warm scan read %d records again", counting.reads-wantReads)
 	}
-	body := []byte("{}")
-	if err := os.WriteFile(last, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	name := "task-" + claimIDOf(0)[:12]
+	sealed := time.Now().UTC()
+	sealedFile(t, home, name, "run-1", records+1, terminal(name, "landed", sealed.Add(-time.Hour), sealed))
 	collector.scanned = time.Time{}
-	collector.collect(t.Context(), now)
-	if counting.reads != records+1 {
-		t.Errorf("a changed record caused %d reads, want 1", counting.reads-records)
+	collector.collect(t.Context(), time.Now().UTC())
+	if counting.reads != wantReads+1 {
+		t.Errorf("a record sealed into a known directory caused %d reads, want 1", counting.reads-wantReads)
 	}
-	t.Logf("3,000 records: cold scan %v (3,000 reads), warm scan %v (0 reads), %d landed in the window", cold, warm, countLanded(block))
+	t.Logf("3,000 records over 35 days: cold scan %v (%d reads), warm scan %v (0 reads, directory listings cached), %d finished in the window", cold, wantReads, warm, finishedIn(block))
 }
 
-func countLanded(block *Throughput) int {
+func finishedIn(block *Throughput) int {
 	total := 0
 	for _, day := range block.PerDay {
-		total += day.Landed
+		total += day.Finished
 	}
 	return total
 }
@@ -246,7 +283,7 @@ func TestE2ELocalTerminalsResolveTheirHomes(t *testing.T) {
 	root := realTempDir(t)
 	home := filepath.Join(root, ".wb")
 	count := 0
-	for _, found := range (LocalTerminals{ProjectsRoot: root, Home: home}).homes() {
+	for _, found := range NewLocalTerminals(root, home).homes() {
 		if found == home {
 			count++
 		}
@@ -254,7 +291,104 @@ func TestE2ELocalTerminalsResolveTheirHomes(t *testing.T) {
 	if count != 1 {
 		t.Errorf("the home appears %d times", count)
 	}
-	if homes := (LocalTerminals{ProjectsRoot: root}).homes(); len(homes) == 0 || homes[0] != home {
+	if homes := (&LocalTerminals{ProjectsRoot: root}).homes(); len(homes) == 0 || homes[0] != home {
 		t.Errorf("homes from the projects root = %v, want %s first", homes, home)
+	}
+}
+
+// TestE2ELocalTerminalsListingIsCachedPerDirectory proves a settled directory is
+// listed from the cache, and that sealing a record into a known terminals
+// directory, or starting a new run in a known task, is found by the next
+// listing; and that a directory touched within the racy window is listed anew.
+func TestE2ELocalTerminalsListingIsCachedPerDirectory(t *testing.T) {
+	t.Parallel()
+	root := realTempDir(t)
+	home := filepath.Join(root, ".wb")
+	now := time.Now().UTC()
+	sealedFile(t, home, "task-a", "run-1", 1, terminal("task-a", "removed", now.Add(-3*time.Hour), now.Add(-2*time.Hour)))
+	sealedFile(t, home, "task-b", "run-1", 2, terminal("task-b", "removed", now.Add(-3*time.Hour), now.Add(-2*time.Hour)))
+	source := &LocalTerminals{Homes: []string{home}, Now: time.Now}
+	// A task with no runs directory and a run with no terminals directory.
+	if err := os.MkdirAll(filepath.Join(home, "worklogs", "task-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "worklogs", "task-b", "runs", "run-open", "claims"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	list := func() int {
+		t.Helper()
+		files, _, err := source.List(t.Context(), 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(files)
+	}
+	if got := list(); got != 2 {
+		t.Fatalf("listed %d, want 2", got)
+	}
+	// Directories touched just now are not trusted: a record sealed into one
+	// within the same instant is still found.
+	sealedFile(t, home, "task-a", "run-1", 3, terminal("task-a", "removed", now.Add(-3*time.Hour), now.Add(-time.Hour)))
+	if got := list(); got != 3 {
+		t.Fatalf("listed %d after a record in a racy directory, want 3", got)
+	}
+	settle(t, home)
+	list() // fills the cache from settled directories
+	// A planted file the cache would not see is proof the listing is cached: an
+	// entry added without moving the directory's time is not found.
+	dir := filepath.Join(home, "worklogs", "task-a", "runs", "run-1", "terminals")
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedFile(t, home, "task-a", "run-1", 4, terminal("task-a", "removed", now.Add(-3*time.Hour), now.Add(-time.Hour)))
+	if err := os.Chtimes(dir, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); got != 3 {
+		t.Fatalf("listed %d: a settled directory with an unchanged time must come from the cache", got)
+	}
+	// Sealing moves the directory's time, so the new record is found.
+	if err := os.Chtimes(dir, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); got != 4 {
+		t.Fatalf("listed %d after the directory's time moved, want 4", got)
+	}
+	// A new run in a known task moves the runs directory's time.
+	settle(t, home)
+	list()
+	sealedFile(t, home, "task-b", "run-2", 5, terminal("task-b", "removed", now.Add(-3*time.Hour), now.Add(-time.Hour)))
+	if got := list(); got != 5 {
+		t.Fatalf("listed %d after a new run, want 5", got)
+	}
+}
+
+// TestE2ELocalTerminalsSkipAnUnreadableDirectory: a terminals directory that
+// cannot be read is skipped and not remembered as empty.
+func TestE2ELocalTerminalsSkipAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("directory permissions are not enforced here")
+	}
+	root := realTempDir(t)
+	home := filepath.Join(root, ".wb")
+	now := time.Now().UTC()
+	path := sealedFile(t, home, "task-a", "run-1", 1, terminal("task-a", "removed", now.Add(-3*time.Hour), now.Add(-2*time.Hour)))
+	dir := filepath.Dir(path)
+	settle(t, home)
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	source := &LocalTerminals{Homes: []string{home}}
+	if files, _, err := source.List(t.Context(), 10); err != nil || len(files) != 0 {
+		t.Fatalf("List = %v, %v", files, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if files, _, _ := source.List(t.Context(), 10); len(files) != 1 {
+		t.Errorf("listed %d after the directory became readable, want 1", len(files))
 	}
 }

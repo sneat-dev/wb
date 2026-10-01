@@ -80,7 +80,7 @@ func sentinelSources() *fakeSources {
 func sentinelTerminals() *fakeTerminals {
 	record := filled[worktreeclaims.TerminalRecord]()
 	now := newClock().Now()
-	record.Disposition, record.Task = "landed", "task-landed"
+	record.Disposition, record.Task = "removed", "task-landed"
 	record.RecordedAt, record.SealedAt = now.Add(-3*time.Hour), now.Add(-time.Hour)
 	source := newFakeTerminals()
 	source.put(sentinel+"path/to/terminal.json", now, record)
@@ -160,7 +160,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 		t.Fatalf("the document carries a forbidden source field: ...%s...", body[start:min(len(body), start+60)])
 	}
 	for _, want := range []string{
-		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
+		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
 		`"desktop"`, `"v0.9.0"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -177,8 +177,8 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	entry := []string{"id", "machine", "machine_id", "route", "observed_at"}
 	want := map[string][]string{
 		"Document":         {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "refresh_interval_seconds", "machines", "repositories", "worktrees", "pull_requests", "agents", "agents_truncated", "pull_requests_throttled", "throughput"},
-		"Throughput":       {"window_days", "per_day", "slowest", "capped"},
-		"ThroughputDay":    {"date", "landed"},
+		"Throughput":       {"window_days", "per_day", "slowest", "median_seconds", "p90_seconds", "capped"},
+		"ThroughputDay":    {"date", "finished", "dropped", "landed"},
 		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
 		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time"}, entry...),
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),

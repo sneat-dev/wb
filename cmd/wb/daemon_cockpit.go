@@ -95,7 +95,7 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
 		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
-		Terminals:    cockpitfleet.LocalTerminals{ProjectsRoot: projectsRoot, Home: home},
+		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}

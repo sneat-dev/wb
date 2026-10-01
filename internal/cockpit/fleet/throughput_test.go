@@ -111,11 +111,11 @@ func throughputOf(t *testing.T, snapshotter *Snapshotter) *Throughput {
 	return snapshotter.Document().Throughput
 }
 
-// TestThroughputBlockFromTerminalRecords is
-// cockpit-views#ac:throughput-block-from-terminal-records: three tasks landed
-// on two days, one orphaned and one landed 40 days ago, through two runs of the
-// collector and a request for the document.
-func TestThroughputBlockFromTerminalRecords(t *testing.T) {
+// TestThroughputBlockFromSealedRecords is
+// cockpit-views#ac:throughput-block-from-sealed-records: sealed records of every
+// disposition on two days, an old one, through two runs of the collector and a
+// request for the document.
+func TestThroughputBlockFromSealedRecords(t *testing.T) {
 	t.Parallel()
 	source := newFakeTerminals()
 	snapshotter, clock := throughputSnapshotter(source, nil)
@@ -123,15 +123,18 @@ func TestThroughputBlockFromTerminalRecords(t *testing.T) {
 	yesterday := now.AddDate(0, 0, -1)
 	source.put("a", now, landedTerminal("task-a", now.Add(-5*time.Hour), now.Add(-2*time.Hour)))
 	source.put("b", now, landedTerminal("task-b", yesterday.Add(-48*time.Hour), yesterday))
-	source.put("c", now, landedTerminal("task-c", yesterday.Add(-time.Hour), yesterday.Add(-30*time.Minute)))
+	source.put("c", now, terminal("task-c", "recycled", yesterday.Add(-time.Hour), yesterday.Add(-30*time.Minute)))
+	source.put("r", now, terminal("task-r", "removed", now.Add(-6*time.Hour), now.Add(-90*time.Minute)))
+	source.put("a-dropped", now, terminal("task-a", "discarded", now.Add(-5*time.Hour), now.Add(-time.Hour)))
 	source.put("orphaned", now, terminal("task-o", "orphaned", now.Add(-3*time.Hour), now.Add(-time.Hour)))
+	source.put("handoff", now, terminal("task-h", "handoff", now.Add(-3*time.Hour), now.Add(-time.Hour)))
 	source.put("old", now, landedTerminal("task-old", now.AddDate(0, 0, -41), now.AddDate(0, 0, -40)))
 	server := newCockpitServer(t, snapshotter)
 
 	refreshAndSettle(t, snapshotter)
 	_, firstReads := source.counts()
 	refreshAndSettle(t, snapshotter)
-	if lists, reads := source.counts(); reads != firstReads || lists != 1 || firstReads != 5 {
+	if lists, reads := source.counts(); reads != firstReads || lists != 1 || firstReads != 8 {
 		t.Fatalf("lists %d, reads %d then %d: the second run must read nothing", lists, firstReads, reads)
 	}
 
@@ -145,12 +148,16 @@ func TestThroughputBlockFromTerminalRecords(t *testing.T) {
 	if got == nil || got.WindowDays != 30 || got.Capped {
 		t.Fatalf("throughput = %+v", got)
 	}
-	wantDays := []ThroughputDay{{Date: "2026-09-30", Landed: 2}, {Date: "2026-10-01", Landed: 1}}
+	// 09-30: b (landed) and c (recycled) finished. 10-01: a (landed, and dropped
+	// the same day: finished wins) and r (removed) finished, o (orphaned)
+	// dropped, h (handoff) neither.
+	wantDays := []ThroughputDay{{Date: "2026-09-30", Finished: 2, Landed: 1}, {Date: "2026-10-01", Finished: 2, Dropped: 1, Landed: 1}}
 	if fmt.Sprint(got.PerDay) != fmt.Sprint(wantDays) {
 		t.Errorf("per_day = %+v, want %+v", got.PerDay, wantDays)
 	}
 	want := []ThroughputTask{
 		{Task: "task-b", DurationSeconds: 48 * 3600, LandedAt: yesterday},
+		{Task: "task-r", DurationSeconds: 4*3600 + 1800, LandedAt: now.Add(-90 * time.Minute)},
 		{Task: "task-a", DurationSeconds: 3 * 3600, LandedAt: now.Add(-2 * time.Hour)},
 		{Task: "task-c", DurationSeconds: 1800, LandedAt: yesterday.Add(-30 * time.Minute)},
 	}
@@ -162,6 +169,10 @@ func TestThroughputBlockFromTerminalRecords(t *testing.T) {
 			t.Errorf("slowest[%d] = %+v, want %+v", index, got.Slowest[index], task)
 		}
 	}
+	// Nearest rank over 1800, 10800, 16200 and 172800 seconds.
+	if got.MedianSeconds == nil || *got.MedianSeconds != 10800 || got.P90Seconds == nil || *got.P90Seconds != 172800 {
+		t.Errorf("median %v, p90 %v, want 10800 and 172800", got.MedianSeconds, got.P90Seconds)
+	}
 	// The export never carries it.
 	if snapshotter.Export(false).Fleet.Throughput != nil {
 		t.Error("the export carries throughput")
@@ -169,8 +180,9 @@ func TestThroughputBlockFromTerminalRecords(t *testing.T) {
 }
 
 // TestThroughputIsOmittedWithoutTimestamps is
-// cockpit-views#ac:throughput-is-omitted-without-timestamps: no landed record
-// with both timestamps means no block and no invented value.
+// cockpit-views#ac:throughput-is-omitted-without-timestamps: no sealed record
+// with both timestamps and a counted disposition means no block and no invented
+// value.
 func TestThroughputIsOmittedWithoutTimestamps(t *testing.T) {
 	t.Parallel()
 	source := newFakeTerminals()
@@ -179,7 +191,8 @@ func TestThroughputIsOmittedWithoutTimestamps(t *testing.T) {
 	now := clock.Now()
 	source.put("no-claim-time", now, landedTerminal("a", time.Time{}, now))
 	source.put("no-seal-time", now, landedTerminal("b", now.Add(-time.Hour), time.Time{}))
-	source.put("orphaned", now, terminal("c", "orphaned", now.Add(-time.Hour), now))
+	source.put("handoff", now, terminal("c", "handoff", now.Add(-time.Hour), now))
+	source.put("unknown", now, terminal("d", "mystery", now.Add(-time.Hour), now))
 	source.put("unreadable", now, worktreeclaims.TerminalRecord{})
 	source.readErr["unreadable"] = errors.New("denied")
 	refreshAndSettle(t, snapshotter)
@@ -200,9 +213,9 @@ func TestThroughputWithNoSourceHasNoBlock(t *testing.T) {
 	}
 }
 
-// TestThroughputCountsATaskOnceAPerDayAcrossRepositories pins the rule: a task
-// landed in several repositories counts once on a day and appears once among
-// the slowest, with its longest duration.
+// TestThroughputCountsATaskOncePerDayAcrossRepositories pins the rule: a task
+// sealed in several repositories counts once on a day (finished winning over
+// dropped) and appears once among the slowest, with its longest duration.
 func TestThroughputCountsATaskOncePerDayAcrossRepositories(t *testing.T) {
 	t.Parallel()
 	source := newFakeTerminals()
@@ -210,18 +223,20 @@ func TestThroughputCountsATaskOncePerDayAcrossRepositories(t *testing.T) {
 	now := clock.Now()
 	day := now.Add(-2 * time.Hour)
 	source.put("repo-1", now, landedTerminal("shared", day.Add(-time.Hour), day))
-	source.put("repo-2", now, landedTerminal("shared", day.Add(-3*time.Hour), day))
-	source.put("repo-3", now, landedTerminal("shared", day.Add(-2*time.Hour), day.Add(time.Minute)))
+	source.put("repo-2", now, terminal("shared", "removed", day.Add(-3*time.Hour), day))
+	source.put("repo-3", now, terminal("shared", "discarded", day.Add(-2*time.Hour), day.Add(time.Minute)))
 	source.put("other", now, landedTerminal("other", day.Add(-time.Hour), day))
-	source.put("next-day", now, landedTerminal("shared", now.AddDate(0, 0, -3), now.AddDate(0, 0, -2)))
+	source.put("dropped-only", now, terminal("dropped-only", "superseded", day.Add(-time.Hour), day))
+	source.put("dropped-only-2", now, terminal("dropped-only", "not_landed", day.Add(-time.Hour), day))
+	source.put("next-day", now, terminal("shared", "retired", now.AddDate(0, 0, -3), now.AddDate(0, 0, -2)))
 	refreshAndSettle(t, snapshotter)
 
 	got := throughputOf(t, snapshotter)
-	if fmt.Sprint(got.PerDay) != fmt.Sprint([]ThroughputDay{{Date: "2026-09-29", Landed: 1}, {Date: "2026-10-01", Landed: 2}}) {
+	if fmt.Sprint(got.PerDay) != fmt.Sprint([]ThroughputDay{{Date: "2026-09-29", Finished: 1}, {Date: "2026-10-01", Finished: 2, Dropped: 1, Landed: 2}}) {
 		t.Errorf("per_day = %+v", got.PerDay)
 	}
 	if len(got.Slowest) != 2 || got.Slowest[0].Task != "shared" || got.Slowest[0].DurationSeconds != 24*3600 || got.Slowest[1].Task != "other" {
-		t.Errorf("slowest = %+v, want shared at its longest (the one-day landing), then other", got.Slowest)
+		t.Errorf("slowest = %+v, want shared at its longest (the one-day sealing), then other", got.Slowest)
 	}
 }
 
@@ -319,7 +334,7 @@ func TestThroughputScansOnItsOwnCadence(t *testing.T) {
 	source.put("a", now, landedTerminal("task-a", now.Add(-4*time.Hour), now.Add(-2*time.Hour)))
 	source.put("edge", now, landedTerminal("task-edge", now.AddDate(0, 0, -40), now.AddDate(0, 0, -29)))
 	refreshAndSettle(t, snapshotter)
-	if got := throughputOf(t, snapshotter); fmt.Sprint(got.PerDay) != fmt.Sprint([]ThroughputDay{{Date: "2026-09-02", Landed: 1}, {Date: "2026-10-01", Landed: 1}}) {
+	if got := throughputOf(t, snapshotter); fmt.Sprint(got.PerDay) != fmt.Sprint([]ThroughputDay{{Date: "2026-09-02", Finished: 1, Landed: 1}, {Date: "2026-10-01", Finished: 1, Landed: 1}}) {
 		t.Fatalf("per_day = %+v: the record landed 29 days ago is the oldest of the window", got.PerDay)
 	}
 	clock.advance(time.Hour) // same day
@@ -351,13 +366,13 @@ func TestThroughputReadsAreCappedAndResumed(t *testing.T) {
 	}
 	refreshAndSettle(t, snapshotter)
 	got := throughputOf(t, snapshotter)
-	if _, reads := source.counts(); reads != 2 || !got.Capped || got.PerDay[0].Landed != 2 {
+	if _, reads := source.counts(); reads != 2 || !got.Capped || got.PerDay[0].Finished != 2 {
 		t.Fatalf("reads %d, throughput %+v: the first scan must read 2 and say it is capped", reads, got)
 	}
 	refreshAndSettle(t, snapshotter)
 	refreshAndSettle(t, snapshotter)
 	got = throughputOf(t, snapshotter)
-	if _, reads := source.counts(); reads != 5 || got.Capped || got.PerDay[0].Landed != 5 {
+	if _, reads := source.counts(); reads != 5 || got.Capped || got.PerDay[0].Finished != 5 {
 		t.Errorf("reads %d, throughput %+v: the cap must resolve in three refreshes without the interval passing", reads, got)
 	}
 	capped := 0
@@ -383,7 +398,7 @@ func TestThroughputTotalIsCapped(t *testing.T) {
 	}
 	refreshAndSettle(t, snapshotter)
 	got := throughputOf(t, snapshotter)
-	if !got.Capped || got.PerDay[0].Landed != 3 {
+	if !got.Capped || got.PerDay[0].Finished != 3 {
 		t.Errorf("throughput = %+v, want 3 known and capped", got)
 	}
 	// The same capped scan is not read again.
@@ -464,7 +479,7 @@ func TestThroughputRecordsAreValidated(t *testing.T) {
 		"a long name is cut":        {landedTerminal(long, sealed.Add(-time.Hour), sealed), strings.Repeat("x", 200)},
 		"no task uses the effort":   {effort, "effort-1"},
 		"no name at all":            {landedTerminal("\x01", sealed.Add(-time.Hour), sealed), ""},
-		"not landed":                {terminal("t", "removed", sealed.Add(-time.Hour), sealed), ""},
+		"handoff is not counted":    {terminal("t", "handoff", sealed.Add(-time.Hour), sealed), ""},
 		"no sealed time":            {landedTerminal("t", sealed.Add(-time.Hour), time.Time{}), ""},
 		"no claim time":             {landedTerminal("t", time.Time{}, sealed), ""},
 		"sealed before claimed":     {landedTerminal("t", sealed, sealed.Add(-time.Second)), ""},
@@ -473,7 +488,7 @@ func TestThroughputRecordsAreValidated(t *testing.T) {
 		"a duration over ten years": {landedTerminal("t", sealed.AddDate(-11, 0, 0), sealed), ""},
 		"zero duration is valid":    {landedTerminal("t", sealed, sealed), "t"},
 	} {
-		got := landingOf(test.record, now)
+		got := sealingOf(test.record)
 		switch {
 		case test.task == "" && got != nil:
 			t.Errorf("%s: landing %+v, want none", name, got)
@@ -520,7 +535,7 @@ func TestThroughputIsRefusedInARemoteEnvelope(t *testing.T) {
 		t.Fatal("an export carries throughput")
 	}
 	block := func() *Throughput {
-		return &Throughput{WindowDays: 30, PerDay: []ThroughputDay{{Date: "2026-10-01", Landed: 1}}, Slowest: []ThroughputTask{{Task: "task-a", DurationSeconds: 5, LandedAt: now.Add(-time.Hour)}}}
+		return &Throughput{WindowDays: 30, PerDay: []ThroughputDay{{Date: "2026-10-01", Finished: 1}}, Slowest: []ThroughputTask{{Task: "task-a", DurationSeconds: 5, LandedAt: now.Add(-time.Hour)}}}
 	}
 	for name, test := range map[string]struct {
 		change func(*Throughput)
@@ -531,7 +546,7 @@ func TestThroughputIsRefusedInARemoteEnvelope(t *testing.T) {
 		"an empty date":       {func(b *Throughput) { b.PerDay[0].Date = "" }, "date is not valid"},
 		"a task with control": {func(b *Throughput) { b.Slowest[0].Task = "a\x00" }, "task is not valid"},
 		"an empty task":       {func(b *Throughput) { b.Slowest[0].Task = "" }, "task is not valid"},
-		"a negative count":    {func(b *Throughput) { b.PerDay[0].Landed = -1 }, "landed is negative"},
+		"a negative count":    {func(b *Throughput) { b.PerDay[0].Finished = -1 }, "finished is negative"},
 		"a future landing":    {func(b *Throughput) { b.Slowest[0].LandedAt = now.Add(time.Hour) }, "landed_at is before 2000"},
 		"too many days":       {func(b *Throughput) { b.PerDay = make([]ThroughputDay, 31) }, "per_day has more than 30"},
 		"too many slowest":    {func(b *Throughput) { b.Slowest = make([]ThroughputTask, 6) }, "slowest has more than 5"},
@@ -574,5 +589,83 @@ func TestThroughputAChangedRecordBeyondTheCapKeepsItsOldValue(t *testing.T) {
 	refreshAndSettle(t, snapshotter)
 	if got := names(); got != "task-a2 task-b2" {
 		t.Errorf("after the next refresh = %q", got)
+	}
+}
+
+// TestThroughputDispositionTable pins the mapping of dispositions to the
+// finished and dropped categories.
+func TestThroughputDispositionTable(t *testing.T) {
+	t.Parallel()
+	now := newClock().Now()
+	for disposition, want := range map[string]string{
+		"landed": "finished landed", "removed": "finished", "retired": "finished", "recycled": "finished",
+		"discarded": "dropped", "superseded": "dropped", "not_landed": "dropped", "orphaned": "dropped",
+		"handoff": "", "mystery": "", "": "",
+	} {
+		got := sealingOf(terminal("t", disposition, now.Add(-time.Hour), now))
+		category := ""
+		switch {
+		case got == nil:
+		case got.finished && got.landed:
+			category = "finished landed"
+		case got.finished:
+			category = "finished"
+		default:
+			category = "dropped"
+		}
+		if category != want {
+			t.Errorf("%q counts as %q, want %q", disposition, category, want)
+		}
+	}
+}
+
+// TestThroughputReadsNewestFirstAndStopsAtTheWindow: the files within the window
+// and a day are read newest first, so a capped scan holds the newest records,
+// and older files are never read at all.
+func TestThroughputReadsNewestFirstAndStopsAtTheWindow(t *testing.T) {
+	t.Parallel()
+	source := newFakeTerminals()
+	snapshotter, clock := throughputSnapshotter(source, func(options *Options) { options.TerminalReadLimit = 2 })
+	now := clock.Now()
+	for index := range 4 {
+		sealed := now.Add(-time.Duration(index) * time.Hour)
+		source.put(fmt.Sprint("k", index), sealed, landedTerminal(fmt.Sprint("task-", index), sealed.Add(-time.Hour), sealed))
+	}
+	for index := range 3 {
+		old := now.AddDate(0, 0, -32-index)
+		source.put(fmt.Sprint("old", index), old, landedTerminal(fmt.Sprint("old-", index), old.Add(-time.Hour), old))
+	}
+	refreshAndSettle(t, snapshotter)
+	if got := fmt.Sprint(source.reads); got != "[k0 k1]" {
+		t.Fatalf("the capped scan read %s, want the two newest", got)
+	}
+	refreshAndSettle(t, snapshotter)
+	if got := fmt.Sprint(source.reads); got != "[k0 k1 k2 k3]" {
+		t.Errorf("reads = %s: the next refresh reads the rest and never an old file", got)
+	}
+	if got := throughputOf(t, snapshotter); got.Capped || got.PerDay[0].Finished != 4 {
+		t.Errorf("throughput = %+v", got)
+	}
+}
+
+// TestThroughputWithOnlyDroppedWorkHasNoPercentiles: a block with no finished
+// task has no median, no p90 and no slowest, and a single finished task is both.
+func TestThroughputWithOnlyDroppedWorkHasNoPercentiles(t *testing.T) {
+	t.Parallel()
+	source := newFakeTerminals()
+	snapshotter, clock := throughputSnapshotter(source, nil)
+	now := clock.Now()
+	source.put("d", now, terminal("task-d", "discarded", now.Add(-time.Hour), now))
+	refreshAndSettle(t, snapshotter)
+	got := throughputOf(t, snapshotter)
+	if got == nil || got.MedianSeconds != nil || got.P90Seconds != nil || len(got.Slowest) != 0 || fmt.Sprint(got.PerDay) != fmt.Sprint([]ThroughputDay{{Date: "2026-10-01", Dropped: 1}}) {
+		t.Fatalf("throughput = %+v", got)
+	}
+	source.put("f", now, terminal("task-f", "removed", now.Add(-2*time.Hour), now))
+	clock.advance(DefaultThroughputInterval)
+	refreshAndSettle(t, snapshotter)
+	got = throughputOf(t, snapshotter)
+	if *got.MedianSeconds != 7200 || *got.P90Seconds != 7200 {
+		t.Errorf("one finished task: median %d p90 %d, want 7200 both", *got.MedianSeconds, *got.P90Seconds)
 	}
 }
