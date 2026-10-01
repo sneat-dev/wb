@@ -222,3 +222,145 @@ func TestStoreDirectoryRecheckReportsMissingPathAndClosedHandle(t *testing.T) {
 		t.Fatalf("closed held handle = %v", err)
 	}
 }
+
+func TestStoreLoadIsReadOnlyAndCorroboratesSnapshot(t *testing.T) {
+	t.Parallel()
+	store := NewStore(privateTestHome(t))
+	checkout := testCheckout()
+	store.Ports.Write, store.Ports.Lock = nil, nil // inspection needs neither capability
+	if state, found, err := store.Load(checkout); err != nil || found || state.Checkout != checkout {
+		t.Fatalf("missing home = %+v, %t, %v", state, found, err)
+	}
+	if _, err := os.Stat(store.Home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created home: %v", err)
+	}
+	if err := os.Mkdir(store.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.Load(checkout); err != nil || found {
+		t.Fatalf("missing coordination directory = %t, %v", found, err)
+	}
+	path := filepath.Join(store.Home, directoryName)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created coordination directory: %v", err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.Load(checkout); err != nil || found {
+		t.Fatalf("missing snapshot = %t, %v", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(path, checkout.ID+".lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created lock: %v", err)
+	}
+	writer := NewStore(store.Home)
+	if _, err := writer.WithLocked(context.Background(), checkout, func(state *State, _ bool) error {
+		return state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if state, found, err := store.Load(checkout); err != nil || !found || state.Owner != "owner" {
+		t.Fatalf("published snapshot = %+v, %t, %v", state, found, err)
+	}
+	rebound := checkout
+	rebound.GitDir = "/another/gitdir"
+	if _, _, err := store.Load(rebound); err == nil {
+		t.Fatal("rebound checkout accepted")
+	}
+}
+
+func TestStoreLoadRefusesFaultsAndDirectoryReplacement(t *testing.T) {
+	t.Parallel()
+	checkout := testCheckout()
+	base := NewStore(privateTestHome(t))
+	if err := os.Mkdir(base.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(base.Home, directoryName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("inspection boundary")
+	for _, tc := range []struct {
+		name   string
+		change func(*Store)
+	}{
+		{"missing boundary", func(s *Store) { s.Ports.Read = nil }},
+		{"open home", func(s *Store) { s.Ports.OpenHome = func(string, bool) (*os.File, error) { return nil, boom } }},
+		{"open child", func(s *Store) {
+			s.Ports.OpenChild = func(*os.File, string, bool, worktreesecure.ValidSegment) (*os.File, error) { return nil, boom }
+		}},
+		{"read", func(s *Store) { s.Ports.Read = func(*os.File, string, any) error { return boom } }},
+		{"replaced before read", func(s *Store) {
+			original := s.Ports.OpenChild
+			s.Ports.OpenChild = func(parent *os.File, name string, create bool, valid worktreesecure.ValidSegment) (*os.File, error) {
+				opened, err := original(parent, name, create, valid)
+				if err == nil {
+					path := filepath.Join(s.Home, directoryName)
+					if renameErr := os.Rename(path, path+".detached"); renameErr != nil {
+						return nil, renameErr
+					}
+					if mkdirErr := os.Mkdir(path, 0o700); mkdirErr != nil {
+						return nil, mkdirErr
+					}
+				}
+				return opened, err
+			}
+		}},
+		{"corrupt", func(s *Store) {
+			s.Ports.Read = func(_ *os.File, _ string, value any) error { value.(*State).Owner = "wrong"; return nil }
+		}},
+		{"replaced after read", func(s *Store) {
+			s.Ports.Read = func(_ *os.File, _ string, _ any) error {
+				path := filepath.Join(s.Home, directoryName)
+				if err := os.Rename(path, path+".detached"); err != nil {
+					return err
+				}
+				return os.Mkdir(path, 0o700)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := base
+			store.Home = privateTestHome(t)
+			if err := os.Mkdir(store.Home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(store.Home, directoryName), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			tc.change(&store)
+			if _, _, err := store.Load(checkout); err == nil {
+				t.Fatal("faulty inspection accepted")
+			}
+		})
+	}
+	if _, _, err := base.Load(Checkout{}); err == nil {
+		t.Fatal("invalid checkout accepted")
+	}
+	for _, phase := range []string{"replace home", "create child"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			store := NewStore(privateTestHome(t))
+			if err := os.Mkdir(store.Home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			store.Ports.OpenChild = func(_ *os.File, _ string, _ bool, _ worktreesecure.ValidSegment) (*os.File, error) {
+				if phase == "replace home" {
+					if err := os.Rename(store.Home, store.Home+".detached"); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(store.Home, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.Mkdir(filepath.Join(store.Home, directoryName), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return nil, os.ErrNotExist
+			}
+			if _, _, err := store.Load(checkout); err == nil {
+				t.Fatal("changed missing directory accepted")
+			}
+		})
+	}
+}

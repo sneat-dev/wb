@@ -50,6 +50,60 @@ func NewStore(home string) Store {
 	}}
 }
 
+// Load reads an atomically published snapshot through held private directories.
+// It never creates the home, coordination directory, lock file, or snapshot.
+// Mutations must still use WithLocked and recheck all authority under its lock.
+func (store Store) Load(checkout Checkout) (State, bool, error) {
+	state, err := New(checkout)
+	if err != nil {
+		return State{}, false, err
+	}
+	if store.Ports.OpenHome == nil || store.Ports.OpenChild == nil || store.Ports.Read == nil {
+		return State{}, false, fmt.Errorf("coordination read boundaries are incomplete")
+	}
+	home, err := store.Ports.OpenHome(store.Home, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return state, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("open private coordination home: %w", err)
+	}
+	defer func() { _ = home.Close() }()
+	directory, err := store.Ports.OpenChild(home, directoryName, false, worktreelayout.ValidSafeSegment)
+	if errors.Is(err, os.ErrNotExist) {
+		held, statErr := home.Stat()
+		current, pathErr := os.Lstat(store.Home)
+		if statErr != nil || pathErr != nil || !current.IsDir() || !os.SameFile(held, current) {
+			return State{}, false, fmt.Errorf("coordination home changed during inspection")
+		}
+		if _, pathErr := os.Lstat(filepath.Join(store.Home, directoryName)); !errors.Is(pathErr, os.ErrNotExist) {
+			return State{}, false, fmt.Errorf("coordination directory changed during inspection: %v", pathErr)
+		}
+		return state, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("open private coordination directory: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	if err := store.directoryMatches(home, directory); err != nil {
+		return State{}, false, err
+	}
+	err = store.Ports.Read(directory, checkout.ID+".json", &state)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return State{}, false, fmt.Errorf("read coordination state: %w", err)
+	}
+	if err := store.directoryMatches(home, directory); err != nil {
+		return State{}, false, err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return state, false, nil
+	}
+	if err := state.Validate(checkout); err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
 // WithLocked loads, validates, and optionally publishes a snapshot while one
 // cross-process lock is held. The callback must not mutate external authority
 // before it returns: a failed callback never writes coordination state. A
