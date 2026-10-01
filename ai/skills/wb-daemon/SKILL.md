@@ -41,6 +41,16 @@ wb daemon stop
 wb daemon restart --if-running
 ```
 
+On macOS the daemon's launchd service has one fixed label per user, so starting
+the daemon for one projects root would silently remove a service registered
+for another. `wb daemon start` and `wb daemon restart` therefore read the
+installed plist first and refuse, changing nothing, when it serves a different
+projects root or cannot be read; the error names that root and its listen
+address. Only `--replace-other-root` (never an environment variable) lets the
+replacement proceed. `wb cockpit`, `wb dashboard --local` and the commands
+that start the daemon implicitly have no such flag: they refuse and tell you to
+run `wb daemon start --replace-other-root` first.
+
 `wb daemon status` reports identity, not just reachability: read `identity`,
 `ready_verified` and `reported_state` before believing `state=ready`. A daemon
 that answers on the loopback port but belongs to another WB home, or that was

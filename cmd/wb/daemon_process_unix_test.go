@@ -16,3 +16,11 @@ func TestStartDaemonProcessRefusesATestBinary(t *testing.T) {
 		t.Fatal("starting the test binary itself must be refused")
 	}
 }
+
+// Off macOS there is no fixed-label launchd service for a start to remove, so
+// the other-root check never refuses.
+func TestDaemonCheckOtherRootNeverRefusesOffMacOS(t *testing.T) {
+	if err := daemonCheckOtherRoot(t.TempDir(), false); err != nil {
+		t.Fatalf("daemonCheckOtherRoot = %v", err)
+	}
+}
