@@ -43,6 +43,10 @@ type Finding struct {
 // BuildPlan evaluates spec against every selected source file below roots.
 // It never writes to those roots.
 func BuildPlan(spec Spec, roots ...string) (Plan, error) {
+	return buildPlanWithAbsolute(spec, filepath.Abs, roots...)
+}
+
+func buildPlanWithAbsolute(spec Spec, absolute func(string) (string, error), roots ...string) (Plan, error) {
 	if err := spec.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -52,7 +56,7 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 	plan := Plan{MigrationID: spec.ID}
 	seen := map[string]bool{}
 	for _, root := range roots {
-		root, err := filepath.Abs(root)
+		root, err := absolute(root)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -73,9 +77,10 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 			if language == "" || !spec.Scope.includes(language) {
 				return nil
 			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil || !spec.Scope.matches(rel) {
-				return err
+			// WalkDir constructs lexical descendants of the same absolute root.
+			rel, _ := filepath.Rel(root, path)
+			if !spec.Scope.matches(rel) {
+				return nil
 			}
 			original, err := os.ReadFile(path)
 			if err != nil {
@@ -119,8 +124,12 @@ func Apply(plan Plan) error {
 // its own Injector to reach the create/write/chmod/close/rename failure
 // branches deterministically.
 func applyInjected(plan Plan, inj *filewrite.Injector) error {
+	return applyWithRead(plan, inj, os.ReadFile)
+}
+
+func applyWithRead(plan Plan, inj *filewrite.Injector, read func(string) ([]byte, error)) error {
 	for _, change := range plan.Changes {
-		current, err := os.ReadFile(change.Path)
+		current, err := read(change.Path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", change.Path, err)
 		}
