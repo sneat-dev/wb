@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -83,22 +84,37 @@ const immutableCache = "public, max-age=31536000, immutable"
 // request; the cockpit page route has already set Origin.
 const gzipVary = "Origin, Accept-Encoding"
 
-// acceptsGzip reports whether the request lists gzip, or `*`, with a quality
-// other than zero.
-func acceptsGzip(request *http.Request) bool {
-	for _, value := range request.Header.Values("Accept-Encoding") {
+// AcceptsGzip reports whether the Accept-Encoding header values allow gzip: an
+// explicit gzip entry decides (a quality of zero refuses it), and only without
+// one does `*` (again unless its quality is zero). Parameters are read
+// case-insensitively and only `q` counts; an unreadable quality is ignored.
+func AcceptsGzip(values []string) bool {
+	explicit, wildcard := -1, -1 // -1: not listed, 0: refused, 1: allowed
+	for _, value := range values {
 		for _, item := range strings.Split(value, ",") {
 			name, parameters, _ := strings.Cut(item, ";")
-			if name = strings.ToLower(strings.TrimSpace(name)); name != "gzip" && name != "*" {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "gzip" && name != "*" {
 				continue
 			}
-			if strings.ReplaceAll(strings.TrimSpace(parameters), " ", "") == "q=0" {
-				continue
+			allowed := 1
+			for _, parameter := range strings.Split(parameters, ";") {
+				key, quality, _ := strings.Cut(strings.ToLower(strings.TrimSpace(parameter)), "=")
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(quality), 64); strings.TrimSpace(key) == "q" && err == nil && parsed == 0 {
+					allowed = 0
+				}
 			}
-			return true
+			if name == "gzip" {
+				explicit = allowed
+			} else {
+				wildcard = allowed
+			}
 		}
 	}
-	return false
+	if explicit >= 0 {
+		return explicit == 1
+	}
+	return wildcard == 1
 }
 
 // gzipBytes compresses a document that was changed for this response.
@@ -185,7 +201,7 @@ func HandlerFor(files fs.FS) http.Handler {
 			return
 		}
 		header := writer.Header()
-		zipped := acceptsGzip(request)
+		zipped := AcceptsGzip(request.Header.Values("Accept-Encoding"))
 		header.Set("Vary", gzipVary)
 		switch {
 		case !isFile || name == indexPage:

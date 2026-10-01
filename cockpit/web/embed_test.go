@@ -395,3 +395,20 @@ func TestEntryDocumentIsCompressedPerResponseWithAFreshNonce(t *testing.T) {
 		t.Error("a wildcard Accept-Encoding was not served gzip")
 	}
 }
+
+func TestAcceptsGzipReadsTheHeaderLikeAClient(t *testing.T) {
+	t.Parallel()
+	for accept, want := range map[string]bool{
+		"gzip": true, "GZIP": true, "gzip, deflate, br": true, "deflate, gzip;q=0.5": true, " gzip ; q=1 ": true, "*": true, "*;q=0.1": true,
+		"identity": false, "br": false, "": false, "gzip;q=0": false, "gzip;q=0.0": false, "gzip;Q=0": false, "gzip; Q = 0": false, "gzip;level=1;q=0": false,
+		"*;q=0": false, "gzip;q=bad": true, "gzip;level=1": true, "gzip;q=0, *": false, "*, gzip;q=0": false, "gzip;q=0.5, *;q=0": true, "gzip, *;q=0": true,
+		"gzip;q=1, *;q=0": true, "*;q=0, gzip": true, "identity, *;q=0.5": true,
+	} {
+		if got := AcceptsGzip([]string{accept}); got != want {
+			t.Errorf("Accept-Encoding %q = %v, want %v", accept, got, want)
+		}
+	}
+	if !AcceptsGzip([]string{"br", "gzip"}) || AcceptsGzip(nil) {
+		t.Error("separate header lines are not read as one list")
+	}
+}
