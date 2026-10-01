@@ -837,3 +837,123 @@ func TestCachedRepositoryNamesAreSplitIntoHostAndName(t *testing.T) {
 		}
 	}
 }
+
+// isBranchList tells a branch list's body from the fleet document's.
+func isBranchList(data []byte) bool { return bytes.HasPrefix(data, []byte(`{"repository"`)) }
+
+// TestPollingBranchesAcrossUnchangedPassesRecompressesNothing proves the
+// prepared branch list outlives a scan that leaves the branches as they were,
+// and is rebuilt when they change.
+func TestPollingBranchesAcrossUnchangedPassesRecompressesNothing(t *testing.T) {
+	t.Parallel()
+	var lists atomic.Int64
+	sources := oneRepoSources(t.TempDir())
+	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Fingerprint = newConstFingerprint("one").get
+		options.Compress = func(data []byte) []byte {
+			if isBranchList(data) {
+				lists.Add(1)
+			}
+			return cockpit.Gzip(data)
+		}
+	})
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	id := localRepositoryOf(t, snapshotter).ID
+	for range 3 {
+		server.get(branchesURL+id, nil, "Accept-Encoding", "gzip")
+		clock.advance(time.Minute) // a later observation time, the same branches
+		refreshAndSettle(t, snapshotter)
+	}
+	if lists.Load() != 1 {
+		t.Errorf("the branch list was compressed %d times across 3 passes with unchanged branches, want 1", lists.Load())
+	}
+	sources.change(func(f *fakeSources) { f.branches["acme/widgets"] = f.branches["acme/widgets"][:1] })
+	if err := snapshotter.RefreshRepository(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	server.get(branchesURL+id, nil)
+	server.get(branchesURL+id, nil)
+	if lists.Load() != 2 {
+		t.Errorf("after the branches changed the list was compressed %d times in all, want 2", lists.Load())
+	}
+}
+
+// TestASlowBranchBuildDoesNotBlockTheFleetDocument proves a branch list is
+// built outside the snapshotter's lock.
+func TestASlowBranchBuildDoesNotBlockTheFleetDocument(t *testing.T) {
+	t.Parallel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
+		options.Compress = func(data []byte) []byte {
+			if isBranchList(data) {
+				close(entered)
+				<-release
+			}
+			return cockpit.Gzip(data)
+		}
+	})
+	refreshAndSettle(t, snapshotter)
+	id := localRepositoryOf(t, snapshotter).ID
+	answered := make(chan bool)
+	go func() {
+		_, found := snapshotter.Branches(id)
+		answered <- found
+	}()
+	<-entered
+	served := make(chan struct{})
+	go func() {
+		snapshotter.Payload()
+		close(served)
+	}()
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Error("Payload was blocked by a branch build")
+	}
+	close(release)
+	if !<-answered {
+		t.Error("the branches were not found")
+	}
+}
+
+// TestBranchesBuiltWhileAScanLandsAreStillServed covers a lost race: a scan
+// stores newer entries while a list is being built.
+func TestBranchesBuiltWhileAScanLandsAreStillServed(t *testing.T) {
+	t.Parallel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	sources := oneRepoSources(t.TempDir())
+	snapshotter, _ := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Compress = func(data []byte) []byte {
+			if isBranchList(data) {
+				close(entered)
+				<-release
+			}
+			return cockpit.Gzip(data)
+		}
+	})
+	refreshAndSettle(t, snapshotter)
+	id := localRepositoryOf(t, snapshotter).ID
+	answered := make(chan branchAnswer)
+	go func() {
+		payload, found := snapshotter.Branches(id)
+		answered <- branchAnswer{payload, found}
+	}()
+	<-entered
+	if err := snapshotter.RefreshRepository(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if result := <-answered; !result.found {
+		t.Error("the list was not served")
+	}
+	if snapshotter.repos[id].branches != nil {
+		t.Error("a list built from superseded entries was stored")
+	}
+}
+
+// branchAnswer is a branch list and whether it was found.
+type branchAnswer struct {
+	payload cockpit.Payload
+	found   bool
+}

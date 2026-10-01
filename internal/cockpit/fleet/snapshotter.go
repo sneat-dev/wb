@@ -286,30 +286,55 @@ func (s *Snapshotter) Payload() cockpit.Payload {
 // branches here: the answer is an empty list and its reason. An id that is
 // neither is not found.
 func (s *Snapshotter) Branches(id string) (payload cockpit.Payload, found bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if state, local := s.repos[id]; local && state.scanned {
-		if state.branches == nil {
-			branches := slices.Clone(state.entries.branches)
-			sortByName(branches, func(item Branch) string { return item.Name }, func(item Branch) string { return item.ID })
-			state.branches = s.branchesPayload(BranchesResponse{Repository: id, Branches: branches})
+	s.mu.RLock()
+	state, local := s.repos[id]
+	if local && state.scanned {
+		if state.branches != nil {
+			defer s.mu.RUnlock()
+			return *state.branches, true
 		}
-		return *state.branches, true
+		// Copy what the build needs, then build outside every lock: marshalling
+		// and compressing a long list must never hold up Payload or a refresh.
+		branches, generation := slices.Clone(state.entries.branches), state.applied
+		s.mu.RUnlock()
+		sortByName(branches, func(item Branch) string { return item.Name }, func(item Branch) string { return item.ID })
+		built := s.branchesPayload(BranchesResponse{Repository: id, Branches: branches})
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// A scan that stored newer entries meanwhile wins; this answer is still
+		// the list as it was when asked for.
+		if current, held := s.repos[id]; held && current.applied == generation && current.branches == nil {
+			current.branches = built
+		}
+		return *built, true
 	}
 	if payload, held := s.remoteBranches[id]; held {
+		s.mu.RUnlock()
 		return payload, true
 	}
-	for _, repository := range s.remote.repositories {
-		if repository.ID == id {
-			payload = *s.branchesPayload(BranchesResponse{Repository: id, Reason: ReasonCachedRepository})
-			if s.remoteBranches == nil {
-				s.remoteBranches = map[string]cockpit.Payload{}
-			}
-			s.remoteBranches[id] = payload
-			return payload, true
-		}
+	known := slices.ContainsFunc(s.remote.repositories, func(repository Repository) bool { return repository.ID == id })
+	s.mu.RUnlock()
+	if !known {
+		return cockpit.Payload{}, false
 	}
-	return cockpit.Payload{}, false
+	built := *s.branchesPayload(BranchesResponse{Repository: id, Reason: ReasonCachedRepository})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Two requests that raced build the same bytes; the later store is harmless.
+	if s.remoteBranches == nil {
+		s.remoteBranches = map[string]cockpit.Payload{}
+	}
+	s.remoteBranches[id] = built
+	return built, true
+}
+
+// sameBranches reports whether two branch lists are the same but for the time
+// they were observed at.
+func sameBranches(old, current []Branch) bool {
+	return slices.EqualFunc(old, current, func(a, b Branch) bool {
+		a.ObservedAt, b.ObservedAt = time.Time{}, time.Time{}
+		return a == b
+	})
 }
 
 // branchesPayload marshals response, with a list that is never null.
@@ -812,7 +837,12 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 	if state, found := s.repos[id]; found && ticket > state.applied {
 		state.applied = ticket
 		state.fingerprint, state.gitRead, state.linked, state.refs, state.defaultBranch, state.identity = held.fingerprint, held.gitRead, held.linked, held.refs, held.defaultBranch, held.identity
-		state.scanned, state.entries, state.branches = true, entries, nil
+		// The prepared branch list survives a scan that left the branches as they
+		// were, so a polling client causes no recompression.
+		if !state.scanned || !sameBranches(state.entries.branches, entries.branches) {
+			state.branches = nil
+		}
+		state.scanned, state.entries = true, entries
 		state.indexKey, state.indexed, state.codeIndex = indexKey, indexed, codeIndex
 	}
 	if errCode != "" {
