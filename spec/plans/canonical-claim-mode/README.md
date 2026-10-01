@@ -54,11 +54,11 @@ Open Questions.
 **Depends-On:** —
 **Status:** planning
 
-In `internal/worktrees/worklog.go` add additive `mode` and
+In `internal/worktrees/worklog.go` add `mode` and
 `lease_expires_at` claim fields, cover `mode` in `expectedWorkLogClaimID`, add
 lease-extension evidence events, and add one exported, clock-injected lookup
 (live, lapsed, sealed, none) built on `activeWorkLogClaim`. It fails closed on
-any read, parse, repository, or corroboration error. No `Version` bump: the fields are additive and omitted when unset.
+any read, parse, repository, or corroboration error.
 
 ### Task 2: Guard and hook admission
 
@@ -157,7 +157,7 @@ the companion plan.
 
 ## Open Questions
 
-None at this time. Confirmed or decided by the founder: verb shape and lease values; no claim `Version` bump; the stale "create never touches canonical" wording is rewritten in task-7. Plan split: one plan per source Feature is what `specscore spec lint` (P-002) accepts; the companion plan [canonical-claim-landing](../canonical-claim-landing/README.md) depends on tasks 1 and 4 here, and its journey test on task 5.
+None at this time. Confirmed or decided by the founder: verb shape and lease values; the stale "create never touches canonical" wording is rewritten in task-7. Plan split: one plan per source Feature is what `specscore spec lint` (P-002) accepts; the companion plan [canonical-claim-landing](../canonical-claim-landing/README.md) depends on tasks 1 and 4 here, and its journey test on task 5.
 
 ---
 *This document follows the https://specscore.md/plan-specification*
