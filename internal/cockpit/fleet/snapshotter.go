@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime"
 	"slices"
 	"sort"
@@ -127,6 +128,11 @@ type Options struct {
 	// Metrics are the sources of the machine-metrics route for other machines,
 	// asked in order (the live remote, then the cached source).
 	Metrics []MetricsSource
+	// Publisher publishes this machine's snapshot to the remote store after a
+	// successful pass (cockpit-views#req:periodic-remote-publish); nil, the
+	// default, publishes nothing. It is called off the pass, in a goroutine of
+	// its own, and decides for itself whether the time has come.
+	Publisher RemotePublisher
 	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
 	// for each snapshot stored and once for each repository's branch list that
 	// is first asked for after a change, never per request; a test counts it.
@@ -160,6 +166,12 @@ type Options struct {
 	TerminalTotalLimit int
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
+}
+
+// RemotePublisher is the periodic remote publisher the snapshotter hands the
+// end of each successful pass to. extras is asked only if it publishes.
+type RemotePublisher interface {
+	Publish(ctx context.Context, extras func() remotestate.Extras)
 }
 
 // repoState is what the snapshotter keeps of one local repository between
@@ -254,6 +266,9 @@ type Snapshotter struct {
 	spent     []time.Time
 	throttled bool
 	remote    remoteView
+	// remoteSampleVersion changes whenever the published metrics samples of the
+	// other machines do; it is the version of the cached metrics source.
+	remoteSampleVersion uint64
 	// remoteBranches holds the prepared empty branch lists of the repositories
 	// cached from other machines, dropped whenever remote is replaced.
 	remoteBranches map[string]cockpit.Payload
@@ -271,6 +286,11 @@ type Snapshotter struct {
 	throughputs    *throughputCollector
 	throughputBusy atomic.Bool
 	throughput     *Throughput
+
+	// publisher is the periodic remote publisher (nil without one) and
+	// publishBusy keeps one hand-off running at a time, like remoteBusy.
+	publisher   RemotePublisher
+	publishBusy atomic.Bool
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -295,6 +315,9 @@ func New(options Options) *Snapshotter {
 		snapshotter.pullTimeout = defaultPullRequestTimeout
 	}
 	snapshotter.sampler = options.Sampler
+	snapshotter.publisher = options.Publisher
+	// The cached source answers last, after any live remote source in Metrics.
+	snapshotter.metricsSources = append(snapshotter.metricsSources, cachedMetricsSource{snapshotter})
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}
@@ -550,6 +573,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	}
 	s.complete = true
 	s.publishLocked()
+	s.startPublish(ctx)
 	return errors.Join(append(failures, machineFailures...)...)
 }
 
@@ -1006,9 +1030,80 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if !maps.Equal(s.remote.samples, view.samples) {
+			s.remoteSampleVersion++
+		}
 		s.remote, s.remoteBranches = view, nil
 		s.publishMaybeLocked()
 	}()
+}
+
+// startPublish hands the end of a successful pass to the periodic remote
+// publisher, in a goroutine of its own that the pass does not wait for, unless a
+// hand-off is still running. A successful pass is one that listed the
+// repositories and ended uncancelled; a repository that failed carries its
+// error code and does not hold the publication back, as in `wb remote publish`.
+func (s *Snapshotter) startPublish(ctx context.Context) {
+	if s.publisher == nil || !s.publishBusy.CompareAndSwap(false, true) {
+		return
+	}
+	s.side.Add(1)
+	go func() {
+		defer s.side.Done()
+		defer s.publishBusy.Store(false)
+		_ = catch(func() error { s.publisher.Publish(ctx, s.publishExtras); return nil })
+	}()
+}
+
+// publishExtras is this machine's agents and its latest metrics sample, as
+// the publisher may add them to a snapshot: only the entries and the sample the
+// document already carries, with the repository of an agent named by the
+// repository's name (owner/name), never its id or its path.
+func (s *Snapshotter) publishExtras() remotestate.Extras {
+	s.mu.RLock()
+	document := s.doc
+	s.mu.RUnlock()
+	names := map[string]string{}
+	for _, repository := range document.Repositories {
+		if repository.Route == RouteLocal {
+			names[repository.ID] = repository.Name
+		}
+	}
+	var extras remotestate.Extras
+	for _, agent := range document.Agents {
+		if agent.Route != RouteLocal {
+			continue
+		}
+		extras.Agents = append(extras.Agents, remotestate.AgentState{
+			Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID, Runtime: agent.Runtime, Model: agent.Model,
+			State: agent.State, Activity: agent.Activity, Task: agent.Task, Repository: names[agent.Repository], StartedAt: agent.StartedAt,
+		})
+	}
+	if s.sampler != nil {
+		if samples := s.sampler.Snapshot().Samples; len(samples) > 0 && samples[len(samples)-1].HasData() {
+			latest := samples[len(samples)-1]
+			extras.Metrics = &remotestate.MetricsSample{
+				CPUPercent: latest.CPUPercent, Load1: latest.Load1, MemoryUsedBytes: latest.MemoryUsedBytes, MemoryTotalBytes: latest.MemoryTotalBytes,
+				DiskFreeBytes: latest.DiskFreeBytes, DiskTotalBytes: latest.DiskTotalBytes, SampledAt: latest.SampledAt,
+			}
+		}
+	}
+	return extras
+}
+
+// cachedMetricsSource answers the machine-metrics route from the latest
+// sample another machine published (cockpit-views#req:machine-metrics-route's
+// `cached` route): one sample, from memory only, with the sample's own time.
+type cachedMetricsSource struct{ snapshotter *Snapshotter }
+
+func (c cachedMetricsSource) MachineMetrics(machineID string) (MetricsAnswer, bool) {
+	c.snapshotter.mu.RLock()
+	defer c.snapshotter.mu.RUnlock()
+	sample, found := c.snapshotter.remote.samples[machineID]
+	if !found {
+		return MetricsAnswer{}, false
+	}
+	return MetricsAnswer{Route: RouteCached, Samples: []machinemetrics.Sample{sample}, Version: c.snapshotter.remoteSampleVersion}, true
 }
 
 // startActivity lists herdr's agents in a goroutine of its own, once per
@@ -1064,7 +1159,7 @@ func (s *Snapshotter) publishLocked() {
 	if provider := s.collectors.CodeIndexProvider; provider != nil {
 		document.CodeIndexProvider = provider.Name()
 	}
-	document.AgentsTruncated = s.truncated
+	document.AgentsTruncated = s.truncated || s.remote.agentsTruncated
 	document.PullRequestsThrottled = s.throttled
 	document.Throughput = s.throughput
 	ids := make([]string, 0, len(s.repos))
@@ -1120,6 +1215,7 @@ func (s *Snapshotter) publishLocked() {
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
 	})
 	document.Machines = append(document.Machines, s.remote.machines...)
+	document.Agents = append(document.Agents, s.remote.agents...)
 	document.Repositories = append(document.Repositories, s.remote.repositories...)
 	document.Worktrees = append(document.Worktrees, s.remote.worktrees...)
 	document.PullRequests = append(document.PullRequests, s.remote.pullRequests...)

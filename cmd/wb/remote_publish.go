@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
@@ -50,9 +52,9 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	if err != nil || login == "" {
 		return &exitError{code: exitUsage, message: fmt.Sprintf("wb remote needs the GitHub login to key this machine's entry (gh auth status): %v", err)}
 	}
-	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID()}
+	identity := publishIdentity(cfg, login, deps.now())
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive))
-	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
+	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
 	if err != nil {
 		progress.fail(err)
 		return err
@@ -71,12 +73,15 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		return err
 	}
 	progress.phase("publishing snapshot")
-	result, err := provider.Publish(context.Background(), snapshot)
+	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot)
 	if err != nil {
 		progress.fail(err)
 		return &exitError{code: exitFindings, message: "publish: " + err.Error()}
 	}
 	report.Location = result.Location
+	if diagnostic != nil && progressOut != nil {
+		_, _ = fmt.Fprintf(progressOut, "wb: %v\n", diagnostic)
+	}
 	progress.finish(fmt.Sprintf("published %d repositories and %d worktrees", report.RepositoriesScanned, report.Worktrees))
 	if jsonOut {
 		return json.NewEncoder(out).Encode(report)
@@ -84,4 +89,17 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	_, err = fmt.Fprintf(out, "published %s: %d repositories scanned, %d need attention, %d worktrees → %s\n",
 		report.Key, report.RepositoriesScanned, report.Attention, report.Worktrees, report.Location)
 	return err
+}
+
+// publishIdentity is the part of a snapshot that is this machine's own rather
+// than the scan's: who and where it is, when it publishes, which wb, and the
+// hardware facts of its machine entry (cockpit-views#req:remote-snapshot-
+// agents-and-metrics). `wb remote publish` and the daemon's periodic publish
+// both start from it.
+func publishIdentity(cfg remotestate.Config, login string, now time.Time) remotestate.Snapshot {
+	hardware := cockpitfleet.LocalHardware()
+	return remotestate.Snapshot{
+		Login: login, Machine: cfg.Machine, PublishedAt: now, WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID(),
+		OS: hardware.OS, Arch: hardware.Arch, CPUCount: hardware.CPUCount, BootTime: hardware.BootTime,
+	}
 }

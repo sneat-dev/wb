@@ -72,6 +72,18 @@ func sentinelSources() *fakeSources {
 	// The machine's hardware facts are fields the document may show.
 	entry.Snapshot.OS, entry.Snapshot.Arch, entry.Snapshot.CPUCount, entry.Snapshot.BootTime = "linux", "arm64", 8, published
 	entry.Snapshot.KnownRepositories = []string{"acme/gadgets"}
+	// The optional agents and sample are fields the document may show, each only
+	// where it is plain, in its closed set or a known measurement: the first
+	// agent is clean, the second carries a sentinel in every field the document
+	// must refuse (an out-of-set activity and a repository it has no entry of;
+	// its free-text fields are cleaned, so they hold none), and the sample's
+	// time and one measurement are all that is given (a sentinel number is out
+	// of range and dropped).
+	entry.Snapshot.Agents = []remotestate.AgentState{
+		{Kind: "session", SessionID: "wbs-remote", Runtime: "claude", Model: "opus", State: "live", Activity: "idle", Task: "task-x", Repository: "acme/gadgets", StartedAt: published},
+		{Kind: "run", RunID: "agt-remote", State: "running", Activity: sentinel + "activity", Repository: sentinel + "repository"},
+	}
+	entry.Snapshot.Metrics = &remotestate.MetricsSample{Load1: ptr(1.5), MemoryUsedBytes: ptr(uint64(1)), MemoryTotalBytes: ptr(uint64(2)), DiskFreeBytes: ptr(uint64(3)), DiskTotalBytes: ptr(uint64(4)), CPUPercent: ptr(float64(sentinelNumber)), SampledAt: published}
 	state := &entry.Snapshot.Worktrees[0]
 	state.Task, state.Stream, state.Repository, state.Branch = "task-x", "stream-x", "acme/gadgets", "feature/x"
 	state.Lifecycle, state.OwnerState = "working", "orphaned"
@@ -180,7 +192,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
-		`"desktop"`, `"v0.9.0"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
