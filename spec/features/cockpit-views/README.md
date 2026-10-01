@@ -714,7 +714,18 @@ Every entry kind has the fields below; every REQ and AC of this Feature that nam
 this REQ. Types are JSON types; "opt." means the field may be absent; the last column says
 whether it is present for entries of this machine (local), for entries of another machine
 (cached or live-remote), or both. An unknown or out-of-set value from another machine is dropped,
-not rendered. Existing field names are not renamed. Times are RFC 3339 strings.
+not rendered. Existing field names are not renamed. Times are RFC 3339 strings. A `live-remote`
+entry is the exporting machine's own local entry, validated and re-mapped
+(REQ:remote-entries-replace-cached), so it carries the fields marked "local only" as that machine
+observed them; "local only" excludes `cached` entries, whose published snapshot does not hold them.
+A link of another machine's entry (`cached` or `live-remote`) is never taken as that machine sent it:
+a pull request's `url` is rebuilt by this daemon from the host of its repository (or, for a
+repository published with no host, the host of the address sent), the repository's `owner/name` and
+the number, as `https://<host>/<owner>/<name>/pull/<number>`, and is kept only when that host is the
+host of a repository of this machine and the link rebuilt is exactly the sanitised address that was
+sent (so a forge whose pull request addresses have another shape has no link, never a wrong one, and
+a sender cannot choose a path); a live-remote repository's `remote_url_web` is kept only when its
+host is the host of a repository of this machine; otherwise the entry has no link.
 
 **Every entry** (machines, repositories, worktrees, pull requests, agents): `id` string; `machine`
 string, the machine's name; `machine_id` string, the id of its machine entry; `route` string,
@@ -736,7 +747,8 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `boot_time` | time | opt. | daemon / snapshot | as above |
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
-| `export_dropped` | int | opt. | the live-remote exporter: entries left out of the export | live-remote and cached |
+| `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached); set only by the reader, refused in an export | live-remote only |
+| `agents_truncated` | bool | opt. | that machine's agents were cut, by it or by this daemon's cap | live-remote only |
 
 | Repository field | Type | Opt. | Source | Local/cached |
 |---|---|---|---|---|
@@ -1086,8 +1098,8 @@ are not persisted across a daemon restart.
 the fleet document, `{machine, route, fetched_at?, samples, reason?}` where `machine` is the machine id with the same
 access class as the fleet document (metadata; capability `machine.read`). `route` is
 `local` for this machine's in-memory history, oldest first, so that its last element
-is the latest sample; `live-remote` for the history fetched in the background over SSH from
-another machine (REQ:remote-exporter-transports), with `fetched_at`; `cached`
+is the latest sample; `live-remote` for the history fetched in the background over HTTP or SSH from
+another machine (REQ:remote-exporter-transports), with `fetched_at` (when this daemon received it); `cached`
 for the single latest sample carried in that machine's published snapshot, with its
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
@@ -1119,7 +1131,18 @@ recorded process is alive and, where the platform can observe it, started when t
 (a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
 `launchctl print` (read-only), so a daemon started by hand in the foreground, outside launchd, is
 reported as `daemon_not_running` there: a stated limitation. The envelope is built by one function that the
-hub route of REQ:hub-export-route also calls. Its capability row, command-coverage entry,
+hub route of REQ:hub-export-route also calls. That function leaves out an entry of this machine
+that the envelope's own rules would refuse and counts it in the optional envelope field `dropped`
+(int, absent when zero), so one odd entry cannot take a machine's export down: an entry with a
+field that breaks its rule (a name over the length cap, a time in the future), one that breaks a
+rule between entries (a repeated id, a web address not built from its host and name, a pull request
+address off its repository's host, a null kinds list), and every worktree, pull request and agent
+of a repository that was left out; a pull request whose worktree was left out stays without the
+reference. The exporter says how many entries of each kind it left out, as numbers and never as
+names: the daemon in its log when the numbers change, the verb on stderr. Only a machine entry that
+is itself invalid still fails the export as `export_failed`. A daemon whose first pass has not ended
+holds a partial fleet, which must never replace what a reader holds: the full export is then the
+fourth typed error `warming_up` (the metrics-only export, which has no fleet, is made). Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
 #### REQ: remote-exporter-transports
@@ -1138,7 +1161,12 @@ The HTTP failures that trigger the fallback are: a connection error, a timeout, 
 401 or 403, status 404 (the remote wb is older and has no such route), status 429, any 5xx
 status, and a redirect (never followed). A well-formed envelope that fails validation
 (REQ:remote-envelope-is-untrusted) is `bad_payload` on either transport and never triggers
-a fallback. After a fallback the daemon keeps using SSH for that machine for a cool-down of
+a fallback. Three answers of a hub are understood by their exact status and typed body and are not
+fallback-class, because no other transport would be answered differently: 503 `warming_up` (while a
+live view of that machine is still fresh it is not a failure: nothing is replaced, no `remote_error`
+is set and the machine is asked again one interval on, with no backoff; once nothing fresh is held
+it is the failure `remote_warming_up`, REQ:remote-entries-replace-cached), 403 `export_refused` (shown as `export_refused`) and 503 `export_failed`
+(shown as `bad_payload`). After a fallback the daemon keeps using SSH for that machine for a cool-down of
 5 minutes and then tries HTTP again; while on SSH the machine entry carries the HTTP
 failure in `remote_error`, and a later HTTP success clears it. The cadence is the same
 for both: a fleet export once per snapshot refresh interval; while any client has requested
@@ -1167,16 +1195,48 @@ anonymous ([cockpit](../cockpit/README.md)#req:forwarded-requests-are-never-anon
 untouched. No new scope is added. A wb server that does not mount a daemon-hosted hub has no such
 route and is reached over SSH.
 
+A machine's choice not to export is the same on every transport (ruling of the plan's coordinator,
+2026-10-01, the conservative default, recorded for the founder in Open Questions): with
+`cockpit.anonymous_metadata: false` the route answers status 403 with the typed body
+`{"error":"export_refused"}` to the owner's credential too, for both shapes, exactly as the CLI verb
+prints `export_refused`. The route's other typed reasons are status 503 `{"error":"warming_up"}`
+until the daemon's first pass has ended (the metrics-only shape is served meanwhile) and status 503
+`{"error":"export_failed"}` when the envelope would not pass its own rules or its size bound. The
+envelope is built and validated once for each version of the daemon's published document and of its
+metrics history, and served by the shared writer with gzip and a strong ETag, so a request copies
+bytes. Every answer of the route, the envelope and a 304 included, carries `Cache-Control: no-store`. Each credential may make a burst of 5 requests and then one a second; over that the answer is
+status 429.
+
 #### REQ: remote-http-fetch
 
 The HTTP exporter's address and credential come only from local configuration, never from a
-snapshot, a request or the remote's output. For the machine that is the configured hub
-(`remote.provider: hub`) it reuses the hub client's `remote.url` and `remote.token_file`. For any
-other machine it reads an optional `http` section beside the `ssh` section of
-`session_move.targets.<machine>` in `internal/sessionmove/config.go`, with the keys `url` and
-`token_file`; the URL is validated by `remotestate.ValidateHubURL` (an `https` URL, or `http` only
-for a loopback host, with no user information, query or fragment and no path) and the token file
-must be absolute and private. The section is not a `Courier`, so `default_courier` and session
+snapshot, a request or the remote's output. A machine has an HTTP route when its entry in
+`session_move.targets.<machine>` (`internal/sessionmove/config.go`) has the optional `http` section
+beside `ssh`, with the keys `url` and `token_file`. The `remote` section names no machine for the
+hub it points at, and entries are placed only by a configured key, so the machine that is the
+configured hub (`remote.provider: hub`) is the target whose `http.url` has the same origin as
+`remote.url`: for it `token_file` may be omitted and the hub client's `remote.token_file` is reused.
+A target with no `token_file` whose `url` is not that hub has no HTTP route. The URL is validated by
+the rule of `remotestate.ValidateHubURL` (an `https` URL, or `http` only for a loopback host, with no
+user information, query or fragment and no path); the rule lives in the leaf package
+`internal/hubaddress`, which both `remotestate` and `sessionmove` call, because `sessionmove` cannot
+import `remotestate` (the import would be a cycle). The token file must be absolute and private
+(a regular file that only its owner can read; the mode is not checked on Windows) and is read on
+every export, so a rotated credential needs no restart; a credential that is missing or unusable
+sends no request and is shown as `http_auth_failed`; a path that is not a regular file (a FIFO, or a
+link to one) is refused without blocking. The address rule admits `localhost` however it is capitalised (the host is compared, and used, in
+lower case, so `http://Localhost:8766` is a loopback address and is never proxied) and
+no `?`, `#` or path (there is no base path), its error text never echoes the address (which could
+hold a password), and the host is used in lower case. Proxies: a plain `http` request (loopback only,
+by the rule) and any request to a loopback host is never proxied, whatever the environment names and
+however the host is spelled, because a proxy would receive such a request whole, bearer included; an
+`https` request follows the environment's proxy, through which it passes as a CONNECT tunnel that
+does not see the bearer. The hub client (`internal/remotestate/hub`), which sends the same
+credential, follows the same policy. TLS certificates are verified against the system roots, and TLS
+1.2 is the oldest version spoken. A loopback `http://` address (the local end of an SSH tunnel, for
+example) sends the bearer to whatever process listens on that local port: prefer `https`, or the SSH
+transport, for a machine reached that way. A target whose `http.url` is this daemon's own listener is
+refused when the daemon starts, with a diagnostic that names the machine. The section is not a `Courier`, so `default_courier` and session
 delivery are unchanged. That target map is where a machine's addresses already live, and keeping
 one list avoids a second place to be wrong; a separate `cockpit` section would repeat the machine
 names. The client calls `GET /v0/workbench/machines/export` with `Authorization: Bearer`, follows
@@ -1215,7 +1275,10 @@ refused. Every entry in it is placed on the machine named by the configured targ
 machine the response names, and no machine name in the response is used for placement; it is never
 applied to the local machine. A refused payload renders nothing and sets `remote_error`
 `bad_payload`. The remote's own cached entries for third machines are dropped, so only that
-machine's own entries are merged. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
+machine's own entries are merged: the exporter never emits them, an envelope that carries one is
+refused whole by the single-machine rule below, and the merger keeps only the entries of the
+envelope's one machine entry whatever reaches it. Every envelope is validated again by the
+scheduler, whichever transport produced it. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
 shape of the bytes before it decodes them (arrays over their caps, nesting beyond 10 levels and
 more than a million tokens are refused without allocating for them), refuses every string field
 that has no declared rule (each closed vocabulary and each identifier pattern is checked, and a
@@ -1230,11 +1293,42 @@ path and never a value, a time or an error text of the remote.
 #### REQ: remote-entries-replace-cached
 
 The accepted entries are merged into the local fleet document as that machine's entries
-with `route` `live-remote`, `observed_at` equal to the remote snapshot's time, and the
+with `route` `live-remote`, `observed_at` equal to the remote snapshot's time (the fleet's
+`snapshot_at`, never later than when this daemon received it), and the
 machine entry's `transport` (`http` or `ssh`) set to the transport that produced them. While
-the export is younger than two refresh intervals they replace that machine's cached
+the export is younger than two refresh intervals, measured from when this daemon received it so
+that a remote's clock cannot keep stale data live, they replace that machine's cached
 (published-store) entries; otherwise the cached entries are shown with their age and the
-`remote_error` explains why. Agents, pull request state, sync facts and `owner_state` of
+`remote_error` explains why. That machine's cached entries are the published snapshots under the
+configured machine name (and under this machine's login when it is known). The machine entry is
+named by the configured key and keeps one id: the id of its published entry when exactly one
+exists, otherwise an id derived from the login and the key; every other id is derived from the
+configured key and never used as received. An agent's `activity`, `task`, `started_at`,
+`finished_at` and `exit_code` are carried under the envelope's rules, and its `worktrees` are the
+re-derived ids of that machine's carried worktrees: an id that is not one of them is dropped. A configured machine with a failure and no published
+entry is shown as a bare machine entry carrying `remote_error`. A target configured under this
+machine's own name is never read, and an export that is this machine's own (its envelope names this
+machine, or its one machine entry has this machine's id: a tunnel, a proxy or a mistaken address
+that leads back here), whatever address it came from and whichever shape, is refused whole as
+`self_export`: nothing of it is placed and its metrics are not kept.
+
+A fleet that says it is warming up (over either transport) is never taken: the previous live view
+stays while it is fresh, with no error and no backoff. Warming is bounded: when no fresh live view
+of that machine is held (it was never read, or its view is older than two refresh intervals) the
+attempt is the failure `remote_warming_up`, shown on the machine's published entries or, with none,
+on a bare machine entry, and followed by the same backoff as any failure. At most 2,000 repositories, 2,000
+worktrees, 500 pull requests and 200 agents of one remote machine are kept; what is cut is added to
+the machine entry's `export_dropped`, and cut agents set its `agents_truncated`. An export whose
+entries are the ones already shown publishes nothing. The entries are mapped, and the document is
+encoded and compressed, outside the snapshotter's exclusive lock, and a request for a machine's
+metrics takes no exclusive lock. A document that would be over 32 MiB with the live machines' entries is
+published without them: the size is estimated before anything is encoded (the size of everything
+else in the last published document plus the encoded size of the fresh live views), so the document
+is encoded once, and each machine left out is shown by its published entries or, with none, by a
+bare machine entry, carrying `remote_error` `export_too_large` either way, never dropped silently,
+with one diagnostic and one log line. The document's `throughput` block is local only and is never
+merged from another machine. A panic while a remote's envelope is validated or mapped is `bad_payload` for that machine,
+logged once, and never ends the daemon. Agents, pull request state, sync facts and `owner_state` of
 that machine therefore become visible live, and such entries have no actions
 (REQ:action-slots). A machine with no live route keeps its published-store entries as
 before.
@@ -1245,15 +1339,24 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 `http_unavailable` (connection error, timeout, 404, 429, 5xx or a redirect), `http_auth_failed`
 (401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
-`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads), `bad_payload`,
-`remote_warming_up` (the remote's first scan is still running; nothing to run) or `export_too_large`; it is cleared by the next success on the preferred transport. A remote export that prints
+`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads),
+`bad_payload`, `remote_warming_up` (the remote daemon's first pass has not ended and no fresh live
+view is held), `export_too_large` (this daemon left the machine's live entries out of a document
+that would be over its size bound; it is set while that holds and is not a failed attempt) or
+`self_export` (the export read is this machine's own); it is cleared by the next successful full
+export on the preferred transport, never by a metrics-only one. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
-codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
+codes name the HTTP transport and the others the SSH transport, except `export_refused`,
+`bad_payload`, `remote_warming_up` and `self_export`, which either transport reports, and
+`export_too_large`, which names none (REQ:remote-exporter-transports), so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
 <<<edit:hub-url>>> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
 `wb_too_old` and `http_unavailable` caused by 404; and for the others the `ssh <user>@<host>
-<wb_path> cockpit export --format json` command to try. The stderr or response body behind
+<wb_path> cockpit export --format json` command to try, except `self_export`,
+`export_too_large` and `remote_warming_up`, which have no command to copy (the first is fixed in
+this machine's configuration of the target's address, the second is this daemon's own bound, the
+third passes when the remote's first pass ends). The stderr or response body behind
 it is not shown.
 
 ### Performance budgets
@@ -2368,9 +2471,9 @@ Then the `vm` worktrees and agent appear with `route` `live-remote`, `transport`
 **Requirements:** cockpit-views#req:remote-envelope-is-untrusted
 
 Scenario: A payload that names another machine, or this one
-Given a target `vm` whose export, over either transport, names machine `mac`, another whose export names the local machine, and entries for a third machine
+Given a target `vm` whose export, over either transport, names machine `mac`, another whose export is the local machine's own (by its name, or by its machine entry's id under another name), and entries for a third machine
 When the daemon decodes them
-Then the entries are placed on `vm` whatever machine they name, nothing is applied to the local machine, the third machine's entries are dropped, and no machine name in the response is used for placement
+Then the entries are placed on `vm` whatever other machine they name, the local machine's own export is refused whole with `remote_error` `self_export`, nothing is applied to the local machine, the third machine's entries are dropped, and no machine name in the response is used for placement
 
 ### AC: failed-export-shows-a-typed-error
 
@@ -2397,7 +2500,7 @@ Then no ssh process is started and no HTTP request is sent by any, and the metri
 Scenario: Credentials, identity, scope of data, and the hosted service
 Given a daemon-hosted hub, a machine credential with `machine_snapshot:read` of the host owner's identity, one of another identity, a peer credential with `peer:session` alone, a session cookie, and the hosted multi-identity service
 When `GET /v0/workbench/machines/export` and `?metrics_only=1` are requested with each, and with none, and a Cockpit route is requested with `Host: vm.example`
-Then only the owner's machine credential receives the envelope of this machine alone (without `fleet` for the metrics-only call), the other identity is refused with 403, the others with 401, the hosted service serves no such route, no new scope exists, the route is not under `/api/v1/cockpit/`, and the Cockpit route is still refused with status 421
+Then only the owner's machine credential receives the envelope of this machine alone (without `fleet` for the metrics-only call), the other identity is refused with 403, the others with 401, the hosted service serves no such route, no new scope exists, the route is not under `/api/v1/cockpit/`, the Cockpit route is still refused with status 421, and a machine with `cockpit.anonymous_metadata: false` answers the owner's credential 403 `export_refused`, which the reading daemon shows as `export_refused`
 
 ### AC: bearer-stays-with-the-configured-host
 
@@ -2598,6 +2701,12 @@ When Home, Tasks and Repositories are rendered repeatedly and a filter is typed
 Then merged repositories, tasks with state, the "Needs you" items, the ready-to-land list and the cleanup counts were each computed once for that document, and a new document computes them once more
 
 ## Open Questions
+
+- `cockpit.anonymous_metadata: false` currently means a machine's metadata is exported by no
+  transport, the hub route with the owner's machine bearer included (REQ:hub-export-route; the
+  conservative default, ruled by the plan's coordinator on 2026-10-01). The founder may later allow
+  a machine bearer of the host owner to override the opt-out, since that credential is not an
+  anonymous reader.
 
 - Which herdr server should the daemon read for `activity`, and should it be configurable? Today
   it reads the one its own environment reaches (the default server for a launchd or systemd

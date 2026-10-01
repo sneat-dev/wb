@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -114,12 +115,41 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	t.Parallel()
 	// The projects root is a sentinel path: it is compared and statted, never
 	// emitted, and the metrics route must not carry it either.
+	// Two other machines are read live (cockpit-views#req:remote-entries-replace-
+	// cached). The first exports the same sentinel sources under a machine name
+	// that is itself a sentinel: the name a response gives is never used, so it
+	// must not reach the document. The second fails with a sentinel as its error
+	// text and as its code: only a code of the closed vocabulary may be shown.
+	remote, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
+		options.Machine = sentinel + "remote-machine"
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+	})
+	refreshAndSettle(t, remote)
+	exported := remote.Export(false)
+	if exported.Machine != sentinel+"remote-machine" || len(exported.Fleet.Worktrees) != 1 {
+		t.Fatalf("the remote export = %+v", exported)
+	}
+	exporter := &fakeExporter{answer: func(target RemoteTarget, _ bool) (Envelope, error) {
+		if target.Machine == "broken" {
+			return Envelope{}, errors.Join(errors.New(sentinel+"error-text"), &RemoteError{Code: sentinel + "code"})
+		}
+		return exported, nil
+	}}
 	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
 		options.ProjectsRoot = "/" + sentinel + "projects-root"
 		options.Sampler = filledSampler(t, &countingSource{}, 3)
+		options.Remotes = []RemoteTarget{
+			{Machine: "vm", HTTP: &HTTPRoute{URL: "https://" + sentinel + "host.example", TokenFile: "/" + sentinel + "token-file"}},
+			{Machine: "broken", HTTP: &HTTPRoute{URL: "https://" + sentinel + "broken.example", TokenFile: "/" + sentinel + "token-file"}},
+		}
+		options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: exporter}}
 		options.Terminals = sentinelTerminals()
 	})
 	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	if vm, found := machineNamed(snapshotter.Document(), "vm"); !found || vm.WorktreeCount != 1 {
+		t.Fatalf("the live machine = %+v (the test would be vacuous)", vm)
+	}
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
 	// The metrics of every machine in the document are served by their own
@@ -180,6 +210,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
+		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
 		`"desktop"`, `"v0.9.0"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -199,7 +230,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"Throughput":       {"window_days", "per_day", "slowest", "median_seconds", "p90_seconds", "capped"},
 		"ThroughputDay":    {"date", "finished", "dropped", "landed"},
 		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
-		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time"}, entry...),
+		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time", "transport", "remote_error", "export_dropped", "agents_truncated"}, entry...),
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
 		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
 		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
