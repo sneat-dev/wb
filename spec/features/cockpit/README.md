@@ -151,7 +151,10 @@ is this closed set of fields:
 - machine name, the machine's unique id, WB version, route and observation time;
   and, for the local machine and for another machine whose snapshot carries them,
   operating system and architecture names, CPU count and boot time (`boot_time`);
-- the snapshot refresh interval in seconds (`refresh_interval_seconds`);
+- the snapshot refresh interval in seconds (`refresh_interval_seconds`), and a
+  machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
+  `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
+  `export_refused` or `bad_payload`), never the remote's error text;
 - a machine's resource samples, served only by the `machine-metrics` route and
   never in the fleet document, which are numbers and times only: CPU percent,
   one-minute load, memory used and total bytes, free and total bytes of the
@@ -197,9 +200,7 @@ is this closed set of fields:
 The metadata routes are `session`, `fleet`, `attention`, the action list, and
 two added by [cockpit-views](../cockpit-views/README.md): `GET /api/v1/cockpit/branches?repository=<id>`
 and `GET /api/v1/cockpit/machine-metrics?machine=<id>`, each of the same access
-class as `fleet`. A machine's metrics are also served to another daemon on the
-hub route `GET /v0/workbench/machines/metrics`, which is not a Cockpit route and
-admits only a machine credential, never an anonymous principal.
+class as `fleet`.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
@@ -310,9 +311,12 @@ Every entry carries a stable `id` unique within its collection, its
 
 #### REQ: route-and-freshness-are-explicit
 
-`route` is `local` for state this daemon observed itself and `cached` for
+`route` is `local` for state this daemon observed itself, `live-remote` for
+state it read in the background from another machine over the configured SSH route
+([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch), and `cached` for
 state read from another machine's published snapshot. A `cached` entry's
-`observed_at` is the snapshot's publish time. The application MUST show the
+`observed_at` is the snapshot's publish time, and a `live-remote` entry's is the
+remote snapshot's time. The application MUST show the
 route and the age of every `cached` entry and MUST NOT render cached state as
 live.
 
