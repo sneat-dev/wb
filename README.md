@@ -585,6 +585,9 @@ remote:
   machine: <unique-name-for-this-machine>
   publish:
     unpushed: subjects   # or: counts
+    # interval: 15m      # opt in: the daemon also publishes after a local scan (minimum 5m; unset = by hand only)
+    # agents: false      # opt in: include this machine's agents in the snapshot
+    # metrics: false     # opt in: include this machine's latest CPU, memory and disk sample
 ```
 
 `wb remote publish` scans this machine's attention repositories and live task

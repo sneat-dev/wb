@@ -783,7 +783,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `session_id`, `run_id` | string | opt. | record | both |
 | `runtime`, `model` | string | opt. | record | both |
 | `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
-| `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
+| `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr; the snapshot's value only if in the set | local, and cached when published |
 | `repository`, `task` | string | opt. | run record; for a session, the declared owner process of its worktrees | both |
 | `worktrees` | list of entry ids | opt. | as above | both |
 | `started_at` | time | opt. | record | both |
@@ -971,9 +971,23 @@ snapshot, memoised on the identity of the fleet document, not on every render.
 #### REQ: periodic-remote-publish
 
 The daemon MAY publish this machine's snapshot to the remote store after a successful local scan,
-by the same publish path as `wb remote publish`. It is opt-in: it runs only when
-`remote.publish.interval` is set (minimum 5 minutes); with no value nothing is published. A failed
-publish is retried at the next interval and never delays the local snapshot.
+by the same publish path as `wb remote publish` (the same snapshot builder and the same provider,
+`gitrepo` or `hub`; there is no second publisher). It is opt-in: it runs only when
+`remote.publish.interval` is set (a duration, minimum 5 minutes: a shorter value is raised to 5
+minutes, a negative one is a configuration error); with no value, or no remote store, nothing is
+published, exactly as before, and a machine that only ever published by hand does not start
+publishing because it was upgraded. A scan is successful when it listed the repositories and was not
+cancelled (a repository that failed carries its error code in the snapshot, as in `wb remote
+publish`). The publish runs off the request path and off the scan, in a goroutine of its own, at
+most once at a time, under a bound of 5 minutes for the scan and the publish together, and never
+more often than the interval. It is skipped when the snapshot says what the last published one said
+(the same digest, apart from the publish time and the metrics sample), so a git store gains no
+commit for an idle machine, except that an unchanged snapshot is published anyway once 6 hours have
+passed, so an idle machine is not taken for a stale one (`wb remote machines` marks a snapshot stale
+after 24 hours). A failed publish is a typed diagnostic (`collect_failed`, `store_unavailable`,
+`publish_failed` or `optional_fields_dropped`, a code and never the text of an error), logged when it
+changes, and is retried after the interval, then after twice, four times and so on up to one hour
+while it keeps failing; it never ends the daemon and never delays the local snapshot.
 [remote-state](../remote-state/README.md)#req:remote-publish-periodic specifies the behaviour;
 until the founder settles which remote store is the fleet's shared one (Open Questions), each
 machine publishes to whatever it has configured. It stays as the fallback for machines without a
@@ -983,16 +997,38 @@ while fresh.
 #### REQ: remote-snapshot-agents-and-metrics
 
 The published remote snapshot MAY carry optional `agents` (at most 200 entries, each with
-runtime, model, task, repository, `activity` when known, `started_at` and the run or session
-identifier) and `metrics` (the latest sample of REQ:machine-metrics-route), and its machine entry
-MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents are published only with
+`kind`, `state`, runtime, model, task, repository name, `activity` when known, `started_at` and the
+`session_id` or `run_id`) and `metrics` (the latest sample of REQ:machine-metrics-route), and its
+machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents are published only with
 `remote.publish.agents: true` and metrics only with `remote.publish.metrics: true`; both default to
-off. All are optional and `schema_version` does not change: an older reader decodes the YAML
-snapshot without strict field checking and ignores them. The hub provider's HTTP snapshot model
-(`api/githubapp/machinesnapshot.Snapshot`) is decoded with unknown fields refused, so it MUST accept
-the same optional fields in the same task; a publisher refused with status 400 by an older hub
-retries once without the optional fields and records a diagnostic. The fleet document shows another
-machine's agents as `cached` with the age of the snapshot and with no actions.
+off, as does the interval of REQ:periodic-remote-publish. All are optional and `schema_version`
+does not change: an older reader decodes the YAML snapshot without strict field checking and
+ignores them. The hub provider's HTTP snapshot model (`api/githubapp/machinesnapshot.Snapshot`) is
+decoded with unknown fields refused, so it MUST accept the same optional fields in the same task; a
+publisher refused with status 400 by an older hub retries once without the optional fields (the
+hardware, the agents and the sample) and records the diagnostic `optional_fields_dropped`; the retry
+is made for `wb remote publish` as well. The fleet document shows another machine's agents as
+`cached` with the age of the snapshot, with no actions, at most 200 for each machine (and sets
+`agents_truncated` when more were published), every string plain text and length-capped, a kind,
+state or activity outside its closed list dropping the agent or the field, and its repository as the
+id of that machine's repository entry of that name or none. The machine's published sample is the
+`cached` source of REQ:machine-metrics-route, served through the same source seam as the live
+remote one and after it.
+
+What leaves the machine, by mode (nothing else is in the part this REQ adds, and none of it is a
+path, a command line, an environment value, a prompt, a process list or a check's text):
+
+| Mode | Added to the snapshot |
+|---|---|
+| Interval unset | nothing is published by the daemon |
+| Interval set, `agents` and `metrics` false | `os`, `arch`, `cpu_count`, `boot_time` of the machine entry |
+| `agents: true` | and `agents`: for each of at most 200 local sessions and runs, `kind` (`session` or `run`), `state`, `runtime`, `model`, `activity` when herdr reports one, `task`, the repository's name as `owner/name`, `started_at`, and the `session_id` or `run_id`, every string cleaned of control characters and cut at 200 characters |
+| `metrics: true` | and `metrics`: one sample, `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` and `sampled_at`, each measurement only when known |
+
+The rest of the snapshot is what `wb remote publish` publishes today and is unchanged: the hub
+provider publishes only its allowlist (no path, no projects root, no commit subject), and the git
+provider's file is the owner's own private store, which carries the paths of its checkouts as it
+always has, redacted by `remote.publish.unpushed` (`subjects` or `counts`) as before.
 
 #### REQ: throughput-block
 
