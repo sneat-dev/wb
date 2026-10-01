@@ -47,13 +47,26 @@ func TestE2ERenameReservationAbortRefusesConflictingTerminalWithoutMovingSource(
 		_ = runDir.Close()
 		t.Fatal(err)
 	}
-	archivePath := filepath.Join(fixture.home, "worklogs", reservations[0].EffortID, "runs", reservations[0].RunID, "original-prompt.txt")
+	runPath := filepath.Join(fixture.home, "worklogs", reservations[0].EffortID, "runs", reservations[0].RunID)
+	archivePath := filepath.Join(runPath, "original-prompt.txt")
+	terminalPath := filepath.Join(runPath, preApplyRenameTerminalName)
+	terminalBefore, err := os.ReadFile(terminalPath)
+	if err != nil {
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
 	_ = runDir.Close()
 	result, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "preapply-new", Disposition: AbortDiscarded, Apply: true,
 	})
-	if err == nil || len(result) != 1 || result[0].Applied {
+	if err == nil || !strings.Contains(err.Error(), "terminalize pre-apply reservation") ||
+		!strings.Contains(err.Error(), "immutable file already exists: "+preApplyRenameTerminalName) ||
+		len(result) != 1 || result[0].Applied {
 		t.Fatalf("conflicting terminal abort = %#v, %v", result, err)
+	}
+	terminalAfter, err := os.ReadFile(terminalPath)
+	if err != nil || string(terminalAfter) != string(terminalBefore) {
+		t.Fatalf("conflicting terminal was replaced: before=%q after=%q err=%v", terminalBefore, terminalAfter, err)
 	}
 	if _, err := os.Stat(created[0].WorktreeDir); err != nil {
 		t.Fatalf("source checkout moved on terminal refusal: %v", err)
