@@ -3,7 +3,7 @@ package githubobserver
 import (
 	"context"
 	"errors"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"os"
 	"path/filepath"
 	"strings"
