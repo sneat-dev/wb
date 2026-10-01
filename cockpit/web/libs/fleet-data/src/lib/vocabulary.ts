@@ -129,8 +129,20 @@ export function listQueryParams(query: Partial<ListQuery>): Record<string, strin
 
 /** An address inside the application: a path and its query parameters. */
 export interface AppLink {
+  /** The address as a string, every segment percent-encoded once: for `href`, `navigateByUrl` and `hrefOf`. */
   path: string
   query: Record<string, string>
+  /**
+   * The same path as router commands, with each segment as the raw value (`['/agents', 'a/1']`), for a detail
+   * address whose id is a path segment. A string given to `[routerLink]` is encoded a second time by the router
+   * (`a%252F1`), so a template binds `linkTarget(link)`, which is these commands when there are any, else the path.
+   */
+  commands?: readonly string[]
+}
+
+/** What `[routerLink]` is given for a link: its commands when it has them (an id with a `/` or a `%` survives), else its path. */
+export function linkTarget(link: AppLink): string | readonly string[] {
+  return link.commands ?? link.path
 }
 
 /** The link as one string, with every value percent-encoded. */
@@ -141,7 +153,10 @@ export function hrefOf(link: AppLink): string {
 
 /** A link to a list page with the given state. Unknown chips, sorts and terms are refused. */
 export function listLink(page: ListPageId, query: Partial<ListQuery> = {}): AppLink {
-  const link: AppLink = { path: PAGE_RULES[page].path, query: listQueryParams(query) }
+  const link: AppLink = {
+    path: PAGE_RULES[page].path,
+    query: listQueryParams(query),
+  }
   const problems = linkProblems(link)
   if (problems.length > 0) throw new Error(`not in the filter vocabulary: ${problems.join('; ')}`)
   return link
@@ -172,22 +187,40 @@ export function taskDetailLink(task: string): AppLink {
   return { path: '/tasks/detail', query: { task } }
 }
 
-/** `/repositories/:host/:owner/:name`; a repository with no host uses `-` for it. */
-export function repositoryDetailLink(host: string | undefined, name: string): AppLink {
-  const segments = [host ?? '-', ...name.split('/')].map(encodeURIComponent)
-  return { path: `/repositories/${segments.join('/')}`, query: {} }
+/** A detail address whose id is one path segment: `/<root>/<id>`, encoded once for the string and raw in the commands. */
+function idLink(root: string, id: string): AppLink {
+  return {
+    path: `${root}/${encodeURIComponent(id)}`,
+    query: {},
+    commands: [root, id],
+  }
+}
+
+/**
+ * `/repositories/:host/:owner/:name` (a repository with no host uses `-` for it). A name that is not exactly
+ * `owner/name` (GitLab `group/sub/project`) has no such address, so with its entry `id` it is `/repositories/<id>`.
+ */
+export function repositoryDetailLink(host: string | undefined, name: string, id?: string): AppLink {
+  const parts = name.split('/')
+  if (parts.length !== 2 && id !== undefined) return idLink('/repositories', id)
+  const segments = [host ?? '-', ...parts]
+  return {
+    path: `/repositories/${segments.map(encodeURIComponent).join('/')}`,
+    query: {},
+    commands: ['/repositories', ...segments],
+  }
 }
 
 export function agentDetailLink(id: string): AppLink {
-  return { path: `/agents/${encodeURIComponent(id)}`, query: {} }
+  return idLink('/agents', id)
 }
 
 export function machineDetailLink(id: string): AppLink {
-  return { path: `/machines/${encodeURIComponent(id)}`, query: {} }
+  return idLink('/machines', id)
 }
 
 export function worktreeDetailLink(id: string): AppLink {
-  return { path: `/worktrees/${encodeURIComponent(id)}`, query: {} }
+  return idLink('/worktrees', id)
 }
 
 /**

@@ -153,13 +153,32 @@ function anchor(worktrees: readonly Worktree[]): Worktree | undefined {
   return worktrees.find((worktree) => worktree.route === 'local') ?? worktrees[0]
 }
 
-function taskCommands(model: FleetModel, task: string, worktrees: readonly Worktree[]): PanelCommand[] {
-  const where = anchor(worktrees)
+/**
+ * The task's commands: reading ones always, and for a task decided on this machine (`stateSource` `local`)
+ * the ones that change something: committing and opening a pull request, and landing each open pull request.
+ * A task only another machine reports has nothing to push or land from here, so those are withheld (not
+ * hidden by the page): its read-only commands stay.
+ */
+function taskCommands(model: FleetModel, task: TaskView): PanelCommand[] {
+  const where = anchor(task.worktrees)
   const target = where === undefined ? {} : model.targetOf(where)
+  const reading = [entry('List worktrees', worktreeList(task.name, target)), entry('Plan cleanup (dry run)', worktreeCleanup(task.name, target))]
+  if (task.stateSource === 'remote') return reading
+  const land = task.pullRequests.filter(isOpenPullRequest).flatMap((pr) => {
+    const panel = buildPullRequestPanel(model, pr.id) as PullRequestPanel
+    // A pull request with no repository has no command to copy.
+    return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
+  })
+  return [reading[0], entry('Commit and open pull request', pullRequestCreate(task.name, PLACEHOLDERS.message, target)), reading[1], ...land]
+}
+
+/** A worktree's panel commands: its task's reading and pushing commands, run where this worktree is. */
+function worktreeCommands(model: FleetModel, worktree: Worktree): PanelCommand[] {
+  const target = model.targetOf(worktree)
   return [
-    entry('List worktrees', worktreeList(task, target)),
-    entry('Commit and open pull request', pullRequestCreate(task, PLACEHOLDERS.message, target)),
-    entry('Plan cleanup (dry run)', worktreeCleanup(task, target)),
+    entry('List worktrees', worktreeList(worktree.task, target)),
+    entry('Commit and open pull request', pullRequestCreate(worktree.task, PLACEHOLDERS.message, target)),
+    entry('Plan cleanup (dry run)', worktreeCleanup(worktree.task, target)),
   ]
 }
 
@@ -190,7 +209,7 @@ export function buildWorktreePanel(model: FleetModel, id: string): WorktreePanel
       pullRequests: (model.worktreePullRequests.get(worktree.id) ?? []).map(checkedPullRequest),
       agents: task.agents,
     },
-    commands: taskCommands(model, worktree.task, [worktree]),
+    commands: worktreeCommands(model, worktree),
     raw: [worktree],
   }
 }
@@ -210,7 +229,7 @@ export function buildTaskPanel(model: FleetModel, name: string): TaskPanel | und
       notReadyReasons: [...new Set(task.pullRequests.filter(isOpenPullRequest).flatMap(notReadyReasons))],
     },
     related: { worktrees: task.worktrees, pullRequests: task.pullRequests.map(checkedPullRequest), agents: task.agents },
-    commands: taskCommands(model, task.name, task.worktrees),
+    commands: taskCommands(model, task),
     raw: [...task.worktrees, ...task.pullRequests, ...task.agents],
   }
 }

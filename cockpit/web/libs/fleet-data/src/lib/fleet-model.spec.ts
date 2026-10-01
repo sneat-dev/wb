@@ -536,12 +536,13 @@ describe('machines and Fleet health', () => {
     expect(byCode['timeout'].link).toEqual({ path: '/machines', query: { machine: 'mach-vm4' } })
   })
 
-  it('lists a machine that is warming up without a command, and one whose export was too large with the export to try', () => {
+  it('lists a machine that is warming up, or whose export was too large, without a command', () => {
     const model = modelOf({ machines: [m('vm', { route: 'cached', remote_error: 'remote_warming_up', observed_at: ago(HOUR) }), m('big', { route: 'cached', remote_error: 'export_too_large', observed_at: ago(HOUR) })] })
     const [warming, big] = buildHealth(model).remoteErrors
     expect(warming.command).toEqual({ reason: expect.stringContaining('nothing to run') })
-    expect(big.command).toMatchObject({ text: "wb cockpit export --format='json'" })
-    expect(remoteFix('remote_warming_up', undefined)).toMatchObject({ ok: false })
+    expect(big.command).toEqual({ reason: expect.stringContaining('nothing to run') })
+    for (const code of ['remote_warming_up', 'export_too_large', 'self_export']) expect(remoteFix(code, undefined)).toEqual({ ok: false, reason: expect.stringContaining('nothing to run') })
+    expect(remoteFix('a_code_from_the_future', { host: 'h' })).toEqual({ ok: false, reason: expect.stringContaining('unknown error') })
   })
 
   it('lists a machine whose export left entries out, and nothing for zero or an unreported count', () => {
@@ -561,7 +562,7 @@ describe('machines and Fleet health', () => {
   })
 
   it('says each remote_error in words, and an unknown code as an unknown error', () => {
-    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload', 'remote_warming_up', 'export_too_large']) {
+    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload', 'remote_warming_up', 'export_too_large', 'self_export']) {
       expect(remoteErrorText(code)).not.toBe('unknown error')
     }
     expect(remoteErrorText('???')).toBe('unknown error')
