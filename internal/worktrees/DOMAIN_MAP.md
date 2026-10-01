@@ -349,6 +349,26 @@ All **13 changed or new compiled production bodies since 360 are 153/153 covered
 
 The merged archive payload is `fd12f4c6` plus corrective commits `33fc7925`, `7a8c13c8` and test-fixture correction `9c8e38bf`; legacy recovery is `732addd5` plus `8bd78ade` and `c16572b2`. Independent review passed before local integration. Profile SHA-256: `740380777649100bc77b85f09bdbbfb428f69be1eef75d4438fbf1a21092e38b`. Local receipts are `/private/tmp/wb-cd46438d-summary.json`, `/private/tmp/wb-cd46438d-checkpoint-receipt.json`, and `/private/tmp/wb-cd46438d-{new,cumulative,facade}-audit.log`. The hourly account check at 2026-10-01 03:51 UTC was 87%, below the authorized 90% stop. The next clone-migration batch is outside this checkpoint; accumulate reviewed local work and coalesce broad checks.
 
+### Managed-claim lineage and native recovery checkpoint — d71f85f7
+
+Clean local source `d71f85f74ec1bd9f4ee6451e0ec65d29cdaa7629` passed the same e2e-enabled 14-package shared-profile run with two worktrees shards. Log creation to final write was approximately 622 seconds. Publication remains deferred.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+|---|---:|---:|---:|
+| `internal/worktrees` facade | 15,783 / 16,553 | 95.3483% | 770 |
+| Original 11-package group | 20,704 / 21,474 | 96.4143% | 770 |
+| Stable 12-package group | 20,791 / 21,561 | 96.4287% | 770 |
+| Comparable 13-package group | 21,021 / 21,792 | 96.4620% | 771 |
+| Expanded 14-package group | 21,288 / 22,059 | 96.5048% | 771 |
+
+Against `cd46438d`, the expanded group has **93 fewer missed statements and 56 more total statements**. File-level miss reductions are checkout-marker 2, clone migration 18, lifecycle 42, orphans 2, Work Log 20 and session custody 9. Clone migration includes removal of two unreachable error statements; its two changed bodies are fully covered. The claim-recovery batch's four-target source-bound union demonstrates 27 newly covered statements, with two target functions reaching 100%; do not add that overlapping union to the shared totals.
+
+An adopted checkout can have shared-root-shaped paths. After a legitimate handoff and loss of its adoption pointer, the old registry fallback incorrectly classified it as managed. Recovery now checks immutable acquisition lineage, binds claims to their actual run and filename, pins no-follow predecessor reads, and verifies in-place placement continuity. Ordinary and reconstructed legacy roots remain accepted; unsupported cross-custody lineage cannot grant managed placement. Native public List/Orphans regressions and two invocation-local fault readers verify refusals, second-read authority changes and descriptor closure. Independent review passed after correcting claim and terminal fixtures that could otherwise mask a scanner regression.
+
+All **10 changed or new compiled production bodies since `cd46438d` are 279/279 covered**. The retained cumulative set since `d4aba76d` is **222 bodies, 4,759/4,759 covered**. The facade has **1,274 named compiled functions: 1,008 fully covered, 266 partial and none completely uncovered**. Twelve supporting packages remain at 100%; checkout-marker is 230/231, with its remaining Darwin path-resolution error outside this batch. Whole-CLI coverage was not refreshed. Focused race checks, vet, pinned lint, seven named guards and normal hooks passed. The exact dead-code gate still fails on the same 255 findings, with no additions or removals and no baseline change.
+
+Profile SHA-256: `af19e4fd75fb55e006d053aec055cb3e344d5486efc7a27b87f1ef1df68858f2`. Receipts are `/private/tmp/wb-d71f85f7-{summary,checkpoint-receipt,worklist}.json` and `/private/tmp/wb-d71f85f7-{new,cumulative,facade}-audit.log`. The hourly account check at 2026-10-01 04:51 UTC was 88%, below the authorized 90% stop. The next native checkout-location test draft is outside this measurement; no useful production deduplication was identified in that domain. Keep coherent batches within 20 target functions and coalesce broad checks.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
