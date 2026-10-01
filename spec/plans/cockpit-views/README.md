@@ -102,7 +102,7 @@ Verification (allmust pass before the task is complete): targeted `wb run -- go 
 **Id:** task-2
 **Verifies:** cockpit-views#ac:sampler-fills-a-ring-buffer, cockpit-views#ac:metrics-route-serves-each-source, cockpit-views#ac:metrics-route-is-compressed-and-revalidatable
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add the sampler: every 10 seconds, off the request path, CPU percent, one-minute load, memory used and total, and free and total disk of the projects root into a 360-sample in-memory ring buffer through an injectable source and clock, with a Windows build that reports metrics as unsupported. Add `GET /api/v1/cockpit/machine-metrics?machine=<id>` returning `{machine, route, fetched_at?, samples, reason?}` with the `local` and `none` sources, 404 for an unknown id, and the hosted-origin conditional-request headers of task 1; the `live-remote` and `cached` sources are filled by tasks 5 and 8 behind the same payload. Compression and the hosted-origin conditional-request headers of task 1 apply to this route and are verified here. The Go tasks 1 to 6 run serially because they all touch the read model and the shared API writer; the sentinel test is extended in each.
 

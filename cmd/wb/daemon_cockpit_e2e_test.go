@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -93,5 +97,61 @@ func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithout
 	}
 	if len(after) != len(before) {
 		t.Errorf("%d files appeared under the state clone", len(after)-len(before))
+	}
+}
+
+// TestE2ECockpitMetricsSamplerReadsThisRealMachine builds the snapshotter from
+// the daemon's own options and sampler wiring (the real platform reader and clock,
+// ticking fast) and starts it as the daemon does, and requires the local metrics
+// route to hold a sample with a CPU percent within seconds (present on macOS and
+// Linux): memory and disk totals above zero and a time in the past.
+func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
+	t.Parallel()
+	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil })
+	// The daemon's own sampler wiring, ticking fast so the test needs no 10 s wait.
+	options.Sampler = newLocalSampler(options.ProjectsRoot, func(string, ...any) {}, func(time.Duration) (<-chan time.Time, func()) {
+		ticker := time.NewTicker(300 * time.Millisecond)
+		return ticker.C, ticker.Stop
+	})
+	snapshotter := cockpitfleet.New(options)
+	stop := snapshotter.Start(t.Context())
+	defer stop()
+	var machine string
+	deadline := time.Now().Add(40 * time.Second)
+	for machine == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("the snapshotter published no machine")
+		}
+		var document cockpitfleet.Document
+		if err := json.Unmarshal(fleetBody(snapshotter), &document); err != nil {
+			t.Fatal(err)
+		}
+		if len(document.Machines) > 0 {
+			machine = document.Machines[0].ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var response cockpitfleet.MetricsResponse
+	for len(response.Samples) < 2 || response.Samples[len(response.Samples)-1].CPUPercent == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("no sample with a CPU percent arrived: %+v", response)
+		}
+		recorder := httptest.NewRecorder()
+		payload, _ := snapshotter.MachineMetrics(machine)
+		cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), payload)
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Route == cockpitfleet.RouteNone {
+			t.Skipf("metrics are not supported on this platform: %s", response.Reason)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sample := response.Samples[len(response.Samples)-1]
+	if response.Route != cockpitfleet.RouteLocal || sample.MemoryTotalBytes == nil || sample.MemoryUsedBytes == nil || sample.DiskTotalBytes == nil || sample.DiskFreeBytes == nil || *sample.MemoryTotalBytes == 0 || *sample.MemoryUsedBytes > *sample.MemoryTotalBytes || *sample.DiskTotalBytes == 0 || *sample.DiskFreeBytes > *sample.DiskTotalBytes || sample.SampledAt.After(time.Now()) {
+		t.Errorf("response = %+v", response)
+	}
+	if sample.CPUPercent == nil || *sample.CPUPercent < 0 || *sample.CPUPercent > 100 {
+		t.Errorf("cpu_percent = %v after two readings on %s, want 0 to 100", sample.CPUPercent, runtime.GOOS)
 	}
 }
