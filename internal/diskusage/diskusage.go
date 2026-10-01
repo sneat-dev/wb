@@ -68,6 +68,10 @@ func Measure(ctx context.Context, root string) (Usage, error) {
 }
 
 func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, error) {
+	return measureStat(ctx, root, unix.Lstat)
+}
+
+func measureStat(ctx context.Context, root string, lstat func(string, *unix.Stat_t) error) (Usage, map[inodeKey]*seenInode, error) {
 	inodes := map[inodeKey]*seenInode{}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -86,7 +90,7 @@ func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, 
 			return nil
 		}
 		var stat unix.Stat_t
-		if statErr := unix.Lstat(path, &stat); statErr != nil {
+		if statErr := lstat(path, &stat); statErr != nil {
 			return nil
 		}
 		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
@@ -105,9 +109,7 @@ func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, 
 		return nil
 	})
 	if walkErr != nil {
-		if errors.Is(walkErr, os.ErrNotExist) {
-			return Usage{}, map[inodeKey]*seenInode{}, nil
-		}
+		// The callback absorbs missing paths; only other errors escape WalkDir.
 		return Usage{}, nil, fmt.Errorf("measure %s: %w", root, walkErr)
 	}
 	usage := Usage{}

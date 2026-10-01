@@ -1718,6 +1718,7 @@
                 "--changed",
                 "--ci",
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--match",
@@ -1751,6 +1752,7 @@
               "command": "wb coverage --help",
               "contains": [
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--minimum",
@@ -1848,6 +1850,7 @@
             {
               "path": "wb coverage baseline",
               "flags": [
+                "--include-e2e",
                 "--module",
                 "--out",
                 "--sha"

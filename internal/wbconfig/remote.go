@@ -69,10 +69,8 @@ func setRemoteHubInjected(path, hubURL, machine, tokenFile string, inj *filewrit
 		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("encode config: %w", err)
 	}
-	if err := encoder.Close(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("finish config: %w", err)
-	}
+	// Encode already flushed this complete document; Close emits no bytes.
+	_ = encoder.Close()
 	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
 		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("sync config: %w", err)

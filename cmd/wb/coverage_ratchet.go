@@ -23,9 +23,10 @@ import (
 // producer `wb coverage --changed` consumes via --baseline-file.
 func newCoverageBaselineCmd() *cobra.Command {
 	var (
-		module string
-		sha    string
-		out    string
+		module     string
+		sha        string
+		out        string
+		includeE2E bool
 	)
 	command := &cobra.Command{
 		Use:   "baseline <coverage-profile>",
@@ -41,11 +42,13 @@ func newCoverageBaselineCmd() *cobra.Command {
 				return err
 			}
 			baseline := quality.BaselineFromProfile(blocks, modulePath, sha)
+			baseline.IncludeE2E = includeE2E
 			return quality.WriteBaseline(out, baseline)
 		},
 	}
 	command.Flags().StringVar(&module, "module", ".", "path to the Go module root (its go.mod names the module path coverage profiles use)")
 	command.Flags().StringVar(&sha, "sha", "", "commit SHA the profile was measured at, recorded in the baseline for traceability")
+	command.Flags().BoolVar(&includeE2E, "include-e2e", false, "profile combines default and native E2E/contract coverage")
 	command.Flags().StringVar(&out, "out", "coverage-baseline.json", "output path for the baseline JSON")
 	return command
 }
@@ -197,7 +200,11 @@ func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, merg
 		baseline, err := quality.LoadBaseline(options.baselineFile)
 		switch {
 		case err == nil:
-			if validateErr := quality.ValidateBaseline(baseline, mergeBase); validateErr != nil {
+			validateErr := quality.ValidateBaseline(baseline, mergeBase)
+			if validateErr == nil && baseline.IncludeE2E != options.includeE2E {
+				validateErr = fmt.Errorf("baseline include_e2e=%t differs from requested include_e2e=%t", baseline.IncludeE2E, options.includeE2E)
+			}
+			if validateErr != nil {
 				// A baseline that parses as JSON but is not usable (wrong
 				// schema, empty, or measured for a different commit) must
 				// never pass the ratchet silently: fall back to measuring

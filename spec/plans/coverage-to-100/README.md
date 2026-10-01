@@ -82,7 +82,7 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 17. **Two test tiers.** "And I think we should have fast unit tests and e2e integration tests. Getting 100% coverage with unit tests should be easy - define interface for external commands caller and git operations and substitute it in test. But e2e testing with real git is also important But. E2E testing is not the way to 100% test coverage. Rework the plan."
     - The coverage target is met by unit tests that use fakes for the command runner and the git operations (task-8).
     - Real-git end-to-end tests form their own tier (task-24, task-23). That tier must pass, but it is not a source of coverage.
-    - At the end (task-20), the unit tier alone produces the coverage profile.
+    - At the end (task-20), the unit tier alone produces the coverage profile. This historical selection was superseded by the 2026-10-01 measurement update below.
 18. **Thin `cmd/wb`.** The coordinator proposed to "add a 'thin `cmd/wb`' task to the plan before task-16. Move the logic out of the biggest files (`fleet_default_branch`, `fleet_merge_policy`, `daemon`, `worktree`, `session_park`) into `internal/` packages behind interfaces, one command family per PR". It then asked "Should I add that task to the plan and route the next free lane to it, starting with `fleet_default_branch`?". The founder answered "Yes, you should."
     - That is task-22. It starts without waiting for task-8.
     - Its first PR (`fleet default-branch`) declares its own consumer-side ports in the destination package. They are backed at first by today's helpers, and switch to task-8's runner when it lands.
@@ -179,7 +179,7 @@ The founder's words are quoted verbatim. *The text after each quote is the plan'
 2. `wb coverage` reports, per package, the uncovered-statement count against the merge-base baseline (the counts go-ci's coverage job published for that exact SHA when it was itself pushed to main — see step 5) and against any line the diff adds or changes that is not a moved, unmodified line. The author sees pass/fail per package plus, on failure, the exact file:line of every newly uncovered statement.
 3. If the PR only moves code (per `git diff --merge-base origin/<base> -U0 --color-moved=plain`), the moved lines are held only to the "uncovered count must not rise" rule — no new 100%-of-the-move requirement. If the PR adds or changes a statement with no covering test, the job fails and names the file:line; the author adds a test and pushes again.
 4. Once the PR is green, it merges. The observable result is that main's published per-package uncovered-count artifact only ever moves down or stays flat for the packages the PR touched.
-5. go-ci's coverage job is the ratchet's one and only baseline producer: task-3 exempts it from the validation-reuse skip on push events, so it runs on every push to main without exception and always uploads the per-package uncovered-count artifact. The nightly job is a separate, independent full-merged-suite run against main on a cron schedule (never on push) — it is the `--minimum=87` (later `=100`) backstop check, not a baseline source.
+5. go-ci's coverage job is the ratchet's one and only baseline producer: task-3 exempts it from the validation-reuse skip on push events, so it runs on every push to main without exception and always uploads the per-package uncovered-count artifact. The nightly job is a separate, independent full-merged-suite run against main on a cron schedule (never on push) — it is the `--minimum=94` (later `=100`) backstop check, not a baseline source.
 6. A separate adversarial reviewer reads each refactor and wave diff before it lands; the reviewer's observable result is a review comment or approval recorded on the PR, not a self-report from the author.
 7. The supervisor (the agent or founder tracking this plan) re-measures coverage independently after each wave lands — never trusting a lane's own "it's green" claim — and updates the plan's task statuses.
 8. Once every package reaches 100% (task-18 lands), the supervisor cuts task-20: the gate becomes specscore-cli's hard 100%-or-fail rule, the ratchet's per-package baseline machinery is retired, and both CI files move together.
@@ -189,14 +189,32 @@ The founder's words are quoted verbatim. *The text after each quote is the plan'
 9. A developer or agent runs `go test ./...` locally. That is the unit tier:
    - It starts no process and uses no external network.
    - It runs in parallel.
-   - Its coverage is what the ratchet and the final gate measure.
+   - Its coverage remains included; CI also merges native coverage under the 2026-10-01 update.
 10. To check integration, they run `go test -tags e2e -run '^Test(E2E|Contract)' ./...`.
     - End-to-end tests build wb and drive it against real git repositories in temporary directories.
     - Contract tests run each fake and the real program through the same cases.
 11. On every PR, CI runs both tiers as separate required jobs.
-    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-24's pending list. As that list empties, the coverage profile becomes the unit tier's alone.
+    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-24's pending list. It now also measures the native tier separately and merges both profiles under the 2026-10-01 update.
     - The e2e job has no coverage step.
 12. When a fake and real git disagree, a contract test in the e2e job fails and names the operation. The fake is fixed before any unit test that relies on it is trusted.
+
+## Coverage measurement update, 2026-10-01
+
+The later user instruction permits native Git tests, seams or mocks wherever
+they get the repository to 100% more cheaply and quickly. This changes the
+unit-only measurement choice recorded under decision 17; that original quote
+remains historical evidence. CI now requests `wb coverage --include-e2e`: the
+default tier runs unchanged, then native `TestE2E*` and `TestContract*` tests run
+once from the same checkout. Their actual profiles use the same package scope
+and coverage mode, and the existing block merger combines executed statements
+before thresholds, the changed-line ratchet, reports and baseline publication.
+Baseline metadata distinguishes unit-only from combined measurement; a mismatch
+causes the merge base to be measured with the requested tiers. The floor is raised to 94% following the user's 2026-10-01 instruction,
+using the latest reported 95.24% observation with about 1.24 percentage points
+of margin. That observation combines saved source-compatible measurements, not
+a fresh passing full run; the next normal CI run validates the floor. The
+per-package ratchet remains unchanged. The separate required E2E job remains.
+Subprocesses built without coverage instrumentation contribute no coverage.
 
 ## Approach
 
@@ -235,7 +253,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 - Task-7 keeps only the hermetic setup: HOME, umask and the state directory.
 - Task-22 thins `cmd/wb` and starts now (decision 18). Since decision 23, task-16 no longer waits for it.
 - Task-23 builds the real-git e2e suite while the waves run.
-- Task-20 gates the unit tier alone, once every pending list is empty.
+- Task-20 gates combined default and native coverage under the 2026-10-01 update.
 
 **Lane cap (amended 2026-09-24 by founder decisions 14–16; these amendments supersede the original scheduling text below).**
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
@@ -250,9 +268,9 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 **Rules every wave brief carries:**
 - The target is a list of packages, never "raise the total".
 - Every test asserts an observable outcome.
-- Forbidden: deleting behaviour to gain coverage, `coverage:ignore`-style markers, build-tag hiding, and lowering the backstop or any package's ratchet baseline. The backstop stays at 87, is only ever raised, and `go-ci.yml` and `nightly-coverage.yml` move together (see task-3). No package's baseline uncovered count may rise.
+- Forbidden: deleting behaviour to gain coverage, `coverage:ignore`-style markers, build-tag hiding, and lowering the backstop or any package's ratchet baseline. The current backstop is 94 (raised from 87 on 2026-10-01), is only ever raised, and `go-ci.yml` and `nightly-coverage.yml` move together (see task-3). No package's baseline uncovered count may rise.
 - Tests sit beside the code, are named after behaviour, and are safe to run in parallel.
-- Every new test is a unit test, as task-24 defines it (decision 17):
+- New tests use the cheaper meaningful tier under the 2026-10-01 update. Unit tests remain hermetic, as task-24 defines them:
   - it starts no process and uses no external network; in-process `httptest` servers and unix sockets under `t.TempDir()` are allowed;
   - git, gh and other programs through task-8's fakes, files through task-9's injector, time through task-10's clock.
   A wave never adds a process-starting test to the default tier.
@@ -260,7 +278,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
   - A package that runs external programs starts its wave only after its task-8 migration PR lands.
   - A package with retry, timeout or backoff code also waits for task-10.
   - Packages that do neither proceed as before.
-- A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where unit tests keep the package's uncovered count flat. The ratchet enforces this.
+- A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where combined coverage keeps the package's uncovered count flat. The ratchet enforces this.
 - Only a happy-path journey, or a failure case on task-23's list, moves to the e2e tier (decision 20). A legacy test of any other failure path is rewritten as a unit test, or deleted as redundant.
 - Some code only a real process can reach: the real runner, `internal/process`, task-8's allow-listed launchers, detach and `syscall.Exec` sites, and OS integration such as cgroups. It is tested with Go's helper-process pattern, where the test binary re-runs itself. Task-24 allows this, and it counts toward coverage.
 - The `e2e` build tag on test files (task-24) only selects a test tier. It hides no production code, so the ban on build-tag hiding still applies to production code.
@@ -585,7 +603,7 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 **Status:** planning
 **Verifies:** `internal/orchestrate` reports 0 uncovered statements in the CI coverage profile at each wave's merge SHA.
 
-`internal/orchestrate` to 100%, in task-25's worklist units. `LandWorktreeMerge` and `PrepareWorktreeMerge` are in this package (`internal/orchestrate/worktree_merge.go`). Since decision 23 their error returns are reached by fail-call-N sweeps, and task-12 splits one only if a unit cannot reach 100% without the split. Coverage comes from unit tests against task-8's fakes (decision 17). A test that needs real git belongs in the e2e tier.
+`internal/orchestrate` to 100%, in task-25's worklist units. `LandWorktreeMerge` and `PrepareWorktreeMerge` are in this package (`internal/orchestrate/worktree_merge.go`). Since decision 23 their error returns are reached by fail-call-N sweeps, and task-12 splits one only if a unit cannot reach 100% without the split. Coverage comes from unit tests against task-8's fakes and measured native tests under the 2026-10-01 update. A test that needs real git belongs in the e2e tier.
 
 ### Task 18: Waves W8–W11, `internal/worktrees`
 
@@ -594,7 +612,7 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 **Status:** planning
 **Verifies:** `internal/worktrees` reports 0 uncovered statements in the CI coverage profile at each wave's merge SHA.
 
-`internal/worktrees` to 100%, in task-25's worklist units (4,585 uncovered at e0dcfda6). Coverage comes from unit tests against task-8's fakes, with fail-call-N sweeps for error returns (decisions 17 and 23). A test that needs real git belongs in the e2e tier. Only the seven allow-listed secure helpers' statements wait for task-11. Task-12 splits a function only if a unit needs it.
+`internal/worktrees` to 100%, in task-25's worklist units (4,585 uncovered at e0dcfda6). Coverage comes from unit tests against task-8's fakes, with fail-call-N sweeps for error returns, and measured native tests under the 2026-10-01 update. A test that needs real git belongs in the e2e tier. Only the seven allow-listed secure helpers' statements wait for task-11. Task-12 splits a function only if a unit needs it.
 
 ### Task 19: Build #570 — `wb run --changed` and `wb coverage --changed`
 
@@ -618,11 +636,11 @@ Promote the changed-package computation that today lives embedded as shell insid
 3. Every pending list is empty:
    - task-24's `unit_tier.pending`;
    - task-8's `exec_sites.pending`.
-4. So the coverage job runs the unit tier only, and the CI unit job runs with `git` and `gh` removed from `PATH`.
+4. The coverage job measures both tiers separately and merges their actual profiles. The independent unit job can still run with `git` and `gh` removed from `PATH`.
 5. The unit tier of `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each runs in at most 3 minutes on the VM, and the CI coverage job in at most 6.
 6. The e2e tier (task-23, task-24) passes as a separate required job.
 
-The gate measures the unit tier alone (decision 17). No process-starting test contributes coverage, apart from the helper-process tests task-24 allows. The e2e tier stays a required pass/fail job with no coverage threshold.
+The gate merges the unchanged default tier and native E2E/contract coverage under the 2026-10-01 update. The E2E tier also remains a separate required pass/fail job.
 
 Once every package is at 100%, replace the per-change ratchet and its 87 backstop with specscore-cli's gate: 100% or fail, with no exclusions. Per Task 3's decision, both the ratchet and this hard gate live in `wb coverage` — this task does not introduce a separate `scripts/coverage-gate.sh`; CI and the pre-push hook call `wb coverage --minimum=100`, with the pre-push invocation scoped to changed packages via task-19's `wb run --changed -- go test` / `wb coverage --changed`, because the full suite is too slow for a pre-push hook (`.wb/templates/go-sharded-pre-push.sh` has no coverage step today, and the full local suite takes about 27 minutes). `--minimum=87` is removed from both files, replaced by `--minimum=100` — not just lowered or left as dead configuration; this is a cutover per `rule:cutover-verbs-mean-full-cutover`, so this task also lists every workflow reference to the old `--minimum=87` invocation and updates each one. The nightly job keeps its cron schedule and full-merged-suite run; its threshold moves to 100, and since task-24 it also runs the e2e tier, since it stays the independent backstop that catches a regression within 24 hours even though the PR-path gate is now scoped to changed packages. The per-package ratchet and its baseline-publishing machinery (task-3, including the push-event validation-reuse exemption) are retired once this gate lands — a single repo-wide 100% requirement makes a per-package baseline redundant. The hook comment must not suggest `--no-verify`, per `rule:hooks-are-never-bypassed`.
 
@@ -751,7 +769,7 @@ Adding a case to this list needs a PR that says why no fake can reproduce the be
 **Scope.**
 - Legacy process-starting tests that task-24's pending list assigns to task-23 move here once their package's unit tests cover the same statements.
 - The suite also carries the contract tests of task-8's git adapter. Contract tests are not journeys: they have one case for each error kind a fake emulates (for example a conflict, a missing ref or a rejected push). That keeps the unit tier's failure tests honest. Contract cases count against the same 10-minute budget.
-- This tier is not measured for coverage (decision 17).
+- This tier contributes actual native coverage under the 2026-10-01 update.
 
 ### Task 24: Test tiers: the unit tier and the real-git e2e tier
 
@@ -760,7 +778,7 @@ Adding a case to this list needs a PR that says why no fake can reproduce the be
 **Status:** in_progress
 **Note:** PR-1 (the tiers, the detector, the pending and allow lists, the e2e job) is in `cov/integration`. Lane `cov-fix-769` taught the detector the `runCommand` and `installFakeGH` wrappers, which raised the pending total from 4,772 to 4,841.
 **Verifies:**
-1. **E2E tier.** It consists of `_test.go` files with `//go:build e2e`, whose tests are named `TestE2E*` or `TestContract*`. CI runs them with `go test -tags e2e -run '^Test(E2E|Contract)' ./...` as their own job. The job is required on every PR (decision 19) and has no coverage step.
+1. **E2E tier.** It consists of `_test.go` files with `//go:build e2e`, whose tests are named `TestE2E*` or `TestContract*`. CI runs them with `go test -tags e2e -run '^Test(E2E|Contract)' ./...` as their own job. The job is required on every PR (decision 19); the coverage job separately includes its measured profile under the 2026-10-01 update.
 2. **Static check.** A check in `internal/quality` fails on any default-tier `_test.go` that uses one of these patterns, beyond the file's count on the pending list:
    - `exec.Command`, `exec.CommandContext` or `os.StartProcess`;
    - `testenv.WriteExecutableFile`;
@@ -816,9 +834,9 @@ Its rules:
   - Make the guards' Windows build pass: `GOOS=windows go vet ./internal/quality` fails at `quality_test.go:1862` (`syscall.Kill`). Find out why CI's Windows job misses it.
 - A file's count falls in one of three ways:
   - its tests are rewritten as unit tests;
-  - they move to the e2e tier in a PR whose unit tests keep the package's uncovered count flat (the ratchet enforces this);
+  - they move to the e2e tier in a PR whose combined coverage keeps the package's uncovered count flat (the ratchet enforces this);
   - they are deleted as redundant, under the same condition.
-- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the profile is the unit tier's alone, and that is what task-20 gates.
+- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the default profile is the unit tier's alone; task-20 gates its union with the native profile under the 2026-10-01 update.
 
 ### Task 25: Coverage worklists
 

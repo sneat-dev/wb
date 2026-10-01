@@ -203,6 +203,7 @@ type UncoveredBlock struct {
 type PackageBaseline struct {
 	SchemaVersion   int                         `json:"schema_version"`
 	SHA             string                      `json:"sha,omitempty"`
+	IncludeE2E      bool                        `json:"include_e2e,omitempty"`
 	Packages        map[string]int              `json:"packages"`
 	UncoveredBlocks map[string][]UncoveredBlock `json:"uncovered_blocks,omitempty"`
 }
@@ -870,7 +871,9 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	if err != nil {
 		return PackageBaseline{}, fmt.Errorf("no coverage profile produced measuring merge base %s (a module with no test files produces none): %w", sha, err)
 	}
-	return BaselineFromProfile(blocks, modulePath, sha), nil
+	baseline := BaselineFromProfile(blocks, modulePath, sha)
+	baseline.IncludeE2E = options.IncludeE2E
+	return baseline, nil
 }
 
 // refMeasurementError reports plain as-is unless ctx's own deadline is what

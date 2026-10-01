@@ -380,6 +380,10 @@ func buildOverview(_ context.Context, projectsRoot, version string, now time.Tim
 // ?tail=<bytes> requests fewer or more than defaultLogTailBytes, capped at
 // maxLogTailBytes.
 func (server *service) log(writer http.ResponseWriter, request *http.Request) {
+	server.logOpened(writer, request, os.Open)
+}
+
+func (server *service) logOpened(writer http.ResponseWriter, request *http.Request, open func(string) (*os.File, error)) {
 	if server.options.LogPath == "" {
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
 			"schema_version": APISchemaVersion,
@@ -404,7 +408,7 @@ func (server *service) log(writer http.ResponseWriter, request *http.Request) {
 			tail = maxLogTailBytes
 		}
 	}
-	file, err := os.Open(server.options.LogPath)
+	file, err := open(server.options.LogPath)
 	if err != nil {
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
 			"schema_version": APISchemaVersion,
