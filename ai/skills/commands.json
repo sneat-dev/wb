@@ -16,6 +16,9 @@
     "ci": [
       "wb-ci"
     ],
+    "cockpit": [
+      "wb-daemon"
+    ],
     "commands": [
       "wb-install"
     ],
