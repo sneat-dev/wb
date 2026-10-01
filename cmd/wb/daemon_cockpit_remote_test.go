@@ -254,13 +254,20 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 	const withSSH = "session_move:\n  targets:\n    vm:\n      default_courier: ssh\n      ssh:\n        host: vm.example\n        user: alex\n        wb_path: /usr/local/bin/wb\n"
 	sshOff := wbconfig.DefaultCockpitConfig()
 	sshOff.RemoteSSH = false
+	var hubRequests atomic.Int64
+	failingHub := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hubRequests.Add(1)
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(failingHub.Close)
+	tokenFile := filepath.Join(t.TempDir(), "vm.token")
+	if err := os.WriteFile(tokenFile, []byte("the-vm-credential\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	start := func(yaml string, config wbconfig.CockpitConfig) (runner *countingRunner, lookups *atomic.Int64, refresh, remote chan time.Time, stop func()) {
 		runner, lookups = &countingRunner{ran: make(chan struct{}, 1)}, &atomic.Int64{}
-		ssh := cockpitSSH{runner: runner, lookPath: func(name string) (string, error) {
+		ssh := cockpitSSH{runner: runner, find: func() (string, error) {
 			lookups.Add(1)
-			if name != "ssh" {
-				return "", errors.New("not ssh")
-			}
 			return executable, nil
 		}}
 		options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, io.Discard, func() (string, error) { return "laptop", nil }, ssh)
@@ -277,14 +284,27 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 		"no session_move section":   {"cockpit:\n  refresh_interval: 60s\n", wbconfig.DefaultCockpitConfig()},
 		"only a synchestra section": {"session_move:\n  targets:\n    vm:\n      default_courier: synchestra\n      synchestra:\n        runner: vm\n", wbconfig.DefaultCockpitConfig()},
 		"remote_ssh false":          {withSSH, sshOff},
+		// The machine has both sections: its hub fails in a way that would fall
+		// back to ssh, and with the switch off nothing is run.
+		"remote_ssh false and an http section that fails": {fmt.Sprintf(sessionMoveHTTPTarget, failingHub.URL, tokenFile), sshOff},
 	} {
-		runner, lookups, refresh, _, stop := start(test.yaml, test.config)
+		runner, lookups, refresh, remote, stop := start(test.yaml, test.config)
 		refresh <- exportTestNow
+		if strings.Contains(test.yaml, "http:") {
+			// Only a daemon with a machine to read runs the loop that takes this tick.
+			remote <- exportTestNow
+			for deadline := time.Now().Add(10 * time.Second); hubRequests.Load() == 0 && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+		}
 		refresh <- exportTestNow.Add(time.Minute)
 		stop()
 		if calls := runner.all(); len(calls) != 0 || lookups.Load() != 0 {
 			t.Fatalf("%s: the daemon ran %v and looked ssh up %d times", name, calls, lookups.Load())
 		}
+	}
+	if hubRequests.Load() == 0 {
+		t.Fatal("the failing hub was never asked: the http-and-no-ssh case proved nothing")
 	}
 	runner, _, _, remote, stop := start(withSSH, wbconfig.DefaultCockpitConfig())
 	remote <- exportTestNow
@@ -296,6 +316,7 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 	stop()
 	want := []string{
 		executable, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+		"-o", "ControlMaster=no", "-o", "RemoteCommand=none", "-o", "PermitLocalCommand=no", "-o", "LogLevel=ERROR",
 		"-l", "alex", "--", "vm.example", "/usr/local/bin/wb", "cockpit", "export", "--format", "json",
 	}
 	if calls := runner.all(); len(calls) == 0 || !slices.Equal(calls[0], want) {
@@ -303,13 +324,18 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 	}
 }
 
-// TestTheDaemonsOwnSSHSeamsAreThePathLookupAndTheGroupKillingRunner holds the
+// TestTheDaemonsOwnSSHSeamsAreTheTrustedSearchAndTheGroupKillingRunner holds the
 // production seams: nothing else decides which ssh runs or how it is ended.
-func TestTheDaemonsOwnSSHSeamsAreThePathLookupAndTheGroupKillingRunner(t *testing.T) {
+func TestTheDaemonsOwnSSHSeamsAreTheTrustedSearchAndTheGroupKillingRunner(t *testing.T) {
 	t.Parallel()
 	ssh := daemonCockpitSSH()
-	if ssh.lookPath == nil || ssh.runner != (remotessh.GroupRunner{}) {
+	if ssh.find == nil || ssh.runner != (remotessh.GroupRunner{}) {
 		t.Fatalf("daemonCockpitSSH = %+v", ssh)
+	}
+	// The search runs nothing: it only looks at files. What it finds is the
+	// system's ssh, or one on the PATH that passes remotessh.ResolveTrusted.
+	if found, err := ssh.find(); err == nil && !filepath.IsAbs(found) {
+		t.Fatalf("the daemon's ssh = %q", found)
 	}
 	// With no session_move section the daemon's options hold no machine to read
 	// and no transport, so nothing is ever run with those seams.

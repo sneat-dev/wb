@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -27,26 +28,45 @@ import (
 //     validated wb_path, which that rule keeps to characters no shell
 //     interprets, so the remote shell has nothing to expand.
 //   - ssh never prompts (BatchMode=yes), has no terminal, forwards no agent, no
-//     X11 and no port, and gives up connecting after sshConnectSeconds. Host key
-//     checking is the user's ssh configuration's and is never switched off.
+//     X11 and no port, never becomes a connection-sharing master, runs no
+//     RemoteCommand or LocalCommand of the user's ssh configuration, and gives
+//     up connecting after sshConnectSeconds. Host key checking is the user's ssh
+//     configuration's and is never switched off.
+//   - The daemon's runner (remotessh.GroupRunner) gives ssh an allow-listed
+//     environment, not the daemon's.
 //   - One call lasts at most sshTotalTimeout: the runner kills the process (its
-//     whole group, with remotessh.GroupRunner) when the context ends, and Export
-//     returns only when the runner has, so a process is always waited for.
+//     whole group) when the context ends, and Export returns only when the
+//     runner has, so a process is always waited for.
 //   - stdout is read through DecodeEnvelope, as every transport's bytes are, and
 //     never more than MaxEnvelopeBytes of it is held.
-//   - A failure is a code. stderr is held to maxSSHDiagnosticBytes, rendered by
-//     remotessh.SanitizeDiagnostic and written to the daemon's own log only: it
-//     never reaches the document, an error value or any reader.
+//   - A failure is a code. The end of stderr (maxSSHDiagnosticBytes of it) is
+//     rendered by remotessh.SanitizeDiagnostic and written to the daemon's own
+//     log only: it never reaches the document, an error value or any reader.
+//
+// The code is chosen by the exit status (sshFailure). ssh passes the remote
+// command's status on, so a remote command that itself exits 255, 127, 126 or 2
+// picks the code: the remote login already has that machine's full authority,
+// and the choice is between codes of one closed set.
+//
+// A remote login shell that prints to stdout (a profile that echoes, a banner
+// script) puts text before the envelope: the export is then bad_payload, and
+// the log line says "output before the envelope".
 //
 // A daemon run by launchd or systemd may have no SSH agent socket. Nothing here
 // looks for one: the login then fails and is shown as auth_failed.
+//
+// How often ssh runs is the scheduler's rule, the same for every transport
+// (remoteSchedule in remote.go).
 
 const (
 	// sshConnectSeconds bounds the connection, and sshTotalTimeout the whole call.
 	sshConnectSeconds = 5
 	sshTotalTimeout   = 15 * time.Second
-	// maxSSHDiagnosticBytes bounds the stderr that is held of one call.
-	maxSSHDiagnosticBytes = 4 * remotessh.MaxDiagnosticBytes
+	// maxSSHDiagnosticBytes bounds the stderr that is held of one call: its end.
+	maxSSHDiagnosticBytes = remotessh.MaxDiagnosticBytes
+	// outputBeforeEnvelope is the log's cause for a stdout that does not start
+	// with the envelope.
+	outputBeforeEnvelope = "output before the envelope"
 )
 
 // The exit statuses an export over SSH is understood by. They are statuses, not
@@ -98,6 +118,9 @@ func (r SSHRoute) valid() bool {
 	return sessionmove.SSHConfig{Host: r.Host, User: r.User, WBPath: r.WBPath}.Validate() == nil
 }
 
+// sshOptions are the fixed ssh options of every export.
+var sshOptions = remotessh.Options{ConnectTimeoutSeconds: sshConnectSeconds, NoForwarding: true, Unattended: true}
+
 // sshExportArguments is the whole argument vector of one export: constants and
 // the route, and nothing else.
 func sshExportArguments(route SSHRoute, metricsOnly bool) []string {
@@ -105,45 +128,46 @@ func sshExportArguments(route SSHRoute, metricsOnly bool) []string {
 	if metricsOnly {
 		remote = append(remote, "--metrics-only")
 	}
-	return remotessh.BuildWith(remotessh.Options{ConnectTimeoutSeconds: sshConnectSeconds, NoForwarding: true}, route.Host, route.User, remote)
+	return remotessh.BuildWith(sshOptions, route.Host, route.User, remote)
 }
 
 // SSHExporter is the SSH RemoteExporter.
 type SSHExporter struct {
-	lookPath func(string) (string, error)
-	runner   remotessh.Runner
-	timeout  time.Duration
-	now      func() time.Time
-	logf     func(string, ...any)
+	find    func() (string, error)
+	runner  remotessh.Runner
+	timeout time.Duration
+	now     func() time.Time
+	logf    func(string, ...any)
 
 	mu sync.Mutex
-	// executable is the local ssh, resolved once: a lookup that fails is made
-	// again at the next export, and one that succeeded is kept.
+	// executable is the local ssh: found once and kept, until a call cannot be
+	// started with it; a search that fails is made again at the next export.
 	executable string
-	// logged is, by machine, the last line written of its failure, so a machine
-	// that keeps failing the same way is logged once.
+	// logged is, by machine, the code of its last logged failure, so a machine
+	// that keeps failing the same way is logged once, whatever its stderr says
+	// each time.
 	logged map[string]string
 }
 
-// NewSSHExporter is the SSH exporter over lookPath (which finds the local ssh)
-// and runner, on the clock now (nil means time.Now), logging to logf (nil means
-// nowhere).
-func NewSSHExporter(lookPath func(string) (string, error), runner remotessh.Runner, now func() time.Time, logf func(string, ...any)) *SSHExporter {
-	return newSSHExporter(lookPath, runner, sshTotalTimeout, now, logf)
+// NewSSHExporter is the SSH exporter over find (which finds the local ssh
+// executable; the daemon's is remotessh.ResolveTrusted) and runner, on the
+// clock now (nil means time.Now), logging to logf (nil means nowhere).
+func NewSSHExporter(find func() (string, error), runner remotessh.Runner, now func() time.Time, logf func(string, ...any)) *SSHExporter {
+	return newSSHExporter(find, runner, sshTotalTimeout, now, logf)
 }
 
 // newSSHExporter is the exporter with the given total timeout.
-func newSSHExporter(lookPath func(string) (string, error), runner remotessh.Runner, timeout time.Duration, now func() time.Time, logf func(string, ...any)) *SSHExporter {
+func newSSHExporter(find func() (string, error), runner remotessh.Runner, timeout time.Duration, now func() time.Time, logf func(string, ...any)) *SSHExporter {
 	if now == nil {
 		now = time.Now
 	}
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &SSHExporter{lookPath: lookPath, runner: runner, timeout: timeout, now: now, logf: logf, logged: map[string]string{}}
+	return &SSHExporter{find: find, runner: runner, timeout: timeout, now: now, logf: logf, logged: map[string]string{}}
 }
 
-// resolve is the local ssh executable, looked up until it is found and then
+// resolve is the local ssh executable, searched for until it is found and then
 // kept.
 func (e *SSHExporter) resolve() (string, error) {
 	e.mu.Lock()
@@ -151,12 +175,19 @@ func (e *SSHExporter) resolve() (string, error) {
 	if e.executable != "" {
 		return e.executable, nil
 	}
-	executable, err := remotessh.Resolve(e.lookPath)
+	executable, err := e.find()
 	if err != nil {
 		return "", err
 	}
 	e.executable = executable
 	return executable, nil
+}
+
+// forget drops the kept executable, so the next export searches again.
+func (e *SSHExporter) forget() {
+	e.mu.Lock()
+	e.executable = ""
+	e.mu.Unlock()
 }
 
 // Export reads target's envelope by running the export verb on it over SSH. A
@@ -169,40 +200,61 @@ func (e *SSHExporter) Export(ctx context.Context, target RemoteTarget, metricsOn
 	}
 	executable, err := e.resolve()
 	if err != nil {
-		return Envelope{}, e.failed(target.Machine, RemoteErrorSSHUnavailable, nil)
+		return Envelope{}, e.failed(target.Machine, RemoteErrorSSHUnavailable, "")
 	}
 	call, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	stdout := remotessh.NewLimitedBuffer(MaxEnvelopeBytes + 1)
-	stderr := remotessh.NewLimitedBuffer(maxSSHDiagnosticBytes)
+	stderr := remotessh.NewTailBuffer(maxSSHDiagnosticBytes)
 	// Run returns when the process has ended and been waited for; the call is
 	// never left running behind a timeout.
 	if runErr := e.runner.Run(call, executable, sshExportArguments(*route, metricsOnly), nil, stdout, stderr); runErr != nil {
-		if call.Err() != nil {
-			return Envelope{}, e.failed(target.Machine, RemoteErrorTimeout, stderr)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// The daemon is stopping: that is not a failure of the machine, and
+			// nothing is logged or recorded of it.
+			return Envelope{}, ctx.Err()
 		}
-		code := sshFailure(runErr, stdout.Bytes(), stderr.Bytes())
+		if call.Err() != nil {
+			return Envelope{}, e.failed(target.Machine, RemoteErrorTimeout, said(stderr))
+		}
+		code, started := sshFailure(runErr, stdout.Bytes(), stderr.Bytes())
+		if !started {
+			e.forget()
+		}
 		if code == "" {
 			return Envelope{}, ErrRemoteWarmingUp
 		}
-		return Envelope{}, e.failed(target.Machine, code, stderr)
+		return Envelope{}, e.failed(target.Machine, code, said(stderr))
 	}
 	body := stdout.Bytes()
 	envelope, err := DecodeEnvelope(bytes.NewReader(body), metricsOnly, e.now())
-	if err != nil {
-		if otherSchema(body) {
-			return Envelope{}, e.failed(target.Machine, RemoteErrorWBTooOld, nil)
-		}
-		// The refusal names a rule and never a value; the scheduler shows it as
-		// bad_payload.
-		return Envelope{}, err
+	switch {
+	case err == nil:
+		e.succeeded(target.Machine)
+		return envelope, nil
+	case !bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("{")):
+		return Envelope{}, e.failed(target.Machine, RemoteErrorBadPayload, outputBeforeEnvelope)
+	case otherSchema(body):
+		return Envelope{}, e.failed(target.Machine, RemoteErrorWBTooOld, "")
 	}
-	e.succeeded(target.Machine)
-	return envelope, nil
+	// The refusal names a rule and never a value; the scheduler shows it as
+	// bad_payload.
+	return Envelope{}, err
+}
+
+// said is the end of what a call wrote to stderr, as one sanitised line, with
+// a leading "..." when earlier output was dropped.
+func said(stderr *remotessh.TailBuffer) string {
+	diagnostic := remotessh.SanitizeDiagnostic(stderr.Bytes(), false)
+	if stderr.Discarded() {
+		return "..." + diagnostic
+	}
+	return diagnostic
 }
 
 // sshFailure is the code of a call that ended with runErr, or "" for a remote
-// that says it is warming up (which is not a failure). The whole rule:
+// that says it is warming up (which is not a failure), and whether ssh was
+// started and ended with a status. The whole rule:
 //
 //   - not an exit status at all (ssh could not be started, or was killed by a
 //     signal): ssh_unavailable;
@@ -212,43 +264,60 @@ func (e *SSHExporter) Export(ctx context.Context, target RemoteTarget, metricsOn
 //   - 127 or 126, the remote shell found no wb it can run: wb_missing;
 //   - 2, wb refused the invocation, which is a wb with no `cockpit export` or
 //     without one of its flags: wb_too_old;
-//   - 1 with a typed reason on stdout: daemon_not_running and export_refused as
-//     they are, export_failed as bad_payload, warming_up as "";
-//   - anything else (another status, a reason that is not one of the four): the
-//     remote answered, and not as an exporter does: bad_payload.
-func sshFailure(runErr error, stdout, stderr []byte) string {
+//   - 1 with a typed reason on stdout (typedReason): daemon_not_running and
+//     export_refused as they are, export_failed as bad_payload, warming_up as "";
+//   - anything else (another status, a reason that is not one of the four or is
+//     not exactly the typed form): the remote answered, and not as an exporter
+//     does: bad_payload.
+func sshFailure(runErr error, stdout, stderr []byte) (code string, started bool) {
 	var exited interface{ ExitCode() int }
 	if !errors.As(runErr, &exited) || exited.ExitCode() < 0 {
-		return RemoteErrorSSHUnavailable
+		return RemoteErrorSSHUnavailable, false
 	}
 	switch exited.ExitCode() {
 	case exitSSHFailed:
-		said := strings.ToLower(string(stderr))
+		told := strings.ToLower(string(stderr))
 		for _, phrase := range sshLoginRefusals {
-			if strings.Contains(said, phrase) {
-				return RemoteErrorAuthFailed
+			if strings.Contains(told, phrase) {
+				return RemoteErrorAuthFailed, true
 			}
 		}
-		return RemoteErrorSSHUnavailable
+		return RemoteErrorSSHUnavailable, true
 	case exitNotFound, exitNotExecutable:
-		return RemoteErrorWBMissing
+		return RemoteErrorWBMissing, true
 	case exitUsage:
-		return RemoteErrorWBTooOld
+		return RemoteErrorWBTooOld, true
 	case exitFindings:
-		var typed ExportError
-		if len(stdout) <= maxFailureBytes {
-			_ = json.Unmarshal(stdout, &typed)
-		}
-		switch typed.Error {
+		switch typedReason(stdout) {
 		case ErrorDaemonNotRunning:
-			return RemoteErrorDaemonNotRunning
+			return RemoteErrorDaemonNotRunning, true
 		case ErrorExportRefused:
-			return RemoteErrorExportRefused
+			return RemoteErrorExportRefused, true
 		case ErrorWarmingUp:
-			return ""
+			return "", true
 		}
 	}
-	return RemoteErrorBadPayload
+	return RemoteErrorBadPayload, true
+}
+
+// typedReason is the reason of the export verb's typed answer, or "" when
+// stdout is not exactly one: at most maxFailureBytes, one JSON object with the
+// two fields of ExportError and no other, this binary's schema version, and
+// nothing after it.
+func typedReason(stdout []byte) string {
+	if len(stdout) > maxFailureBytes {
+		return ""
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stdout))
+	decoder.DisallowUnknownFields()
+	var typed ExportError
+	if err := decoder.Decode(&typed); err != nil || typed.SchemaVersion != ExportSchemaVersion {
+		return ""
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return typed.Error
 }
 
 // otherSchema reports whether body is a JSON object that names an export schema
@@ -267,22 +336,21 @@ func otherSchema(body []byte) bool {
 var sshTransportCodes = []string{RemoteErrorSSHUnavailable, RemoteErrorAuthFailed, RemoteErrorTimeout, RemoteErrorWBMissing, RemoteErrorWBTooOld}
 
 // failed is the error of an export of machine that failed with code, and
-// writes the daemon's log line for it: the code, and what stderr held, as
-// remotessh.SanitizeDiagnostic renders it (one line, no control character, at
-// most remotessh.MaxDiagnosticBytes). The line is written when it differs from
-// the last one written for the machine.
-func (e *SSHExporter) failed(machine, code string, stderr *remotessh.LimitedBuffer) error {
-	line := code
-	if stderr != nil {
-		if diagnostic := remotessh.SanitizeDiagnostic(stderr.Bytes(), stderr.Exceeded()); diagnostic != "" {
-			line += ": " + diagnostic
-		}
-	}
+// writes the daemon's log line for it: the code and detail, which is the end of
+// what stderr held (as remotessh.SanitizeDiagnostic renders it: one line of
+// printable characters, at most remotessh.MaxDiagnosticBytes) or a fixed cause.
+// The line is written when the code differs from the last one logged for the
+// machine: a remote that words its stderr anew each time is still logged once.
+func (e *SSHExporter) failed(machine, code, detail string) error {
 	e.mu.Lock()
-	changed := e.logged[machine] != line
-	e.logged[machine] = line
+	changed := e.logged[machine] != code
+	e.logged[machine] = code
 	e.mu.Unlock()
 	if changed {
+		line := code
+		if detail != "" {
+			line += ": " + detail
+		}
 		e.logf("cockpit fleet: the ssh export of %s failed (%s)", machine, line)
 	}
 	return &RemoteError{Code: code, Fallback: slices.Contains(sshTransportCodes, code)}

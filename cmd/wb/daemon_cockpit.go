@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -196,22 +197,28 @@ func cockpitRemotes(configPath string, config wbconfig.CockpitConfig, logf func(
 		transports = append(transports, cockpitfleet.RemoteTransport{Name: cockpitfleet.TransportHTTP, Exporter: cockpitfleet.NewHTTPExporter(nil)})
 	}
 	if overSSH {
-		transports = append(transports, cockpitfleet.RemoteTransport{Name: cockpitfleet.TransportSSH, Exporter: cockpitfleet.NewSSHExporter(ssh.lookPath, ssh.runner, nil, logf)})
+		transports = append(transports, cockpitfleet.RemoteTransport{Name: cockpitfleet.TransportSSH, Exporter: cockpitfleet.NewSSHExporter(ssh.find, ssh.runner, nil, logf)})
 	}
 	return targets, transports, routes
 }
 
-// cockpitSSH is what the SSH transport runs with: the lookup of the local ssh
+// cockpitSSH is what the SSH transport runs with: what finds the local ssh
 // executable and the runner of it.
 type cockpitSSH struct {
-	lookPath func(string) (string, error)
-	runner   remotessh.Runner
+	find   func() (string, error)
+	runner remotessh.Runner
 }
 
-// daemonCockpitSSH is the daemon's: the PATH lookup, and the runner that kills
-// the whole process group of an ssh that overruns its time.
+// daemonCockpitSSH is the daemon's: the system's own ssh, or the one on the PATH
+// when no other process could have replaced it (remotessh.ResolveTrusted), and
+// the runner that gives ssh an allow-listed environment and kills the whole
+// process group of one that overruns its time.
 func daemonCockpitSSH() cockpitSSH {
-	return cockpitSSH{lookPath: exec.LookPath, runner: remotessh.GroupRunner{}}
+	return cockpitSSH{runner: remotessh.GroupRunner{}, find: func() (string, error) {
+		// A home directory that cannot be named is not checked against.
+		home, _ := os.UserHomeDir()
+		return remotessh.ResolveTrusted(exec.LookPath, remotessh.SystemExecutable, home)
+	}}
 }
 
 // withoutOwnAddress is targets less the http route of any whose http url is this

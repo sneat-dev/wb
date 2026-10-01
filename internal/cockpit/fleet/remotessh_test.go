@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,17 +138,13 @@ func testSSHPath(t *testing.T) string {
 	return executable
 }
 
-// foundSSH is a lookup that finds the local ssh, and counts how often it is
-// asked.
-func foundSSH(t *testing.T, lookups *atomic.Int64) func(string) (string, error) {
+// foundSSH finds the local ssh, and counts how often it is asked.
+func foundSSH(t *testing.T, lookups *atomic.Int64) func() (string, error) {
 	t.Helper()
 	executable := testSSHPath(t)
-	return func(name string) (string, error) {
+	return func() (string, error) {
 		if lookups != nil {
 			lookups.Add(1)
-		}
-		if name != remotessh.ExecutableName {
-			return "", errors.New("not ssh")
 		}
 		return executable, nil
 	}
@@ -211,7 +208,7 @@ func TestSSHArgumentVectorContainsOnlyConfiguredValues(t *testing.T) {
 	clock.advance(metricsOnlyInterval)
 	pollAndSettle(t, snapshotter)
 
-	options := remotessh.Options{ConnectTimeoutSeconds: 5, NoForwarding: true}
+	options := remotessh.Options{ConnectTimeoutSeconds: 5, NoForwarding: true, Unattended: true}
 	wantFull := remotessh.BuildWith(options, "vm.example", "alex", []string{"/usr/local/bin/wb", "cockpit", "export", "--format", "json"})
 	wantOnly := remotessh.BuildWith(options, "vm.example", "alex", []string{"/usr/local/bin/wb", "cockpit", "export", "--format", "json", "--metrics-only"})
 	if got := runner.all(); len(got) != 2 || !slices.Equal(got[0], wantFull) || !slices.Equal(got[1], wantOnly) {
@@ -220,6 +217,7 @@ func TestSSHArgumentVectorContainsOnlyConfiguredValues(t *testing.T) {
 	// The vector, spelled out: this is everything ssh is given.
 	literal := []string{
 		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+		"-o", "ControlMaster=no", "-o", "RemoteCommand=none", "-o", "PermitLocalCommand=no", "-o", "LogLevel=ERROR",
 		"-l", "alex", "--", "vm.example", "/usr/local/bin/wb", "cockpit", "export", "--format", "json",
 	}
 	if !slices.Equal(wantFull, literal) {
@@ -231,7 +229,7 @@ func TestSSHArgumentVectorContainsOnlyConfiguredValues(t *testing.T) {
 		}
 	}
 	joined := fmt.Sprint(runner.all())
-	for _, absent := range []string{"touch", "reboot", "ProxyCommand", "evil", vmOwnName, "StrictHostKeyChecking", "UserKnownHostsFile"} {
+	for _, absent := range []string{"touch", "reboot", "ProxyCommand", "evil", vmOwnName, "StrictHostKeyChecking", "UserKnownHostsFile", "ControlPath"} {
 		if strings.Contains(joined, absent) {
 			t.Errorf("the argument vector holds %q: %s", absent, joined)
 		}
@@ -277,10 +275,21 @@ func TestSSHFailureIsACodeChosenByExitStatus(t *testing.T) {
 		"status 1 and no reason":              {err: exitStatus(1), stderr: "Permission denied (publickey).", want: RemoteErrorBadPayload},
 		"a reason hidden in a long output":    {err: exitStatus(1), stdout: strings.Repeat(" ", maxFailureBytes) + typed(ErrorDaemonNotRunning), want: RemoteErrorBadPayload},
 		"another status":                      {err: exitStatus(3), stdout: typed(ErrorDaemonNotRunning), want: RemoteErrorBadPayload},
+		"a reason with another field":         {err: exitStatus(1), stdout: `{"schema_version":1,"error":"daemon_not_running","more":1}`, want: RemoteErrorBadPayload},
+		"a reason and then more":              {err: exitStatus(1), stdout: typed(ErrorDaemonNotRunning) + `{"error":"export_refused"}`, want: RemoteErrorBadPayload},
+		"a reason of another generation":      {err: exitStatus(1), stdout: `{"schema_version":2,"error":"daemon_not_running"}`, want: RemoteErrorBadPayload},
+		"a reason after a shell's greeting":   {err: exitStatus(1), stdout: "Welcome\n" + typed(ErrorDaemonNotRunning), want: RemoteErrorBadPayload},
+		"a reason that is not an object":      {err: exitStatus(1), stdout: `"daemon_not_running"`, want: RemoteErrorBadPayload},
+		"a remote command that exits 255":     {err: exitStatus(255), stdout: typed(ErrorDaemonNotRunning), stderr: "the remote said: Permission denied (", want: RemoteErrorAuthFailed},
 		"a wrapped status":                    {err: fmt.Errorf("run: %w", exitStatus(127)), want: RemoteErrorWBMissing},
 	} {
-		if got := sshFailure(test.err, []byte(test.stdout), []byte(test.stderr)); got != test.want {
+		got, started := sshFailure(test.err, []byte(test.stdout), []byte(test.stderr))
+		if got != test.want {
 			t.Errorf("%s: code %q, want %q", name, got, test.want)
+		}
+		// Only a call that never ran, or was killed, is not a status of ssh's.
+		if notRun := name == "ssh could not be started" || name == "ssh was killed by a signal"; started == notRun {
+			t.Errorf("%s: started = %v", name, started)
 		}
 	}
 	// Every code is one of the closed vocabulary.
@@ -316,20 +325,24 @@ func TestFailedSSHExportShowsATypedErrorAndNeverTheRemotesText(t *testing.T) {
 		noSSH    bool
 		want     string
 		noStderr bool
+		quiet    bool
+		logged   string
 	}{
-		"an unresolvable host":        {answer: failingSSH(255, "", "ssh: Could not resolve hostname "+said), want: RemoteErrorSSHUnavailable},
-		"a refused login":             {answer: failingSSH(255, "", said+": Permission denied (publickey)."), want: RemoteErrorAuthFailed},
-		"a deadline overrun":          {hang: true, want: RemoteErrorTimeout, noStderr: true},
-		"no wb":                       {answer: failingSSH(127, "", "sh: wb: command not found "+said), want: RemoteErrorWBMissing},
-		"an old wb":                   {answer: failingSSH(2, "", `unknown command "cockpit export" `+said), want: RemoteErrorWBTooOld},
-		"no daemon":                   {answer: failingSSH(1, typed(ErrorDaemonNotRunning), "wb cockpit export: daemon_not_running "+said), want: RemoteErrorDaemonNotRunning},
-		"a daemon that refuses":       {answer: failingSSH(1, typed(ErrorExportRefused), said), want: RemoteErrorExportRefused},
-		"a failed export":             {answer: failingSSH(1, typed(ErrorExportFailed), said), want: RemoteErrorBadPayload},
-		"an invalid payload":          {answer: func([]string) sshAnswer { return sshAnswer{stdout: unknownField} }, want: RemoteErrorBadPayload, noStderr: true},
-		"not an envelope at all":      {answer: func([]string) sshAnswer { return sshAnswer{stdout: []byte("Welcome to " + said)} }, want: RemoteErrorBadPayload, noStderr: true},
+		"an unresolvable host":  {answer: failingSSH(255, "", "ssh: Could not resolve hostname "+said), want: RemoteErrorSSHUnavailable},
+		"a refused login":       {answer: failingSSH(255, "", said+": Permission denied (publickey)."), want: RemoteErrorAuthFailed},
+		"a deadline overrun":    {hang: true, want: RemoteErrorTimeout, noStderr: true},
+		"no wb":                 {answer: failingSSH(127, "", "sh: wb: command not found "+said), want: RemoteErrorWBMissing},
+		"an old wb":             {answer: failingSSH(2, "", `unknown command "cockpit export" `+said), want: RemoteErrorWBTooOld},
+		"no daemon":             {answer: failingSSH(1, typed(ErrorDaemonNotRunning), "wb cockpit export: daemon_not_running "+said), want: RemoteErrorDaemonNotRunning},
+		"a daemon that refuses": {answer: failingSSH(1, typed(ErrorExportRefused), said), want: RemoteErrorExportRefused},
+		"a failed export":       {answer: failingSSH(1, typed(ErrorExportFailed), said), want: RemoteErrorBadPayload},
+		"an invalid payload":    {answer: func([]string) sshAnswer { return sshAnswer{stdout: unknownField} }, want: RemoteErrorBadPayload, noStderr: true, quiet: true},
+		"not an envelope at all": {answer: func([]string) sshAnswer {
+			return sshAnswer{stdout: append([]byte("Welcome to "+said+"\n"), marshalled(t, full)...)}
+		}, want: RemoteErrorBadPayload, noStderr: true, logged: "bad_payload: output before the envelope)"},
 		"a wb of another generation":  {answer: func([]string) sshAnswer { return sshAnswer{stdout: otherGeneration} }, want: RemoteErrorWBTooOld, noStderr: true},
 		"no local ssh":                {noSSH: true, want: RemoteErrorSSHUnavailable, noStderr: true},
-		"a daemon that is warming up": {answer: failingSSH(1, typed(ErrorWarmingUp), said), want: RemoteErrorWarmingUp, noStderr: true},
+		"a daemon that is warming up": {answer: failingSSH(1, typed(ErrorWarmingUp), said), want: RemoteErrorWarmingUp, noStderr: true, quiet: true},
 	} {
 		runner := &fakeSSH{answer: test.answer, hang: test.hang}
 		sources := &fakeSources{}
@@ -340,7 +353,7 @@ func TestFailedSSHExportShowsATypedErrorAndNeverTheRemotesText(t *testing.T) {
 		}
 		snapshotter, clock, logs := newSSHLive(t, sources, runner, timeout, func(options *Options) {
 			if test.noSSH {
-				missing := func(string) (string, error) { return "", errors.New("executable file not found in $PATH " + said) }
+				missing := func() (string, error) { return "", errors.New("executable file not found in $PATH " + said) }
 				options.Transports = []RemoteTransport{{Name: TransportSSH, Exporter: NewSSHExporter(missing, runner, nil, options.Logf)}}
 			}
 		})
@@ -369,8 +382,7 @@ func TestFailedSSHExportShowsATypedErrorAndNeverTheRemotesText(t *testing.T) {
 		// The daemon's own log names the code, and what stderr held as one
 		// sanitised line; it is the only place that text goes.
 		// A refused envelope is logged by the scheduler, with its code alone.
-		quiet := test.want == RemoteErrorWarmingUp || test.want == RemoteErrorBadPayload && test.noStderr
-		if got := logs.count("the ssh export of vm failed (" + test.want); (got == 1) == quiet {
+		if got := logs.count("the ssh export of vm failed (" + test.want); (got == 1) == test.quiet || logs.count(test.logged) == 0 {
 			t.Errorf("%s: %d log lines of the ssh failure: %q", name, got, logs.all())
 		}
 		if test.noStderr == (logs.count(said) > 0) && !test.noSSH {
@@ -516,48 +528,74 @@ func TestNoSSHProcessIsStartedWithoutAValidConfiguredRoute(t *testing.T) {
 	}
 }
 
-// TestTheLocalSSHIsLookedUpUntilFoundAndThenKept: the ssh executable is resolved
-// once; while there is none, each export is ssh_unavailable and looks again.
-func TestTheLocalSSHIsLookedUpUntilFoundAndThenKept(t *testing.T) {
+// TestTheLocalSSHIsSearchedForUntilFoundKeptAndSearchedForAgainWhenItCannotBeStarted:
+// while there is no ssh each export is ssh_unavailable and searches again; once
+// found it is kept; and when a call cannot be started with it (it was removed
+// or replaced), the next export searches again.
+func TestTheLocalSSHIsSearchedForUntilFoundKeptAndSearchedForAgainWhenItCannotBeStarted(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 0, false)
 	runner := &fakeSSH{answer: exporting(t, full, full)}
 	var lookups atomic.Int64
 	installed := false
-	found := foundSSH(t, nil)
-	exporter := NewSSHExporter(func(name string) (string, error) {
+	exporter := NewSSHExporter(func() (string, error) {
 		lookups.Add(1)
 		if !installed {
 			return "", errors.New("not found")
 		}
-		return found(name)
+		return testSSHPath(t), nil
 	}, runner, func() time.Time { return newClock().Now() }, nil)
+	export := func() error {
+		_, err := exporter.Export(t.Context(), sshTarget(), false)
+		return err
+	}
 	var failure *RemoteError
 	for range 2 {
-		if _, err := exporter.Export(t.Context(), sshTarget(), false); !errors.As(err, &failure) || failure.Code != RemoteErrorSSHUnavailable || !failure.Fallback {
+		if err := export(); !errors.As(err, &failure) || failure.Code != RemoteErrorSSHUnavailable || !failure.Fallback {
 			t.Fatalf("with no ssh: %v", err)
 		}
 	}
 	installed = true
 	for range 3 {
-		if envelope, err := exporter.Export(t.Context(), sshTarget(), false); err != nil || envelope.Fleet == nil {
+		if err := export(); err != nil {
 			t.Fatalf("with ssh: %v", err)
 		}
 	}
 	if lookups.Load() != 3 || runner.count() != 3 {
-		t.Fatalf("%d lookups and %d processes, want 3 and 3", lookups.Load(), runner.count())
+		t.Fatalf("%d searches and %d processes, want 3 and 3", lookups.Load(), runner.count())
+	}
+	// A status of ssh's own, whatever it is, keeps the executable.
+	runner.set(failingSSH(255, "", "ssh: connect to host vm.example port 22: Connection refused"))
+	_ = export()
+	_ = export()
+	if lookups.Load() != 3 {
+		t.Fatalf("%d searches after ssh ran and failed, want 3", lookups.Load())
+	}
+	runner.set(func([]string) sshAnswer { return sshAnswer{err: errors.New("fork/exec: no such file or directory")} })
+	if err := export(); !errors.As(err, &failure) || failure.Code != RemoteErrorSSHUnavailable {
+		t.Fatalf("an ssh that cannot be started: %v", err)
+	}
+	_ = export()
+	if lookups.Load() != 4 {
+		t.Fatalf("%d searches after a call that could not be started, want 4", lookups.Load())
 	}
 }
 
-// TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog: what ssh or the remote
-// writes to stderr is held to maxSSHDiagnosticBytes, rendered as one line with
-// no control character and at most remotessh.MaxDiagnosticBytes, and written to
-// the daemon's log when it changes; the error an export returns is its code and
-// nothing else.
+// TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog: the end of what ssh or
+// the remote writes to stderr (a long banner cannot push the refusal out of it)
+// is rendered as one line of printable characters, at most
+// remotessh.MaxDiagnosticBytes, and written to the daemon's log once per code,
+// however the remote words it each time; the error an export returns is its
+// code and nothing else.
 func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
 	t.Parallel()
-	hostile := "\x1b[31m" + sentinel + "first\r\nsecond\x00line\x07 " + strings.Repeat("x", 3*maxSSHDiagnosticBytes)
-	runner := &fakeSSH{answer: failingSSH(255, sentinel+"stdout", hostile)}
+	attempt := 0
+	runner := &fakeSSH{answer: func([]string) sshAnswer {
+		attempt++
+		banner := strings.Repeat("banner \x1b[31m\u202e\u2028", 400)
+		return sshAnswer{stdout: []byte(sentinel + "stdout"), err: exitStatus(255),
+			stderr: []byte(banner + fmt.Sprintf("\r\nattempt %d\x00\x07 alex@vm.example: Permission denied (publickey).\n", attempt))}
+	}}
 	logs := &logRecorder{}
 	exporter := NewSSHExporter(foundSSH(t, nil), runner, nil, logs.logf)
 	export := func() error {
@@ -567,21 +605,25 @@ func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
 	for range 3 {
 		err := export()
 		var failure *RemoteError
-		if !errors.As(err, &failure) || failure.Code != RemoteErrorSSHUnavailable || strings.Contains(err.Error(), sentinel) || err.Error() != "remote export failed: ssh_unavailable" {
+		// The refusal is at the end of a stderr many times the buffer's size.
+		if !errors.As(err, &failure) || failure.Code != RemoteErrorAuthFailed || err.Error() != "remote export failed: auth_failed" {
 			t.Fatalf("the error = %v", err)
 		}
 	}
 	lines := logs.all()
 	if len(lines) != 1 {
-		t.Fatalf("%d log lines of one repeated failure", len(lines))
+		t.Fatalf("%d log lines of one failure worded three ways: %q", len(lines), lines)
 	}
 	line := lines[0]
-	if !strings.HasPrefix(line, "cockpit fleet: the ssh export of vm failed (ssh_unavailable: [31m"+sentinel+"first second line ") || !strings.HasSuffix(line, "...)") ||
-		len(line) > remotessh.MaxDiagnosticBytes+100 || strings.ContainsFunc(line, func(character rune) bool { return character < ' ' || character == 0x7f }) || strings.Contains(line, "stdout") {
+	if !strings.HasPrefix(line, "cockpit fleet: the ssh export of vm failed (auth_failed: ...") || !strings.HasSuffix(line, "attempt 1 alex@vm.example: Permission denied (publickey).)") ||
+		len(line) > remotessh.MaxDiagnosticBytes+100 || strings.Contains(line, "stdout") ||
+		strings.ContainsFunc(line, func(character rune) bool {
+			return character != ' ' && !strconv.IsPrint(character) || character == '\u202e'
+		}) {
 		t.Fatalf("the log line = %q", line)
 	}
-	// Another failure is another line, and after a success the same failure is
-	// said again.
+	// Another code is another line, and after a success the same code is said
+	// again.
 	runner.set(failingSSH(127, "", "sh: wb: command not found"))
 	_ = export()
 	full := exportOf(t, vmOwnName, vmSources(), 0, false)
@@ -594,6 +636,38 @@ func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
 	_ = export()
 	if got := logs.count("failed (wb_missing: sh: wb: command not found)"); got != 2 || len(logs.all()) != 3 {
 		t.Fatalf("the log = %q", logs.all())
+	}
+}
+
+// TestADaemonThatStopsIsNotATimedOutMachine: when the daemon's own context is
+// cancelled while ssh runs, the export ends with that cancellation: nothing is
+// logged and no code is made of it. The overall bound of an export running out
+// is still a timeout.
+func TestADaemonThatStopsIsNotATimedOutMachine(t *testing.T) {
+	t.Parallel()
+	hung := &fakeSSH{hang: true, entered: make(chan struct{}, 1)}
+	logs := &logRecorder{}
+	exporter := newSSHExporter(foundSSH(t, nil), hung, time.Hour, nil, logs.logf)
+	ctx, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := exporter.Export(ctx, sshTarget(), false)
+		done <- err
+	}()
+	<-hung.entered
+	stop()
+	var failure *RemoteError
+	if err := <-done; !errors.Is(err, context.Canceled) || errors.As(err, &failure) {
+		t.Fatalf("a stopped daemon's export = %v, want the cancellation", err)
+	}
+	if lines := logs.all(); len(lines) != 0 || hung.running.Load() != 0 {
+		t.Fatalf("the stop was logged: %q", lines)
+	}
+	bounded, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	t.Cleanup(cancel)
+	hung.entered = nil
+	if _, err := exporter.Export(bounded, sshTarget(), false); !errors.As(err, &failure) || failure.Code != RemoteErrorTimeout {
+		t.Fatalf("an export that ran out of its overall time = %v, want timeout", err)
 	}
 }
 

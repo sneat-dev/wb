@@ -59,6 +59,12 @@ func newFakeCockpitDaemon(t *testing.T) *fakeCockpitDaemon {
 		var payload any = fake.document
 		switch request.URL.Path {
 		case cockpit.APIPrefix + cockpitfleet.FleetRoute:
+			// The verb says that its read is not a person looking; a daemon that
+			// took it for one would keep reading its own other machines.
+			if request.Header.Get(cockpitfleet.ExportReaderHeader) == "" {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			if cutShort {
 				writer.Header().Set("Content-Length", "100")
 				_, _ = writer.Write([]byte("{"))

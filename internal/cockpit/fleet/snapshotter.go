@@ -290,8 +290,12 @@ type Snapshotter struct {
 	liveKeys []string
 	// sshRoutes is the configured machines' SSH routes and sshKeys their keys in
 	// order; both are fixed once built.
-	sshRoutes  map[string]SSHRoute
-	sshKeys    []string
+	sshRoutes map[string]SSHRoute
+	sshKeys   []string
+	// fleetAsked is when a client last read the fleet document, in nanoseconds
+	// since the epoch and zero for never; kick wakes the background loop.
+	fleetAsked atomic.Int64
+	kick       chan struct{}
 	liveIDs    map[string]string
 	transports []RemoteTransport
 	remoteTick func(time.Duration) (<-chan time.Time, func())
@@ -347,6 +351,7 @@ func New(options Options) *Snapshotter {
 		}
 		sort.Strings(snapshotter.liveKeys)
 	}
+	snapshotter.kick = make(chan struct{}, 1)
 	snapshotter.sshRoutes = map[string]SSHRoute{}
 	for key, route := range options.SSHRoutes {
 		if key != "" && key != options.Machine && route.valid() {
@@ -1192,7 +1197,7 @@ func (s *Snapshotter) publishUnlocked() {
 // views it included and whether it left them out.
 func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int, leftOut bool) {
 	for _, key := range s.liveKeys {
-		if machine := s.live[key]; machine.fresh(now, s.interval) {
+		if machine := s.live[key]; machine.fresh(now, s.remoteInterval()) {
 			liveBytes += machine.viewBytes
 		}
 	}

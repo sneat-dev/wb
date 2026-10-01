@@ -30,8 +30,12 @@ func Register(server *cockpit.Server, snapshotter *Snapshotter) {
 // serveFleet answers the fleet read model from the last snapshot's prepared
 // bytes: gzip or identity with each encoding's strong ETag and If-None-Match
 // support. It reads memory only: no collector runs on a request and no
-// compressor either.
+// compressor either. A read by a client (not by the export verb) is recorded as
+// demand for the other machines' entries; nothing is fetched on the request.
 func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
+	if request.Header.Get(ExportReaderHeader) == "" {
+		s.fleetRead()
+	}
 	cockpit.ServePayload(writer, request, s.Payload())
 }
 
