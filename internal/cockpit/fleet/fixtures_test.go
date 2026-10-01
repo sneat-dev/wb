@@ -509,6 +509,14 @@ func (g *fakeGate) GitUsable(context.Context) bool {
 	return g.usable
 }
 
+// Body is the last published document as marshalled JSON, and its strong ETag,
+// as a request without Accept-Encoding receives them; a test-only view.
+func (s *Snapshotter) Body() (body []byte, etag string) {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), s.Payload())
+	return recorder.Body.Bytes(), recorder.Header().Get("ETag")
+}
+
 // allBranches is every branch the daemon holds, in the order the branches route
 // would list them within a repository and by repository id across them; a
 // test-only view, as the document no longer carries them.

@@ -280,12 +280,6 @@ func (s *Snapshotter) Payload() cockpit.Payload {
 	return s.payload
 }
 
-// Body returns the last published document as marshalled JSON, and its strong
-// ETag.
-func (s *Snapshotter) Body() (body []byte, etag string) {
-	return s.Payload().Identity()
-}
-
 // Branches returns the branch list of the local repository with id, prepared for
 // serving, from the last scan and without running anything (cockpit-views#req:
 // lazy-branches-route). A repository cached from another machine is known and has no

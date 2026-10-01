@@ -189,16 +189,6 @@ func publishedLifecycle(lifecycle string) string {
 	return ""
 }
 
-// publishedPullRequestState lower-cases a published pull request state and
-// keeps it when it is one of open, merged, closed or draft.
-func publishedPullRequestState(state string) string {
-	state = strings.ToLower(state)
-	if slices.Contains([]string{"open", "merged", "closed", "draft"}, state) {
-		return state
-	}
-	return ""
-}
-
 // safeHTTPSURL is rawURL when it is an https address of printable ASCII whose
 // host passes the hostname rule, with no port and no user information, else
 // empty. Another
@@ -430,7 +420,7 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") {
 				pullRequests = append(pullRequests, PullRequest{
 					Entry: cached(entryID(kindPR, key, state.Repository, strconv.Itoa(pull.Number))), Repository: repositoryIDs[state.Repository],
-					Worktree: id, Branch: plainText(state.Branch), Number: pull.Number, State: publishedPullRequestState(pull.State), URL: safeHTTPSURL(pull.URL),
+					Worktree: id, Branch: plainText(state.Branch), Number: pull.Number, State: "open", URL: safeHTTPSURL(pull.URL),
 				})
 			}
 		}

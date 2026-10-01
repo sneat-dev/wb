@@ -2,8 +2,6 @@ package fleet
 
 import (
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -22,17 +20,4 @@ type Hardware struct {
 // operating system's own and is zero where it cannot be read.
 func LocalHardware() Hardware {
 	return Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUCount: runtime.NumCPU(), BootTime: bootTime()}
-}
-
-// parseBootTime reads the `btime` line (seconds since the epoch) of the text of
-// /proc/stat; it returns the zero time when there is none.
-func parseBootTime(stat string) time.Time {
-	for _, line := range strings.Split(stat, "\n") {
-		if value, found := strings.CutPrefix(line, "btime "); found {
-			if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds > 0 {
-				return time.Unix(seconds, 0).UTC()
-			}
-		}
-	}
-	return time.Time{}
 }

@@ -186,6 +186,17 @@ func TestBranchesRouteServesFromTheLastSnapshotWithNoGit(t *testing.T) {
 		t.Errorf("the branches requests ran %d collector calls, want none", sources.calls.Load()-calls)
 	}
 
+	// Two branches of one name (a local and a remote) are ordered by id.
+	sources.change(func(f *fakeSources) {
+		f.branches["acme/widgets"] = []BranchRef{{Name: "same", Scope: BranchLocal}, {Name: "same", Scope: BranchRemote}}
+	})
+	if err := snapshotter.RefreshRepository(t.Context(), local.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(server.get(branchesURL+local.ID, nil).Body.Bytes(), &listed); err != nil || len(listed.Branches) != 2 || listed.Branches[0].ID >= listed.Branches[1].ID {
+		t.Errorf("equal names: %+v, %v", listed.Branches, err)
+	}
+
 	// A new scan replaces the prepared list.
 	sources.change(func(f *fakeSources) { f.branches["acme/widgets"] = twelve[:3] })
 	if err := snapshotter.RefreshRepository(t.Context(), local.ID); err != nil {

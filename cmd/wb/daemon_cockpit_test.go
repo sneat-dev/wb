@@ -335,7 +335,7 @@ func TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot(t *t
 			t.Errorf("%s = %d %s, want %d", target, recorder.Code, recorder.Body.String(), want)
 		}
 	}
-	if body, _ := snapshotter.Body(); !strings.Contains(string(body), `"warming_up":true`) {
+	if body := fleetBody(snapshotter); !strings.Contains(string(body), `"warming_up":true`) {
 		t.Error("a snapshotter that has not started is not warming up")
 	}
 }
@@ -416,4 +416,12 @@ func TestCockpitLoginCodeRouteIsRefusedByTheFileBridge(t *testing.T) {
 			t.Errorf("the file bridge prepared %s: %v", procedure, err)
 		}
 	}
+}
+
+// fleetBody is the fleet document as a request without Accept-Encoding would
+// receive it, from the snapshotter's prepared bytes.
+func fleetBody(snapshotter *cockpitfleet.Snapshotter) []byte {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), snapshotter.Payload())
+	return recorder.Body.Bytes()
 }

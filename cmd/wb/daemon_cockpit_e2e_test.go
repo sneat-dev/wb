@@ -68,7 +68,7 @@ func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithout
 		t.Fatal(err)
 	}
 	machines := func() []cockpitfleet.Machine {
-		body, _ := snapshotter.Body()
+		body := fleetBody(snapshotter)
 		var document cockpitfleet.Document
 		if err := json.Unmarshal(body, &document); err != nil {
 			t.Fatal(err)
