@@ -1,0 +1,57 @@
+<p class="back"><a routerLink="/repositories">&larr; Repositories</a></p>
+@if (entry(); as repository) {
+  <h2 class="page-title">{{ label(repository) }}</h2>
+  @if (repository.error) {
+    <p class="row-error">could not be read: {{ repository.error }}</p>
+  }
+  <dl class="detail">
+    <dt>Machine</dt>
+    <dd>{{ repository.machine }}</dd>
+    <dt>Source</dt>
+    <dd><app-route-label [entry]="repository" [now]="store.now()" /></dd>
+    <dt>Host</dt>
+    <dd>{{ repository.host ?? '—' }}</dd>
+    <dt>Default branch</dt>
+    <dd>{{ repository.default_branch ?? '—' }}</dd>
+    <dt>Worktrees</dt>
+    <dd>
+      <app-count label="worktrees" [names]="worktreeNames()" target="/worktrees" [query]="{ repository: repository.id }" />
+    </dd>
+    <dt>Running agents</dt>
+    <dd>
+      @if (repository.active_agent_count !== undefined) {
+        <app-count label="running agents" [names]="runningAgentNames()" target="/agents" [query]="{ repository: repository.id, state: 'running' }" />
+      } @else {
+        <span class="unknown" title="Not known for a repository on another machine">—</span>
+      }
+    </dd>
+    <dt>Code index</dt>
+    <dd><app-code-index-label [states]="repository.code_index" [now]="store.now()" /></dd>
+    <dt>Code browser</dt>
+    <dd>
+      @if (link(repository); as href) {
+        <a [href]="href" target="_blank" rel="noopener noreferrer" class="code-link">Code</a>
+      } @else {
+        <span class="unknown">—</span>
+      }
+    </dd>
+  </dl>
+  <div class="detail-section">
+    <app-code-index-panel [entry]="repository" [states]="repository.code_index" [provider]="store.codeIndexProvider()" [now]="store.now()" />
+  </div>
+  <div class="detail-section">
+    @if (repository.route === 'cached') {
+      <h3 class="section-title">README</h3>
+      <p class="unknown">The README is read on the machine that holds the repository; this entry is cached from another machine.</p>
+    } @else {
+      <app-readme-section [repository]="repository.id" [canRead]="store.canReadContent()" [sessionStatus]="store.sessionStatus()" />
+    }
+  </div>
+} @else {
+  <h2 class="page-title">Repository</h2>
+  @if (store.warmingUp() || !store.loaded()) {
+    <p class="unknown">Waiting for the fleet snapshot…</p>
+  } @else {
+    <p>This repository is not in the fleet document; it may have been removed.</p>
+  }
+}

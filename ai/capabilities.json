@@ -1291,6 +1291,90 @@
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
     },
     {
+      "id": "wb.cockpit",
+      "feature_refs": [
+        "spec/features/cockpit/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb cockpit",
+              "flags": [
+                "--format",
+                "--hosted",
+                "--json",
+                "--listen"
+              ],
+              "modes": [
+                "Starts or reuses the loopback daemon, requests a single-use login code over the owner channel and opens the Cockpit login URL on the canonical origin.",
+                "--listen <host:port> names the loopback address to start the daemon on (default 127.0.0.1:8766); without it a running daemon is used wherever it listens; a running daemon on another address is refused, never replaced; non-loopback is refused.",
+                "--hosted opens the configured cockpit.hosted_url and starts no daemon.",
+                "JSON output prints {url, scope, opened} with no login code and launches no browser.",
+                "Non-interactive invocations print the login URL without launching a browser."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb cockpit --help",
+              "contains": [
+                "single-use login code",
+                "--format",
+                "--hosted",
+                "--json",
+                "--listen"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb cockpit",
+                "wb cockpit --hosted",
+                "wb cockpit --format=json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/cockpit_test.go",
+              "name": "TestCockpitLocalOpensTheLoginURL",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/cockpit_test.go",
+              "name": "TestCockpitJSONCarriesNoCodeAndOpensNothing",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/cockpit_test.go",
+              "name": "TestCockpitHostedUsesTheConfiguredURLAndStartsNoDaemon",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cockpit is opened with a single-use login code the daemon mints for the owner; machine callers receive a code-free URL receipt."
+    },
+    {
       "id": "wb.commands",
       "feature_refs": [
         "spec/features/modern-cli-help-discovery/README.md"
@@ -2480,13 +2564,15 @@
                 "--force-detached",
                 "--format",
                 "--if-running",
-                "--json"
+                "--json",
+                "--replace-other-root"
               ],
               "modes": [
                 "Restarts with a durable queue ownership handoff",
                 "--if-running is safe after verified self-update",
                 "Hands a supervised (systemd/launchd) daemon back to its supervisor instead of launching a detached replacement",
-                "--force-detached overrides a refusal to start a detached daemon under a recorded supervisor"
+                "--force-detached overrides a refusal to start a detached daemon under a recorded supervisor",
+                "On macOS, refuses to replace the launchd service registered for a different projects root unless --replace-other-root is given"
               ]
             }
           ],
@@ -2501,7 +2587,8 @@
                 "--force-detached",
                 "--format",
                 "--if-running",
-                "--json"
+                "--json",
+                "--replace-other-root"
               ]
             }
           ],
@@ -2658,12 +2745,14 @@
                 "--force-detached",
                 "--format",
                 "--json",
-                "--listen"
+                "--listen",
+                "--replace-other-root"
               ],
               "modes": [
                 "Idempotently starts the loopback daemon and hands off an older installed executable",
                 "Refuses a detached start when the runtime's recorded owner is a systemd or launchd supervisor still confirmed present",
-                "--force-detached overrides that refusal"
+                "--force-detached overrides that refusal",
+                "On macOS, refuses to replace the launchd service registered for a different projects root unless --replace-other-root is given"
               ]
             }
           ],
@@ -2678,7 +2767,8 @@
                 "--force-detached",
                 "--format",
                 "--json",
-                "--listen"
+                "--listen",
+                "--replace-other-root"
               ]
             }
           ],

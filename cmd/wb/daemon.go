@@ -24,6 +24,7 @@ import (
 	"github.com/strongo/cli-helpers/daemonlifecycle"
 
 	"github.com/sneat-dev/wb/hub/narrate"
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/filewrite"
@@ -413,9 +414,15 @@ type daemonDependencies struct {
 	now        func() time.Time
 	executable func() (string, error)
 	start      func(string, []string, string) (int, error)
-	alive      func(int) bool
-	stop       func(pid int, supervisor daemon.Supervisor, supervisorLabel string) error
-	sleep      func(time.Duration)
+	// checkOtherRoot runs at the top of launch, before any lifecycle state is
+	// written and before start is called. It refuses a start for projects root
+	// `root` when the platform's one fixed-label supervisor service is already
+	// registered for a different projects root, unless replace is true. A nil
+	// value skips the check (tests that do not exercise it).
+	checkOtherRoot func(root string, replace bool) error
+	alive          func(int) bool
+	stop           func(pid int, supervisor daemon.Supervisor, supervisorLabel string) error
+	sleep          func(time.Duration)
 	// lockNow is a dedicated clock seam for stateLock's short retry deadline.
 	// It must never be `now` (which the production default strips to a
 	// UTC, non-monotonic reading via time.Time.UTC(), a wall-clock time that
@@ -487,18 +494,19 @@ type daemonDependencies struct {
 
 func defaultDaemonDependencies() daemonDependencies {
 	return daemonDependencies{
-		now:          func() time.Time { return time.Now().UTC() },
-		lockNow:      time.Now,
-		executable:   os.Executable,
-		start:        startDaemonProcess,
-		alive:        daemonProcessAlive,
-		stop:         stopDaemonProcess,
-		sleep:        time.Sleep,
-		version:      collectVersion,
-		token:        daemonOwnerToken,
-		health:       daemonHealthy,
-		ownedHealth:  daemonOwnedHealthy,
-		bridgeHealth: daemonFileBridgeHealthy,
+		now:            func() time.Time { return time.Now().UTC() },
+		lockNow:        time.Now,
+		executable:     os.Executable,
+		start:          startDaemonProcess,
+		checkOtherRoot: daemonCheckOtherRoot,
+		alive:          daemonProcessAlive,
+		stop:           stopDaemonProcess,
+		sleep:          time.Sleep,
+		version:        collectVersion,
+		token:          daemonOwnerToken,
+		health:         daemonHealthy,
+		ownedHealth:    daemonOwnedHealthy,
+		bridgeHealth:   daemonFileBridgeHealthy,
 		restartTicker: func(interval time.Duration) (<-chan time.Time, func()) {
 			ticker := time.NewTicker(interval)
 			return ticker.C, ticker.Stop
@@ -629,7 +637,7 @@ func reportPinnedLifecycleState(out io.Writer, pinned, resolved string) {
 
 func newDaemonStartCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var listen, format string
-	var jsonOut, forceDetached bool
+	var jsonOut, forceDetached, replaceOtherRoot bool
 	command := &cobra.Command{Use: "start", Short: "Start the local WB daemon, or hand off to the installed WB binary", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -639,7 +647,7 @@ func newDaemonStartCmd(inv *invocation, deps daemonDependencies) *cobra.Command 
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon start: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, inv.projectsRoot).StartWithProgress(command.Context(), listen, progress, forceDetached)
+			result, err := newDaemonController(deps, inv.projectsRoot).withReplaceOtherRoot(replaceOtherRoot).StartWithProgress(command.Context(), listen, progress, forceDetached)
 			if err != nil {
 				return err
 			}
@@ -647,10 +655,14 @@ func newDaemonStartCmd(inv *invocation, deps daemonDependencies) *cobra.Command 
 		}}
 	command.Flags().StringVar(&listen, "listen", daemonDefaultListen, "loopback listen address")
 	command.Flags().BoolVar(&forceDetached, "force-detached", false, "start a detached daemon even though the runtime's recorded owner is a systemd or launchd supervisor")
+	command.Flags().BoolVar(&replaceOtherRoot, "replace-other-root", false, replaceOtherRootUsage)
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
 }
+
+// replaceOtherRootUsage is the one help line for --replace-other-root.
+const replaceOtherRootUsage = "on macOS, replace the launchd service registered for a different projects root (refused without this flag)"
 
 func newDaemonStatusCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
@@ -714,7 +726,7 @@ func newDaemonStopCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 
 func newDaemonRestartCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	var format string
-	var jsonOut, ifRunning, forceDetached bool
+	var jsonOut, ifRunning, forceDetached, replaceOtherRoot bool
 	command := &cobra.Command{Use: "restart", Short: "Drain, hand off the durable queue, and start the installed WB daemon", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -724,7 +736,7 @@ func newDaemonRestartCmd(inv *invocation, deps daemonDependencies) *cobra.Comman
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, inv.projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress, forceDetached)
+			result, err := newDaemonController(deps, inv.projectsRoot).withReplaceOtherRoot(replaceOtherRoot).RestartWithProgress(command.Context(), ifRunning, progress, forceDetached)
 			if err != nil {
 				return err
 			}
@@ -732,6 +744,7 @@ func newDaemonRestartCmd(inv *invocation, deps daemonDependencies) *cobra.Comman
 		}}
 	command.Flags().BoolVar(&ifRunning, "if-running", false, "succeed without starting when no managed daemon is running")
 	command.Flags().BoolVar(&forceDetached, "force-detached", false, "start a detached daemon even though the runtime's recorded owner is a systemd or launchd supervisor")
+	command.Flags().BoolVar(&replaceOtherRoot, "replace-other-root", false, replaceOtherRootUsage)
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
@@ -906,6 +919,17 @@ type daemonController struct {
 	deps  daemonDependencies
 	store daemon.Store
 	root  string
+	// replaceOtherRoot is the explicit --replace-other-root request: let a start
+	// for this projects root replace a supervisor service registered for a
+	// different one. Zero for every implicit caller.
+	replaceOtherRoot bool
+}
+
+// withReplaceOtherRoot returns the controller with the explicit
+// --replace-other-root request set.
+func (controller daemonController) withReplaceOtherRoot(replace bool) daemonController {
+	controller.replaceOtherRoot = replace
+	return controller
 }
 
 func newDaemonController(deps daemonDependencies, root string) daemonController {
@@ -2247,6 +2271,11 @@ func (controller daemonController) markStoppedIfUnchanged(expected daemon.State,
 }
 
 func (controller daemonController) launch(ctx context.Context, previous *daemon.State, listen string, provenance daemon.Provenance, action string, handoff bool) (daemonResult, error) {
+	if controller.deps.checkOtherRoot != nil {
+		if err := controller.deps.checkOtherRoot(controller.root, controller.replaceOtherRoot); err != nil {
+			return daemonResult{}, err
+		}
+	}
 	token, err := controller.deps.token()
 	if err != nil {
 		return daemonResult{}, err
@@ -2488,6 +2517,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	if _, err := nodeidentity.LoadFile(nodeidentity.PathFromHome(location.Home), nil); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: node identity unavailable:", err)
 	}
+	// A malformed cockpit: section is an operator mistake worth refusing to
+	// start over, not a surface to silently run with defaults.
+	cockpitConfig, err := wbconfig.LoadCockpit(hubConfigPath())
+	if err != nil {
+		return fmt.Errorf("load the cockpit configuration: %w", err)
+	}
 	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
 		return fmt.Errorf("mount the bench hub: %w", err)
@@ -2508,10 +2543,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		peersSource = emptyPeersSource{}
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
+	cockpitServer := newCockpitServer(address, cockpitConfig)
+	fleetSnapshotter := registerCockpitFleet(cockpitServer, cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname))
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
-		Mounts: mount.handlers(), Hub: mount.hubHealth(), LogPath: logPath,
+		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
@@ -2522,6 +2559,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	// TCP dashboard listener (peer-connectivity#req:admin-requires-owner-
 	// credential).
 	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
+	// So does the route that mints a Cockpit login code: holding the owner
+	// token is what entitles a caller to an owner session
+	// (cockpit#req:owner-session). The file bridge below is handed this mux
+	// too, but dispatches only the DaemonService procedures
+	// daemonFilePrepareRequest lists, so it never reaches this route.
+	rpcMux.Handle(cockpit.LoginCodeRPCPath, authenticatedDaemonHandler(ownerToken, cockpitServer.LoginCodeHandler()))
 	fileBridge, err := newDaemonFileBridgeServer(inv.projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
 		return fmt.Errorf("prepare daemon file bridge: %w", err)
@@ -2529,6 +2572,9 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
+	// The snapshotter lives as long as the daemon and is stopped, and waited
+	// for, on the way out so no refresh outlives the daemon's state.
+	defer fleetSnapshotter.Start(ctx)()
 	queue.StartLeaseRecovery(ctx)
 	if err := startRepositoryEventReceiver(ctx, inv.projectsRoot, hubConfigPath(), command.ErrOrStderr()); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "repository event receiver disabled:", err)

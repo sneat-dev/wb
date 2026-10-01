@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Implemented
 ---
 # Plan: Cockpit shell
 
-**Status:** Approved
+**Status:** Implemented
 **Source Feature:** cockpit
 **Date:** 2026-10-01
 **Owner:** alex
@@ -46,7 +46,7 @@ coverage. Every task keeps the code it adds at 100% coverage: Go through `wb cov
 **Id:** task-1
 **Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:dashboard-command-is-unchanged
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
 
 Add `cockpit.hosted_url`, `cockpit.code_browser_url`,
 `cockpit.anonymous_metadata` and `cockpit.refresh_interval` to
@@ -64,7 +64,7 @@ Tests: the guard table, the unbuilt page, and a regression test that `/`,
 **Id:** task-2
 **Verifies:** cockpit#ac:login-code-is-single-use, cockpit#ac:session-ends-on-logout-and-restart, cockpit#ac:proxied-request-needs-a-session, cockpit#ac:only-the-hosted-origin-may-read-cross-origin, cockpit#ac:session-reports-principal-and-capabilities
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add a login-code operation to the owner-token service on the daemon's unix
 socket: single use, 60-second life, injectable clock. Add
@@ -85,7 +85,7 @@ canonical origin plus JSON on state-changing routes.
 **Id:** task-3
 **Verifies:** cockpit#ac:command-opens-local-cockpit, cockpit#ac:json-output-carries-no-code, cockpit#ac:hosted-flag-uses-configured-url, cockpit#ac:manifest-rows-exist
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add `cmd/wb/cockpit.go`, reusing the daemon start-or-reuse path that
 `wb dashboard --local` uses. It requests a login code over the owner RPC,
@@ -101,12 +101,14 @@ flag-matrix line and the persistent-flag support declaration.
 **Id:** task-4
 **Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add a background snapshotter in the daemon that builds the fleet document
-from `discover.ScanLocalIndexed`, `worktrees.ListWithDiagnostics`,
-`worktrees.BranchList`, pull request evidence, the session and agent run
-records, and `remotestate.ReadStatus` for other machines, giving every entry
+from `discover.ScanLocalIndexed`, the cheap worktree
+enumeration the existing dashboard uses, one `git for-each-ref` per repository,
+locally recorded pull requests, the session and agent run
+records, and a local-only read of the local copy of the remote state store for
+other machines, giving every entry
 a stable `id`, its `machine`, `route` and `observed_at`. It refreshes on
 `cockpit.refresh_interval`, skipping repositories whose fingerprint is
 unchanged, and can refresh one repository on request from inside the daemon;
@@ -124,7 +126,7 @@ answers 401 without a session.
 **Id:** task-5
 **Verifies:** cockpit#ac:release-build-includes-cockpit, cockpit#ac:coverage-gates-hold
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Create the Angular 22 project at `cockpit/web` with PrimeNG 22, the CDK,
 Vitest and Playwright: an empty shell that builds, is embedded, and is served
@@ -141,7 +143,7 @@ with an assertion that its output exists.
 **Id:** task-6
 **Verifies:** cockpit#ac:every-page-lists-its-collection, cockpit#ac:counts-drill-down, cockpit#ac:repository-links-to-code-browser
 **Depends-On:** 2, 4, 5
-**Status:** planning
+**Status:** complete
 
 Build the shell and navigation, and the Dashboard, Repositories, Worktrees,
 Agents and Machines pages as tables filterable by machine and repository,
@@ -149,13 +151,14 @@ with route and age labels on cached rows, the hover card and drill-down for
 every count, the link from each repository
 to the CodeGrapher browser built from `cockpit.code_browser_url`, and light
 and dark themes. Controls are driven by `GET /api/v1/cockpit/session`.
+Branch and pull-request counts are not shown until they have list pages.
 
 ### Task 7: Code-index freshness
 
 **Id:** task-7
 **Verifies:** cockpit#ac:code-index-freshness-appears
 **Depends-On:** 4, 6
-**Status:** planning
+**Status:** complete
 
 Add `code_index` freshness to each repository and worktree in the read model,
 in the six states `code-index-freshness` defines, read from indexer receipts.
@@ -169,7 +172,7 @@ tables.
 **Id:** task-8
 **Verifies:** cockpit#ac:readme-needs-owner, cockpit#ac:hostile-readme-is-inert, cockpit#ac:code-index-panel
 **Depends-On:** 4, 6, 7
-**Status:** planning
+**Status:** complete
 
 Render the README as sanitized Markdown on the repository page, with the
 owner-session notice for other callers. Add the code-index provider
@@ -183,20 +186,19 @@ the repository and worktree pages.
 **Id:** task-9
 **Verifies:** cockpit#ac:whole-journey-e2e
 **Depends-On:** 3, 6, 8
-**Status:** planning
+**Status:** complete
 
 One Playwright test against a real daemon on a temporary projects root: run
 `wb cockpit`, follow the printed URL, assert the Dashboard as owner, hover
 and click the worktree count, assert the filtered table, clear the cookie,
 reload, and assert that lists load while the README asks for an owner
-session. No reloads or manual steps beyond those the journey names.
+session. No reloads or manual steps beyond those the journey names. The journey
+runs on Linux in CI only, because on macOS the daemon is a launchd service with
+one fixed label per user.
 
 ## Open Questions
 
 - The Go package layout under `internal/cockpit` is settled in Task 1.
-- Whether `cockpit/web` is a plain Angular workspace or an Nx workspace like
-  the CodeGrapher web UI is settled in Task 5; sharing components later
-  favors matching it.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

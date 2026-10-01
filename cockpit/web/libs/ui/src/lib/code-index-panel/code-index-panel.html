@@ -1,0 +1,50 @@
+<section class="code-index-panel" aria-labelledby="code-index-heading">
+  <h3 id="code-index-heading" class="panel-title">Code index</h3>
+  @let current = view();
+  @switch (current.kind) {
+    @case ('unknown') {
+      <p class="panel-note">Not known for a checkout on another machine: its published snapshot carries no code index.</p>
+    }
+    @case ('none') {
+      <p class="panel-note">No code-index provider is configured. Set <code>cockpit.code_index_provider</code> in wb.yaml to show statistics.</p>
+    }
+    @default {
+      <p class="panel-freshness">Freshness: <app-code-index-label [states]="states()" [now]="now()" /></p>
+      @switch (current.kind) {
+        @case ('indexed') {
+          <dl class="totals">
+            <div>
+              <dt>Files</dt>
+              <dd>{{ current.statistics.files }}</dd>
+            </div>
+            <div>
+              <dt>Symbols</dt>
+              <dd>{{ current.statistics.symbols }}</dd>
+            </div>
+            <div>
+              <dt>Edges</dt>
+              <dd>{{ current.statistics.edges }}</dd>
+            </div>
+          </dl>
+          @if (current.statistics.kinds.length) {
+            <h4 class="kinds-title">Symbols by kind</h4>
+            <ul class="kinds">
+              @for (item of current.statistics.kinds; track item.kind) {
+                <li>
+                  <span class="kind">{{ item.kind }}</span>
+                  <span class="kind-count">{{ item.count }}</span>
+                </li>
+              }
+            </ul>
+          }
+        }
+        @case ('failed') {
+          <p class="panel-note">The code-index provider could not read this index ({{ current.code }}).</p>
+        }
+        @default {
+          <p class="panel-note">Not indexed.</p>
+        }
+      }
+    }
+  }
+</section>

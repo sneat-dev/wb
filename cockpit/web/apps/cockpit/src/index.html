@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WB Cockpit</title>
+    <base href="/cockpit/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  </head>
+  <body>
+    <!-- The wb daemon replaces the nonce placeholder below on every
+         response (cockpit/web/embed.go); Angular reads ngCspNonce for the
+         style elements it injects, and app.config.ts hands the same value to
+         PrimeNG. -->
+    <app-root ngCspNonce="__CSP_NONCE__"></app-root>
+  </body>
+</html>

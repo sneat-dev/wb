@@ -221,6 +221,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newRunCmd(inv), rootGroupChange),
 		groupedRootCommand(newWorkerCmd(inv, defaultDaemonDependencies()), rootGroupMaintain),
 		groupedRootCommand(newDashboardCmd(inv), rootGroupFleet),
+		groupedRootCommand(newCockpitCmd(inv), rootGroupFleet),
 		groupedRootCommand(newDaemonCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newPeersCmd(inv), rootGroupMaintain),
@@ -246,6 +247,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"sync": true, "run": true, "migrate": true,
 		"sync-report publish": true,
 		"dashboard":           true,
+		"cockpit":             true,
 		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		// The verb-first spellings run the same implementations, so they take
