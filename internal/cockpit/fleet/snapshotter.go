@@ -127,6 +127,16 @@ type Options struct {
 	Tick func(interval time.Duration) (<-chan time.Time, func())
 	// Fingerprint computes a clone's fingerprint; nil means Fingerprint.
 	Fingerprint func(checkout string) (string, error)
+	// PullRequests observes the pull requests recorded locally on the
+	// snapshotter's own ticker; nil means none is observed (the daemon passes a
+	// *prwatch.Watcher). PullRequestLimit is the most observed per pass (zero
+	// or less means DefaultPullRequestLimit), PullRequestInterval the shortest
+	// time between two passes (zero or less means 90 s) and PullRequestTimeout
+	// the bound of one observation (zero or less means 30 s).
+	PullRequests        PullRequestObserver
+	PullRequestLimit    int
+	PullRequestInterval time.Duration
+	PullRequestTimeout  time.Duration
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
 }
@@ -180,6 +190,10 @@ type Snapshotter struct {
 	tick              func(time.Duration) (<-chan time.Time, func())
 	fingerprint       func(string) (string, error)
 	logf              func(string, ...any)
+	pullObserver      PullRequestObserver
+	pullLimit         int
+	pullInterval      time.Duration
+	pullTimeout       time.Duration
 
 	// refresh serialises full passes. side counts the read of the other
 	// machines, which outlives the pass that started it, and remoteBusy keeps
@@ -187,6 +201,7 @@ type Snapshotter struct {
 	refresh    sync.Mutex
 	side       sync.WaitGroup
 	remoteBusy atomic.Bool
+	pullBusy   atomic.Bool
 	mu         sync.RWMutex
 
 	doc         Document
@@ -203,6 +218,11 @@ type Snapshotter struct {
 	truncated   bool
 	bindings    []worktrees.RegisteredPullRequestBinding
 	boundAt     time.Time
+	// observed holds the last successful observation of each recorded pull
+	// request, by pullKey; lastPull is when the last pass began.
+	observed    map[string]pullObservation
+	lastPull    time.Time
+	pullStarted bool
 	remote      remoteView
 	// remoteBranches holds the prepared empty branch lists of the repositories
 	// cached from other machines, dropped whenever remote is replaced.
@@ -219,7 +239,17 @@ func New(options Options) *Snapshotter {
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
 		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
-		repos: map[string]*repoState{},
+		repos: map[string]*repoState{}, observed: map[string]pullObservation{},
+		pullObserver: options.PullRequests, pullLimit: options.PullRequestLimit, pullInterval: options.PullRequestInterval, pullTimeout: options.PullRequestTimeout,
+	}
+	if snapshotter.pullLimit <= 0 {
+		snapshotter.pullLimit = DefaultPullRequestLimit
+	}
+	if snapshotter.pullInterval <= 0 {
+		snapshotter.pullInterval = defaultPullRequestInterval
+	}
+	if snapshotter.pullTimeout <= 0 {
+		snapshotter.pullTimeout = defaultPullRequestTimeout
 	}
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
@@ -883,9 +913,8 @@ func (s *Snapshotter) refreshMachineState(parent context.Context) []error {
 	}); err != nil {
 		failures = append(failures, fmt.Errorf("read pull request records: %w", err))
 	} else {
-		s.mu.Lock()
-		s.bindings, s.boundAt = bindings, at
-		s.mu.Unlock()
+		s.bindingsRead(bindings, at)
+		s.startPullRequests(parent)
 	}
 	return failures
 }
@@ -959,7 +988,7 @@ func (s *Snapshotter) publishLocked() {
 	for _, id := range ids {
 		worktreesOf[id] = s.repos[id].entries.worktrees
 	}
-	pullRequests, diagnostics := mapPullRequests(s.machine, s.bindings, s.boundAt, idsBySlug, worktreesOf)
+	pullRequests, diagnostics := mapPullRequests(s.machine, s.bindings, s.boundAt, idsBySlug, worktreesOf, s.observed)
 	document.Diagnostics = diagnostics
 	activeOf := map[string]int{}
 	for _, record := range s.agents {

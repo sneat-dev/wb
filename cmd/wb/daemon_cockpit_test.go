@@ -19,6 +19,7 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/prwatch"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -313,6 +314,19 @@ func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testin
 	provider := named.Collectors.CodeIndexProvider
 	if provider == nil || provider.Name() != "codegrapher" || provider.Indexer() != "code-graph" {
 		t.Errorf("the configured provider = %+v", provider)
+	}
+}
+
+// TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit
+// pins that the daemon hands the snapshotter the production watcher and
+// cockpit.pull_request_limit. Nothing here observes a pull request.
+func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit(t *testing.T) {
+	t.Parallel()
+	config := wbconfig.DefaultCockpitConfig()
+	config.PullRequestLimit = 7
+	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil })
+	if _, ok := options.PullRequests.(*prwatch.Watcher); !ok || options.PullRequestLimit != 7 {
+		t.Errorf("pull request observer = %T limit %d, want a *prwatch.Watcher and 7", options.PullRequests, options.PullRequestLimit)
 	}
 }
 

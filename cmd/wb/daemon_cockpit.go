@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/prwatch"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -45,6 +46,8 @@ func registerCockpitFleet(server *cockpit.Server, options cockpitfleet.Options) 
 // none). cockpit.refresh_interval, when set, is the refresh interval, and
 // cockpit.code_index_provider, when set, names the provider that reports the
 // statistics of each checkout's index (the snapshotter alone asks it).
+// cockpit.pull_request_limit, when set, bounds the pull requests the
+// snapshotter observes on GitHub in one pass, through a prwatch.Watcher.
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(logs, "wb: "+format+"\n", args...) }
 	machine, err := hostname()
@@ -71,6 +74,7 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	}
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		PullRequests: prwatch.NewWatcher(), PullRequestLimit: config.PullRequestLimit,
 		Logf: logf,
 	}
 }

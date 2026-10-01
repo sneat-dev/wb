@@ -808,7 +808,7 @@ and hyphens, no port and no user information. They come from the daemon's snapsh
 the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
 the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
 WB already uses. At most `cockpit.pull_request_limit` pull requests are observed per tick, the
-oldest `checked_at` first; a merged pull request leaves the watch set after one confirmed
+oldest `checked_at` first (default 10, between 1 and 200, a pass starting at most every 90 seconds, so on every other refresh at the default interval; each observation is bounded to 30 seconds and at most 4 run at once, and a pass never delays the publication of the local snapshot); a merged pull request leaves the watch set after one confirmed
 observation; an observation that fails leaves the previous values and `checked_at` in place, so the
 age shows. No request reads GitHub. When no observation has ever succeeded for a pull request, the
 fields other than `number`, `repository` and `url` are omitted and the application says the state

@@ -116,7 +116,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
 		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
 		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
-		"PullRequest":      append([]string{"repository", "worktree", "branch", "number", "state", "url"}, entry...),
+		"PullRequest":      append([]string{"repository", "worktree", "branch", "number", "state", "url", "mergeable", "checks_total", "checks_passed", "checks_failed", "checks_skipped", "checks_pending", "checks_green", "failed_check", "checked_at"}, entry...),
 		"BranchesResponse": {"repository", "branches", "reason"},
 		"CodeIndex":        {"indexer", "state", "behind", "receipt_at", "statistics"},
 		"CodeStatistics":   {"indexed", "files", "symbols", "edges", "kinds", "error"},

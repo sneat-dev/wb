@@ -164,10 +164,13 @@ const maxRemoteText = 200
 // plainText is text with control and format characters (which include the
 // bidirectional controls) removed and at most maxRemoteText runes kept: a
 // snapshot is another machine's data, and a name in it is shown as text only.
-func plainText(text string) string {
+func plainText(text string) string { return plainTextMax(text, maxRemoteText) }
+
+// plainTextMax is plainText cut to at most limit characters.
+func plainTextMax(text string, limit int) string {
 	var kept []rune
 	for _, character := range text {
-		if len(kept) == maxRemoteText {
+		if len(kept) == limit {
 			break
 		}
 		if !unicode.IsControl(character) && !unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
@@ -305,11 +308,14 @@ func splitForgeName(name string) (host, rest string) {
 // local repository has that slug (repositories maps a slug to the ids of the
 // repositories with it) and to a worktree of it when one has the record's
 // task; otherwise it keeps no repository and counts as one diagnostic.
-func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestBinding, at time.Time, repositories map[string][]string, worktreesOf map[string][]Worktree) (mapped []PullRequest, diagnostics int) {
+func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestBinding, at time.Time, repositories map[string][]string, worktreesOf map[string][]Worktree, observed map[string]pullObservation) (mapped []PullRequest, diagnostics int) {
 	for _, binding := range bindings {
 		pull := PullRequest{
 			Entry:  localEntry(entryID(kindPR, machine, binding.Repository, strconv.Itoa(binding.PullRequest)), machine, at),
 			Number: binding.PullRequest, URL: safeHTTPSURL(binding.URL),
+		}
+		if observation, ok := observed[pullKey(binding.Repository, binding.PullRequest)]; ok {
+			observation.applyTo(&pull)
 		}
 		if ids := repositories[binding.Repository]; len(ids) == 1 {
 			pull.Repository = ids[0]

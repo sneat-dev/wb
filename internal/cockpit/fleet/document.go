@@ -270,7 +270,7 @@ type Branch struct {
 
 // PullRequest is one open pull request recorded locally, tied to its
 // repository and, where one exists, its worktree. State is empty for a local
-// record, which names the pull request but not its state; Repository is empty
+// record, which names the pull request but not its state until one is observed; Repository is empty
 // when the record's repository slug matches no single local repository.
 type PullRequest struct {
 	Entry
@@ -280,6 +280,21 @@ type PullRequest struct {
 	Number     int    `json:"number"`
 	State      string `json:"state,omitempty"`
 	URL        string `json:"url,omitempty"`
+	// The fields below come from the daemon's last successful observation of
+	// the pull request and are omitted until one has succeeded, and always for
+	// a pull request of another machine (cockpit-views#req:pull-request-fields).
+	// The counts and the verdict are pointers because zero and false are
+	// values. ChecksGreen is the observation's own verdict, not derived from
+	// the counts.
+	Mergeable     string    `json:"mergeable,omitempty"`
+	ChecksTotal   *int      `json:"checks_total,omitempty"`
+	ChecksPassed  *int      `json:"checks_passed,omitempty"`
+	ChecksFailed  *int      `json:"checks_failed,omitempty"`
+	ChecksSkipped *int      `json:"checks_skipped,omitempty"`
+	ChecksPending *int      `json:"checks_pending,omitempty"`
+	ChecksGreen   *bool     `json:"checks_green,omitempty"`
+	FailedCheck   string    `json:"failed_check,omitempty"`
+	CheckedAt     time.Time `json:"checked_at,omitzero"`
 }
 
 // Agent is a registered session or a dispatched run: identifiers, runtime,
