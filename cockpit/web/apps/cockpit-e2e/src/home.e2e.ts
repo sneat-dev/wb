@@ -79,9 +79,11 @@ test('Home lists what needs the operator with one action each, and what is ready
   await expect(failure).toHaveAttribute('target', '_blank')
   await expect(needs.locator('.home-row').nth(1)).toContainText('build-linux failed on acme/web#131')
 
-  // The action of work at risk is a lazy chunk: with no registry it is "Copy template".
+  // Work at risk opens its task first; with no registry its secondary action, a lazy chunk, is a quiet "Copy template" icon button.
+  await expect(needs.locator('.home-row').nth(0).getByRole('link', { name: 'Open task refactor-cache' })).toHaveAttribute('href', /\/tasks\?sel=refactor-cache$/)
   const template = needs.locator('.home-row').nth(0).getByRole('button', { name: /^Copy command template/ })
   await expect(template).toHaveText('Copy template')
+  await expect(template.locator('.visually-hidden')).toHaveText('Copy template')
   await template.click()
   await expect(template).toHaveText('Copied')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("wb pr create 'refactor-cache' --commit-all --message=<<<edit:message>>>")
@@ -114,7 +116,8 @@ test('the charts are canvases that are drawn, and fetched, only when they scroll
   await page.goto('/cockpit/')
   await expect(page.getByRole('region', { name: /^Fleet health|^Cleanup/ }).first()).toBeAttached()
   await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeAttached()
-  await page.waitForTimeout(500)
+  // The charts' own slot stands where they will be, with nothing fetched for them yet.
+  await expect(page.locator('.home-lazy-slot')).toBeAttached()
   await expect(page.locator('app-home-charts')).toHaveCount(0)
   expect(await page.locator('canvas').count()).toBe(0)
   const before = scripts.size

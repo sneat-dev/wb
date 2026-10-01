@@ -19,7 +19,7 @@ describe('healthRows', () => {
       command: { text: 'wb remote publish', needsEdit: false },
     })
     expect(rows[1]).toMatchObject({ where: 'run on old', command: { text: 'wb self-update' } })
-    expect(rows[2]).toMatchObject({ text: 'Scan error in sneat-dev/wb', where: undefined, command: { text: "wb fleet status --filter='sneat-dev/wb'", needsEdit: false } })
+    expect(rows[2]).toMatchObject({ text: 'Scan error in sneat-dev/wb', where: 'run here', command: { text: "wb fleet status --filter='sneat-dev/wb'", needsEdit: false } })
   })
 
   it('says why a scan error has no command when the library refuses to write one for that repository name', () => {

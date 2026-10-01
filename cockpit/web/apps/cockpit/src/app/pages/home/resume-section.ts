@@ -1,9 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { FleetModel, TaskView, selectionLink } from '@cockpit/fleet-data'
-import { Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
+import { GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { counted, isoOf } from './home-format'
-import { GLYPH_CHECK_CIRCLE } from '@cockpit/ui/state'
 
 /**
  * Home "Resume" (REQ:home-resume): the last five tasks by activity, each with its state badge and

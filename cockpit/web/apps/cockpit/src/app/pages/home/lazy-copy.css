@@ -39,3 +39,27 @@
   background: var(--bad-soft);
   color: var(--bad);
 }
+
+.home-copy.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.home-copy.quiet:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.home-copy.quiet.done {
+  color: var(--ok);
+}
+
+.home-copy.quiet.failed {
+  color: var(--bad);
+}
+
+.home-copy.icon-only {
+  min-width: 1.75rem;
+}

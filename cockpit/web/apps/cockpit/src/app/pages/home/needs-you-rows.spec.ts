@@ -27,10 +27,12 @@ describe('needsYouRows', () => {
     expect(rows[1].places).toEqual([{ repository: 'sneat-co/sneat-go', branch: 'codex/split-cache' }])
   })
 
-  it('gives work at risk the push or copy action for each worktree, a failure a link out, an agent a link in', () => {
+  it('gives work at risk "Open task" as its action and the push or copy for each worktree beside it, a failure a link out, an agent a link in', () => {
     const rows = needsYouRows(modelOf(fleet()))
-    expect(rows[0].action).toEqual({
-      kind: 'work',
+    expect(rows[0].action).toEqual({ kind: 'route', text: 'Open task', label: 'Open task refactor-cache', link: { path: '/tasks', query: { sel: 'refactor-cache' } } })
+    expect(rows[2].work).toBeUndefined()
+    expect(rows[5].work).toBeUndefined()
+    expect(rows[0].work).toEqual({
       task: 'refactor-cache',
       worktrees: [
         { id: 'wt-1', branch: 'task/refactor-cache' },

@@ -2,12 +2,10 @@ import { TestBed } from '@angular/core/testing'
 import { registryAction } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { HomeRegistry, PUSH_ACTION } from './home-registry'
-import { RowAction } from './needs-you-rows'
+import { WorkOffer } from './needs-you-rows'
 import { WorkAction } from './work-action'
 
-type Work = Extract<RowAction, { kind: 'work' }>
-const work: Work = {
-  kind: 'work',
+const work: WorkOffer = {
   task: 'fix-ci',
   worktrees: [
     { id: 'w1', branch: 'task/fix-ci' },

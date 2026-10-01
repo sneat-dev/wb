@@ -1,11 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { FleetDocument, FleetModel, ReadyToLand, ReadyToLandRow } from '@cockpit/fleet-data'
-import { ActionSlot, CopyButton, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
+import { RouterLink } from '@angular/router'
+import { FleetDocument, FleetModel, ReadyToLand, ReadyToLandRow, chipLink } from '@cockpit/fleet-data'
+import { ActionSlot, CopyButton, GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { counted, isoOf } from './home-format'
 import { minutesBetween } from './home-time'
 import { HomeRegistry, LAND_ACTION } from './home-registry'
-import { GLYPH_CHECK_CIRCLE } from '@cockpit/ui/state'
 
 /** A document as the daemon sends it, with the field the library's type does not carry yet. */
 // TODO(fleet-data): `pull_requests_throttled` is in the daemon's document (document.go) but not in FleetDocument.
@@ -30,7 +30,7 @@ export function throttleNote(model: FleetModel, rows: ReadyToLand): string | und
  */
 @Component({
   selector: 'app-ready-to-land',
-  imports: [ActionSlot, CopyButton, Glyph, RelativeTime, SkeletonRows, StateBadge],
+  imports: [ActionSlot, CopyButton, Glyph, RelativeTime, RouterLink, SkeletonRows, StateBadge],
   templateUrl: './ready-section.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -41,6 +41,7 @@ export class ReadySection {
 
   private readonly registry = inject(HomeRegistry)
   protected readonly ok = GLYPH_CHECK_CIRCLE
+  protected readonly readyLink = chipLink('tasks', 'ready')
   protected readonly rows = computed(() => this.model().readyToLand)
   protected readonly empty = computed(() => this.rows().ready.length === 0 && this.rows().notReady.length === 0)
   protected readonly note = computed(() => throttleNote(this.model(), this.rows()))

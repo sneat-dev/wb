@@ -2,7 +2,7 @@
   <h2 id="home-flight-h" class="home-h">
     In flight
     @if (rows().length > 0) {
-      <span class="home-count">{{ rows().length }}</span>
+      <a class="home-count" [routerLink]="runningLink.path" [queryParams]="runningLink.query" title="The running agents, on Agents">{{ rows().length }}</a>
     }
   </h2>
   <div class="flight-layout">
@@ -35,8 +35,8 @@
               <div class="home-action flight-side">
                 <app-state-badge kind="agent-activity" size="small" [value]="row.activity" [label]="row.activity ? undefined : 'state not reported'" />
                 @if (row.controllable) {
-                  <app-lazy-copy idleWord="Copy stop" label="Copy command: wb agent stop" [build]="row.stop" />
-                  <app-lazy-copy idleWord="Copy log" label="Copy command: wb agent logs" [build]="row.log" />
+                  <app-lazy-copy idleWord="Copy stop" label="Copy command: wb agent stop" [build]="row.stop" [quiet]="true" />
+                  <app-lazy-copy idleWord="Copy log" label="Copy command: wb agent logs" [build]="row.log" [quiet]="true" />
                 }
               </div>
             </li>

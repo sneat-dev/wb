@@ -4,7 +4,6 @@
 .home {
   display: grid;
   gap: var(--space-5);
-  max-width: 72rem;
   min-width: 0;
 }
 
@@ -45,6 +44,11 @@ main:has(.home) > app-skeleton-rows.warming {
   border-color: var(--bad-border);
   background: var(--bad-soft);
   color: var(--bad);
+}
+
+a.home-count:hover {
+  border-color: currentcolor;
+  text-decoration: none;
 }
 
 .home-count.warn {
@@ -209,8 +213,16 @@ main:has(.home) > app-skeleton-rows.warming {
   text-decoration: none;
 }
 
+/* The primary action is anchored at the right edge, with the other sections' actions; the lazy secondary one (push or
+   copy) comes after it in the document and appears to its left, in room that was free, so nothing moves when it arrives. */
+.needs-row .home-action {
+  flex-direction: row-reverse;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
 .needs-row {
-  grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 20rem) 9rem;
+  grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 18rem) 14rem;
 }
 
 @media (max-width: 52rem) {
@@ -222,6 +234,11 @@ main:has(.home) > app-skeleton-rows.warming {
   .needs-row .home-action {
     grid-column: 2;
     justify-content: flex-start;
+  }
+
+  .needs-row .home-action {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 }
 

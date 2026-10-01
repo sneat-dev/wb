@@ -21,7 +21,10 @@ describe('NeedsYouSection', () => {
     const { root, rows } = await render()
     expect(root.querySelector('section')?.getAttribute('aria-labelledby')).toBe('home-needs-h')
     expect(text(root.querySelector('h2'))).toBe('Needs you 6')
-    expect(root.querySelector('.home-count')?.classList.contains('urgent')).toBe(true)
+    const count = root.querySelector('.home-count') as HTMLAnchorElement
+    expect(count.classList.contains('urgent')).toBe(true)
+    // The number is a link to exactly the tasks it counts.
+    expect(count.getAttribute('href')).toBe('/tasks?chips=needs-you')
     expect(root.querySelector('.home-card')?.classList.contains('urgent')).toBe(true)
     expect(rows.map((row) => text(row.querySelector('.home-task')))).toEqual([
       'refactor-cache',
@@ -31,7 +34,7 @@ describe('NeedsYouSection', () => {
       'bump-deps',
       '3 blocked agents with no task',
     ])
-    expect(rows.map((row) => text(row.querySelector('app-state-badge')))).toEqual(
+    expect(rows.map((row) => text(row.querySelector('app-task-state-badge')))).toEqual(
       ['at risk', 'at risk', 'checks failed', 'blocked', 'blocked', 'blocked'].map((state) => expect.stringContaining(state)),
     )
     expect(text(rows[2].querySelector('.home-reason'))).toBe('build-linux failed on sneat-dev/wb#131')
@@ -81,11 +84,20 @@ describe('NeedsYouSection', () => {
 
   it('mounts the action of work at risk from its lazy chunk: one copy button for the task', async () => {
     const { fixture, rows } = await render()
+    // Before the chunk arrives the row has its primary action alone.
+    expect(rows[0].querySelectorAll('.home-action a, .home-action button')).toHaveLength(1)
     await new Promise((done) => setTimeout(done, 20))
     await fixture.whenStable()
-    const buttons = rows[0].querySelectorAll('.home-action button')
+    // The primary action is "Open task"; the copy is a quiet icon button after it, named for what it copies.
+    expect(text(rows[0].querySelector('a.home-act'))).toBe('Open task')
+    expect(rows[0].querySelector('a.home-act')?.getAttribute('href')).toBe('/tasks?sel=refactor-cache')
+    const buttons = rows[0].querySelectorAll<HTMLButtonElement>('.home-action button')
     expect(buttons).toHaveLength(1)
     expect(text(buttons[0])).toBe('Copy template')
+    expect(buttons[0].classList.contains('quiet')).toBe(true)
+    expect(buttons[0].classList.contains('icon-only')).toBe(true)
+    expect(buttons[0].querySelector('.visually-hidden')).not.toBeNull()
+    expect(buttons[0].getAttribute('title')).toContain('Copy command template')
   })
 
   it('lists "+n more" as a link to Tasks filtered to the same set', async () => {

@@ -2,7 +2,7 @@
   <h2 id="home-ready-h" class="home-h">
     Ready to land
     @if (rows().ready.length > 0) {
-      <span class="home-count">{{ rows().ready.length }}</span>
+      <a class="home-count" [routerLink]="readyLink.path" [queryParams]="readyLink.query" title="The tasks that are ready to land, on Tasks">{{ rows().ready.length }}</a>
     }
   </h2>
   @if (empty()) {

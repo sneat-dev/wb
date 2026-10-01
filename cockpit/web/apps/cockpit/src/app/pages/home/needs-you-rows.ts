@@ -6,8 +6,12 @@ import { MachineWords, machineWords } from './machine-words'
 export type RowAction =
   | { kind: 'route'; text: string; label: string; link: AppLink }
   | { kind: 'external'; text: string; label: string; href: string }
-  /** Work at risk: the registry's Push per worktree when it offers one, otherwise "Copy command". */
-  | { kind: 'work'; task: string; worktrees: { id: string; branch: string }[] }
+
+/** What work at risk offers besides opening its task: the registry's Push per worktree when it offers one, otherwise a "Copy template" icon button. */
+export interface WorkOffer {
+  task: string
+  worktrees: { id: string; branch: string }[]
+}
 
 /** A repository, and for work at risk the branch of the worktree, a row says "where" with. */
 export interface RowPlace {
@@ -30,6 +34,8 @@ export interface NeedsYouRow {
   at: string | undefined
   age: string | undefined
   action: RowAction
+  /** Work at risk only: the secondary action (push or copy), after the primary "Open task". */
+  work: WorkOffer | undefined
 }
 
 function openTask(item: NeedsYouItem): RowAction {
@@ -41,18 +47,11 @@ function openTask(item: NeedsYouItem): RowAction {
   }
 }
 
-/** What the row's action is: a link for the failures and the agents, the push or the copy for work at risk. */
+/** What the row's one primary action is: a link, to the task panel (where the commands live) for work at risk. */
 function actionOf(item: NeedsYouItem): RowAction {
   switch (item.kind) {
     case 'work-at-risk':
-      return {
-        kind: 'work',
-        task: item.task,
-        worktrees: item.worktrees.map((worktree) => ({
-          id: worktree.id,
-          branch: worktree.branch,
-        })),
-      }
+      return openTask(item)
     case 'pr-checks-failed':
       // A pull request with no address that is safe to open is named and not linked; the row still opens its task.
       return item.url === undefined
@@ -83,6 +82,10 @@ function actionOf(item: NeedsYouItem): RowAction {
     case 'agent-finished':
       return openTask(item)
   }
+}
+
+function workOf(item: NeedsYouItem): WorkOffer | undefined {
+  return item.kind === 'work-at-risk' ? { task: item.task, worktrees: item.worktrees.map((worktree) => ({ id: worktree.id, branch: worktree.branch })) } : undefined
 }
 
 function reasonOf(item: NeedsYouItem): string {
@@ -139,6 +142,7 @@ export function needsYouRows(model: FleetModel): NeedsYouRow[] {
       at: isoOf(item.lastActivityAt),
       age: item.lastActivityAt === undefined ? undefined : formatAge(isoOf(item.lastActivityAt), model.now),
       action: actionOf(item),
+      work: workOf(item),
     }
   })
   if (withoutTask !== undefined) {
@@ -159,6 +163,7 @@ export function needsYouRows(model: FleetModel): NeedsYouRow[] {
         label: 'Open the blocked agents with no task',
         link: withoutTask.link,
       },
+      work: undefined,
     })
   }
   return rows

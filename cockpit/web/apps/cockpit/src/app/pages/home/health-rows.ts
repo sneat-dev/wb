@@ -36,7 +36,8 @@ export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
       id: `scan:${error.repository}`,
       text: `Scan error in ${error.repository}`,
       link: error.link,
-      where: undefined,
+      // `wb fleet status` reads this machine's own scan.
+      where: 'text' in error.command ? 'run here' : undefined,
       command: 'text' in error.command ? { text: error.command.text, needsEdit: false } : error.command,
     })
   }

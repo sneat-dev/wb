@@ -1,7 +1,6 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, inject, input, signal } from '@angular/core'
 import type { CopyCommand } from '@cockpit/fleet-data'
-import { ClipboardWriter, COPIED_FEEDBACK_MS, Glyph } from '@cockpit/ui/control'
-import { GLYPH_CHECK, GLYPH_COPY } from '@cockpit/ui/state'
+import { COPIED_FEEDBACK_MS, ClipboardWriter, GLYPH_CHECK, GLYPH_COPY, Glyph } from '@cockpit/ui/control'
 
 /**
  * A "Copy command" button whose command is built when it is pressed, so the command templates (a
@@ -17,12 +16,14 @@ import { GLYPH_CHECK, GLYPH_COPY } from '@cockpit/ui/state'
       class="home-copy"
       [class.done]="state() === 'copied'"
       [class.failed]="state() === 'failed'"
+      [class.quiet]="quiet()"
+      [class.icon-only]="iconOnly()"
       [attr.aria-label]="label()"
-      [attr.title]="reason() ?? null"
+      [attr.title]="reason() ?? (iconOnly() ? label() : null)"
       (click)="copy()"
     >
       <app-glyph [paths]="state() === 'copied' ? check : glyph" />
-      <span aria-hidden="true">{{ word() }}</span>
+      <span aria-hidden="true" [class.visually-hidden]="iconOnly() && state() === 'idle'">{{ word() }}</span>
     </button>
     <span class="visually-hidden" role="status">{{ status() }}</span>`,
   styleUrl: './lazy-copy.css',
@@ -35,6 +36,10 @@ export class LazyCopy {
   readonly idleWord = input('Copy command')
   /** The accessible name, which says what is copied. */
   readonly label = input('Copy command')
+  /** A secondary button: no border until it is hovered, so the badge or the primary action is the signal. */
+  readonly quiet = input(false)
+  /** Only the glyph while idle (the word is for assistive technology and the tooltip). */
+  readonly iconOnly = input(false)
 
   private readonly clipboard = inject(ClipboardWriter)
   protected readonly state = signal<'idle' | 'copied' | 'failed' | 'refused'>('idle')

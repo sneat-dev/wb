@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing'
+import { provideRouter } from '@angular/router'
 import { registryAction } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { FIXED_CLOCK, fleet, modelOf, only } from './home-testing'
@@ -9,7 +10,7 @@ async function render(document = fleet(), options: { warming?: boolean; offered?
   const registry = { offered: (target: string) => (options.offered?.includes(target) ? [registryAction(LAND_ACTION, 'Land', { target_types: ['pull_request'] })] : undefined) }
   const copy = vi.fn().mockResolvedValue(true)
   TestBed.resetTestingModule()
-  TestBed.configureTestingModule({ providers: [FIXED_CLOCK, { provide: HomeRegistry, useValue: registry }, { provide: ClipboardWriter, useValue: { copy } }] })
+  TestBed.configureTestingModule({ providers: [FIXED_CLOCK, provideRouter([]), { provide: HomeRegistry, useValue: registry }, { provide: ClipboardWriter, useValue: { copy } }] })
   const fixture = TestBed.createComponent(ReadySection)
   const model = modelOf(document)
   fixture.componentRef.setInput('model', model)
@@ -25,6 +26,7 @@ describe('ReadySection', () => {
   it('lists each ready task with its repositories, checks and the age of the oldest observation', async () => {
     const { root, rows } = await render()
     expect(text(root.querySelector('h2'))).toBe('Ready to land 2')
+    expect(root.querySelector('h2 a.home-count')?.getAttribute('href')).toBe('/tasks?chips=ready')
     expect(rows).toHaveLength(3)
     expect(text(rows[0].querySelector('.home-task'))).toBe('improve-docs')
     expect(text(rows[0].querySelector('.home-reason'))).toBe('2 repositories · 10/10 checks · checked 9 min ago')

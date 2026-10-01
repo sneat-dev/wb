@@ -56,6 +56,7 @@ describe('InFlightSection', () => {
   it('lists each running agent with its runtime and model, work, machine, running time and activity or "state not reported"', async () => {
     const { root, rows } = await render()
     expect(text(root.querySelector('h2'))).toBe('In flight 4')
+    expect(root.querySelector('h2 a.home-count')?.getAttribute('href')).toBe('/agents?chips=running')
     expect(rows).toHaveLength(4)
     expect(text(rows[0].querySelector('.home-task'))).toBe('claude opus')
     expect(rows[0].querySelector('a.home-task')?.getAttribute('href')).toBe('/agents/run-speed')
@@ -80,6 +81,8 @@ describe('InFlightSection', () => {
     const { fixture, rows, copy } = await render()
     const buttons = [...rows[0].querySelectorAll<HTMLButtonElement>('button')]
     expect(buttons.map((button) => text(button))).toEqual(['Copy stop', 'Copy log'])
+    // Quiet: the state badge is the signal of the row, not these.
+    expect(buttons.every((button) => button.classList.contains('quiet'))).toBe(true)
     expect(rows[1].querySelector('button')).toBeNull()
     buttons[0].click()
     await new Promise((done) => setTimeout(done, 10))

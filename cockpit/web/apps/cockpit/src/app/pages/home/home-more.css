@@ -30,7 +30,7 @@ app-home-more {
 }
 
 .health-row {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .charts-grid {
@@ -58,7 +58,6 @@ app-home-more {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .health-row .home-meta,
   .health-row .home-action {
     justify-content: flex-start;
   }

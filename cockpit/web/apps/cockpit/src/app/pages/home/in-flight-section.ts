@@ -1,14 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, formatAge } from '@cockpit/fleet-data'
-import { Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
+import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge } from '@cockpit/fleet-data'
+import { GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { isoOf } from './home-format'
 import { spanText } from './home-time'
 import { LazyCopy } from './lazy-copy'
 import { MachineWords, machineWords } from './machine-words'
 import { MachineStrip } from './machine-strip'
-import { GLYPH_CHECK_CIRCLE } from '@cockpit/ui/state'
 
 /** One running agent as a row shows it. */
 export interface FlightRow {
@@ -83,5 +82,6 @@ export class InFlightSection {
       .map((view) => view.machine.machine),
   )
   protected readonly idle = GLYPH_CHECK_CIRCLE
+  protected readonly runningLink = chipLink('agents', 'running')
   protected readonly iso = isoOf
 }

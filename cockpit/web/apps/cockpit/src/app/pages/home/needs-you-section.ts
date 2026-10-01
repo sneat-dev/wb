@@ -1,24 +1,24 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { FleetModel } from '@cockpit/fleet-data'
-import { GLYPH_CHECK_CIRCLE, Glyph, StateBadge } from '@cockpit/ui/state'
+import { GLYPH_CHECK_CIRCLE, Glyph, TaskStateBadge } from '@cockpit/ui/state'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { LazyMount } from './lazy-mount'
 import { needsYouRows } from './needs-you-rows'
 
-/** The action of work at risk (the registry's Push or "Copy command"): a lazy chunk, since it depends on the registry. */
+/** The secondary action of work at risk (the registry's Push or a "Copy template" icon): a lazy chunk, since it depends on the registry. */
 const loadWorkAction = () => import('./work-action').then((module) => module.WorkAction)
 
 /**
  * Home "Needs you" (REQ:home-needs-you): one row per task that needs the operator, worst first, at
  * most five, each with its reason in words and exactly one primary action; "+n more" opens Tasks
  * filtered to the same set. It looks urgent only when it has rows: with none it is one calm line.
- * It is part of the first page and renders from the model alone: the rows' own actions are links,
- * and the action of work at risk (which depends on the registry) is a lazy chunk.
+ * It is part of the first page and renders from the model alone: the rows' primary actions are links,
+ * and the secondary action of work at risk (the registry's push, or a copy icon) is a lazy chunk.
  */
 @Component({
   selector: 'app-needs-you',
-  imports: [RouterLink, Glyph, LazyMount, SkeletonRows, StateBadge],
+  imports: [RouterLink, Glyph, LazyMount, SkeletonRows, TaskStateBadge],
   templateUrl: './needs-you-section.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

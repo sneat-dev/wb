@@ -1,6 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { FleetStore } from '@cockpit/fleet-data'
-import { watchMetrics } from '../../metrics/metrics-poller'
 import { LazyMount } from './lazy-mount'
 import { NeedsYouSection } from './needs-you-section'
 
@@ -13,8 +12,8 @@ const loadRest = () => import('./home-rest').then((module) => module.HomeRest)
  * first paint. Everything below it ("Ready to land", "In flight" with the machine strip,
  * "Resume", "Cleanup", "Fleet health" when something is wrong, the throughput charts) is one lazy
  * chunk, requested when the page is created and appended below, so nothing on screen moves
- * (REQ:initial-script-size keeps Home's first-page script under 350 kB; the control surface alone
- * is 12 kB of it). Chart.js loads only when the charts scroll near the viewport.
+ * (REQ:initial-script-size keeps Home's first-page script under 350 kB: what is left in the first
+ * page is "Needs you", the task badge and glyphs it draws, and the code that mounts the lazy chunk). Chart.js loads only when the charts scroll near the viewport.
  */
 @Component({
   selector: 'app-home-page',
@@ -26,9 +25,4 @@ export class HomePage {
   protected readonly store = inject(FleetStore)
   protected readonly loadRest = loadRest
   protected readonly restInputs = computed(() => ({ model: this.store.model(), warming: this.store.warmingUp(), dropped: this.store.droppedEntries() }))
-
-  constructor() {
-    // The machines are polled every 10 seconds while Home is shown (REQ:machine-metrics-polling).
-    watchMetrics(() => this.store.document().machines.map((machine) => machine.id))
-  }
 }

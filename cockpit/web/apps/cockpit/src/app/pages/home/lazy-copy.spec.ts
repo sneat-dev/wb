@@ -38,6 +38,27 @@ describe('LazyCopy', () => {
     expect(status.textContent).toBe('')
   })
 
+  it('can be quiet, and icon-only: the word stays for assistive technology and as the tooltip, and shows again once pressed', async () => {
+    const { fixture, button } = await render({ ok: true, text: 'x', needsEdit: false })
+    expect(button.classList.contains('quiet')).toBe(false)
+    expect(button.querySelector('.visually-hidden')).toBeNull()
+    expect(button.getAttribute('title')).toBeNull()
+    fixture.componentRef.setInput('quiet', true)
+    fixture.componentRef.setInput('iconOnly', true)
+    fixture.detectChanges()
+    expect(button.classList.contains('quiet')).toBe(true)
+    expect(button.classList.contains('icon-only')).toBe(true)
+    expect(button.querySelector('.visually-hidden')?.textContent).toBe('Copy template')
+    expect(button.getAttribute('title')).toBe('Copy command template: commit')
+    expect(button.getAttribute('aria-label')).toBe('Copy command template: commit')
+    button.click()
+    await vi.waitFor(() => {
+      fixture.detectChanges()
+      expect(button.textContent?.trim()).toBe('Copied')
+    })
+    expect(button.querySelector('.visually-hidden')).toBeNull()
+  })
+
   it('says so when the browser refused', async () => {
     const { fixture, button, status } = await render({ ok: true, text: 'wb x', needsEdit: false }, false)
     vi.useFakeTimers()

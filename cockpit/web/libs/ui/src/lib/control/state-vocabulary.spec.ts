@@ -128,10 +128,10 @@ describe('the state vocabulary', () => {
   it('keeps each kind\'s table in its own module, which imports only the glyphs and the shared helpers, so a page that shows one kind does not carry the others', () => {
     const directory = join(__dirname, 'state-tables')
     const modules = readdirSync(directory).filter((name) => name.endsWith('.ts') && !name.endsWith('.spec.ts'))
-    expect(modules.sort()).toEqual(['agent-activity.ts', 'agent-state.ts', 'checks.ts', 'code-index.ts', 'load.ts', 'mergeable.ts', 'operation.ts', 'owner.ts', 'pr-state.ts', 'route.ts', 'shared.ts', 'task.ts'])
+    expect(modules.sort()).toEqual(['agent-activity.ts', 'agent-state.ts', 'checks.ts', 'code-index.ts', 'kinds.ts', 'load.ts', 'mergeable.ts', 'operation.ts', 'owner.ts', 'pr-state.ts', 'route.ts', 'shared.ts', 'task.ts'])
     for (const name of modules) {
       const imports = [...readFileSync(join(directory, name), 'utf8').matchAll(/from '([^']+)'/g)].map((match) => match[1])
-      for (const source of imports) expect(['../glyphs', './shared', '@cockpit/fleet-data'], `${name} imports ${source}`).toContain(source)
+      for (const source of imports) expect(['../glyphs', '../glyphs-state', './shared', '@cockpit/fleet-data'], `${name} imports ${source}`).toContain(source)
     }
   })
 })

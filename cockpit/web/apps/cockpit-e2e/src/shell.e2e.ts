@@ -84,8 +84,8 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   // The overlays are fetched once the shell has rendered; wait for the entry to answer.
   await expect(page.locator('app-overlays')).toBeAttached()
-  // Home's own lazy sections load right after the first page; let them finish too.
-  await page.waitForLoadState('networkidle')
+  // Home's own lazy sections load right after the first page; their last heading says they are in.
+  await expect(page.getByRole('heading', { level: 2, name: 'Cleanup' })).toBeVisible()
   const requestsBefore: string[] = []
   page.on('request', (request) => requestsBefore.push(request.url()))
   await page.keyboard.press('Control+k')

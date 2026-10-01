@@ -2,7 +2,7 @@
   <h2 id="home-needs-h" class="home-h">
     Needs you
     @if (needs().items.length > 0) {
-      <span class="home-count urgent">{{ needs().items.length }}</span>
+      <a class="home-count urgent" [routerLink]="needs().moreLink.path" [queryParams]="needs().moreLink.query" title="All of them, on Tasks">{{ needs().items.length }}</a>
     }
   </h2>
   @if (empty()) {
@@ -15,7 +15,7 @@
     <ul class="home-card urgent">
       @for (row of rows(); track row.id) {
         <li class="home-row needs-row">
-          <app-state-badge kind="task" size="small" [value]="row.state" />
+          <app-task-state-badge size="small" [value]="row.state" />
           <div class="home-main">
             <strong class="home-task">{{ row.task }}</strong>
             <span class="home-reason">{{ row.reason }}</span>
@@ -37,10 +37,11 @@
           <div class="home-action">
             @if (row.action.kind === 'route') {
               <a class="home-act" [routerLink]="row.action.link.path" [queryParams]="row.action.link.query" [attr.aria-label]="row.action.label">{{ row.action.text }}</a>
-            } @else if (row.action.kind === 'external') {
-              <a class="home-act" [href]="row.action.href" target="_blank" rel="noopener noreferrer" [attr.aria-label]="row.action.label + ', opens in a new tab'">{{ row.action.text }}</a>
             } @else {
-              <app-lazy-mount [load]="loadWork" [inputs]="{ action: row.action }" />
+              <a class="home-act" [href]="row.action.href" target="_blank" rel="noopener noreferrer" [attr.aria-label]="row.action.label + ', opens in a new tab'">{{ row.action.text }}</a>
+            }
+            @if (row.work; as work) {
+              <app-lazy-mount [load]="loadWork" [inputs]="{ action: work }" />
             }
           </div>
         </li>

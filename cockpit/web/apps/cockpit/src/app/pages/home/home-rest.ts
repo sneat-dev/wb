@@ -1,14 +1,14 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ViewEncapsulation, computed, effect, inject, input, signal, untracked } from '@angular/core'
 import { FleetModel, FleetStore } from '@cockpit/fleet-data'
-import { Glyph } from '@cockpit/ui/control'
+import { GLYPH_CHEVRON_DOWN, Glyph } from '@cockpit/ui/control'
+import { watchMetrics } from '../../metrics/metrics-poller'
 import { HomeMore } from './home-more'
 import { HomeRegistry } from './home-registry'
 import { InFlightSection } from './in-flight-section'
 import { needsYouRows } from './needs-you-rows'
 import { ReadySection } from './ready-section'
 import { ResumeSection } from './resume-section'
-import { GLYPH_CHEVRON_DOWN } from '@cockpit/ui/state'
 
 /** The width at and below which Home is a phone: sections 1 to 3 are cards and the rest is behind "More". */
 export const PHONE_QUERY = '(max-width: 480px)'
@@ -23,7 +23,7 @@ export const ACTION_CAPABILITIES: readonly string[] = ['git.commit', 'branch.pus
 
 /** The registry targets whose actions Home's rows can show: the worktrees at risk and the pull requests ready to land. */
 export function registryTargets(model: FleetModel): string[] {
-  const atRisk = needsYouRows(model).flatMap((row) => (row.action.kind === 'work' ? row.action.worktrees.map((worktree) => `worktree:${worktree.id}`) : []))
+  const atRisk = needsYouRows(model).flatMap((row) => row.work?.worktrees.map((worktree) => `worktree:${worktree.id}`) ?? [])
   const ready = model.readyToLand.ready.flatMap((row) => row.pullRequests.filter((pullRequest) => !pullRequest.remote).map((pullRequest) => `pull_request:${pullRequest.id}`))
   return [...atRisk, ...ready]
 }
@@ -59,6 +59,8 @@ export class HomeRest {
   private readonly targets = computed(() => registryTargets(this.model()))
 
   constructor() {
+    // The machines are polled every 10 seconds while Home is shown (REQ:machine-metrics-polling); the strip that shows them is in this chunk.
+    watchMetrics(() => this.store.document().machines.map((machine) => machine.id))
     effect(() => {
       const targets = this.targets()
       const asks = this.store.session()?.capabilities.some((capability) => ACTION_CAPABILITIES.includes(capability)) ?? false
