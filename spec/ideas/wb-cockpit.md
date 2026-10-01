@@ -154,6 +154,7 @@ last slice, not the first.
 - Daemon-originated text submitted into a pane — stays record-only as `herdr-session-transport` specifies; only operator-initiated steering is reopened.
 - General infrastructure monitoring — machine telemetry is limited to reachability, CPU, memory, disk and WB version.
 - Token and cost metrics beyond what the ported views already show — the prompt defers them until the data exists.
+- Multi-segment worktree names such as `goal/task/subtask` — not yet; pending a brainstorming session (founder, 2026-10-01). Claims refuse a slash today, and the name is also a branch and a directory level of the worktree store.
 - A raw command endpoint — remote and browser actions stay typed and allow-listed, as `agent-sdlc-throughput` requires.
 
 ## Key Assumptions to Validate
@@ -199,10 +200,6 @@ last slice, not the first.
 - The task reference lives in the Work Log creation manifest, which is inside
   the worktree. What carries it to other machines and keeps it after cleanup —
   the claim, the published snapshot, or neither — was not confirmed.
-- Should task names allow several segments, such as `goal/task/subtask`? The
-  founder is undecided. Claims refuse a slash today
-  (`remotestate.ValidTaskName`), and the task name is also a branch name and a
-  directory level of the worktree store.
 - May the task reference enter an opt-in cloud snapshot? A plan URL names a
   repository and a plan, and the snapshot allowlist currently excludes
   anything of that kind.
