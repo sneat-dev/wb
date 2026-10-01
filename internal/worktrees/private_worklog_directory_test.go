@@ -8,6 +8,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
 func openTestPrivateDirectory(t *testing.T, root string) *os.File {
@@ -24,8 +25,8 @@ func TestOpenPrivateChildRejectsAnUnsafeSegmentName(t *testing.T) {
 	t.Parallel()
 	parent := openTestPrivateDirectory(t, t.TempDir())
 
-	if _, err := openPrivateChildWith(secureopen.Real{}, parent, "../escape", false); err == nil {
-		t.Fatalf("openPrivateChildWith(../escape) = nil, want an error")
+	if _, err := worktreesecure.OpenPrivateChildWith(secureopen.Real{}, parent, "../escape", false, validSafeSegment); err == nil {
+		t.Fatalf("worktreesecure.OpenPrivateChildWith(../escape) = nil, want an error")
 	}
 }
 
@@ -37,9 +38,9 @@ func TestOpenPrivateChildOpensAnExistingChildReadOnly(t *testing.T) {
 	}
 	parent := openTestPrivateDirectory(t, root)
 
-	child, err := openPrivateChildWith(secureopen.Real{}, parent, "child", false)
+	child, err := worktreesecure.OpenPrivateChildWith(secureopen.Real{}, parent, "child", false, validSafeSegment)
 	if err != nil {
-		t.Fatalf("openPrivateChildWith(child, create=false) = %v, want nil", err)
+		t.Fatalf("worktreesecure.OpenPrivateChildWith(child, create=false) = %v, want nil", err)
 	}
 	_ = child.Close()
 }
@@ -48,8 +49,8 @@ func TestOpenPrivateChildReportsAMissingChildOnRead(t *testing.T) {
 	t.Parallel()
 	parent := openTestPrivateDirectory(t, t.TempDir())
 
-	if _, err := openPrivateChildWith(secureopen.Real{}, parent, "absent", false); err == nil {
-		t.Fatalf("openPrivateChildWith(absent, create=false) = nil, want an error")
+	if _, err := worktreesecure.OpenPrivateChildWith(secureopen.Real{}, parent, "absent", false, validSafeSegment); err == nil {
+		t.Fatalf("worktreesecure.OpenPrivateChildWith(absent, create=false) = nil, want an error")
 	}
 }
 
@@ -58,9 +59,9 @@ func TestOpenPrivateChildCreatesAndHardensAMissingChild(t *testing.T) {
 	root := t.TempDir()
 	parent := openTestPrivateDirectory(t, root)
 
-	child, err := openPrivateChildWith(secureopen.Real{}, parent, "child", true)
+	child, err := worktreesecure.OpenPrivateChildWith(secureopen.Real{}, parent, "child", true, validSafeSegment)
 	if err != nil {
-		t.Fatalf("openPrivateChildWith(child, create=true) = %v, want nil", err)
+		t.Fatalf("worktreesecure.OpenPrivateChildWith(child, create=true) = %v, want nil", err)
 	}
 	t.Cleanup(func() { _ = child.Close() })
 
@@ -81,9 +82,9 @@ func TestOpenPrivateChildLeavesAnExistingChildsModeUntouchedOnRead(t *testing.T)
 	}
 	parent := openTestPrivateDirectory(t, root)
 
-	child, err := openPrivateChildWith(secureopen.Real{}, parent, "child", false)
+	child, err := worktreesecure.OpenPrivateChildWith(secureopen.Real{}, parent, "child", false, validSafeSegment)
 	if err != nil {
-		t.Fatalf("openPrivateChildWith(child, create=false) = %v, want nil", err)
+		t.Fatalf("worktreesecure.OpenPrivateChildWith(child, create=false) = %v, want nil", err)
 	}
 	_ = child.Close()
 
@@ -104,7 +105,7 @@ func TestOpenPrivateChildPropagatesAnOpenerFailure(t *testing.T) {
 	boom := errors.New("boom")
 	opener.FailCall(1, boom)
 
-	if _, err := openPrivateChildWith(opener, parent, "child", true); !errors.Is(err, boom) {
+	if _, err := worktreesecure.OpenPrivateChildWith(opener, parent, "child", true, validSafeSegment); !errors.Is(err, boom) {
 		t.Fatalf("openPrivateChildWith with a failing opener = %v, want it to wrap boom", err)
 	}
 }

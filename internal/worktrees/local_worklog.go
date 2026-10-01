@@ -70,10 +70,6 @@ func readLocalEvents(worktree string) ([]LocalWorkLogEvent, error) {
 	return localJournalStore().ReadLocalEvents(worktree)
 }
 
-func readLocalWorkLogBytes(worktree, name string) ([]byte, error) {
-	return localJournalStore().ReadLocalWorkLogBytes(worktree, name)
-}
-
 // readLocalEventsForInspection preserves the strict append/validation path
 // while allowing read-only lifecycle inspection to explain one historical
 // parked-session receipt emitted with event version 0. The malformed record is
@@ -110,17 +106,6 @@ func sameLocalEvent(first, second LocalWorkLogEvent) bool {
 	return localJournalStore().SameLocalEvent(first, second)
 }
 
-// repairLocalEventDerivatives makes the journal event the sole source of
-// truth. A crash after events.jsonl but before either derived write is
-// therefore repaired by replaying the exact explicit event ID.
-func repairLocalEventDerivatives(worktree string, directory *os.File, events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
-	return localJournalStore().RepairLocalEventDerivatives(worktree, directory, events)
-}
-
-func repairLocalOutbox(directory *os.File, events []LocalWorkLogEvent) error {
-	return localJournalStore().RepairLocalOutbox(directory, events)
-}
-
 func projectLocalWorkLog(worktree string, events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
 	return localJournalPorts().ProjectLocalWorkLog(worktree, events)
 }
@@ -133,27 +118,8 @@ func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, erro
 	return localJournalStore().RepairCurrentLocalProjection(worktree)
 }
 
-func rewriteLocalEventJournal(directory *os.File, events []LocalWorkLogEvent) error {
-	return localJournalStore().RewriteLocalEventJournal(directory, events)
-}
-
 func readLocalEventsForAppend(directory *os.File) ([]LocalWorkLogEvent, bool, error) {
 	return localJournalStore().ReadLocalEventsForAppend(directory)
-}
-
-// parseLocalEventsForRepair accepts only one crash shape: an unterminated
-// final record. Malformed completed lines and every non-final corruption are
-// immutable-evidence conflicts and remain hard failures.
-func parseLocalEventsForRepair(content []byte) ([]LocalWorkLogEvent, bool, error) {
-	return localJournalStore().ParseLocalEventsForRepair(content)
-}
-
-func validateLocalEventForSequence(event LocalWorkLogEvent, existing []LocalWorkLogEvent) error {
-	return localJournalStore().ValidateLocalEventForSequence(event, existing)
-}
-
-func encodeLocalEvents(events []LocalWorkLogEvent) ([]byte, error) {
-	return localJournalStore().EncodeLocalEvents(events)
 }
 
 func lockLocalWorkLog(directory *os.File) (func(), error) {
@@ -162,10 +128,6 @@ func lockLocalWorkLog(directory *os.File) (func(), error) {
 
 func rebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
 	return localJournalStore().RebuildLocalProjection(events)
-}
-
-func localEventID(existing []LocalWorkLogEvent, event LocalWorkLogEvent) string {
-	return localJournalStore().LocalEventID(existing, event)
 }
 
 func observeLocalGit(ctx context.Context, worktree string) LocalGitEvidence {
