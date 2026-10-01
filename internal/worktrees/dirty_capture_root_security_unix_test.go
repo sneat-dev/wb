@@ -24,7 +24,8 @@ func TestDirtyCaptureRefusesRegularToFIFOAndSameSizeReplacement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Remove(path); err != nil {
+			originalPath := filepath.Join(directory, "original")
+			if err := os.Rename(path, originalPath); err != nil {
 				t.Fatal(err)
 			}
 			switch replacement {
@@ -43,6 +44,14 @@ func TestDirtyCaptureRefusesRegularToFIFOAndSameSizeReplacement(t *testing.T) {
 				if err := os.Symlink("target", path); err != nil {
 					t.Fatal(err)
 				}
+			}
+			preserved, err := os.Lstat(originalPath)
+			if err != nil || !os.SameFile(initial, preserved) {
+				t.Fatalf("original inode was not retained: %v", err)
+			}
+			replaced, err := os.Lstat(path)
+			if err != nil || os.SameFile(initial, replaced) {
+				t.Fatalf("replacement reused original inode: %v", err)
 			}
 			root, err := os.OpenRoot(directory)
 			if err != nil {

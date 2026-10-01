@@ -74,11 +74,6 @@ const (
 	KindRaceOrCover
 )
 
-// IsHeavy reports whether kind is "heavy" under the adaptive (N >= 8)
-// model — lead design (sneat-dev/wb#621): a heavy job is a broad Go/Node
-// test or build, or any coverage or race run.
-func (kind Kind) IsHeavy() bool { return kind == KindBroad || kind == KindRaceOrCover }
-
 // Classify reports what kind of governed work argv is. KindNone means argv
 // is not CPU-governed at all.
 func Classify(argv []string) Kind {
@@ -555,11 +550,15 @@ type Admission struct {
 // exactly once, regardless of outcome; Forget on a nil Ticket is a safe
 // no-op.
 func RegisterForAdmission(projectsRoot string, argv []string, self Participant) *Ticket {
+	return registerForAdmissionOnMachine(projectsRoot, argv, self, smallMachine())
+}
+
+func registerForAdmissionOnMachine(projectsRoot string, argv []string, self Participant, small bool) *Ticket {
 	kind := Classify(argv)
 	switch {
 	case kind == KindNone:
 		return nil
-	case smallMachine():
+	case small:
 		// Review finding (PR #628 re-review, Minor 1): on a small machine
 		// every governed kind — KindFocused included — goes through the
 		// same legacy Acquire pool as any other small-machine job (see
@@ -572,10 +571,10 @@ func RegisterForAdmission(projectsRoot string, argv []string, self Participant) 
 		return Register(projectsRoot, self)
 	case kind == KindFocused:
 		return nil
-	case kind.IsHeavy():
-		return RegisterHeavy(projectsRoot, self)
 	default:
-		return Register(projectsRoot, self)
+		// Classify returns only None, Focused, Broad, or RaceOrCover.
+		// The first two were handled above, leaving exactly the heavy kinds.
+		return RegisterHeavy(projectsRoot, self)
 	}
 }
 
