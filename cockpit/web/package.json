@@ -12,7 +12,8 @@
     "build": "nx build cockpit && node tools/finish-build.mjs",
     "lint": "nx run-many -t lint -p cockpit cockpit-e2e fleet-data ui",
     "test": "node tools/check-component-specs.mjs && vitest run --coverage",
-    "test:e2e": "playwright test -c apps/cockpit-e2e/playwright.config.ts"
+    "test:e2e": "playwright test -c apps/cockpit-e2e/playwright.config.ts",
+    "test:journey": "node tools/journey-guard.mjs && pnpm build && playwright test -c apps/cockpit-e2e/playwright.journey.config.ts"
   },
   "devDependencies": {
     "@analogjs/vite-plugin-angular": "2.6.4",

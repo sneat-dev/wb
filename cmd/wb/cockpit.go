@@ -45,7 +45,7 @@ type cockpitCommandDependencies struct {
 	configPath func() string
 	// local starts or reuses the daemon and, only when mint is true, requests
 	// a login code over the owner channel. JSON output never mints one.
-	local func(ctx context.Context, deps daemonDependencies, root string, mint bool) (cockpitLocalSession, error)
+	local func(ctx context.Context, deps daemonDependencies, root, listen string, mint bool) (cockpitLocalSession, error)
 }
 
 func defaultCockpitCommandDependencies() cockpitCommandDependencies {
@@ -61,9 +61,30 @@ func defaultCockpitCommandDependencies() cockpitCommandDependencies {
 // cockpitLocalFromDaemon starts or reuses this machine's daemon the way
 // `wb dashboard --local` does and, when mint is set, asks it for a login code
 // on the owner channel (the unix socket behind the owner bearer token).
-func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root string, mint bool) (cockpitLocalSession, error) {
+func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, listen string, mint bool) (cockpitLocalSession, error) {
 	controller := newDaemonController(deps, root)
-	result, err := controller.Start(ctx, daemonDefaultListen)
+	// `wb cockpit` opens the daemon this machine has; it never moves one. A live
+	// daemon recorded on another address is reused when --listen was not given
+	// (listen is empty) and is a refusal when it was, because Start would
+	// otherwise replace it (rewriting the launchd job on macOS, or overwriting
+	// its record and spawning a second process elsewhere).
+	recorded, found, err := controller.store.Load()
+	if err != nil {
+		return cockpitLocalSession{}, fmt.Errorf("read the local daemon record: %w", err)
+	}
+	switch {
+	case found && recorded.Status != daemon.StatusStopped && recorded.PID > 0 && deps.alive(recorded.PID):
+		if listen == "" {
+			listen = recorded.Listen
+		} else if listen != recorded.Listen {
+			return cockpitLocalSession{}, fmt.Errorf(
+				"a local daemon is already running on %s, not the requested %s; use `wb cockpit --listen %s`, or stop it first with `wb daemon stop`",
+				recorded.Listen, listen, recorded.Listen)
+		}
+	case listen == "":
+		listen = daemonDefaultListen
+	}
+	result, err := controller.Start(ctx, listen)
 	if err != nil {
 		return cockpitLocalSession{}, fmt.Errorf("start local daemon: %w", err)
 	}
@@ -129,12 +150,15 @@ func newCockpitCmd(inv *invocation) *cobra.Command {
 
 func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependencies) *cobra.Command {
 	var hosted, jsonOut bool
-	var format string
+	var format, listen string
 	command := &cobra.Command{
 		Use:   "cockpit",
 		Short: "Open the Cockpit web workspace for this machine's fleet",
 		Long: "Open Cockpit. By default it starts or reuses this machine's loopback daemon, requests a " +
 			"single-use login code (valid for 60 seconds) and opens the login URL on the canonical origin. " +
+			"--listen names the loopback address of the daemon to start (default 127.0.0.1:8766); without it a daemon " +
+			"already running here is used wherever it listens. A running daemon on another address is never replaced: " +
+			"the command refuses and names it. Non-loopback addresses are refused before anything starts. " +
 			"--hosted opens the configured cockpit.hosted_url and starts nothing. " +
 			"JSON output and non-interactive invocations print the URL without launching a browser; " +
 			"JSON output never carries a login code.",
@@ -153,7 +177,12 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 				}
 				result.URL, target = config.HostedURL, config.HostedURL
 			} else {
-				session, err := deps.local(command.Context(), deps.daemon, inv.projectsRoot, format == "text")
+				if command.Flags().Changed("listen") {
+					if err := requireLoopbackAddress(listen); err != nil {
+						return usageError(err.Error())
+					}
+				}
+				session, err := deps.local(command.Context(), deps.daemon, inv.projectsRoot, listen, format == "text")
 				if err != nil {
 					return err
 				}
@@ -189,6 +218,7 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 			return nil
 		},
 	}
+	command.Flags().StringVar(&listen, "listen", "", "loopback address of the daemon to start (default 127.0.0.1:8766, or the running daemon's address)")
 	command.Flags().BoolVar(&hosted, "hosted", false, "open the hosted Cockpit at cockpit.hosted_url and start no daemon")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
