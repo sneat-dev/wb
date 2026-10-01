@@ -50,15 +50,13 @@ describe('MetricsPoller', () => {
     const first = poller.watch(() => ['m1'])
     const second = poller.watch(() => ['m1', 'm2'])
     await advance(0)
-    expect(read.mock.calls.map((call) => call[0])).toEqual(['m1'])
-    await advance(METRICS_INTERVAL_MS)
-    expect(read.mock.calls.map((call) => call[0])).toEqual(['m1', 'm1', 'm2'])
+    expect(read.mock.calls.map((call) => call[0])).toEqual(['m1', 'm2'])
     first()
     await advance(METRICS_INTERVAL_MS)
-    expect(read).toHaveBeenCalledTimes(5)
+    expect(read).toHaveBeenCalledTimes(4)
     second()
     await advance(METRICS_INTERVAL_MS)
-    expect(read).toHaveBeenCalledTimes(5)
+    expect(read).toHaveBeenCalledTimes(4)
   })
 
   it('keeps the last good answer when a read fails and says why, and recovers', async () => {

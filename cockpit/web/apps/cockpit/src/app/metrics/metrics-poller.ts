@@ -71,7 +71,10 @@ export class MetricsPoller {
     const active = this.watchers.size > 0 && this.doc.visibilityState !== 'hidden'
     if (active && !this.polling) {
       this.polling = true
-      void this.round(++this.generation)
+      const generation = ++this.generation
+      // A page calls `watch` from its constructor, before the router has bound its inputs
+      // (the machine filter of the address): the first read comes just after that.
+      this.timer = setTimeout(() => void this.round(generation), 0)
     } else if (!active) {
       this.stop()
     }

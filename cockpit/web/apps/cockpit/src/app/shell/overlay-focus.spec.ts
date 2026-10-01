@@ -10,7 +10,7 @@ import { OverlayFocus, restoreFocus } from './overlay-focus'
       <div appOverlayFocus id="overlay">
         @if (buttons()) {
           <button id="first">one</button>
-          <button id="second" data-autofocus>two</button>
+          <button id="second" [attr.data-autofocus]="marked() ? '' : null">two</button>
           <button id="last">three</button>
         }
       </div>
@@ -20,6 +20,7 @@ import { OverlayFocus, restoreFocus } from './overlay-focus'
 class Host {
   readonly open = signal(false)
   readonly buttons = signal(true)
+  readonly marked = signal(true)
 }
 
 function tab(from: Element, shiftKey = false): KeyboardEvent {
@@ -57,6 +58,16 @@ describe('OverlayFocus', () => {
     fixture.componentInstance.open.set(false)
     await fixture.whenStable()
     expect(document.activeElement).toBe(opener)
+    fixture.nativeElement.remove()
+  })
+
+  it('takes the focus itself when nothing inside is marked for it', async () => {
+    const fixture = TestBed.createComponent(Host)
+    document.body.append(fixture.nativeElement)
+    fixture.componentInstance.marked.set(false)
+    fixture.componentInstance.open.set(true)
+    await fixture.whenStable()
+    expect(document.activeElement).toBe(fixture.nativeElement.querySelector('#overlay'))
     fixture.nativeElement.remove()
   })
 

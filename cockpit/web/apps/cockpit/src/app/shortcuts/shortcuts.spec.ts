@@ -119,6 +119,13 @@ describe('Shortcuts', () => {
     expect(target.focus).toHaveBeenCalledTimes(1)
   })
 
+  it('opens the palette again with / once the registered filter is unregistered', () => {
+    const unregister = shortcuts.registerFilter({ element: document.createElement('input'), focus: vi.fn(), clear: vi.fn() })
+    unregister()
+    press('/')
+    expect(shell.paletteOpen()).toBe(true)
+  })
+
   it('closes the palette, then the sheet, then clears the focused filter, then closes the panel on Esc', () => {
     const element = document.createElement('input')
     document.body.append(element)

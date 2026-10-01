@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { NONCE_PLACEHOLDER, finishBuild, precompress } from './finish-build.mjs'
+import { INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, initialScriptSize, initialScripts, precompress } from './finish-build.mjs'
 
 let dist
 
@@ -66,4 +66,63 @@ it('counts the files it compressed', () => {
   writeFileSync(join(dist, 'a.css'), 'a{color:red}'.repeat(40))
   writeFileSync(join(dist, 'b.json'), JSON.stringify({ k: 'v'.repeat(300) }))
   expect(precompress(dist)).toBe(2)
+})
+
+// cockpit-views#ac:initial-script-fits-the-budget
+function writeApplication({ mainBytes = 1000, chunkBytes = 2000, lazyBytes = 900_000 } = {}) {
+  writeFileSync(
+    join(dist, 'index.html'),
+    `<link rel="stylesheet" href="styles-ABC.css"><app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root><link rel="modulepreload" href="chunk-SHARED.js"><script src="main-ABC.js" type="module" nonce="${NONCE_PLACEHOLDER}"></script>`,
+  )
+  // main imports a shared chunk statically and a lazy one dynamically; the shared one re-exports a third.
+  writeFileSync(join(dist, 'main-ABC.js'), `import{a as b}from"./chunk-SHARED.js";import"./chunk-SIDE.js";const lazy=()=>import("./chunk-LAZY.js");${'x'.repeat(mainBytes)}`)
+  writeFileSync(join(dist, 'chunk-SHARED.js'), `export{c}from"./chunk-DEEP.js";${'y'.repeat(chunkBytes)}`)
+  writeFileSync(join(dist, 'chunk-SIDE.js'), 'export{}')
+  writeFileSync(join(dist, 'chunk-DEEP.js'), 'export const c=1')
+  writeFileSync(join(dist, 'chunk-LAZY.js'), 'z'.repeat(lazyBytes))
+  writeFileSync(join(dist, 'styles-ABC.css'), 'a{color:red}'.repeat(100_000))
+}
+
+it('counts the scripts the entry document loads, the preloads and what they import statically, and no lazy chunk or style', () => {
+  writeApplication()
+  expect(initialScripts(dist)).toEqual(['chunk-DEEP.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'])
+  const size = initialScriptSize(dist)
+  expect(size.files.map((file) => file.name)).toEqual(['chunk-DEEP.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'])
+  expect(size.total).toBe(size.files.reduce((sum, file) => sum + file.bytes, 0))
+  expect(size.total).toBeLessThan(5000)
+  expect(size.budget).toBe(INITIAL_SCRIPT_BUDGET)
+  expect(INITIAL_SCRIPT_BUDGET).toBe(350_000)
+})
+
+it('ignores a script the document names but the build did not emit', () => {
+  writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root><script src="main-GONE.js" type="module"></script>`)
+  expect(initialScripts(dist)).toEqual([])
+})
+
+it('reports the size and succeeds within the budget', () => {
+  writeApplication()
+  const lines = []
+  const failures = []
+  expect(finishBuild(dist, (line) => failures.push(line), (line) => lines.push(line))).toBe(0)
+  expect(failures).toEqual([])
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toMatch(/^initial JavaScript \d+\.\d\d kB of 350\.00 kB \(chunk-DEEP\.js .*main-ABC\.js/)
+  expect(existsSync(join(dist, 'main-ABC.js.gz'))).toBe(true)
+})
+
+it('fails the build, naming the files, when the initial JavaScript is over the budget', () => {
+  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET })
+  const failures = []
+  expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+  expect(failures.join('')).toContain('over the budget of 350.00 kB')
+  expect(failures.join('')).toContain('main-ABC.js')
+  expect(existsSync(join(dist, '.gitkeep'))).toBe(false)
+})
+
+it('passes at exactly the budget', () => {
+  writeApplication({ mainBytes: 0, chunkBytes: 0 })
+  const base = initialScriptSize(dist).total
+  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET - base, chunkBytes: 0 })
+  expect(initialScriptSize(dist).total).toBe(INITIAL_SCRIPT_BUDGET)
+  expect(finishBuild(dist, () => {})).toBe(0)
 })

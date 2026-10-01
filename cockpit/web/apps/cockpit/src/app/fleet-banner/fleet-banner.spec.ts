@@ -47,6 +47,20 @@ describe('FleetBanner', () => {
     expect(root.querySelector('[role=alert]')?.textContent).toBe('down')
   })
 
+  it('counts the entries the client dropped as unreadable, singular and plural', async () => {
+    const one = await render((store) => {
+      store.loaded.set(true)
+      store.droppedEntries.set(1)
+    })
+    expect(text(one)).toBe('1 entry in the fleet document could not be read and is left out.')
+    TestBed.resetTestingModule()
+    const many = await render((store) => {
+      store.loaded.set(true)
+      store.droppedEntries.set(3)
+    })
+    expect(text(many)).toBe('3 entries in the fleet document could not be read and are left out.')
+  })
+
   it('says nothing of a warming-up scan, which the freshness chip and the skeleton rows show', async () => {
     const root = await render((store) => {
       store.document.set(fleetDocument({ warming_up: true, repositories_scanned: 3, repositories_total: 12 }))

@@ -34,8 +34,24 @@ describe('App', () => {
     expect([...root.querySelectorAll('nav a')].map((a) => a.textContent?.replace(/\d+|\s+| need.*|agents running|tasks need you/g, '').trim())).toEqual(PAGE_LINKS.map((link) => link.label))
     expect(root.querySelector('main router-outlet')).not.toBeNull()
     expect(root.querySelector('main app-fleet-banner')).not.toBeNull()
-    expect(root.querySelector('app-command-palette')).not.toBeNull()
-    expect(root.querySelector('app-shortcut-sheet')).not.toBeNull()
+    // The palette and the sheet are a lazy chunk the shell fetches once it has rendered.
+    await vi.waitFor(() => expect(root.querySelector('app-overlays app-command-palette')).not.toBeNull())
+    expect(root.querySelector('app-overlays app-shortcut-sheet')).not.toBeNull()
+  })
+
+  it('opens the palette, held by the shell state, once the lazy overlays have arrived', async () => {
+    const { fixture, root } = await open('/')
+    TestBed.inject(ShellState).openPalette()
+    await vi.waitFor(() => expect(root.querySelector('app-overlays [role="dialog"][aria-label="Search"]')).not.toBeNull())
+    expect(fixture).toBeDefined()
+  })
+
+  it('does not create the overlays in a shell that is already gone', async () => {
+    const { fixture, root } = await open('/')
+    fixture.destroy()
+    // Nothing throws when the chunk arrives late.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(root.querySelector('app-overlays')).toBeNull()
   })
 
   // cockpit-views#ac:home-route-and-alias

@@ -65,8 +65,9 @@ function rank(terms: readonly Term[], subject: Subject): number {
   for (const term of terms) {
     if (term.negate || term.field !== undefined) continue
     // A glob, which has no single place, ranks after the placed matches.
-    const best = subject.bare.reduce((least, value) => (value.includes(term.raw) ? Math.min(least, placement(value, term.raw)) : least), 3)
-    total += best
+    // A repository is `owner/name`: its name alone counts as a value too, so `go` is the whole name of `acme/go`.
+    const values = subject.bare.flatMap((value) => [value, value.slice(value.lastIndexOf('/') + 1)])
+    total += values.reduce((least, value) => (value.includes(term.raw) ? Math.min(least, placement(value, term.raw)) : least), 3)
   }
   return total
 }
@@ -100,8 +101,8 @@ function group(kind: PaletteKind, candidates: readonly Candidate[], page: ListPa
   }
 }
 
-const rows = <T>(source: readonly ListRow<T>[], describe: (row: ListRow<T>) => Omit<Candidate, 'id' | 'subject'>): Candidate[] =>
-  source.map((row) => ({ id: row.id, subject: row.subject, ...describe(row) }))
+const rows = <T>(source: readonly ListRow<T>[], describe: (row: ListRow<T>) => Omit<Candidate, 'id' | 'subject'>, alsoBare: (row: ListRow<T>) => string[] = () => []): Candidate[] =>
+  source.map((row) => ({ id: row.id, subject: { ...row.subject, bare: [...row.subject.bare, ...alsoBare(row)] }, ...describe(row) }))
 
 /**
  * The palette's results for `text`, grouped by kind with at most 8 each: the
@@ -174,7 +175,10 @@ export function searchPalette(model: FleetModel, text: string, now: number): Pal
         label: agentLabel(row.item),
         detail: [model.tasksOfAgent(row.item)[0], row.item.repository === undefined ? undefined : model.repositoryName(row.item.repository), row.item.machine].filter((part) => part).join(' · '),
         link: agentDetailLink(row.item.id),
-      })),
+      }),
+      // An agent is also found by its session or run id, which is what the operator holds.
+      (row) => [row.item.session_id, row.item.run_id].filter((id): id is string => id !== undefined).map((id) => id.toLowerCase()),
+    ),
       'agents',
       terms,
       now,

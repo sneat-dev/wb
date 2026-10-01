@@ -38,7 +38,7 @@ export class TopBar {
   private readonly counts = computed<Record<TabSignal, number> | undefined>(() => {
     if (!this.store.loaded() || this.store.schemaMismatch() !== null) return undefined
     const model = this.store.model()
-    return { 'needs-you': model.needsYou.items.length, running: model.inFlight.length }
+    return { 'needs-you': model.homeBadge, running: model.runningAgentCount }
   })
 
   protected badge(link: PageLink): { count: number; hint: string; hot: boolean } | undefined {

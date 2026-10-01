@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, signal, viewChild } from '@angular/core'
 import { Router } from '@angular/router'
 import { FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { OverlayFocus } from '../shell/overlay-focus'
@@ -11,6 +11,12 @@ import { PaletteRecents } from './recents'
 export function scrollIntoList(list: Pick<HTMLElement, 'scrollTop' | 'clientHeight'>, item: Pick<HTMLElement, 'offsetTop' | 'offsetHeight'>): void {
   if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop
   else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight
+}
+
+/** Keeps the selected option of `list`, when there is one, inside the scrolled list. */
+export function revealSelected(list: HTMLElement | undefined): void {
+  const item = list?.querySelector<HTMLElement>('[aria-selected="true"]')
+  if (list && item) scrollIntoList(list, item)
 }
 
 interface NumberedResult extends PaletteResult {
@@ -58,6 +64,16 @@ export class CommandPalette {
   protected readonly active = computed(() => Math.min(this.highlighted(), Math.max(0, this.count() - 1)))
   protected readonly searching = computed(() => this.query().trim() !== '')
 
+  constructor() {
+    // However it closed (Esc, a click on the backdrop, a result), it opens empty next time.
+    effect(() => {
+      if (!this.shell.paletteOpen()) {
+        this.query.set('')
+        this.highlighted.set(0)
+      }
+    })
+  }
+
   private recentGroups(): PaletteGroup[] {
     const items = this.recents.items()
     if (items.length === 0) return []
@@ -96,18 +112,12 @@ export class CommandPalette {
   protected open(result: NumberedResult): void {
     const plain: PaletteResult = { id: result.id, kind: result.kind, label: result.label, detail: result.detail, link: result.link }
     this.shell.closePalette()
-    this.query.set('')
-    this.highlighted.set(0)
     this.recents.add(plain)
     void this.router.navigateByUrl(hrefOf(result.link))
   }
 
   /** After the highlight moved: keep it inside the scrolled list. */
   private reveal(): void {
-    queueMicrotask(() => {
-      const list = this.list()?.nativeElement
-      const item = list?.querySelector<HTMLElement>('[aria-selected="true"]')
-      if (list && item) scrollIntoList(list, item)
-    })
+    queueMicrotask(() => revealSelected(this.list()?.nativeElement))
   }
 }

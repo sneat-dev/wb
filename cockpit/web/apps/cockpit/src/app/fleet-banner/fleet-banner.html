@@ -14,3 +14,9 @@
 @if (document().agents_truncated) {
   <p class="notice" role="status"><app-icon name="alert" />The agents list is capped; not every agent is shown.</p>
 }
+@if (store.droppedEntries() > 0) {
+  <p class="notice" role="status">
+    <app-icon name="alert" />{{ store.droppedEntries() }} {{ store.droppedEntries() === 1 ? 'entry' : 'entries' }} in the fleet document could not be read and
+    {{ store.droppedEntries() === 1 ? 'is' : 'are' }} left out.
+  </p>
+}
