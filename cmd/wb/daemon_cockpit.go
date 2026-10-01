@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -27,6 +29,13 @@ func registerCockpitFleet(server *cockpit.Server, options cockpitfleet.Options) 
 	snapshotter := cockpitfleet.New(options)
 	cockpitfleet.Register(server, snapshotter)
 	return snapshotter
+}
+
+// newLocalSampler is this machine's metrics sampler: the platform's own reader of
+// the projects root's disk, memory, load and CPU, on the real clock, ticking every
+// machinemetrics.Interval unless a test supplies tick.
+func newLocalSampler(projectsRoot string, logf func(string, ...any), tick func(time.Duration) (<-chan time.Time, func())) *machinemetrics.Sampler {
+	return machinemetrics.New(machinemetrics.Options{Source: machinemetrics.NewSource(projectsRoot), Tick: tick, Logf: logf})
 }
 
 // cockpitFleetOptions is what the fleet snapshotter reads on this machine: the
@@ -70,7 +79,8 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
 	return cockpitfleet.Options{
-		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
+		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
 		Logf: logf,
 	}
 }

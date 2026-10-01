@@ -72,3 +72,18 @@ export function shotPlan(document) {
   }
   return shots
 }
+
+// The gallery of the control surface: a route of the preview build only
+// (`pnpm build:preview`, served from dist-preview), photographed whole, once the
+// charts have drawn, in each scheme and size.
+export const GALLERY_DIST = 'dist-preview'
+
+export function galleryPlan() {
+  const shots = []
+  for (const scheme of SCHEMES) {
+    for (const viewport of VIEWPORTS) {
+      shots.push({ name: 'gallery', url: '/gallery', state: 'ok', scheme, viewport, file: `gallery-${scheme}-${viewport.name}.png`, dist: GALLERY_DIST, fullPage: true, ready: 'canvas' })
+    }
+  }
+  return shots
+}

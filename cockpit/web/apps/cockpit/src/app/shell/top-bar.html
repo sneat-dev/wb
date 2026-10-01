@@ -34,7 +34,18 @@
       <span class="new-task-text">New task</span>
     </a>
     <app-freshness-chip />
-    <span class="chip tone-neutral session" [attr.title]="session().title">
+    <!-- The anonymous chip is the one affordance that says how to sign in as owner (REQ:owner-gating-is-visible); its card is a lazy overlay. -->
+    <span
+      class="chip tone-neutral session"
+      [attr.role]="session().anonymous ? 'button' : null"
+      [attr.tabindex]="session().anonymous ? 0 : null"
+      [attr.aria-haspopup]="session().anonymous ? 'dialog' : null"
+      [attr.aria-expanded]="session().anonymous ? shell.ownerHintOpen() : null"
+      [attr.title]="session().title"
+      (click)="ownerHint()"
+      (keydown.enter)="ownerHint()"
+      (keydown.space)="ownerHint($event)"
+    >
       <app-icon name="user" />
       <span>{{ session().text }}</span>
     </span>

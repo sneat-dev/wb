@@ -71,11 +71,14 @@ describe('OverlayLoader', () => {
     importer.mockRejectedValue(new Error('offline'))
     const shell = TestBed.inject(ShellState)
     shell.openPalette()
+    shell.toggleOwnerHint()
     const loader = TestBed.inject(OverlayLoader)
     const done = loader.ensure()
     await vi.advanceTimersByTimeAsync(OVERLAY_RETRY_MS)
     await done
     expect(shell.modalOpen()).toBe(false)
+    // The sign-in card is closed too: it is in the chunk that did not arrive.
+    expect(shell.ownerHintOpen()).toBe(false)
     expect(error).toHaveBeenCalled()
     importer.mockResolvedValue({ Overlays: Fake })
     await loader.ensure()

@@ -22,7 +22,9 @@
       "@cockpit/ui/code-index-panel": ["./libs/ui/src/lib/code-index-panel/code-index-panel.ts"],
       "@cockpit/ui/list": ["./libs/ui/src/lib/list/index.ts"],
       "@cockpit/ui/panel": ["./libs/ui/src/lib/panel/index.ts"],
-      "@cockpit/ui": ["./libs/ui/src/index.ts"]
+      "@cockpit/ui": ["./libs/ui/src/index.ts"],
+      "@cockpit/ui/control": ["./libs/ui/src/control.ts"],
+      "@cockpit/ui/chart": ["./libs/ui/src/chart.ts"]
     },
     "strict": false,
     "noUncheckedSideEffectImports": false,

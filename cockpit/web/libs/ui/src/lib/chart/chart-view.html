@@ -1,0 +1,42 @@
+<figure class="chart">
+  <figcaption class="title">{{ spec().title }}</figcaption>
+  <div #box class="plot" [style.height.rem]="height()">
+    <canvas #canvas role="img" [attr.aria-label]="summary()"></canvas>
+    @if (unavailable()) {
+      <p class="overlay" role="status">Chart unavailable. The numbers are in the table below.</p>
+    } @else if (empty()) {
+      <p class="overlay">No data</p>
+    }
+  </div>
+  <div class="data">
+    <table>
+      <caption>
+        {{ table().caption }}
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ table().columns[0] }}</th>
+          <th scope="col">{{ table().columns[1] }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of table().rows; track $index) {
+          <tr>
+            <th scope="row">{{ row.label }}</th>
+            <td>
+              @if (row.link) {
+                <button type="button" [attr.aria-label]="row.label + ': ' + row.value" (click)="select(row.link)">{{ row.value }}</button>
+              } @else {
+                {{ row.value }}
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="2">No data</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</figure>

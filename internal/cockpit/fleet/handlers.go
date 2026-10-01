@@ -17,11 +17,12 @@ const (
 	readmeQuery   = "repository"
 )
 
-// Register adds the fleet metadata route and the owner-only README route to
+// Register adds the fleet, branches and machine-metrics metadata routes and the owner-only README route to
 // server. Call it before the server's mounts are taken.
 func Register(server *cockpit.Server, snapshotter *Snapshotter) {
 	server.HandleMetadata(FleetRoute, cockpit.CapabilityFleetRead, snapshotter.serveFleet)
 	server.HandleMetadata(BranchesRoute, cockpit.CapabilityBranchRead, snapshotter.serveBranches)
+	server.HandleMetadata(MetricsRoute, cockpit.CapabilityMachineRead, snapshotter.serveMetrics)
 	server.HandleOwner(http.MethodGet, ReadmePath, cockpit.CapabilityRepoContentRead, snapshotter.serveReadme)
 }
 

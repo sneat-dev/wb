@@ -5,6 +5,16 @@ import { Injectable, signal } from '@angular/core'
 export class ShellState {
   readonly paletteOpen = signal(false)
   readonly sheetOpen = signal(false)
+  /** The "Sign in as owner" card under the session chip; it does not hold the keyboard, so it is not modal. */
+  readonly ownerHintOpen = signal(false)
+
+  toggleOwnerHint(): void {
+    this.ownerHintOpen.update((open) => !open)
+  }
+
+  closeOwnerHint(): void {
+    this.ownerHintOpen.set(false)
+  }
 
   openPalette(): void {
     this.sheetOpen.set(false)

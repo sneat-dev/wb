@@ -398,7 +398,8 @@ only for dispatched runs on this machine, through the action slot, and otherwise
 "Copy command" entries. Machine chips at the right show live or cached with age and,
 where metrics exist, a load indicator that answers "can this machine take another
 agent": `free` when `cpu_percent` is below 70 and memory used is below 80 percent
-of the total, `busy` otherwise, with the sample's route (`local`, `live-remote` or
+of the total, `busy` otherwise, and `unknown` (never `free`) when the sample has no
+`cpu_percent` or no memory value, with the sample's route (`local`, `live-remote` or
 `cached`) and its age.
 
 #### REQ: home-resume
@@ -751,10 +752,18 @@ agents of one machine are capped at 200 at read and at publish, and every string
 int and `landed_at` time. Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
-string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt.; `samples` list, at
-most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100), `load1` number (0
-or more), `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` ints
-(0 or more) and `sampled_at` time (not in the future).
+string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
+`samples` list, at most 360, oldest first; `reason` string, opt., one of `no_source`, `unsupported`
+or `unavailable`. A sample has `sampled_at` time (not in the future, strictly later than the sample
+before it) and these measurements, each optional (a part that could not be read is absent, never
+zero): `cpu_percent` number (0 to 100), `load1` number (0 or more), `memory_used_bytes` and
+`memory_total_bytes` ints, `disk_free_bytes` and `disk_total_bytes` ints (each pair present
+together, used not above total, free not above total). `cpu_percent` is absent on the first
+sample, when the counters did not advance or went backwards, and where sampling is unsupported.
+Memory used is one rule on every platform: the total less the memory that is available without
+swapping, which is `MemTotal - MemAvailable` on Linux and the total less the free and inactive
+pages on macOS (gopsutil's `Available`), so a healthy machine with a large file cache does not
+read as busy. The route sanitizes every answer, whatever its source, before serving it.
 
 #### REQ: compressed-responses
 
@@ -926,7 +935,11 @@ The daemon MUST sample the local machine's CPU percent, one-minute load, memory
 used and total, and free and total disk of the projects root every 10 seconds
 into an in-memory ring buffer of 360 samples. Sampling is off the request path,
 reads through an injectable source so unit tests need no real machine, and
-compiles on Windows, where it may report that metrics are unsupported. Samples
+compiles on Windows, where it may report that metrics are unsupported. A part of a
+reading that fails is left out of that sample and the rest is kept; after three
+consecutive readings that give nothing the route answers `none` with the reason
+`unavailable` until one succeeds. A panic or a hung read in a source never ends or
+blocks the daemon (stopping waits at most 2 seconds for a read in flight). Samples
 are not persisted across a daemon restart.
 
 #### REQ: machine-metrics-route
@@ -941,7 +954,7 @@ for the single latest sample carried in that machine's published snapshot, with 
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
 `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`,
-`disk_total_bytes` and `sampled_at`, and nothing else. The fallback order for another
+`disk_total_bytes` and `sampled_at`, and nothing else (every measurement may be absent, never guessed or zero-filled). The fallback order for another
 machine is live remote, then cached, then none, and the response says which it is. An
 unknown machine id is answered with status 404. The route runs no request-time fetch.
 
@@ -956,9 +969,18 @@ tab makes. It prints the export envelope `{schema_version, machine, exported_at,
 metrics}` to stdout, bounded at 8 MiB, containing only the anonymous-readable metadata
 set of [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only. The flag
 `--metrics-only` omits `fleet`. When no daemon is running, or the daemon refuses an
-anonymous read (`cockpit.anonymous_metadata: false`), it prints
-`{schema_version, error}` with `error` `daemon_not_running` or `export_refused` and exits
-with the findings code 1, and starts nothing. The envelope is built by one function that the
+anonymous read (`cockpit.anonymous_metadata: false`), or the export fails for any other
+reason (an unreadable or unsupported daemon record, a daemon that answers an error or a body
+this binary does not understand, an envelope that fails its own validation), it prints
+`{schema_version, error}` with `error` `daemon_not_running`, `export_refused` or
+`export_failed` and exits with the findings code 1, and starts nothing; the text is fixed and
+carries no path, no error text of a dependency and no response body. The recorded address is
+dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted. The verb writes
+nothing, and records no heartbeat or invoked-command marker. A daemon is "running" when its
+recorded process is alive and, where the platform can observe it, started when the record says
+(a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
+`launchctl print` (read-only), so a daemon started by hand in the foreground, outside launchd, is
+reported as `daemon_not_running` there: a stated limitation. The envelope is built by one function that the
 hub route of REQ:hub-export-route also calls. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
@@ -1055,7 +1077,17 @@ refused. Every entry in it is placed on the machine named by the configured targ
 machine the response names, and no machine name in the response is used for placement; it is never
 applied to the local machine. A refused payload renders nothing and sets `remote_error`
 `bad_payload`. The remote's own cached entries for third machines are dropped, so only that
-machine's own entries are merged. The same validation applies to the SSH transport.
+machine's own entries are merged. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
+shape of the bytes before it decodes them (arrays over their caps, nesting beyond 10 levels and
+more than a million tokens are refused without allocating for them), refuses every string field
+that has no declared rule (each closed vocabulary and each identifier pattern is checked, and a
+field added later is refused until it has one), and refuses an export that is not a single machine's
+own: any route but `local`, an id that is empty, malformed or repeated, an entry whose `machine_id`
+is not the one machine entry's, a null collection, a repository's web address that is not built from
+its host and name, and a pull request address off its repository's host. The ids in an envelope are
+the exporter's own, so a merger (REQ:remote-entries-replace-cached) re-derives every id under the
+configured machine key and never uses one as received. Its refusal names the rule and the field's
+path and never a value, a time or an error text of the remote.
 
 #### REQ: remote-entries-replace-cached
 
@@ -1076,7 +1108,8 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 (401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
 `daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads) or
-`bad_payload`; it is cleared by the next success on the preferred transport. The `http_*`
+`bad_payload`; it is cleared by the next success on the preferred transport. A remote export that prints
+`export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
@@ -1619,7 +1652,7 @@ Then each is listed with runtime and model, task, machine and how long it has ru
 Scenario: Free and busy
 Given machine `mac` with `cpu_percent` 40 and 50 percent memory used (route `local`), machine `vm` with `cpu_percent` 85 (route `live-remote`), and machine `old` with a cached sample 30 minutes old
 When Home is opened
-Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label
+Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label; and a machine whose latest sample lacks `cpu_percent` (the first after a daemon start) shows load `unknown`, never `free`
 
 ### AC: resume-lists-five-recent-tasks
 

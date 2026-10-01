@@ -49,7 +49,7 @@ export class App {
       destroyed.onDestroy(whenIdle(win, () => void loader.ensure()))
     })
     effect(() => {
-      if (shell.modalOpen() || this.store.schemaMismatch() !== null) void loader.ensure()
+      if (shell.modalOpen() || shell.ownerHintOpen() || this.store.schemaMismatch() !== null) void loader.ensure()
     })
     // The one fleet store reads for as long as the shell is up.
     this.store.start()

@@ -13,5 +13,7 @@ export const workspaceAliases = [
   { find: '@cockpit/ui/code-index-panel', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/code-index-panel/code-index-panel.ts') },
   { find: '@cockpit/ui/list', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/list/index.ts') },
   { find: '@cockpit/ui/panel', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/panel/index.ts') },
+  { find: '@cockpit/ui/control', replacement: resolve(import.meta.dirname, 'libs/ui/src/control.ts') },
+  { find: '@cockpit/ui/chart', replacement: resolve(import.meta.dirname, 'libs/ui/src/chart.ts') },
   { find: '@cockpit/ui', replacement: resolve(import.meta.dirname, 'libs/ui/src/index.ts') },
 ]

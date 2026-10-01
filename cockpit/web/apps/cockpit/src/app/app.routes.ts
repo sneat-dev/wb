@@ -1,5 +1,6 @@
 import { Type } from '@angular/core'
 import { Route, Routes } from '@angular/router'
+import { galleryRoutes } from './gallery/gallery-routes'
 
 // Every route of the application, registered once and lazy-loaded: the tab
 // list (nav.ts) and this table are complete, and the task that builds a page
@@ -38,6 +39,8 @@ export const pageRoutes: Routes = [
   page('agents/:id', 'Agent', () => import('./pages/agents/agent-detail-page').then((m) => m.AgentDetailPage)),
   prime('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
   page('machines/:id', 'Machine', () => import('./pages/machines/machine-detail-page').then((m) => m.MachineDetailPage)),
+  // Empty in the production build; the preview build's gallery (gallery/gallery-routes.ts).
+  ...galleryRoutes,
   { path: '**', redirectTo: '' },
 ]
 

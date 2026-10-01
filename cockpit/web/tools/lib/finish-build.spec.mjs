@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { FIRST_PAGE_ENTRY, INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, firstPageScripts, initialScripts, precompress, scriptBudget } from './finish-build.mjs'
+import { FIRST_PAGE_ENTRY, GALLERY_MARKERS, INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, galleryLeaks, firstPageScripts, initialScripts, precompress, scriptBudget } from './finish-build.mjs'
 
 let dist
 
@@ -189,5 +189,29 @@ describe('failing closed', () => {
     writeApplication()
     writeFileSync(join(dist, 'stats.json'), JSON.stringify({ outputs: { 'main-ABC.js': {} } }))
     expect(firstPageScripts(dist, ['main-ABC.js'], FIRST_PAGE_ENTRY).problems.join('')).toContain(FIRST_PAGE_ENTRY)
+  })
+})
+
+describe('the gallery of the preview build', () => {
+  it('names what only the gallery contains', () => {
+    expect(GALLERY_MARKERS).toEqual(['app-gallery', 'cockpit-gallery-fixture'])
+  })
+
+  it('is found in a script directly under dist, by its selector or its fixture marker, and not elsewhere', () => {
+    writeApplication()
+    expect(galleryLeaks(dist)).toEqual([])
+    writeFileSync(join(dist, 'chunk-G1.js'), 'selector:"app-gallery"')
+    writeFileSync(join(dist, 'chunk-G2.js'), 'machine:"cockpit-gallery-fixture"')
+    writeFileSync(join(dist, 'notes.txt'), 'app-gallery')
+    expect(galleryLeaks(dist).sort()).toEqual(['chunk-G1.js', 'chunk-G2.js'])
+  })
+
+  it('fails the production build, naming the file, when it is in it', () => {
+    writeApplication()
+    writeFileSync(join(dist, 'chunk-G1.js'), 'selector:"app-gallery"')
+    const messages = []
+    expect(finishBuild(dist, (message) => messages.push(message))).toBe(1)
+    expect(messages.join(' ')).toContain('chunk-G1.js')
+    expect(messages.join(' ')).toContain('gallery')
   })
 })

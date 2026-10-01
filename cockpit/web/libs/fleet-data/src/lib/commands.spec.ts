@@ -97,8 +97,11 @@ const REQUIRED_FLAGS: Record<string, string[]> = {
   'wb remote enroll': ['--url', '--token-stdin'],
 }
 
-/** The verbs of the export, which the export task adds to the manifest: tolerated as pending only while absent. */
-const PENDING_VERBS = new Set(['wb cockpit export'])
+/**
+ * Verbs a template may name before the manifest has them: tolerated as pending only while absent.
+ * `wb cockpit export` was pending until the export verb landed (cockpit-views task 7) and is now a manifest command.
+ */
+const PENDING_VERBS = new Set<string>()
 
 /** Finds the command path of a template: the longest prefix of its words that is a manifest path. */
 function verbOf(words: string[]): string | undefined {
@@ -170,7 +173,7 @@ describe('Copy command templates against the command manifest', () => {
 
   it('lists a verb as pending only while the manifest lacks it', () => {
     for (const verb of PENDING_VERBS) {
-      // When the export task adds the verb, delete it from PENDING_VERBS and add its flags above.
+      // When a verb lands in the manifest, delete it from PENDING_VERBS.
       expect(commands.has(verb)).toBe(false)
     }
   })

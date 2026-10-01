@@ -1,0 +1,14 @@
+// The control surface (badges, chips, copy commands, action slot, sign-in card). Its own entry point,
+// never the barrel (index.ts), which carries the PrimeNG-based components.
+export * from './lib/control/glyph'
+export * from './lib/control/state-vocabulary'
+export * from './lib/control/state-badge'
+export * from './lib/control/relative-time'
+export * from './lib/control/sync-badges'
+export * from './lib/control/pr-chip'
+export * from './lib/control/machine-chip'
+export * from './lib/control/clipboard'
+export * from './lib/control/copy-button'
+export * from './lib/control/copy-command-list'
+export * from './lib/control/action-slot'
+export * from './lib/control/owner-signin'

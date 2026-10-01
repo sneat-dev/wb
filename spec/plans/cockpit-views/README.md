@@ -102,7 +102,7 @@ Verification (allmust pass before the task is complete): targeted `wb run -- go 
 **Id:** task-2
 **Verifies:** cockpit-views#ac:sampler-fills-a-ring-buffer, cockpit-views#ac:metrics-route-serves-each-source, cockpit-views#ac:metrics-route-is-compressed-and-revalidatable
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add the sampler: every 10 seconds, off the request path, CPU percent, one-minute load, memory used and total, and free and total disk of the projects root into a 360-sample in-memory ring buffer through an injectable source and clock, with a Windows build that reports metrics as unsupported. Add `GET /api/v1/cockpit/machine-metrics?machine=<id>` returning `{machine, route, fetched_at?, samples, reason?}` with the `local` and `none` sources, 404 for an unknown id, and the hosted-origin conditional-request headers of task 1; the `live-remote` and `cached` sources are filled by tasks 5 and 8 behind the same payload. Compression and the hosted-origin conditional-request headers of task 1 apply to this route and are verified here. The Go tasks 1 to 6 run serially because they all touch the read model and the shared API writer; the sentinel test is extended in each.
 
@@ -157,7 +157,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-7
 **Verifies:** cockpit-views#ac:export-without-a-daemon-fails-and-starts-nothing, cockpit-views#ac:export-carries-only-the-metadata-set
 **Depends-On:** 1, 2
-**Status:** planning
+**Status:** complete
 
 Add the read-only verb `wb cockpit export --format json` (with `--metrics-only`) to the `wb cockpit` command tree in `cmd/wb/cockpit.go`. It finds the running daemon from the daemon record without starting it (it must not use `cockpitLocalFromDaemon`, which starts a daemon and can mint a login code), reads the fleet document and machine-metrics over the daemon's loopback transport as `anonymous-local`, and prints one envelope `{schema_version, machine, exported_at, fleet, metrics}` bounded at 8 MiB and limited to the anonymous-readable metadata set. With no daemon, or a daemon refusing anonymous reads, it prints `{schema_version, error}` with `daemon_not_running` or `export_refused` and exits 1. Add its `ai/capabilities.json` row, command-coverage entry, Agent Skill coverage in `wb-daemon`, the `docs/cli-flag-matrix.md` line and the persistent-flag support declaration, because a CLI verb is added. Unit tier only: a fake daemon transport; no real daemon and no ssh. It may run in parallel with tasks 3 to 6; all touch the read model, so the later to land rebases and extends the sentinel test.
 
@@ -223,7 +223,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-13
 **Verifies:** cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it, cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers, cockpit-views#ac:copy-command-templates-match-the-manifest, cockpit-views#ac:copy-command-refuses-hostile-values, cockpit-views#ac:owner-gating-is-one-affordance, cockpit-views#ac:intent-to-done-budgets-hold, cockpit-views#ac:chart-library-is-pinned-and-tree-shaken
 **Depends-On:** 11
-**Status:** planning
+**Status:** complete
 
 The control-surface components as empty-capable pieces driven by task 10's fake registry: the action slot (one per pull request or worktree; its direct-button and overflow choices follow `cockpit-actions`), the "Copy command" component with POSIX single-quoting, `--flag=value` and the refusal of control characters and leading dashes, and a unit test that parses every command template against `ai/capabilities.json`; the owner-gating affordance. Also the design tokens (typography, state colours with icons, light and dark) and the exact-pinned tree-shaken Chart.js wrapper as a lazy chunk. Nothing here executes an action; operation feedback and palette action results are `cockpit-actions` Task 8.
 

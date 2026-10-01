@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, inject } from '@angular/core'
 import { FleetStore } from '@cockpit/fleet-data'
 import { CommandPalette } from '../palette/command-palette'
 import { ShortcutSheet } from '../shortcuts/shortcut-sheet'
+import { OwnerPopover } from './owner-popover'
 import { SchemaMismatch } from './schema-mismatch'
 
 /**
@@ -17,13 +18,14 @@ import { SchemaMismatch } from './schema-mismatch'
  */
 @Component({
   selector: 'app-overlays',
-  imports: [CommandPalette, ShortcutSheet, SchemaMismatch],
+  imports: [CommandPalette, ShortcutSheet, SchemaMismatch, OwnerPopover],
   template: `
     @if (store.schemaMismatch(); as mismatch) {
       <app-schema-mismatch [mismatch]="mismatch" />
     }
     <app-command-palette />
     <app-shortcut-sheet />
+    <app-owner-popover />
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

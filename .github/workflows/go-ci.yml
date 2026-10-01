@@ -196,6 +196,13 @@ jobs:
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: go build (macOS, no cgo)
+        # No job runs tests on macOS, so the cgo-free macOS machine-metrics reader
+        # (gopsutil through purego) is only build- and vet-checked here; its tests
+        # run on the founder's Mac.
+        run: |
+          CGO_ENABLED=0 GOOS=darwin go build ./...
+          CGO_ENABLED=0 GOOS=darwin go vet ./internal/cockpit/machinemetrics
 
   lint:
     name: Lint (golangci-lint)

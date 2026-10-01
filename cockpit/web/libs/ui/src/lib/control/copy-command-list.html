@@ -1,0 +1,42 @@
+@if (rows().length > 0) {
+  <section class="copy-list" aria-label="Copy command">
+    <h3 class="heading">Copy command</h3>
+    <ul>
+      @for (row of rows(); track $index) {
+        <li>
+          <div class="head">
+            <span class="title">{{ row.title }}</span>
+            @if (row.command.ok) {
+              <span class="where" [class.elsewhere]="row.command.label !== undefined"><app-glyph [paths]="terminal" />{{ where(row.command) }}</span>
+              @if (row.command.needsEdit) {
+                <span class="edit"><app-glyph [paths]="pencil" />edit before running</span>
+              }
+            }
+          </div>
+          @if (row.command.ok) {
+            <div class="line">
+              <code tabindex="0" [attr.aria-label]="row.title + ' command'">
+                @for (segment of row.segments; track $index) {
+                  @if (segment.placeholder) {
+                    <mark>{{ segment.text }}</mark>
+                  } @else {
+                    <span>{{ segment.text }}</span>
+                  }
+                }
+              </code>
+              <app-copy-button
+                [text]="row.command.text"
+                [label]="label(row.title, row.command.needsEdit)"
+                [idleWord]="row.command.needsEdit ? 'Copy template' : 'Copy'"
+                [doneStatus]="row.command.needsEdit ? doneStatus : 'Copied'"
+                (copied)="copied.emit($event)"
+              />
+            </div>
+          } @else {
+            <p class="refused"><app-glyph [paths]="ban" /><span>Not copied: {{ row.command.reason }}</span></p>
+          }
+        </li>
+      }
+    </ul>
+  </section>
+}
