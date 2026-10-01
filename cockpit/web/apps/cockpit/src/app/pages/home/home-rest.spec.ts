@@ -73,6 +73,16 @@ describe('HomeRest', () => {
     expect(root.querySelector('button.home-more-toggle')).toBeNull()
   })
 
+  it('shows only the first three sections while the daemon is still scanning, with no "More" even on a phone', async () => {
+    stubPhone(true)
+    const { root } = await render({ warming: true })
+    expect(headings(root)).toEqual(['Ready to land 2', 'In flight 4'])
+    expect(root.querySelector('button.home-more-toggle')).toBeNull()
+    stubPhone(false)
+    const desktop = await render({ warming: true })
+    expect(headings(desktop.root)).toEqual(['Ready to land 2', 'In flight 4'])
+  })
+
   it('asks the registry for the actions of its rows only for a session that holds an action capability', async () => {
     const anonymous = await render({ capabilities: ['fleet.read'] })
     expect(anonymous.request).not.toHaveBeenCalled()

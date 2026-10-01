@@ -76,7 +76,6 @@ export class InFlightSection {
   readonly warming = input(false)
 
   protected readonly rows = computed(() => flightRows(this.model()))
-  protected readonly many = computed(() => this.model().machines.length > 1)
   /** The other machines that report no agents, in one muted line. */
   protected readonly silent = computed(() =>
     this.model()

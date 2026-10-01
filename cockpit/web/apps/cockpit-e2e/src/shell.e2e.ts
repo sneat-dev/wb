@@ -84,6 +84,8 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   // The overlays are fetched once the shell has rendered; wait for the entry to answer.
   await expect(page.locator('app-overlays')).toBeAttached()
+  // Home's own lazy sections load right after the first page; let them finish too.
+  await page.waitForLoadState('networkidle')
   const requestsBefore: string[] = []
   page.on('request', (request) => requestsBefore.push(request.url()))
   await page.keyboard.press('Control+k')
@@ -186,12 +188,14 @@ test('while the daemon warms up the chip counts the scan and skeleton rows wait,
   await page.goto('/cockpit/')
   const chip = page.getByTestId('freshness-chip')
   await expect(chip).toContainText('scanned 120 of 438')
-  await expect(page.locator('app-skeleton-rows.warming .skeleton-row')).toHaveCount(6)
-  expect(await page.locator('app-skeleton-rows.warming .skeleton-row').first().evaluate((row) => row.getBoundingClientRect().height)).toBe(32)
+  // Home has its own skeleton row for each of its first three sections that has nothing yet (here "Needs you" and "Ready to land": the fleet has an agent already); the shell's rows below the page are not shown on Home, since sections arriving above them would push them.
+  await expect(page.locator('.home app-skeleton-rows .skeleton-row')).toHaveCount(2)
+  expect(await page.locator('.home app-skeleton-rows .skeleton-row').first().evaluate((row) => row.getBoundingClientRect().height)).toBe(32)
+  await expect(page.locator('app-skeleton-rows.warming')).toBeHidden()
 
   await expect(chip).toContainText(/updated \d+ s ago/, { timeout: 15_000 })
   await expect(page.locator('app-skeleton-rows')).toHaveCount(0)
-  await expect(page.locator('tbody tr').first()).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'In flight' })).toBeVisible()
   expect(await page.evaluate(() => (window as unknown as { __cls: number }).__cls)).toBeLessThan(0.01)
 })
 

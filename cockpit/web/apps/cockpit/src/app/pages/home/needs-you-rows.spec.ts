@@ -48,6 +48,8 @@ describe('needsYouRows', () => {
     expect(rows[3]).toMatchObject({ reportedBy: 'vm', machine: { name: 'vm', chip: 'ssh', stale: false, title: 'vm: read live over ssh' } })
     expect(rows[0].reportedBy).toBeUndefined()
     expect(rows[0].machine).toBeUndefined()
+    // A local agent's machine is its name alone.
+    expect(rows[4].machine).toEqual({ name: 'mac', chip: '', stale: false, title: undefined })
   })
 
   it('opens the task when a pull request has no address that is safe to link', () => {
@@ -69,7 +71,7 @@ describe('needsYouRows', () => {
     const document = only('add-search')
     document.worktrees[0].owner_state = 'active'
     const finished = needsYouRows(modelOf(document))[0]
-    expect(finished).toMatchObject({ task: 'add-search', reason: 'agent finished, work not pushed', machine: undefined, action: { kind: 'route', text: 'Open task' } })
+    expect(finished).toMatchObject({ task: 'add-search', reason: 'agent finished, work not pushed', machine: { name: 'mac', chip: '' }, action: { kind: 'route', text: 'Open task' } })
   })
 
   it('names the repository of a blocked agent, says a failed run that had no exit code, and a failure without a check name', () => {

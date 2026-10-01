@@ -21,7 +21,7 @@
                 <a class="home-task flight-label" [routerLink]="row.link.path">{{ row.label }}</a>
                 <span class="home-reason">{{ row.work }}</span>
                 <div class="flight-meta">
-                  @if (many() && row.machine; as machine) {
+                  @if (row.machine; as machine) {
                     <span class="home-machine" [attr.title]="machine.title"><span class="home-machine-name">{{ machine.name }}</span>@if (machine.chip) {<span class="home-chip" [class.stale]="machine.stale">{{ machine.chip }}</span>}</span>
                   }
                   @if (row.remote) {

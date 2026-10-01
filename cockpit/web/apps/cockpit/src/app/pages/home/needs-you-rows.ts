@@ -22,7 +22,7 @@ export interface NeedsYouRow {
   /** The reason in plain words. */
   reason: string
   places: RowPlace[]
-  /** The machine of the agent, only when it is not this one. */
+  /** The machine of the agent: the name alone for this machine, with a chip for another. */
   machine: MachineWords | undefined
   /** The machines that reported the task, when its state is theirs and not this machine's ("as reported by vm"); such a row offers no push or copy. */
   reportedBy: string | undefined
@@ -113,12 +113,12 @@ function placesOf(item: NeedsYouItem): RowPlace[] {
   return []
 }
 
-/** The machine an agent runs on, when it is another one (a local agent needs no chip). */
-function remoteMachine(model: FleetModel, item: NeedsYouItem): MachineWords | undefined {
+/** The machine an agent runs on, as a row says it (the name alone for this machine, a chip besides for another). */
+function agentMachine(model: FleetModel, item: NeedsYouItem): MachineWords | undefined {
   if (item.kind !== 'agent-blocked' && item.kind !== 'run-failed' && item.kind !== 'agent-finished') return undefined
   // An item names an agent of the document, so the agent is there.
   const machineId = (model.agentById(item.agentId) as Agent).machine_id
-  const view = model.machines.find((candidate) => candidate.machine.id === machineId && !candidate.local)
+  const view = model.machines.find((candidate) => candidate.machine.id === machineId)
   return view && machineWords(view, model.now)
 }
 
@@ -134,7 +134,7 @@ export function needsYouRows(model: FleetModel): NeedsYouRow[] {
       state: task.state,
       reason: reasonOf(item),
       places: placesOf(item),
-      machine: remoteMachine(model, item),
+      machine: agentMachine(model, item),
       reportedBy: item.stateSource === 'remote' ? task.reportedBy.map((machine) => machine.name).join(', ') : undefined,
       at: isoOf(item.lastActivityAt),
       age: item.lastActivityAt === undefined ? undefined : formatAge(isoOf(item.lastActivityAt), model.now),

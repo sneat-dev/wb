@@ -89,7 +89,7 @@ describe('InFlightSection', () => {
     expect(copy.mock.calls.map((call) => call[0])).toEqual(["wb agent stop 'run-speed'", "wb agent logs 'run-speed'"])
   })
 
-  it('names the machine of a row only when the fleet has more than one machine, and says which machines report no agents', async () => {
+  it('names the machine of each row, and says which machines report no agents', async () => {
     const quiet = fleet()
     quiet.agents = quiet.agents.filter((agent) => agent.id !== 'vm-blocked')
     const { root, rows } = await render(quiet)
@@ -98,7 +98,8 @@ describe('InFlightSection', () => {
     one.machines = one.machines.filter((machine) => machine.machine === 'mac')
     one.agents = one.agents.filter((agent) => agent.machine === 'mac')
     const single = await render(one)
-    expect(single.root.querySelector('.home-machine')).toBeNull()
+    expect(single.root.querySelector('.home-machine-name')?.textContent).toBe('mac')
+    expect(single.root.querySelector('.home-chip')).toBeNull()
     expect(single.root.querySelector('.home-note')).toBeNull()
     expect(rows.length).toBeGreaterThan(0)
   })

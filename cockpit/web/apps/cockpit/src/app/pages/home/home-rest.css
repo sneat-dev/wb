@@ -243,6 +243,7 @@ app-home-rest {
 }
 
 @media (max-width: 30rem) {
+  .flight-row,
   .ready-row,
   .resume-row {
     grid-template-columns: minmax(0, 1fr);
@@ -250,6 +251,10 @@ app-home-rest {
 
   .ready-row .home-prs {
     grid-column: 1;
+  }
+
+  .flight-side {
+    justify-content: flex-start;
   }
 
   .home-tiles {

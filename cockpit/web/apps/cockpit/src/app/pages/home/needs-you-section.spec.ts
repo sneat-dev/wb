@@ -61,6 +61,8 @@ describe('NeedsYouSection', () => {
     const { rows } = await render()
     expect([...rows[0].querySelectorAll('.home-place')].map((place) => text(place))).toEqual(['sneat-dev/wb', 'sneat-co/sneat-go'])
     expect(rows[0].querySelector('.home-machine')).toBeNull()
+    expect(text(rows[4].querySelector('.home-machine'))).toBe('mac')
+    expect(rows[4].querySelector('.home-chip')).toBeNull()
     const remote = rows[3]
     expect(text(remote.querySelector('.home-machine-name'))).toBe('vm')
     expect(text(remote.querySelector('.home-chip'))).toBe('ssh')

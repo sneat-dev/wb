@@ -31,7 +31,8 @@ export function registryTargets(model: FleetModel): string[] {
 /**
  * Everything on Home after "Needs you", as one lazy chunk that the page requests as soon as it is
  * created (REQ:initial-script-size keeps it out of the first page): "Ready to land", "In flight"
- * with the machine strip, "Resume", and below the fold "Cleanup", "Fleet health" and the charts. It
+ * with the machine strip, "Resume", and below the fold "Cleanup", "Fleet health" and the charts (which wait until the
+ * daemon's first scan is done: counts of a partial scan mean nothing, and nothing below the first three sections may move). It
  * also asks the registry for the actions of the rows that can show them. On a phone (480 px or
  * less) sections 1 to 3 are cards and the rest sits behind one "More" disclosure (REQ:home-phone).
  */

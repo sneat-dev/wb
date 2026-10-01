@@ -8,6 +8,12 @@
   min-width: 0;
 }
 
+/* Home has skeleton rows of its own for each section while the daemon scans; the shell's rows below the page would
+   be pushed down by the sections that arrive above them (a layout shift), so on Home they are not shown. */
+main:has(.home) > app-skeleton-rows.warming {
+  display: none;
+}
+
 .home-section {
   min-width: 0;
 }
