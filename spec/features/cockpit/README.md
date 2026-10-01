@@ -194,7 +194,8 @@ is this closed set of fields:
   another machine's snapshot, at most 200 agents per machine;
 - the landed-task throughput block (`throughput`): the window in days, the
   number of tasks landed per day, and at most five of the slowest landed tasks
-  with their task name, duration in seconds and landing time;
+  with their task name, duration in seconds and landing time, and whether the
+  collector's bounds cut the scan;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;

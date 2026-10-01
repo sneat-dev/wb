@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -71,6 +72,21 @@ func sentinelSources() *fakeSources {
 	}
 }
 
+// sentinelTerminals is a terminal source whose one landed record has a
+// sentinel in every field of the record and of its claim (its repository,
+// worktree path, branch, commit, agent, prompt and report path among them)
+// except the task name and the two times, which are the fields the throughput
+// block may carry.
+func sentinelTerminals() *fakeTerminals {
+	record := filled[worktreeclaims.TerminalRecord]()
+	now := newClock().Now()
+	record.Disposition, record.Task = "landed", "task-landed"
+	record.RecordedAt, record.SealedAt = now.Add(-3*time.Hour), now.Add(-time.Hour)
+	source := newFakeTerminals()
+	source.put(sentinel+"path/to/terminal.json", now, record)
+	return source
+}
+
 // TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet feeds every source a
 // sentinel in each forbidden field, for local state and for a remote snapshot,
 // and requires the marshalled document to hold none of them, while the allowed
@@ -82,6 +98,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
 		options.ProjectsRoot = "/" + sentinel + "projects-root"
 		options.Sampler = filledSampler(t, &countingSource{}, 3)
+		options.Terminals = sentinelTerminals()
 	})
 	refreshAndSettle(t, snapshotter)
 	server := newCockpitServer(t, snapshotter)
@@ -143,7 +160,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 		t.Fatalf("the document carries a forbidden source field: ...%s...", body[start:min(len(body), start+60)])
 	}
 	for _, want := range []string{
-		`"task-a"`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
+		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
 		`"desktop"`, `"v0.9.0"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -159,7 +176,10 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	t.Parallel()
 	entry := []string{"id", "machine", "machine_id", "route", "observed_at"}
 	want := map[string][]string{
-		"Document":         {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "refresh_interval_seconds", "machines", "repositories", "worktrees", "pull_requests", "agents", "agents_truncated", "pull_requests_throttled"},
+		"Document":         {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "refresh_interval_seconds", "machines", "repositories", "worktrees", "pull_requests", "agents", "agents_truncated", "pull_requests_throttled", "throughput"},
+		"Throughput":       {"window_days", "per_day", "slowest", "capped"},
+		"ThroughputDay":    {"date", "landed"},
+		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
 		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time"}, entry...),
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
 		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
@@ -177,6 +197,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
 		"BranchesResponse": jsonFields(BranchesResponse{}), "MetricsResponse": jsonFields(MetricsResponse{}), "Sample": jsonFields(machinemetrics.Sample{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
+		"Throughput": jsonFields(Throughput{}), "ThroughputDay": jsonFields(ThroughputDay{}), "ThroughputTask": jsonFields(ThroughputTask{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])

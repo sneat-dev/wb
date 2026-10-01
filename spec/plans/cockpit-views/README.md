@@ -146,9 +146,9 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-6
 **Verifies:** cockpit-views#ac:throughput-block-from-terminal-records, cockpit-views#ac:throughput-is-omitted-without-timestamps
 **Depends-On:** 5
-**Status:** planning
+**Status:** complete
 
-Add a collector that reads this machine's sealed terminal records (`worktreeclaims.TerminalRecord`) once, cached by claim identity, and emits the `throughput` block: per-day landed counts and the five slowest claim-to-landed durations over 30 days, counting a task as landed when `worktree_disposition` is `landed`, at `sealed_at`, with the duration from the claim's `created_at`. The Work Log retirement archive manifests carry no timestamps and are not read. Confirm the timestamps first; if no record carries both, the block and the Home charts are dropped and the task reports it, with no invented data.
+Add a collector that reads this machine's sealed terminal records (`worktreeclaims.TerminalRecord`) once, cached by claim identity, and emits the `throughput` block: per-day landed counts and the five slowest claim-to-landed durations over 30 days, counting a task as landed when `worktree_disposition` is `landed`, at `sealed_at`, with the duration from the claim's `recorded_at` (the claim record has no `created_at`). The Work Log retirement archive manifests carry no timestamps and are not read. Confirm the timestamps first; if no record carries both, the block and the Home charts are dropped and the task reports it, with no invented data.
 
 Verification (all must pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 

@@ -749,7 +749,7 @@ agents of one machine are capped at 200 at read and at publish, and every string
 
 **Throughput** (`throughput`): `window_days` int (30); `per_day` list of `date` string
 (`YYYY-MM-DD`) and `landed` int; `slowest` list of at most 5 of `task` string, `duration_seconds`
-int and `landed_at` time. Local only.
+int and `landed_at` time; `capped` bool opt. Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
@@ -938,15 +938,45 @@ machine's agents as `cached` with the age of the snapshot and with no actions.
 #### REQ: throughput-block
 
 The fleet document carries an optional `throughput` block: `window_days` (30),
-`per_day` (a list of `date` and `landed`, the number of tasks landed that day) and
-`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`). A
-collector reads this machine's sealed terminal records once, cached by claim
-identity (`worktreeclaims.TerminalRecord`), and counts a task as landed when its
+`per_day` (a list of `date` and `landed`, the number of tasks landed that day),
+`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`) and
+`capped` (true only when a bound below cut the scan). A collector reads this
+machine's sealed terminal records (`worktreeclaims.TerminalRecord`, the files
+`<wb home>/worklogs/<task>/runs/<run>/terminals/<claim id>.json` of every WB home the
+projects root resolves to, read-only), and counts a task as landed when its
 `worktree_disposition` is `landed`, at its `sealed_at`; the duration is `sealed_at`
-minus the claim's `created_at`. The Work Log retirement archives themselves
-(`worktreeretire.Manifest` and `Receipt`) carry no timestamps and are not the source.
-When no terminal record has both timestamps the block is omitted and the charts of
-REQ:home-charts are not shown; no value is invented.
+minus the claim's `recorded_at` (the claim record carries no `created_at`: its
+`recorded_at` is the time the claim was made, kept unchanged in the terminal). The
+Work Log retirement archives themselves (`worktreeretire.Manifest` and `Receipt`)
+carry no timestamps and are not the source.
+
+The rules of the block:
+
+- The window is today and the 29 UTC days before it; `date` is a UTC `YYYY-MM-DD`;
+  `per_day` lists only the days with a landing, oldest first, and `slowest` the
+  longest durations first (ties: later landing, then name). Both are lists, never null.
+- A task landed in several repositories counts once on each day it landed, and
+  appears once among the slowest, with its longest duration.
+- A record is usable only when it is `landed`, has a `sealed_at` and a `recorded_at`
+  both after 1999, a `sealed_at` not before its `recorded_at`, a duration of at
+  most ten years, and a task name (else its effort id) that is not empty after
+  control and bidirectional characters are removed (the name is cut at 200
+  characters). A landing later than five seconds ahead of the clock is not counted.
+- When no terminal record is usable the block is omitted and the charts of
+  REQ:home-charts are not shown; no value is invented. A usable record outside the
+  window keeps the block, with empty lists.
+- The collector runs on the snapshotter's cadence but not on every refresh: it
+  lists the records at most every ten minutes (or on the next refresh while a cap left
+  records unread), keeps what it learns by each record's identity (path, size and
+  modification time) and reads again only a record that is new or changed; when the
+  UTC day changes it recomputes the window from what it holds without listing. It
+  never runs on a request. It reads at most 1,000 records in a scan and knows at
+  most 20,000; either bound sets `capped` and is logged.
+- The block is local only: a machine's throughput is read from that machine, so
+  `NewEnvelope` never exports it and the strict decoder refuses an envelope that
+  carries one.
+- The collector is read-only: it never writes, creates or locks anything under a
+  WB home, and does not follow a symbolic link.
 
 ### Machine metrics
 
@@ -2132,7 +2162,7 @@ Then agents and metrics are present only when their flag is true, `schema_versio
 Scenario: Landed, orphaned and old terminals
 Given sealed terminal records: three tasks landed on two days within 30 days with known claim creation times, one with disposition `orphaned`, and one landed 40 days ago
 When the collector runs twice and the fleet document is requested
-Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `slowest` of at most five tasks with `duration_seconds` equal to `sealed_at` minus the claim's `created_at`, excludes the orphaned and the old one, and the second run reads no record again
+Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `slowest` of at most five tasks with `duration_seconds` equal to `sealed_at` minus the claim's `recorded_at`, excludes the orphaned and the old one, and the second run reads no record again
 
 ### AC: throughput-is-omitted-without-timestamps
 
