@@ -1,0 +1,118 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.reach {
+  font-weight: var(--fw-semibold);
+}
+
+.mark {
+  padding: 0 6px;
+  border: 1px solid var(--idle-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1.25rem;
+}
+
+.mark.stale {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.quiet {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.warning {
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+dt {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 1.75rem;
+}
+
+dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  align-items: center;
+  min-height: 1.75rem;
+  margin: 0;
+  min-width: 0;
+}
+
+h3 {
+  margin: 0 0 var(--space-1);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+p {
+  margin: 0;
+}
+
+.source {
+  margin-bottom: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.latest {
+  margin-bottom: var(--space-3);
+}
+
+.rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  min-width: 0;
+}
+
+/* The charts' place keeps the height they will take (one column in a narrow panel, two in a wide page), so they arrive without moving anything. */
+.charts {
+  container-type: inline-size;
+}
+
+.charts ::ng-deep .home-lazy-slot {
+  height: 44rem;
+}
+
+@container (min-width: 40rem) {
+  .charts ::ng-deep .home-lazy-slot {
+    height: 22rem;
+  }
+}

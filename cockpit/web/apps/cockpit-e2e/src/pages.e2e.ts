@@ -6,11 +6,10 @@ import { fleet, now, stub, watch } from './support'
 // ends by checking that no policy violation and no console error occurred,
 // beyond the PrimeUI licence banner this build is known to show.
 
-const rows = (page: Page) => page.locator('tbody tr')
 // The shared list (the Worktrees page) has no table: its rows are ARIA rows of a virtual grid.
 const listRows = (page: Page) => page.locator('[role=row][data-index]')
 
-test('every page lists its collection, cached rows show route and age, and the machine filter works', async ({ page }) => {
+test('Home, Repositories and the machine chip work, in the built application', async ({ page }) => {
   await stub(page)
   const expectClean = await watch(page)
 
@@ -33,28 +32,7 @@ test('every page lists its collection, cached rows show route and age, and the m
   await expect(listRows(page)).toHaveCount(1)
   await expect(listRows(page).first()).toContainText('acme/far')
 
-  const lists = [
-    { link: 'Machines', rows: 2, first: 'alpha' },
-  ]
-  for (const list of lists) {
-    await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: list.link }).click()
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText(list.link)
-    await expect(rows(page)).toHaveCount(list.rows)
-    await expect(rows(page).first()).toContainText(list.first)
-    // Every cached row shows its route and age; a local row says local.
-    const cached = rows(page).filter({ hasText: 'beta' })
-    await expect(cached).not.toHaveCount(0)
-    for (const row of await cached.all()) await expect(row).toContainText(/cached, 1\d min ago/)
-    for (const row of await rows(page).filter({ hasText: 'alpha' }).all()) await expect(row).toContainText('local')
-
-    // The machine filter leaves only that machine's rows.
-    await page.locator('#filter-machine').click()
-    await page.getByRole('option', { name: 'beta' }).click()
-    await expect(page).toHaveURL(/[?&]machine=mach-beta/)
-    await expect(rows(page)).toHaveCount(1)
-    await expect(rows(page).first()).toContainText('beta')
-    await expect(rows(page).first()).toContainText('cached')
-  }
+  // Machines is the shared list too, and has its own journey (machines.e2e.ts).
   await expectClean()
 })
 
@@ -143,23 +121,18 @@ test('the Repositories page shows the code-index freshness of each repository', 
   await expectClean()
 })
 
-test('no page scrolls sideways at 360 px, and the hover card stays on screen', async ({ page }) => {
+test('no page scrolls sideways at 360 px', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 })
   await stub(page)
   const expectClean = await watch(page)
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
     // Home has no table: its first section is its landmark.
-    const first = path === '' ? page.getByRole('heading', { level: 2, name: 'Needs you' }) : (path === 'worktrees' || path === 'agents' || path === 'repositories' ? listRows(page) : rows(page)).first()
+    const first = path === '' ? page.getByRole('heading', { level: 2, name: 'Needs you' }) : listRows(page).first()
     await expect(first).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)
   }
-  await page.goto('/cockpit/machines')
-  await page.locator('app-count a').last().hover()
-  const box = await page.locator('.count-card.open').boundingBox()
-  expect(box!.x).toBeGreaterThanOrEqual(0)
-  expect(box!.x + box!.width).toBeLessThanOrEqual(360)
   await expectClean()
 })
 

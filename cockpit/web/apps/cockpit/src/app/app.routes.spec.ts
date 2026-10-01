@@ -39,19 +39,13 @@ describe('pageRoutes', () => {
     }
   })
 
-  it('loads each page lazily, those that still use PrimeNG through the route that provides it', async () => {
-    const plain = pageRoutes.filter((route): route is Route => route.loadComponent !== undefined)
-    const prime = pageRoutes.filter((route): route is Route => route.loadChildren !== undefined)
-    expect(plain.map((route) => route.path)).toEqual(['', 'tasks', 'tasks/new', 'tasks/detail', 'repositories', 'repositories/:host/:owner/:name', 'repositories/:id', 'worktrees', 'worktrees/:id', 'agents', 'agents/:id', 'machines/:id'])
-    expect(prime.map((route) => route.path)).toEqual(['machines'])
-    for (const route of plain) {
+  it('loads each page lazily, with no route that provides PrimeNG', async () => {
+    const lazy = pageRoutes.filter((route): route is Route => route.loadComponent !== undefined)
+    expect(pageRoutes.filter((route) => route.loadChildren !== undefined)).toEqual([])
+    expect(lazy.map((route) => route.path)).toEqual(['', 'tasks', 'tasks/new', 'tasks/detail', 'repositories', 'repositories/:host/:owner/:name', 'repositories/:id', 'worktrees', 'worktrees/:id', 'agents', 'agents/:id', 'machines', 'machines/:id'])
+    for (const route of lazy) {
       const loaded = await (route.loadComponent as () => Promise<unknown>)()
       expect(typeof loaded, route.path).toBe('function')
-    }
-    for (const route of prime) {
-      const [child] = await (route.loadChildren as () => Promise<Route[]>)()
-      expect(typeof (await (child.loadComponent as () => Promise<unknown>)()), route.path).toBe('function')
-      expect(child.providers, route.path).toBeDefined()
     }
   })
 
