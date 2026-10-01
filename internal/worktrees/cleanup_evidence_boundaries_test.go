@@ -79,13 +79,7 @@ func TestTerminalCleanupProofReportRootAndTimestampBoundaries(t *testing.T) {
 						if scenario == "missing head" {
 							report.Results[0].HeadSHA = ""
 						}
-						encoded, err := json.Marshal(report)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := os.WriteFile(filepath.Join(path, "cleanup.json"), encoded, 0o600); err != nil {
-							t.Fatal(err)
-						}
+						wtLifeCovWriteJSON(t, filepath.Join(path, "cleanup.json"), report)
 					}
 				}
 			}
@@ -144,7 +138,11 @@ func TestResumableBacklogSelectionAndFilesystemBoundaries(t *testing.T) {
 	bad := record
 	bad.Version++
 	bad.ID = strings.Repeat("b", 64)
-	plantBacklogRecord(t, home, bad.ID+".json", mustJSON(t, bad))
+	encoded, err := json.Marshal(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plantBacklogRecord(t, home, bad.ID+".json", encoded)
 	if records, quarantine, err := load(); err != nil || len(records) != 1 || len(quarantine) != 1 || quarantine[0].Task != record.Task {
 		t.Fatalf("selected invalid backlog = %v/%v/%v", records, quarantine, err)
 	}
@@ -353,13 +351,4 @@ func TestVacantBacklogRefusesMissingRegistrationAuthority(t *testing.T) {
 	if err := completeVacantLifecycleBacklog(context.Background(), t.TempDir(), &record, lockErr); !errors.Is(err, lockErr) {
 		t.Fatalf("missing canonical authority = %v", err)
 	}
-}
-
-func mustJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encoded
 }
