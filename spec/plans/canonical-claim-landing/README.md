@@ -53,7 +53,7 @@ to every entry point with `--apply` and `--force`.
 ### Task 2: Landing and release restore the clone
 
 **Id:** task-2
-**Verifies:** canonical-claim-landing#ac:landing-restores-clone-and-keeps-it, canonical-claim-landing#ac:restore-refuses-without-destroying
+**Verifies:** canonical-claim-landing#ac:landing-restores-clone-and-keeps-it, canonical-claim-landing#ac:restore-refuses-without-destroying, canonical-claim-landing#ac:end-releases-claim-keeping-work
 **Depends-On:** 1
 **Status:** planning
 
@@ -62,7 +62,7 @@ checkout base, ff-only, branch containment check, delete branch, seal, marker)
 with per-step receipt entries, reusing the `syncCanonicalMergeTarget` checks in
 `internal/orchestrate/worktree_merge.go` and `pr_land.go`. Wire it into
 `wb worktree land`/`wb land`, `wb pr create` landing, `wb pr land`, and
-`wb worktree end` (release, branch kept). Real bare-remote tests, interrupt
+`wb worktree end` (release: WIP commit, push, checkout base, ff-only, feature branch kept locally and remotely; commit or push failure switches nothing; never removes the canonical directory). Real bare-remote tests, interrupt
 after each step.
 
 ### Task 3: Sync, hygiene, and fleet readers skip a claimed clone
@@ -93,7 +93,7 @@ and `worktree end`.
 
 ## Open Questions
 
-- Release verb (`wb worktree end`) and the fleet-reader inventory are open in the Feature.
+None at this time. The release verb and the fleet-reader inventory (first step of task-3) are confirmed.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

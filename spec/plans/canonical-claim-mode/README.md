@@ -58,8 +58,7 @@ In `internal/worktrees/worklog.go` add additive `mode` and
 `lease_expires_at` claim fields, cover `mode` in `expectedWorkLogClaimID`, add
 lease-extension evidence events, and add one exported, clock-injected lookup
 (live, lapsed, sealed, none) built on `activeWorkLogClaim`. It fails closed on
-any read, parse, repository, or corroboration error. Settle the claim `Version`
-question first (Open Questions).
+any read, parse, repository, or corroboration error. No `Version` bump: the fields are additive and omitted when unset.
 
 ### Task 2: Guard and hook admission
 
@@ -128,15 +127,18 @@ Teach `internal/canonicalrescue` and `cmd/wb/worktree_rescue.go` to rescue a
 canonical clone on the claim's feature branch (staged, unstaged, untracked)
 without touching the claim's commits and without discarding by default.
 
-### Task 7: Skills, docs, help, capabilities
+### Task 7: Skills, docs, help, capabilities, stale create wording
 
 **Id:** task-7
 **Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes
 **Depends-On:** 5
 **Status:** planning
 
-Update `skills/wb-worktrees`, `skills/wb`, `skills/wb-merge`, `skills/wb-fleet`
-and the generated `ai/capabilities.json` / `skills/commands.json`, help text,
+Rewrite every statement that `wb worktree create` never touches the canonical
+clone (the `Guard` refusal text in `internal/worktrees/worktrees.go`,
+`wb worktree create --help`, and the skills) so it says plain create still
+never does, while `--canonical` is the sanctioned exception. Update
+`skills/wb-worktrees`, `skills/wb`, `skills/wb-merge`, `skills/wb-fleet` and the generated `ai/capabilities.json` / `skills/commands.json`, help text,
 and `docs/`: when to choose canonical mode, never `git checkout -b`/`git switch
 -c`, explicit-path commits for subagents, one canonical claim per repository,
 rescue for crashes.
@@ -155,10 +157,7 @@ the companion plan.
 
 ## Open Questions
 
-- Entry verb (`create --canonical` vs a sibling) and lease values await human confirmation (see the Feature Open Questions).
-- Claim `Version` bump versus additive fields (task-1).
-- Contradiction to resolve: `Guard`'s own message says `wb worktree create` leaves the canonical clone untouched; `--canonical` is the first create path that checks out in it, so help text and skills must say so.
-- Plan split: one plan per source Feature is what `specscore spec lint` (P-002) accepts. The companion plan [canonical-claim-landing](../canonical-claim-landing/README.md) depends on tasks 1 and 4 here; its journey test depends on task 5.
+None at this time. Confirmed or decided by the founder: verb shape and lease values; no claim `Version` bump; the stale "create never touches canonical" wording is rewritten in task-7. Plan split: one plan per source Feature is what `specscore spec lint` (P-002) accepts; the companion plan [canonical-claim-landing](../canonical-claim-landing/README.md) depends on tasks 1 and 4 here, and its journey test on task 5.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

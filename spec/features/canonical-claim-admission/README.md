@@ -55,7 +55,7 @@ Both fields MUST be additive and omitted when unset so an older WB reading the
 claim sees no change, and a canonical claim's `worktree` field MUST be the
 canonical clone path. The claim identity derivation
 (`expectedWorkLogClaimID` in `internal/worktrees/worklog.go`) MUST cover
-`mode` so a canonical claim cannot be rewritten as a worktree claim.
+`mode` so a canonical claim cannot be rewritten as a worktree claim. The claim `Version` MUST NOT be bumped: an older WB ignores `mode`, treats the claim as an ordinary one that does not admit the canonical clone, and keeps its strict guard, so it fails safe (refuses writes) and loses no work.
 
 #### REQ: canonical-claim-entry
 
@@ -263,9 +263,7 @@ auto-claim, keyed by task.
 
 ## Open Questions
 
-- Entry verb: this spec proposes `wb worktree create --canonical` (one claim path, reuses creation checks and Work Log recording) rather than a new `wb worktree claim` leaf. Confirm the verb before the plan's CLI task starts.
-- Lease defaults (2h default, 8h cap, renewal by idempotent re-run) are proposed values; renewal is explicit, not sliding on each commit. Confirm.
-- `mode` and `lease_expires_at` are new claim fields and the lease extension is appended evidence; confirm whether this needs a claim `Version` bump or stays additive under the existing version.
+None at this time. Confirmed by the founder: the `wb worktree create --canonical` / `--lease` verb shape; lease 2h default, 8h cap, renewal by re-running create. Decided: no claim `Version` bump (see REQ claim-mode-field).
 
 ---
 *This document follows the https://specscore.md/feature-specification*

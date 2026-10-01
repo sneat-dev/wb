@@ -70,12 +70,22 @@ reported.
 
 #### REQ: release-without-landing
 
-`wb worktree end <task>` on a canonical claim MUST restore the clone to its
-base branch without landing: require a clean tree (after `wb worktree rescue`
-if needed), check out base, fast-forward, keep the feature branch and its
-commits, seal the claim as released, and refresh the marker. It MUST never
-remove the clone and MUST use the same restore routine and receipt as landing
-minus the branch deletion.
+`wb worktree end <task>` on a canonical claim MUST release the claim without
+landing, with no extra git call from the agent: commit any uncommitted work onto
+the claim's feature branch as a WIP commit (never discard, reset, or stash),
+push that branch so the work survives, check out the base branch, fast-forward
+it with `--ff-only` to the latest remote, KEEP the unmerged feature branch both
+locally and on the remote, seal the claim as released, refresh the marker, and
+restore the strict guard. If the commit or the push fails, `end` MUST stop
+before switching branches, leave the claim active, and report the failure (the
+same rule as `end`'s capture failure). It MUST use the same restore routine and
+receipt as landing minus the branch deletion.
+
+#### REQ: end-never-removes-canonical
+
+`wb worktree end` on a canonical claim MUST NOT remove, rename, or relocate the
+canonical directory, on success or failure; it is covered by
+[canonical-path-never-removable](#req-canonical-path-never-removable).
 
 ### Cleanup can never target a canonical path
 
@@ -142,11 +152,19 @@ abort. [Fleet Status](../fleet-status/README.md) owns canonical health reporting
 
 ### AC: restore-refuses-without-destroying
 
-**Requirements:** canonical-claim-landing#req:restore-refuses-unsafe-state, canonical-claim-landing#req:release-without-landing
+**Requirements:** canonical-claim-landing#req:restore-refuses-unsafe-state
 
 **Given** canonical clones that are dirty, on another branch, detached, or diverged from the remote base, and one whose feature branch holds unmerged commits
 **When** landing and `wb worktree end` run
 **Then** each unsafe clone is refused at the blocking step with its remedy and the claim stays active, nothing is reset, cleaned, or stashed, the unmerged branch is retained, and a clean unlanded claim is released back to base with its feature branch kept.
+
+### AC: end-releases-claim-keeping-work
+
+**Requirements:** canonical-claim-landing#req:release-without-landing, canonical-claim-landing#req:end-never-removes-canonical
+
+**Given** a real bare remote and a canonical claim whose clone has uncommitted work on the feature branch, and a second one where the push is made to fail
+**When** `wb worktree end <task>` runs on each
+**Then** the first commits the work as a WIP commit on the feature branch, pushes it, checks out the base branch at the latest remote tip, keeps the feature branch locally and on the remote, seals the claim as released, restores the strict guard and a `writable: false` marker, and the canonical directory still exists; the second stops before any checkout, leaves the claim active and the clone on the feature branch with the work intact, and reports the push failure.
 
 ### AC: no-removal-path-reaches-a-canonical-clone
 
@@ -166,8 +184,7 @@ abort. [Fleet Status](../fleet-status/README.md) owns canonical health reporting
 
 ## Open Questions
 
-- Release without landing is proposed as `wb worktree end <task>` on a canonical claim; confirm this verb rather than a dedicated leaf.
-- The set of "fleet readers" that treat the canonical working tree as the base tip is not yet enumerated; the plan's inventory task must list them before the readers task starts.
+- The set of "fleet readers" that treat the canonical working tree as the base tip is not yet enumerated; the plan's first step in task 3 (confirmed by the founder) inventories them before any reader changes. The release verb (`wb worktree end <task>`) is confirmed.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
