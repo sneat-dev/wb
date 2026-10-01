@@ -143,7 +143,7 @@ with an assertion that its output exists.
 **Id:** task-6
 **Verifies:** cockpit#ac:every-page-lists-its-collection, cockpit#ac:counts-drill-down, cockpit#ac:repository-links-to-code-browser
 **Depends-On:** 2, 4, 5
-**Status:** planning
+**Status:** complete
 
 Build the shell and navigation, and the Dashboard, Repositories, Worktrees,
 Agents and Machines pages as tables filterable by machine and repository,
@@ -151,6 +151,7 @@ with route and age labels on cached rows, the hover card and drill-down for
 every count, the link from each repository
 to the CodeGrapher browser built from `cockpit.code_browser_url`, and light
 and dark themes. Controls are driven by `GET /api/v1/cockpit/session`.
+Branch and pull-request counts are not shown until they have list pages.
 
 ### Task 7: Code-index freshness
 

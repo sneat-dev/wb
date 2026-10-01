@@ -1,6 +1,12 @@
 <header class="shell-header">
   <h1 class="shell-title">WB Cockpit</h1>
+  <nav class="shell-nav" aria-label="Pages">
+    @for (link of links; track link.path) {
+      <a [routerLink]="link.path" routerLinkActive="active" ariaCurrentWhenActive="page">{{ link.label }}</a>
+    }
+  </nav>
 </header>
-<main>
+<main class="shell-main">
+  <app-fleet-banner />
   <router-outlet />
 </main>

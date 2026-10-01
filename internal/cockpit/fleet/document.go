@@ -62,11 +62,14 @@ const PullRequestUnknown = "unknown"
 
 // Entry is what every collection's entry carries: a stable identifier unique
 // within its collection, the machine it belongs to, its route and when it was
-// observed. For a cached entry ObservedAt is the publish time of the snapshot
+// observed. Machine is the machine's name, which two logins can share;
+// MachineID is the id of the machine entry it belongs to, which is unique, and
+// is what a client filters by. For a cached entry ObservedAt is the publish time of the snapshot
 // it came from.
 type Entry struct {
 	ID         string    `json:"id"`
 	Machine    string    `json:"machine"`
+	MachineID  string    `json:"machine_id"`
 	Route      string    `json:"route"`
 	ObservedAt time.Time `json:"observed_at,omitzero"`
 }

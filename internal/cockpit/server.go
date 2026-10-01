@@ -105,7 +105,7 @@ func newServer(options Options, app http.Handler) *Server {
 	}
 	// Any resolved principal may ask who it is; fleet.read is the capability
 	// both principals hold.
-	server.HandleMetadata(sessionRoute, CapabilityFleetRead, serveSession)
+	server.HandleMetadata(sessionRoute, CapabilityFleetRead, server.serveSession)
 	// Logout needs the session and no capability beyond it.
 	server.HandleOwner(http.MethodPost, LogoutPath, "", server.logout)
 	return server
@@ -303,10 +303,20 @@ func (server *Server) serveOwner(writer http.ResponseWriter, request *http.Reque
 	route.handler(writer, request)
 }
 
+// sessionResponse is what the session route answers: the principal and its
+// capabilities, and the configured code browser base, which the application
+// builds its repository links from (cockpit#req:code-browser-link). The base
+// is configuration, not state or content, and is not secret.
+type sessionResponse struct {
+	Principal
+	CodeBrowserURL string `json:"code_browser_url"`
+}
+
 // serveSession reports the caller's principal and effective capabilities
-// (cockpit#req:effective-permissions-are-discoverable).
-func serveSession(writer http.ResponseWriter, _ *http.Request, principal Principal) {
-	_ = json.NewEncoder(writer).Encode(principal)
+// (cockpit#req:effective-permissions-are-discoverable) and the code browser
+// base.
+func (server *Server) serveSession(writer http.ResponseWriter, _ *http.Request, principal Principal) {
+	_ = json.NewEncoder(writer).Encode(sessionResponse{Principal: principal, CodeBrowserURL: server.config.CodeBrowserURL})
 }
 
 // servePage answers everything under PagePrefix: the login exchange, the

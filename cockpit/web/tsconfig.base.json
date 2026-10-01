@@ -13,7 +13,11 @@
     "lib": ["es2020", "dom"],
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
-    "paths": {},
+    "paths": {
+      "@cockpit/fleet-data": ["./libs/fleet-data/src/index.ts"],
+      "@cockpit/fleet-data/testing": ["./libs/fleet-data/src/testing.ts"],
+      "@cockpit/ui": ["./libs/ui/src/index.ts"]
+    },
     "strict": false,
     "noUncheckedSideEffectImports": false,
     "types": ["*"],

@@ -32,6 +32,14 @@ type recordedWorktree struct {
 	record WorktreeRecord
 }
 
+// localMachineID is the id of the machine entry of this machine.
+func localMachineID(machine string) string { return entryID(kindMachine, machine) }
+
+// localEntry is the entry of state this daemon observed itself on machine.
+func localEntry(id, machine string, at time.Time) Entry {
+	return Entry{ID: id, Machine: machine, MachineID: localMachineID(machine), Route: RouteLocal, ObservedAt: at}
+}
+
 // localRepositoryID is the id of a local repository on machine.
 func localRepositoryID(machine string, repository discover.Repo) string {
 	return entryID(kindRepository, machine, repository.Identity())
@@ -43,7 +51,7 @@ func localRepositoryID(machine string, repository discover.Repo) string {
 // the repository as unreadable this pass.
 func mapLocalRepository(machine string, repository discover.Repo, defaultBranch string, recorded []recordedWorktree, refs []BranchRef, errCode string, at time.Time) repoEntries {
 	identity := repository.Identity()
-	entry := func(id string) Entry { return Entry{ID: id, Machine: machine, Route: RouteLocal, ObservedAt: at} }
+	entry := func(id string) Entry { return localEntry(id, machine, at) }
 	repositoryID := localRepositoryID(machine, repository)
 	mapped := repoEntries{repository: Repository{
 		Entry: entry(repositoryID), Host: repository.Host, Name: repository.Slug(),
@@ -93,7 +101,7 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestBinding, at time.Time, repositories map[string][]string, worktreesOf map[string][]Worktree) (mapped []PullRequest, diagnostics int) {
 	for _, binding := range bindings {
 		pull := PullRequest{
-			Entry:  Entry{ID: entryID(kindPR, machine, binding.Repository, strconv.Itoa(binding.PullRequest)), Machine: machine, Route: RouteLocal, ObservedAt: at},
+			Entry:  localEntry(entryID(kindPR, machine, binding.Repository, strconv.Itoa(binding.PullRequest)), machine, at),
 			Number: binding.PullRequest, State: PullRequestUnknown, URL: binding.URL,
 		}
 		if ids := repositories[binding.Repository]; len(ids) == 1 {
@@ -138,7 +146,7 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		}
 		identity := firstNonEmpty(view.WBSessionID, "pid\x00"+strconv.Itoa(view.PID))
 		mapped = append(mapped, agentRecord{agent: Agent{
-			Entry: Entry{ID: entryID(kindAgent, machine, AgentSession, identity), Machine: machine, Route: RouteLocal, ObservedAt: at},
+			Entry: localEntry(entryID(kindAgent, machine, AgentSession, identity), machine, at),
 			Kind:  AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
 		}, when: view.StartedAt})
 	}
@@ -151,7 +159,7 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 			continue
 		}
 		mapped = append(mapped, agentRecord{agent: Agent{
-			Entry: Entry{ID: entryID(kindAgent, machine, AgentRun, run.AgentID), Machine: machine, Route: RouteLocal, ObservedAt: at},
+			Entry: localEntry(entryID(kindAgent, machine, AgentRun, run.AgentID), machine, at),
 			Kind:  AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
 		}, slug: run.Repository, when: when})
 	}
@@ -201,8 +209,9 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 		}
 		key := snapshot.Key()
 		published := snapshot.PublishedAt
+		machineID := entryID(kindMachine, key)
 		cached := func(id string) Entry {
-			return Entry{ID: id, Machine: snapshot.Machine, Route: RouteCached, ObservedAt: published}
+			return Entry{ID: id, Machine: snapshot.Machine, MachineID: machineID, Route: RouteCached, ObservedAt: published}
 		}
 		repositoryNames := map[string]bool{}
 		for _, name := range snapshot.KnownRepositories {
@@ -241,7 +250,7 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 			repositories[index].OpenPullRequestCount = &open
 		}
 		view.machines = append(view.machines, Machine{
-			Entry: cached(entryID(kindMachine, key)), WBVersion: snapshot.WBVersion,
+			Entry: cached(machineID), WBVersion: snapshot.WBVersion,
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
 		})
 		view.repositories = append(view.repositories, repositories...)

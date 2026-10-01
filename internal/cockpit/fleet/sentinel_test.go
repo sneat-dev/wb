@@ -99,7 +99,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 // document type must be added here deliberately.
 func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	t.Parallel()
-	entry := []string{"id", "machine", "route", "observed_at"}
+	entry := []string{"id", "machine", "machine_id", "route", "observed_at"}
 	want := map[string][]string{
 		"Document":    {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "machines", "repositories", "worktrees", "branches", "pull_requests", "agents", "agents_truncated"},
 		"Machine":     append([]string{"wb_version", "repository_count", "worktree_count"}, entry...),

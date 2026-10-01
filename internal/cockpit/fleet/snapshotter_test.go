@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -1168,6 +1169,91 @@ func TestReadmeUsesTheDocumentsDefaultBranch(t *testing.T) {
 		}
 		if sources.readmeBranch != want || local.DefaultBranch != want {
 			t.Errorf("listed %q: README read %q, document says %q, want both %q", listed, sources.readmeBranch, local.DefaultBranch, want)
+		}
+	}
+}
+
+// TestEveryEntryCarriesItsMachinesUniqueId keeps the filter value of a machine
+// unique: two logins that publish from one hostname share a name and not an id,
+// and every entry names the id of the machine entry it belongs to.
+func TestEveryEntryCarriesItsMachinesUniqueId(t *testing.T) {
+	t.Parallel()
+	sources := oneRepoSources(t.TempDir())
+	published := remotePublishedAt()
+	worktree := func(task string) []remotestate.WorktreeState {
+		return []remotestate.WorktreeState{{Task: task, Repository: "acme/far", Branch: task, PullRequest: &remotestate.PullRequestState{Number: 1, State: "OPEN"}}}
+	}
+	sources.remote = []remotestate.Entry{
+		{Snapshot: remotestate.Snapshot{Login: "a", Machine: "dup", PublishedAt: published, Worktrees: worktree("one")}},
+		{Snapshot: remotestate.Snapshot{Login: "b", Machine: "dup", PublishedAt: published, Worktrees: worktree("two")}},
+	}
+	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	document := snapshotter.Document()
+	known := map[string]bool{}
+	for _, machine := range document.Machines {
+		if machine.MachineID != machine.ID || known[machine.ID] {
+			t.Errorf("machine %+v: its machine_id must be its own, unique id", machine)
+		}
+		known[machine.ID] = true
+	}
+	if len(known) != 3 {
+		t.Fatalf("machines = %+v, want this machine and two named dup", document.Machines)
+	}
+	ids := []string{}
+	for _, entry := range document.Repositories {
+		ids = append(ids, entry.MachineID)
+	}
+	for _, entry := range document.Worktrees {
+		ids = append(ids, entry.MachineID)
+	}
+	for _, entry := range document.Branches {
+		ids = append(ids, entry.MachineID)
+	}
+	for _, entry := range document.PullRequests {
+		ids = append(ids, entry.MachineID)
+	}
+	for _, entry := range document.Agents {
+		ids = append(ids, entry.MachineID)
+	}
+	if len(ids) < 8 {
+		t.Fatalf("only %d entries to check", len(ids))
+	}
+	for _, id := range ids {
+		if !known[id] {
+			t.Errorf("machine_id %q is not a machine entry's id", id)
+		}
+	}
+	worktreeMachines := map[string]bool{}
+	for _, entry := range document.Worktrees {
+		if entry.Machine == "dup" {
+			worktreeMachines[entry.MachineID] = true
+		}
+	}
+	if len(worktreeMachines) != 2 {
+		t.Errorf("the two dup machines' worktrees share machine_ids %v", worktreeMachines)
+	}
+}
+
+// A published document with nothing in a collection still marshals that
+// collection as an empty list: the browser client rejects a null one.
+func TestPublishedDocumentMarshalsEveryCollectionAsAList(t *testing.T) {
+	t.Parallel()
+	sources := oneRepoSources(t.TempDir())
+	sources.bindings, sources.remote = nil, nil
+	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	if err := snapshotter.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	snapshotter.side.Wait()
+	body, _ := snapshotter.Body()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"machines", "repositories", "worktrees", "branches", "pull_requests", "agents"} {
+		if value := string(raw[name]); !strings.HasPrefix(value, "[") {
+			t.Errorf("%s = %s, want a list", name, value)
 		}
 	}
 }

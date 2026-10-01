@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "nx build cockpit && node tools/finish-build.mjs",
-    "lint": "nx run-many -t lint -p cockpit cockpit-e2e",
+    "lint": "nx run-many -t lint -p cockpit cockpit-e2e fleet-data ui",
     "test": "node tools/check-component-specs.mjs && vitest run --coverage",
     "test:e2e": "playwright test -c apps/cockpit-e2e/playwright.config.ts"
   },

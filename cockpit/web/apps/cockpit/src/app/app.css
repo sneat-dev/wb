@@ -4,11 +4,41 @@
 }
 
 .shell-header {
-  padding: 0.75rem 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1.25rem;
+  padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--p-content-border-color, #ddd);
 }
 
 .shell-title {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: 1.125rem;
+}
+
+.shell-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+}
+
+.shell-nav a {
+  padding: 0.25rem 0.25rem;
+  color: var(--p-text-muted-color);
+  text-decoration: none;
+}
+
+.shell-nav a:hover,
+.shell-nav a.active {
+  color: var(--p-primary-color);
+}
+
+.shell-nav a.active {
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
+}
+
+.shell-main {
+  padding: 0.75rem 1rem;
 }

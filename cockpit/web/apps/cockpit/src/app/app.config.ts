@@ -3,7 +3,7 @@ import {
   provideBrowserGlobalErrorListeners,
   provideZonelessChangeDetection,
 } from '@angular/core'
-import { provideRouter } from '@angular/router'
+import { provideRouter, withComponentInputBinding } from '@angular/router'
 import Aura from '@primeuix/themes/aura'
 import { providePrimeNG } from 'primeng/config'
 import { appRoutes } from './app.routes'
@@ -22,7 +22,7 @@ export function createAppConfig(doc: Document): ApplicationConfig {
     providers: [
       provideBrowserGlobalErrorListeners(),
       provideZonelessChangeDetection(),
-      provideRouter(appRoutes),
+      provideRouter(appRoutes, withComponentInputBinding()),
       providePrimeNG({
         csp: { nonce: readCspNonce(doc) },
         theme: {

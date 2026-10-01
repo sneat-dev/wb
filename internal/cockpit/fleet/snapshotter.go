@@ -708,7 +708,7 @@ func (s *Snapshotter) publishLocked() {
 		document.Worktrees = append(document.Worktrees, entries.worktrees...)
 		document.Branches = append(document.Branches, entries.branches...)
 	}
-	document.PullRequests = pullRequests
+	document.PullRequests = append(document.PullRequests, pullRequests...)
 	for _, record := range s.agents {
 		agent := record.agent
 		if owners := idsBySlug[record.slug]; len(owners) == 1 {
@@ -717,7 +717,7 @@ func (s *Snapshotter) publishLocked() {
 		document.Agents = append(document.Agents, agent)
 	}
 	document.Machines = append(document.Machines, Machine{
-		Entry:     Entry{ID: entryID(kindMachine, s.machine), Machine: s.machine, Route: RouteLocal, ObservedAt: now},
+		Entry:     localEntry(localMachineID(s.machine), s.machine, now),
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 	})
 	document.Machines = append(document.Machines, s.remote.machines...)

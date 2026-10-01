@@ -20,6 +20,6 @@ describe('createAppConfig', () => {
   it('provides the router, PrimeNG and the zoneless runtime', () => {
     const config = createAppConfig(documentWith('<app-root ngCspNonce="n"></app-root>'))
     expect(config.providers.length).toBeGreaterThan(3)
-    expect(appRoutes).toEqual([])
+    expect(appRoutes.length).toBeGreaterThan(5)
   })
 })

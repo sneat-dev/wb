@@ -1,0 +1,69 @@
+<h2 class="page-title">Repositories</h2>
+<app-filter-bar
+  [machines]="store.machineOptions()"
+  [repositories]="repositoryOptions()"
+  [machine]="machine()"
+  [repository]="repository()"
+  (changed)="filter($event)"
+/>
+<div class="table-scroll">
+  <p-table [value]="rows()" dataKey="id" size="small" [stripedRows]="true" [paginator]="rows().length > 50" [rows]="50">
+    <ng-template #header>
+      <tr>
+        <th scope="col">Repository</th>
+        <th scope="col" class="wide">Machine</th>
+        <th scope="col">Source</th>
+        <th scope="col">Worktrees</th>
+        <th scope="col" class="wide">Running agents</th>
+        <th scope="col" class="wide">Default branch</th>
+        <th scope="col">Code</th>
+      </tr>
+    </ng-template>
+    <ng-template #body let-repository>
+      <tr>
+        <td>
+          {{ label(repository) }}
+          <span class="narrow-only machine-sub">{{ repository.machine }}</span>
+          @if (repository.error) {
+            <span class="row-error">could not be read: {{ repository.error }}</span>
+          }
+        </td>
+        <td class="wide">{{ repository.machine }}</td>
+        <td><app-route-label [entry]="repository" [now]="store.now()" /></td>
+        <td>
+          <app-count
+            label="worktrees"
+            [names]="worktreeNames(repository)"
+            target="/worktrees"
+            [query]="{ repository: repository.id }"
+          />
+        </td>
+        <td class="wide">
+          @if (repository.active_agent_count !== undefined) {
+            <app-count
+              label="running agents"
+              [names]="runningAgentNames(repository)"
+              target="/agents"
+              [query]="{ repository: repository.id, state: 'running' }"
+            />
+          } @else {
+            <span class="unknown" title="Not known for a repository on another machine">—</span>
+          }
+        </td>
+        <td class="wide">{{ repository.default_branch ?? '—' }}</td>
+        <td>
+          @if (link(repository); as href) {
+            <a [href]="href" target="_blank" rel="noopener noreferrer" class="code-link">Code</a>
+          } @else {
+            <span class="unknown" [attr.title]="repository.route === 'cached' ? 'The host is not known for a repository on another machine' : 'The origin names no forge host'">—</span>
+          }
+        </td>
+      </tr>
+    </ng-template>
+    <ng-template #emptymessage>
+      <tr>
+        <td colspan="7">No repositories{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
+      </tr>
+    </ng-template>
+  </p-table>
+</div>

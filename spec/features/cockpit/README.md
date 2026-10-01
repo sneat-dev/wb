@@ -146,14 +146,15 @@ A request that passes the two checks above and has no owner session is the
 principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
-- machine name, WB version, route and observation time;
+- machine name, the machine's unique id, WB version, route and observation time;
 - repository forge host, `owner/name` and default branch name;
 - task name, stream name, branch name, lifecycle and owner state, last
   activity time;
 - pull request number, state and URL;
 - agent run and session identifiers, runtime, model and state;
 - counts, durability levels, risk reason codes and code-index freshness;
-- the read model's own `error` code and `agents_truncated` flag.
+- the read model's own `error` code and `agents_truncated` flag;
+- the configured code browser base (`cockpit.code_browser_url`), on the session response.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT

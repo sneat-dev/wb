@@ -625,6 +625,14 @@ func TestSessionRouteReportsPrincipalAndCapabilities(t *testing.T) {
 		!strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") {
 		t.Errorf("session body = %q %v", recorder.Body.String(), recorder.Header())
 	}
+	// The code browser base travels with the session, as configured.
+	if !strings.Contains(recorder.Body.String(), `"code_browser_url":""`) {
+		t.Errorf("an unset base is reported as %q", recorder.Body.String())
+	}
+	configured := newFixture(t, func(options *Options) { options.Config.CodeBrowserURL = "https://code.example.test/" })
+	if body := configured.do(call{target: sessionPath}).Body.String(); !strings.Contains(body, `"code_browser_url":"https://code.example.test/"`) {
+		t.Errorf("session body = %q", body)
+	}
 	// One principal's capabilities are not another's to change.
 	first := anonymousLocal()
 	first.Capabilities[0] = "tampered"
