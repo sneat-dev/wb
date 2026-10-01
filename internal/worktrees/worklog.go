@@ -121,6 +121,14 @@ type WorkLogOptions struct {
 	// the manifest beside it — says the identity was reconstructed rather than
 	// created. Empty for a normal create.
 	AcquiredVia string
+	// Mode is the claim mode: "" or "worktree" (the default, an isolated linked
+	// worktree) or "canonical" (the repository's canonical clone, held under a
+	// lease). A canonical claim requires LeaseExpiresAt.
+	Mode string
+	// LeaseExpiresAt is the instant a canonical claim's lease lapses. It is
+	// computed once by the caller from the creation instant; any later
+	// extension is separate append-only evidence, never a rewrite.
+	LeaseExpiresAt time.Time
 
 	// originalPromptContents is an immutable preflight snapshot. Keeping it in
 	// the options passed through one create/recycle call closes the usual
@@ -178,6 +186,15 @@ type workLogClaim struct {
 	ParentClaimID   string                          `json:"parent_claim_id,omitempty"`
 	AcquiredVia     string                          `json:"acquired_via,omitempty"`
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+	// Mode is "" or "worktree" for a claim on an isolated worktree and
+	// "canonical" for a claim on the repository's canonical clone. It is part
+	// of the claim identity (expectedWorkLogClaimID), so a canonical claim
+	// cannot be rewritten as a worktree claim.
+	Mode string `json:"mode,omitempty"`
+	// LeaseExpiresAt is set exactly on canonical claims: the instant the
+	// original lease lapses. Extensions are appended as lease-extension
+	// evidence (see canonical_claim.go) and never mutate this field.
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 
 	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
 	// only, read at zero cost from the environment by
@@ -532,6 +549,13 @@ func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {
 				claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
 			return errors.New("immutable successor Work Log claim metadata is invalid")
 		}
+	}
+	var lease time.Time
+	if claim.LeaseExpiresAt != nil {
+		lease = *claim.LeaseExpiresAt
+	}
+	if err := validateClaimModeLease(claim.Mode, lease, claim.RecordedAt); err != nil {
+		return err
 	}
 	wantID, err := expectedWorkLogClaimID(claim)
 	if err != nil {
@@ -985,11 +1009,23 @@ func identityFromClaim(claim workLogClaim) ExecutionIdentity {
 }
 
 func workLogClaimID(effort string, result CreateResult) string {
+	return workLogClaimIDForMode(effort, result, "")
+}
+
+// workLogClaimIDForMode covers the claim mode. The default (worktree) mode
+// hashes exactly the fields it always has; a canonical claim additionally
+// hashes its mode, so the same checkout identity cannot be re-presented as a
+// worktree claim.
+func workLogClaimIDForMode(effort string, result CreateResult, mode string) string {
 	hash := sha256.New()
 	// Claim identity is portable: run IDs and machine-local worktree paths are
 	// deliberately absent. The immutable private claim still records and
 	// corroborates the absolute live path.
-	for _, value := range []string{effort, result.Repository, result.Branch, result.Base, result.BaseSHA} {
+	fields := []string{effort, result.Repository, result.Branch, result.Base, result.BaseSHA}
+	if mode == ClaimModeCanonical {
+		fields = append(fields, "mode:"+mode)
+	}
+	for _, value := range fields {
 		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
 		_, _ = io.WriteString(hash, value)
 	}
@@ -1033,7 +1069,7 @@ func declaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition strin
 // validated which acquisition modes its workflow accepts.
 func expectedWorkLogClaimID(claim workLogClaim) (string, error) {
 	if claim.ParentClaimID == "" {
-		return workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}), nil
+		return workLogClaimIDForMode(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}, claim.Mode), nil
 	}
 	switch claim.AcquiredVia {
 	case "external_handoff":
@@ -1079,7 +1115,7 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 		if normalizeErr != nil {
 			return WorkLogPublicationOutcome{}, normalizeErr
 		}
-		want := workLogClaimID(effort, result)
+		want := workLogClaimIDForMode(effort, result, options.Mode)
 		if claim.EffortID != effort || claim.RunID != run || claim.Task != task || claim.Repository != result.Repository ||
 			filepath.Clean(claim.Worktree) != filepath.Clean(result.WorktreeDir) || claim.Branch != result.Branch ||
 			claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
@@ -1207,8 +1243,11 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 	if err != nil {
 		return outcome, err
 	}
+	if err := validateClaimModeLease(options.Mode, options.LeaseExpiresAt, now); err != nil {
+		return outcome, err
+	}
 	outcome.EffortID, outcome.RunID = effort, run
-	claimID := workLogClaimID(effort, result)
+	claimID := workLogClaimIDForMode(effort, result, options.Mode)
 	outcome.ClaimID = claimID
 	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
 	if err != nil {
@@ -1263,7 +1302,7 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		TaskSummary:   taskSummary,
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
-		AcquiredVia:      strings.TrimSpace(options.AcquiredVia),
+		AcquiredVia: strings.TrimSpace(options.AcquiredVia), Mode: options.Mode, LeaseExpiresAt: claimLeaseExpiry(options.LeaseExpiresAt),
 		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
 		EffortLevel: fields.EffortLevel, ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion}
 	claims, err := openPrivateChild(runDir, "claims", true)
