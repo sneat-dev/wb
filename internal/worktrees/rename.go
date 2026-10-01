@@ -1167,23 +1167,15 @@ func normalizeRenameOptions(options RenameOptions) (RenameOptions, error) {
 	if options.NewTask == options.OldTask {
 		return RenameOptions{}, fmt.Errorf("new task %q must differ from old task %q", options.NewTask, options.OldTask)
 	}
-	branchProvided := options.Branch != ""
-	prefixProvided := options.BranchPrefix != ""
-	options.Branch = strings.TrimSpace(options.Branch)
-	// Existing direct Go callers pass nonempty branch fields without a separate
-	// presence bit. Retain that contract; the booleans only carry an explicit
-	// empty CLI value that must not silently fall back to policy.
-	options.BranchChosen = options.BranchChosen || branchProvided
-	options.BranchPrefixChosen = options.BranchPrefixChosen || prefixProvided
-	if options.BranchPrefixChosen && strings.TrimSpace(options.BranchPrefix) != options.BranchPrefix {
-		return RenameOptions{}, fmt.Errorf("branch prefix must not have surrounding whitespace")
+	selection, err := normalizeBranchNamingOptions(branchNamingOptions{
+		ExactBranch: options.Branch, ExactBranchChosen: options.BranchChosen,
+		CLIPrefix: options.BranchPrefix, CLIPrefixChosen: options.BranchPrefixChosen,
+	})
+	if err != nil {
+		return RenameOptions{}, err
 	}
-	if options.BranchChosen && options.BranchPrefixChosen {
-		return RenameOptions{}, fmt.Errorf("--branch and --branch-prefix cannot be used together")
-	}
-	if options.BranchChosen && options.Branch == "" {
-		return RenameOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
-	}
+	options.Branch, options.BranchChosen = selection.ExactBranch, selection.ExactBranchChosen
+	options.BranchPrefix, options.BranchPrefixChosen = selection.CLIPrefix, selection.CLIPrefixChosen
 	ctx := context.Background()
 	if options.Branch != "" && !validBranch(ctx, options.Branch) {
 		return RenameOptions{}, fmt.Errorf("invalid feature branch %q", options.Branch)

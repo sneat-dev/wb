@@ -269,6 +269,27 @@ type branchNamingOptions struct {
 	Base              string
 }
 
+// normalizeBranchNamingOptions retains legacy nonempty Go API values while
+// preserving the meaningful explicit empty CLI prefix and rejecting an empty
+// chosen branch. Branch selection precedes each caller's remaining validation.
+func normalizeBranchNamingOptions(options branchNamingOptions) (branchNamingOptions, error) {
+	branchProvided := options.ExactBranch != ""
+	prefixProvided := options.CLIPrefix != ""
+	options.ExactBranch = strings.TrimSpace(options.ExactBranch)
+	options.ExactBranchChosen = options.ExactBranchChosen || branchProvided
+	options.CLIPrefixChosen = options.CLIPrefixChosen || prefixProvided
+	if options.CLIPrefixChosen && strings.TrimSpace(options.CLIPrefix) != options.CLIPrefix {
+		return branchNamingOptions{}, fmt.Errorf("branch prefix must not have surrounding whitespace")
+	}
+	if options.ExactBranchChosen && options.CLIPrefixChosen {
+		return branchNamingOptions{}, fmt.Errorf("--branch and --branch-prefix cannot be used together")
+	}
+	if options.ExactBranchChosen && options.ExactBranch == "" {
+		return branchNamingOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
+	}
+	return options, nil
+}
+
 func deriveBranchName(ctx context.Context, options branchNamingOptions) (string, error) {
 	if options.ExactBranchChosen && options.CLIPrefixChosen {
 		return "", fmt.Errorf("--branch and --branch-prefix cannot be used together")

@@ -1799,23 +1799,15 @@ func normalizeCreateOptions(options CreateOptions) (CreateOptions, error) {
 	if options.Base == "" {
 		options.Base = "main"
 	}
-	branchProvided := options.Branch != ""
-	prefixProvided := options.BranchPrefix != ""
-	options.Branch = strings.TrimSpace(options.Branch)
-	// Preserve source compatibility for callers of the Go API that predate the
-	// explicit-presence booleans. The booleans are needed only to distinguish an
-	// omitted value from an explicitly empty CLI flag.
-	options.BranchChosen = options.BranchChosen || branchProvided
-	options.BranchPrefixChosen = options.BranchPrefixChosen || prefixProvided
-	if options.BranchPrefixChosen && strings.TrimSpace(options.BranchPrefix) != options.BranchPrefix {
-		return CreateOptions{}, fmt.Errorf("branch prefix must not have surrounding whitespace")
+	selection, err := normalizeBranchNamingOptions(branchNamingOptions{
+		ExactBranch: options.Branch, ExactBranchChosen: options.BranchChosen,
+		CLIPrefix: options.BranchPrefix, CLIPrefixChosen: options.BranchPrefixChosen,
+	})
+	if err != nil {
+		return CreateOptions{}, err
 	}
-	if options.BranchChosen && options.BranchPrefixChosen {
-		return CreateOptions{}, fmt.Errorf("--branch and --branch-prefix cannot be used together")
-	}
-	if options.BranchChosen && options.Branch == "" {
-		return CreateOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
-	}
+	options.Branch, options.BranchChosen = selection.ExactBranch, selection.ExactBranchChosen
+	options.BranchPrefix, options.BranchPrefixChosen = selection.CLIPrefix, selection.CLIPrefixChosen
 	ctx := context.Background()
 	if err := branchValidationError(ctx, "base branch", options.Base); err != nil {
 		return CreateOptions{}, err
