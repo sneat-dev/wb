@@ -91,10 +91,14 @@ func (fixture legacyMissingClaimNativeFixture) assertNoRecoveryPublication(t *te
 func assertLegacyEvidenceBytesUnchanged(t *testing.T, paths ...string) func() {
 	t.Helper()
 	before := make(map[string][]byte, len(paths))
+	missing := make([]string, 0, len(paths))
 	for _, path := range paths {
 		content, err := os.ReadFile(path)
-		if err == nil {
+		switch {
+		case err == nil:
 			before[path] = content
+		case errors.Is(err, os.ErrNotExist):
+			missing = append(missing, path)
 		}
 	}
 	return func() {
@@ -102,6 +106,11 @@ func assertLegacyEvidenceBytesUnchanged(t *testing.T, paths ...string) func() {
 		for path, content := range before {
 			if after, err := os.ReadFile(path); err != nil || string(after) != string(content) {
 				t.Fatalf("refusal changed immutable evidence %s: %q, %v", path, after, err)
+			}
+		}
+		for _, path := range missing {
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("refusal published new immutable evidence at %s: %v", path, err)
 			}
 		}
 	}
