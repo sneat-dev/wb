@@ -96,7 +96,6 @@ func TestRepositoryRelocationReceiptRefusesUnboundOrUnreadableEvidence(t *testin
 			if err := os.WriteFile(fixture.directory, []byte("blocked"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.Rename(backup, fixture.directory) })
 		}},
 		{"malformed durable journal", "decode relocation journal", func(t *testing.T, fixture repositoryRelocationReceiptFixture, _ *workLogRelocationIntent) {
 			if err := os.WriteFile(filepath.Join(fixture.directory, fixture.claim.ClaimID+"-bad.completed.json"), []byte("{"), 0o600); err != nil {

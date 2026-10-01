@@ -89,6 +89,11 @@ func TestE2ERepositoryTransferPreReceiptFailureKeepsClaimAndIntent(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	claimPath := filepath.Join(fixture.home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims", claim.ClaimID+".json")
+	claimBytes, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sourceHead := gitTestOutput(t, sourceWorktree, "rev-parse", "HEAD")
 	fixture.moveRemote(t)
 	remoteHead := gitTestOutput(t, fixture.newRemote, "rev-parse", "refs/heads/main")
@@ -111,6 +116,9 @@ func TestE2ERepositoryTransferPreReceiptFailureKeepsClaimAndIntent(t *testing.T)
 	retained, _, _, err := activeWorkLogClaim(fixture.home, sourceWorktree)
 	if err != nil || retained.ClaimID != claim.ClaimID {
 		t.Fatalf("rollback lost original active claim: %#v, %v", retained, err)
+	}
+	if after, err := os.ReadFile(claimPath); err != nil || string(after) != string(claimBytes) {
+		t.Fatalf("rollback changed immutable claim bytes: %q, %v", after, err)
 	}
 	run, runPath, err := openWorkLogRun(fixture.home, claim.EffortID, claim.RunID, false)
 	if err != nil {
