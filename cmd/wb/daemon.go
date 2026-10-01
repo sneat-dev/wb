@@ -2489,6 +2489,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	if _, err := nodeidentity.LoadFile(nodeidentity.PathFromHome(location.Home), nil); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: node identity unavailable:", err)
 	}
+	// A malformed cockpit: section is an operator mistake worth refusing to
+	// start over, not a surface to silently run with defaults.
+	cockpitConfig, err := wbconfig.LoadCockpit(hubConfigPath())
+	if err != nil {
+		return fmt.Errorf("load the cockpit configuration: %w", err)
+	}
 	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
 		return fmt.Errorf("mount the bench hub: %w", err)
@@ -2512,7 +2518,7 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
-		Mounts: cockpit.MountsWith(mount.handlers(), cockpit.CanonicalHost(address)), Hub: mount.hubHealth(), LogPath: logPath,
+		Mounts: cockpit.MountsWith(mount.handlers(), cockpit.Options{CanonicalHost: cockpit.CanonicalHost(address), Config: cockpitConfig}), Hub: mount.hubHealth(), LogPath: logPath,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)

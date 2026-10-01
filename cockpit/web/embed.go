@@ -37,9 +37,6 @@ const notBuiltPage = "Cockpit was not built into this wb binary. " +
 // unreachable branch.
 var distFS, _ = fs.Sub(Dist, "dist")
 
-// Built reports whether a real application is embedded.
-func Built() bool { return builtIn(distFS) }
-
 func builtIn(files fs.FS) bool {
 	_, err := fs.Stat(files, indexPage)
 	return err == nil
@@ -48,13 +45,9 @@ func builtIn(files fs.FS) bool {
 // Handler serves the embedded application under MountPath, or the one-line
 // not-built page when none is embedded. Mount it at MountPath; the prefix is
 // stripped here so the caller does not have to.
-func Handler() http.Handler { return handlerFor(distFS) }
+func Handler() http.Handler { return HandlerFor(distFS) }
 
-// UnbuiltHandler is Handler as served by a binary with no application
-// embedded, whatever this checkout's dist holds, for tests of callers.
-func UnbuiltHandler() http.Handler { return handlerFor(embed.FS{}) }
-
-// handlerFor is Handler over an injectable tree, so the built and not-built
+// HandlerFor is Handler over an injectable tree, so the built and not-built
 // pages are both testable in a checkout that has only one of them.
 //
 // Only GET and HEAD are answered. A path with no file extension is a
@@ -62,7 +55,7 @@ func UnbuiltHandler() http.Handler { return handlerFor(embed.FS{}) }
 // names no file is a missing asset and gets 404, never HTML. The entry
 // document, the fallback and the not-built page are sent no-cache so a new wb
 // binary's application is never masked by a stale one.
-func handlerFor(files fs.FS) http.Handler {
+func HandlerFor(files fs.FS) http.Handler {
 	built := builtIn(files)
 	return http.StripPrefix(strings.TrimSuffix(MountPath, "/"), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {

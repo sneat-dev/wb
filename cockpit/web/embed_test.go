@@ -42,7 +42,7 @@ func builtTree() fs.FS {
 
 func TestEmbeddedPlaceholderIsNotBuiltAndServesTheOneLinePage(t *testing.T) {
 	t.Parallel()
-	if Built() {
+	if builtIn(distFS) {
 		t.Skip("a real Cockpit build is embedded in this checkout")
 	}
 	response, body := get(t, Handler(), "/cockpit/")
@@ -57,7 +57,7 @@ func TestEmbeddedPlaceholderIsNotBuiltAndServesTheOneLinePage(t *testing.T) {
 func TestUnbuiltTreeServesTheNotBuiltPageOnEveryPath(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"/cockpit/", "/cockpit/fleet", "/cockpit"} {
-		response, body := get(t, handlerFor(fstest.MapFS{".gitkeep": {}}), target)
+		response, body := get(t, HandlerFor(fstest.MapFS{".gitkeep": {}}), target)
 		if response.StatusCode != http.StatusOK || body != notBuiltPage {
 			t.Errorf("%s = %d %q", target, response.StatusCode, body)
 		}
@@ -66,7 +66,7 @@ func TestUnbuiltTreeServesTheNotBuiltPageOnEveryPath(t *testing.T) {
 
 func TestBuiltTreeServesFilesAndFallsBackToTheEntryDocument(t *testing.T) {
 	t.Parallel()
-	handler := handlerFor(builtTree())
+	handler := HandlerFor(builtTree())
 	for target, want := range map[string]string{
 		"/cockpit/":            "text/html; charset=utf-8",
 		"/cockpit/fleet/alpha": "text/html; charset=utf-8",
@@ -103,7 +103,7 @@ func (statOnlyFS) Stat(name string) (fs.FileInfo, error) {
 
 func TestBuiltTreeWhoseEntryDocumentCannotBeReadAnswersNotFound(t *testing.T) {
 	t.Parallel()
-	response, _ := get(t, handlerFor(statOnlyFS{}), "/cockpit/")
+	response, _ := get(t, HandlerFor(statOnlyFS{}), "/cockpit/")
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", response.StatusCode)
 	}
@@ -111,7 +111,7 @@ func TestBuiltTreeWhoseEntryDocumentCannotBeReadAnswersNotFound(t *testing.T) {
 
 func TestMissingAssetIs404ButClientRoutesFallBack(t *testing.T) {
 	t.Parallel()
-	handler := handlerFor(builtTree())
+	handler := HandlerFor(builtTree())
 	for target, want := range map[string]int{
 		"/cockpit/missing.js":    404,
 		"/cockpit/chunk-ABC.css": 404,
@@ -133,7 +133,7 @@ func TestMissingAssetIs404ButClientRoutesFallBack(t *testing.T) {
 
 func TestOnlyGetAndHeadAreAnswered(t *testing.T) {
 	t.Parallel()
-	for _, handler := range []http.Handler{handlerFor(builtTree()), UnbuiltHandler()} {
+	for _, handler := range []http.Handler{HandlerFor(builtTree()), HandlerFor(fstest.MapFS{})} {
 		for method, want := range map[string]int{"GET": 200, "HEAD": 200, "POST": 405, "PUT": 405, "DELETE": 405} {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, httptest.NewRequest(method, "/cockpit/", nil))
@@ -149,7 +149,7 @@ func TestOnlyGetAndHeadAreAnswered(t *testing.T) {
 
 func TestEntryFallbackAndNotBuiltPageAreNoCacheButAssetsAreNot(t *testing.T) {
 	t.Parallel()
-	built := handlerFor(builtTree())
+	built := HandlerFor(builtTree())
 	for target, want := range map[string]string{
 		"/cockpit/":            "no-cache",
 		"/cockpit/index.html":  "no-cache",
@@ -160,7 +160,7 @@ func TestEntryFallbackAndNotBuiltPageAreNoCacheButAssetsAreNot(t *testing.T) {
 			t.Errorf("%s Cache-Control = %q, want %q", target, response.Header.Get("Cache-Control"), want)
 		}
 	}
-	if response, _ := get(t, UnbuiltHandler(), "/cockpit/"); response.Header.Get("Cache-Control") != "no-cache" {
+	if response, _ := get(t, HandlerFor(fstest.MapFS{}), "/cockpit/"); response.Header.Get("Cache-Control") != "no-cache" {
 		t.Errorf("not-built Cache-Control = %q", response.Header.Get("Cache-Control"))
 	}
 }

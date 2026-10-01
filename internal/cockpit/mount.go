@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/sneat-dev/wb/cockpit/web"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 // APIHandler answers every Cockpit API route. No route exists yet, so each
@@ -20,18 +21,27 @@ func APIHandler() http.Handler {
 	})
 }
 
-// Mounts returns Cockpit's two subtrees, each behind Guard with the given
-// canonical host (see CanonicalHost), in the shape
+// Options is what the daemon hands Cockpit at startup.
+type Options struct {
+	// CanonicalHost is the loopback name the listener has (see CanonicalHost).
+	CanonicalHost string
+	// Config is wb.yaml's cockpit: section, after defaults. Later tasks read
+	// it; for now it is only carried.
+	Config wbconfig.CockpitConfig
+}
+
+// Mounts returns Cockpit's two subtrees, each behind Guard with the options'
+// canonical host, in the shape
 // dashboard.Options.Mounts takes. They are mounted whether or not wb.yaml has
 // a hub: section.
-func Mounts(canonical string) map[string]http.Handler {
-	return mountsFor(canonical, web.Handler())
+func Mounts(options Options) map[string]http.Handler {
+	return mountsFor(options.CanonicalHost, web.Handler())
 }
 
 // MountsWith returns Cockpit's mounts added to others (the hub's, which is nil
 // without a hub: section). The others are copied, never modified.
-func MountsWith(others map[string]http.Handler, canonical string) map[string]http.Handler {
-	return mergeMounts(others, Mounts(canonical))
+func MountsWith(others map[string]http.Handler, options Options) map[string]http.Handler {
+	return mergeMounts(others, Mounts(options))
 }
 
 func mergeMounts(base, extra map[string]http.Handler) map[string]http.Handler {

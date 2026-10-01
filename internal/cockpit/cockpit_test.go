@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/sneat-dev/wb/cockpit/web"
@@ -151,7 +152,7 @@ func TestMountsServeBothSubtreesBehindTheGuard(t *testing.T) {
 
 func TestUnbuiltCockpitPageIsOneLinePlainText(t *testing.T) {
 	t.Parallel()
-	unbuilt := web.UnbuiltHandler()
+	unbuilt := web.HandlerFor(fstest.MapFS{})
 	recorder := do(mountsFor("127.0.0.1", unbuilt)[PagePrefix], "127.0.0.1:8766", "/cockpit/")
 	body := recorder.Body.String()
 	if recorder.Code != 200 || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/plain") ||
@@ -162,7 +163,7 @@ func TestUnbuiltCockpitPageIsOneLinePlainText(t *testing.T) {
 
 func TestMountsServesTheEmbeddedApplicationBehindTheGuard(t *testing.T) {
 	t.Parallel()
-	mounts := Mounts("127.0.0.1")
+	mounts := Mounts(Options{CanonicalHost: "127.0.0.1"})
 	if recorder := do(mounts[PagePrefix], "127.0.0.1:1", "/cockpit/"); recorder.Code != 200 {
 		t.Errorf("page = %d", recorder.Code)
 	}
@@ -174,11 +175,11 @@ func TestMountsServesTheEmbeddedApplicationBehindTheGuard(t *testing.T) {
 func TestMountsWithKeepsTheOthersAndDoesNotModifyThem(t *testing.T) {
 	t.Parallel()
 	hub := map[string]http.Handler{"/workbench/": served}
-	merged := MountsWith(hub, "127.0.0.1")
+	merged := MountsWith(hub, Options{CanonicalHost: "127.0.0.1"})
 	if len(hub) != 1 || len(merged) != 3 || merged["/workbench/"] == nil || merged[PagePrefix] == nil || merged[APIPrefix] == nil {
 		t.Fatalf("hub = %v, merged = %v", hub, merged)
 	}
-	if len(MountsWith(nil, "::1")) != 2 {
+	if len(MountsWith(nil, Options{CanonicalHost: "::1"})) != 2 {
 		t.Fatal("Cockpit is not mounted without a hub")
 	}
 }
@@ -201,7 +202,7 @@ func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 	hub := map[string]http.Handler{"/workbench/": served, "/v0/workbench/": served}
 	for name, others := range map[string]map[string]http.Handler{"hub": hub, "no hub": nil} {
 		before := dashboard.NewHandler(options(others))
-		after := dashboard.NewHandler(options(MountsWith(others, "127.0.0.1")))
+		after := dashboard.NewHandler(options(MountsWith(others, Options{CanonicalHost: "127.0.0.1"})))
 		for _, target := range []string{"/", "/metrics", "/coverage", "/api/v1/health", "/api/v1/overview", "/api/v1/log", "/api/v1/peers", "/workbench/", "/v0/workbench/x", "/nowhere"} {
 			want, got := do(before, "127.0.0.1:8766", target), do(after, "127.0.0.1:8766", target)
 			if want.Code != got.Code || cacheHit.ReplaceAllString(want.Body.String(), "") != cacheHit.ReplaceAllString(got.Body.String(), "") || !reflect.DeepEqual(want.Header(), got.Header()) {
