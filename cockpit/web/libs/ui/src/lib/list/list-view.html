@@ -1,0 +1,111 @@
+<div class="layout" [class.with-panel]="panelOpen()">
+  <section class="list" [attr.aria-label]="noun()" [attr.inert]="sheet() && panelOpen() ? '' : null">
+    <app-list-toolbar
+      [id]="id"
+      [noun]="noun()"
+      [text]="text()"
+      [fields]="fields()"
+      [shown]="result().rows.length"
+      [total]="result().total"
+      [chips]="chips()"
+      [activeChips]="query().chips"
+      [machines]="machines()"
+      [activeMachines]="query().machines"
+      (edited)="setText($event)"
+      (chipToggled)="toggleChip($event)"
+      (machineToggled)="toggleMachine($event)"
+    />
+
+    <div
+      #viewport
+      class="viewport"
+      role="grid"
+      tabindex="0"
+      [attr.aria-label]="noun()"
+      [attr.aria-rowcount]="result().rows.length + 1"
+      [attr.aria-colcount]="shown().length + 1"
+      [style.--cols]="tracks()"
+      [attr.aria-activedescendant]="activeId()"
+      [attr.aria-busy]="skeleton()"
+      (scroll)="scrolled()"
+      (click)="clicked($event)"
+      (keydown)="keydown($event)"
+    >
+      <div class="head" role="row" aria-rowindex="1">
+        @for (column of shown(); track column.id) {
+          <div class="cell" role="columnheader" [class.end]="column.align === 'end'" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
+            @if (column.sort; as sortId) {
+              <button type="button" class="sort" (click)="sortBy(sortId)">
+                {{ column.header }}
+                @if (sort().sort === sortId) {
+                  <app-glyph [paths]="sort().dir === 'asc' ? up : down" />
+                }
+              </button>
+            } @else {
+              {{ column.header }}
+            }
+          </div>
+        }
+        <div class="cell open-cell" role="columnheader" aria-label="Open page"></div>
+      </div>
+
+      @if (skeleton()) {
+        <div class="body" aria-hidden="true">
+          @for (n of skeletonRows; track n) {
+            <div class="row skeleton"><span class="bar"></span></div>
+          }
+        </div>
+      } @else if (result().rows.length === 0) {
+        <div class="empty" role="status">
+          @if (items().length === 0) {
+            <span>Nothing has been observed yet: no {{ noun() }}.</span>
+          } @else {
+            <span>No {{ noun() }} match {{ nothingMatched() }}.</span>
+            <button type="button" class="clear-filters" (click)="clearFilters()">Clear filters</button>
+          }
+        </div>
+      } @else {
+        <div class="body" [style.height.px]="total()">
+          <div class="window" [style.transform]="'translateY(' + visible().offset + 'px)'">
+            @for (item of visible().rows; track item.row.id) {
+              <div
+                class="row"
+                role="row"
+                [id]="id + '-row-' + item.index"
+                [class.focused]="item.index === focused()"
+                [class.selected]="item.row.id === selected()?.id"
+                [attr.aria-selected]="item.row.id === selected()?.id"
+                [attr.aria-rowindex]="item.index + 2"
+                [attr.data-index]="item.index"
+              >
+                @for (column of shown(); track column.id) {
+                  <div class="cell" role="gridcell" [class.end]="column.align === 'end'" [attr.title]="column.value?.(item.row.item) ?? null">
+                    @if (cellOf(column.id); as template) {
+                      <ng-container [ngTemplateOutlet]="template" [ngTemplateOutletContext]="{ $implicit: item.row.item, row: item.row }" />
+                    } @else {
+                      {{ column.value?.(item.row.item) }}
+                    }
+                  </div>
+                }
+                <div class="cell open-cell" role="gridcell">
+                  <a class="open" tabindex="-1" [routerLink]="detail(item.row.item).path" [queryParams]="detail(item.row.item).query" [attr.aria-label]="'Open ' + name(item.row.item)" [attr.title]="'Open the page (o)'"><app-glyph [paths]="open" /></a>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+      }
+    </div>
+    <span class="visually-hidden" role="status">{{ announcer.message() }}</span>
+  </section>
+
+  @if (panelTemplate(); as panel) {
+    @if (selected(); as row) {
+      <app-side-panel [label]="panelLabel()(row.item)" (closed)="closePanel()">
+        <ng-container [ngTemplateOutlet]="panel.template" [ngTemplateOutletContext]="{ $implicit: row.item, row: row }" />
+      </app-side-panel>
+    } @else if (vanished()) {
+      <app-side-panel label="Details" (closed)="closePanel()"><p class="gone">This is no longer in the fleet.</p></app-side-panel>
+    }
+  }
+</div>

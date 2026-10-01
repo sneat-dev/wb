@@ -40,7 +40,7 @@ const indexed: CodeIndex[] = [
 describe('CodeIndexPanel', () => {
   it('shows the freshness, the three totals and the symbols by kind of an indexed checkout', async () => {
     const root = await render(local, indexed, 'codegrapher')
-    expect(text(root.querySelector('.panel-freshness'))).toBe('Freshness: fresh 5 min ago')
+    expect(text(root.querySelector('.panel-freshness'))).toBe('fresh 5 min ago')
     expect([...root.querySelectorAll('.totals div')].map((item) => text(item))).toEqual(['Files12', 'Symbols40', 'Edges90'])
     expect([...root.querySelectorAll('.kinds li')].map((item) => text(item))).toEqual(['function30', 'struct10'])
   })

@@ -490,7 +490,7 @@ describe('machines and Fleet health', () => {
   // cockpit-views#ac:fleet-health-only-when-not-ok (the lines the library derives)
   it('is ok for a fleet in which every machine is live and current', () => {
     const model = modelOf({ machines: [m('alpha', { wb_version: '0.176.0' }), m('beta', { route: 'cached', wb_version: '0.176.0', observed_at: ago(HOUR) })], repositories: [repository('r1', 'alpha')] })
-    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] })
+    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], scanErrors: [] })
   })
 
   it('shows a stale machine, an older WB and a scan error, each with a command to copy', () => {
@@ -536,6 +536,22 @@ describe('machines and Fleet health', () => {
     expect(byCode['timeout'].link).toEqual({ path: '/machines', query: { machine: 'mach-vm4' } })
   })
 
+  it('lists a machine that is warming up without a command, and one whose export was too large with the export to try', () => {
+    const model = modelOf({ machines: [m('vm', { route: 'cached', remote_error: 'remote_warming_up', observed_at: ago(HOUR) }), m('big', { route: 'cached', remote_error: 'export_too_large', observed_at: ago(HOUR) })] })
+    const [warming, big] = buildHealth(model).remoteErrors
+    expect(warming.command).toEqual({ reason: expect.stringContaining('nothing to run') })
+    expect(big.command).toMatchObject({ text: "wb cockpit export --format='json'" })
+    expect(remoteFix('remote_warming_up', undefined)).toMatchObject({ ok: false })
+  })
+
+  it('lists a machine whose export left entries out, and nothing for zero or an unreported count', () => {
+    const model = modelOf({ machines: [m('vm', { route: 'cached', export_dropped: 3, observed_at: ago(HOUR) }), m('one', { route: 'cached', export_dropped: 1, observed_at: ago(HOUR) }), m('ok', { route: 'cached', export_dropped: 0, observed_at: ago(HOUR) }), m('none', { route: 'cached', observed_at: ago(HOUR) })] })
+    const health = buildHealth(model)
+    expect(health.ok).toBe(false)
+    expect(health.exportDropped.map((item) => item.text)).toEqual(["3 entries left out of vm's export", "1 entry left out of one's export"])
+    expect(health.exportDropped[0].command).toMatchObject({ text: "wb cockpit export --format='json'", label: 'run on vm' })
+  })
+
   it('shows the reason instead of a command when the SSH route of a machine is hostile', () => {
     const model = new FleetModel(fleetDocument({ machines: [m('vm', { route: 'cached', remote_error: 'timeout', observed_at: ago(HOUR) })], repositories: [], worktrees: [], agents: [], pull_requests: [] }), {
       now: () => NOW,
@@ -545,7 +561,7 @@ describe('machines and Fleet health', () => {
   })
 
   it('says each remote_error in words, and an unknown code as an unknown error', () => {
-    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload']) {
+    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload', 'remote_warming_up', 'export_too_large']) {
       expect(remoteErrorText(code)).not.toBe('unknown error')
     }
     expect(remoteErrorText('???')).toBe('unknown error')
@@ -576,29 +592,37 @@ describe('throughput', () => {
       throughput: {
         window_days: 5,
         per_day: [
-          { date: '2026-10-01', landed: 2 },
-          { date: '2026-09-29', landed: 1 },
-          { date: '2026-08-01', landed: 9 },
+          { date: '2026-10-01', finished: 3, dropped: 1, landed: 2 },
+          { date: '2026-09-29', finished: 1, dropped: 0 },
+          { date: '2026-08-01', finished: 9, dropped: 9, landed: 9 },
         ],
         slowest: [1, 2, 3, 4, 5, 6].map((n) => ({ task: `t${n}`, duration_seconds: n * 100, landed_at: OBSERVED })),
+        median_seconds: 300,
+        p90_seconds: 600,
+        capped: true,
       },
     })
     const series = buildThroughput(model)
     expect(series?.perDay).toEqual([
-      { date: '2026-09-27', landed: 0 },
-      { date: '2026-09-28', landed: 0 },
-      { date: '2026-09-29', landed: 1 },
-      { date: '2026-09-30', landed: 0 },
-      { date: '2026-10-01', landed: 2 },
+      { date: '2026-09-27', finished: 0, dropped: 0, landed: 0 },
+      { date: '2026-09-28', finished: 0, dropped: 0, landed: 0 },
+      { date: '2026-09-29', finished: 1, dropped: 0, landed: 0 },
+      { date: '2026-09-30', finished: 0, dropped: 0, landed: 0 },
+      { date: '2026-10-01', finished: 3, dropped: 1, landed: 2 },
     ])
-    expect([series?.windowDays, series?.totalLanded, series?.maxLanded]).toEqual([5, 3, 2])
+    expect(series).toMatchObject({ windowDays: 5, totalFinished: 4, totalDropped: 1, maxPerDay: 4, hasLanded: true, totalLanded: 2, maxLanded: 2, medianSeconds: 300, p90Seconds: 600, capped: true })
     expect(series?.slowest.map((entry) => [entry.task, entry.durationSeconds])).toEqual([['t6', 600], ['t5', 500], ['t4', 400], ['t3', 300], ['t2', 200]])
     expect(Object.keys(series?.slowest[0] ?? {})).not.toContain('link')
   })
 
+  it('has no landed series when no day has a landed count, and no caption numbers without finished tasks', () => {
+    const series = buildThroughput(modelOf({ throughput: { window_days: 2, per_day: [{ date: '2026-10-01', finished: 0, dropped: 2 }], slowest: [] } }))
+    expect(series).toMatchObject({ hasLanded: false, totalLanded: 0, maxPerDay: 2, medianSeconds: undefined, p90Seconds: undefined, capped: false })
+  })
+
   it('has no series without the block, and a window of no landings has a maximum of 0', () => {
     expect(buildThroughput(modelOf({}))).toBeUndefined()
-    expect(buildThroughput(modelOf({ throughput: { window_days: 2, per_day: [], slowest: [] } }))).toMatchObject({ totalLanded: 0, maxLanded: 0 })
+    expect(buildThroughput(modelOf({ throughput: { window_days: 2, per_day: [], slowest: [] } }))).toMatchObject({ totalLanded: 0, maxLanded: 0, maxPerDay: 0, hasLanded: false })
     expect(buildThroughput(modelOf({ throughput: { window_days: 0, per_day: [], slowest: [] } }))?.perDay).toEqual([])
   })
 })
@@ -695,11 +719,12 @@ describe('review fixes', () => {
     const model = modelOf({
       repositories: REPOS,
       worktrees: [wt('w1', 'a')],
-      pull_requests: [{ ...pr('p1', 'w1'), route: 'cached', machine: 'vm', machine_id: 'mach-vm' }, pr('p2', 'w1', { checked_at: undefined, state: undefined })],
+      pull_requests: [{ ...pr('p1', 'w1'), route: 'cached', machine: 'vm', machine_id: 'mach-vm' }, pr('p3', 'w1'), pr('p2', 'w1', { checked_at: undefined, state: undefined })],
     })
     const row = model.readyToLand.ready[0]
     expect(row.unobservedPullRequests).toBe(1)
-    expect(row.pullRequests[0]).toMatchObject({ landCommand: "wb pr land 'sneat-dev/wb#1'", landLabel: 'run on vm' })
+    expect(row.pullRequests[0]).toMatchObject({ landCommand: "wb pr land 'sneat-dev/wb#1'", landLabel: 'run on vm', machine: 'vm', machineId: 'mach-vm', remote: true })
+    expect(row.pullRequests[1]).toMatchObject({ machine: 'alpha', remote: false })
     expect(modelOf({ worktrees: [wt('w1', 'a')], pull_requests: [pr('p1', 'w1')] }).readyToLand.ready[0].pullRequests[0].landLabel).toBeUndefined()
   })
 
@@ -787,3 +812,54 @@ describe('review fixes', () => {
 function m(name: string, extra: Record<string, unknown> = {}) {
   return { ...machine(name), ...extra }
 }
+
+
+describe('the trust rule: where a task\'s state is decided', () => {
+  const remote = { route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' }
+
+  // cockpit-views#ac:task-state-ready-to-land
+  it('says a task with an entry of this machine is decided here, and one with only other machines\' entries is reported by them', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'mine'), wt('w2', 'theirs', remote)],
+      pull_requests: [pr('p1', 'w2', remote)],
+      agents: [agent('a1', 'r1', 'live', { task: 'theirs', ...remote })],
+    })
+    expect(model.taskNamed('mine')).toMatchObject({ stateSource: 'local', reportedBy: [{ id: 'mach-alpha', name: 'alpha' }] })
+    expect(model.taskNamed('theirs')).toMatchObject({ stateSource: 'remote', state: 'ready', reportedBy: [{ id: 'mach-vm', name: 'vm' }] })
+  })
+
+  it('lists a ready task decided elsewhere without a land command, and keeps the command of a local one', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'mine'), wt('w2', 'theirs', remote)],
+      pull_requests: [pr('p1', 'w1'), pr('p2', 'w2', remote)],
+    })
+    const rows = model.readyToLand.ready
+    expect(rows.map((row) => [row.task, row.stateSource])).toEqual(expect.arrayContaining([['mine', 'local'], ['theirs', 'remote']]))
+    const theirs = rows.find((row) => row.task === 'theirs')
+    expect(theirs?.reportedBy).toEqual([{ id: 'mach-vm', name: 'vm' }])
+    expect(theirs?.pullRequests[0]).toMatchObject({ landCommand: undefined, landLabel: undefined, machine: 'vm', remote: true })
+    expect(rows.find((row) => row.task === 'mine')?.pullRequests[0].landCommand).toBe("wb pr land 'sneat-dev/wb#1'")
+  })
+
+  it('does not let a ready pull request of another machine make a local task ready, and marks the waiting rows', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'mine'), wt('w2', 'later')],
+      pull_requests: [pr('p1', 'w1', remote), pr('p2', 'w2', { checks_green: false, checks_pending: 1 })],
+    })
+    expect(model.taskNamed('mine')?.state).toBe('not-ready')
+    expect(model.readyToLand.ready).toEqual([])
+    expect(model.readyToLand.notReady.map((row) => [row.task, row.stateSource])).toEqual([['later', 'local']])
+  })
+
+  it('carries the state source on every Needs you row', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'theirs', remote), wt('w2', 'mine', { owner_state: 'orphaned', ahead: 1 })],
+      pull_requests: [pr('p1', 'w1', { ...remote, checks_failed: 1, checks_green: false, failed_check: 'unit' })],
+    })
+    expect(model.needsYou.items.map((item) => [item.task, item.kind, item.stateSource])).toEqual([['mine', 'work-at-risk', 'local'], ['theirs', 'pr-checks-failed', 'remote']])
+  })
+})

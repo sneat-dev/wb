@@ -19,7 +19,7 @@ primary object and the control surface in which the actions of `cockpit-actions`
 live. Schema version 2 of the fleet read model with compression, lazy branches and
 new fields, machine metrics (local, live remote and cached), pull request state and
 checks, agent activity, periodic remote publish with agents and metrics, and
-landed-task throughput; a `fleet-data` library with the matcher, filter vocabulary,
+sealed-work throughput; a `fleet-data` library with the matcher, filter vocabulary,
 task lifecycle and view model; a shell with palette and side panel; and Home, Tasks,
 Repositories, Worktrees, Agents and Machines pages.
 
@@ -141,14 +141,14 @@ Nothing publishes `os`, `arch`, `cpu_count` or `boot_time` yet (task 1 added the
 
 Verification (all must pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 
-### Task 6: Backend: landed-task throughput collector
+### Task 6: Backend: sealed-work throughput collector
 
 **Id:** task-6
-**Verifies:** cockpit-views#ac:throughput-block-from-terminal-records, cockpit-views#ac:throughput-is-omitted-without-timestamps
+**Verifies:** cockpit-views#ac:throughput-block-from-sealed-records, cockpit-views#ac:throughput-is-omitted-without-timestamps
 **Depends-On:** 5
-**Status:** planning
+**Status:** complete
 
-Add a collector that reads this machine's sealed terminal records (`worktreeclaims.TerminalRecord`) once, cached by claim identity, and emits the `throughput` block: per-day landed counts and the five slowest claim-to-landed durations over 30 days, counting a task as landed when `worktree_disposition` is `landed`, at `sealed_at`, with the duration from the claim's `created_at`. The Work Log retirement archive manifests carry no timestamps and are not read. Confirm the timestamps first; if no record carries both, the block and the Home charts are dropped and the task reports it, with no invented data.
+Add a collector that reads this machine's sealed terminal records (`worktreeclaims.TerminalRecord`) once, cached by claim identity, and emits the `throughput` block: per-day finished and dropped counts (and `landed` when present) by the disposition table of REQ:throughput-block, the five slowest finished tasks and the median and p90 finished durations over 30 days, at `sealed_at`, with the duration from the claim's `recorded_at` (the claim record has no `created_at`); it reads newest first and stops at the window. The Work Log retirement archive manifests carry no timestamps and are not read. Confirm the timestamps first; if no record carries both, the block and the Home charts are dropped and the task reports it, with no invented data.
 
 Verification (all must pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 
@@ -212,7 +212,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-12
 **Verifies:** cockpit-views#ac:filter-state-lives-in-the-address, cockpit-views#ac:rows-are-one-line-and-virtual, cockpit-views#ac:columns-are-few-and-uniform-ones-hidden, cockpit-views#ac:repository-and-time-rendering, cockpit-views#ac:empty-states-offer-clear, cockpit-views#ac:side-panel-opens-and-closes, cockpit-views#ac:side-panel-shows-summary-actions-commands-and-raw-data, cockpit-views#ac:detail-routes-render-the-same-panel, cockpit-views#ac:copy-buttons-copy-the-full-value, cockpit-views#ac:list-never-exceeds-60-row-elements, cockpit-views#ac:shortcuts-navigate-and-respect-typing
 **Depends-On:** 11
-**Status:** planning
+**Status:** complete
 
 The shared virtual list (sticky header, sort, chips, machine chips, name and time rendering, auto-hidden columns, empty states, `j`/`k`/Enter/Esc), the page-address state (`q`, `sort`, `dir`, `machine`, `chips`, `sel`) with bad values ignored, the side panel and the one component that renders both the panel and the detail page, with its collapsed "Raw data" block, and the copy buttons. The panel hosts the action slot and "Copy command" components of task 13 through their interfaces and renders nothing for them until they exist. It wires `Shortcuts.registerFilter` and `Shortcuts.registerPanel` (Task 11) on the lists, and so proves the clauses of `cockpit-views#ac:shortcuts-navigate-and-respect-typing` that Task 11 leaves to it: `/` on a list focuses the filter box, a typed `g w` stays text in it and no tab switches, and Esc with the side panel open closes it (an empty focused filter lets Esc through to the panel).
 

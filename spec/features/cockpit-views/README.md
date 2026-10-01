@@ -21,7 +21,7 @@ views are where the actions of [cockpit-actions](../cockpit-actions/README.md)
 live, because the Cockpit is the control panel of the fleet and not only a
 screen to read. The fleet read model changes (schema version 2) so that the
 page is small, and gains pull request state and checks, agent activity, agents
-and load from other machines, and landed-task throughput.
+and load from other machines, and sealed-work throughput.
 
 ## Problem
 
@@ -78,7 +78,7 @@ The journey of one working morning:
    side panel without leaving the list, and open "New task" to get the exact
    command that starts it. **Observable good result:** the selection is in the
    address (`?sel=`), the back button and a pasted link return exactly that view,
-   and the list never holds more than 60 row elements however long it is.
+   and the list never holds more than 80 row elements however long it is.
 3. **Land (J2, J4).** I choose "Land task" on a ready task. **Observable good
    result:** a preview opens without a page navigation, nothing runs until I
    confirm it, and the task's row reflects the result within one refetch; a
@@ -337,6 +337,19 @@ Feature does not type its input. The second arm of row 7 applies only to worktre
 first arm applies. A pull request whose `state` is not reported is never counted as open,
 ready or landed.
 
+**Trust rule.** Tasks are joined by name across machines, so an entry of another machine
+(`route` `cached` or `live-remote`) MUST NOT decide the good states of a task that has an entry of this
+machine (a worktree, pull request or agent with `route` `local`). For such a task: row 4 is `ready`
+only when at least one of its open pull requests is local and every open pull request, local or
+remote, is ready (a remote open pull request that is not ready still blocks, a remote ready one alone
+cannot make the task ready); row 7 (both arms and the unpushed-work veto) reads only local pull
+requests and local worktrees; remote entries may still worsen the state (rows 2, 3 and 5) or add
+`working` (row 6). A task with no local entry is computed from its remote entries, and its state is
+that machine's report: the view model carries `stateSource` (`local` or `remote`) and `reportedBy`
+(the machines) so the page can say "as reported by <machine>", and every pull request in a Home row
+says which machine it came from. Home lists such a task, and offers no land or push action for it
+(REQ:home-needs-you, REQ:home-ready-to-land).
+
 #### REQ: tasks-list
 
 Serves J1, J2, J5. The Tasks page MUST show one row per task with these columns: Task,
@@ -369,6 +382,8 @@ or a pull request that needs the operator still has that row, which is not age-l
 Agent blocked and Run failed. A pull request link of a row is the pull request's `url` only when
 it is an `https` address with a plain host (the check the daemon applies, applied again here);
 otherwise the row names the pull request and has no link. Rows
+of a task whose state is only another machine's report (REQ:task-state, `stateSource` `remote`) say "as reported by <machine>"; a land or push action is offered only for a task whose `stateSource` is `local` (a remote row has only its "Open" links). Agent finished and Agent blocked are read from the agent's `activity` only when it is reported.
+Rows
 are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
 last activity, newest first. Items disappear when their state changes; there is no acknowledge
 or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
@@ -394,7 +409,7 @@ with no task", whose action opens Agents with chip `blocked`. The kinds, in rank
 Serves J2. The second section, "Ready to land", MUST list the tasks in state `ready`, one row
 per task: the task, the number of repositories, the pull request numbers, the checks passed
 over total and the age of the pull request observation (`checked_at`, the oldest among them).
-The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
+A task whose `stateSource` is `remote` (REQ:task-state) is listed with "as reported by <machine>" and with no action at all, and the pull requests of a task decided here show the machine each one came from. The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
 task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
 `wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
 on checks are shown below them muted, with how long ago their checks were read and no action.
@@ -436,8 +451,8 @@ theme's colours in light and dark.
 
 Serves J7. The sixth section, "Fleet health", MUST be shown only when something is not OK, as
 one line per problem: a stale machine (state older than 24 hours), a machine running an older
-WB than the newest in the fleet, a scan error, or a machine's `remote_error`
-(REQ:remote-error-is-visible). Each has a "Copy fix command": `wb remote publish` labelled "run
+WB than the newest in the fleet, a scan error, a machine's `remote_error`
+(REQ:remote-error-is-visible), or a machine whose `export_dropped` is above zero ("N entries left out of <machine>'s export", with the export command to try). Each has a "Copy fix command": `wb remote publish` labelled "run
 on <machine>" for a stale machine, `wb self-update` labelled "run on <machine>" for an older WB,
 `wb fleet status --filter=<owner/repository>` for a scan error, and the command of
 REQ:remote-error-is-visible for a remote error.
@@ -446,8 +461,9 @@ REQ:remote-error-is-visible for a remote error.
 
 Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone, Home MUST show
 two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
-"Time to land", the claim-to-landed durations of tasks landed in the last 30 days with the
-slowest five named, and "Landed per day" over the last 30 days. They are non-linking
+"Finished per day" over the last 30 days (stacked bars of `finished` and `dropped`) and
+"Time to finish" (the slowest five finished tasks named, with the `median_seconds` and
+`p90_seconds` in the caption). They are non-linking
 (REQ:every-number-is-a-link). When the block is absent the charts are not rendered. Each chart
 has a text alternative, a visually hidden table of the same numbers, and uses the theme's colours
 in light and dark. The charts never sit above sections 1 to 3.
@@ -503,12 +519,22 @@ the section shows skeleton rows.
 
 Serves J5 and J6. The Worktrees page MUST show these columns in order: Worktree,
 the identity cell, showing the task in strong type and the repository
-`owner/name` in muted type, linking to the worktree page that
-[cockpit](../cockpit/README.md) defines, with a small link on the task part to the
-task page; Branch (shown when any visible row's branch differs from its task);
-Machine; State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
+`owner/name` in muted type, with a small link on the task part to the task page;
+Branch (shown when any visible row's branch differs from its task);
+Machine (the name alone for this machine; for a cached or remote machine the name
+and one unbreakable chip with the age, "stale" and the transport, as `vm · 19 m · ssh`,
+the details in its `title`); State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
 for commits behind, and "gone" for a vanished upstream); PR; Code index; Last
-activity. There is no separate Task column. The sync badges and the chips
+activity. A click on a row selects it and opens its panel; a small button at the
+row end, shown on the hovered or focused row and always on a touch screen, and the
+key `o` open the worktree page that [cockpit](../cockpit/README.md) defines. There
+is no separate Task, Source or Lifecycle column (the route is in the machine chip,
+the lifecycle in the panel), and a column that is empty or uniform for every
+visible row, such as Machine on a fleet of one machine, is hidden. When the list is
+narrower than its columns need (a panel open beside it, a narrow window), columns are hidden
+by priority, never squeezed all alike: Code index and Branch first, then PR, then Machine;
+Worktree, State and Last activity always stay, and what is hidden is still in the panel. The
+`idle` owner state is plain muted text, so the states that need a look stand out. The sync badges and the chips
 `unpushed` and `gone` and their counts concern this machine only and say so. The
 quick filters are those of REQ:filter-vocabulary. The PR cell, the chip `pr`, the
 worktree's side panel and the pull requests listed on its page all read one worktree-to-pull-request
@@ -710,6 +736,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `boot_time` | time | opt. | daemon / snapshot | as above |
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
+| `export_dropped` | int | opt. | the live-remote exporter: entries left out of the export | live-remote and cached |
 
 | Repository field | Type | Opt. | Source | Local/cached |
 |---|---|---|---|---|
@@ -767,8 +794,10 @@ A client's notion "running" is derived, not a field: a session `live` or a run `
 agents of one machine are capped at 200 at read and at publish, and every string is length-capped.
 
 **Throughput** (`throughput`): `window_days` int (30); `per_day` list of `date` string
-(`YYYY-MM-DD`) and `landed` int; `slowest` list of at most 5 of `task` string, `duration_seconds`
-int and `landed_at` time. Local only.
+(`YYYY-MM-DD`), `finished` int, `dropped` int and `landed` int opt. (above zero only);
+`slowest` list of at most 5 of `task` string, `duration_seconds` int and `landed_at` time (the
+time the task was sealed); `median_seconds` int opt.; `p90_seconds` int opt.; `capped` bool opt.
+Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
@@ -956,16 +985,74 @@ machine's agents as `cached` with the age of the snapshot and with no actions.
 
 #### REQ: throughput-block
 
-The fleet document carries an optional `throughput` block: `window_days` (30),
-`per_day` (a list of `date` and `landed`, the number of tasks landed that day) and
-`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`). A
-collector reads this machine's sealed terminal records once, cached by claim
-identity (`worktreeclaims.TerminalRecord`), and counts a task as landed when its
-`worktree_disposition` is `landed`, at its `sealed_at`; the duration is `sealed_at`
-minus the claim's `created_at`. The Work Log retirement archives themselves
+The fleet document carries an optional `throughput` block that reports what this
+machine's sealed work records prove, and never guesses a merge: `window_days` (30),
+`per_day` (a list of `date`, `finished`, `dropped` and, when above zero, `landed`),
+`slowest` (at most five entries of `task`, `duration_seconds` and `landed_at`, the time
+the task was sealed), `median_seconds` and `p90_seconds` (the median and 90th
+percentile, nearest rank, of the finished durations in the window, absent when no task
+finished) and `capped` (true only when a bound below cut the scan). A collector reads
+this machine's sealed terminal records (`worktreeclaims.TerminalRecord`, the files
+`<wb home>/worklogs/<task>/runs/<run>/terminals/<claim id>.json` of every WB home the
+projects root resolves to, read-only) and counts each by its `worktree_disposition`, at
+its `sealed_at`; the duration is `sealed_at` minus the claim's `recorded_at` (the claim
+record carries no `created_at`: its `recorded_at` is the time the claim was made, kept
+unchanged in the terminal). The Work Log retirement archives themselves
 (`worktreeretire.Manifest` and `Receipt`) carry no timestamps and are not the source.
-When no terminal record has both timestamps the block is omitted and the charts of
-REQ:home-charts are not shown; no value is invented.
+
+| `worktree_disposition` | Counts as | Why |
+|---|---|---|
+| `landed` | finished, and `landed` | sealed by `wb worktree log finalize --apply` |
+| `removed` | finished | cleanup of finished work |
+| `retired` | finished | retired after archiving |
+| `recycled` | finished | the worktree was reused after the work |
+| `discarded` | dropped | work thrown away |
+| `superseded` | dropped | replaced by other work |
+| `not_landed` | dropped | finalized as a failure |
+| `orphaned` | dropped | its worktree was gone |
+| `handoff` | neither | the work continues elsewhere |
+| any other value | neither | not counted |
+
+The rules of the block:
+
+- The window is today and the 29 UTC days before it; `date` is a UTC `YYYY-MM-DD`;
+  `per_day` lists only the days with a sealing, oldest first, and `slowest` the
+  longest durations first (ties: later sealing, then name). Both are lists, never null.
+- A task counts once on each day it was sealed, in the better category: `finished` wins
+  over `dropped`, so a task sealed `removed` and `discarded` on one day is one finished
+  task. `landed` is how many of that day's finished tasks were sealed `landed` (a subset
+  of `finished`), absent when none, so a client can show it once `wb` seals landings with
+  evidence. A task finished in several repositories counts once a day, appears once among
+  the slowest and in the percentiles, with its longest finished duration.
+- `slowest`, `median_seconds` and `p90_seconds` use finished tasks only, in the window.
+- A record is usable only when its disposition is in the table (not `handoff`), it has a
+  `sealed_at` and a `recorded_at` both after 1999, a `sealed_at` not before its
+  `recorded_at`, a duration of at most ten years, and a task name (else its effort id) that
+  is not empty after control and bidirectional characters are removed (the name is cut at
+  200 characters). A sealing later than five seconds ahead of the clock is not counted.
+- When no terminal record is usable the block is omitted and the charts of
+  REQ:home-charts are not shown; no value is invented. A usable record outside the
+  window keeps the block, with empty lists.
+- The collector runs on the snapshotter's cadence but not on every refresh: it
+  lists the records at most every ten minutes (or on the next refresh while a cap left
+  records unread), keeps what it learns by each record's identity (path, size and
+  modification time) and reads again only a record that is new or changed; when the
+  UTC day changes it recomputes the window from what it holds without listing. It
+  never runs on a request.
+- It reads newest first: the candidates are sorted by file modification time, newest
+  first, and a file older than the window plus one day is not read at all (a record's
+  file is written when it is sealed, so its time is its seal time or later), so one pass
+  covers the window. The bounds are safety only: at most 5,000 records read in a scan and
+  20,000 known; either sets `capped` and is logged.
+- Listing is cached per directory: a task's `runs` directory and each run's `terminals`
+  directory are listed again only when their modification time moved or is within two
+  seconds of the listing (a record is immutable, and sealing one, or starting a run,
+  moves its directory's time), so an unchanged task costs two stats.
+- The block is local only: a machine's throughput is read from that machine, so
+  `NewEnvelope` never exports it and the strict decoder refuses an envelope that
+  carries one.
+- The collector is read-only: it never writes, creates or locks anything under a
+  WB home, and does not follow a symbolic link.
 
 ### Machine metrics
 
@@ -1147,8 +1234,8 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 `http_unavailable` (connection error, timeout, 404, 429, 5xx or a redirect), `http_auth_failed`
 (401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
-`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads) or
-`bad_payload`; it is cleared by the next success on the preferred transport. A remote export that prints
+`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads), `bad_payload`,
+`remote_warming_up` (the remote's first scan is still running; nothing to run) or `export_too_large`; it is cleared by the next success on the preferred transport. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
@@ -1185,7 +1272,8 @@ loads only with that page's route, never for the shell or for a page that uses n
 #### REQ: bounded-row-elements
 
 At a test viewport 1080 px high a list MUST NOT have more than 60 row elements
-in the DOM, the visible rows plus a fixed overscan, whatever the number of rows.
+in the DOM, the visible rows plus a fixed overscan, whatever the number of rows,
+and on any viewport not more than 80.
 
 #### REQ: fast-filtering
 
@@ -1422,10 +1510,10 @@ Then each row is one line with an ellipsis and the full value in its `title`, th
 
 **Requirements:** cockpit-views#req:default-columns-are-few
 
-Scenario: At most seven, Lifecycle empty, Source all local
-Given 529 worktrees with an empty lifecycle and route `local`, and a second fleet in which one worktree has a lifecycle and one is `cached`
+Scenario: At most seven, Branch uniform, PR empty, one machine
+Given 529 worktrees on one machine whose branch equals its task and which have no pull request, and a second fleet on two machines in which one worktree has a different branch and one has a pull request
 When every list page is opened, and the Worktrees page for each fleet
-Then no list shows more than 7 columns, the first fleet shows neither the Lifecycle nor the Source column and the second shows both
+Then no list shows more than 7 columns, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
 
 ### AC: repository-and-time-rendering
 
@@ -1785,7 +1873,7 @@ Then the first shows no Fleet health line, the second shows one line per problem
 Scenario: With and without throughput, and non-linking
 Given a document with a `throughput` block of 30 days and one without
 When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
-Then the first shows "Time to land" with the slowest five named and "Landed per day", each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
+Then the first shows "Time to finish" with the slowest five named and the median and 90th percentile in its caption, and "Finished per day" as stacked finished and dropped bars, each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
 
 ### AC: home-phone-layout
 
@@ -1866,7 +1954,7 @@ Then the page shows a merged header and one section per machine, requests `/api/
 Scenario: Task and repository in one cell
 Given a worktree of task `fix-ci` in `sneat-dev/wb`
 When the Worktrees page is opened
-Then the first column holds `fix-ci` in strong type with `sneat-dev/wb` muted, a click on the cell opens that worktree's page, a click on the task part opens the task page, and there is no Task column
+Then the first column holds `fix-ci` in strong type with `sneat-dev/wb` muted, a click on the task part opens the task page, the open button at the row end opens that worktree's page, a click elsewhere in the row selects it, and there is no Task column
 
 ### AC: worktrees-columns-and-badges
 
@@ -2210,14 +2298,14 @@ Given a publisher with `remote.publish.agents` and `remote.publish.metrics` each
 When snapshots are encoded, decoded by the old decoder and published through each hub
 Then agents and metrics are present only when their flag is true, `schema_version` is unchanged, the old decoder returns the snapshot without error and without those fields, the new hub model accepts and stores them, the older hub's 400 is followed by one retry without the optional fields and a recorded diagnostic, and the local fleet document shows that machine's agents as `cached` with the snapshot's age and no actions
 
-### AC: throughput-block-from-terminal-records
+### AC: throughput-block-from-sealed-records
 
 **Requirements:** cockpit-views#req:throughput-block
 
-Scenario: Landed, orphaned and old terminals
-Given sealed terminal records: three tasks landed on two days within 30 days with known claim creation times, one with disposition `orphaned`, and one landed 40 days ago
+Scenario: Every disposition, two days and an old record
+Given sealed terminal records on two days within 30 days: tasks sealed `landed`, `recycled` and `removed` with known claim `recorded_at` times, a task sealed `discarded` and `landed` on the same day, one `orphaned`, one `handoff`, and one landed 40 days ago
 When the collector runs twice and the fleet document is requested
-Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `slowest` of at most five tasks with `duration_seconds` equal to `sealed_at` minus the claim's `created_at`, excludes the orphaned and the old one, and the second run reads no record again
+Then `throughput` carries `window_days` 30, `per_day` with `finished`, `dropped` and `landed` counts for the two days (one task once a day, finished winning over dropped, `handoff` counted in neither, the old record excluded), `slowest` of at most five finished tasks with `duration_seconds` equal to `sealed_at` minus the claim's `recorded_at`, and the `median_seconds` and `p90_seconds` of the finished durations by nearest rank, and the second run reads no record again
 
 ### AC: throughput-is-omitted-without-timestamps
 
@@ -2226,7 +2314,7 @@ Then `throughput` carries `window_days` 30, `per_day` counts for the two days, `
 Scenario: No usable record
 Given no sealed terminal record that has both a claim creation time and a sealed time
 When the fleet document is requested
-Then it has no `throughput` block and invents no value
+Then it has no `throughput` block and invents no value (a record with a `handoff` or unknown disposition, or a missing timestamp, is not usable)
 
 ### AC: sampler-fills-a-ring-buffer
 
@@ -2415,7 +2503,7 @@ Then the JavaScript needed to render Home, counted over JavaScript files only, i
 Scenario: Largest lists at 1080 px
 Given the fixture and a viewport 1080 px high
 When the Repositories and Worktrees pages are rendered and scrolled to the end
-Then at no moment are there more than 60 row elements in the DOM
+Then at no moment are there more than 60 row elements in the DOM at 1080 px, and none above 80 at any height
 
 ### AC: filtering-5000-rows-is-fast
 
@@ -2500,6 +2588,10 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 
 ## Open Questions
 
+- `wb worktree land` and cleanup seal most merged work as `removed` (3,410 of 3,679 terminal
+  records on the founder's machine, against 62 `landed`), so the Cockpit can report finished
+  work but not true landings. Sealing `landed` with merge evidence would let it show them: a
+  follow-up for the worktree-lifecycle Feature, not specified here.
 - On Windows the owner-process liveness read for `owner_state` cannot tell a gone process from a
   live one (`Signal(0)` is unsupported there), so a Windows machine's local worktrees read as
   `unknown` and its `boot_time` from `GetTickCount64` is not checked for 32-bit truncation.

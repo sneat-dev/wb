@@ -20,6 +20,7 @@ import {
   notReadyReasons,
   openObserved,
   startedAt,
+  stateSourceOf,
   taskState,
   taskStateInfo,
 } from './task-state'
@@ -336,6 +337,7 @@ export class FleetModel {
         const state = taskState(inputs, this.now)
         const times = inputs.worktrees.map((worktree) => toTime(worktree.last_activity_at)).filter((time): time is number => time !== undefined)
         const machines = new Map(inputs.worktrees.map((worktree) => [worktree.machine_id, worktree.machine]))
+        const reporters = new Map([...inputs.worktrees, ...inputs.pullRequests, ...inputs.agents].map((entry) => [entry.machine_id, entry.machine]))
         return {
           name,
           worktrees: [...inputs.worktrees],
@@ -343,6 +345,8 @@ export class FleetModel {
           agents: [...inputs.agents],
           state,
           stateInfo: taskStateInfo(state),
+          stateSource: stateSourceOf(inputs),
+          reportedBy: [...reporters].map(([id, name]) => ({ id, name })),
           repositories: [...new Set(inputs.worktrees.map((worktree) => this.repositoryName(worktree.repository)))],
           machines: [...machines].map(([id, machine]) => ({ id, name: machine })),
           lastActivityAt: times.length === 0 ? undefined : Math.max(...times),
@@ -403,7 +407,7 @@ export class FleetModel {
   }
 
   private needsYouItem(task: TaskView): NeedsYouItem | undefined {
-    const base = { task: task.name, lastActivityAt: task.lastActivityAt, link: selectionLink('tasks', task.name) }
+    const base = { task: task.name, stateSource: task.stateSource, lastActivityAt: task.lastActivityAt, link: selectionLink('tasks', task.name) }
     // Older at-risk work is a cleanup matter, counted by Cleanup's "need a look"; what else the task needs still counts.
     const state = task.state === 'at-risk' && !this.isRecent(task) ? this.stateBelowAtRisk(task) : task.state
     switch (state) {
@@ -466,7 +470,7 @@ export class FleetModel {
   }
 
   /** The two kinds beyond the failures: a green pull request that cannot merge, and an agent that finished (within the window) with work not pushed. */
-  private softNeedsYouItem(task: TaskView, base: { task: string; lastActivityAt?: number; link: NeedsYouItem['link'] }): NeedsYouItem | undefined {
+  private softNeedsYouItem(task: TaskView, base: { task: string; stateSource: TaskView['stateSource']; lastActivityAt?: number; link: NeedsYouItem['link'] }): NeedsYouItem | undefined {
     const stuck = task.openPullRequests.find((pullRequest) => pullRequest.checks_green === true && pullRequest.mergeable !== undefined && MERGE_ATTENTION.has(pullRequest.mergeable))
     if (stuck) {
       return {
@@ -505,7 +509,7 @@ export class FleetModel {
           const reasons = [...new Set(task.pullRequests.filter(isOpenPullRequest).flatMap(notReadyReasons))]
           // Never vacuously: a task with no reason at all is not shown as waiting.
           if (reasons.length > 0 && reasons.every((reason) => reason === 'checks pending')) {
-            notReady.push({ task: task.name, checkedAt: oldestCheck(task.openPullRequests), reasons, link: selectionLink('tasks', task.name) })
+            notReady.push({ task: task.name, stateSource: task.stateSource, checkedAt: oldestCheck(task.openPullRequests), reasons, link: selectionLink('tasks', task.name) })
           }
         }
       }
@@ -521,12 +525,16 @@ export class FleetModel {
   private readyRow(task: TaskView): ReadyToLandRow {
     const pullRequests = task.openPullRequests.map((pullRequest): ReadyPullRequest => {
       const repository = pullRequest.repository === undefined ? undefined : this.repositoryName(pullRequest.repository)
-      const command: CopyCommand | undefined = repository === undefined ? undefined : pullRequestLand(repository, pullRequest.number, this.targetOf(pullRequest))
+      // A task decided by another machine's report offers no land action from here.
+      const command: CopyCommand | undefined = repository === undefined || task.stateSource === 'remote' ? undefined : pullRequestLand(repository, pullRequest.number, this.targetOf(pullRequest))
       return {
         id: pullRequest.id,
         repository,
         number: pullRequest.number,
         url: webAddress(pullRequest.url),
+        machine: pullRequest.machine,
+        machineId: pullRequest.machine_id,
+        remote: pullRequest.route !== 'local',
         // A count the daemon did not report stays absent: never 0 of 0.
         checksPassed: pullRequest.checks_passed,
         checksTotal: pullRequest.checks_total,
@@ -538,6 +546,8 @@ export class FleetModel {
     const repositories = [...new Set(pullRequests.flatMap((pullRequest) => (pullRequest.repository === undefined ? [] : [pullRequest.repository])))]
     return {
       task: task.name,
+      stateSource: task.stateSource,
+      reportedBy: task.reportedBy,
       repositories,
       pullRequests,
       checkedAt: oldestCheck(task.openPullRequests),
