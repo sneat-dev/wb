@@ -7,6 +7,9 @@ import { AgeText, MachineCell, OwnerStateCell } from '@cockpit/ui/list'
 import { PanelContent } from '@cockpit/ui/panel'
 import { seenElsewhereOnly, taskReason } from './task-reason'
 
+/** `wb pr create` (commits and pushes) and `wb pr land`, also behind an ssh prefix. */
+const LAND_OR_PUSH = /(^|\s)pr (create|land)(\s|$)/
+
 /** The task of a name, with its panel data and the model they were read from. */
 interface Loaded {
   task: TaskView
@@ -36,8 +39,11 @@ export class TaskPanelView {
   readonly page = input(false)
 
   protected readonly store = inject(FleetStore)
-  /** What the registry returned for a target; none until the cockpit-actions client exists, so every slot renders nothing. */
-  protected readonly registry: readonly RegistryAction[] | undefined = undefined // TODO(cockpit-actions): the registry client
+  /**
+   * What the action registry returned, by target (`worktree:<id>`, `pull_request:<id>`); the page that has the
+   * cockpit-actions client passes it. Without it, or without an entry for a target, a slot renders nothing.
+   */
+  readonly registry = input<ReadonlyMap<string, readonly RegistryAction[]>>()
 
   /** The task and its panel data; none for a name the document does not list. */
   protected readonly data = computed<Loaded | undefined>(() => {
@@ -50,6 +56,16 @@ export class TaskPanelView {
     const { task, model } = this.data() as Loaded
     return taskReason(task, { repositoryName: (id) => model.repositoryName(id), now: this.store.now() })
   })
+
+  /** The machines whose report decides the task, when none of its entries is on this machine (REQ:task-state, trust rule). */
+  protected readonly reportedBy = computed(() => {
+    const { task } = this.data() as Loaded
+    return task.stateSource === 'remote' ? task.reportedBy : []
+  })
+
+  protected actionsFor(target: string): readonly RegistryAction[] | undefined {
+    return this.registry()?.get(target)
+  }
 
   protected readonly elsewhereOnly = computed(() => seenElsewhereOnly((this.data() as Loaded).task))
   /** More than one machine in the fleet: only then is a machine worth a chip in a row. */
@@ -82,12 +98,13 @@ export class TaskPanelView {
 
   /** The library's task commands, then `wb pr land` for each open pull request, each with where it runs. */
   protected readonly commands = computed<PanelCommand[]>(() => {
-    const { view, model } = this.data() as Loaded
+    const { task, view, model } = this.data() as Loaded
     const land = view.related.pullRequests.filter(isOpenPullRequest).flatMap((pr) => {
       const panel = buildPullRequestPanel(model, pr.id) as PullRequestPanel
       // A pull request with no repository has no command to copy.
       return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
     })
-    return [...view.commands, ...land]
+    // A task only another machine reports has nothing to land or push from here: its read-only commands stay.
+    return task.stateSource === 'remote' ? [...view.commands, ...land].filter((entry) => !entry.command.ok || !LAND_OR_PUSH.test(entry.command.text)) : [...view.commands, ...land]
   })
 }

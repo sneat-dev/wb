@@ -1,5 +1,6 @@
 .agent,
-.machines {
+.machines,
+.state {
   display: flex;
   flex-wrap: nowrap;
   gap: var(--space-2);
@@ -18,5 +19,18 @@
 .more {
   color: var(--text-3);
   font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.state app-state-badge {
+  flex: none;
+}
+
+.via {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }

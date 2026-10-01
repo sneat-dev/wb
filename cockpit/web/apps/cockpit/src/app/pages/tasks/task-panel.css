@@ -99,3 +99,24 @@ h3 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.source {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+/* A row's identity (repository, branch, machine) and, apart from it, what it is doing; they share a line when there is room. */
+.where,
+.what {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  min-width: 0;
+}

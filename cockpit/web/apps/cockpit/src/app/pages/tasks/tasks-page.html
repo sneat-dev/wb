@@ -1,6 +1,13 @@
 <app-list page="tasks" [columns]="columns" [panelLabel]="panelLabel">
   <ng-template appCell="task" let-t><app-identity-cell [name]="t.name" [secondary]="repositories(t)" [link]="taskLink(t)" copyLabel="Copy task name" /></ng-template>
-  <ng-template appCell="state" let-t><app-state-badge kind="task" size="small" [value]="t.state" /></ng-template>
+  <ng-template appCell="state" let-t>
+    <span class="state">
+      <app-state-badge kind="task" size="small" [value]="t.state" />
+      @if (reporters(t); as names) {
+        <span class="via" [attr.title]="'As reported by ' + names + ', not by this machine'">via {{ names }}</span>
+      }
+    </span>
+  </ng-template>
   <ng-template appCell="pr" let-t><app-task-pr-cell [pullRequests]="t.pullRequests" /></ng-template>
   <ng-template appCell="agents" let-t>
     @if (runningAgents(t)[0]; as agent) {

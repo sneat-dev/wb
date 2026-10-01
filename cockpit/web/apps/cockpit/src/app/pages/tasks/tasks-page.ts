@@ -46,6 +46,8 @@ export class TasksPage {
 
   /** Whether the task is anywhere but on this machine alone: only then are its machines worth showing. */
   protected readonly anyRemote = (task: TaskView): boolean => task.machines.some((machine) => this.remote().has(machine.id))
+  /** The machines that report a task decided by another machine alone; none for a task decided here. */
+  protected readonly reporters = (task: TaskView): string => (task.stateSource === 'remote' ? task.reportedBy.map((machine) => machine.name).join(', ') : '')
   protected readonly machinesShown = (task: TaskView) => task.machines.slice(0, NAMES_SHOWN)
   protected readonly machinesMore = (task: TaskView) => Math.max(0, task.machines.length - NAMES_SHOWN)
 
@@ -56,7 +58,7 @@ export class TasksPage {
    */
   protected readonly columns: ListColumn<TaskView>[] = [
     { id: 'task', header: 'Task', sort: 'task', width: 'fill', grow: 4, min: 280, priority: ALWAYS, value: (t) => `${t.name} · ${this.repositories(t)}` },
-    { id: 'state', header: 'State', sort: 'state', width: 160, min: 150, priority: ALWAYS, value: (t) => t.stateInfo.label },
+    { id: 'state', header: 'State', sort: 'state', width: 200, min: 170, priority: ALWAYS, value: (t) => t.stateInfo.label },
     { id: 'pr', header: 'Pull requests', width: 230, min: 190, priority: 3, value: (t) => t.pullRequests.map((pr) => `#${pr.number}`).join(' '), empty: (t) => t.pullRequests.length === 0 },
     { id: 'agents', header: 'Agents', width: 150, min: 120, priority: 2, value: (t) => this.runningAgents(t).map((agent) => agent.runtime ?? 'agent').join(' '), empty: (t) => this.runningAgents(t).length === 0 },
     { id: 'worktrees', header: 'Worktrees', sort: 'worktrees', width: 96, min: 90, priority: 4, align: 'end', value: (t) => String(t.worktrees.length) },

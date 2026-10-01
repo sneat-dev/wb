@@ -26,9 +26,8 @@ function repositoryNamer(slugs: readonly string[]): (slug: string) => string {
   return (slug) => (slugs.filter((other) => tail(other) === tail(slug)).length > 1 ? slug : tail(slug))
 }
 
-/** The parts of a sentence: the label alone when there are none, else the first few and "+n more". */
+/** The parts of a sentence, which each state has at least one of: the first few and "+n more". */
 function sentence(label: string, parts: readonly string[]): string {
-  if (parts.length === 0) return label
   const shown = parts.length > REASON_PARTS_SHOWN ? [...parts.slice(0, REASON_PARTS_SHOWN), `+${parts.length - REASON_PARTS_SHOWN} more`] : parts
   return `${label}: ${shown.join('; ')}`
 }
@@ -62,14 +61,14 @@ export function taskReason(task: TaskView, context: ReasonContext): string {
       ])
     case 'ready':
       return `Ready to land: ${plural(task.openPullRequests.length, 'pull request')} green and mergeable`
-    case 'not-ready':
-      return sentence(
-        'Not ready',
-        task.pullRequests.filter(isOpenPullRequest).flatMap((pr) => {
-          const reasons = notReadyReasons(pr)
-          return reasons.length === 0 ? [] : [`${prLabel(pr)} ${reasons.join(', ')}`]
-        }),
-      )
+    case 'not-ready': {
+      const parts = task.pullRequests.filter(isOpenPullRequest).flatMap((pr) => {
+        const reasons = notReadyReasons(pr)
+        return reasons.length === 0 ? [] : [`${prLabel(pr)} ${reasons.join(', ')}`]
+      })
+      // Every open pull request is ready, but none is on this machine: another machine's report cannot make this machine's task ready (REQ:task-state, trust rule).
+      return sentence('Not ready', parts.length > 0 ? parts : ['no open pull request is on this machine, and only this machine can make the task ready'])
+    }
     case 'working':
       return sentence('Working', [
         ...task.agents.filter(isWorking).map((agent) => `${agentTitle(agent)} is running`),
