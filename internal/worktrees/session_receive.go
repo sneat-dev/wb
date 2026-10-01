@@ -83,23 +83,24 @@ func sessionMoveReceiveSpec(projectsRoot string, options SessionReceiveOptions) 
 	}, nil
 }
 
-func validateSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) error {
+func admitSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) (gitremote.Remote, error) {
 	for name, value := range map[string]string{"authority ID": spec.AuthorityID, "operation ID": spec.OperationID, "member key": spec.MemberKey} {
 		if !sessionauthority.ValidID(value) {
-			return fmt.Errorf("session receive %s is not one fixed safe ID", name)
+			return gitremote.Remote{}, fmt.Errorf("session receive %s is not one fixed safe ID", name)
 		}
 	}
-	if _, err := gitremote.Parse(spec.RepositoryRemote); err != nil {
-		return err
+	remote, err := gitremote.Parse(spec.RepositoryRemote)
+	if err != nil {
+		return gitremote.Remote{}, err
 	}
 	if !validBranch(ctx, spec.Branch) || !validBranch(ctx, spec.PinBranch) {
-		return fmt.Errorf("session receive branch or pin is invalid")
+		return gitremote.Remote{}, fmt.Errorf("session receive branch or pin is invalid")
 	}
 	if !isGitObjectID(spec.Commit) {
-		return fmt.Errorf("session receive commit is not one full Git object ID")
+		return gitremote.Remote{}, fmt.Errorf("session receive commit is not one full Git object ID")
 	}
 	if spec.SourceWorkCommit != "" && !isGitObjectID(spec.SourceWorkCommit) {
-		return fmt.Errorf("session receive source commit is not one full Git object ID")
+		return gitremote.Remote{}, fmt.Errorf("session receive source commit is not one full Git object ID")
 	}
 	// HandoverPath names a legacy tracked-in-worktree location and is only
 	// ever set together with HandoverDigest (a pre-cutover move request). A
@@ -107,14 +108,14 @@ func validateSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) er
 	// but still a digest to verify the inline content against. A park member
 	// carries neither. A path without a digest is never valid.
 	if spec.HandoverPath != "" && spec.HandoverDigest == "" {
-		return fmt.Errorf("session receive tracked handover path requires a digest")
+		return gitremote.Remote{}, fmt.Errorf("session receive tracked handover path requires a digest")
 	}
 	if spec.AuthorityStore != "" {
 		if !filepath.IsAbs(spec.AuthorityStore) || filepath.Clean(spec.AuthorityStore) != spec.AuthorityStore || spec.Fence == nil {
-			return fmt.Errorf("session receive replay authority is incomplete")
+			return gitremote.Remote{}, fmt.Errorf("session receive replay authority is incomplete")
 		}
 	}
-	return nil
+	return remote, nil
 }
 
 // SessionReceiveResult identifies the exact target checkout. Task 3 creates
@@ -150,23 +151,21 @@ func SessionReceiveWorktreePath(projectsRoot string, request sessionmove.Request
 }
 
 func SessionReceiveMemberPath(projectsRoot string, spec SessionReceiveSpec) (string, error) {
-	if err := validateSessionReceiveSpec(context.Background(), spec); err != nil {
+	remote, err := admitSessionReceiveSpec(context.Background(), spec)
+	if err != nil {
 		// Path derivation does not need a live fence. Admit an intentionally
 		// absent store/fence only for this read-only helper.
 		if spec.AuthorityStore != "" && spec.Fence == nil {
 			spec.AuthorityStore = ""
-			if retry := validateSessionReceiveSpec(context.Background(), spec); retry != nil {
-				return "", retry
+			remote, err = admitSessionReceiveSpec(context.Background(), spec)
+			if err != nil {
+				return "", err
 			}
 		} else {
 			return "", err
 		}
 	}
 	root, err := absoluteProjectsRoot(projectsRoot)
-	if err != nil {
-		return "", err
-	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
 	if err != nil {
 		return "", err
 	}
@@ -345,15 +344,12 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 		return SessionReceiveResult{}, err
 	}
 	spec := options.Spec
-	if err := validateSessionReceiveSpec(ctx, spec); err != nil {
+	remote, err := admitSessionReceiveSpec(ctx, spec)
+	if err != nil {
 		return SessionReceiveResult{}, err
 	}
 	if spec.Fence == nil || !spec.Fence.HeldForSession(spec.AuthorityStore, spec.AuthorityID, string(spec.AuthorityDigest)) {
 		return SessionReceiveResult{}, fmt.Errorf("local session receive replay requires exact admitted handoff authority")
-	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
-	if err != nil {
-		return SessionReceiveResult{}, err
 	}
 	_, _, canonicalPath, err := canonicalRepositoryPath(projectsRoot, remote.Identity.Repository)
 	if err != nil {
@@ -472,15 +468,16 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 // prepareSource authenticates the declared clone and the exact fetched commit
 // before any target operation directory or lock is created.
 func (state *sessionReceiveState) prepareSource(ctx context.Context, options SessionMemberReceiveOptions, afterFetchRemoteAuthentication func()) error {
+	return state.prepareSourceWithAdmission(ctx, options, afterFetchRemoteAuthentication, CanonicalRepositoryPathForURL, requireGitFilesystemCapability)
+}
+
+func (state *sessionReceiveState) prepareSourceWithAdmission(ctx context.Context, options SessionMemberReceiveOptions, afterFetchRemoteAuthentication func(), canonicalPathForURL func(string, string, string) (string, error), requireCapability func() error) error {
 	state.ctx = ctx
 	state.spec = options.Spec
 	spec := state.spec
-	if err := validateSessionReceiveSpec(ctx, spec); err != nil {
-		return fmt.Errorf("validate target session receive authority: %w", err)
-	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
+	remote, err := admitSessionReceiveSpec(ctx, spec)
 	if err != nil {
-		return err
+		return fmt.Errorf("validate target session receive authority: %w", err)
 	}
 	state.repository = remote.Identity.Repository
 	state.projectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
@@ -490,7 +487,7 @@ func (state *sessionReceiveState) prepareSource(ctx context.Context, options Ses
 	// The declared remote names the forge, so a clone that has to be created
 	// lands at the same host-level address `wb sync` and orchestrate would use,
 	// while an existing clone — host level or legacy — is used where it is.
-	state.canonicalPath, err = CanonicalRepositoryPathForURL(state.projectsRoot, state.repository, spec.RepositoryRemote)
+	state.canonicalPath, err = canonicalPathForURL(state.projectsRoot, state.repository, spec.RepositoryRemote)
 	if err != nil {
 		return err
 	}
@@ -503,7 +500,7 @@ func (state *sessionReceiveState) prepareSource(ctx context.Context, options Ses
 	if err != nil {
 		return err
 	}
-	if err := requireGitFilesystemCapability(); err != nil {
+	if err := requireCapability(); err != nil {
 		return err
 	}
 	state.canonical, err = openOrCloneSessionReceiveCanonical(
@@ -1259,7 +1256,13 @@ func verifyHeldSessionReceiveCheckout(
 	worktree *os.File,
 	pinBranch, bundleCommit string,
 ) error {
-	rootRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--show-toplevel")
+	return verifyHeldSessionReceiveCheckoutWithQuery(ctx, worktreePath, pinBranch, bundleCommit, func(ctx context.Context, args ...string) ([]byte, error) {
+		return runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, args...)
+	})
+}
+
+func verifyHeldSessionReceiveCheckoutWithQuery(ctx context.Context, worktreePath, pinBranch, bundleCommit string, query func(context.Context, ...string) ([]byte, error)) error {
+	rootRaw, err := query(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return fmt.Errorf("verify existing target linked worktree common directory: %w", err)
 	}
@@ -1267,15 +1270,15 @@ func verifyHeldSessionReceiveCheckout(
 		return fmt.Errorf("existing target linked worktree root does not match %s", worktreePath)
 	}
 	wantedRef := "refs/heads/" + pinBranch
-	attachedRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "symbolic-ref", "--quiet", "HEAD")
+	attachedRaw, err := query(ctx, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil || strings.TrimSpace(string(attachedRaw)) != wantedRef {
 		return fmt.Errorf("existing target worktree is not attached to exact pin branch %s", wantedRef)
 	}
-	pinRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--verify", wantedRef+"^{commit}")
+	pinRaw, err := query(ctx, "rev-parse", "--verify", wantedRef+"^{commit}")
 	if err != nil || strings.TrimSpace(string(pinRaw)) != bundleCommit {
 		return fmt.Errorf("existing target pin branch %s does not identify exact bundle commit %s", wantedRef, bundleCommit)
 	}
-	headRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--verify", "HEAD^{commit}")
+	headRaw, err := query(ctx, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return fmt.Errorf("verify existing target HEAD: %w", err)
 	}
@@ -1283,7 +1286,7 @@ func verifyHeldSessionReceiveCheckout(
 	if head != bundleCommit {
 		return fmt.Errorf("existing target HEAD is %s, want exact bundle commit %s", head, bundleCommit)
 	}
-	status, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := query(ctx, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect existing target worktree status: %w", err)
 	}
