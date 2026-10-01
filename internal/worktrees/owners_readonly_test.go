@@ -99,3 +99,23 @@ func TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
 		t.Errorf("a directory that is not there = %q", got)
 	}
 }
+
+// TestDeclaredOwnerPIDReadOnlyGivesTheLiveOwnersProcessOnly proves the process
+// id is the live owner's and is 0 for a gone or an unstated owner.
+func TestDeclaredOwnerPIDReadOnlyGivesTheLiveOwnersProcessOnly(t *testing.T) {
+	t.Parallel()
+	live, dead := os.Getpid(), 424242
+	for name, test := range map[string]struct {
+		pids []int
+		want int
+	}{
+		"no journal":     {nil, 0},
+		"a dead owner":   {[]int{dead}, 0},
+		"a live owner":   {[]int{live}, live},
+		"dead then live": {[]int{dead, live}, live},
+	} {
+		if _, pid := DeclaredOwnerPIDReadOnly(journalWith(t, test.pids...)); pid != test.want {
+			t.Errorf("%s: pid = %d, want %d", name, pid, test.want)
+		}
+	}
+}
