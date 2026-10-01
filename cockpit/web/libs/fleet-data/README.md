@@ -17,6 +17,8 @@ to chunks by file, so a lazy name must not live in a file the first page imports
 | `@cockpit/fleet-data` | the types, `FleetClient`, `FleetStore`, `FleetModel`/`FleetModels` with the Home sections above the fold (`needsYou`, `readyToLand`, `inFlight`, `resume`, `machines`, `tasks`, `taskNamed`, `worktreePullRequests`, `homeBadge`, `homeBadgeLabel`, `runningAgentCount`), the task state, `webAddress`, the link builders and `ListQuery` (`vocabulary.ts`), `parseQuery`, the helpers of `fleet-view.ts` (freshness `formatAge`, labels, `emptyDocument`, the small entity filters), the control types, and the few commands Home and the shell copy (`PLACEHOLDERS`, `pullRequestLand`, `selfUpdate`, ...) | the shell, Home, everything |
 | `@cockpit/fleet-data/home-details` | Home below the fold as functions over a model: `buildCleanup`, `buildHealth`, `buildThroughput`, `remoteErrorText`, `remoteFix` | Home after its first paint (`import()`), and the list entry (the cleanup sets) |
 | `@cockpit/fleet-data/panel` | the entity panels: `buildWorktreePanel(model, id)`, `buildTaskPanel`, `buildRepositoryPanel`, `buildAgentPanel`, `buildMachinePanel`, `buildPullRequestPanel` and their types | pages that open a panel |
+| `@cockpit/fleet-data/task-reason` | `taskReason(model, name)`, the plain-words sentence for a task's state, and `seenElsewhereOnly` | the Tasks panel, Home's rows and the palette |
+| `@cockpit/fleet-data/lazy-client` | the reads that only some pages make, as functions of the fetch (`inject(FETCH)`): `readBranches(fetcher, repositoryId)`, `readMachineMetrics(fetcher, machineId, signal?)`, `readReadme(fetcher, repositoryId)` | pages that open a repository, the metrics poller and the README section, with `import()` |
 | `@cockpit/fleet-data/commands` | every Copy-command template (and what the main entry has) | pages and the New task form |
 | `@cockpit/fleet-data/list` | `buildTaskRows(model)` and the other row builders, `applyListQuery`, the matching half of the matcher (`matchesTerms`, `globMatch`, `Subject`, `MatchEnv`, `StepCounter`), the full filter vocabulary (`VOCABULARY`, `chipOf`, `SEL_KEYS`, `defaultDirection`), `parseListQuery`/`emptyListQuery`/`termLink` and the count-cell links, `buildRepositories(model)` and `mergeRepositories`, the page helpers (`worktreeLabel`, `codeIndexText`, `readmeFailureText`, ...) | list pages and the palette |
 | `@cockpit/fleet-data/testing` | fixtures | specs |
@@ -31,7 +33,7 @@ The views are free functions over a model, not methods of it (`model.worktreeVie
 
 | Export | What it is |
 |---|---|
-| `FleetClient` | `readFleet(etag?, expected = SCHEMA_VERSION)` (200 or 304; a body of another schema throws `FleetSchemaError` with the message `update wb on this machine` (daemon older) or `reload` (page older)), `readSession()`, `readReadme(id)`, `readBranches(repositoryId)` (lazy route, `{branches, reason?}`), `readMachineMetrics(machineId, signal?)` (`{machine, route, fetched_at?, samples, reason?}`; `signal` cancels the request, which the metrics poller does when its last page leaves; the request timeout still applies) |
+| `FleetClient` | `readFleet(etag?, expected = SCHEMA_VERSION)` (200 or 304; a body of another schema throws `FleetSchemaError` with the message `update wb on this machine` (daemon older) or `reload` (page older)), `readSession()`, the three lazy reads are not methods of the client but functions in `@cockpit/fleet-data/lazy-client`: `readBranches(fetcher, repositoryId)` (lazy route, `{branches, reason?}`), `readMachineMetrics(fetcher, machineId, signal?)` (`{machine, route, fetched_at?, samples, reason?}`; `signal` cancels the request, which the metrics poller does when its last page leaves; the request timeout still applies) and `readReadme(fetcher, id)` |
 | `FETCH` | injection token for `fetch`; tests replace it |
 | `FleetStore` | polls, keeps the last document, exposes `document`, `model` (the memoised view model of the current document), `schemaMismatch`, `error`, `session`, `now`, `warmingUp`, `progress` |
 | `EXPECTED_SCHEMA`, `MODEL_OPTIONS`, `POLL_INTERVALS` | injection tokens (expected schema, view model options such as a clock or derivation counter, poll intervals) |
@@ -74,7 +76,7 @@ through `onError`, and is listed in `model.failedDerivations`.
 
 Also exported: `machineLoad(metrics)` (`free` below 70 % CPU and 80 % memory, `busy` otherwise,
 `not-reported` without a sample), `agentTitle`, `parseVersion`, `compareVersions`, `versionKey`,
-`remoteErrorText`, `remoteFix`, `NEEDS_YOU_VISIBLE`, `RESUME_COUNT`. A field the daemon omitted
+`remoteErrorText`, `remoteFix` (the command for a `remote_error` code: none, with the reason, for `remote_warming_up`, `export_too_large`, `self_export` and a code this library does not know), `NEEDS_YOU_VISIBLE`, `RESUME_COUNT`. A field the daemon omitted
 gives the "not reported" outcome, never a guess.
 
 ## Entity panels
@@ -83,7 +85,7 @@ Each `build*Panel(model, id)` (`@cockpit/fleet-data/panel`) returns `{summary, r
 Copy-command list (`PanelCommand {title, command: CopyCommand}`; already quoted, each with `needsEdit`
 and, for another machine without an SSH route, the label "run on <machine>") and the raw entries
 exactly as the read model sent them (the `related` pull requests and `summary.url` carry only a checked `webAddress`, else no `url`). A dispatched run has the agent verbs; any other session has no
-command and `summary.controllable` is false; a machine has no command. Types: `WorktreePanel`,
+command and `summary.controllable` is false; a machine has no command. `buildTaskPanel` carries the commands that change something (committing and opening a pull request, and `wb pr land` for each open pull request, titled with the repository and number) only for a task decided on this machine; for a task only another machine reports (`stateSource` `remote`) it withholds them and keeps the reading ones, so a page filters nothing. `taskReason(model, name)` says the task's state in one sentence from the library's own predicates ("At risk: 1 commit only on this machine in specscore-go (worktree idle)", "Checks failed: wb#131 has 1 failing check (build-linux)", "Ready to land: 2 pull requests green and mergeable"; at most three parts and "+n more"), so the panel, Home's rows and the palette cannot disagree with the badge. Types: `WorktreePanel`,
 `TaskPanel`, `RepositoryPanel`, `AgentPanel`, `MachinePanel`, `PullRequestPanel`. `model.targetOf(entry)`
 gives the `CommandTarget` of any entry (here, through the session's SSH route, or "run on").
 
@@ -140,7 +142,7 @@ Repositories `sel`.
 A link is built only by these functions, which refuse anything outside the vocabulary; each returns
 an `AppLink {path, query}` and `hrefOf(link)` the percent-encoded string: `listLink`, `chipLink`,
 `stateLink`, `ageLink`, `machineLink`, `selectionLink` (and `sortLink`, in `/list`), and the detail addresses `taskDetailLink`,
-`repositoryDetailLink`, `agentDetailLink`, `machineDetailLink`, `worktreeDetailLink`.
+`repositoryDetailLink(host, name, id?)` (a name that is not `owner/name` opens by entry `id`: `/repositories/<id>`), `agentDetailLink`, `machineDetailLink`, `worktreeDetailLink`. An address whose id is a path segment also carries `commands` (router commands with the raw id) and `linkTarget(link)` gives what `[routerLink]` is bound to, so the id is encoded once.
 `linkProblems(link)` lists what is wrong with an address (none when valid). Count cells that link (`/list`)
 (REQ:every-number-is-a-link) use these helpers, each returning a `LinkResult`
 (`{ok: true, link}` or `{ok: false, reason}`): `taskWorktreesLink`, `repositoryWorktreesLink`,

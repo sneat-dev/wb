@@ -1,19 +1,23 @@
 import { Component } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { FleetClient, FleetRequestError, MachineMetrics } from '@cockpit/fleet-data'
+import { FleetRequestError, MachineMetrics } from '@cockpit/fleet-data'
 import { METRICS_INTERVAL_MS, METRICS_MAX_BACKOFF_MS, MetricsPoller, watchMetrics } from './metrics-poller'
+
+// The read itself is `readMachineMetrics` of the lazy client; the poller's own behaviour is under test here.
+const read = vi.hoisted(() => vi.fn<(machine: string, signal?: AbortSignal) => Promise<MachineMetrics>>())
+vi.mock('@cockpit/fleet-data/lazy-client', () => ({ readMachineMetrics: (_fetcher: typeof fetch, machine: string, signal?: AbortSignal) => read(machine, signal) }))
 
 function metrics(machine: string): MachineMetrics {
   return { machine, route: 'local', samples: [] }
 }
 
 describe('MetricsPoller', () => {
-  const read = vi.fn<(machine: string, signal?: AbortSignal) => Promise<MachineMetrics>>()
+  // The poller loads the lazy client on its first read: load it now, so the fake clock below is not waiting on a module.
+  beforeAll(async () => void (await import('@cockpit/fleet-data/lazy-client')))
 
   beforeEach(() => {
     vi.useFakeTimers()
     read.mockReset().mockImplementation(async (machine) => metrics(machine))
-    TestBed.configureTestingModule({ providers: [{ provide: FleetClient, useValue: { readMachineMetrics: read } }] })
   })
 
   afterEach(() => {
