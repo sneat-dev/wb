@@ -76,7 +76,7 @@ good" to the whole set without discussing that row on its own.
 | Cloud data | No cloud transit by default. Publishing allowlisted snapshots to the hosted hub is an explicit opt-in; the snapshot privacy allowlist is unchanged. |
 | Frontend | Angular with Material/CDK. No React. An open-source chart library is still to be chosen. |
 | Permissions | Every action declares a required capability from the first slice, and Cockpit discovers effective permissions. The MVP has three fixed principals: anonymous-local (metadata read), owner session (everything), peer (typed remote operations). Per-user grants and non-loopback binding wait for the OAuth2/OIDC feature in decision 0002. |
-| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URL whose fragment names the task, for example `https://example.com/spec/plan.md#task1`. The URL without its fragment identifies the plan; the hierarchy and any not-yet-started tasks live in whatever the URL points to. The reference is recorded in the Work Log creation manifest. WB groups worktrees that reference the same plan. Without a reference a task is the worktree's name, as today. Plans are read through a plans-provider adapter; SpecScore is the first provider and ships out of the box. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
+| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URI whose fragment names the task. Its scheme selects the plans provider, for example `specscore://github.com/sneat-dev/wb/spec/plans/cockpit#task1`; a plain `https://example.com/spec/plan.md#task1` is a link-only reference with no provider behind it. The URI without its fragment identifies the plan; the hierarchy and any not-yet-started tasks live in whatever the URL points to. The reference is recorded in the Work Log creation manifest. WB groups worktrees that reference the same plan. Without a reference a task is the worktree's name, as today. Plans are read through a plans-provider adapter; SpecScore is the first provider and ships out of the box. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
 | Dispatch | Every dispatched agent runs in a herdr pane. The detached headless mode is removed from `agent-dispatch`. |
 | Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
@@ -206,7 +206,11 @@ last slice, not the first.
 - May the task reference enter an opt-in cloud snapshot? A plan URL names a
   repository and a plan, and the snapshot allowlist currently excludes
   anything of that kind.
-- Do SpecScore plan tasks have stable anchors a URL fragment can name?
+- SpecScore plan tasks are believed to have stable references a fragment can
+  name (founder, 2026-10-01); the exact form was not confirmed.
+- Who defines the `specscore://host/org/repo/path` form? It should be
+  SpecScore's own canonical reference that WB consumes, not a format WB
+  invents. Whether SpecScore already has one was not checked.
 - How do Stop, Cancel and Kill map onto herdr's actual pane controls? No
   existing semantics were found in `agent-dispatch` or
   `herdr-session-transport`, by keyword search rather than a full read.
