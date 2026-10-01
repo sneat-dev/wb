@@ -40,9 +40,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 	if got := mergeReceiptCleanupTargetOverride(ctx, []MergeReceiptCleanupProof{proof}, entry); got != "main" {
 		t.Fatalf("target override = %q", got)
 	}
-	if err := applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{proof}, &entry); err != nil {
-		t.Fatal(err)
-	}
+	applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{proof}, &entry)
 	if !entry.IntegratedAtOrigin || !entry.AbsorbedAtOrigin || entry.AbsorbedBySHA != landing || entry.mergeReceiptCandidateSHA != candidate {
 		t.Fatalf("valid proof did not grant exact absorption: %+v", entry)
 	}
@@ -68,9 +66,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 			if rejection := mergeReceiptCleanupProofRejection(ctx, p, e); !strings.Contains(rejection, test.want) {
 				t.Fatalf("rejection = %q, want %q", rejection, test.want)
 			}
-			if err := applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{p}, &e); err != nil {
-				t.Fatal(err)
-			}
+			applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{p}, &e)
 			if !strings.Contains(e.AbsorbedByRejection, test.want) {
 				t.Fatalf("proof rejection not reported: %+v", e)
 			}

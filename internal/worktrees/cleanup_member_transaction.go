@@ -60,7 +60,8 @@ func productionCleanupMemberRecheckPorts(worktree *cleanupWorktreeHandle) cleanu
 				true, false, entry.External, cleanupInspectPolicy(options))
 		},
 		MergeProof: func(ctx context.Context, options CleanupOptions, result *ListResult) error {
-			return applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, result)
+			applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, result)
+			return nil
 		},
 		Acknowledgement: applyAbsorbedConflictAcknowledgementCleanupProof,
 		Supersession:    applySupersessionReceipt,

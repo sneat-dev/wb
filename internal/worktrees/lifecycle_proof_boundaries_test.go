@@ -387,9 +387,7 @@ func TestLifecycleProofCleanupBoundaries(t *testing.T) {
 	}
 
 	proofEntry := ListResult{WorktreeDir: "/worktree"}
-	if err := applyMergeReceiptCleanupProof(context.Background(), []MergeReceiptCleanupProof{{SourceWorktree: "/other"}}, &proofEntry); err != nil {
-		t.Fatal(err)
-	}
+	applyMergeReceiptCleanupProof(context.Background(), []MergeReceiptCleanupProof{{SourceWorktree: "/other"}}, &proofEntry)
 	if rejection := mergeReceiptCleanupProofRejection(context.Background(), MergeReceiptCleanupProof{}, proofEntry); !strings.Contains(rejection, "receipt has no") {
 		t.Fatalf("empty receipt rejection = %q", rejection)
 	}

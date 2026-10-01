@@ -2631,9 +2631,7 @@ func (run *cleanupRun) gatherInventory() error {
 		run.listed.Results = selected
 	}
 	for index := range run.listed.Results {
-		if err := applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &run.listed.Results[index]); err != nil {
-			return err
-		}
+		applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &run.listed.Results[index])
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &run.listed.Results[index]); err != nil {
 			return err
 		}
@@ -4234,23 +4232,22 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 // repeats every identity-bearing Git observation needed for the special
 // squash-landing shape. Ordinary cleanup continues to use its generic
 // containment and --absorbed-by checks unchanged.
-func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCleanupProof, entry *ListResult) error {
+func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCleanupProof, entry *ListResult) {
 	for _, proof := range proofs {
 		if filepath.Clean(proof.SourceWorktree) != filepath.Clean(entry.WorktreeDir) {
 			continue
 		}
 		if rejection := mergeReceiptCleanupProofRejection(ctx, proof, *entry); rejection != "" {
 			entry.AbsorbedByRejection = "worktree-merge receipt cleanup proof: " + rejection
-			return nil
+			return
 		}
 		entry.IntegratedAtOrigin = true
 		entry.AbsorbedAtOrigin = true
 		entry.AbsorbedBySHA = proof.LandingSHA
 		entry.mergeReceiptCandidateSHA = proof.CandidateSHA
 		entry.AbsorbedByRejection = ""
-		return nil
+		return
 	}
-	return nil
 }
 
 // mergeReceiptCleanupTargetOverride changes only the target used by this
