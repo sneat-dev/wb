@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SCHEMES, VIEWPORTS, routePlan, shotPlan } from './shot-plan.mjs'
+import { GALLERY_DIST, SCHEMES, VIEWPORTS, galleryPlan, routePlan, shotPlan } from './shot-plan.mjs'
 
 const document = {
   repositories: [{ id: 'r0', name: 'acme/cached' }, { id: 'r1', host: 'github.com', name: 'sneat-co/sneat-go' }],
@@ -50,5 +50,14 @@ describe('shotPlan', () => {
 
   it('gives every shot a distinct file', () => {
     expect(new Set(shots.map((shot) => shot.file)).size).toBe(shots.length)
+  })
+})
+
+describe('galleryPlan', () => {
+  it('photographs the whole gallery from the preview build, once the charts have drawn, in each scheme and size', () => {
+    const shots = galleryPlan()
+    expect(GALLERY_DIST).toBe('dist-preview')
+    expect(shots.map((shot) => shot.file).sort()).toEqual(['gallery-dark-1440.png', 'gallery-dark-390.png', 'gallery-light-1440.png', 'gallery-light-390.png'])
+    for (const shot of shots) expect(shot).toMatchObject({ url: '/gallery', state: 'ok', dist: 'dist-preview', fullPage: true, ready: 'canvas' })
   })
 })

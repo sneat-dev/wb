@@ -84,10 +84,10 @@ export class TopBar {
   protected readonly session = computed(() => {
     const principal = this.store.session()?.principal
     if (principal === undefined) {
-      return this.store.sessionStatus() === 'failed' ? { text: 'no session', title: 'The session could not be read.' } : { text: 'session', title: 'Reading the session.' }
+      return this.store.sessionStatus() === 'failed' ? { text: 'no session', title: 'The session could not be read.', anonymous: false } : { text: 'session', title: 'Reading the session.', anonymous: false }
     }
     return principal === 'owner'
-      ? { text: 'owner', title: 'An owner session: this page may read repository content.' }
-      : { text: 'anonymous', title: 'An anonymous local reader: fleet metadata only. `wb cockpit` opens an owner session.' }
+      ? { text: 'owner', title: 'An owner session: this page may read repository content.', anonymous: false }
+      : { text: 'anonymous', title: 'An anonymous local reader: fleet metadata only. `wb cockpit` opens an owner session.', anonymous: true }
   })
 }

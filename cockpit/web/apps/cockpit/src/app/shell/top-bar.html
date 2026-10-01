@@ -34,9 +34,17 @@
       <span class="new-task-text">New task</span>
     </a>
     <app-freshness-chip />
-    <span class="chip tone-neutral session" [attr.title]="session().title">
-      <app-icon name="user" />
-      <span>{{ session().text }}</span>
-    </span>
+    @if (session().anonymous) {
+      <!-- The one place that says how to sign in as owner (REQ:owner-gating-is-visible); the card is a lazy overlay. -->
+      <button type="button" class="chip tone-neutral session" aria-haspopup="dialog" [attr.aria-expanded]="shell.ownerHintOpen()" [attr.title]="session().title" (click)="shell.toggleOwnerHint()">
+        <app-icon name="user" />
+        <span>{{ session().text }}</span>
+      </button>
+    } @else {
+      <span class="chip tone-neutral session" [attr.title]="session().title">
+        <app-icon name="user" />
+        <span>{{ session().text }}</span>
+      </span>
+    }
   </div>
 </header>

@@ -56,6 +56,22 @@
   --idle-soft: light-dark(#eef0f3, #1f242b);
   --idle-border: light-dark(#d5d9e0, #323944);
 
+  /* Badges: one height each for a table row and for a card. */
+  --badge-h: 1.5rem;
+  --badge-h-small: 1.25rem;
+
+  /* Charts: Chart.js draws to a canvas and cannot read light-dark(), so the chart
+     reads these through a probe element (libs/ui chart-theme.ts) and is redrawn
+     when the colour scheme changes. One series colour: the accent. */
+  --chart-line: var(--accent);
+  --chart-fill: light-dark(rgb(63 81 214 / 0.12), rgb(143 157 255 / 0.16));
+  --chart-bar: var(--accent);
+  --chart-bar-hover: var(--accent-hover);
+  --chart-grid: var(--border);
+  --chart-tick: var(--text-3);
+  --chart-tooltip-bg: light-dark(#14171c, #e8ebf0);
+  --chart-tooltip-fg: light-dark(#ffffff, #0e1014);
+
   /* Spacing: an 8 px grid with a 4 px half step. */
   --space-1: 4px;
   --space-2: 8px;

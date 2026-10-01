@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "nx build cockpit && node tools/finish-build.mjs",
+    "build:preview": "nx build cockpit --configuration=preview",
     "lint": "nx run-many -t lint -p cockpit cockpit-e2e fleet-data ui",
     "test": "node tools/check-component-specs.mjs && vitest run --coverage",
     "test:e2e": "playwright test -c apps/cockpit-e2e/playwright.config.ts",
@@ -49,6 +50,7 @@
     "@angular/platform-browser": "22.1.8",
     "@angular/router": "22.1.8",
     "@primeuix/themes": "^3.0.1",
+    "chart.js": "4.5.1",
     "marked": "18.0.14",
     "primeng": "^22.1.2",
     "rxjs": "^7.8.2",

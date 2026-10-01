@@ -103,6 +103,21 @@ describe('TopBar', () => {
     expect(text(owner.root.querySelector('.session'))).toBe('session')
   })
 
+  // cockpit-views#ac:owner-gating-is-one-affordance
+  it('makes the anonymous chip the one affordance that opens the sign-in card, and the owner chip a plain label', async () => {
+    const { root, fixture } = await render()
+    const chip = root.querySelector('.session') as HTMLElement
+    expect(chip.tagName).toBe('BUTTON')
+    expect(chip.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(chip.getAttribute('aria-expanded')).toBe('false')
+    chip.click()
+    await fixture.whenStable()
+    expect(TestBed.inject(ShellState).ownerHintOpen()).toBe(true)
+    expect(chip.getAttribute('aria-expanded')).toBe('true')
+    const owner = await render(undefined, { principal: 'owner', capabilities: [], code_browser_url: '' })
+    expect(owner.root.querySelector('.session')?.tagName).toBe('SPAN')
+  })
+
   it('uses the platform key in the search hint', async () => {
     const { root } = await render()
     expect(text(root.querySelector('.trigger-keys'))).toMatch(/^(⌘|Ctrl) K$/)

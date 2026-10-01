@@ -1,4 +1,5 @@
 import { Route, Routes } from '@angular/router'
+import { galleryRoutes } from './gallery/gallery-routes'
 
 // Every route of the application, registered once and lazy-loaded: the tab
 // list (nav.ts) and this table are complete, and the task that builds a page
@@ -34,4 +35,7 @@ export const pageRoutes: Routes = [
   { path: '**', redirectTo: '' },
 ]
 
-export const appRoutes: Routes = [{ path: '', loadChildren: () => import('./pages/prime-theme').then((m) => m.withPrimeNg(pageRoutes)) }]
+// The gallery of the control surface exists only in the preview build, which replaces
+// gallery/gallery-routes.ts (an empty list) with its own file; it needs no PrimeNG, so it sits
+// outside the group that provides it. In the production build `galleryRoutes` is empty.
+export const appRoutes: Routes = [...galleryRoutes, { path: '', loadChildren: () => import('./pages/prime-theme').then((m) => m.withPrimeNg(pageRoutes)) }]

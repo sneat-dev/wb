@@ -58,6 +58,27 @@
           "optimization": false,
           "extractLicenses": false,
           "sourceMap": true
+        },
+        "preview": {
+          "outputPath": {
+            "base": "dist-preview",
+            "browser": ""
+          },
+          "fileReplacements": [
+            {
+              "replace": "apps/cockpit/src/app/gallery/gallery-routes.ts",
+              "with": "apps/cockpit/src/app/gallery/gallery-routes.preview.ts"
+            }
+          ],
+          "outputHashing": "all",
+          "optimization": {
+            "scripts": true,
+            "styles": {
+              "minify": true,
+              "inlineCritical": false
+            },
+            "fonts": false
+          }
         }
       },
       "defaultConfiguration": "production"

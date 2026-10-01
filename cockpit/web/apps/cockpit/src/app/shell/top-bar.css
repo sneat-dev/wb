@@ -169,6 +169,17 @@
   flex: none;
 }
 
+/* The anonymous chip is a button that opens the sign-in card. */
+button.session {
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+button.session:hover {
+  background: var(--surface-hover);
+}
+
 /* "session" while it is read, then "anonymous" or "owner": the same width, so the bar does not move. */
 @media (min-width: 48rem) {
   .session {
