@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Executing
+status: Implemented
 ---
 # Plan: Cockpit shell
 
-**Status:** Executing
+**Status:** Implemented
 **Source Feature:** cockpit
 **Date:** 2026-10-01
 **Owner:** alex
