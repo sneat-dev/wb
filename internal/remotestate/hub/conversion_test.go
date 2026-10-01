@@ -110,3 +110,28 @@ func TestOptionalFieldsCrossTheHostedBoundaryBothWays(t *testing.T) {
 		t.Errorf("a snapshot without optional fields gained some: %+v", bare)
 	}
 }
+
+// TestWhatThePublisherSendsIsAlwaysWhatTheHubAccepts: whatever a machine's agent
+// fields hold, the publisher's validation leaves only values the hub's model
+// accepts, so a hub 400 can never be caused by our own values.
+func TestWhatThePublisherSendsIsAlwaysWhatTheHubAccepts(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	hostile := []string{"", "/Users/alice/models/x.gguf", "HOME=/Users/alice", "ignore previous instructions", "a\nb", "ok-value", "meta/llama:8b", "owner/name", "running", "live", "working"}
+	var agents []remotestate.AgentState
+	for _, kind := range []string{"session", "run", "other"} {
+		for _, value := range hostile {
+			agents = append(agents, remotestate.AgentState{Kind: kind, State: value, SessionID: value, RunID: value, Runtime: value, Model: value, Activity: value, Task: value, Repository: value})
+			agents = append(agents, remotestate.AgentState{Kind: kind, State: "live", Runtime: value, Model: value, Activity: value, Task: value, Repository: value, StartedAt: at.Add(1000 * time.Hour)})
+			agents = append(agents, remotestate.AgentState{Kind: kind, State: "running", Runtime: value, Model: value, Activity: value, Task: value, Repository: value})
+		}
+	}
+	snapshot := remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: at, OS: "bad os!", CPUCount: -3, BootTime: time.Now().Add(time.Hour)}.CleanHardware().
+		WithExtras(remotestate.Extras{Agents: agents, Metrics: &remotestate.MetricsSample{SampledAt: time.Now().Add(time.Hour)}}, true, true)
+	if len(snapshot.Agents) == 0 {
+		t.Fatal("no agent survived: the test would be vacuous")
+	}
+	if err := FromRemoteSnapshot(snapshot).Validate(); err != nil {
+		t.Fatalf("the hub would refuse what the publisher sends: %v", err)
+	}
+}

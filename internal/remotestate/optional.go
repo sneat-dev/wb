@@ -5,17 +5,42 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"math"
+	"regexp"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/agentfields"
 )
+
+// maxCPUCount bounds a published CPU count.
+const maxCPUCount = 65536
+
+var shortName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+
+// CleanHardware blanks the hardware facts that fail their rules: an operating
+// system or architecture name that is not a short plain word, a CPU count outside
+// 1 to 65536, and a boot time in the future or before 1970. The publisher applies
+// it so that what it sends is what the hub accepts.
+func (s Snapshot) CleanHardware() Snapshot {
+	if !shortName.MatchString(s.OS) {
+		s.OS = ""
+	}
+	if !shortName.MatchString(s.Arch) {
+		s.Arch = ""
+	}
+	if s.CPUCount < 1 || s.CPUCount > maxCPUCount {
+		s.CPUCount = 0
+	}
+	if s.BootTime.Before(time.Unix(0, 0)) || s.BootTime.After(time.Now().Add(maxSkew)) {
+		s.BootTime = time.Time{}
+	}
+	return s
+}
 
 // MaxAgents is the most agents one published snapshot carries.
 const MaxAgents = 200
-
-// maxAgentText bounds every string of an AgentState.
-const maxAgentText = 200
 
 // AgentState is one agent of the publishing machine, as the optional `agents`
 // list of a snapshot carries it. It holds the closed set of fields of
@@ -68,53 +93,83 @@ type PublishSource interface {
 }
 
 // WithExtras returns the snapshot carrying extras under the opt-in flags:
-// agents only when withAgents (at most MaxAgents, every string cleaned and
-// length-capped), the sample only when withMetrics and it is set. With both
-// flags false it is the snapshot unchanged.
+// agents only when withAgents, the sample only when withMetrics and it is set.
+// With both flags false it is the snapshot unchanged.
+//
+// Agents are validated, not repaired (package agentfields): an agent whose kind,
+// state or identifier fails is dropped, any other failing field is blanked, so a
+// path, an environment value or prose in a field never reaches the payload. At
+// most MaxAgents valid agents are kept, and AgentsTruncated is set when more
+// valid ones were left out (an invalid agent beyond the cap is not a cut).
 func (s Snapshot) WithExtras(extras Extras, withAgents, withMetrics bool) Snapshot {
-	s.Agents, s.Metrics = nil, nil
+	s.Agents, s.Metrics, s.AgentsTruncated = nil, nil, false
 	if withAgents {
 		for _, agent := range extras.Agents {
+			cleaned, ok := agent.cleaned()
+			if !ok {
+				continue
+			}
 			if len(s.Agents) == MaxAgents {
+				s.AgentsTruncated = true
 				break
 			}
-			s.Agents = append(s.Agents, agent.cleaned())
+			s.Agents = append(s.Agents, cleaned)
 		}
 	}
 	if withMetrics && extras.Metrics != nil {
-		sample := *extras.Metrics
-		s.Metrics = &sample
+		if sample, ok := extras.Metrics.valid(); ok {
+			s.Metrics = &sample
+		}
 	}
 	return s
 }
 
-func (a AgentState) cleaned() AgentState {
-	a.Kind, a.SessionID, a.RunID = cleanText(a.Kind), cleanText(a.SessionID), cleanText(a.RunID)
-	a.Runtime, a.Model, a.State, a.Activity = cleanText(a.Runtime), cleanText(a.Model), cleanText(a.State), cleanText(a.Activity)
-	a.Task, a.Repository = cleanText(a.Task), cleanText(a.Repository)
-	return a
+// cleaned applies the shared rules; false means the agent is dropped.
+func (a AgentState) cleaned() (AgentState, bool) {
+	fields, ok := agentfields.Clean(agentfields.Agent{
+		Kind: a.Kind, SessionID: a.SessionID, RunID: a.RunID, Runtime: a.Runtime, Model: a.Model, State: a.State,
+		Activity: a.Activity, Task: a.Task, Repository: a.Repository,
+	}, agentfields.IsTaskName)
+	if !ok {
+		return AgentState{}, false
+	}
+	a.Kind, a.SessionID, a.RunID, a.Runtime, a.Model, a.State = fields.Kind, fields.SessionID, fields.RunID, fields.Runtime, fields.Model, fields.State
+	a.Activity, a.Task, a.Repository = fields.Activity, fields.Task, fields.Repository
+	if !a.StartedAt.IsZero() && a.StartedAt.After(time.Now().Add(maxSkew)) {
+		a.StartedAt = time.Time{}
+	}
+	return a, true
 }
 
-// cleanText removes control and line-break characters and cuts the text to
-// maxAgentText characters, so a published string is one bounded plain line.
-func cleanText(text string) string {
-	kept := make([]rune, 0, len(text))
-	for _, character := range text {
-		if len(kept) == maxAgentText {
-			break
-		}
-		if !unicode.IsControl(character) && !unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
-			kept = append(kept, character)
-		}
+// maxSkew is how far ahead of the clock a published time may be.
+const maxSkew = 5 * time.Second
+
+// valid returns the sample with each out-of-range measurement dropped, and false
+// when its time is missing or in the future.
+func (m MetricsSample) valid() (MetricsSample, bool) {
+	if m.SampledAt.IsZero() || m.SampledAt.After(time.Now().Add(maxSkew)) {
+		return MetricsSample{}, false
 	}
-	return string(kept)
+	if m.CPUPercent != nil && !(*m.CPUPercent >= 0 && *m.CPUPercent <= 100) {
+		m.CPUPercent = nil
+	}
+	if m.Load1 != nil && !(*m.Load1 >= 0 && !math.IsInf(*m.Load1, 0)) {
+		m.Load1 = nil
+	}
+	if m.MemoryUsedBytes == nil || m.MemoryTotalBytes == nil || *m.MemoryUsedBytes > *m.MemoryTotalBytes {
+		m.MemoryUsedBytes, m.MemoryTotalBytes = nil, nil
+	}
+	if m.DiskFreeBytes == nil || m.DiskTotalBytes == nil || *m.DiskFreeBytes > *m.DiskTotalBytes {
+		m.DiskFreeBytes, m.DiskTotalBytes = nil, nil
+	}
+	return m, true
 }
 
 // WithoutOptional returns the snapshot without the optional fields an older
 // hub refuses: the hardware facts, the agents and the sample.
 func (s Snapshot) WithoutOptional() Snapshot {
 	s.OS, s.Arch, s.CPUCount, s.BootTime = "", "", 0, time.Time{}
-	s.Agents, s.Metrics = nil, nil
+	s.Agents, s.Metrics, s.AgentsTruncated = nil, nil, false
 	return s
 }
 
@@ -123,13 +178,42 @@ func (s Snapshot) HasOptional() bool {
 	return s.OS != "" || s.Arch != "" || s.CPUCount != 0 || !s.BootTime.IsZero() || len(s.Agents) > 0 || s.Metrics != nil
 }
 
-// Digest identifies what a snapshot says apart from when it was published and
-// the changing machine sample: it is the same before and after a publish when
-// nothing a reader would act on has changed. The periodic publisher skips a
-// publish whose digest is the last published one, so a git store gains no
+// ActivityBucket is the granularity of the published times a digest and the
+// daemon's change token take: a heartbeat that moves a worktree's last activity
+// by less than this does not make a snapshot "changed", so an active machine is
+// not published (and git does not gain a commit) for every heartbeat.
+const ActivityBucket = 15 * time.Minute
+
+// Digest identifies what a snapshot says apart from when it was published, the
+// changing machine sample, the agents' fast-flapping `activity` and the worktrees'
+// last-activity times below ActivityBucket: it is the same before and after a
+// publish when nothing a reader would act on has changed. The periodic publisher
+// skips a publish whose digest is the last published one, so a git store gains no
 // commit for an idle machine.
-func (s Snapshot) Digest() string {
+func (s Snapshot) Digest() string { return digestOf(s, true) }
+
+// CoreDigest is Digest without the agents and their truncation marker: what the
+// publisher compares to tell a change of agents alone from a change of the rest.
+func (s Snapshot) CoreDigest() string { return digestOf(s, false) }
+
+func digestOf(s Snapshot, withAgents bool) string {
 	s.PublishedAt, s.LastSeenAt, s.Metrics = time.Time{}, time.Time{}, nil
+	if withAgents {
+		agents := make([]AgentState, len(s.Agents))
+		for index, agent := range s.Agents {
+			agent.Activity = ""
+			agents[index] = agent
+		}
+		s.Agents = agents
+	} else {
+		s.Agents, s.AgentsTruncated = nil, false
+	}
+	worktrees := make([]WorktreeState, len(s.Worktrees))
+	for index, worktree := range s.Worktrees {
+		worktree.LastActivityAt = worktree.LastActivityAt.UTC().Truncate(ActivityBucket)
+		worktrees[index] = worktree
+	}
+	s.Worktrees = worktrees
 	data, _ := yaml.Marshal(s) // a Snapshot always marshals
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

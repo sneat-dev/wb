@@ -61,8 +61,11 @@ type Snapshot struct {
 	// snapshot-agents-and-metrics): present only when the publisher opted in
 	// with remote.publish.agents and remote.publish.metrics, ignored by a
 	// reader that does not know them, and with no effect on schema_version.
-	Agents            []AgentState      `yaml:"agents,omitempty" json:"agents,omitempty"`
-	Metrics           *MetricsSample    `yaml:"metrics,omitempty" json:"metrics,omitempty"`
+	Agents  []AgentState   `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Metrics *MetricsSample `yaml:"metrics,omitempty" json:"metrics,omitempty"`
+	// AgentsTruncated is set when the publisher had more than MaxAgents valid
+	// agents and kept the first MaxAgents.
+	AgentsTruncated   bool              `yaml:"agents_truncated,omitempty" json:"agents_truncated,omitempty"`
 	KnownRepositories []string          `yaml:"known_repositories,omitempty" json:"known_repositories,omitempty"`
 	Repositories      []RepositoryState `yaml:"repositories" json:"repositories"`
 	Worktrees         []WorktreeState   `yaml:"worktrees" json:"worktrees"`

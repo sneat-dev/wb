@@ -13,9 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/sneat-dev/wb/internal/agentfields"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 )
 
@@ -41,7 +40,7 @@ import (
 // envelope (a kind inside statistics inside a code index inside a repository
 // inside the fleet) and maxTokens a bound on the JSON tokens of a body.
 const (
-	maxFieldBytes = 256
+	maxFieldBytes = agentfields.MaxTextBytes
 	maxCollection = 5000
 	maxCodeIndex  = 32
 	maxDepth      = 10
@@ -251,30 +250,16 @@ func (e Envelope) Validate(metricsOnly bool, now time.Time) error {
 // a model is a token that may also hold the characters a model name uses.
 var (
 	idPattern      = regexp.MustCompile(`^[a-z]{2,6}-[0-9a-f]{20}$`)
-	tokenPattern   = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
-	modelPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,63}$`)
+	tokenPattern   = agentfields.Token
+	modelPattern   = agentfields.Model
 	versionPattern = regexp.MustCompile(`^[A-Za-z0-9._+()-]{1,64}$`)
 	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 )
 
-// unsafeText reports whether character may not appear in a name, beyond what
-// plainText removes: the replacement character (what invalid UTF-8 decodes to), a
-// private-use character, a space other than the ASCII one, and the characters
-// that draw as blanks (the Hangul fillers and the blank Braille pattern).
-func unsafeText(character rune) bool {
-	switch character {
-	case utf8.RuneError, 0x2800, 0x115F, 0x1160, 0x3164, 0xFFA0:
-		return true
-	}
-	return unsafeRune(character) || unicode.Is(unicode.Co, character) || (unicode.Is(unicode.Zs, character) && character != ' ')
-}
-
 // textRule decides whether a string field's value is acceptable.
 type textRule func(string) bool
 
-func isText(value string) bool {
-	return len(value) <= maxFieldBytes && !strings.ContainsFunc(value, unsafeText)
-}
+func isText(value string) bool { return agentfields.IsText(value) }
 
 func isSafeURL(value string) bool {
 	return value == "" || (len(value) <= maxURLLength && safeHTTPSURL(value) == value)
@@ -318,9 +303,9 @@ var stringRules = map[string]textRule{
 	// the error of a read of another machine: both must be absent.
 	"Machine.transport":    oneOf(),
 	"Machine.remote_error": oneOf(),
-	// The machine's own entry carries the code of its own last failed publish
-	// (it is local only: another machine never carries it from an export).
-	"Machine.publish_error":     oneOf(publishErrorCodes...),
+	// The code of this machine's own last failed publish is local only: an export
+	// never carries it (NewEnvelope clears it), and one that does is refused.
+	"Machine.publish_error":     oneOf(),
 	"Repository.host":           isHost,
 	"Repository.name":           isText,
 	"Repository.default_branch": isText,

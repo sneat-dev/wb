@@ -77,8 +77,9 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		_, err = out.Write(data)
 		return err
 	}
+	marker := ""
 	if progressOut != nil {
-		noteHardwareOnce(deps.configPath, progressOut)
+		marker = noteHardware(deps.configPath, progressOut)
 	}
 	progress.phase("publishing snapshot")
 	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, deps.now())
@@ -87,6 +88,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		return &exitError{code: exitFindings, message: "publish: " + err.Error()}
 	}
 	report.Location = result.Location
+	recordHardwareNoted(marker)
 	if diagnostic != nil && progressOut != nil {
 		_, _ = fmt.Fprintf(progressOut, "wb: %v\n", diagnostic)
 	}
@@ -109,24 +111,33 @@ func publishIdentity(cfg remotestate.Config, login string, now time.Time) remote
 	return remotestate.Snapshot{
 		Login: login, Machine: cfg.Machine, PublishedAt: now, WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID(),
 		OS: hardware.OS, Arch: hardware.Arch, CPUCount: hardware.CPUCount, BootTime: hardware.BootTime,
-	}
+	}.CleanHardware()
 }
 
 // hardwareNote is the one line the first real publish prints after the machine's
 // hardware facts joined the snapshot.
 const hardwareNote = "wb: this publish also includes this machine's os, arch, cpu_count and boot_time (new in this version); agents and metrics are never sent by hand\n"
 
-// noteHardwareOnce prints hardwareNote the first time and records that it did
-// with a marker file beside the configuration, so the line is not repeated. A
-// marker that cannot be written costs only a repeat of the line.
-func noteHardwareOnce(configPath string, out io.Writer) {
+// noteHardware prints hardwareNote unless it was printed on an earlier
+// successful publish, and returns the marker to write once this publish has
+// succeeded ("" when there is nothing to record), so a publish that fails does
+// not use the note up.
+func noteHardware(configPath string, out io.Writer) (marker string) {
 	if configPath == "" {
-		return
+		return ""
 	}
-	marker := filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
+	marker = filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
 	if _, err := os.Stat(marker); err == nil {
-		return
+		return ""
 	}
 	_, _ = io.WriteString(out, hardwareNote)
-	_ = os.WriteFile(marker, nil, 0o600)
+	return marker
+}
+
+// recordHardwareNoted writes the marker noteHardware returned. A marker that
+// cannot be written costs only a repeat of the line.
+func recordHardwareNoted(marker string) {
+	if marker != "" {
+		_ = os.WriteFile(marker, nil, 0o600)
+	}
 }

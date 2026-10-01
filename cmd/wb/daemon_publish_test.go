@@ -241,8 +241,9 @@ func TestRemotePublishByHandSaysOnceThatHardwareIsNowIncluded(t *testing.T) {
 		t.Fatalf("dry run: %v %q", err, progress.String())
 	}
 	// Without a config path or an unwritable marker nothing breaks.
-	noteHardwareOnce("", &progress)
-	noteHardwareOnce(filepath.Join(t.TempDir(), "absent", "wb.yaml"), &progress)
+	noteHardware("", &progress)
+	recordHardwareNoted(noteHardware(filepath.Join(t.TempDir(), "absent", "wb.yaml"), &progress))
+	recordHardwareNoted("")
 }
 
 func TestRemotePublishHelpStatesWhatIsPublished(t *testing.T) {
@@ -252,5 +253,30 @@ func TestRemotePublishHelpStatesWhatIsPublished(t *testing.T) {
 		if !strings.Contains(long, want) {
 			t.Errorf("help lacks %q", want)
 		}
+	}
+}
+
+func TestAFailedPublishDoesNotUseUpTheHardwareNote(t *testing.T) {
+	t.Parallel()
+	provider := &capturingProvider{errs: []error{errors.New("store down")}}
+	opened := 0
+	deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	deps.configPath = cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n  machine: mac\n")()
+	run := func() (string, error) {
+		var out, progress bytes.Buffer
+		err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, &progress, &invocation{})
+		return progress.String(), err
+	}
+	first, err := run()
+	if err == nil || !strings.Contains(first, "boot_time") {
+		t.Fatalf("the failing publish: %v, note %q", err, first)
+	}
+	second, err := run() // succeeds: the note is shown again, and only now recorded
+	if err != nil || !strings.Contains(second, "boot_time") {
+		t.Fatalf("the retry after a failure did not repeat the note: %v %q", err, second)
+	}
+	third, err := run()
+	if err != nil || strings.Contains(third, "boot_time") {
+		t.Fatalf("the note was shown after a success: %v %q", err, third)
 	}
 }

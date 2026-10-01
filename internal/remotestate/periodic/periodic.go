@@ -42,6 +42,11 @@ const (
 	DefaultKeepalive = 6 * time.Hour
 	// DefaultMaxBackoff is the longest wait after repeated failures.
 	DefaultMaxBackoff = time.Hour
+	// AgentsMinSpacing is the least time between two publishes that differ only
+	// in the agents (an agent started or ended, a state changed): with the
+	// interval it bounds the commits an agents-only churn can add to a git store
+	// to one per max(interval, 15 minutes).
+	AgentsMinSpacing = 15 * time.Minute
 )
 
 // Options configures a Publisher.
@@ -78,9 +83,10 @@ type Status struct {
 	Diagnostic string
 	// Attempts counts the attempts that ran a scan, Published the publishes
 	// that reached the store, Skipped the attempts that scanned and found
-	// nothing changed, and Gated the attempts that did not scan at all because
+	// nothing changed, Held the attempts that found only the agents changed
+	// and held them back, and Gated the attempts that did not scan at all because
 	// the source reported nothing changed (they are not Attempts).
-	Attempts, Published, Skipped, Gated int
+	Attempts, Published, Skipped, Held, Gated int
 	// LastPublished is when the last publish reached the store.
 	LastPublished time.Time
 }
@@ -96,7 +102,9 @@ type Publisher struct {
 	next         time.Time
 	failures     int
 	lastDigest   string
+	lastCore     string
 	lastToken    string
+	retryFullAt  time.Time
 	provider     remotestate.Provider
 	status       Status
 	loggedStatus string
@@ -132,8 +140,8 @@ func (p *Publisher) Status() Status {
 	return p.status
 }
 
-// Diagnostic is the code of the last attempt, "" when it published, found
-// nothing to publish, or none has run.
+// Diagnostic is the code of the last completed outcome against the store, ""
+// when it is healthy, none has run or publishing never failed.
 func (p *Publisher) Diagnostic() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -147,9 +155,19 @@ func (p *Publisher) Diagnostic() string {
 // does not even scan: the scan reads the git status of every repository, which
 // the snapshotter's fingerprints already tell is unchanged. Otherwise it scans,
 // adds the extras the flags allow, skips a snapshot that says what the last
-// published one said, and publishes through the provider. source may be nil
-// (no gate, no extras). It returns nothing: every outcome is a Status and a
-// logged code.
+// published one said, holds back a change of the agents alone until
+// max(interval, AgentsMinSpacing) has passed since the last publish, and
+// publishes through the provider. When an older hub's refusal of the optional
+// fields has been remembered for a day, the first attempt after that day is
+// forced: no gate and no digest skip, so an upgraded hub is noticed within 24
+// hours. source may be nil (no gate, no extras). It returns nothing: every
+// outcome is a Status and a logged code.
+//
+// The diagnostic (Status.Diagnostic) is one rule: it is the code of the last
+// completed outcome against the store. A failure sets its code; a publish that
+// carried the optional fields clears it; a publish that had to leave them out
+// sets optional_fields_dropped, which stays until a publish that carried them
+// succeeds; a gated, skipped or held-back attempt never changes it.
 func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSource) {
 	if p.options.Every <= 0 || p.options.Collect == nil || p.options.Open == nil {
 		return
@@ -166,9 +184,10 @@ func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSourc
 		extras = source.PublishExtras
 		token = p.gateKey(source)
 	}
-	if token != "" && token == p.lastToken && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive {
+	forced := !p.retryFullAt.IsZero() && !now.Before(p.retryFullAt)
+	if !forced && token != "" && token == p.lastToken && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive {
 		p.status.Gated++
-		p.next = now.Add(p.options.Every)
+		p.next = p.after(now)
 		p.mu.Unlock()
 		return
 	}
@@ -177,40 +196,56 @@ func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSourc
 
 	ctx, cancel := context.WithTimeout(ctx, p.options.Timeout)
 	defer cancel()
-	diagnostic, detail, published, skipped, digest := p.guarded(ctx, now, extras)
+	result := p.guarded(ctx, now, extras, forced)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.running = false
 	p.status.Attempts++
-	p.status.Diagnostic = diagnostic
 	switch {
-	case published:
+	case result.failure != DiagnosticNone:
+		p.status.Diagnostic = result.failure
+		p.failures++
+	case result.published:
 		p.status.Published++
 		p.status.LastPublished = now
-		p.lastDigest, p.lastToken = digest, token
-	case skipped:
+		p.lastDigest, p.lastCore, p.lastToken = result.digest, result.core, token
+		p.failures = 0
+		switch {
+		case result.dropped:
+			p.status.Diagnostic = DiagnosticOptionalFields
+			if p.retryFullAt.IsZero() || forced {
+				p.retryFullAt = now.Add(remotestate.OptionalRefusalMemoryFor)
+			}
+		case result.carriedOptional:
+			p.status.Diagnostic, p.retryFullAt = DiagnosticNone, time.Time{}
+		case p.status.Diagnostic != DiagnosticOptionalFields:
+			p.status.Diagnostic = DiagnosticNone
+		}
+	case result.skipped:
 		p.status.Skipped++
 		p.lastToken = token
+	case result.held:
+		p.status.Held++
 	}
-	failed := diagnostic != DiagnosticNone && diagnostic != DiagnosticOptionalFields
-	if failed {
-		p.failures++
-		wait := p.options.Every
-		for step := 1; step < p.failures && wait < p.options.MaxBackoff; step++ {
-			wait *= 2
-		}
-		p.next = now.Add(min(wait, max(p.options.MaxBackoff, p.options.Every)))
-	} else {
-		p.failures = 0
-		p.next = now.Add(p.options.Every)
-	}
-	if diagnostic != p.loggedStatus {
-		p.loggedStatus = diagnostic
-		if diagnostic != DiagnosticNone {
-			p.options.Logf("remote publish: %s: %s", diagnostic, detail)
+	p.next = p.after(now)
+	if p.status.Diagnostic != p.loggedStatus {
+		p.loggedStatus = p.status.Diagnostic
+		if p.status.Diagnostic != DiagnosticNone {
+			p.options.Logf("remote publish: %s: %s", p.status.Diagnostic, result.detail)
 		}
 	}
+}
+
+// after is the time of the next attempt that is allowed: the interval, or while
+// publishes keep failing a wait that doubles up to MaxBackoff. The caller holds
+// p.mu.
+func (p *Publisher) after(now time.Time) time.Time {
+	wait := p.options.Every
+	for step := 1; step < p.failures && wait < p.options.MaxBackoff; step++ {
+		wait *= 2
+	}
+	return now.Add(min(wait, max(p.options.MaxBackoff, p.options.Every)))
 }
 
 // gateKey is the source's change token with the digest of the agents it would
@@ -227,39 +262,61 @@ func (p *Publisher) gateKey(source remotestate.PublishSource) string {
 	return token
 }
 
+// result is how one attempt ended.
+type result struct {
+	// failure is the diagnostic of a failed attempt, DiagnosticNone otherwise.
+	failure string
+	detail  string
+	// published: reached the store; dropped: without the optional fields;
+	// carriedOptional: with them. skipped: nothing changed; held: only the agents
+	// changed and it is too soon to publish them.
+	published, dropped, carriedOptional, skipped, held bool
+	digest, core                                       string
+}
+
 // guarded is attempt with a panic in a collaborator turned into a failed
 // attempt: a daemon never ends because a publish did.
-func (p *Publisher) guarded(ctx context.Context, now time.Time, extras func() remotestate.Extras) (diagnostic, detail string, published, skipped bool, digest string) {
+func (p *Publisher) guarded(ctx context.Context, now time.Time, extras func() remotestate.Extras, forced bool) (outcome result) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			diagnostic, detail, published, skipped, digest = DiagnosticCollectFailed, fmt.Sprintf("panic (%T)", recovered), false, false, ""
+			outcome = result{failure: DiagnosticCollectFailed, detail: fmt.Sprintf("panic (%T)", recovered)}
 		}
 	}()
-	return p.attempt(ctx, now, extras)
+	return p.attempt(ctx, now, extras, forced)
 }
 
 // attempt runs the scan and the publish and says how it ended.
-func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() remotestate.Extras) (diagnostic, detail string, published, skipped bool, digest string) {
+func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() remotestate.Extras, forced bool) result {
 	snapshot, err := p.options.Collect(ctx, now)
 	if err != nil {
-		return DiagnosticCollectFailed, err.Error(), false, false, ""
+		return result{failure: DiagnosticCollectFailed, detail: err.Error()}
 	}
 	if extras != nil {
 		snapshot = snapshot.WithExtras(extras(), p.options.Agents, p.options.Metrics)
 	} else {
 		snapshot = snapshot.WithExtras(remotestate.Extras{}, false, false)
 	}
-	digest = snapshot.Digest()
+	outcome := result{digest: snapshot.Digest(), core: snapshot.CoreDigest()}
 	p.mu.Lock()
-	unchanged := digest == p.lastDigest && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive
+	published := !p.status.LastPublished.IsZero()
+	age := now.Sub(p.status.LastPublished)
+	unchanged := published && outcome.digest == p.lastDigest && age < p.options.Keepalive
+	held := published && outcome.core == p.lastCore && age < max(p.options.Every, AgentsMinSpacing) && age < p.options.Keepalive
 	provider := p.provider
 	p.mu.Unlock()
-	if unchanged {
-		return DiagnosticNone, "", false, true, digest
+	if !forced {
+		if unchanged {
+			outcome.skipped = true
+			return outcome
+		}
+		if held {
+			outcome.held = true
+			return outcome
+		}
 	}
 	if provider == nil {
 		if provider, err = p.options.Open(); err != nil {
-			return DiagnosticOpenFailed, err.Error(), false, false, ""
+			return result{failure: DiagnosticOpenFailed, detail: err.Error()}
 		}
 		p.mu.Lock()
 		p.provider = provider
@@ -267,10 +324,13 @@ func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() re
 	}
 	_, dropped, err := remotestate.PublishWithFallback(ctx, provider, snapshot, now)
 	if err != nil {
-		return DiagnosticPublishFailed, err.Error(), false, false, ""
+		return result{failure: DiagnosticPublishFailed, detail: err.Error()}
 	}
+	outcome.published = true
 	if errors.Is(dropped, remotestate.ErrOptionalFieldsDropped) {
-		return DiagnosticOptionalFields, fmt.Sprint(dropped), true, false, digest
+		outcome.dropped, outcome.detail = true, fmt.Sprint(dropped)
+		return outcome
 	}
-	return DiagnosticNone, "", true, false, digest
+	outcome.carriedOptional = snapshot.HasOptional()
+	return outcome
 }

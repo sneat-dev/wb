@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -197,7 +198,7 @@ func TestRemoteAgentsAreCachedWithTheSnapshotsAgeAndNoActions(t *testing.T) {
 	published := publishedAt(t)
 	entries := remoteWith(t, func(s *remotestate.Snapshot) {
 		s.Agents = []remotestate.AgentState{
-			{Kind: "session", SessionID: "wbs-9", Runtime: "claude\u202e", Model: "opus", State: "live", Activity: "blocked", Task: "t\n1", Repository: "acme/gadgets", StartedAt: published.Add(-time.Hour)},
+			{Kind: "session", SessionID: "wbs-9", Runtime: "claude", Model: "opus", State: "live", Activity: "blocked", Task: "fix-ci", Repository: "acme/gadgets", StartedAt: published.Add(-time.Hour)},
 			{Kind: "run", RunID: "agt-9", State: "completed", Activity: sentinel + "bad", Repository: "acme/unknown", StartedAt: published.Add(48 * time.Hour)},
 			{Kind: "daemon", State: "live"},
 			{Kind: "session", State: "exploded"},
@@ -222,7 +223,7 @@ func TestRemoteAgentsAreCachedWithTheSnapshotsAgeAndNoActions(t *testing.T) {
 		byKey[agent.SessionID+agent.RunID+agent.State] = agent
 	}
 	session := byKey["wbs-9live"]
-	if session.Machine != "vm" || !session.ObservedAt.Equal(published) || session.Runtime != "claude" || session.Task != "t1" || session.Activity != ActivityBlocked ||
+	if session.Machine != "vm" || !session.ObservedAt.Equal(published) || session.Runtime != "claude" || session.Task != "fix-ci" || session.Activity != ActivityBlocked ||
 		session.Repository == "" || session.MachineID == "" || len(session.Worktrees) != 0 || session.ExitCode != nil || !session.StartedAt.Equal(published.Add(-time.Hour)) {
 		t.Fatalf("cached session = %+v", session)
 	}
@@ -246,13 +247,12 @@ func TestRemoteAgentsAreCachedWithTheSnapshotsAgeAndNoActions(t *testing.T) {
 	}
 }
 
-func TestRemoteAgentsAreCappedAndTheDocumentSaysSo(t *testing.T) {
+func TestRemoteAgentsAreCappedAndTheCutIsOnThatMachinesEntry(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat("x", 5000)
 	entries := remoteWith(t, func(s *remotestate.Snapshot) {
 		for index := range 500 {
-			s.Agents = append(s.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-" + strings.Repeat("0", index%3) + string(rune('a'+index%26)) + long[:index%7], Runtime: long, Model: long, State: "running", Task: long, Repository: long, SessionID: ""})
-			s.Agents[index].RunID += "-" + string(rune('0'+index/100)) + string(rune('0'+(index/10)%10)) + string(rune('0'+index%10))
+			s.Agents = append(s.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-" + strconv.Itoa(index), Runtime: long, Model: long, State: "running", Task: long, Repository: long})
 		}
 	})
 	sources := oneRepoSources("/repo/widgets")
@@ -265,14 +265,67 @@ func TestRemoteAgentsAreCappedAndTheDocumentSaysSo(t *testing.T) {
 			continue
 		}
 		count++
-		for _, text := range []string{agent.Runtime, agent.Model, agent.Task, agent.RunID} {
-			if len([]rune(text)) > maxRemoteText {
-				t.Fatalf("an uncapped string of %d characters", len([]rune(text)))
-			}
+		// Strings that fail the rules are blanked, never kept long.
+		if agent.Runtime != "" || agent.Model != "" || agent.Task != "" || agent.Repository != "" {
+			t.Fatalf("an over-long string was kept: %+v", agent)
 		}
 	}
-	if count != 200 || !snapshotter.Document().AgentsTruncated {
-		t.Fatalf("cached agents = %d, truncated = %v", count, snapshotter.Document().AgentsTruncated)
+	vm, _ := machineNamed(snapshotter.Document(), "vm")
+	// The cut is on the machine it cut, and the document-level flag is this machine's own.
+	if count != 200 || !vm.AgentsTruncated || snapshotter.Document().AgentsTruncated {
+		t.Fatalf("cached agents = %d, vm truncated = %v, document truncated = %v", count, vm.AgentsTruncated, snapshotter.Document().AgentsTruncated)
+	}
+}
+
+func TestAPublishedTruncationMarkerAndInvalidAgentsBeyondTheCap(t *testing.T) {
+	t.Parallel()
+	run := func(change func(*remotestate.Snapshot)) Machine {
+		sources := oneRepoSources("/repo/widgets")
+		sources.remote = remoteWith(t, change)
+		snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+		refreshAndSettle(t, snapshotter)
+		vm, _ := machineNamed(snapshotter.Document(), "vm")
+		return vm
+	}
+	// The publisher's own marker is carried.
+	if vm := run(func(s *remotestate.Snapshot) {
+		s.Agents, s.AgentsTruncated = []remotestate.AgentState{{Kind: "run", RunID: "a", State: "running"}}, true
+	}); !vm.AgentsTruncated {
+		t.Error("a published truncation marker was lost")
+	}
+	// Exactly the cap, then invalid agents: not a cut.
+	if vm := run(func(s *remotestate.Snapshot) {
+		for index := range 200 {
+			s.Agents = append(s.Agents, remotestate.AgentState{Kind: "run", RunID: "a" + strconv.Itoa(index), State: "running"})
+		}
+		s.Agents = append(s.Agents, remotestate.AgentState{Kind: "run", State: "bogus"})
+	}); vm.AgentsTruncated {
+		t.Error("an invalid 201st agent counted as a cut")
+	}
+	if vm := run(func(*remotestate.Snapshot) {}); vm.AgentsTruncated {
+		t.Error("no agents, yet truncated")
+	}
+}
+
+func TestACutCachedMachineDoesNotMarkThisMachinesDocumentAndHidesWithItsMachine(t *testing.T) {
+	t.Parallel()
+	published := cachedVM("alex")
+	for index := range 250 {
+		published.Snapshot.Agents = append(published.Snapshot.Agents, remotestate.AgentState{Kind: "run", RunID: "a" + strconv.Itoa(index), State: "running"})
+	}
+	sources := oneRepoSources("/repos/widgets")
+	sources.remote = append(sources.remote, published)
+	full := exportOf(t, vmOwnName, vmSources(), 4, false)
+	live, clock := newLive(t, sources, &fakeExporter{answer: answering(full, full)}, nil)
+	refreshAndSettle(t, live)
+	if vm, _ := machineNamed(live.Document(), vmKey); !vm.AgentsTruncated || live.Document().AgentsTruncated {
+		t.Fatalf("cached: machine %v, document %v", vm.AgentsTruncated, live.Document().AgentsTruncated)
+	}
+	clock.advance(7 * time.Second)
+	pollAndSettle(t, live)
+	vm, _ := machineNamed(live.Document(), vmKey)
+	if vm.Route != RouteLiveRemote || vm.AgentsTruncated || live.Document().AgentsTruncated {
+		t.Fatalf("behind a live read the cut stayed: machine %+v, document %v", vm, live.Document().AgentsTruncated)
 	}
 }
 
@@ -368,25 +421,33 @@ func TestACachedSampleAnswersAfterALiveRemoteOne(t *testing.T) {
 
 func TestPublishedAgentAndSampleStringsAreSentinelFree(t *testing.T) {
 	t.Parallel()
-	// The remote entry of the sentinel sources carries a sentinel in every field
-	// of its agent and sample; only the closed, enum-checked ones may arrive.
+	// Every string of the agent is a sentinel that fails its field's rule (a space,
+	// a path and an environment-looking value): the identifying fields are valid so
+	// the agent is kept, and none of the sentinel may reach the document.
 	sources := sentinelSources()
 	entry := &sources.remote[0].Snapshot
-	entry.Agents = []remotestate.AgentState{filled[remotestate.AgentState]()}
-	entry.Agents[0].Kind, entry.Agents[0].State = "run", "running"
+	hostile := sentinel + "x /Users/x HOME=/y"
+	entry.Agents = []remotestate.AgentState{{
+		Kind: "run", State: "running", RunID: "agt-hostile", Runtime: hostile, Model: hostile, Activity: hostile, Task: hostile, Repository: hostile,
+	}}
 	entry.Metrics = &remotestate.MetricsSample{SampledAt: publishedAt(t)}
 	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
 	refreshAndSettle(t, snapshotter)
+	body, _ := json.Marshal(snapshotter.Document())
+	if strings.Contains(string(body), sentinel+"x") || strings.Contains(string(body), "/Users/x") || strings.Contains(string(body), "HOME=") {
+		t.Fatalf("a hostile agent string reached the document: %s", body)
+	}
+	kept := false
 	for _, agent := range snapshotter.Document().Agents {
-		if agent.Route != RouteCached {
-			continue
+		if agent.RunID == "agt-hostile" {
+			kept = true
+			if agent.Runtime != "" || agent.Model != "" || agent.Activity != "" || agent.Task != "" || agent.Repository != "" {
+				t.Fatalf("a failing field was kept: %+v", agent)
+			}
 		}
-		// Free text that the document may carry (runtime, model, task and the ids)
-		// arrives plain and capped; the activity and the repository, which are
-		// closed or resolved, do not carry the sentinel.
-		if strings.Contains(agent.Activity, sentinel) || strings.Contains(agent.Repository, sentinel) {
-			t.Fatalf("a closed field carries a sentinel: %+v", agent)
-		}
+	}
+	if !kept {
+		t.Fatal("the agent with valid identifying fields was dropped: the test would be vacuous")
 	}
 	if answer, ok := (cachedMetricsSource{snapshotter}).MachineMetrics(machineIDOf(t, snapshotter, "desktop")); ok {
 		t.Fatalf("a sample with no measurement was served: %+v", answer)
@@ -461,7 +522,10 @@ func TestChangeTokenMovesWithWhatThePublisherMustSeeAndWithNothingElse(t *testin
 func TestThePublisherIsHandedTheSnapshotterAsItsSource(t *testing.T) {
 	t.Parallel()
 	publisher := &fakePublisher{}
-	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) { o.Publisher = publisher })
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) {
+		o.Publisher = publisher
+		o.Fingerprint = newConstFingerprint("fp").get
+	})
 	refreshAndSettle(t, snapshotter)
 	if len(publisher.tokens) != 1 || publisher.tokens[0] == "" {
 		t.Fatalf("tokens = %v", publisher.tokens)
@@ -600,5 +664,96 @@ func TestCachedAgentsFollowTheirMachinesLiveReplacement(t *testing.T) {
 	pollAndSettle(t, live)
 	if got := cachedAgentsOf(live.Document(), vmKey); len(got) != 0 {
 		t.Fatalf("a machine read live still shows its cached agents: %+v", got)
+	}
+}
+
+// TestChangeTokenMovesExactlyWhenTheDigestWouldForTheFieldsItTakes is the
+// invariant of ChangeToken for its fields: a heartbeat inside a
+// remotestate.ActivityBucket moves neither the token nor the published digest, one
+// across a bucket moves both. (An edit that no fingerprint and none of these facts
+// sees moves neither, which the spec says waits for the keepalive.)
+func TestChangeTokenMovesExactlyWhenTheDigestWouldForTheFieldsItTakes(t *testing.T) {
+	t.Parallel()
+	sources := oneRepoSources("/repo/widgets")
+	snapshotter, clock := newSnapshotter(sources.collectors(), func(o *Options) { o.Fingerprint = newConstFingerprint("fp").get })
+	refreshAndSettle(t, snapshotter)
+	start := newClock().Now().Add(-time.Hour) // the record's heartbeat, 08:00
+	digestAt := func(heartbeat time.Time) string {
+		return remotestate.Snapshot{Worktrees: []remotestate.WorktreeState{{Task: "task-a", LastActivityAt: heartbeat}}}.Digest()
+	}
+	token, digest := snapshotter.ChangeToken(), digestAt(start)
+	for name, test := range map[string]struct {
+		heartbeat time.Time
+		moves     bool
+	}{
+		"inside the bucket": {start.Add(5 * time.Minute), false},
+		"across the bucket": {start.Add(20 * time.Minute), true},
+		"a day later":       {start.Add(24 * time.Hour), true},
+	} {
+		sources.change(func(f *fakeSources) {
+			record := f.records["/wt/task-a"]
+			record.HeartbeatAt = test.heartbeat
+			f.records["/wt/task-a"] = record
+		})
+		clock.advance(time.Minute)
+		refreshAndSettle(t, snapshotter)
+		tokenMoved := snapshotter.ChangeToken() != token
+		digestMoved := digestAt(test.heartbeat) != digest
+		if tokenMoved != test.moves || digestMoved != test.moves {
+			t.Errorf("%s: token moved %v, digest moved %v, want both %v", name, tokenMoved, digestMoved, test.moves)
+		}
+	}
+}
+
+func TestAnUncomputableFingerprintOpensTheGate(t *testing.T) {
+	t.Parallel()
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) {
+		o.Fingerprint = func(string) (string, error) { return "", errors.New("no .git") }
+	})
+	refreshAndSettle(t, snapshotter)
+	if token := snapshotter.ChangeToken(); token != "" {
+		t.Fatalf("a repository with no fingerprint still gave a token %q", token)
+	}
+}
+
+func TestAnUnchangedRemoteReadDoesNotBumpTheSampleVersion(t *testing.T) {
+	t.Parallel()
+	sources := oneRepoSources("/repo/widgets")
+	sources.remote = remoteWith(t, func(s *remotestate.Snapshot) {
+		s.Metrics = &remotestate.MetricsSample{CPUPercent: ptr(10.0), Load1: ptr(1.0), SampledAt: publishedAt(t)}
+	})
+	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	first := snapshotter.remoteSampleVersion
+	if first == 0 {
+		t.Fatal("the first sample did not set a version")
+	}
+	// A second read of the same data builds new pointers and must not bump.
+	refreshAndSettle(t, snapshotter)
+	refreshAndSettle(t, snapshotter)
+	if snapshotter.remoteSampleVersion != first {
+		t.Fatalf("version %d after unchanged reads, want %d", snapshotter.remoteSampleVersion, first)
+	}
+	sources.change(func(f *fakeSources) { f.remote[0].Snapshot.Metrics.CPUPercent = ptr(11.0) })
+	refreshAndSettle(t, snapshotter)
+	if snapshotter.remoteSampleVersion == first {
+		t.Fatal("a changed sample did not bump the version")
+	}
+	if sameSample(machinemetrics.Sample{SampledAt: time.Unix(1, 0)}, machinemetrics.Sample{SampledAt: time.Unix(2, 0)}) {
+		t.Fatal("samples of different times are the same")
+	}
+}
+
+func TestPublishErrorIsNeverExportedAndAnExportCarryingItIsRefused(t *testing.T) {
+	t.Parallel()
+	publisher := &fakePublisher{diag: "publish_failed"}
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) { o.Publisher = publisher })
+	refreshAndSettle(t, snapshotter)
+	body, _ := json.Marshal(snapshotter.Export(false))
+	if strings.Contains(string(body), "publish_error") {
+		t.Fatalf("the export carries publish_error: %s", body)
+	}
+	if rule := stringRules["Machine.publish_error"]; rule("publish_failed") || !rule("") {
+		t.Fatal("the decoder accepts publish_error in an export")
 	}
 }

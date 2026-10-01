@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sneat-dev/wb/internal/agentfields"
 )
 
 const (
@@ -90,7 +92,10 @@ type Snapshot struct {
 	CPUCount int       `json:"cpu_count,omitempty" firestore:"cpu_count,omitempty"`
 	BootTime time.Time `json:"boot_time,omitzero" firestore:"boot_time,omitempty"`
 	Agents   []Agent   `json:"agents,omitempty" firestore:"agents,omitempty"`
-	Metrics  *Metrics  `json:"metrics,omitempty" firestore:"metrics,omitempty"`
+	// AgentsTruncated is set when the publisher had more than MaxAgents valid
+	// agents and sent the first MaxAgents.
+	AgentsTruncated bool     `json:"agents_truncated,omitempty" firestore:"agents_truncated,omitempty"`
+	Metrics         *Metrics `json:"metrics,omitempty" firestore:"metrics,omitempty"`
 }
 
 // Agent is one agent of the machine: the closed set of fields of the optional
@@ -253,6 +258,12 @@ func (snapshot Snapshot) Validate() error {
 	return nil
 }
 
+// now is the clock of the future-time checks, and maxFutureSkew how far ahead of
+// it a published time may be (allowing for the clocks of machines).
+var now = time.Now
+
+const maxFutureSkew = 5 * time.Minute
+
 var shortName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 
 // validateOptional checks the additive hardware, agents and metrics fields.
@@ -262,6 +273,12 @@ func (snapshot Snapshot) validateOptional() error {
 	}
 	if snapshot.CPUCount < 0 || snapshot.CPUCount > MaxCPUCount {
 		return errors.New("cpu_count is invalid")
+	}
+	if snapshot.BootTime.After(now().Add(maxFutureSkew)) {
+		return errors.New("boot_time is in the future")
+	}
+	if snapshot.AgentsTruncated && len(snapshot.Agents) == 0 {
+		return errors.New("agents_truncated without agents")
 	}
 	if len(snapshot.Agents) > MaxAgents {
 		return fmt.Errorf("agents exceeds %d entries", MaxAgents)
@@ -278,26 +295,24 @@ func (snapshot Snapshot) validateOptional() error {
 }
 
 func (agent Agent) validate() error {
-	if agent.Kind != "session" && agent.Kind != "run" {
-		return errors.New("kind must be session or run")
+	fields := agentfields.Agent{
+		Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID, Runtime: agent.Runtime, Model: agent.Model, State: agent.State,
+		Activity: agent.Activity, Task: agent.Task, Repository: agent.Repository,
 	}
-	if agent.State == "" {
-		return errors.New("state is required")
+	// The hub refuses what the publisher would have blanked or dropped, by the
+	// one set of rules both share (internal/agentfields).
+	if !agentfields.Valid(fields, agentfields.IsTaskName) {
+		return errors.New("agent has a field outside its closed set or pattern")
 	}
-	for _, value := range []string{agent.SessionID, agent.RunID, agent.Runtime, agent.Model, agent.State, agent.Activity, agent.Task, agent.Repository} {
-		if utf8.RuneCountInString(value) > MaxAgentTextLen || !printable(value) || strings.ContainsAny(value, "\r\n") {
-			return errors.New("text is too long or contains control characters")
-		}
-		if looksLikeAbsolutePath(value) {
-			return errors.New("text must not be an absolute path")
-		}
+	if agent.StartedAt.After(now().Add(maxFutureSkew)) {
+		return errors.New("agent started_at is in the future")
 	}
 	return nil
 }
 
 func (metrics Metrics) validate() error {
-	if metrics.SampledAt.IsZero() {
-		return errors.New("metrics sampled_at is required")
+	if metrics.SampledAt.IsZero() || metrics.SampledAt.After(now().Add(maxFutureSkew)) {
+		return errors.New("metrics sampled_at is required and not in the future")
 	}
 	for _, value := range []*float64{metrics.CPUPercent, metrics.Load1} {
 		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0) {

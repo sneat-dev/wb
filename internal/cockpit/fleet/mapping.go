@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sneat-dev/wb/internal/agentfields"
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
@@ -197,9 +198,7 @@ func plainTextMax(text string, limit int) string {
 
 // unsafeRune reports whether character is one plainText removes: a control or
 // format character, or a line or paragraph separator.
-func unsafeRune(character rune) bool {
-	return unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp)
-}
+func unsafeRune(character rune) bool { return agentfields.UnsafeRune(character) }
 
 // remoteLifecycles are the lifecycle values a published snapshot is built with.
 var remoteLifecycles = []string{"working", "review", "merged", "superseded"}
@@ -528,8 +527,6 @@ type remoteView struct {
 	worktrees    []Worktree
 	pullRequests []PullRequest
 	agents       []Agent
-	// agentsTruncated is set when a snapshot carried more than agentCap agents.
-	agentsTruncated bool
 	// samples is the latest published metrics sample of each machine that
 	// published one, by machine id.
 	samples map[string]machinemetrics.Sample
@@ -612,7 +609,6 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 		}
 		agentViews, agentsCut := mapRemoteAgents(snapshot.Agents, key, machineName, machineID, published, now, repositoryIDs)
 		view.agents = append(view.agents, agentViews...)
-		view.agentsTruncated = view.agentsTruncated || agentsCut
 		if sample, ok := publishedSample(snapshot.Metrics, now); ok {
 			if view.samples == nil {
 				view.samples = map[string]machinemetrics.Sample{}
@@ -629,6 +625,9 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
 			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: publishedBootTime(snapshot.BootTime, now),
+			// The cut is carried by the machine it cut, whether the publisher said
+			// so or this reader did, so hiding the machine hides the flag.
+			AgentsTruncated: snapshot.AgentsTruncated || agentsCut,
 		})
 		view.repositories = append(view.repositories, repositories...)
 		view.worktrees = append(view.worktrees, worktreeViews...)
@@ -639,36 +638,34 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 	return view
 }
 
-// remoteAgentStates are the states a published agent may carry, by kind.
-var remoteAgentStates = map[string][]string{
-	AgentSession: {session.StateLive, session.StateParked},
-	AgentRun:     {string(agents.StateRunning), string(agents.StateCompleted), string(agents.StateFailed), string(agents.StateTimeout), string(agents.StateAbandoned)},
-}
-
 // mapRemoteAgents maps the agents another machine published as `cached` entries
-// observed at the snapshot's time, with no action, at most agentCap of them
-// (the second result is true when the cap cut some). Every string is plain text
-// and length-capped, a kind, state or activity outside its set drops the agent
-// or the field, and the repository is the id of the machine's repository entry
-// of that name, or none. An agent that names neither a session nor a run keeps
-// its position in the snapshot as its identity.
+// observed at the snapshot's time, with no action, at most agentCap of them (the
+// second result is true when the cap cut valid ones). Every string is read by
+// the same rules as the export decoder's and the publisher's (package
+// agentfields; the task by the task-name rule, stricter than the decoder's text
+// rule so that prose cannot be planted in it): an agent whose kind, state or
+// identifier fails is dropped, any other failing field is blanked, so prose, a
+// path or an environment value planted in a snapshot never renders. An invalid
+// agent beyond the cap is not a cut. The repository is the id of the machine's
+// repository entry of that name, or none. An agent that names neither a session
+// nor a run keeps its position in the snapshot as its identity.
 func mapRemoteAgents(states []remotestate.AgentState, key, machineName, machineID string, published, now time.Time, repositoryIDs map[string]string) (mapped []Agent, truncated bool) {
 	for position, state := range states {
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: state.Kind, SessionID: state.SessionID, RunID: state.RunID, Runtime: state.Runtime, Model: state.Model, State: state.State,
+			Activity: state.Activity, Task: state.Task, Repository: state.Repository,
+		}, agentfields.IsTaskName)
+		if !ok {
+			continue
+		}
 		if len(mapped) == agentCap {
 			return mapped, true
 		}
-		if !slices.Contains(remoteAgentStates[state.Kind], state.State) {
-			continue
-		}
-		identity := firstNonEmpty(plainText(state.SessionID), plainText(state.RunID), "n"+strconv.Itoa(position))
+		identity := firstNonEmpty(fields.SessionID, fields.RunID, "n"+strconv.Itoa(position))
 		agent := Agent{
-			Entry: Entry{ID: entryID(kindAgent, key, state.Kind, identity), Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published},
-			Kind:  state.Kind, SessionID: plainText(state.SessionID), RunID: plainText(state.RunID),
-			Runtime: plainText(state.Runtime), Model: plainText(state.Model), State: state.State,
-			Task: plainText(state.Task), Repository: repositoryIDs[state.Repository],
-		}
-		if slices.Contains([]string{ActivityWorking, ActivityBlocked, ActivityIdle, ActivityDone, ActivityUnknown}, state.Activity) {
-			agent.Activity = state.Activity
+			Entry: Entry{ID: entryID(kindAgent, key, fields.Kind, identity), Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published},
+			Kind:  fields.Kind, SessionID: fields.SessionID, RunID: fields.RunID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			Activity: fields.Activity, Task: fields.Task, Repository: repositoryIDs[fields.Repository],
 		}
 		if !state.StartedAt.IsZero() && !state.StartedAt.After(now) {
 			agent.StartedAt = state.StartedAt

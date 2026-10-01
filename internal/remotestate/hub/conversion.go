@@ -18,7 +18,7 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 		Repositories: hostedRepositories(source.KnownRepositories),
 		Worktrees:    make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
 		OS:           source.OS, Arch: source.Arch, CPUCount: source.CPUCount, BootTime: source.BootTime,
-		Agents: hostedAgents(source.Agents), Metrics: hostedMetrics(source.Metrics),
+		Agents: hostedAgents(source.Agents), AgentsTruncated: source.AgentsTruncated, Metrics: hostedMetrics(source.Metrics),
 	}
 	for _, sourceWorktree := range source.Worktrees {
 		result.Worktrees = append(result.Worktrees, machinesnapshot.Worktree{
@@ -50,7 +50,7 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		KnownRepositories: remoteRepositories(stored.Snapshot.Repositories),
 		Worktrees:         make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
 		OS:                stored.Snapshot.OS, Arch: stored.Snapshot.Arch, CPUCount: stored.Snapshot.CPUCount, BootTime: stored.Snapshot.BootTime,
-		Agents: remoteAgents(stored.Snapshot.Agents), Metrics: remoteMetrics(stored.Snapshot.Metrics),
+		Agents: remoteAgents(stored.Snapshot.Agents), AgentsTruncated: stored.Snapshot.AgentsTruncated, Metrics: remoteMetrics(stored.Snapshot.Metrics),
 	}
 	for _, worktree := range stored.Snapshot.Worktrees {
 		snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{

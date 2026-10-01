@@ -80,9 +80,15 @@ func sentinelSources() *fakeSources {
 	// its free-text fields are cleaned, so they hold none), and the sample's
 	// time and one measurement are all that is given (a sentinel number is out
 	// of range and dropped).
+	hostile := func(label string) string { return sentinel + label + " /Users/x HOME=/y" } // fails every pattern and rule
 	entry.Snapshot.Agents = []remotestate.AgentState{
 		{Kind: "session", SessionID: "wbs-remote", Runtime: "claude", Model: "opus", State: "live", Activity: "idle", Task: "task-x", Repository: "acme/gadgets", StartedAt: published},
-		{Kind: "run", RunID: "agt-remote", State: "running", Activity: sentinel + "activity", Repository: sentinel + "repository"},
+		// Every non-identifying string carries a sentinel that fails its rule: the
+		// agent is kept and each of those fields is blanked.
+		{Kind: "run", RunID: "agt-remote", State: "running", Runtime: hostile("runtime"), Model: hostile("model"), Activity: hostile("activity"), Task: hostile("task"), Repository: hostile("repository")},
+		// An identifying field that fails drops the whole agent.
+		{Kind: "run", RunID: hostile("run_id"), State: "running", Runtime: "dropped-runtime"},
+		{Kind: hostile("kind"), State: "running", Runtime: "dropped-runtime"},
 	}
 	entry.Snapshot.Metrics = &remotestate.MetricsSample{Load1: ptr(1.5), MemoryUsedBytes: ptr(uint64(1)), MemoryTotalBytes: ptr(uint64(2)), DiskFreeBytes: ptr(uint64(3)), DiskTotalBytes: ptr(uint64(4)), CPUPercent: ptr(float64(sentinelNumber)), SampledAt: published}
 	state := &entry.Snapshot.Worktrees[0]

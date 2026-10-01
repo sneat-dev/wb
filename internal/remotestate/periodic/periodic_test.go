@@ -294,7 +294,7 @@ func (s status) HTTPStatus() int { return int(s) }
 
 func TestExtrasAreAddedOnlyUnderTheirFlags(t *testing.T) {
 	t.Parallel()
-	extras := &source{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "session", State: "live"}}, Metrics: &remotestate.MetricsSample{}}}
+	extras := &source{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "session", State: "live"}}, Metrics: &remotestate.MetricsSample{SampledAt: time.Now()}}}
 	for _, test := range []struct{ agents, metrics bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		h := newHarness(t, func(o *Options) { o.Agents, o.Metrics = test.agents, test.metrics })
 		h.publisher.Publish(context.Background(), extras)
@@ -441,11 +441,20 @@ func TestAChangeOfPublishedAgentsOpensTheGate(t *testing.T) {
 	if h.collects != 1 {
 		t.Fatal("unchanged agents opened the gate")
 	}
+	// A flap of activity alone is not a change.
 	src.extras.Agents[0].Activity = "idle"
 	h.clock.advance(11 * time.Minute)
 	h.publisher.Publish(context.Background(), src)
+	if h.collects != 1 {
+		t.Fatalf("an activity flap opened the gate: collects %d", h.collects)
+	}
+	// A membership or state change does, and is held back until max(interval, 15 min) has passed
+	// since the last publish.
+	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
+	h.clock.advance(11 * time.Minute) // 33 minutes since the last publish
+	h.publisher.Publish(context.Background(), src)
 	if h.collects != 2 || h.provider.count() != 2 {
-		t.Fatalf("changed agents: collects %d published %d", h.collects, h.provider.count())
+		t.Fatalf("a new agent: collects %d published %d", h.collects, h.provider.count())
 	}
 }
 
@@ -471,4 +480,158 @@ func TestAFailedAttemptAndATokenlessSourceNeverGate(t *testing.T) {
 	if h.publisher.Diagnostic() != DiagnosticNone {
 		t.Fatalf("diagnostic = %q", h.publisher.Diagnostic())
 	}
+}
+
+func TestAnAgentsOnlyChangeIsHeldBackForAtLeastFifteenMinutes(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Agents = true })
+	src := &source{token: "t0", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}}}
+	h.publisher.Publish(context.Background(), src)
+	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
+	h.clock.advance(10 * time.Minute) // the interval has passed, 15 minutes have not
+	h.publisher.Publish(context.Background(), src)
+	if h.provider.count() != 1 || h.publisher.Status().Held != 1 {
+		t.Fatalf("an agents-only change was not held: published %d, %+v", h.provider.count(), h.publisher.Status())
+	}
+	h.clock.advance(10 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.provider.count() != 2 {
+		t.Fatalf("the held change was not published after 15 minutes: %d", h.provider.count())
+	}
+	// A change of anything else is never held.
+	h.worktree = "b"
+	src.token = "t1"
+	h.clock.advance(10 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.provider.count() != 3 {
+		t.Fatalf("a worktree change was held: %d", h.provider.count())
+	}
+}
+
+// TestThePublishErrorLifecycle is the one rule of Diagnostic: the code of the
+// last completed outcome against the store; a gated, skipped or held attempt
+// never changes it; a success that carried the optional fields clears it; the
+// optional_fields_dropped code stays until such a success.
+func TestThePublishErrorLifecycle(t *testing.T) {
+	t.Parallel()
+	type step struct {
+		name    string
+		advance time.Duration
+		edit    func(*harness, *source)
+		want    string
+	}
+	h := newHarness(t, nil)
+	src := &source{token: "t0"}
+	steps := []step{
+		{"first publish succeeds", 0, nil, ""},
+		{"a failure sets its code", 11 * time.Minute, func(h *harness, s *source) {
+			s.token, h.worktree = "t1", "b"
+			h.provider.errs = []error{errors.New("x")}
+		}, DiagnosticPublishFailed},
+		{"a skip after the failure leaves it", 21 * time.Minute, func(h *harness, s *source) { h.worktree = "a"; s.token = "t0" }, DiagnosticPublishFailed},
+		{"a gated attempt leaves it", 41 * time.Minute, nil, DiagnosticPublishFailed},
+		{"a real success clears it", 61 * time.Minute, func(h *harness, s *source) { s.token, h.worktree = "t2", "c" }, ""},
+		{"a collect failure sets its code", 11 * time.Minute, func(h *harness, s *source) { s.token = "t3"; h.collectEr = errors.New("scan") }, DiagnosticCollectFailed},
+		{"a store failure replaces it", 21 * time.Minute, func(h *harness, s *source) {
+			h.collectEr, h.openErr, h.publisher.provider, h.worktree = nil, errors.New("clone"), nil, "e"
+		}, DiagnosticOpenFailed},
+		{"recovery clears it", 41 * time.Minute, func(h *harness, s *source) { h.openErr, h.worktree = nil, "d" }, ""},
+	}
+	for _, st := range steps {
+		h.clock.advance(st.advance)
+		if st.edit != nil {
+			st.edit(h, src)
+		}
+		h.publisher.Publish(context.Background(), src)
+		if got := h.publisher.Diagnostic(); got != st.want {
+			t.Fatalf("%s: diagnostic = %q, want %q (%+v)", st.name, got, st.want, h.publisher.Status())
+		}
+	}
+}
+
+func TestOptionalFieldsDroppedStaysUntilAPublishThatCarriedThemSucceeds(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Agents = true })
+	src := &source{token: "t0", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "a", State: "running"}}}}
+	// A provider that refuses optional fields until upgraded and remembers the refusal.
+	old := &refusingProvider{fakeProvider: h.provider, refuse: true}
+	h.publisher.provider = old
+	h.publisher.Publish(context.Background(), src)
+	if h.publisher.Diagnostic() != DiagnosticOptionalFields || old.fullAttempts != 1 {
+		t.Fatalf("first: %q, full attempts %d", h.publisher.Diagnostic(), old.fullAttempts)
+	}
+	// Changes within the day publish without the fields and leave the code.
+	for i := range 3 {
+		h.clock.advance(11 * time.Minute)
+		src.token, h.worktree = "t"+string(rune('1'+i)), string(rune('b'+i))
+		h.publisher.Publish(context.Background(), src)
+		if h.publisher.Diagnostic() != DiagnosticOptionalFields {
+			t.Fatalf("change %d cleared the code: %q", i, h.publisher.Diagnostic())
+		}
+	}
+	if old.fullAttempts != 1 {
+		t.Fatalf("the refusal was not remembered: %d full attempts", old.fullAttempts)
+	}
+	// An idle machine: gated and skipped attempts leave it too.
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.publisher.Diagnostic() != DiagnosticOptionalFields {
+		t.Fatal("a gated attempt changed the code")
+	}
+	// After a day the next attempt publishes the full payload at once, with no
+	// change, bypassing the gate and the digest skip; the upgraded hub takes it and clears the code.
+	old.refuse = false
+	h.clock.advance(24 * time.Hour)
+	published := h.provider.count()
+	h.publisher.Publish(context.Background(), src)
+	if h.provider.count() != published+1 || h.publisher.Diagnostic() != DiagnosticNone || old.fullAttempts != 2 {
+		t.Fatalf("after the day: published %d->%d, diagnostic %q, full attempts %d", published, h.provider.count(), h.publisher.Diagnostic(), old.fullAttempts)
+	}
+	// And it is not forced again.
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.provider.count() != published+1 {
+		t.Fatal("a forced publish repeated")
+	}
+}
+
+func TestAHubStillOldAfterADayIsTriedOnceAndRememberedAgain(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Agents = true })
+	src := &source{token: "t0", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "a", State: "running"}}}}
+	old := &refusingProvider{fakeProvider: h.provider, refuse: true}
+	h.publisher.provider = old
+	h.publisher.Publish(context.Background(), src)
+	h.clock.advance(25 * time.Hour)
+	h.publisher.Publish(context.Background(), src)
+	if old.fullAttempts != 2 || h.publisher.Diagnostic() != DiagnosticOptionalFields {
+		t.Fatalf("full attempts %d, diagnostic %q", old.fullAttempts, h.publisher.Diagnostic())
+	}
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if old.fullAttempts != 2 {
+		t.Fatal("the full payload was retried before the next day")
+	}
+}
+
+// refusingProvider answers 400 to a payload with optional fields while refuse is
+// set, and remembers the refusal as the hub provider does.
+type refusingProvider struct {
+	*fakeProvider
+	refuse       bool
+	fullAttempts int
+	until        time.Time
+}
+
+func (p *refusingProvider) OptionalFieldsRefused(now time.Time) bool { return now.Before(p.until) }
+func (p *refusingProvider) RefuseOptionalFields(until time.Time)     { p.until = until }
+
+func (p *refusingProvider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (remotestate.PublishResult, error) {
+	if snapshot.HasOptional() {
+		p.fullAttempts++
+		if p.refuse {
+			return remotestate.PublishResult{}, status(400)
+		}
+	}
+	return p.fakeProvider.Publish(ctx, snapshot)
 }

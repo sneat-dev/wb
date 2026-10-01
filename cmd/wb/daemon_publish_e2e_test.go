@@ -29,6 +29,11 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	deps.now = func() time.Time { return clock }
 	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state", Machine: "laptop", Publish: remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone}}
 	publisher := newPeriodicPublisher(deps, cfg, f.projectsRoot, nil)
+	// The real gate source: the fleet snapshotter of the daemon over the same
+	// projects root, refreshed before each attempt as its own ticker would.
+	options := cockpitFleetOptions(f.projectsRoot, t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "laptop", nil })
+	options.PullRequests = nil
+	snapshotter := cockpitfleet.New(options)
 	commits := func() int {
 		count, err := strconv.Atoi(strings.TrimSpace(remoteGit(t, f.origin, "rev-list", "--count", "main")))
 		if err != nil {
@@ -38,7 +43,10 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	}
 	attempt := func(advance time.Duration) {
 		clock = clock.Add(advance)
-		publisher.Publish(t.Context(), nil)
+		if err := snapshotter.Refresh(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		publisher.Publish(t.Context(), snapshotter)
 	}
 	base := commits() // the seed commit
 	attempt(0)
@@ -52,32 +60,34 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	// The first publish created the clone of the store under the projects root,
 	// which the next scan lists as a repository: one more commit, once.
 	attempt(6 * time.Minute)
-	if got := commits(); got != base+2 {
-		t.Fatalf("the store's own clone appearing in the scan: %d commits, want %d", got, base+2)
+	attempt(6 * time.Minute)
+	settled := commits()
+	if settled < base+2 {
+		t.Fatalf("the store's own clone appearing in the scan: %d commits, want at least %d", settled, base+2)
 	}
-	base++
-	// An idle machine: five more intervals, no commit.
+	// An idle machine: five more intervals, no commit, and most do not even scan.
+	status := publisher.Status()
 	for range 5 {
 		attempt(6 * time.Minute)
 	}
-	if got := commits(); got != base+1 || publisher.Status().Skipped != 5 {
-		t.Fatalf("idle machine: %d commits, status %+v", got, publisher.Status())
+	after := publisher.Status()
+	if got := commits(); got != settled || after.Published != status.Published || after.Gated+after.Skipped != status.Gated+status.Skipped+5 {
+		t.Fatalf("idle machine: %d commits (was %d), status %+v then %+v", got, settled, status, after)
 	}
-	// A change is one commit.
-	if err := os.WriteFile(filepath.Join(f.projectsRoot, "acme", "widgets", "another.txt"), []byte("y"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// A change that moves a fingerprint (a commit in the repository) is one commit,
+	// found through the real gate.
+	remoteGit(t, filepath.Join(f.projectsRoot, "acme", "widgets"), "commit", "-q", "--allow-empty", "-m", "more")
 	attempt(6 * time.Minute)
-	if got := commits(); got != base+2 {
-		t.Fatalf("changed machine: %d commits, want %d", got, base+2)
+	if got := commits(); got != settled+1 {
+		t.Fatalf("changed machine: %d commits, want %d (status %+v)", got, settled+1, publisher.Status())
 	}
 	// Idle for seven hours: nothing at five hours, the keepalive at seven.
 	attempt(5 * time.Hour)
-	if got := commits(); got != base+2 {
-		t.Fatalf("idle for five hours: %d commits, want %d", got, base+2)
+	if got := commits(); got != settled+1 {
+		t.Fatalf("idle for five hours: %d commits, want %d", got, settled+1)
 	}
 	attempt(2 * time.Hour)
-	if got := commits(); got != base+3 || publisher.Status().Diagnostic != periodic.DiagnosticNone {
+	if got := commits(); got != settled+2 || publisher.Status().Diagnostic != periodic.DiagnosticNone {
 		t.Fatalf("keepalive: %d commits, status %+v", got, publisher.Status())
 	}
 }

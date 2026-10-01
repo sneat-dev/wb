@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -1104,7 +1105,7 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if !maps.Equal(s.remote.samples, view.samples) {
+		if !maps.EqualFunc(s.remote.samples, view.samples, sameSample) {
 			s.remoteSampleVersion++
 		}
 		s.remote, s.remoteBranches = view, nil
@@ -1143,10 +1144,18 @@ func (s *Snapshotter) startPublish(ctx context.Context) {
 // observes of this machine's repositories and worktrees has changed: the change
 // fingerprint of each clone (which it already computes to skip Git work) and the
 // worktree and pull-request facts it reads on every pass outside Git (owner
-// state, lifecycle, activity, ahead and behind, pull-request state). It is empty
-// until a full pass has completed. It does not see an edit that moves no
-// fingerprint and none of those facts (a new untracked file, say); such a change
-// reaches the store with the next one that does, or with the keepalive.
+// state, lifecycle, ahead and behind, pull-request state, and the last activity at
+// remotestate.ActivityBucket granularity). It is empty, which opens the publisher's
+// gate, until a full pass has completed and whenever a clone's fingerprint could
+// not be computed.
+//
+// The invariant is a property of the fields it takes, not of the whole snapshot:
+// for those fields the token moves exactly when the published digest would
+// (remotestate.Snapshot.Digest truncates the same last-activity time to the same
+// bucket, so a heartbeat inside a bucket moves neither), and an edit that moves
+// none of them (a new untracked file, an unstaged edit of a tracked file, which
+// no fingerprint and no fact the snapshotter reads sees) waits for the next change
+// of one, or for the keepalive.
 func (s *Snapshotter) ChangeToken() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1160,9 +1169,13 @@ func (s *Snapshotter) ChangeToken() string {
 	sort.Strings(ids)
 	sum := sha256.New()
 	for _, id := range ids {
-		_, _ = fmt.Fprintf(sum, "repo\x00%s\x00%s\x00%s\n", id, s.repos[id].fingerprint, s.repos[id].entries.repository.Error)
-		for _, worktree := range s.repos[id].entries.worktrees {
-			facts, _ := json.Marshal([]any{worktree.ID, worktree.Branch, worktree.Lifecycle, worktree.OwnerState, worktree.LastActivityAt.UTC(), worktree.Ahead, worktree.Behind, worktree.UpstreamGone, worktree.HasUpstream})
+		state := s.repos[id]
+		if state.fingerprint == "" {
+			return ""
+		}
+		_, _ = fmt.Fprintf(sum, "repo\x00%s\x00%s\x00%s\n", id, state.fingerprint, state.entries.repository.Error)
+		for _, worktree := range state.entries.worktrees {
+			facts, _ := json.Marshal([]any{worktree.ID, worktree.Branch, worktree.Lifecycle, worktree.OwnerState, worktree.LastActivityAt.UTC().Truncate(remotestate.ActivityBucket), worktree.Ahead, worktree.Behind, worktree.UpstreamGone, worktree.HasUpstream})
 			_, _ = fmt.Fprintf(sum, "wt\x00%s\n", facts)
 		}
 	}
@@ -1347,7 +1360,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 	if provider := s.collectors.CodeIndexProvider; provider != nil {
 		document.CodeIndexProvider = provider.Name()
 	}
-	document.AgentsTruncated = s.truncated || s.remote.agentsTruncated
+	document.AgentsTruncated = s.truncated
 	document.PullRequestsThrottled = s.throttled
 	document.Throughput = s.throughput
 	ids := make([]string, 0, len(s.repos))
@@ -1425,4 +1438,14 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		return document, 0, true
 	}
 	return document, liveBytes, false
+}
+
+// sameSample compares two samples by value: a sample holds pointers, which a
+// plain comparison would take as different on every read.
+func sameSample(a, b machinemetrics.Sample) bool {
+	if !a.SampledAt.Equal(b.SampledAt) {
+		return false
+	}
+	a.SampledAt, b.SampledAt = time.Time{}, time.Time{}
+	return reflect.DeepEqual(a, b)
 }

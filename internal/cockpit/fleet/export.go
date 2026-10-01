@@ -152,6 +152,11 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	// machine's throughput is read from that machine, never merged.
 	own.Throughput = nil
 	own.Machines = keepLocal(document.Machines, func(machine Machine) Entry { return machine.Entry })
+	// The code of this machine's own failed publish is shown by the daemon that
+	// has it, not exported (the strict decoder refuses it).
+	for index := range own.Machines {
+		own.Machines[index].PublishError = ""
+	}
 	machineID := ""
 	if len(own.Machines) > 0 {
 		machineID = own.Machines[0].ID
