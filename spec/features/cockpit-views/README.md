@@ -387,7 +387,8 @@ only for dispatched runs on this machine, through the action slot, and otherwise
 "Copy command" entries. Machine chips at the right show live or cached with age and,
 where metrics exist, a load indicator that answers "can this machine take another
 agent": `free` when `cpu_percent` is below 70 and memory used is below 80 percent
-of the total, `busy` otherwise, with the sample's route (`local`, `live-remote` or
+of the total, `busy` otherwise, and `unknown` (never `free`) when the sample has no
+`cpu_percent` or no memory value, with the sample's route (`local`, `live-remote` or
 `cached`) and its age.
 
 #### REQ: home-resume
@@ -727,9 +728,8 @@ int and `landed_at` time. Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt.; `samples` list, at
-most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100; absent where the
-platform has no cgo-free reader, which is macOS, and on the first sample of a platform that
-derives it from two readings), `load1` number (0
+most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100; absent only on the
+first sample, which derives it from two readings, and where sampling is unsupported), `load1` number (0
 or more), `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` ints
 (0 or more) and `sampled_at` time (not in the future).
 
@@ -918,7 +918,7 @@ for the single latest sample carried in that machine's published snapshot, with 
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
 `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`,
-`disk_total_bytes` and `sampled_at`, and nothing else (`cpu_percent` may be absent, never guessed). The fallback order for another
+`disk_total_bytes` and `sampled_at`, and nothing else (`cpu_percent` may be absent on the first sample, never guessed). The fallback order for another
 machine is live remote, then cached, then none, and the response says which it is. An
 unknown machine id is answered with status 404. The route runs no request-time fetch.
 
@@ -1592,7 +1592,7 @@ Then each is listed with runtime and model, task, machine and how long it has ru
 Scenario: Free and busy
 Given machine `mac` with `cpu_percent` 40 and 50 percent memory used (route `local`), machine `vm` with `cpu_percent` 85 (route `live-remote`), and machine `old` with a cached sample 30 minutes old
 When Home is opened
-Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label
+Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label; and a machine whose latest sample lacks `cpu_percent` (the first after a daemon start) shows load `unknown`, never `free`
 
 ### AC: resume-lists-five-recent-tasks
 

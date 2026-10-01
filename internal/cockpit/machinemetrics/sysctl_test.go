@@ -15,75 +15,50 @@ func loadavgBytes(first uint32, scale uint64) []byte {
 	return raw
 }
 
-func fakeSysctls(values map[string]uint64) func(string) (uint64, error) {
-	return func(name string) (uint64, error) {
-		value, ok := values[name]
-		if !ok {
-			return 0, errors.New("unknown oid")
-		}
-		return value, nil
+var errRefused = errors.New("refused")
+
+func goodMac() *sysctlSource {
+	return &sysctlSource{
+		raw:    func(string) ([]byte, error) { return loadavgBytes(2048*3, 2048), nil },
+		cpu:    func() (float64, float64, error) { return 10, 100, nil },
+		memory: func() (uint64, uint64, error) { return 60, 100, nil },
+		disk:   okDisk,
 	}
 }
 
-func goodSysctls() map[string]uint64 {
-	return map[string]uint64{
-		"hw.memsize": 1000 * 4096, "vm.pagesize": 4096,
-		"vm.page_free_count": 100, "vm.page_speculative_count": 50, "vm.page_pageable_external_count": 250,
-	}
-}
-
-func TestSysctlSourceReportsEverythingButCPU(t *testing.T) {
+func TestSysctlSourceReportsEverythingAndDerivesCPUFromTwoReadings(t *testing.T) {
 	t.Parallel()
-	source := &sysctlSource{
-		uint64Of: fakeSysctls(goodSysctls()),
-		raw:      func(string) ([]byte, error) { return loadavgBytes(2048*3, 2048), nil },
-		disk:     okDisk,
-	}
-	sample, err := source.Read()
+	source := goodMac()
+	first, err := source.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sample.CPUPercent != nil {
-		t.Error("macOS reports a CPU percent without cgo")
+	if first.CPUPercent != nil || first.Load1 != 3 || first.MemoryUsedBytes != 60 || first.MemoryTotalBytes != 100 || first.DiskFreeBytes != 40 {
+		t.Errorf("first = %+v", first)
 	}
-	if sample.Load1 != 3 || sample.MemoryTotalBytes != 1000*4096 || sample.MemoryUsedBytes != 600*4096 || sample.DiskFreeBytes != 40 {
-		t.Errorf("sample = %+v", sample)
+	source.cpu = func() (float64, float64, error) { return 30, 200, nil }
+	second, err := source.Read()
+	if err != nil || second.CPUPercent == nil || *second.CPUPercent != 20 {
+		t.Errorf("second = %+v, %v; want 20 percent", second, err)
 	}
 }
 
 func TestSysctlSourceFailsOnAnyRefusal(t *testing.T) {
 	t.Parallel()
-	good := func(string) ([]byte, error) { return loadavgBytes(1, 1), nil }
-	failing := func(skip string) func(string) (uint64, error) {
-		values := goodSysctls()
-		delete(values, skip)
-		return fakeSysctls(values)
-	}
-	for _, name := range []string{"hw.memsize", "vm.pagesize", "vm.page_free_count", "vm.page_speculative_count", "vm.page_pageable_external_count"} {
-		if _, err := (&sysctlSource{uint64Of: failing(name), raw: good, disk: okDisk}).Read(); err == nil {
-			t.Errorf("%s refused: no error", name)
+	for name, change := range map[string]func(*sysctlSource){
+		"loadavg refused": func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return nil, errRefused } },
+		"loadavg short":   func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return []byte{1}, nil } },
+		"cpu":             func(s *sysctlSource) { s.cpu = func() (float64, float64, error) { return 0, 0, errRefused } },
+		"memory":          func(s *sysctlSource) { s.memory = func() (uint64, uint64, error) { return 0, 0, errRefused } },
+		"disk":            func(s *sysctlSource) { s.disk = func() (uint64, uint64, error) { return 0, 0, errRefused } },
+	} {
+		source := goodMac()
+		change(source)
+		if _, err := source.Read(); err == nil {
+			t.Errorf("%s: no error", name)
 		}
-	}
-	if _, err := (&sysctlSource{uint64Of: fakeSysctls(goodSysctls()), raw: func(string) ([]byte, error) { return nil, errors.New("refused") }, disk: okDisk}).Read(); err == nil {
-		t.Error("a refused vm.loadavg gave no error")
-	}
-	if _, err := (&sysctlSource{uint64Of: fakeSysctls(goodSysctls()), raw: func(string) ([]byte, error) { return []byte{1}, nil }, disk: okDisk}).Read(); err == nil {
-		t.Error("a short vm.loadavg gave no error")
-	}
-	if _, err := (&sysctlSource{uint64Of: fakeSysctls(goodSysctls()), raw: good, disk: func() (uint64, uint64, error) { return 0, 0, errors.New("statfs") }}).Read(); err == nil {
-		t.Error("a failed statfs gave no error")
 	}
 	if _, err := parseLoadavg(loadavgBytes(1, 0)); err == nil {
 		t.Error("a zero scale gave no error")
-	}
-}
-
-func TestMoreReclaimableThanTotalIsClampedToZeroUsed(t *testing.T) {
-	t.Parallel()
-	values := goodSysctls()
-	values["vm.page_free_count"] = 5000
-	sample, err := (&sysctlSource{uint64Of: fakeSysctls(values), raw: func(string) ([]byte, error) { return loadavgBytes(1, 1), nil }, disk: okDisk}).Read()
-	if err != nil || sample.MemoryUsedBytes != 0 {
-		t.Errorf("used = %d, %v", sample.MemoryUsedBytes, err)
 	}
 }

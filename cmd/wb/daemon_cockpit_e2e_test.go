@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -102,8 +103,8 @@ func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithout
 // TestE2ECockpitMetricsSamplerReadsThisRealMachine builds the snapshotter from
 // the daemon's own options (the real platform reader, the real clock) and starts
 // it as the daemon does, and requires the local metrics route to hold a real
-// first sample within seconds: memory and disk totals above zero, a time in the
-// past, and no CPU percent where the platform cannot report one correctly.
+// two samples within seconds (the second gives the CPU percent, present on
+// macOS and Linux): memory and disk totals above zero and a time in the past.
 func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 	t.Parallel()
 	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil })
@@ -111,7 +112,7 @@ func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 	stop := snapshotter.Start(t.Context())
 	defer stop()
 	var machine string
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(40 * time.Second)
 	for machine == "" {
 		if time.Now().After(deadline) {
 			t.Fatal("the snapshotter published no machine")
@@ -126,9 +127,9 @@ func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	var response cockpitfleet.MetricsResponse
-	for len(response.Samples) == 0 {
+	for len(response.Samples) < 2 {
 		if time.Now().After(deadline) {
-			t.Fatalf("no sample arrived: %+v", response)
+			t.Fatalf("fewer than two samples arrived: %+v", response)
 		}
 		recorder := httptest.NewRecorder()
 		payload, _ := snapshotter.MachineMetrics(machine)
@@ -144,5 +145,8 @@ func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 	sample := response.Samples[len(response.Samples)-1]
 	if response.Route != cockpitfleet.RouteLocal || sample.MemoryTotalBytes == 0 || sample.MemoryUsedBytes > sample.MemoryTotalBytes || sample.DiskTotalBytes == 0 || sample.DiskFreeBytes > sample.DiskTotalBytes || sample.SampledAt.After(time.Now()) {
 		t.Errorf("response = %+v", response)
+	}
+	if sample.CPUPercent == nil || *sample.CPUPercent < 0 || *sample.CPUPercent > 100 {
+		t.Errorf("cpu_percent = %v after two readings on %s, want 0 to 100", sample.CPUPercent, runtime.GOOS)
 	}
 }

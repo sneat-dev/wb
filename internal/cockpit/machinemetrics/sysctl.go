@@ -7,24 +7,23 @@ import (
 	"errors"
 )
 
-// sysctlSource reads macOS through injected sysctl functions. It is built on
-// macOS only, so no other platform carries it as unreachable code. It reports memory, load and disk, and never CPU percent: the
-// only macOS sources of CPU ticks are the Mach calls host_statistics and
-// host_processor_info, which need cgo (the kernel has no kern.cp_time), and WB
-// builds without cgo. An absent cpu_percent is honest; a number derived from the
-// load average would be wrong.
-//
-// Used memory is the total less what the kernel can hand out without paging: free,
-// speculative and file-backed (external) pageable pages.
+// sysctlSource reads macOS through injected functions: the kernel's sysctls for
+// the load average, the system's own CPU times and memory figures (gopsutil's
+// libSystem calls, made without cgo through purego) and statfs for the disk. CPU
+// percent comes from two readings of the aggregate CPU times, so the first sample
+// has none.
 type sysctlSource struct {
-	uint64Of func(name string) (uint64, error)
-	raw      func(name string) ([]byte, error)
-	disk     func() (free, total uint64, err error)
+	raw    func(name string) ([]byte, error)
+	cpu    func() (busy, all float64, err error)
+	memory func() (used, total uint64, err error)
+	disk   func() (free, total uint64, err error)
+
+	meter cpuMeter
 }
 
 var errBadSysctl = errors.New("unexpected sysctl value")
 
-// Read reads hw.memsize, vm.pagesize, the page counts, vm.loadavg and the disk.
+// Read reads vm.loadavg, the CPU times, the memory figures and the disk.
 func (s *sysctlSource) Read() (Sample, error) {
 	var sample Sample
 	raw, err := s.raw("vm.loadavg")
@@ -34,26 +33,17 @@ func (s *sysctlSource) Read() (Sample, error) {
 	if sample.Load1, err = parseLoadavg(raw); err != nil {
 		return sample, err
 	}
-	total, err := s.uint64Of("hw.memsize")
+	busy, all, err := s.cpu()
 	if err != nil {
 		return sample, err
 	}
-	pageSize, err := s.uint64Of("vm.pagesize")
-	if err != nil {
+	if sample.MemoryUsedBytes, sample.MemoryTotalBytes, err = s.memory(); err != nil {
 		return sample, err
 	}
-	var reclaimable uint64
-	for _, name := range []string{"vm.page_free_count", "vm.page_speculative_count", "vm.page_pageable_external_count"} {
-		pages, readErr := s.uint64Of(name)
-		if readErr != nil {
-			return sample, readErr
-		}
-		reclaimable += pages * pageSize
-	}
-	sample.MemoryTotalBytes, sample.MemoryUsedBytes = total, total-min(reclaimable, total)
 	if sample.DiskFreeBytes, sample.DiskTotalBytes, err = s.disk(); err != nil {
 		return sample, err
 	}
+	sample.CPUPercent = s.meter.percent(busy, all)
 	return sample, nil
 }
 

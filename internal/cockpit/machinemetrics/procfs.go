@@ -13,8 +13,7 @@ type procSource struct {
 	readFile func(path string) ([]byte, error)
 	disk     func() (free, total uint64, err error)
 
-	havePrevious              bool
-	previousBusy, previousAll uint64
+	cpu cpuMeter
 }
 
 var errBadProc = errors.New("unexpected /proc format")
@@ -47,11 +46,7 @@ func (p *procSource) Read() (Sample, error) {
 	if sample.DiskFreeBytes, sample.DiskTotalBytes, err = p.disk(); err != nil {
 		return sample, err
 	}
-	if p.havePrevious && all > p.previousAll && busy >= p.previousBusy {
-		percent := 100 * float64(busy-p.previousBusy) / float64(all-p.previousAll)
-		sample.CPUPercent = &percent
-	}
-	p.havePrevious, p.previousBusy, p.previousAll = true, busy, all
+	sample.CPUPercent = p.cpu.percent(float64(busy), float64(all))
 	return sample, nil
 }
 

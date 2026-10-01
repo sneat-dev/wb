@@ -21,9 +21,8 @@ const (
 // read metrics; the sampler then reports "unsupported" and stops sampling.
 var ErrUnsupported = errors.New("machine metrics are not supported on this platform")
 
-// Sample is one reading. It holds numbers and a time and nothing else. CPUPercent is
-// absent where the platform has no reader that can report it correctly, and on the
-// first reading of a platform that derives it from two readings.
+// Sample is one reading. It holds numbers and a time and nothing else. CPUPercent
+// is derived from two readings, so the first sample has none.
 type Sample struct {
 	CPUPercent       *float64  `json:"cpu_percent,omitempty"`
 	Load1            float64   `json:"load1"`
