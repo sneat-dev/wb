@@ -113,6 +113,10 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 			t.Errorf("the local machine has %d samples, want 3 (the test would be vacuous)", len(decoded.Samples))
 		}
 		body += recorder.Body.String()
+		// A forwarded request has no anonymous reading: it gets no data at all.
+		if forwarded := server.get(metricsURL+machine.ID, nil, "X-Forwarded-For", "203.0.113.9"); forwarded.Code != 401 || strings.Contains(forwarded.Body.String(), "samples") {
+			t.Errorf("a forwarded metrics request = %d %s, want 401 and no data", forwarded.Code, forwarded.Body.String())
+		}
 	}
 	// The branches are served by their own route, so the same checks cover it.
 	for _, repository := range snapshotter.Document().Repositories {

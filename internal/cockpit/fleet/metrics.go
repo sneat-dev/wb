@@ -115,17 +115,24 @@ func (s *Snapshotter) MachineMetrics(id string) (payload cockpit.Payload, found 
 		}
 	}
 	s.metrics.mu.Lock()
-	defer s.metrics.mu.Unlock()
-	if held, ok := s.metrics.entries[id]; ok && held.route == answer.Route && held.version == answer.Version {
+	held, ok := s.metrics.entries[id]
+	s.metrics.mu.Unlock()
+	if ok && held.route == answer.Route && held.version == answer.Version {
 		return held.payload, true
 	}
+	// Marshal and compress outside the lock, as Branches does: two requests that
+	// race build the same bytes, and an older answer never replaces a newer one.
 	response := MetricsResponse{Machine: id, Route: answer.Route, FetchedAt: answer.FetchedAt, Samples: answer.Samples, Reason: answer.Reason}
 	if response.Samples == nil {
 		response.Samples = []machinemetrics.Sample{}
 	}
 	body, _ := json.Marshal(response)
 	payload = cockpit.NewPayload(append(body, '\n'), s.compress)
-	s.metrics.entries[id] = cachedMetrics{route: answer.Route, version: answer.Version, payload: payload}
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+	if current, exists := s.metrics.entries[id]; !exists || current.version <= answer.Version {
+		s.metrics.entries[id] = cachedMetrics{route: answer.Route, version: answer.Version, payload: payload}
+	}
 	return payload, true
 }
 

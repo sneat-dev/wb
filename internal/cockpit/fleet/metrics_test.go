@@ -288,3 +288,54 @@ func TestSnapshotterStartsAndStopsItsSampler(t *testing.T) {
 	})
 	withoutSampler.Start(t.Context())()
 }
+
+// TestMetricsNeedASessionWhenForwardedOrNotLoopback proves the metrics route has
+// the fleet document's access class: a proxied request or one for a non-loopback
+// host gets no anonymous reading and no data.
+func TestMetricsNeedASessionWhenForwardedOrNotLoopback(t *testing.T) {
+	t.Parallel()
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+	})
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	target := metricsURL + localMachineID(testMachine)
+	if recorder := server.get(target, nil); recorder.Code != 200 {
+		t.Fatalf("anonymous loopback = %d", recorder.Code)
+	}
+	for name, headers := range map[string][]string{
+		"forwarded for": {"X-Forwarded-For", "203.0.113.9"}, "forwarded https": {"X-Forwarded-Proto", "https"}, "via a proxy": {"Via", "1.1 proxy"},
+	} {
+		if recorder := server.get(target, nil, headers...); recorder.Code != http.StatusUnauthorized || strings.Contains(recorder.Body.String(), "samples") {
+			t.Errorf("%s = %d %s, want 401 with no data", name, recorder.Code, recorder.Body.String())
+		}
+		if recorder := server.get(target, server.login(), headers...); recorder.Code != 200 {
+			t.Errorf("%s with a session = %d", name, recorder.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = "wb.example.test"
+	recorder := httptest.NewRecorder()
+	server.api.ServeHTTP(recorder, request)
+	if recorder.Code == 200 || strings.Contains(recorder.Body.String(), `"samples"`) {
+		t.Errorf("a non-loopback host got %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestAnOlderMetricsAnswerNeverReplacesANewerOne covers the race of two requests
+// that built from different versions: the stored body keeps the newest version.
+func TestAnOlderMetricsAnswerNeverReplacesANewerOne(t *testing.T) {
+	t.Parallel()
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), nil)
+	id := localMachineID(testMachine)
+	remote := &fakeMetrics{answers: map[string]MetricsAnswer{id: {Route: RouteCached, Version: 5}}}
+	snapshotter.metricsSources = []MetricsSource{remote}
+	if _, found := snapshotter.MachineMetrics(id); !found {
+		t.Fatal("not found")
+	}
+	remote.answers[id] = MetricsAnswer{Route: RouteCached, Version: 3} // an older answer arriving late
+	_, _ = snapshotter.MachineMetrics(id)
+	if held := snapshotter.metrics.entries[id]; held.version != 5 {
+		t.Errorf("held version = %d, want 5", held.version)
+	}
+}
