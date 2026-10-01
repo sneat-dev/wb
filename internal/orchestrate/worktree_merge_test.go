@@ -202,7 +202,10 @@ func TestInspectWorktreeMergeSourcesPreservesWorkLogLoadError(t *testing.T) {
 
 // The target can already be red. A source which does not change that failure
 // must still prepare: target failures are diagnostics, not candidate blockers.
+//
+//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
 func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T) {
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Broken() { missingBaseline }\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -325,7 +328,9 @@ func TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
 func TestPrepareWorktreeMergeRejectsChangedCandidateFailureBeyondTargetBaseline(t *testing.T) {
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Broken() { missingBaseline }\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -400,7 +405,9 @@ func TestPrepareWorktreeMergeRefusesValidationFailedReceiptAfterSourceAdvanceWit
 	}
 }
 
+//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
 func TestLandWorktreeMergeAllowsUnchangedFailingAdvancedTargetValidation(t *testing.T) {
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -774,7 +781,9 @@ func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(
 	}
 }
 
+//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
 func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testing.T) {
+	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
 	writeEngineFile(t, filepath.Join(fixture.canonical, "spec", "README.md"), "# Example\n")

@@ -85,12 +85,35 @@ func (p *sessionCheckpointPreflight) close() {
 	}
 }
 
+// sessionCheckpointPorts keeps fallible private boundaries invocation-local.
+// The ID callbacks exercise their declared error contracts; Go's current
+// crypto/rand.Read implementation does not return an ordinary entropy error.
+type sessionCheckpointPorts struct {
+	newHandoffID  func() (string, error)
+	newSessionID  func() (string, error)
+	homeRoot      func(string) (string, error)
+	openCanonical func(string) (*canonicalRepository, error)
+	openWorktree  func(string) (*cleanupWorktreeHandle, error)
+}
+
+func productionSessionCheckpointPorts() sessionCheckpointPorts {
+	return sessionCheckpointPorts{
+		newHandoffID: sessionmove.NewHandoffID, newSessionID: session.NewID,
+		homeRoot: wbhome.Root, openCanonical: openCanonicalRepository,
+		openWorktree: openAdoptedCleanupWorktree,
+	}
+}
+
 // CreateSessionCheckpoint performs the source-owned transaction up to, but
 // never including, courier delivery. All refusal predicates are evaluated
 // before the tracked handover path, index, branch, remote, aggregate, or Work
 // Log is mutated. The final Work Log record is an offer (Apply=false), so the
 // predecessor keeps custody until a later receipt-gated task completes it.
 func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptions) (SessionCheckpointResult, error) {
+	return createSessionCheckpointWithPorts(ctx, options, productionSessionCheckpointPorts())
+}
+
+func createSessionCheckpointWithPorts(ctx context.Context, options SessionCheckpointOptions, ports sessionCheckpointPorts) (SessionCheckpointResult, error) {
 	var result SessionCheckpointResult
 	if err := validateSessionHandover(options.Handover); err != nil {
 		return result, err
@@ -119,7 +142,7 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	handoffID := strings.TrimSpace(options.HandoffID)
 	if handoffID == "" {
 		var err error
-		handoffID, err = sessionmove.NewHandoffID()
+		handoffID, err = ports.newHandoffID()
 		if err != nil {
 			return result, err
 		}
@@ -127,13 +150,13 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	successorID := strings.TrimSpace(options.SuccessorWBSessionID)
 	if successorID == "" {
 		var err error
-		successorID, err = session.NewID()
+		successorID, err = ports.newSessionID()
 		if err != nil {
 			return result, err
 		}
 	}
 
-	preflight, err := preflightSessionCheckpoint(ctx, options, handoffID, successorID)
+	preflight, err := preflightSessionCheckpoint(ctx, options, handoffID, successorID, ports)
 	if err != nil {
 		return result, err
 	}
@@ -177,15 +200,12 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	}
 	// Validate every request-carried value while the operation is still
 	// read-only.
-	if _, err := sessionmove.EncodeRequest(request); err != nil {
+	requestRaw, err := sessionmove.EncodeRequest(request)
+	if err != nil {
 		return result, fmt.Errorf("validate session checkpoint before mutation: %w", err)
 	}
 	if err := verifySessionCheckpointUnchanged(ctx, preflight); err != nil {
 		return result, err
-	}
-	requestRaw, err := sessionmove.EncodeRequest(request)
-	if err != nil {
-		return result, fmt.Errorf("encode exact session move request: %w", err)
 	}
 	digest := sessionmove.DigestBytes(requestRaw)
 
@@ -214,7 +234,7 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 		return result, fmt.Errorf("remote branch %s tip is %q after push, want exact source commit %s", preflight.branch, remoteTip, request.BundleCommit)
 	}
 
-	home, err := wbhome.Root(options.ProjectsRoot)
+	home, err := ports.homeRoot(options.ProjectsRoot)
 	if err != nil {
 		return result, err
 	}
@@ -273,7 +293,7 @@ func validateSourceSession(source session.Record) error {
 	return nil
 }
 
-func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOptions, handoffID, successorID string) (*sessionCheckpointPreflight, error) {
+func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOptions, handoffID, successorID string, ports sessionCheckpointPorts) (_ *sessionCheckpointPreflight, returnErr error) {
 	root, err := RepositoryRootFor(ctx, options.Worktree)
 	if err != nil {
 		return nil, err
@@ -310,45 +330,44 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 		return nil, fmt.Errorf("active Work Log branch %q does not match source branch %q", claim.Branch, branch)
 	}
 
-	canonical, err := openCanonicalRepository(guard.CanonicalDir)
+	canonical, err := ports.openCanonical(guard.CanonicalDir)
 	if err != nil {
 		return nil, fmt.Errorf("open managed canonical repository: %w", err)
 	}
-	worktree, err := openAdoptedCleanupWorktree(root)
+	// Ownership begins as soon as the canonical descriptor opens. Every later
+	// refusal releases whatever has been acquired; a successful return hands
+	// both capabilities to the caller's deferred close.
+	preflight := &sessionCheckpointPreflight{canonical: canonical}
+	defer func() {
+		if returnErr != nil {
+			preflight.close()
+		}
+	}()
+	worktree, err := ports.openWorktree(root)
 	if err != nil {
-		canonical.close()
 		return nil, fmt.Errorf("hold source worktree for checkpoint: %w", err)
 	}
+	preflight.worktree = worktree
 	fetchRemote, err := readCanonicalOriginRemote(ctx, canonical, false)
 	if err != nil {
-		worktree.close()
-		canonical.close()
 		return nil, fmt.Errorf("source branch has no usable origin fetch remote: %w", err)
 	}
 	pushRemote, err := readCanonicalOriginRemote(ctx, canonical, true)
 	if err != nil {
-		worktree.close()
-		canonical.close()
 		return nil, fmt.Errorf("source branch has no usable origin push remote: %w", err)
 	}
 	parsedFetch, err := gitremote.Parse(fetchRemote)
 	if err != nil {
-		worktree.close()
-		canonical.close()
 		return nil, fmt.Errorf("origin fetch remote is unsafe: %w", err)
 	}
 	parsedPush, err := gitremote.Parse(pushRemote)
 	if err != nil {
-		worktree.close()
-		canonical.close()
 		return nil, fmt.Errorf("origin push remote is unsafe: %w", err)
 	}
 	if !parsedFetch.Identity.Equal(parsedPush.Identity) {
-		worktree.close()
-		canonical.close()
 		return nil, fmt.Errorf("origin fetch and push remotes identify different repositories")
 	}
-	preflight := &sessionCheckpointPreflight{
+	*preflight = sessionCheckpointPreflight{
 		root: root, branch: branch, sourceCommit: head, repositoryRemote: parsedFetch.Raw, pushRemote: parsedPush.Raw,
 		workLogReference: reference, canonicalDir: guard.CanonicalDir, worktreesRoot: guard.WorktreesRoot,
 		canonical: canonical, worktree: worktree,
@@ -358,11 +377,9 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 	// named branch can advance without force. No generated file or local ref
 	// exists yet, so a rejection is a zero-mutation refusal.
 	if err := runSessionPushGit(ctx, preflight, true); err != nil {
-		preflight.close()
 		return nil, fmt.Errorf("source branch %s cannot be pushed without force: %w", branch, err)
 	}
 	if err := verifySessionCheckpointUnchanged(ctx, preflight); err != nil {
-		preflight.close()
 		return nil, err
 	}
 	// Validate IDs and request-owned identity before mutation using the same
@@ -382,7 +399,6 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 	}
 	probe.SourceOfferDigest = sessionmove.DigestSourceOffer(probe.SourceOfferMessage, probe.SourceOfferNextAction)
 	if _, err := sessionmove.EncodeRequest(probe); err != nil {
-		preflight.close()
 		return nil, fmt.Errorf("validate source checkpoint identity: %w", err)
 	}
 	return preflight, nil

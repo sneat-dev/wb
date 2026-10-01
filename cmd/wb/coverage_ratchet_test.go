@@ -759,8 +759,9 @@ func TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) 
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero when the coverage profile fails the ratchet's stricter parse")
 	}
-	if !strings.Contains(stderr.String(), "produced by go test") {
-		t.Fatalf("stderr = %q, want it to name the parse failure", stderr.String())
+	if !strings.Contains(stderr.String(), "coverage could not be measured: invalid coverage profile") ||
+		!strings.Contains(stderr.String(), "missing file:range separator") {
+		t.Fatalf("stderr = %q, want the malformed profile and its structural parse failure", stderr.String())
 	}
 }
 

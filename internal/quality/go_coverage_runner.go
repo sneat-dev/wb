@@ -73,8 +73,13 @@ type plannedGoCoveragePackage struct {
 }
 
 func runCoverageWithOptions(ctx context.Context, options RunOptions, module, profilePath string) (string, int, error) {
+	packagePatterns := goCoveragePackagePatterns(options)
+	if err := ValidateGoCoveragePackagePatterns(packagePatterns); err != nil {
+		return "", 0, err
+	}
 	if options.GoTestShards <= 1 && len(options.GoShardPackages) == 0 {
-		return runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
+		arguments := goCoverageArguments(profilePath, packagePatterns...)
+		return runWithOptions(ctx, options, module, "go", arguments...)
 	}
 	if options.GoTestShards < 2 {
 		return "", 0, fmt.Errorf("go test sharding requires at least 2 shards")
@@ -97,11 +102,33 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if discoveryTimeout <= 0 {
 		discoveryTimeout = shardAttemptTimeout
 	}
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress)
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, packagePatterns)
 	if errors.Is(context.Cause(checkCtx), errLogicalCheckTimeout) {
 		return output, attempts, fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
 	return output, attempts, err
+}
+
+func goCoveragePackagePatterns(options RunOptions) []string {
+	if len(options.GoTestPackages) == 0 {
+		return []string{"./..."}
+	}
+	return append([]string(nil), options.GoTestPackages...)
+}
+
+// ValidateGoCoveragePackagePatterns rejects values that `go test` could
+// interpret as flags instead of the package patterns callers intend to scope.
+func ValidateGoCoveragePackagePatterns(patterns []string) error {
+	for _, pattern := range patterns {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			return fmt.Errorf("--package must not be empty")
+		}
+		if strings.HasPrefix(trimmed, "-") {
+			return fmt.Errorf("--package %q must not start with '-'", pattern)
+		}
+	}
+	return nil
 }
 
 func runShardedCoverage(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int) (string, error) {
@@ -117,15 +144,23 @@ func runShardedCoverageWithDiagnosticsAndProgress(ctx context.Context, module, o
 	return output, err
 }
 
-func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress)) (string, int, error) {
-	allPackages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list all packages", func(commandCtx context.Context) ([]string, error) {
-		return goListPackages(commandCtx, module, "./...")
+func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), selectedPackagePatterns ...[]string) (string, int, error) {
+	packagePatterns := []string{"./..."}
+	if len(selectedPackagePatterns) > 0 {
+		packagePatterns = selectedPackagePatterns[0]
+	}
+	allPackages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list selected packages", func(commandCtx context.Context) ([]string, error) {
+		return goCoveragePackages(commandCtx, module, packagePatterns)
 	})
 	if err != nil {
 		return "", 0, err
 	}
 	shardedPackages := make([]string, 0, len(requestedPackages))
 	shardedSet := map[string]bool{}
+	selectedSet := make(map[string]bool, len(allPackages))
+	for _, packagePath := range allPackages {
+		selectedSet[packagePath] = true
+	}
 	for _, requested := range requestedPackages {
 		packages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list shard package "+requested, func(commandCtx context.Context) ([]string, error) {
 			return goListPackages(commandCtx, module, requested)
@@ -135,6 +170,9 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, m
 		}
 		if len(packages) != 1 {
 			return "", 0, fmt.Errorf("shard package %q resolved to %d packages; name exactly one package", requested, len(packages))
+		}
+		if !selectedSet[packages[0]] {
+			return "", 0, fmt.Errorf("shard package %q resolves outside selected package scope", requested)
 		}
 		if shardedSet[packages[0]] {
 			return "", 0, fmt.Errorf("duplicate shard package %q", requested)
@@ -257,6 +295,25 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, m
 		return output.String(), maxAttempts, err
 	}
 	return output.String(), maxAttempts, nil
+}
+
+func goCoveragePackages(ctx context.Context, module string, patterns []string) ([]string, error) {
+	seen := make(map[string]bool)
+	for _, pattern := range patterns {
+		packages, err := goListPackages(ctx, module, pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, packagePath := range packages {
+			seen[packagePath] = true
+		}
+	}
+	packages := make([]string, 0, len(seen))
+	for packagePath := range seen {
+		packages = append(packages, packagePath)
+	}
+	sort.Strings(packages)
+	return packages, nil
 }
 
 // Discovery runs before shard attempts, but it is still external process work.

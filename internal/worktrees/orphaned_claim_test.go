@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,7 +182,7 @@ func TestAbortOrphanedClaimRefusesEveryNonAbsentPredicate(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = runDir.Close() }()
-			if _, err := writeWorkLogTerminal(fixture.home, runDir, claim, claim.BaseSHA, "discarded", "", "", nil); err != nil {
+			if _, err := sealWorkLogTerminal(fixture.home, runDir, worktreeclaims.TerminalSealRequest{Claim: claim, FinalCommit: claim.BaseSHA, Disposition: "discarded"}); err != nil {
 				t.Fatal(err)
 			}
 		}, want: "terminal record already exists"},

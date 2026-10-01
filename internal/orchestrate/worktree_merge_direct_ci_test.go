@@ -51,11 +51,21 @@ func TestDirectCIWaitCannotPassOnJoblessWorkflowOrSkippedCoverage(t *testing.T) 
 	installDirectCITestGH(t)
 	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: directCITestHead,
 		ExpectedActionChecks: &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: directCIGoChecks},
-		Slice:                20 * time.Second, CheckPollInterval: 200 * time.Millisecond}
+		Slice:                20 * time.Second, CheckPollInterval: 200 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.Result.Status != PullRequestWaitPending || progress.NextPoll == 0 {
+				return
+			}
+			if progress.Result.Head != directCITestHead || progress.Result.StableObservations != 0 || len(progress.Result.Checks) != 0 ||
+				!strings.Contains(progress.Result.Reason, "expected Actions jobs have not registered for the exact head") {
+				t.Errorf("jobless workflow yielded an unsafe pending observation: %#v", progress)
+			}
+		}}
 	result, err := WaitForCommitChecks(context.Background(), options)
 	if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, "expected Actions jobs") {
 		t.Fatalf("jobless workflow wait = %#v, err=%v", result, err)
 	}
+	options.Progress = nil
 	t.Setenv("WB_TEST_CHECK_RUNS", `{"total_count":2,"check_runs":[{"id":1,"name":"Required checks passed","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":305}},{"id":2,"name":"Tests and coverage (8 shards)","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":305}}]}`)
 	result, err = WaitForCommitChecks(context.Background(), options)
 	if err != nil || result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, "did not execute successfully") {

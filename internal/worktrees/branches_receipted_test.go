@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // installReceiptFixture puts a deterministic fake gh on PATH that answers the
@@ -214,7 +215,7 @@ func TestBranchCleanupReceiptRecheckRefusesRevertBetweenPlanAndApply(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 	planned := false
 	for _, result := range results {
 		if result.Branch == "feature/landed" && result.Eligible {

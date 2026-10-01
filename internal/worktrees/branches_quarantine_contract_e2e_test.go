@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 //nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for real Git.
@@ -53,7 +54,7 @@ func TestContractQuarantinePlanDestinationCollision(t *testing.T) {
 	gitTest(t, fixture.canonical, "branch", "feature/old")
 	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
 	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
-	destination := retiredBranchDestination(now, "feature/old", sha)
+	destination := worktreebranches.RetiredBranchDestination(now, "feature/old", sha)
 	gitTest(t, fixture.canonical, "branch", destination)
 	result := planBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha, Reason: "old"}, now)
 	if result.Outcome != "refused" || !strings.Contains(result.Error, "destination already exists") {

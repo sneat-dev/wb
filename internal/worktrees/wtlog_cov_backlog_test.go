@@ -344,4 +344,14 @@ func TestWtLogCovSealCreateFailureBacklogClaim(t *testing.T) {
 	if err := sealCreateFailureBacklogClaim(fixture.home, missing); err == nil {
 		t.Fatal("missing run was sealed")
 	}
+	missingClaim := record
+	missingClaim.WorkLogClaim = strings.Repeat("b", 64)
+	if err := sealCreateFailureBacklogClaim(fixture.home, missingClaim); err == nil {
+		t.Fatal("missing immutable claim was sealed")
+	}
+	conflicting := record
+	conflicting.HeadSHA = strings.Repeat("c", 40)
+	if err := sealCreateFailureBacklogClaim(fixture.home, conflicting); err == nil || !strings.Contains(err.Error(), "seal failed-create Work Log claim") {
+		t.Fatalf("conflicting terminal seal error = %v", err)
+	}
 }

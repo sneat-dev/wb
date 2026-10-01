@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 const lifecycleBacklogVersion = 1
@@ -435,12 +436,17 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 }
 
 // resumeLifecycleBacklog finishes the exact residual checkout and local-ref
-// deletion this record's own interrupted run left behind. It refuses if the
-// worktree registration or remote branch still exists, or if the local ref
-// moved. The private record is therefore a recovery hint, never authority to
-// delete a different checkout or branch.
+// deletion this record's own interrupted run left behind. It refuses a live
+// remote branch except at retiring_remote with --remote and the recorded exact
+// SHA lease; it also refuses a surviving registration or a moved local ref.
+// The private record is therefore a recovery hint, never authority to delete
+// a different checkout or branch.
 func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, deleteRemote bool) error {
-	if err := validateLifecycleBacklog(*record); err != nil {
+	return resumeLifecycleBacklogWithPorts(ctx, home, record, deleteRemote, productionCleanupBacklogPorts())
+}
+
+func resumeLifecycleBacklogWithPorts(ctx context.Context, home string, record *lifecycleBacklogRecord, deleteRemote bool, ports cleanupBacklogPorts) error {
+	if err := ports.ValidateRecord(*record); err != nil {
 		return err
 	}
 	// This is the one caller allowed to reclaim a lock an interrupted run left
@@ -454,7 +460,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		Legacy:        filepath.Clean(record.WorktreesRoot) == filepath.Join(filepath.Clean(record.ProjectsRoot), ".wb", "worktrees"),
 	}
 	lockRoot := lifecycleTaskLockRoot(home, layout)
-	task, err := acquireCleanupTaskAtReclaimingInterrupted(lockRoot, record.Task, true)
+	task, err := ports.AcquireTask(lockRoot, record.Task, true)
 	if err != nil {
 		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 		if !errors.Is(err, os.ErrNotExist) {
@@ -466,21 +472,20 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		// private write, not a deletion, which is why it is allowed without the
 		// lock that guards deletions. A record that still owes any of them
 		// keeps the original error: work needs the lock WB can no longer take.
-		return completeVacantLifecycleBacklog(ctx, home, record, lockErr)
+		return ports.CompleteVacant(ctx, home, record, lockErr)
 	}
 	defer func() {
-		_ = task.lock.release()
-		task.close()
+		ports.ReleaseTask(task)
 	}()
-	canonical, err := openCanonicalRepository(record.CanonicalDir)
+	canonical, err := ports.OpenCanonical(record.CanonicalDir)
 	if err != nil {
 		return err
 	}
-	defer canonical.close()
-	if err := canonical.validate(); err != nil {
+	defer ports.CloseCanonical(canonical)
+	if err := ports.ValidateCanonical(canonical); err != nil {
 		return err
 	}
-	if remoteHead, err := detachedAwareRemoteBranchHead(ctx, record); err != nil {
+	if remoteHead, err := ports.RemoteHead(ctx, record); err != nil {
 		return err
 	} else if remoteHead != "" && !record.PreserveLocalBranch {
 		// A record sealed at retiring_remote was interrupted *during* the remote
@@ -501,16 +506,14 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		if record.RemoteHeadSHA == "" || remoteHead != record.RemoteHeadSHA {
 			return fmt.Errorf("resume lifecycle backlog %s: origin/%s advanced from %s to %s since the interrupted run observed it", record.ID, record.Branch, record.RemoteHeadSHA, remoteHead)
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
-			"push", "--force-with-lease=refs/heads/"+record.Branch+":"+record.RemoteHeadSHA,
-			"origin", ":refs/heads/"+record.Branch); err != nil {
+		if err := ports.DeleteRemote(ctx, canonical, record); err != nil {
 			return fmt.Errorf("resume exact remote branch retirement %s: %w", record.Branch, err)
 		}
-		if err := persistLifecycleBacklog(home, record, lifecycleStageRemoteRetired); err != nil {
+		if err := ports.Persist(home, record, lifecycleStageRemoteRetired); err != nil {
 			return err
 		}
 	}
-	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
+	registrations, err := ports.Registrations(ctx, canonical)
 	if err != nil {
 		return err
 	}
@@ -522,17 +525,17 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// named the exact path, and the registration check above proved Git has
 	// already let go of it, so finishing that deletion is what resuming means.
 	// Anything still registered was refused and returned above.
-	if _, err := os.Lstat(record.WorktreeDir); err == nil {
-		worktree, openErr := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir, External: record.External}})
+	if _, err := ports.Lstat(record.WorktreeDir); err == nil {
+		worktree, openErr := ports.OpenWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir, External: record.External}})
 		if openErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, openErr)
 		}
-		if _, removeErr := removeUnregisteredWorktreeResidue(worktree, record.WorktreeDir); removeErr != nil {
-			worktree.close()
+		if _, removeErr := ports.RemoveResidue(worktree, record.WorktreeDir); removeErr != nil {
+			ports.CloseWorktree(worktree)
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, removeErr)
 		}
-		parentErr := worktree.removeEmptyParent(nil, nil)
-		worktree.close()
+		parentErr := ports.RemoveParent(worktree)
+		ports.CloseWorktree(worktree)
 		if parentErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, parentErr)
 		}
@@ -543,32 +546,32 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if !record.Detached {
 		// A detached checkout owns no ref: removing the checkout is the whole
 		// of its retirement.
-		exists, err = localBranchExistsCanonical(ctx, canonical, record.Branch)
+		exists, err = ports.LocalExists(ctx, canonical, record.Branch)
 		if err != nil {
 			return err
 		}
 	}
 	if exists && !record.PreserveLocalBranch {
-		head, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+record.Branch)
+		head, err := ports.LocalHead(ctx, canonical, record.Branch)
 		if err != nil {
 			return err
 		}
 		if head != record.HeadSHA {
 			return fmt.Errorf("resume lifecycle backlog %s: branch moved from %s to %s", record.ID, record.HeadSHA, head)
 		}
-		if err := persistLifecycleBacklog(home, record, lifecycleStageRemovingLocalBranch); err != nil {
+		if err := ports.Persist(home, record, lifecycleStageRemovingLocalBranch); err != nil {
 			return err
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.Branch, record.HeadSHA); err != nil {
+		if err := ports.DeleteLocal(ctx, canonical, record); err != nil {
 			return fmt.Errorf("resume exact local branch deletion %s: %w", record.Branch, err)
 		}
 	}
 	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
-		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
+		if err := ports.SealClaim(home, *record); err != nil {
 			return err
 		}
 	}
-	return persistLifecycleBacklog(home, record, lifecycleStageComplete)
+	return ports.Persist(home, record, lifecycleStageComplete)
 }
 
 // completeVacantLifecycleBacklog closes a record whose task namespace no longer
@@ -624,7 +627,9 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {
 		return fmt.Errorf("failed-create Work Log claim does not match durable cleanup receipt")
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", "", nil); err != nil {
+	if _, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+		Claim: claim, FinalCommit: record.HeadSHA, Disposition: "create_failed",
+	}); err != nil {
 		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
 	}
 	return nil

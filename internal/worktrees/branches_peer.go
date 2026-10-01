@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
-
-const peerEvidenceMaximumAge = 5 * time.Minute
 
 func compactStrings(values []string) []string {
 	var out []string
@@ -30,63 +29,24 @@ func validatePeerEvidence(options BranchCleanupOptions, results []BranchCleanupR
 	if len(options.PeerEvidence) == 0 && len(options.RequireHosts) == 0 {
 		return nil
 	}
-	required := map[string]bool{}
-	for _, host := range options.RequireHosts {
-		required[host] = true
-	}
-	if !required[branchEvidenceHost()] {
-		return fmt.Errorf("--require-host must include local host %q", branchEvidenceHost())
-	}
-	seen := map[string]bool{}
+	evidence := make([]worktreebranches.PeerEvidence, 0, len(options.PeerEvidence))
 	for _, path := range options.PeerEvidence {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read peer evidence %s: %w", path, err)
 		}
-		var evidence BranchListOutcome
-		if err := json.Unmarshal(raw, &evidence); err != nil {
+		var decoded worktreebranches.PeerEvidence
+		if err := json.Unmarshal(raw, &decoded); err != nil {
 			return fmt.Errorf("decode peer evidence %s: %w", path, err)
 		}
-		if evidence.Host == "" || !required[evidence.Host] || seen[evidence.Host] {
-			return fmt.Errorf("peer evidence %s has missing, unrequired, or duplicate host", path)
-		}
-		if evidence.GeneratedAt.IsZero() || evidence.GeneratedAt.After(now) || now.Sub(evidence.GeneratedAt) > peerEvidenceMaximumAge {
-			return fmt.Errorf("peer evidence for %s is stale or future-dated", evidence.Host)
-		}
-		if evidence.Repository != options.Repository || evidence.Branch != options.Branch || evidence.Base != options.Base || len(evidence.Diagnostics) != 0 || len(evidence.Entries) != 1 {
-			return fmt.Errorf("peer evidence for %s is not a complete exact branch inventory", evidence.Host)
-		}
-		entry := evidence.Entries[0]
-		if entry.Repository != options.Repository || entry.Branch != options.Branch || entry.Base != options.Base || entry.Scope != BranchScopeRemote || !peerEvidenceSafeDisposition(entry.Disposition) {
-			return fmt.Errorf("peer evidence for %s reports unsafe branch state", evidence.Host)
-		}
-		var planned *BranchCleanupResult
-		for index := range results {
-			if results[index].Repository == options.Repository && results[index].Branch == options.Branch && results[index].Scope == BranchScopeRemote {
-				planned = &results[index]
-				break
-			}
-		}
-		if planned == nil || entry.SHA != planned.SHA || entry.TargetSHA != planned.TargetSHA {
-			return fmt.Errorf("peer evidence for %s does not match planned branch head", evidence.Host)
-		}
-		seen[evidence.Host] = true
+		decoded.Path = path
+		evidence = append(evidence, decoded)
 	}
-	for host := range required {
-		if !seen[host] {
-			return fmt.Errorf("required peer evidence for host %s is missing", host)
-		}
-	}
-	return nil
-}
-
-func peerEvidenceSafeDisposition(disposition string) bool {
-	switch disposition {
-	case BranchContained, BranchReceipted, BranchAbsorbed, BranchUnique:
-		return true
-	default:
-		return false
-	}
+	return worktreebranches.ValidatePeerEvidence(worktreebranches.PeerEvidenceValidation{
+		LocalHost: branchEvidenceHost(), Repository: options.Repository, Branch: options.Branch,
+		Base: options.Base, RequireHosts: options.RequireHosts, Evidence: evidence,
+		Results: results, Now: now,
+	})
 }
 
 // reviewedRemoteForkGuard refuses reviewed retirement from a fork. GitHub's

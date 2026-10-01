@@ -66,8 +66,7 @@ internal/worktrees/branches_quarantine.go	1	task-18
 internal/worktrees/clone_migrate.go	4	task-18
 internal/worktrees/git_capability_darwin.go	1	task-18
 internal/worktrees/git_executable_darwin.go	1	task-18
-internal/worktrees/heartbeat.go	2	task-18
+internal/worktrees/heartbeat.go	1	task-18
 internal/worktrees/patchid.go	2	task-18
 internal/worktrees/repository_relocate.go	5	task-18
-internal/worktrees/retire.go	2	task-18
 internal/worktrees/worktrees.go	4	task-18

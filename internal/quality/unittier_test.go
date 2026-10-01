@@ -614,6 +614,34 @@ func TestSomething(t *testing.T) {
 	}
 }
 
+func TestFindUnitTierMatchesRetirementLeafGitHelpers(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import retireleaf "github.com/sneat-dev/wb/internal/worktreeretire"
+
+func TestSomething(t *testing.T) {
+	retireleaf.GitBytes(nil, "repo", "show", "missing")
+	retireleaf.GitObjectSHA(nil, "repo", "missing")
+	retireleaf.GitObjectSHA(nil, "repo", "other")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 3 {
+		t.Fatalf("matches = %+v, want all three direct Git-object calls", matches)
+	}
+	want := []string{"retireleaf.GitBytes", "retireleaf.GitObjectSHA", "retireleaf.GitObjectSHA"}
+	for i, match := range matches {
+		if match.Pattern != UnitTierPatternGitHelper || match.Detail != want[i] {
+			t.Fatalf("match %d = %+v, want Git helper %q", i, match, want[i])
+		}
+	}
+}
+
 func TestFindUnitTierMatchesResolvesAliasedExecImport(t *testing.T) {
 	t.Parallel()
 	root := unitTierFixtureModule(t)

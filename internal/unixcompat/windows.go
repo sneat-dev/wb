@@ -74,7 +74,7 @@ func pathOf(fd int) string { files.Lock(); defer files.Unlock(); return files.pa
 func Open(path string, flags, _ int) (int, error) {
 	return openWindows(path, flags, flags&O_NOFOLLOW != 0)
 }
-func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
+func Openat(dirfd int, name string, flags int, mode uint32) (int, error) {
 	dir := pathOf(dirfd)
 	if dir == "" {
 		return -1, errors.New("unknown directory handle")

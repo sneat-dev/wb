@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
@@ -75,9 +76,9 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	repository := discover.Repo{Org: "acme", Name: "app", Path: root}
 	entries := []BranchEntry{}
 	names := map[string]bool{}
-	count := appendRetiredEntries(ctx, &entries, names, repository, branchSweepOptions{
+	count := branchInventoryService().AppendRetiredEntries(ctx, &entries, names, branchInventoryRepository(repository), (branchSweepOptions{
 		Now: now, Name: "retired/*",
-	}, []branchRef{
+	}).branchInventorySweep(), []branchRef{
 		{Name: "active/one"},
 		{Name: "retired/one", UnknownDate: true},
 	}, BranchScopeLocal)
@@ -147,10 +148,10 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if repositories, err := discoverBranchRepositories(fileRoot, ""); err == nil || repositories != nil {
+	if repositories, err := branchInventoryService().DiscoverBranchRepositories(fileRoot, ""); err == nil || repositories != nil {
 		t.Fatalf("repository discovery through file = %#v/%v", repositories, err)
 	}
-	if repositories, err := discoverBranchRepositories(root, "missing"); err != nil || len(repositories) != 0 {
+	if repositories, err := branchInventoryService().DiscoverBranchRepositories(root, "missing"); err != nil || len(repositories) != 0 {
 		t.Fatalf("filtered repository discovery = %#v/%v", repositories, err)
 	}
 	if index, diagnostic := branchInUseIndex(ctx, fileRoot, ""); diagnostic == "" || len(index) != 0 {
@@ -186,14 +187,14 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 		{Name: "active/old", CommitterDate: now.Add(-2 * time.Hour)},
 	}
 	counts, names := map[string]int{}, map[string]bool{}
-	accumulateRetiredCounts(sweep, repositories[0], refs, BranchScopeLocal, counts, names)
+	worktreebranches.AccumulateRetiredCounts(sweep.branchPolicyOptions(), repositories[0].Slug(), refs, BranchScopeLocal, counts, names)
 	if counts[BranchScopeLocal] != 1 || !names["acme/one|retired/old"] || len(names) != 1 {
 		t.Fatalf("retired counts = %#v/%#v", counts, names)
 	}
 
 	entries := []BranchEntry{}
 	tagNames := map[string]bool{}
-	if count := appendRetiredTagEntries(ctx, &entries, tagNames, repositories[0], sweep,
+	if count := branchInventoryService().AppendRetiredTagEntries(ctx, &entries, tagNames, branchInventoryRepository(repositories[0]), sweep.branchInventorySweep(),
 		[]branchRef{{Name: "retired/old", CommitterDate: now.Add(-2 * time.Hour)}}, BranchScopeRemote); count != 1 {
 		t.Fatalf("appended retired tags = %d", count)
 	}
@@ -212,9 +213,9 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 	}
 
 	var progress bytes.Buffer
-	reportBranchProgress(nil, 1, 1, "ignored")
-	reportBranchProgress(&progress, 2, 3, "acme/one")
-	reportBranchSummary(&progress, map[string]int{BranchUnique: 2, BranchContained: 1}, 1500*time.Millisecond)
+	worktreebranches.ReportBranchProgress(nil, 1, 1, "ignored")
+	worktreebranches.ReportBranchProgress(&progress, 2, 3, "acme/one")
+	worktreebranches.ReportBranchSummary(&progress, map[string]int{BranchUnique: 2, BranchContained: 1}, 1500*time.Millisecond)
 	if output := progress.String(); !strings.Contains(output, "[2/3] scanning acme/one") ||
 		!strings.Contains(output, "contained=1 unique=2") {
 		t.Fatalf("progress output = %q", output)
@@ -431,12 +432,12 @@ func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
 	}
 
 	pullRequest := &PullRequest{Number: 17}
-	explicit := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
+	explicit := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
 	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
 		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
 		t.Fatalf("explicit receipt classification = %#v", explicit)
 	}
-	automatic := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
+	automatic := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
 	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
 		!strings.Contains(automatic.Reason, "--receipts") {
 		t.Fatalf("automatic receipt classification = %#v", automatic)

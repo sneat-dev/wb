@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // BranchQuarantineOptions moves explicitly selected local refs into retired/*.
@@ -38,18 +38,8 @@ type BranchQuarantineOptions struct {
 type BranchQuarantineManifest struct {
 	Entries []BranchQuarantineRequest `json:"entries"`
 }
-type BranchQuarantineRequest struct {
-	Repository string `json:"repository"`
-	Ref        string `json:"ref"`
-	SHA        string `json:"sha"`
-	Reason     string `json:"reason"`
-}
-type BranchQuarantineResult struct {
-	BranchQuarantineRequest
-	Destination string `json:"destination,omitempty"`
-	Outcome     string `json:"outcome"`
-	Error       string `json:"error,omitempty"`
-}
+type BranchQuarantineRequest = worktreebranches.BranchQuarantineRequest
+type BranchQuarantineResult = worktreebranches.BranchQuarantineResult
 type BranchQuarantineOutcome struct {
 	GeneratedAt time.Time                `json:"generated_at"`
 	Apply       bool                     `json:"apply"`
@@ -221,13 +211,13 @@ func validateQuarantineRequests(requests []BranchQuarantineRequest) ([]BranchQua
 }
 
 func quarantineRepositoryPaths(root string, requests []BranchQuarantineRequest) (map[string]string, error) {
-	repositories, err := discoverBranchRepositories(root, "")
+	repositories, err := branchInventoryService().DiscoverBranchRepositories(root, "")
 	if err != nil {
 		return nil, err
 	}
 	paths := map[string]string{}
 	for _, repository := range repositories {
-		paths[repository.Slug()] = repository.Path
+		paths[repository.Slug] = repository.Path
 	}
 	for _, request := range requests {
 		if paths[request.Repository] == "" {
@@ -260,33 +250,23 @@ func planBranchQuarantine(ctx context.Context, projectsRoot, path string, reques
 	return planBranchQuarantineWithOps(ctx, projectsRoot, path, request, now, realBranchQuarantineOps())
 }
 
-func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time, ops branchQuarantinePlanOps) BranchQuarantineResult {
-	result := BranchQuarantineResult{BranchQuarantineRequest: request, Outcome: "refused"}
-	source, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, "", false, ops)
-	if refusal != "" {
-		result.Error = refusal
-		return result
-	}
-	result.SHA = source
-	result.Destination = retiredBranchDestination(now, request.Ref, source)
-	if _, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+result.Destination); err == nil {
-		result.Error = "destination already exists"
-		return result
-	}
-	result.Outcome = "planned"
-	return result
+func branchQuarantineService(ops branchQuarantinePlanOps) worktreebranches.InventoryService {
+	return worktreebranches.InventoryService{Ports: worktreebranches.InventoryPorts{
+		Git: ops.git, CheckedOut: ops.checkedOut, InUse: ops.inUse,
+		OpenHeadPull: func(ctx context.Context, path, repository, branch, head string) (*PullRequest, error) {
+			pulls, err := ops.pullRequests(ctx, path, repository, head)
+			if err != nil {
+				return nil, err
+			}
+			open, _ := matchingPullRequests(pulls, repository, "main", branch, head)
+			return open, nil
+		},
+		OpenBasePull: ops.openBasePull,
+	}}
 }
 
-var quarantineSegmentUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-
-func retiredBranchDestination(now time.Time, source, sha string) string {
-	flat := strings.ReplaceAll(source, "/", "-")
-	flat = quarantineSegmentUnsafe.ReplaceAllString(flat, "-")
-	flat = strings.Trim(flat, "-.")
-	if flat == "" {
-		flat = "branch"
-	}
-	return "retired/" + now.UTC().Format("20060102") + "-" + flat + "-" + shortSHA(sha)
+func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time, ops branchQuarantinePlanOps) BranchQuarantineResult {
+	return branchQuarantineService(ops).PlanBranchQuarantine(ctx, projectsRoot, path, request, now)
 }
 
 func applyBranchQuarantine(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult) {
@@ -315,88 +295,7 @@ func inspectBranchQuarantineCandidate(
 	applying bool,
 	ops branchQuarantinePlanOps,
 ) (string, string) {
-	source, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+request.Ref+"^{commit}")
-	if err != nil {
-		if applying {
-			return "", "source disappeared before apply: " + err.Error()
-		}
-		return "", "source ref unavailable: " + err.Error()
-	}
-	source = strings.TrimSpace(source)
-	if request.SHA != "" && request.SHA != source {
-		if applying {
-			return "", fmt.Sprintf("source moved from %s to %s before apply", shortSHA(request.SHA), shortSHA(source))
-		}
-		return "", fmt.Sprintf("source moved from manifest SHA %s to %s", shortSHA(request.SHA), shortSHA(source))
-	}
-	head, _ := ops.git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
-	if isProtectedBranch(request.Ref, "main", strings.TrimSpace(head)) {
-		if applying {
-			return "", "source became protected or the canonical current branch"
-		}
-		return "", "source is protected or the canonical current branch"
-	}
-	checked, diagnostic := ops.checkedOut(ctx, path)
-	if diagnostic != "" {
-		return "", diagnostic
-	}
-	if checked[request.Ref] {
-		if applying {
-			return "", "source became checked out in a linked worktree"
-		}
-		return "", "source is checked out in a linked worktree"
-	}
-	if !applying {
-		if refusal := branchQuarantineClaimRefusal(ctx, projectsRoot, request, false, ops); refusal != "" {
-			return "", refusal
-		}
-	} else if _, err := ops.git(ctx, path, "rev-parse", "--verify", "refs/heads/"+destination); err == nil {
-		return "", "destination appeared before apply"
-	}
-	pulls, err := ops.pullRequests(ctx, path, request.Repository, source)
-	if err != nil {
-		if applying {
-			return "", "cannot re-prove pull-request safety: " + err.Error()
-		}
-		return "", "cannot prove pull-request safety: " + err.Error()
-	}
-	if open, _ := matchingPullRequests(pulls, request.Repository, "main", request.Ref, source); open != nil {
-		if applying {
-			return "", "source became head of open pull request " + open.URL
-		}
-		return "", "source is head of open pull request " + open.URL
-	}
-	if open, err := ops.openBasePull(ctx, path, request.Repository, request.Ref); err != nil {
-		if applying {
-			return "", "cannot re-prove pull-request base safety: " + err.Error()
-		}
-		return "", "cannot prove pull-request base safety: " + err.Error()
-	} else if open != nil {
-		if applying {
-			return "", "source became base of open pull request " + open.URL
-		}
-		return "", "source is base of open pull request " + open.URL
-	}
-	if applying {
-		if refusal := branchQuarantineClaimRefusal(ctx, projectsRoot, request, true, ops); refusal != "" {
-			return "", refusal
-		}
-	}
-	return source, ""
-}
-
-func branchQuarantineClaimRefusal(ctx context.Context, projectsRoot string, request BranchQuarantineRequest, applying bool, ops branchQuarantinePlanOps) string {
-	inUse, diagnostic := ops.inUse(ctx, projectsRoot, "")
-	if diagnostic != "" {
-		return diagnostic
-	}
-	if _, claimed := inUse[branchInUseKey(request.Repository, request.Ref)]; !claimed {
-		return ""
-	}
-	if applying {
-		return "source became claimed by a live WB work log"
-	}
-	return "source is claimed by a live WB work log"
+	return branchQuarantineService(ops).InspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, destination, applying)
 }
 
 func openPullRequestUsingBranchAsBase(ctx context.Context, worktree, repository, branch string) (*PullRequest, error) {

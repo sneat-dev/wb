@@ -64,6 +64,9 @@ func TestWtLifeCovSecureHelperProcess(t *testing.T) {
 }
 
 func wtLifeCovDispatchSecureHelper(helper string, args []string) int {
+	if strings.HasPrefix(helper, "fault-") {
+		return wtLifeCovDispatchSecureHelperFault(helper, args)
+	}
 	switch helper {
 	case "cleanup":
 		return RunSecureCleanupGitHelper(args)
@@ -223,4 +226,57 @@ func wtLifeCovOpenDirectory(t *testing.T, path string) *os.File {
 	}
 	t.Cleanup(func() { _ = directory.Close() })
 	return directory
+}
+
+// Faults run in the coverage-aware child process. In particular, none of the
+// parent test process's runtime descriptors or working directory is altered.
+func wtLifeCovDispatchSecureHelperFault(helper string, args []string) int {
+	ops := defaultSecureHelperOps()
+	switch helper {
+	case "fault-stage-cwd":
+		ops.getwd = func() (string, error) { return "", errors.New("injected held cwd failure") }
+		return runSecureStageGitHelperWithOps(args, ops)
+	case "fault-stage-canonical-cwd":
+		ops.getwd = func() (string, error) { return "", errors.New("injected held cwd failure") }
+		return runSecureStageCanonicalGitHelperWithOps(args, ops)
+	case "fault-stage-canonical-common-chdir":
+		ops.chdir = failNthSecureHelperChdir(ops.chdir, 3)
+		return runSecureStageCanonicalGitHelperWithOps(args, ops)
+	case "fault-canonical-common-chdir":
+		ops.chdir = failNthSecureHelperChdir(ops.chdir, 2)
+		return runSecureCanonicalGitHelperWithOps(args, ops)
+	case "fault-cleanup-common-chdir":
+		ops.chdir = failNthSecureHelperChdir(ops.chdir, 2)
+		return runSecureCleanupGitHelperWithOps(args, ops)
+	case "fault-rename-worktree-chdir":
+		ops.chdir = failNthSecureHelperChdir(ops.chdir, 2)
+		return runSecureRenameGitHelperWithOps(args, ops)
+	case "fault-rename-retain":
+		ops.retain = func(...*os.File) error { return errors.New("injected retention failure") }
+		return runSecureRenameGitHelperWithOps(args, ops)
+	case "fault-rename-post-retention-drift":
+		ops.retain = func(files ...*os.File) error {
+			if err := retainDescriptorsAcrossGitExec(files...); err != nil {
+				return err
+			}
+			if err := os.Rename(args[1], args[1]+"-held"); err != nil {
+				return err
+			}
+			return os.Rename(args[1]+"-replacement", args[1])
+		}
+		return runSecureRenameGitHelperWithOps(args, ops)
+	default:
+		return -1
+	}
+}
+
+func failNthSecureHelperChdir(chdir func(int) error, target int) func(int) error {
+	count := 0
+	return func(fd int) error {
+		count++
+		if count == target {
+			return errors.New("injected held chdir failure")
+		}
+		return chdir(fd)
+	}
 }

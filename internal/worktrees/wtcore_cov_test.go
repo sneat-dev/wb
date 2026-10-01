@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -394,7 +395,7 @@ func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
 	}
 	// A directory tree with no WB journal anywhere above it is not a worktree,
 	// so the upward walk reaches the filesystem root and reports nothing.
-	if root, err := worktreeRootOf(filepath.Join(t.TempDir(), "no-manifest")); err != nil || root != "" {
+	if root, err := heartbeatPorts().WorktreeRootOf(filepath.Join(t.TempDir(), "no-manifest")); err != nil || root != "" {
 		t.Fatalf("worktreeRootOf outside a worktree = %q, err=%v", root, err)
 	}
 }
@@ -466,7 +467,7 @@ func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
 // always returns the zero time. Covering it would require a source change, so
 // only the honest negative behaviour is asserted here; see the report.
 func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
-	if got := newestWorkLogEventTime(t.TempDir()); !got.IsZero() {
+	if got := heartbeatPorts().NewestWorkLogEventTime(t.TempDir()); !got.IsZero() {
 		t.Fatalf("non-worktree work log signal = %v, want zero", got)
 	}
 }
@@ -476,12 +477,12 @@ func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
 func TestWTCoreCovExtraStringTrimsOnlyStrings(t *testing.T) {
 	t.Parallel()
 	extra := map[string]any{"present": "  value  ", "number": 7, "null": nil}
-	if got := extraString(extra, "present"); got != "value" {
-		t.Fatalf("extraString(present) = %q, want %q", got, "value")
+	if got := worktreeclaims.ExtraString(extra, "present"); got != "value" {
+		t.Fatalf("worktreeclaims.ExtraString(present) = %q, want %q", got, "value")
 	}
 	for _, key := range []string{"missing", "number", "null"} {
-		if got := extraString(extra, key); got != "" {
-			t.Fatalf("extraString(%s) = %q, want empty", key, got)
+		if got := worktreeclaims.ExtraString(extra, key); got != "" {
+			t.Fatalf("worktreeclaims.ExtraString(%s) = %q, want empty", key, got)
 		}
 	}
 }

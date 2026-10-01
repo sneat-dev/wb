@@ -71,7 +71,9 @@ func (r *fixtureRepo) commitAll(message string) string {
 func (r *fixtureRepo) coverProfile() []CoverageBlock {
 	r.t.Helper()
 	profilePath := filepath.Join(r.t.TempDir(), "profile.out")
-	cmd := exec.Command("go", "test", "-coverprofile="+profilePath, "./...")
+	// This fixture measures each package's own tests. Inherited -coverpkg
+	// must not let a test moved to another package keep covering its source.
+	cmd := exec.Command("go", "test", "-coverpkg=", "-coverprofile="+profilePath, "./...")
 	cmd.Dir = r.dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		r.t.Fatalf("go test -coverprofile: %v\n%s", err, output)
@@ -484,6 +486,76 @@ func TestParseCoverageProfileParsesRangesAndCounts(t *testing.T) {
 	}
 	if blocks[1] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 7, StartCol: 34, EndLine: 10, EndCol: 2, Statements: 3, Count: 0}) {
 		t.Fatalf("blocks[1] = %#v", blocks[1])
+	}
+}
+
+func TestParseCoverageProfileDeduplicatesSetBlocksForSummary(t *testing.T) {
+	t.Parallel()
+	profilePath := filepath.Join(t.TempDir(), "profile.out")
+	contents := "mode: set\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n"
+	if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ParseCoverageProfile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 || blocks[0].Count != 1 || blocks[1].Count != 0 || blocks[0].EndCol != 4 || blocks[1].EndCol != 6 {
+		t.Fatalf("deduplicated blocks = %#v", blocks)
+	}
+	summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+	if summary.Statements != 5 || summary.Covered != 2 || summary.Packages["pkg"].Statements != 5 || summary.Packages["pkg"].Covered != 2 {
+		t.Fatalf("duplicate blocks inflated summary: %+v", summary)
+	}
+	baseline := BaselineFromProfile(blocks, "example.com/app", "abc123")
+	if baseline.Packages["pkg"] != 3 || len(baseline.UncoveredBlocks["pkg"]) != 1 || baseline.UncoveredBlocks["pkg"][0].EndCol != 6 {
+		t.Fatalf("duplicate blocks inflated baseline: %+v", baseline)
+	}
+}
+
+func TestParseCoverageProfileSumsRepeatedCountAndAtomicHits(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"count", "atomic"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			profilePath := filepath.Join(t.TempDir(), "profile.out")
+			contents := "mode: " + mode + "\n" +
+				"example.com/app/pkg/a.go:1.1,1.4 2 2\n" +
+				"example.com/app/pkg/a.go:1.1,1.4 2 3\n"
+			if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			blocks, err := ParseCoverageProfile(profilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(blocks) != 1 || blocks[0].Count != 5 {
+				t.Fatalf("merged %s hits = %#v", mode, blocks)
+			}
+			summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+			if summary.Statements != 2 || summary.Covered != 2 {
+				t.Fatalf("merged %s summary = %+v", mode, summary)
+			}
+		})
+	}
+}
+
+func TestParseCoverageProfileRejectsConflictingRepeatedStatementCount(t *testing.T) {
+	t.Parallel()
+	profilePath := filepath.Join(t.TempDir(), "profile.out")
+	contents := "mode: set\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 3 1\n"
+	if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCoverageProfile(profilePath); err == nil || !strings.Contains(err.Error(), "statement count") {
+		t.Fatalf("conflicting block error = %v", err)
 	}
 }
 

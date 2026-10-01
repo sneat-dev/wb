@@ -151,8 +151,8 @@ func TestBranchLifecycleRefactorBatchQuarantineApply(t *testing.T) {
 	claimedOps.inUse = func(context.Context, string, string) (map[string]string, string) {
 		return map[string]string{branchInUseKey(request.Repository, request.Ref): "task"}, ""
 	}
-	if refusal := branchQuarantineClaimRefusal(context.Background(), "/projects", request, false, claimedOps); !strings.Contains(refusal, "is claimed") {
-		t.Fatalf("plan claim refusal = %q", refusal)
+	if claimed := planBranchQuarantineWithOps(context.Background(), "/projects", "/repo", request, now, claimedOps); !strings.Contains(claimed.Error, "is claimed") {
+		t.Fatalf("plan claim refusal = %q", claimed.Error)
 	}
 	if source, refusal := inspectBranchQuarantineCandidate(context.Background(), "/projects", "/repo", request, planned.Destination, true, branchLifecycleQuarantineOps(sha)); source != sha || refusal != "" {
 		t.Fatalf("direct candidate inspection = %q, %q", source, refusal)

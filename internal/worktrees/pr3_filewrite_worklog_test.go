@@ -50,7 +50,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedCreateFailure(t *testing.
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedWriteFailure(t *testing.T
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(directory.Name(), "f")); !os.IsNotExist(err) {
@@ -72,7 +72,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedSyncFailure(t *testing.T)
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -82,7 +82,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedCloseFailure(t *testing.T
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -92,7 +92,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedRenameNoReplaceFailureNon
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepRenameNoReplace, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v, want errBoomPR3", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -101,11 +101,11 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedRenameNoReplaceFailureNon
 func TestWriteBytesImmutableAtInjectedRenameNoReplaceFailureSurvivesIdenticalIdempotentContent(t *testing.T) {
 	t.Parallel()
 	directory := openPR3TestDir(t)
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, true, nil); err != nil {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, true, nil, writeBytesImmutableAtBeforeRename); err != nil {
 		t.Fatal(err)
 	}
 	inj := &filewrite.Injector{Step: filewrite.StepRenameNoReplace, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, true, inj); err != nil {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, true, inj, writeBytesImmutableAtBeforeRename); err != nil {
 		t.Fatalf("idempotent rewrite with an injected rename failure = %v, want nil (existing content already matches)", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -115,7 +115,7 @@ func TestWriteBytesImmutableAtInjectedHonoursAnInjectedDirSyncFailure(t *testing
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepDirSync, Err: errBoomPR3}
-	if err := writeBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "f", []byte("x"), 0o600, false, inj, writeBytesImmutableAtBeforeRename); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesImmutableAtInjected error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(directory.Name(), "f")); err != nil {
@@ -127,7 +127,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedCreateFailure(t *testing.T) 
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -146,7 +146,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -156,7 +156,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -166,7 +166,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedRenameFailure(t *testing.T) 
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, directory.Name(), ".f.tmp-*")
@@ -176,7 +176,7 @@ func TestWriteBytesAtomicAtInjectedHonoursAnInjectedDirSyncFailure(t *testing.T)
 	t.Parallel()
 	directory := openPR3TestDir(t)
 	inj := &filewrite.Injector{Step: filewrite.StepDirSync, Err: errBoomPR3}
-	if err := writeBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicAtInjected error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(directory.Name(), "f")); err != nil {
@@ -188,7 +188,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 }
@@ -197,7 +197,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 }
@@ -215,7 +215,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 }
@@ -224,7 +224,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 	matches, err := filepath.Glob(filepath.Join(dir, ".f.tmp-*"))
@@ -240,7 +240,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 	matches, err := filepath.Glob(filepath.Join(dir, ".f.tmp-*"))
@@ -256,7 +256,7 @@ func TestWriteBytesAtomicInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	inj := &filewrite.Injector{Step: filewrite.StepDirSync, Err: errBoomPR3}
-	if err := writeBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
+	if err := filewrite.WriteBytesAtomicInjected(dir, "f", []byte("x"), 0o600, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeBytesAtomicInjected error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "f")); err != nil {

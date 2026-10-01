@@ -26,6 +26,11 @@ import (
 var testIsolatedQueueDir string
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	// Every CLI test in this package that invokes `wb run --` or `wb
 	// worktree merge`/`prepare`/`resume` (directly via run()/root.Execute(),
 	// in-process) must never depend on the real host load average: GitHub's
@@ -42,23 +47,8 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
-	}
 	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
 		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
 	}
 	// Isolate the whole test binary from ambient ownership/session-identity
 	// state before any test runs: this binary is a subprocess of whichever

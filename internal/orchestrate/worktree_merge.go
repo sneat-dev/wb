@@ -4322,6 +4322,11 @@ func worktreeMergeValidationRegressionWithImportedMain(baseline, candidate quali
 			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) || matchImportedMainDeadcodeFailure(baseline.Results, candidateFailure, imported) {
 				continue
 			}
+			if imported == nil {
+				if delta, ok := worktreeMergeDeadcodeTargetDelta(baseline.Results, candidateFailure); ok {
+					return fmt.Errorf("candidate validation has %d deadcode finding(s) absent from exact target: %s", len(delta), strings.Join(delta, ", "))
+				}
+			}
 			return fmt.Errorf("candidate validation introduced or changed deadcode failure: %s", candidateFailure.Command)
 		}
 		if candidateFailure.Language == "go" && candidateFailure.Check == quality.CheckTest {
@@ -4444,6 +4449,25 @@ func worktreeMergeDeadcodeIdentitySet(entries []quality.VerificationEntry, langu
 		identities[identity] = true
 	}
 	return identities, true
+}
+
+// worktreeMergeDeadcodeTargetDelta is diagnostic only. An incomplete or
+// ambiguous exact-target report cannot supply a trustworthy difference.
+func worktreeMergeDeadcodeTargetDelta(target []quality.VerificationEntry, candidate quality.VerificationEntry) ([]string, bool) {
+	if !candidate.Deadcode.Valid() {
+		return nil, false
+	}
+	known, valid := worktreeMergeDeadcodeIdentitySet(target, candidate.Language, candidate.Check, candidate.Command, candidate.Module)
+	if !valid {
+		return nil, false
+	}
+	var delta []string
+	for _, identity := range candidate.Deadcode.Identities {
+		if !known[identity] {
+			delta = append(delta, identity)
+		}
+	}
+	return delta, len(delta) > 0
 }
 
 // matchDeadcodeBaselineFailure compares complete function identities, not the

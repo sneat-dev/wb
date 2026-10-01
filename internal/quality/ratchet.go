@@ -30,10 +30,17 @@ type CoverageBlock struct {
 	Count      int
 }
 
+type coverageBlockLocation struct {
+	file                string
+	startLine, startCol int
+	endLine, endCol     int
+}
+
 // ParseCoverageProfile reads a Go coverage profile (`mode: ...` header
 // followed by `file:startLine.startCol,endLine.endCol numStmt count` rows)
-// into its constituent blocks, preserving line ranges that profileTotals
-// collapses into a single aggregate.
+// into unique source blocks, preserving line ranges for callers that need more
+// than profileTotals' aggregate. Repeated blocks from instrumented test
+// binaries combine execution counts according to the profile mode.
 func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	file, err := os.Open(profilePath)
 	if err != nil {
@@ -42,6 +49,8 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	defer func() { _ = file.Close() }()
 
 	var blocks []CoverageBlock
+	seen := make(map[coverageBlockLocation]int)
+	mode := "set"
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	lineNumber := 0
@@ -52,12 +61,29 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 			continue
 		}
 		if lineNumber == 1 && strings.HasPrefix(line, "mode: ") {
+			mode = strings.TrimSpace(strings.TrimPrefix(line, "mode: "))
 			continue
 		}
 		block, err := parseCoverageProfileLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("invalid coverage profile %s at line %d: %w", profilePath, lineNumber, err)
 		}
+		location := coverageBlockLocation{file: block.File, startLine: block.StartLine, startCol: block.StartCol, endLine: block.EndLine, endCol: block.EndCol}
+		if index, exists := seen[location]; exists {
+			if blocks[index].Statements != block.Statements {
+				return nil, fmt.Errorf("invalid coverage profile %s at line %d: coverage block %s:%d.%d,%d.%d has statement count %d, want %d",
+					profilePath, lineNumber, block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol, block.Statements, blocks[index].Statements)
+			}
+			if mode == "count" || mode == "atomic" {
+				blocks[index].Count += block.Count
+			} else if blocks[index].Count > 0 || block.Count > 0 {
+				blocks[index].Count = 1
+			} else {
+				blocks[index].Count = 0
+			}
+			continue
+		}
+		seen[location] = len(blocks)
 		blocks = append(blocks, block)
 	}
 	if err := scanner.Err(); err != nil {

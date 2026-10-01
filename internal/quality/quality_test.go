@@ -60,6 +60,59 @@ func TestProfileTotals(t *testing.T) {
 	}
 }
 
+func TestProfileTotalsMatchesSummaryForRepeatedBlocks(t *testing.T) {
+	t.Parallel()
+	profile := filepath.Join(t.TempDir(), "coverage.out")
+	writeQualityFile(t, profile, "mode: set\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n"+
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n"+
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n")
+	statements, covered, err := profileTotals(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ParseCoverageProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+	if statements != 5 || covered != 2 || statements != summary.Statements || covered != summary.Covered {
+		t.Fatalf("totals = %d/%d, summary = %d/%d; want 2/5", covered, statements, summary.Covered, summary.Statements)
+	}
+}
+
+func TestProfileTotalsRejectsConflictingBlocksAndEmptyProfiles(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, contents, want string
+	}{
+		{"conflicting statement count", "mode: set\nexample.com/app/pkg/a.go:1.1,1.4 2 0\nexample.com/app/pkg/a.go:1.1,1.4 3 1\n", "statement count"},
+		{"empty file", "", "invalid coverage profile"},
+		{"whitespace only", " \n\t\n", "invalid coverage profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			profile := filepath.Join(t.TempDir(), "coverage.out")
+			writeQualityFile(t, profile, tc.contents)
+			if _, _, err := profileTotals(profile); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("profileTotals error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProfileTotalsAcceptsHeaderOnlyProfile(t *testing.T) {
+	t.Parallel()
+	profile := filepath.Join(t.TempDir(), "coverage.out")
+	writeQualityFile(t, profile, "mode: set\n")
+	statements, covered, err := profileTotals(profile)
+	if err != nil || statements != 0 || covered != 0 {
+		t.Fatalf("header-only totals = %d/%d, error = %v; want 0/0", covered, statements, err)
+	}
+}
+
 func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")

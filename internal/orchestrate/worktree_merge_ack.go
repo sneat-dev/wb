@@ -2122,8 +2122,15 @@ func validateValidationFailedSupersessionSource(ctx context.Context, projectsRoo
 		filepath.Clean(view.Claim.Worktree) != filepath.Clean(source.Worktree) || view.Claim.Branch != source.Branch {
 		return "", "", fmt.Errorf("receipted source %s has no matching active Work Log claim", source.Worktree)
 	}
-	if view.Claim.Base != receipt.Target || strings.TrimSpace(view.Claim.BaseSHA) == "" {
-		return "", "", fmt.Errorf("receipted source %s claim base no longer has the immutable target identity", source.Worktree)
+	if strings.TrimSpace(view.Claim.Base) == "" || strings.TrimSpace(view.Claim.BaseSHA) == "" {
+		return "", "", fmt.Errorf("receipted source %s has no immutable claim base", source.Worktree)
+	}
+	containsClaimBase, ancestorErr := isMergeAncestor(ctx, source.Worktree, view.Claim.BaseSHA, source.SHA)
+	if ancestorErr != nil {
+		return "", "", fmt.Errorf("receipted source %s does not descend from immutable claim base %s: %w", source.Worktree, view.Claim.BaseSHA, ancestorErr)
+	}
+	if !containsClaimBase {
+		return "", "", fmt.Errorf("receipted source %s does not descend from immutable claim base %s", source.Worktree, view.Claim.BaseSHA)
 	}
 	containsRecordedSource, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
 	if ancestorErr != nil {

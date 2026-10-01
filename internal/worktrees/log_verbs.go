@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
 )
 
 // LogVerbResult is the public receipt returned by mutating log verbs.
@@ -43,10 +47,7 @@ type claimFence struct {
 }
 
 func resolveWorktreeRoot(ctx context.Context, path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		path = "."
-	}
-	return RepositoryRootFor(ctx, path)
+	return claimRecoveryPorts().ResolveWorktreeRoot(ctx, path)
 }
 
 func withOptionalClaimFence(projectsRoot, worktree string, require bool) (claimFence, error) {
@@ -76,37 +77,7 @@ func withOptionalClaimFence(projectsRoot, worktree string, require bool) (claimF
 }
 
 func observeUsage(discriminator string, input, output *int64, cost *float64, currency, providerRef string) (*LocalUsageEvidence, error) {
-	discriminator = strings.TrimSpace(discriminator)
-	if discriminator == "" {
-		if input == nil && output == nil && cost == nil && currency == "" && providerRef == "" {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("--usage-discriminator is required when usage fields are supplied")
-	}
-	switch discriminator {
-	case "provider_reported", "estimated", "unavailable":
-	default:
-		return nil, fmt.Errorf("usage discriminator must be provider_reported, estimated, or unavailable")
-	}
-	usage := &LocalUsageEvidence{
-		Discriminator: discriminator,
-		InputTokens:   input,
-		OutputTokens:  output,
-		EstimatedCost: cost,
-		Currency:      strings.TrimSpace(currency),
-		ProviderRef:   strings.TrimSpace(providerRef),
-	}
-	if input != nil || output != nil {
-		total := int64(0)
-		if input != nil {
-			total += *input
-		}
-		if output != nil {
-			total += *output
-		}
-		usage.TotalTokens = &total
-	}
-	return usage, nil
+	return worktreeclaims.ObserveUsage(discriminator, input, output, cost, currency, providerRef)
 }
 
 // LogInitOptions configures wb worktree log init.
@@ -397,20 +368,7 @@ func LogRefresh(ctx context.Context, options LogRefreshOptions) (LogVerbResult, 
 }
 
 func aheadBehind(ctx context.Context, worktree, targetSHA string) (int, int, error) {
-	out, err := git(ctx, worktree, "rev-list", "--left-right", "--count", "HEAD..."+targetSHA)
-	if err != nil {
-		return 0, 0, err
-	}
-	fields := strings.Fields(strings.TrimSpace(out))
-	if len(fields) != 2 {
-		return 0, 0, fmt.Errorf("unexpected ahead/behind output %q", out)
-	}
-	ahead, err1 := strconv.Atoi(fields[0])
-	behind, err2 := strconv.Atoi(fields[1])
-	if err1 != nil || err2 != nil {
-		return 0, 0, fmt.Errorf("parse ahead/behind %q", out)
-	}
-	return ahead, behind, nil
+	return worktreeclaims.GitEvidencePorts{Git: git}.AheadBehind(ctx, worktree, targetSHA)
 }
 
 // LogIntegrateOptions configures wb worktree log integrate.
@@ -523,28 +481,11 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 }
 
 func resolveLogBase(worktree, requested string) string {
-	if base := strings.TrimSpace(requested); base != "" {
-		return base
-	}
-	if manifest, err := ReadManifest(worktree); err == nil {
-		if base := strings.TrimSpace(manifest.Base); base != "" {
-			return base
-		}
-	}
-	return "main"
+	return claimRecoveryPorts().ResolveLogBase(worktree, requested)
 }
 
 func branchPublished(ctx context.Context, worktree string) (bool, error) {
-	branch, err := git(ctx, worktree, "branch", "--show-current")
-	if err != nil {
-		return false, err
-	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return false, nil
-	}
-	_, err = git(ctx, worktree, "rev-parse", "--verify", "refs/remotes/origin/"+branch)
-	return err == nil, nil
+	return worktreeclaims.GitEvidencePorts{Git: git}.BranchPublished(ctx, worktree)
 }
 
 // LogHandoffOptions configures wb worktree log handoff.
@@ -670,6 +611,9 @@ type LogRecoverOptions struct {
 	// testBeforeBundleCheck models a ref moving after immutable recovery
 	// coordinates are recorded but before either destructive retirement stage.
 	testBeforeBundleCheck func()
+	// appendRecoveryEvent models a failure after immutable claim publication
+	// and before its local recovery event, without a process-global hook.
+	appendRecoveryEvent func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
 }
 
 // LogRecover rebuilds derived state and diagnoses claim/journal disagreement.
@@ -691,10 +635,11 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	} else {
 		diagnosis = append(diagnosis, fmt.Sprintf("local events: %d", len(events)))
 	}
-	projection, projErr := rebuildLocalProjection(events)
-	if projErr != nil {
-		diagnosis = append(diagnosis, "projection rebuild: "+projErr.Error())
+	appendEvent := options.appendRecoveryEvent
+	if appendEvent == nil {
+		appendEvent = appendLocalEvent
 	}
+	projection := worktreejournal.ProjectionFromEvents(events)
 	manifest, manifestErr := ReadManifest(root)
 	if manifestErr != nil {
 		diagnosis = append(diagnosis, "manifest: "+manifestErr.Error())
@@ -737,15 +682,12 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 			result.Notes = []string{"dry-run only; pass --apply to publish the missing private Work Log claim and rebuild derived projections"}
 			return result, nil
 		}
-		home, err := wbhome.Root(options.ProjectsRoot)
-		if err != nil {
-			return LogVerbResult{}, err
-		}
+		// Use the same resolved authority as the claim observation above.
 		outcome, err := recoverBlankManifestClaim(ctx, home, root, manifest)
 		if err != nil {
 			return LogVerbResult{}, err
 		}
-		event, recoveredProjection, err := appendLocalEvent(root, LocalWorkLogEvent{
+		event, recoveredProjection, err := appendEvent(root, LocalWorkLogEvent{
 			Type: LocalEventRecover, Message: "authoritative Work Log claim recovered from immutable campaign manifest",
 			Extra: map[string]any{"claim_id": outcome.ClaimID, "recovery": "blank_manifest_claim"},
 		})
@@ -769,6 +711,9 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	if fence.unlock != nil {
 		defer fence.unlock()
 	}
+	if options.Takeover && strings.TrimSpace(options.Actor) == "" {
+		return LogVerbResult{}, fmt.Errorf("--actor is required with --takeover")
+	}
 	directory, err := openLocalWorkLogDir(root, true)
 	if err != nil {
 		return LogVerbResult{}, err
@@ -779,10 +724,7 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	}
 	result.Applied = true
 	if options.Takeover {
-		if strings.TrimSpace(options.Actor) == "" {
-			return LogVerbResult{}, fmt.Errorf("--actor is required with --takeover")
-		}
-		event, updated, err := appendLocalEvent(root, LocalWorkLogEvent{
+		event, updated, err := appendEvent(root, LocalWorkLogEvent{
 			Type: LocalEventRecover, Message: "explicit takeover after recover diagnosis",
 			Git: &gitEvidence, Extra: map[string]any{"actor": strings.TrimSpace(options.Actor)},
 		})
@@ -796,59 +738,35 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 }
 
 func recoverableBlankManifestClaimID(ctx context.Context, root string, manifest Manifest) (string, error) {
-	if !manifest.DependencyCampaign {
-		return "", fmt.Errorf("claim establishment is supported only for dependency-campaign manifests")
-	}
-	if strings.TrimSpace(manifest.ClaimID) != "" {
-		return "", fmt.Errorf("manifest already records ClaimID %q; refusing to establish a replacement claim", manifest.ClaimID)
-	}
-	if strings.TrimSpace(manifest.EffortID) == "" || strings.TrimSpace(manifest.Repository) == "" ||
-		strings.TrimSpace(manifest.Worktree) == "" || strings.TrimSpace(manifest.Branch) == "" ||
-		strings.TrimSpace(manifest.Base) == "" || !isGitObjectID(strings.TrimSpace(manifest.BaseSHA)) {
-		return "", fmt.Errorf("immutable campaign manifest lacks complete checkout identity; refusing claim recovery")
-	}
-	if filepath.Clean(manifest.Worktree) != filepath.Clean(root) {
-		return "", fmt.Errorf("immutable campaign manifest names worktree %q, not %q", manifest.Worktree, root)
-	}
-	evidence := observeLocalGit(ctx, root)
-	if evidence.Branch != manifest.Branch {
-		return "", fmt.Errorf("live branch %q does not match immutable campaign manifest branch %q", evidence.Branch, manifest.Branch)
-	}
-	if _, err := git(ctx, root, "merge-base", "--is-ancestor", manifest.BaseSHA, evidence.Head); err != nil {
-		return "", fmt.Errorf("live HEAD is not descended from immutable campaign base %s: %w", manifest.BaseSHA, err)
-	}
-	effort := manifest.EffortID
-	return WorkLogClaimID(effort, CreateResult{
-		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
-		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
-	}), nil
+	return claimRecoveryPorts().RecoverableBlankManifestClaimID(ctx, root, manifest)
 }
 
 func recoverBlankManifestClaim(ctx context.Context, home, root string, manifest Manifest) (WorkLogPublicationOutcome, error) {
-	claimID, err := recoverableBlankManifestClaimID(ctx, root, manifest)
-	if err != nil {
-		return WorkLogPublicationOutcome{}, err
+	return worktreeclaims.RecoverBlankManifestClaim(ctx, home, root, manifest, claimRecoveryPorts(),
+		func(home, task string, result worktreeclaims.CreationResult, options worktreeclaims.Options) (WorkLogPublicationOutcome, error) {
+			return EnsureWorkLogClaim(home, task, CreateResult{
+				Repository: result.Repository, WorktreeDir: result.WorktreeDir, Branch: result.Branch,
+				Base: result.Base, BaseSHA: result.BaseSHA,
+			}, fromClaimOptions(options))
+		})
+}
+
+func claimRecoveryPorts() worktreeclaims.RecoveryPorts {
+	return worktreeclaims.RecoveryPorts{
+		RepositoryRootFor: RepositoryRootFor,
+		ReadManifest:      ReadManifest,
+		ObserveGit: func(ctx context.Context, root string) worktreeclaims.LocalGit {
+			evidence := observeLocalGit(ctx, root)
+			return worktreeclaims.LocalGit{Branch: evidence.Branch, Head: evidence.Head}
+		},
+		Git: git,
+		ClaimID: func(effort string, result worktreeclaims.CreationResult) string {
+			return WorkLogClaimID(effort, CreateResult{
+				Repository: result.Repository, WorktreeDir: result.WorktreeDir, Branch: result.Branch,
+				Base: result.Base, BaseSHA: result.BaseSHA,
+			})
+		},
 	}
-	task := ParentEffort(manifest.EffortID)
-	if task == "" {
-		task = manifest.EffortID
-	}
-	runID := strings.TrimSpace(manifest.RunID)
-	if runID == "" {
-		runID = "recovery-" + claimID[:16]
-	}
-	model := strings.TrimSpace(manifest.Model)
-	if model == "" {
-		model = "unknown"
-	}
-	return EnsureWorkLogClaim(home, task, CreateResult{
-		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
-		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
-	}, WorkLogOptions{
-		EffortID: manifest.EffortID, RunID: runID, Initiator: manifest.Initiator,
-		AgentID: manifest.AgentID, AgentRuntime: manifest.AgentRuntime, Model: model,
-		CLI: manifest.CLI, Provider: manifest.Provider,
-	})
 }
 
 // LogFinalizeOptions configures wb worktree log finalize.
@@ -1050,9 +968,11 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 		effort = "unknown-effort"
 	}
 	dest := filepath.Join(home, "worklogs", effort, "archived-local", time.Now().UTC().Format("20060102T150405Z"))
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+	destinationParent, err := openPrivateArchiveDirectory(filepath.Dir(dest))
+	if err != nil {
 		return LogVerbResult{}, err
 	}
+	defer func() { _ = destinationParent.Close() }()
 	src := filepath.Join(root, journalRootDirectory, journalLocalDirectory)
 	if err := copyDir(src, dest); err != nil {
 		return LogVerbResult{}, err
@@ -1072,13 +992,10 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 }
 
 func mustCountOutbox(worktree string) int {
-	count, _ := countLocalOutbox(worktree)
-	return count
+	return worktreeclaims.MustCountOutbox(worktree, countLocalOutbox)
 }
-
 func ptrLocalGit(evidence LocalGitEvidence) *LocalGitEvidence {
-	copyEvidence := evidence
-	return &copyEvidence
+	return worktreeclaims.PtrLocalGit(evidence)
 }
 
 func copyDir(src, dest string) error {
@@ -1086,22 +1003,82 @@ func copyDir(src, dest string) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
+		rel, _ := filepath.Rel(src, path) // Walk yields only src and its descendants.
 		target := filepath.Join(dest, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o700)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("archive refuses symlink %s", path)
 		}
-		content, err := os.ReadFile(path)
+		if info.IsDir() {
+			directory, openErr := openPrivateArchiveDirectory(target)
+			if openErr != nil {
+				return openErr
+			}
+			return directory.Close()
+		}
+		content, err := readArchiveSourceNoFollow(path)
 		if err != nil {
 			return err
 		}
-		mode := info.Mode().Perm()
-		if mode == 0 {
-			mode = 0o600
-		}
-		return os.WriteFile(target, content, mode)
+		return writeArchiveTargetNoFollow(target, content, archiveCopyMode(info.Mode()))
 	})
+}
+
+func readArchiveSourceNoFollow(path string) ([]byte, error) {
+	parent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(path), false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = parent.Close() }()
+	return readBytesAt(parent, filepath.Base(path))
+}
+
+func archiveCopyMode(mode os.FileMode) os.FileMode {
+	if mode.Perm() == 0 {
+		return 0o600
+	}
+	return mode.Perm()
+}
+
+// archivePrivateOpener retains the shared no-follow path traversal while
+// creating only newly needed archive directories with the original 0700 mode.
+type archivePrivateOpener struct{ secureopen.Real }
+
+func (archivePrivateOpener) Mkdir(parentFD int, name string) error {
+	return unix.Mkdirat(parentFD, name, 0o700)
+}
+
+func openPrivateArchiveDirectory(path string) (*os.File, error) {
+	return openAbsoluteDirectoryNoFollowWith(archivePrivateOpener{}, path, true)
+}
+
+func writeArchiveTargetNoFollow(path string, content []byte, sourceMode os.FileMode) error {
+	parent, err := openPrivateArchiveDirectory(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = parent.Close() }()
+	name := filepath.Base(path)
+	mode, existing, err := archiveTargetMode(parent, name, sourceMode)
+	if err != nil {
+		return err
+	}
+	if existing {
+		return filewrite.WriteBytesAtomicAtExactMode(parent, name, content, mode)
+	}
+	return filewrite.WriteBytesAtomicAt(parent, name, content, mode)
+}
+
+func archiveTargetMode(parent *os.File, name string, sourceMode os.FileMode) (os.FileMode, bool, error) {
+	var stat unix.Stat_t
+	err := unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, os.ErrNotExist) {
+		return sourceMode, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return 0, false, fmt.Errorf("archive refuses nonregular target %s", name)
+	}
+	return os.FileMode(stat.Mode) & os.ModePerm, true, nil
 }

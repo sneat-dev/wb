@@ -2,6 +2,7 @@ package sessionlaunch
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,19 +43,15 @@ func TestValidatePrivateParkPlanRejectsNonCanonicalEnvelope(t *testing.T) {
 	}
 }
 
-// TestInspectPreparedRejectsWorktreeWhenCurrentDirectoryIsGone drives
-// InspectPrepared's own worktree-resolution gate (launch.go): its
-// filepath.Abs(options.WorktreeDir) can only fail (making the "clean
-// absolute path" branch reachable at all -- filepath.Abs already returns a
-// cleaned path, so the Clean(...) != ... half of that condition is
-// otherwise dead) when os.Getwd itself fails, which happens when the
-// process's current directory has been removed out from under it. This
-// test reproduces that for a relative WorktreeDir without any new
-// production seam: it chdirs into a scratch directory it then deletes.
+// TestInspectPreparedWithRemovedCurrentDirectory pins both native outcomes
+// for a relative WorktreeDir. On Linux, Getwd fails after removal and the
+// clean-absolute-path gate rejects it. On Darwin, Getwd can still name the
+// unlinked directory; resolution succeeds, but the resolved path must not
+// match the immutable plan's pinned worktree.
 //
 // Not run in parallel: t.Chdir is process-wide (and panics if combined with
 // t.Parallel).
-func TestInspectPreparedRejectsWorktreeWhenCurrentDirectoryIsGone(t *testing.T) {
+func TestInspectPreparedWithRemovedCurrentDirectory(t *testing.T) {
 	fixture := slCovNewAuthorityFixture(t)
 	options := fixture.options()
 	options.WorktreeDir = "relative/worktree"
@@ -68,8 +65,26 @@ func TestInspectPreparedRejectsWorktreeWhenCurrentDirectoryIsGone(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	cwd, cwdErr := os.Getwd()
+	resolved, resolveErr := filepath.Abs(options.WorktreeDir)
+	if cwdErr != nil {
+		if !errors.Is(cwdErr, os.ErrNotExist) || resolveErr == nil {
+			t.Fatalf("removed current directory: Getwd = %v, Abs = %q, %v; want matching ENOENT resolution failure", cwdErr, resolved, resolveErr)
+		}
+		if _, err := InspectPrepared(context.Background(), options); err == nil ||
+			!strings.Contains(err.Error(), "clean absolute path") {
+			t.Fatalf("InspectPrepared(unresolvable worktree) = %v, want a clean-absolute-path error", err)
+		}
+		return
+	}
+	if !filepath.IsAbs(cwd) || resolveErr != nil || resolved != filepath.Join(cwd, options.WorktreeDir) {
+		t.Fatalf("removed current directory: Getwd = %q, Abs = %q, %v; want an absolute child of the unlinked directory", cwd, resolved, resolveErr)
+	}
+	if resolved == fixture.worktree {
+		t.Fatal("relative worktree unexpectedly resolved to the admitted worktree")
+	}
 	if _, err := InspectPrepared(context.Background(), options); err == nil ||
-		!strings.Contains(err.Error(), "clean absolute path") {
-		t.Fatalf("InspectPrepared(worktree resolution with no current directory) = %v, want a clean-absolute-path error", err)
+		!strings.Contains(err.Error(), "immutable launch plan conflicts with the admitted request or pinned worktree") {
+		t.Fatalf("InspectPrepared(resolvable but unadmitted worktree) = %v, want immutable-plan refusal", err)
 	}
 }

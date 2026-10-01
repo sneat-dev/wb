@@ -95,6 +95,24 @@ a writable root, or select repository-local mode) instead of a bare
 
 ## Validation
 
+For an intentionally shared linked checkout, one registered session takes
+explicit ownership after inspecting the current owner; other registered
+sessions join without taking custody. The owner can transfer to a live joined
+session. This opt-in coordination does not reserve files or stop concurrent Git
+operations; participants still agree on edit boundaries and let the owner
+coordinate checkout-wide operations.
+
+```sh
+wb worktree info .
+wb worktree take-ownership . --expected-owner none
+wb worktree join .
+wb worktree transfer-ownership . --to-session <wb-session-id>
+wb worktree leave .
+wb worktree message send . --to-session <wb-session-id> --idempotency-key <key> --message-file <file>
+wb worktree message inbox .
+wb worktree message ack . <message-id>
+```
+
 During implementation, format changed files and run focused named tests plus
 focused vet or lint for the affected packages. Before a push, run at most one
 warranted full static or test gate. Leave broad race, coverage, and fleet checks
