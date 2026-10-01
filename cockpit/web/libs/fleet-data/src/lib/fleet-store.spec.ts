@@ -1,3 +1,6 @@
+import { buildRepositories } from './model-repositories'
+import { buildWorktreePanel } from './entity-views'
+import { buildCleanup } from './home-details'
 import { TestBed } from '@angular/core/testing'
 import { FleetClient, FleetRead, FleetSchemaError } from './fleet-client'
 import { EXPECTED_SCHEMA, FleetStore, MODEL_OPTIONS, POLL_INTERVALS } from './fleet-store'
@@ -245,7 +248,7 @@ describe('FleetStore', () => {
     await vi.advanceTimersByTimeAsync(0)
     const first = store.model()
     const render = (): void => {
-      void [store.model().repositories, store.model().tasks, store.model().needsYou, store.model().readyToLand, store.model().cleanup]
+      void [buildRepositories(store.model()), store.model().tasks, store.model().needsYou, store.model().readyToLand, buildCleanup(store.model())]
     }
     render()
     render()
@@ -296,14 +299,14 @@ describe('FleetStore', () => {
     store.start()
     await vi.advanceTimersByTimeAsync(0)
     expect(store.model().machineRoutes).toBe(owner.machine_routes)
-    expect(store.model().worktreeView('w3')?.commands[0].command).toMatchObject({ text: expect.stringContaining('ssh alex@beta.example') })
+    expect(buildWorktreePanel(store.model(), 'w3')?.commands[0].command).toMatchObject({ text: expect.stringContaining('ssh alex@beta.example') })
     store.stop()
     TestBed.resetTestingModule()
     const anonymous = storeWith({ readFleet: async () => remoteRead, readSession: async () => session })
     anonymous.start()
     await vi.advanceTimersByTimeAsync(0)
     expect(anonymous.model().machineRoutes).toBeUndefined()
-    expect(anonymous.model().worktreeView('w3')?.commands[0].command).toMatchObject({ label: 'run on beta' })
+    expect(buildWorktreePanel(anonymous.model(), 'w3')?.commands[0].command).toMatchObject({ label: 'run on beta' })
     anonymous.stop()
   })
 

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { FleetStore, RUNNING_STATE, Repository, agentLabel, codeBrowserLink, filterAgents, filterWorktrees, repositoryLabel, worktreeLabel } from '@cockpit/fleet-data'
+import { FleetStore, RUNNING_STATE, Repository, repositoryLabel, filterWorktrees, filterAgents } from '@cockpit/fleet-data'
+import { agentLabel, codeBrowserLink, worktreeLabel } from '@cockpit/fleet-data/list'
 import { CodeIndexLabel, CodeIndexPanel, Count, RouteLabel } from '@cockpit/ui'
 import { ReadmeSection } from '../../readme/readme-section'
 

@@ -68,6 +68,21 @@ describe('TopBar', () => {
     expect(root.querySelector('[class*="operation"], [aria-label*="peration"]')).toBeNull()
   })
 
+  // cockpit-views#ac:home-badge-is-capped
+  it('caps the Home badge at "99+", with the whole number in its title', async () => {
+    const many = (count: number) => (store: FleetStore) => {
+      const worktrees = Array.from({ length: count }, (_, index) => ({ ...worktree(`w${index}`, 'r1', 'alpha'), task: `task-${index}` }))
+      store.document.set(fleetDocument({ worktrees, pull_requests: worktrees.map((tree, index) => pullRequest(`p${index}`, 'r1', tree.id, { number: index + 1, checks_green: false, checks_failed: 1 })) }))
+    }
+    const at99 = await render(many(99))
+    expect(text(at99.tab('Home').querySelector('.badge'))).toBe('99')
+    expect(at99.tab('Home').querySelector('.badge')?.getAttribute('title')).toBeNull()
+    const at294 = await render(many(294))
+    expect(text(at294.tab('Home').querySelector('.badge'))).toBe('99+')
+    expect(at294.tab('Home').querySelector('.badge')?.getAttribute('title')).toBe('294')
+    expect(at294.tab('Home').querySelector('.badge')?.classList.contains('hot')).toBe(true)
+  })
+
   it('shows a muted zero when there is no signal, and no badge without data', async () => {
     const { root, tab, fixture, store } = await render((store) => store.document.set(fleetDocument({ agents: [], worktrees: [] })))
     expect(text(tab('Home').querySelector('.badge'))).toBe('0')

@@ -65,7 +65,23 @@ func TestProviderNeverSendsItsCredentialThroughAnHTTPProxy(t *testing.T) {
 	if provider.baseURL != "https://hub.example" {
 		t.Errorf("baseURL = %q, want the origin in lower case", provider.baseURL)
 	}
-	if _, err := New(Options{BaseURL: "http://LOCALHOST" + port, Machine: "laptop", Token: "the-credential"}); err == nil {
-		t.Error("a capitalised localhost is accepted")
+	// A capitalised localhost is the same host: accepted, used in lower case and
+	// never proxied.
+	capital, err := New(Options{BaseURL: "http://Localhost" + port, Machine: "laptop", Token: "the-credential", Client: newClient(hubaddress.ProxyFrom(everything))})
+	if err != nil || capital.baseURL != "http://localhost"+port {
+		t.Fatalf("http://Localhost = %v, %v", capital, err)
+	}
+	if _, err := capital.List(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if proxied != 0 || authorized != 3 {
+		t.Errorf("after the capitalised address the proxy saw %d requests and the hub %d of 3", proxied, authorized)
+	}
+	mu.Unlock()
+	// A default transport of another type does not make the client panic.
+	other := credentialTransport(roundTripFunc(nil), hubaddress.Proxy)
+	if other == nil || reflect.ValueOf(other.Proxy).Pointer() != reflect.ValueOf(hubaddress.Proxy).Pointer() {
+		t.Error("a replaced default transport lost the proxy policy")
 	}
 }

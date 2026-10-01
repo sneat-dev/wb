@@ -106,6 +106,7 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
 		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
 		Remotes: targets, Transports: transports,
+		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
@@ -220,5 +221,6 @@ func (source *machineExportSource) serve(writer http.ResponseWriter, request *ht
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	cockpit.ServePayload(writer, request, payload)
+	// An export is credentialed and is never to be kept by a client or a proxy.
+	cockpit.ServePrivatePayload(writer, request, payload)
 }

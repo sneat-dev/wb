@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
-import { agentLabel, filterAgents } from '@cockpit/fleet-data'
+import { filterAgents } from '@cockpit/fleet-data'
+import { agentLabel } from '@cockpit/fleet-data/list'
 import { FilterBar, RouteLabel } from '@cockpit/ui'
 import { TableModule } from 'primeng/table'
 import { ListPage } from '../list-page'

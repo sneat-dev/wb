@@ -156,7 +156,8 @@ is this closed set of fields:
 - the snapshot refresh interval in seconds (`refresh_interval_seconds`), and a
   machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
   `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
-  `export_refused`, `http_unavailable`, `http_auth_failed` or `bad_payload`), never the
+  `export_refused`, `http_unavailable`, `http_auth_failed`, `bad_payload`,
+  `remote_warming_up`, `export_too_large` or `self_export`), never the
   remote's error text, the transport that supplied a machine's live entries
   (`transport`: `http` or `ssh`), the number of another machine's entries that were
   left out of its export or cut at this daemon's caps (`export_dropped`) and whether
@@ -196,9 +197,11 @@ is this closed set of fields:
   and its start time, the finish time and exit code of a finished run, a
   session's state (`live` or `parked`), and the same agent fields read from
   another machine's snapshot, at most 200 agents per machine;
-- the landed-task throughput block (`throughput`): the window in days, the
-  number of tasks landed per day, and at most five of the slowest landed tasks
-  with their task name, duration in seconds and landing time;
+- the sealed-work throughput block (`throughput`): the window in days, the
+  number of tasks finished and dropped per day (and how many of the finished were
+  sealed `landed`), at most five of the slowest finished tasks with their task name,
+  duration in seconds and sealing time, the median and 90th-percentile finished
+  durations, and whether the collector's bounds cut the scan;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;

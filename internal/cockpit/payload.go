@@ -60,9 +60,20 @@ func (payload Payload) gzipTag() string {
 // but revalidates on every use). If-None-Match accepts either ETag form, and
 // `*`, and a match is answered 304 with no body.
 func ServePayload(writer http.ResponseWriter, request *http.Request, payload Payload) {
+	servePayload(writer, request, payload, "no-cache")
+}
+
+// ServePrivatePayload is ServePayload for a body no client and no intermediary
+// may keep: `Cache-Control: no-store`. The ETags are still sent and still
+// honoured, so a reader that holds the body in memory is answered 304.
+func ServePrivatePayload(writer http.ResponseWriter, request *http.Request, payload Payload) {
+	servePayload(writer, request, payload, "no-store")
+}
+
+func servePayload(writer http.ResponseWriter, request *http.Request, payload Payload, cacheControl string) {
 	header := writer.Header()
 	header.Set("Vary", varyHeader)
-	header.Set("Cache-Control", "no-cache")
+	header.Set("Cache-Control", cacheControl)
 	zipped := web.AcceptsGzip(request.Header.Values("Accept-Encoding"))
 	body, etag := payload.identity, payload.tag
 	if zipped {

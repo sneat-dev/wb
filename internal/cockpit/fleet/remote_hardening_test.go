@@ -53,12 +53,15 @@ func publishesOf(snapshotter *Snapshotter) int {
 	return snapshotter.publishes
 }
 
-// TestAWarmingRemoteNeverReplacesWhatIsHeld proves that a remote daemon whose
-// first pass has not ended changes nothing here: said by its hub (the typed 503)
-// or by a partial fleet in an envelope, it leaves a machine's published entries,
-// and later its complete live entries, exactly as they are, sets no remote_error
-// and earns no backoff (it is asked again one interval on).
-func TestAWarmingRemoteNeverReplacesWhatIsHeld(t *testing.T) {
+// TestAWarmingRemoteNeverReplacesWhatIsHeldAndCannotHideForEver proves the two
+// halves of the warming rule. A remote daemon whose first pass has not ended
+// (said by its hub's typed 503 or by a partial fleet in an envelope) never
+// replaces a complete live view that is still fresh, sets no error and earns no
+// backoff then. But warming is bounded: once nothing fresh is held (the machine
+// was never read, or its view went stale) it is shown as remote_warming_up, on
+// its published entries or, with none, on a bare machine entry that keeps the
+// configured machine visible, and it backs off like any failure.
+func TestAWarmingRemoteNeverReplacesWhatIsHeldAndCannotHideForEver(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 2, false)
 	partial := copyEnvelope(t, full)
@@ -74,32 +77,74 @@ func TestAWarmingRemoteNeverReplacesWhatIsHeld(t *testing.T) {
 			clock.advance(remoteStep)
 		}
 	}
+	// Never read: warming is shown on the published entries, which stay.
 	step(120)
 	vm, _ := machineNamed(snapshotter.Document(), vmKey)
-	if vm.Route != RouteCached || vm.RemoteError != "" || vm.WorktreeCount != 1 {
-		t.Fatalf("a machine whose remote is warming = %+v, want its published entries untouched", vm)
+	if vm.Route != RouteCached || vm.RemoteError != RemoteErrorWarmingUp || vm.WorktreeCount != 1 {
+		t.Fatalf("a never-read machine whose remote is warming = %+v", vm)
 	}
 	exporter.set(answering(full, full))
 	step(60)
-	if vm, _ = machineNamed(snapshotter.Document(), vmKey); vm.Route != RouteLiveRemote || vm.WorktreeCount != 3 {
+	if vm, _ = machineNamed(snapshotter.Document(), vmKey); vm.Route != RouteLiveRemote || vm.WorktreeCount != 3 || vm.RemoteError != "" {
 		t.Fatalf("after the remote finished warming = %+v", vm)
 	}
+	// The remote restarts and warms: the fresh, complete view stays untouched.
 	published := publishesOf(snapshotter)
 	exporter.set(answering(partial, partial))
-	step(60)
-	exporter.set(failing(ErrRemoteWarmingUp))
 	step(60)
 	if vm, _ = machineNamed(snapshotter.Document(), vmKey); vm.Route != RouteLiveRemote || vm.WorktreeCount != 3 || vm.RemoteError != "" || len(entriesOf(snapshotter.Document(), vm.ID)["agents"]) != 1 {
 		t.Fatalf("a restarted remote that is warming replaced the complete view: %+v", vm)
 	}
 	if got := publishesOf(snapshotter); got != published {
-		t.Errorf("a warming remote caused %d publications", got-published)
+		t.Errorf("a warming remote with a fresh view caused %d publications", got-published)
 	}
-	if got, want := exporter.callsAt(false), []int{0, 60, 120, 180, 240}; !slices.Equal(got, want) {
-		t.Errorf("attempts at %v, want one per interval with no backoff %v", got, want)
+	// It keeps warming until the view is two intervals old: now it is an error.
+	exporter.set(failing(ErrRemoteWarmingUp))
+	step(240)
+	if vm, _ = machineNamed(snapshotter.Document(), vmKey); vm.Route != RouteCached || vm.RemoteError != RemoteErrorWarmingUp || vm.WorktreeCount != 1 {
+		t.Fatalf("a remote that warms past the view's freshness = %+v", vm)
 	}
-	if lines := logs.all(); len(lines) != 0 {
-		t.Errorf("warming up was logged as a failure: %q", lines)
+	// 0: warming, shown, backed off to 120; 120: read; 180: warming with a fresh
+	// view; 240: warming with a stale view, backed off to 360.
+	if got, want := exporter.callsAt(false), []int{0, 120, 180, 240, 360}; !slices.Equal(got, want) {
+		t.Errorf("attempts at %v, want %v", got, want)
+	}
+	if logs.count("the export of vm failed (remote_warming_up)") != 2 {
+		t.Errorf("log = %q, want the bounded warming logged when it starts, twice", logs.all())
+	}
+
+	// A configured machine with no published entry stays visible while it warms.
+	bare := &fakeExporter{answer: failing(ErrRemoteWarmingUp)}
+	lone, _ := newLive(t, oneRepoSources("/repos/widgets"), bare, nil)
+	refreshAndSettle(t, lone)
+	pollAndSettle(t, lone)
+	shown, found := machineNamed(lone.Document(), vmKey)
+	if !found || shown.Route != RouteLiveRemote || shown.RemoteError != RemoteErrorWarmingUp || shown.WorktreeCount != 0 {
+		t.Fatalf("a machine with no published entry whose remote is warming = %+v (found %v)", shown, found)
+	}
+}
+
+// TestAMetricsOnlyExportNeverClearsAFailure proves that only a full export
+// clears remote_error: a remote that refuses or fails its full export and
+// answers its metrics-only one keeps the error, and still gives the metrics.
+func TestAMetricsOnlyExportNeverClearsAFailure(t *testing.T) {
+	t.Parallel()
+	only := exportOf(t, vmOwnName, vmSources(), 3, true)
+	snapshotter, clock := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: failing(&RemoteError{Code: RemoteErrorHTTPAuthFailed, Fallback: true})}, nil)
+	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	machine := snapshotter.live[vmKey]
+	if publish := snapshotter.recordExport(t.Context(), machine, exportResult{envelope: only, transport: TransportHTTP, ok: true}, true, clock.Now(), clock.Now(), liveView{}, [32]byte{}, 0, ""); publish {
+		t.Error("a metrics-only export asked for a publication")
+	}
+	snapshotter.mu.RLock()
+	kept, samples := machine.remoteError, len(machine.samples)
+	snapshotter.mu.RUnlock()
+	if kept != RemoteErrorHTTPAuthFailed || samples != 3 {
+		t.Fatalf("after a metrics-only success: remote_error %q, %d samples", kept, samples)
+	}
+	if vm, _ := machineNamed(snapshotter.Document(), vmKey); vm.RemoteError != RemoteErrorHTTPAuthFailed {
+		t.Errorf("the machine = %+v", vm)
 	}
 }
 
@@ -355,8 +400,10 @@ func TestAReaderShowsWhatAnExportLeftOutAndNeverTakesTheCountFromAnExportItself(
 // TestALinkAnotherMachineSentIsNeverRendered proves the link rule for entries of
 // other machines, live and published: no address a remote sent is rendered. A
 // pull request's link is built here from its repository's host and name and its
-// number, and a repository's web address is kept, only where the host is the
-// host of a repository of this machine; anywhere else there is no link.
+// number, and kept only where the host is the host of a repository of this
+// machine and the link built is exactly the address sent (so another forge's
+// address shape, or a path the sender chose, has no link at all); a
+// repository's web address is kept under the same host rule.
 func TestALinkAnotherMachineSentIsNeverRendered(t *testing.T) {
 	t.Parallel()
 	// The live machine: one repository on github.com, where this machine has
@@ -380,6 +427,9 @@ func TestALinkAnotherMachineSentIsNeverRendered(t *testing.T) {
 			{Task: "t2", Repository: "acme/gadgets", Branch: "b2", PullRequest: &remotestate.PullRequestState{Number: 4, State: "OPEN", URL: "https://github.com/attacker/phish/pull/9999"}},
 			{Task: "t3", Repository: "github.com/acme/hosted", Branch: "b3", PullRequest: &remotestate.PullRequestState{Number: 5, State: "OPEN", URL: "https://evil.example/x/y/pull/5"}},
 			{Task: "t4", Repository: "evil.example/acme/other", Branch: "b4", PullRequest: &remotestate.PullRequestState{Number: 6, State: "OPEN", URL: "https://evil.example/acme/other/pull/6"}},
+			{Task: "t5", Repository: "github.com/acme/hosted", Branch: "b5", PullRequest: &remotestate.PullRequestState{Number: 8, State: "OPEN", URL: "https://github.com/acme/hosted/pull/8"}},
+			{Task: "t6", Repository: "github.com/acme/hosted", Branch: "b6", PullRequest: &remotestate.PullRequestState{Number: 9, State: "OPEN", URL: "https://github.com/acme/hosted/-/merge_requests/9"}},
+			{Task: "t7", Repository: "acme/gadgets", Branch: "b7", PullRequest: &remotestate.PullRequestState{Number: 10, State: "OPEN", URL: "https://github.com/acme/gadgets/pull/10"}},
 		},
 	}}}
 	for name, test := range map[string]struct {
@@ -388,11 +438,15 @@ func TestALinkAnotherMachineSentIsNeverRendered(t *testing.T) {
 		wantLinks []string
 	}{
 		"a host only the remote names": {onEvil, true, []string{
-			"https://github.com/acme/gadgets/pull/4", "https://github.com/acme/hosted/pull/5", "https://github.com/acme/widgets", "https://github.com/acme/widgets/pull/7",
+			"https://github.com/acme/gadgets/pull/10", "https://github.com/acme/hosted/pull/8", "https://github.com/acme/widgets", "https://github.com/acme/widgets/pull/7",
 		}},
-		"a host this machine has": {onGitHub, true, []string{
+		"a path the sender chose": {onGitHub, true, []string{
+			"https://github.com/acme/engine",
+			"https://github.com/acme/gadgets/pull/10", "https://github.com/acme/hosted/pull/8", "https://github.com/acme/widgets", "https://github.com/acme/widgets/pull/7",
+		}},
+		"the address the link would have": {exportOf(t, vmOwnName, vmSources(), 1, false), true, []string{
 			"https://github.com/acme/engine", "https://github.com/acme/engine/pull/41",
-			"https://github.com/acme/gadgets/pull/4", "https://github.com/acme/hosted/pull/5", "https://github.com/acme/widgets", "https://github.com/acme/widgets/pull/7",
+			"https://github.com/acme/gadgets/pull/10", "https://github.com/acme/hosted/pull/8", "https://github.com/acme/widgets", "https://github.com/acme/widgets/pull/7",
 		}},
 		"this machine has no repository": {onGitHub, false, nil},
 	} {
@@ -421,7 +475,7 @@ func TestALinkAnotherMachineSentIsNeverRendered(t *testing.T) {
 			t.Errorf("%s: links = %q, want %q", name, links, test.wantLinks)
 		}
 		body, _ := json.Marshal(document)
-		for _, never := range []string{"https://evil.example", "attacker", "phish", sentinel} {
+		for _, never := range []string{"https://evil.example", "attacker", "phish", "merge_requests", sentinel} {
 			if strings.Contains(string(body), never) {
 				t.Errorf("%s: the document renders %q", name, never)
 			}
@@ -595,14 +649,14 @@ func TestADocumentOverItsSizeBoundLeavesTheLiveMachinesOut(t *testing.T) {
 		t.Helper()
 		document := snapshotter.Document()
 		vm, _ := machineNamed(document, vmKey)
-		if vm.Route != RouteCached || vm.WorktreeCount != 1 || document.Diagnostics != diagnostics+1 || snapshotter.Payload().Size() > without+200 {
+		if vm.Route != RouteCached || vm.RemoteError != RemoteErrorExportTooLarge || vm.WorktreeCount != 1 || document.Diagnostics != diagnostics+1 || snapshotter.Payload().Size() > without+200 {
 			t.Fatalf("%s: vm %+v, diagnostics %d, %d bytes", when, vm, document.Diagnostics, snapshotter.Payload().Size())
 		}
 	}
 	check("after the export")
 	refreshAndSettle(t, snapshotter) // the pass publishes under the lock
 	check("after a pass")
-	if logs.count("the fleet document is over") != 1 {
+	if logs.count("the fleet document would be over") != 1 {
 		t.Errorf("log = %q, want the guard logged once", logs.all())
 	}
 	snapshotter.mu.Lock()
@@ -611,7 +665,7 @@ func TestADocumentOverItsSizeBoundLeavesTheLiveMachinesOut(t *testing.T) {
 	clock.advance(time.Second)
 	refreshAndSettle(t, snapshotter)
 	document := snapshotter.Document()
-	if vm, _ := machineNamed(document, vmKey); vm.Route != RouteLiveRemote || vm.WorktreeCount != 3 || document.Diagnostics != diagnostics {
+	if vm, _ := machineNamed(document, vmKey); vm.Route != RouteLiveRemote || vm.RemoteError != "" || vm.WorktreeCount != 3 || document.Diagnostics != diagnostics {
 		t.Fatalf("when it fits again: vm %+v, diagnostics %d", vm, document.Diagnostics)
 	}
 	// Over the bound again, found by the path that prepares outside the lock.
@@ -620,8 +674,64 @@ func TestADocumentOverItsSizeBoundLeavesTheLiveMachinesOut(t *testing.T) {
 	snapshotter.mu.Unlock()
 	snapshotter.publishUnlocked()
 	check("published outside the lock")
-	if logs.count("the fleet document is over") != 2 {
+	if logs.count("the fleet document would be over") != 2 {
 		t.Errorf("log = %q, want the guard logged again", logs.all())
+	}
+}
+
+// TestAMachineLeftOutForSizeIsNeverDroppedSilently proves that a live machine
+// with no published entry stays visible when the size guard leaves its entries
+// out: a bare machine entry that says export_too_large. It also proves that a
+// document discarded for a later one changes nothing of the guard's state.
+func TestAMachineLeftOutForSizeIsNeverDroppedSilently(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 2, false)
+	logs := &logRecorder{}
+	var snapshotter *Snapshotter
+	var interleave atomic.Bool
+	snapshotter, _ = newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: answering(full, full)}, func(options *Options) {
+		options.Logf = logs.logf
+		options.Compress = func(body []byte) []byte {
+			if interleave.CompareAndSwap(true, false) {
+				// A later document, which fits, is published while this one,
+				// which left the live machines out, is being prepared.
+				snapshotter.mu.Lock()
+				snapshotter.maxDocument = defaultMaxDocumentBytes
+				snapshotter.publishLocked()
+				snapshotter.mu.Unlock()
+			}
+			return body
+		}
+	})
+	refreshAndSettle(t, snapshotter)
+	without := snapshotter.Payload().Size()
+	pollAndSettle(t, snapshotter)
+	if vm, _ := machineNamed(snapshotter.Document(), vmKey); vm.WorktreeCount != 3 || vm.RemoteError != "" {
+		t.Fatalf("the fixture's live machine = %+v", vm)
+	}
+	snapshotter.mu.Lock()
+	snapshotter.maxDocument = without + 200
+	snapshotter.mu.Unlock()
+	interleave.Store(true)
+	snapshotter.publishUnlocked()
+	snapshotter.mu.RLock()
+	leftOut := snapshotter.leftOut
+	snapshotter.mu.RUnlock()
+	if vm, _ := machineNamed(snapshotter.Document(), vmKey); leftOut || vm.WorktreeCount != 3 || logs.count("the fleet document would be over") != 0 {
+		t.Fatalf("a discarded document changed the guard: left out %v, vm %+v, log %q", leftOut, vm, logs.all())
+	}
+
+	snapshotter.mu.Lock()
+	snapshotter.maxDocument = without + 200
+	snapshotter.mu.Unlock()
+	snapshotter.publishUnlocked()
+	document := snapshotter.Document()
+	vm, found := machineNamed(document, vmKey)
+	if !found || vm.RemoteError != RemoteErrorExportTooLarge || vm.Route != RouteLiveRemote || vm.WorktreeCount != 0 || len(entriesOf(document, vm.ID)) != 0 {
+		t.Fatalf("a live machine left out for size, with no published entry = %+v (found %v), entries %v", vm, found, entriesOf(document, vm.ID))
+	}
+	if snapshotter.Payload().Size() > without+200 || logs.count("the fleet document would be over") != 1 {
+		t.Errorf("%d bytes, log %q", snapshotter.Payload().Size(), logs.all())
 	}
 }
 
@@ -956,10 +1066,84 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 			t.Errorf("mapLive does not carry %s: copy it there under its rule, or list it in notCarried with the reason", path)
 		}
 	}
-	for path := range notCarried {
+	for path, reason := range notCarried {
 		if !slices.Contains(missing, path) {
 			t.Errorf("%s is listed as not carried and is carried", path)
 		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("%s is listed as not carried with no reason", path)
+		}
+	}
+	// The list is pinned: a field added to it is a reviewed change of this number.
+	if len(notCarried) != 2 {
+		t.Errorf("%d fields are listed as not carried by mapLive, want 2", len(notCarried))
+	}
+	if document.Throughput == nil {
+		t.Fatal("the filled document has no throughput: the check below would be vacuous")
+	}
+
+	// The same check on the published document, where the links are rebuilt
+	// (relink, locallyLinked): every field of a live machine's entries arrives
+	// unless it is listed here with its reason.
+	notPublished := map[string]string{
+		".machine.RemoteError": "empty: the last export succeeded",
+	}
+	snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: failing(errBoom)}, nil)
+	refreshAndSettle(t, snapshotter)
+	snapshotter.mu.Lock()
+	machine := snapshotter.live[vmKey]
+	id := snapshotter.liveMachineID(vmKey, nil)
+	machine.fleet, machine.receivedAt, machine.observedAt, machine.transport, machine.dropped = &document, now, now, TransportHTTP, 1
+	machine.view, machine.mappedFor = mapLive(vmKey, id, &document, now, 1), id
+	snapshotter.publishLocked()
+	published := snapshotter.doc
+	snapshotter.mu.Unlock()
+	entries := map[string]any{}
+	for _, item := range published.Machines {
+		if item.ID == id {
+			entries[".machine"] = item
+		}
+	}
+	for _, item := range published.Repositories {
+		if item.MachineID == id {
+			entries[".repository"] = item
+		}
+	}
+	for _, item := range published.Worktrees {
+		if item.MachineID == id {
+			entries[".worktree"] = item
+		}
+	}
+	for _, item := range published.PullRequests {
+		if item.MachineID == id {
+			entries[".pull_request"] = item
+		}
+	}
+	for _, item := range published.Agents {
+		if item.MachineID == id {
+			entries[".agent"] = item
+		}
+	}
+	if len(entries) != 5 {
+		t.Fatalf("the published document has %d of the live machine's 5 kinds of entry", len(entries))
+	}
+	missing = nil
+	for path, entry := range entries {
+		missing = append(missing, unset(reflect.ValueOf(entry), path)...)
+	}
+	slices.Sort(missing)
+	for _, path := range missing {
+		if strings.TrimSpace(notPublished[path]) == "" {
+			t.Errorf("the published document does not carry %s of a live machine: carry it, or list it in notPublished with the reason", path)
+		}
+	}
+	for path := range notPublished {
+		if !slices.Contains(missing, path) {
+			t.Errorf("%s is listed as not published and is published", path)
+		}
+	}
+	if len(notPublished) != 1 {
+		t.Errorf("%d fields are listed as not published, want 1", len(notPublished))
 	}
 
 	// The document's own fields: the collections are mapped, and each other field
@@ -977,6 +1161,7 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 		"code_index_provider":      "ignored: the remote's own configuration",
 		"refresh_interval_seconds": "ignored: freshness is measured by this daemon's interval",
 		"pull_requests_throttled":  "ignored: the remote's own observation budget",
+		"throughput":               "not carried: local only, never exported (NewEnvelope clears it) and never merged",
 	}
 	for _, field := range jsonFields(Document{}) {
 		if _, known := handled[field]; !known {

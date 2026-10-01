@@ -259,8 +259,8 @@ func TestRemoteFailureNamesTheCodeAndWhetherToFallBack(t *testing.T) {
 	if text := (&RemoteError{Code: RemoteErrorTimeout}).Error(); text != "remote export failed: timeout" {
 		t.Errorf("error text = %q", text)
 	}
-	if len(remoteErrorCodes) != 10 {
-		t.Errorf("the vocabulary has %d codes, want the ten of the requirement", len(remoteErrorCodes))
+	if len(remoteErrorCodes) != 13 {
+		t.Errorf("the vocabulary has %d codes, want the thirteen of the requirement", len(remoteErrorCodes))
 	}
 }
 
@@ -928,9 +928,9 @@ func TestLiveMetricsAreServedWithTheirFetchTimeAndExpire(t *testing.T) {
 // configured under this machine's own name is never read.
 func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 	t.Parallel()
-	for _, named := range []string{"mac", testMachine} {
-		// The export is of the same repository this machine has, so when it names
-		// this machine every id in it equals an id of this machine's own entries.
+	{
+		const named = "mac"
+		// The export is of the same repository this machine has, under another name.
 		full := exportOf(t, named, oneRepoSources("/repos/widgets"), 2, false)
 		exporter := &fakeExporter{answer: answering(full, full)}
 		snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), exporter, nil)
@@ -943,10 +943,8 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 		if !found || vm.Route != RouteLiveRemote || len(entriesOf(document, vm.ID)["worktrees"]) != 2 {
 			t.Fatalf("an export naming %q is placed as %+v", named, vm)
 		}
-		if named != testMachine {
-			if _, found := machineNamed(document, named); found {
-				t.Errorf("a machine entry named %q appeared", named)
-			}
+		if _, found := machineNamed(document, named); found {
+			t.Errorf("a machine entry named %q appeared", named)
 		}
 		local, _ := machineNamed(document, testMachine)
 		was, _ := machineNamed(before, testMachine)
@@ -959,6 +957,40 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 				t.Errorf("a worktree is on the wrong machine: %+v", worktree)
 			}
 		}
+	}
+
+	// An export that is this machine's own (it names this machine, or its machine
+	// entry has this machine's id: a tunnel or proxy that leads back here) is
+	// refused, whatever address it came from: nothing of it is placed anywhere,
+	// this machine's entries are untouched, and the configured key says why. A
+	// metrics-only export of this machine is refused the same way.
+	own := exportOf(t, testMachine, oneRepoSources("/repos/widgets"), 2, false)
+	renamed := copyEnvelope(t, own)
+	renamed.Machine = "another-name"
+	ownMetrics := exportOf(t, testMachine, oneRepoSources("/repos/widgets"), 2, true)
+	for name, envelope := range map[string]Envelope{"by its name": own, "by its machine id": renamed} {
+		logs := &logRecorder{}
+		snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: answering(envelope, ownMetrics)}, func(options *Options) { options.Logf = logs.logf })
+		refreshAndSettle(t, snapshotter)
+		before := snapshotter.Document()
+		pollAndSettle(t, snapshotter)
+		document := snapshotter.Document()
+		vm, _ := machineNamed(document, vmKey)
+		local, _ := machineNamed(document, testMachine)
+		if vm.RemoteError != RemoteErrorSelfExport || vm.WorktreeCount != 0 || len(document.Worktrees) != len(before.Worktrees) || local.WorktreeCount != 2 {
+			t.Errorf("this machine's own export, recognised %s: vm %+v, %d worktrees", name, vm, len(document.Worktrees))
+		}
+		if logs.count("the export of vm failed (self_export)") != 1 {
+			t.Errorf("%s: log = %q", name, logs.all())
+		}
+		machine := snapshotter.live[vmKey]
+		if snapshotter.recordExport(t.Context(), machine, exportResult{}, true, newClock().Now(), newClock().Now(), liveView{}, [32]byte{}, 0, ""); machine.samples != nil {
+			t.Errorf("%s: metrics of this machine were kept", name)
+		}
+	}
+	snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: answering(ownMetrics, ownMetrics)}, nil)
+	if !snapshotter.ownExport(ownMetrics) || snapshotter.ownExport(exportOf(t, vmOwnName, vmSources(), 0, true)) {
+		t.Error("a metrics-only export is not told apart by its name")
 	}
 
 	// A third machine's entries: dropped by the mapping, and the envelope that
@@ -983,11 +1015,11 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 		}
 	}
 	exporter := &fakeExporter{answer: answering(third, third)}
-	snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), exporter, nil)
-	refreshAndSettle(t, snapshotter)
-	pollAndSettle(t, snapshotter)
-	body, _ := json.Marshal(snapshotter.Document())
-	vm, _ := machineNamed(snapshotter.Document(), vmKey)
+	reader, _ := newLive(t, oneRepoSources("/repos/widgets"), exporter, nil)
+	refreshAndSettle(t, reader)
+	pollAndSettle(t, reader)
+	body, _ := json.Marshal(reader.Document())
+	vm, _ := machineNamed(reader.Document(), vmKey)
 	if vm.RemoteError != RemoteErrorBadPayload || strings.Contains(string(body), "third") || strings.Contains(string(body), "vm-task") {
 		t.Errorf("an envelope with a third machine's entry: %+v %s", vm, body)
 	}
@@ -1211,6 +1243,17 @@ func TestNewEnvelopeDropsAndCountsAnEntryItsOwnDecoderWouldRefuse(t *testing.T) 
 	}
 	if view := mapLive(vmKey, "mach-x", future.Fleet, clock.Now(), 0); len(view.worktrees) != 0 || len(view.pullRequests) != 1 || len(view.agents) != 0 {
 		t.Errorf("a reader of it keeps %d worktrees and %d pull requests", len(view.worktrees), len(view.pullRequests))
+	}
+	// An id is the kept entry's: a refused entry that claimed the id first takes
+	// nothing of the valid repository that has it after.
+	twice := snapshotter.Document()
+	refused, valid := twice.Repositories[0], twice.Repositories[0]
+	refused.LastActivityAt, valid.LastActivityAt = clock.Now().Add(time.Hour), clock.Now()
+	twice.Repositories = []Repository{refused, valid}
+	kept, drops := NewEnvelope(twice, MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, clock.Now(), false)
+	// (The one worktree dropped is the fixture's, for its own task name.)
+	if drops != (ExportDrops{Repositories: 1, Worktrees: 1}) || len(kept.Fleet.Repositories) != 1 || len(kept.Fleet.Worktrees) != 2 || len(kept.Fleet.Agents) != 1 || len(kept.Fleet.PullRequests) != 2 {
+		t.Errorf("a refused entry before the valid one of the same id: drops %+v, %d worktrees", drops, len(kept.Fleet.Worktrees))
 	}
 	// A clean export counts nothing and says nothing.
 	clean, _ := json.Marshal(exportOf(t, vmOwnName, vmSources(), 1, false))

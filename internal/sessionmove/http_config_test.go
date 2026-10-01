@@ -67,7 +67,7 @@ func TestLoadConfigRefusesAnHTTPAddressACredentialMustNotBeSentTo(t *testing.T) 
 		"a query":                 "        url: https://vm.example?machine=mac\n",
 		"a fragment":              "        url: https://vm.example#x\n",
 		"an empty query":          "        url: \"https://vm.example?\"\n",
-		"a capitalised localhost": "        url: http://LOCALHOST:8766\n",
+		"a name that looks local": "        url: http://localhost.example:8766\n",
 		"no url":                  "        token_file: /etc/wb/vm.token\n",
 		"relative token file":     "        url: https://vm.example\n        token_file: vm.token\n",
 	} {

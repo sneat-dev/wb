@@ -34,15 +34,17 @@ func Valid(raw string) bool {
 	case "https":
 		return true
 	case "http":
-		return IsLoopbackHost(parsed.Hostname())
+		// The host is compared, and later used (Origin), in lower case, so
+		// "Localhost" is the loopback name too.
+		return IsLoopbackHost(strings.ToLower(parsed.Hostname()))
 	}
 	return false
 }
 
 // IsLoopbackHost reports whether host is exactly "localhost" or a loopback IP
-// address. The name is matched in lower case only: Go's own exemption of
-// loopback hosts from proxying is case-sensitive, and one spelling leaves
-// nothing to disagree about.
+// address. The name is matched in lower case only (callers lower-case first):
+// Go's own exemption of loopback hosts from proxying is case-sensitive, so an
+// address is always used in lower case (Origin) and never proxied (ProxyFrom).
 func IsLoopbackHost(host string) bool {
 	if host == "localhost" {
 		return true

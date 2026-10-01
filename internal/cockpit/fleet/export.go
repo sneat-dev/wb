@@ -147,6 +147,10 @@ func keepLocal[T any](list []T, entry func(T) Entry) []T {
 func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	var drops ExportDrops
 	own := document
+	// The throughput block is local to the daemon that serves the fleet
+	// document and is not exported (cockpit-views#req:throughput-block): a
+	// machine's throughput is read from that machine, never merged.
+	own.Throughput = nil
 	own.Machines = keepLocal(document.Machines, func(machine Machine) Entry { return machine.Entry })
 	machineID := ""
 	if len(own.Machines) > 0 {
@@ -178,6 +182,9 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 		}
 		hostOf[repository.ID] = repository.Host
 		own.Repositories = append(own.Repositories, repository)
+		// The id is this kept repository's now, whatever an earlier entry that
+		// claimed it and was left out did to it.
+		delete(dropped, repository.ID)
 	}
 	worktrees := map[string]bool{}
 	own.Worktrees = make([]Worktree, 0, len(document.Worktrees))

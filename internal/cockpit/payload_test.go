@@ -61,6 +61,11 @@ func TestServePayloadChoosesTheEncodingAndMatchesEitherTag(t *testing.T) {
 	if plain.Header().Get("ETag") != identityTag || plain.Header().Get("Content-Encoding") != "" || plain.Header().Get("Vary") != "Origin, Accept-Encoding" || plain.Header().Get("Cache-Control") != "no-cache" || plain.Body.String() != `{"ok":true}`+"\n" {
 		t.Errorf("identity = %v", plain.Header())
 	}
+	private := httptest.NewRecorder()
+	ServePrivatePayload(private, httptest.NewRequest(http.MethodGet, "/", nil), payload)
+	if private.Header().Get("Cache-Control") != "no-store" || private.Header().Get("ETag") != identityTag || private.Body.String() != plain.Body.String() {
+		t.Errorf("a private payload = %v", private.Header())
+	}
 	zipped := do("Accept-Encoding", "gzip")
 	if zipped.Header().Get("ETag") != gzipTag || !strings.HasSuffix(gzipTag, `-gzip"`) || zipped.Header().Get("Content-Encoding") != "gzip" {
 		t.Errorf("gzip = %v", zipped.Header())

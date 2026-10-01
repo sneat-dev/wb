@@ -60,6 +60,8 @@ var collectionLimits = map[string]int{
 	"kinds":      maxKinds,
 	"code_index": maxCodeIndex,
 	"samples":    machinemetrics.Capacity,
+	"per_day":    ThroughputWindowDays,
+	"slowest":    throughputSlowest,
 }
 
 // BadEnvelopeError is a refused envelope. Reason names the rule and the
@@ -252,6 +254,7 @@ var (
 	tokenPattern   = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 	modelPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,63}$`)
 	versionPattern = regexp.MustCompile(`^[A-Za-z0-9._+()-]{1,64}$`)
+	datePattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 )
 
 // unsafeText reports whether character may not appear in a name, beyond what
@@ -345,6 +348,8 @@ var stringRules = map[string]textRule{
 	"CodeIndex.state":           required(oneOf(CodeIndexFresh, CodeIndexStale, CodeIndexDiverged, CodeIndexPending, CodeIndexFailed, CodeIndexNever)),
 	"CodeStatistics.error":      oneOf(ErrorProviderUnavailable, ErrorProviderTimeout, ErrorProviderFailed, ErrorProviderOutput),
 	"KindCount.kind":            required(matching(kindPattern)),
+	"ThroughputDay.date":        required(matching(datePattern)),
+	"ThroughputTask.task":       required(isText),
 }
 
 // rulesForUnmergedFields are rules named in stringRules for fields that are not
@@ -476,6 +481,9 @@ func joinPath(path, name string) string {
 func validateDocument(document *Document) error {
 	if document.SchemaVersion != SchemaVersion {
 		return refuse("fleet.schema_version is not %d", SchemaVersion)
+	}
+	if document.Throughput != nil {
+		return refuse("fleet.throughput is local only and never exported")
 	}
 	if document.Machines == nil || document.Repositories == nil || document.Worktrees == nil || document.PullRequests == nil || document.Agents == nil {
 		return refuse("fleet has a null collection")

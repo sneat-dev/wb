@@ -50,6 +50,15 @@ const (
 	RemoteErrorDaemonNotRunning = "daemon_not_running"
 	RemoteErrorExportRefused    = "export_refused"
 	RemoteErrorBadPayload       = "bad_payload"
+	// RemoteErrorWarmingUp says the remote daemon keeps answering that its first
+	// pass has not ended and nothing fresh is held of it.
+	RemoteErrorWarmingUp = "remote_warming_up"
+	// RemoteErrorExportTooLarge says the machine's live entries were left out
+	// because the fleet document would be over its size bound with them.
+	RemoteErrorExportTooLarge = "export_too_large"
+	// RemoteErrorSelfExport says the export read from the configured address is
+	// this machine's own.
+	RemoteErrorSelfExport = "self_export"
 )
 
 // remoteErrorCodes is the closed vocabulary of remote_error: a code outside it
@@ -57,6 +66,7 @@ const (
 var remoteErrorCodes = []string{
 	RemoteErrorHTTPUnavailable, RemoteErrorHTTPAuthFailed, RemoteErrorSSHUnavailable, RemoteErrorAuthFailed, RemoteErrorTimeout,
 	RemoteErrorWBMissing, RemoteErrorWBTooOld, RemoteErrorDaemonNotRunning, RemoteErrorExportRefused, RemoteErrorBadPayload,
+	RemoteErrorWarmingUp, RemoteErrorExportTooLarge, RemoteErrorSelfExport,
 }
 
 const (
@@ -300,8 +310,10 @@ type liveMachine struct {
 	mappedFor  string
 	view       liveView
 	// digest is the digest of view, by which an export that changed nothing is
-	// recognised and not published again.
-	digest [sha256.Size]byte
+	// recognised and not published again, and viewBytes its encoded size, which
+	// the document's size guard counts.
+	digest    [sha256.Size]byte
+	viewBytes int
 
 	// remoteError is the code of the last failure, empty after a success on the
 	// preferred transport.
@@ -479,11 +491,12 @@ func liveCodeIndex(indexes []CodeIndex) []CodeIndex {
 	return mapped
 }
 
-// digestOf is a digest of everything a view contributes to the document.
-func digestOf(view liveView) [sha256.Size]byte {
+// digestOf is a digest of everything a view contributes to the document, and
+// its encoded size.
+func digestOf(view liveView) ([sha256.Size]byte, int) {
 	// The document types cannot fail to marshal.
 	body, _ := json.Marshal([]any{view.machine, view.repositories, view.worktrees, view.pullRequests, view.agents})
-	return sha256.Sum256(body)
+	return sha256.Sum256(body), len(body)
 }
 
 // pullRequestPath is the path of a pull request under a repository's web
@@ -494,9 +507,12 @@ const pullRequestPath = "/pull/"
 // have (cockpit-views#req:pull-request-fields): an address a remote sent is
 // never rendered. The link is built here from the host of the pull request's
 // repository (or, for a repository published with no host, the host of the
-// address that was sent), the repository's owner/name and the number, and only
-// when that host is the host of a repository of THIS machine; otherwise the
-// pull request has no link. It returns new entries and leaves pulls untouched.
+// address that was sent), the repository's owner/name and the number, and kept
+// only when that host is the host of a repository of THIS machine and the link
+// built is exactly the address that was sent: a forge whose pull request
+// addresses have another shape (GitLab, Bitbucket) then has no link, rather
+// than a wrong one, and a sender cannot choose a path. Otherwise the pull
+// request has no link. It returns new entries and leaves pulls untouched.
 func relink(pulls []PullRequest, repositories []Repository, localHosts map[string]bool) []PullRequest {
 	if len(pulls) == 0 {
 		return nil
@@ -512,9 +528,12 @@ func relink(pulls []PullRequest, repositories []Repository, localHosts map[strin
 		if host == "" && pull.URL != "" {
 			host = urlHost(pull.URL)
 		}
+		sent := pull.URL
 		pull.URL = ""
 		if base := webURL(host, repository.Name); base != "" && localHosts[strings.ToLower(host)] && pull.Number > 0 {
-			pull.URL = base + pullRequestPath + strconv.Itoa(pull.Number)
+			if built := base + pullRequestPath + strconv.Itoa(pull.Number); built == sent {
+				pull.URL = built
+			}
 		}
 		linked[index] = pull
 	}
@@ -566,8 +585,9 @@ func (s *Snapshotter) liveMachineID(key string, cached []string) string {
 // failure of the preferred transport, and hides its published-store entries.
 // One whose export is stale or missing keeps its published-store entries, which
 // then carry the failure code; with no such entry and a failure, a bare machine
-// entry says so. With withLive false no live entry is added (the document was
-// over its size bound with them). It also records which machine ids stand for
+// entry says so. With withLive false no live entry is added (the document would
+// be over its size bound with them) and each machine that has a fresh export is
+// shown that way with export_too_large. It also records which machine ids stand for
 // which configured key, for the metrics source. A panic while a machine's
 // entries are mapped drops that machine's export as bad_payload and never
 // reaches the daemon. The caller holds s.mu.
@@ -581,13 +601,19 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bo
 		for _, published := range cached {
 			s.liveIDs[published] = key
 		}
-		fresh := withLive && machine.fresh(now, s.interval)
+		fresh, failure := machine.fresh(now, s.interval), machine.remoteError
+		if fresh && !withLive {
+			// Left out for the document's size: shown by its published entries, or
+			// a bare entry, with the reason.
+			fresh, failure = false, RemoteErrorExportTooLarge
+		}
 		if fresh && machine.mappedFor != id {
 			if err := catch(func() error {
 				machine.view, machine.mappedFor = s.mapper(key, id, machine.fleet, machine.observedAt, machine.dropped), id
-				machine.digest = digestOf(machine.view)
+				machine.digest, machine.viewBytes = digestOf(machine.view)
 				return nil
 			}); err != nil {
+				failure = RemoteErrorBadPayload
 				s.logf("cockpit fleet: the export of %s could not be mapped (%s)", key, RemoteErrorBadPayload)
 				machine.fleet, machine.view, machine.mappedFor, machine.remoteError, fresh = nil, liveView{}, "", RemoteErrorBadPayload, false
 			}
@@ -607,18 +633,18 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bo
 				}
 				hidden[published] = true
 			}
-		case machine.remoteError == "":
+		case failure == "":
 		case len(cached) > 0:
 			for _, published := range cached {
 				if failures == nil {
 					failures = map[string]string{}
 				}
-				failures[published] = machine.remoteError
+				failures[published] = failure
 			}
 		default:
 			document.Machines = append(document.Machines, Machine{
 				Entry:       Entry{ID: id, Machine: key, MachineID: id, Route: RouteLiveRemote},
-				RemoteError: machine.remoteError,
+				RemoteError: failure,
 			})
 		}
 	}
@@ -737,7 +763,13 @@ func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine,
 	received := s.now()
 	var view liveView
 	var digest [sha256.Size]byte
-	id := ""
+	size, id := 0, ""
+	if result.ok && s.ownExport(result.envelope) {
+		// The export is this machine's own, whatever address it came from (a
+		// tunnel or proxy that leads back here): reading it would show this
+		// machine a second time under another name.
+		result = exportResult{failure: RemoteErrorSelfExport}
+	}
 	if result.ok && !metricsOnly {
 		// A publication that finds the machine's id changed maps the entries again.
 		s.mu.RLock()
@@ -745,33 +777,55 @@ func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine,
 		s.mu.RUnlock()
 		if err := catch(func() error {
 			view = s.mapper(key, id, result.envelope.Fleet, observedTime(result.envelope, received), result.envelope.Dropped)
-			digest = digestOf(view)
+			digest, size = digestOf(view)
 			return nil
 		}); err != nil {
 			result = exportResult{failure: RemoteErrorBadPayload}
 		}
 	}
-	if s.recordExport(parent, machine, result, metricsOnly, started, received, view, digest, id) {
+	if s.recordExport(parent, machine, result, metricsOnly, started, received, view, digest, size, id) {
 		s.publishUnlocked()
 	}
 }
 
+// ownExport reports whether envelope is this machine's own export: it names
+// this machine, or its machine entry has this machine's id.
+func (s *Snapshotter) ownExport(envelope Envelope) bool {
+	if envelope.Machine == s.machine {
+		return true
+	}
+	return envelope.Fleet != nil && len(envelope.Fleet.Machines) == 1 && envelope.Fleet.Machines[0].ID == localMachineID(s.machine)
+}
+
 // recordExport records the outcome of an export under the lock and reports
 // whether the document must be published again.
-func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine, result exportResult, metricsOnly bool, started, received time.Time, view liveView, digest [sha256.Size]byte, id string) (publish bool) {
+//
+// A warming remote keeps what is held while that is fresh: nothing changes and
+// it is asked again one interval on. Once nothing fresh is held (never read, or
+// the view went stale) warming is shown as remote_warming_up and backs off like
+// a failure, so a machine cannot say "warming up" for ever and show no error,
+// and a configured machine with no published entry stays visible.
+//
+// A metrics-only export never clears the failure: only a full export on the
+// preferred transport does.
+func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine, result exportResult, metricsOnly bool, started, received time.Time, view liveView, digest [sha256.Size]byte, size int, id string) (publish bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	machine.busy = false
 	if parent.Err() != nil {
 		return false
 	}
-	machine.schedule = machine.schedule.after(started, metricsOnly, result.ok || result.warming, s.interval)
 	if result.warming {
-		return false
+		if machine.fresh(received, s.interval) {
+			machine.schedule = machine.schedule.after(started, metricsOnly, true, s.interval)
+			return false
+		}
+		result = exportResult{failure: RemoteErrorWarmingUp}
 	}
-	publish = machine.remoteError != result.failure
-	machine.remoteError = result.failure
+	machine.schedule = machine.schedule.after(started, metricsOnly, result.ok, s.interval)
 	if !result.ok {
+		publish = machine.remoteError != result.failure
+		machine.remoteError = result.failure
 		if publish {
 			s.logf("cockpit fleet: the export of %s failed (%s)", machine.target.Machine, result.failure)
 		}
@@ -783,13 +837,15 @@ func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine,
 	}
 	machine.metricsVersion++
 	if metricsOnly {
-		return publish
+		return false
 	}
+	publish = machine.remoteError != result.failure
+	machine.remoteError = result.failure
 	// An export whose entries are the ones already shown, by the same transport,
 	// publishes nothing: only the time it was received at moves on.
 	unchanged := machine.fresh(received, s.interval) && machine.mappedFor == id && machine.digest == digest && machine.transport == result.transport
 	machine.fleet, machine.dropped, machine.observedAt, machine.receivedAt, machine.transport = result.envelope.Fleet, result.envelope.Dropped, observedTime(result.envelope, received), received, result.transport
-	machine.view, machine.mappedFor, machine.digest = view, id, digest
+	machine.view, machine.mappedFor, machine.digest, machine.viewBytes = view, id, digest, size
 	if !unchanged {
 		s.remoteBranches = nil
 	}

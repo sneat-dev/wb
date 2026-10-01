@@ -21,7 +21,9 @@ import {
 import type { FleetModel } from './fleet-model'
 import { agentTitle } from './fleet-view'
 import { Agent, Machine, PullRequest, Worktree, isRunning } from './fleet.types'
+import { buildRepositories } from './model-repositories'
 import { MergedRepository } from './repository-identity'
+import { webAddress } from './web-address'
 import { isObserved, isOpenPullRequest, notReadyReasons } from './task-state'
 import { MachineView, TaskView } from './view-types'
 
@@ -109,6 +111,7 @@ export interface PullRequestPanel extends PanelBase {
     id: string
     repository?: string
     number: number
+    /** Only a checked web address (https, plain host); never the raw value. */
     url?: string
     state?: string
     mergeable?: string
@@ -132,6 +135,15 @@ export const MACHINE_RECENT_WORKTREES = 5
 const time = (value: string | undefined): number | undefined => {
   const parsed = value ? Date.parse(value) : Number.NaN
   return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/**
+ * A pull request as a panel shows it: its `url` only when it is a checked web
+ * address (`webAddress`), so a page can bind it to an `href`. The panel's `raw`
+ * entries stay exactly as the read model sent them, for the Raw data block.
+ */
+function checkedPullRequest(pullRequest: PullRequest): PullRequest {
+  return { ...pullRequest, url: webAddress(pullRequest.url) }
 }
 
 const entry = (title: string, command: CopyCommand): PanelCommand => ({ title, command })
@@ -174,8 +186,8 @@ export function buildWorktreePanel(model: FleetModel, id: string): WorktreePanel
     },
     related: {
       task,
-      repository: model.repositories.find((row) => row.checkouts.some((checkout) => checkout.repository.id === worktree.repository)),
-      pullRequests: model.document.pull_requests.filter((pullRequest) => pullRequest.worktree === worktree.id),
+      repository: buildRepositories(model).find((row) => row.checkouts.some((checkout) => checkout.repository.id === worktree.repository)),
+      pullRequests: (model.worktreePullRequests.get(worktree.id) ?? []).map(checkedPullRequest),
       agents: task.agents,
     },
     commands: taskCommands(model, worktree.task, [worktree]),
@@ -197,14 +209,14 @@ export function buildTaskPanel(model: FleetModel, name: string): TaskPanel | und
       unobservedPullRequests: task.unobservedPullRequests,
       notReadyReasons: [...new Set(task.pullRequests.filter(isOpenPullRequest).flatMap(notReadyReasons))],
     },
-    related: { worktrees: task.worktrees, pullRequests: task.pullRequests, agents: task.agents },
+    related: { worktrees: task.worktrees, pullRequests: task.pullRequests.map(checkedPullRequest), agents: task.agents },
     commands: taskCommands(model, task.name, task.worktrees),
     raw: [...task.worktrees, ...task.pullRequests, ...task.agents],
   }
 }
 
 export function buildRepositoryPanel(model: FleetModel, key: string): RepositoryPanel | undefined {
-  const repository = model.repositories.find((row) => row.key === key)
+  const repository = buildRepositories(model).find((row) => row.key === key)
   if (repository === undefined) return undefined
   const ids = new Set(repository.checkouts.map((checkout) => checkout.repository.id))
   const target = model.targetOf(repository.checkouts[0].repository)
@@ -212,7 +224,7 @@ export function buildRepositoryPanel(model: FleetModel, key: string): Repository
     summary: repository,
     related: {
       worktrees: model.document.worktrees.filter((worktree) => ids.has(worktree.repository)),
-      pullRequests: model.document.pull_requests.filter((pullRequest) => ids.has(pullRequest.repository ?? '')),
+      pullRequests: model.document.pull_requests.filter((pullRequest) => ids.has(pullRequest.repository ?? '')).map(checkedPullRequest),
       agents: model.document.agents.filter((agent) => ids.has(agent.repository ?? '')),
     },
     commands: [
@@ -253,7 +265,7 @@ export function buildAgentPanel(model: FleetModel, id: string): AgentPanel | und
     related: {
       task: taskName === undefined ? undefined : model.taskNamed(taskName),
       worktrees,
-      pullRequests: model.document.pull_requests.filter((pullRequest) => pullRequest.worktree !== undefined && (agent.worktrees ?? []).includes(pullRequest.worktree)),
+      pullRequests: [...new Set((agent.worktrees ?? []).flatMap((worktreeId) => model.worktreePullRequests.get(worktreeId) ?? []))].map(checkedPullRequest),
     },
     commands: run ? [entry('Status', agentStatus(runId, target)), entry('Logs', agentLogs(runId, target)), entry('Stop', agentStop(runId, target))] : [],
     raw: [agent],
@@ -288,7 +300,7 @@ export function buildPullRequestPanel(model: FleetModel, id: string): PullReques
       id: pullRequest.id,
       repository,
       number: pullRequest.number,
-      url: pullRequest.url,
+      url: webAddress(pullRequest.url),
       state: pullRequest.state,
       mergeable: pullRequest.mergeable,
       observed: isObserved(pullRequest),

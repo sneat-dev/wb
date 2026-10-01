@@ -306,8 +306,16 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 	if zipped.Code != http.StatusOK || zipped.Header().Get("Content-Encoding") != "gzip" || !strings.HasSuffix(zipped.Header().Get("ETag"), `-gzip"`) {
 		t.Errorf("the gzip export = %d %v", zipped.Code, zipped.Header())
 	}
-	if same := get(hub.MachineExportPath, "Authorization", owner, "If-None-Match", full.Header().Get("ETag")); same.Code != http.StatusNotModified || same.Body.Len() != 0 {
+	same := get(hub.MachineExportPath, "Authorization", owner, "If-None-Match", full.Header().Get("ETag"))
+	if same.Code != http.StatusNotModified || same.Body.Len() != 0 {
 		t.Errorf("a revalidation = %d with %d bytes, want 304", same.Code, same.Body.Len())
+	}
+	// A credentialed export is never to be kept by a client or an intermediary,
+	// whichever shape, encoding or status answers.
+	for name, response := range map[string]*httptest.ResponseRecorder{"full": full, "metrics only": only, "gzip": zipped, "not modified": same} {
+		if got := response.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+			t.Errorf("the %s export has Cache-Control %q, want no-store", name, got)
+		}
 	}
 
 	stranger, err := mount.Enrollment.Enroll(ctx, hub.Viewer{Authenticated: true, IdentityID: "someone-else"}, hub.MachineEnrollmentRequest{Name: "their-laptop"})

@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed } from '@angular/core'
-import { Machine, filterMachines, filterRepositories, filterWorktrees, repositoryLabel, worktreeLabel } from '@cockpit/fleet-data'
+import { Machine, repositoryLabel, filterWorktrees } from '@cockpit/fleet-data'
+import { filterMachines, filterRepositories, worktreeLabel } from '@cockpit/fleet-data/list'
 import { Count, FilterBar, RouteLabel } from '@cockpit/ui'
 import { TableModule } from 'primeng/table'
 import { watchMetrics } from '../../metrics/metrics-poller'

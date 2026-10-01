@@ -156,6 +156,15 @@ type Options struct {
 	PullRequestLimit        int
 	PullRequestHourlyBudget int
 	PullRequestTimeout      time.Duration
+	// Terminals is this machine's sealed terminal records, the source of the
+	// throughput block; nil means the document has none. ThroughputInterval is
+	// the time between scans (zero or less means DefaultThroughputInterval),
+	// TerminalReadLimit the most records read in one scan and TerminalTotalLimit
+	// the most known at once (zero or less means the defaults).
+	Terminals          TerminalRecords
+	ThroughputInterval time.Duration
+	TerminalReadLimit  int
+	TerminalTotalLimit int
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
 }
@@ -272,12 +281,20 @@ type Snapshotter struct {
 	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
 	// replaces it). generation counts the documents assembled, so that one
 	// prepared outside the lock is stored only if none was assembled after it.
-	// maxDocument is the size over which the live machines are left out, and
-	// leftOut whether they are.
+	// maxDocument is the size over which the live machines are left out,
+	// leftOut whether they are in the published document, and baseBytes the
+	// size of that document less its live machines' entries.
+	baseBytes   int
 	mapper      func(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView
 	generation  uint64
 	maxDocument int
 	leftOut     bool
+
+	// throughputs scans the terminal records on its own cadence (nil without a
+	// source); throughput is its last block, guarded by mu.
+	throughputs    *throughputCollector
+	throughputBusy atomic.Bool
+	throughput     *Throughput
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -352,6 +369,9 @@ func New(options Options) *Snapshotter {
 	}
 	if snapshotter.logf == nil {
 		snapshotter.logf = func(string, ...any) {}
+	}
+	if options.Terminals != nil {
+		snapshotter.throughputs = newThroughputCollector(options.Terminals, options.ThroughputInterval, options.TerminalReadLimit, options.TerminalTotalLimit, snapshotter.logf)
 	}
 	snapshotter.store(emptyDocument(snapshotter.interval))
 	return snapshotter
@@ -552,6 +572,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	if listErr != nil {
 		failures := s.refreshMachineState(ctx)
 		s.startPullRequests(ctx)
+		s.startThroughput(ctx)
 		s.mu.Lock()
 		s.listError = ErrorRepositoriesUnreadable
 		s.publishLocked()
@@ -572,6 +593,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	// Pull requests are observed once the worktrees are known, so the records of
 	// a worktree this machine has are asked about before the others.
 	s.startPullRequests(ctx)
+	s.startThroughput(ctx)
 	s.mu.Lock()
 	s.passing = false
 	defer s.mu.Unlock()
@@ -1052,39 +1074,33 @@ func (s *Snapshotter) publishMaybeLocked() {
 }
 
 // publishLocked assembles the document, prepares its body and makes it the
-// published one. The caller holds s.mu. A document that is over its size bound
-// with the live machines' entries is published without them (their published
-// entries are shown instead), which is logged once and counted as a diagnostic.
+// published one. The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
-	document := s.assemble(now, true)
-	payload := s.prepare(document)
-	if s.oversized(payload) {
-		document = s.assemble(now, false)
-		payload = s.prepare(document)
-	}
-	s.doc, s.payload = document, payload
-	s.lastPublish, s.publishes = now, s.publishes+1
+	document, liveBytes, leftOut := s.assemble(now)
+	s.commit(document, s.prepare(document), now, liveBytes, leftOut)
 }
 
-// oversized reports whether a prepared document is over the size bound while it
-// carries live machines, and logs the change. The caller holds s.mu.
-func (s *Snapshotter) oversized(payload cockpit.Payload) bool {
-	over := len(s.liveKeys) > 0 && payload.Size() > s.maxDocument
-	if over != s.leftOut {
-		s.leftOut = over
-		if over {
-			s.logf("cockpit fleet: the fleet document is over %d bytes with the live machines' entries; they are left out and their published entries shown", s.maxDocument)
-		}
+// commit makes a prepared document the published one and records what the size
+// guard needs for the next: the size of everything but the live machines'
+// entries, and whether they were left out (logged when that changes). The
+// caller holds s.mu, and calls it only for the newest document assembled.
+func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, liveBytes int, leftOut bool) {
+	s.doc, s.payload = document, payload
+	s.lastPublish, s.publishes = now, s.publishes+1
+	s.baseBytes = max(payload.Size()-liveBytes, 0)
+	if leftOut && !s.leftOut {
+		s.logf("cockpit fleet: the fleet document would be over %d bytes with the live machines' entries; they are left out (%s) and their published entries shown", s.maxDocument, RemoteErrorExportTooLarge)
 	}
-	return over
+	s.leftOut = leftOut
 }
 
 // publishUnlocked publishes as publishLocked does for a caller that does not
 // hold s.mu, without encoding or compressing under it: the document is
 // assembled under the lock, its body prepared outside it, and stored only if no
-// later document was assembled meanwhile (the later one wins). During a pass it
-// keeps to the pass's publication rate; the pass publishes when it ends.
+// later document was assembled meanwhile (the later one wins, and a discarded
+// one changes nothing). During a pass it keeps to the pass's publication rate;
+// the pass publishes when it ends.
 func (s *Snapshotter) publishUnlocked() {
 	now := s.now()
 	s.mu.Lock()
@@ -1092,34 +1108,37 @@ func (s *Snapshotter) publishUnlocked() {
 		s.mu.Unlock()
 		return
 	}
-	document := s.assemble(now, true)
+	document, liveBytes, leftOut := s.assemble(now)
 	generation := s.generation
 	s.mu.Unlock()
 	payload := s.prepare(document)
 	s.mu.Lock()
-	over := s.oversized(payload)
-	if over && generation == s.generation {
-		document = s.assemble(now, false)
-		generation = s.generation
-	}
-	s.mu.Unlock()
-	if over {
-		payload = s.prepare(document)
-	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	if generation == s.generation {
-		s.doc, s.payload = document, payload
-		s.lastPublish, s.publishes = now, s.publishes+1
+		s.commit(document, payload, now, liveBytes, leftOut)
 	}
 }
 
 // assemble builds the document from what the snapshotter holds: the
 // repositories scanned so far, the agents, the pull-request records and the
-// other machines: the configured ones read live (when withLive), which replace
-// their published-store entries while fresh, and the published store's. The
-// caller holds s.mu.
-func (s *Snapshotter) assemble(now time.Time, withLive bool) Document {
+// other machines: the configured ones read live, which replace their
+// published-store entries while fresh, and the published store's. The caller
+// holds s.mu.
+//
+// The size guard is decided here, before anything is encoded, so the document
+// is encoded once: when the size of everything else in the last published
+// document plus the encoded size of the fresh live views is over the bound, the
+// live machines' entries are left out, each such machine is shown by its
+// published entries or a bare entry carrying remote_error export_too_large,
+// and the document counts one more diagnostic. It returns the bytes of the live
+// views it included and whether it left them out.
+func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int, leftOut bool) {
+	for _, key := range s.liveKeys {
+		if machine := s.live[key]; machine.fresh(now, s.interval) {
+			liveBytes += machine.viewBytes
+		}
+	}
+	withLive := liveBytes == 0 || s.baseBytes+liveBytes <= s.maxDocument
 	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
@@ -1131,6 +1150,7 @@ func (s *Snapshotter) assemble(now time.Time, withLive bool) Document {
 	}
 	document.AgentsTruncated = s.truncated
 	document.PullRequestsThrottled = s.throttled
+	document.Throughput = s.throughput
 	ids := make([]string, 0, len(s.repos))
 	idsBySlug := map[string][]string{}
 	for id, state := range s.repos {
@@ -1195,5 +1215,8 @@ func (s *Snapshotter) assemble(now time.Time, withLive bool) Document {
 		document.Diagnostics++
 	}
 	s.generation++
-	return document
+	if !withLive {
+		return document, 0, true
+	}
+	return document, liveBytes, false
 }

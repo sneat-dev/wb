@@ -57,9 +57,20 @@ type Provider struct {
 // bearer is never handed to an HTTP proxy in a plain request; an https request
 // still tunnels through the proxy the environment names.
 func newClient(proxy func(*http.Request) (*url.URL, error)) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	return &http.Client{Timeout: 30 * time.Second, Transport: credentialTransport(http.DefaultTransport, proxy)}
+}
+
+// credentialTransport is base with the proxy policy when base is the standard
+// transport type (the default transport's settings are kept), and a fresh
+// transport with the policy otherwise: a program that replaced
+// http.DefaultTransport with another type must not make this panic.
+func credentialTransport(base http.RoundTripper, proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	transport := &http.Transport{ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second}
+	if standard, isStandard := base.(*http.Transport); isStandard {
+		transport = standard.Clone()
+	}
 	transport.Proxy = proxy
-	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	return transport
 }
 
 // New validates the endpoint and credential source without making a request.

@@ -14,6 +14,8 @@ func TestValidAcceptsHTTPSAndLoopbackHTTPOrigins(t *testing.T) {
 	for _, accepted := range []string{
 		"https://hub.example", "https://hub.example/", "https://hub.example:8443", " https://hub.example ", "https://HUB.example",
 		"http://127.0.0.1:8766", "http://localhost:8766", "http://localhost", "http://[::1]:8766", "http://127.0.0.1:8766/",
+		// A capitalised loopback name is the same host; it is used in lower case.
+		"http://LOCALHOST:8766", "http://Localhost:8766",
 	} {
 		if !Valid(accepted) {
 			t.Errorf("Valid(%q) = false, want it accepted", accepted)
@@ -28,8 +30,7 @@ func TestValidRefusesEverythingACredentialMustNotBeSentTo(t *testing.T) {
 		"https://user@hub.example", "https://user:secret@hub.example", "https://hub.example/path", "https://hub.example//",
 		"https://hub.example?query=1", "https://hub.example?", "https://hub.example#fragment", "https://hub.example#", "https://hub.example/#",
 		"http://127.0.0.1:8766/v0", "://bad", "https://hub.example/%zz",
-		// The loopback name is its one lower-case spelling.
-		"http://LOCALHOST:8766", "http://Localhost:8766", "http://localhost.:8766", "http://localhost.example:8766",
+		"http://localhost.:8766", "http://localhost.example:8766",
 	} {
 		if Valid(refused) {
 			t.Errorf("Valid(%q) = true, want it refused", refused)
@@ -53,7 +54,7 @@ func TestOriginIsLowerCaseWithNoTrailingSlash(t *testing.T) {
 	t.Parallel()
 	for raw, want := range map[string]string{
 		"https://Hub.Example/": "https://hub.example", " HTTPS://HUB.example:8443 ": "https://hub.example:8443",
-		"http://127.0.0.1:8766": "http://127.0.0.1:8766", "://bad": "",
+		"http://127.0.0.1:8766": "http://127.0.0.1:8766", "://bad": "", "http://Localhost:8766": "http://localhost:8766",
 	} {
 		if got := Origin(raw); got != want {
 			t.Errorf("Origin(%q) = %q, want %q", raw, got, want)
