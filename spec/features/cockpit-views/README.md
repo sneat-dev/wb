@@ -738,7 +738,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `runtime`, `model` | string | opt. | record | both |
 | `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
 | `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
-| `repository`, `task` | string | opt. | run record; claim or owner for a session | both |
+| `repository`, `task` | string | opt. | run record; for a session, the declared owner process of its worktrees | both |
 | `worktrees` | list of entry ids | opt. | as above | both |
 | `started_at` | time | opt. | record | both |
 | `finished_at` | time | opt. | a finished run's record | both |
@@ -887,8 +887,11 @@ populated for a dispatched run from its run record (`agents.Result`: `Repository
 `Branch`, `StartedAt`, `State`, `FinishedAt`, `ExitCode`); a finished run also carries
 `finished_at` and `exit_code`, never its free-text failure, and its `state` is `running`,
 `completed`, `failed`, `timeout` or `abandoned`. A registered session has `state` `live` or
-`parked`, and only `started_at` is populated, plus a worktree and task when a worktree's owner or
-claim names that session; otherwise they are absent and are never guessed. The agents of another
+`parked`, and only `started_at` is populated, plus its worktrees, task and repository when a
+worktree's declared owner process (the process id its Work Log journal records) is the process of
+that live session (a claim records no session, so it links nothing); otherwise they are absent and
+are never guessed. A session whose worktrees name more than one task or repository carries none of
+that one; at most 10 worktrees are listed. The agents of another
 machine are capped at 200 per machine when read from a snapshot and when published.
 
 #### REQ: machine-fields
