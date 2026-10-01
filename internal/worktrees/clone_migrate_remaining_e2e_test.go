@@ -4,9 +4,11 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -173,11 +175,37 @@ func TestE2ECloneMoveIntentSelectionRefusesUnreadableProjectsRoot(t *testing.T) 
 	if err := os.WriteFile(blocker, []byte("keep projects bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordCloneMoveRelocationIntents(filepath.Join(blocker, "missing"), nil, time.Time{}); err == nil {
-		t.Fatal("intent selection accepted a non-directory projects root")
+	if entries, err := RecordCloneMoveRelocationIntents(filepath.Join(blocker, "missing"), nil, time.Time{}); len(entries) != 0 || !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("projects-root resolution = (%#v, %v), want ENOTDIR before intent selection", entries, err)
 	}
 	if got, err := os.ReadFile(blocker); err != nil || string(got) != "keep projects bytes" {
 		t.Fatalf("projects-root blocker changed: %q, %v", got, err)
+	}
+}
+
+func TestE2ECloneRebaseKeepsExactRelativeAndRootPathMeaning(t *testing.T) {
+	t.Parallel()
+	current := t.TempDir()
+	if err := os.Mkdir(filepath.Join(current, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, legacy, want string
+		ok                       bool
+	}{
+		{"relative equal", "legacy", "legacy", current, true},
+		{"relative descendant", "legacy/nested", "legacy", filepath.Join(current, "nested"), true},
+		{"relative sibling", "legacy-other/nested", "legacy", "", false},
+		{"root equal", string(filepath.Separator), string(filepath.Separator), current, true},
+		{"root descendant", filepath.Join(string(filepath.Separator), "nested"), string(filepath.Separator), "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := rebaseUnderNewClone(tc.path, tc.legacy, current)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("rebased %q below %q = (%q, %t), want (%q, %t)", tc.path, tc.legacy, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 
