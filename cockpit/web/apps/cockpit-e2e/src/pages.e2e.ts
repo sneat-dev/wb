@@ -13,7 +13,7 @@ const alpha = { machine: 'alpha', machine_id: 'mach-alpha', route: 'local', obse
 const beta = { machine: 'beta', machine_id: 'mach-beta', route: 'cached', observed_at: observed }
 
 const fleet = {
-  schema_version: 1,
+  schema_version: 2,
   snapshot_at: now,
   warming_up: false,
   repositories_total: 3,
@@ -33,7 +33,6 @@ const fleet = {
     { id: 'wt-2', ...alpha, repository: 'repo-cli', task: 'fix-index', branch: 'task/fix-index', owner_state: 'idle', last_activity_at: observed },
     { id: 'wt-3', ...beta, repository: 'repo-far', task: 'far-task', branch: 'task/far-task' },
   ],
-  branches: [],
   pull_requests: [],
   agents: [
     { id: 'ag-1', ...alpha, kind: 'session', session_id: 'sess-1', runtime: 'claude', state: 'running', repository: 'repo-cli' },

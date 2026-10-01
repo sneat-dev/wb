@@ -7,6 +7,7 @@ import {
   FleetDocument,
   Machine,
   Repository,
+  SCHEMA_VERSION,
   Session,
   Worktree,
 } from './fleet.types'
@@ -27,7 +28,7 @@ export type FilterQuery = Record<string, string>
 
 export function emptyDocument(): FleetDocument {
   return {
-    schema_version: 1,
+    schema_version: SCHEMA_VERSION,
     warming_up: true,
     repositories_total: 0,
     repositories_scanned: 0,
@@ -35,7 +36,6 @@ export function emptyDocument(): FleetDocument {
     machines: [],
     repositories: [],
     worktrees: [],
-    branches: [],
     pull_requests: [],
     agents: [],
   }

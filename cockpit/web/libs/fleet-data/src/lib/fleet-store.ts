@@ -1,7 +1,8 @@
 import { Injectable, InjectionToken, computed, inject, signal } from '@angular/core'
-import { FleetClient } from './fleet-client'
+import { FleetClient, FleetSchemaError, SchemaMismatch } from './fleet-client'
+import { FleetModel, FleetModels, ModelOptions } from './fleet-model'
 import { canReadContent, emptyDocument, machineOptions, repositoryLabel } from './fleet-view'
-import { FleetDocument, Session, SessionStatus } from './fleet.types'
+import { FleetDocument, SCHEMA_VERSION, Session, SessionStatus } from './fleet.types'
 
 /** How often the store re-reads the fleet document, in milliseconds. */
 export interface PollIntervals {
@@ -16,6 +17,18 @@ export const POLL_INTERVALS = new InjectionToken<PollIntervals>('poll intervals'
   factory: () => ({ warmingUp: 2_000, steady: 15_000 }),
 })
 
+/** The schema version this page reads; a test sets another to see each mismatch message. */
+export const EXPECTED_SCHEMA = new InjectionToken<number>('expected schema version', {
+  providedIn: 'root',
+  factory: () => SCHEMA_VERSION,
+})
+
+/** The clock, derivation counter and SSH routes of the view model. */
+export const MODEL_OPTIONS = new InjectionToken<ModelOptions>('fleet model options', {
+  providedIn: 'root',
+  factory: () => ({}),
+})
+
 /**
  * The one fleet store: it holds the last document and the session, re-reads
  * the document with If-None-Match, and never waits for a full scan. While the
@@ -25,13 +38,20 @@ export const POLL_INTERVALS = new InjectionToken<PollIntervals>('poll intervals'
 export class FleetStore {
   private readonly client = inject(FleetClient)
   private readonly intervals = inject(POLL_INTERVALS)
+  private readonly expected = inject(EXPECTED_SCHEMA)
+  private readonly models = new FleetModels(inject(MODEL_OPTIONS))
   private etag: string | undefined
+  private digest: string | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
   private running = false
   private failures = 0
   private loadingSession = false
 
   readonly document = signal<FleetDocument>(emptyDocument())
+  /** Set while the daemon speaks another schema version: no data is shown, and what to do about it. */
+  readonly schemaMismatch = signal<SchemaMismatch | null>(null)
+  /** The view model of the current document: derived collections are computed once per document. */
+  readonly model = computed<FleetModel>(() => this.models.forDocument(this.document()))
   readonly session = signal<Session | null>(null)
   /** Whether the session read is still going ('loading'), answered ('ready') or failed and will be retried ('failed'). */
   readonly sessionStatus = signal<SessionStatus>('loading')
@@ -77,14 +97,24 @@ export class FleetStore {
     // The session read is retried on every poll until it succeeds.
     if (this.session() === null) void this.loadSession()
     try {
-      const read = await this.client.readFleet(this.etag)
+      const read = await this.client.readFleet(this.etag, this.expected)
       if (read.kind === 'changed') {
         this.etag = read.etag
-        this.document.set(read.document)
+        // A body identical to the last one keeps the document, so nothing downstream recomputes.
+        if (read.digest !== this.digest) this.document.set(read.document)
+        this.digest = read.digest
       }
+      this.schemaMismatch.set(null)
       this.error.set(null)
       this.failures = 0
     } catch (error) {
+      if (error instanceof FleetSchemaError) {
+        // Another schema version renders no data at all.
+        this.etag = undefined
+        this.digest = undefined
+        this.schemaMismatch.set(error.mismatch)
+        this.document.set({ ...emptyDocument(), warming_up: false })
+      }
       this.error.set(error instanceof Error ? error.message : String(error))
       this.failures++
     }

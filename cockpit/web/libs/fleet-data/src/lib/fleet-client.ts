@@ -1,5 +1,16 @@
 import { Injectable, InjectionToken, inject } from '@angular/core'
-import { FLEET_PATH, FleetDocument, README_PATH, SESSION_PATH, Session } from './fleet.types'
+import {
+  BRANCHES_PATH,
+  BranchesResponse,
+  FLEET_PATH,
+  FleetDocument,
+  MACHINE_METRICS_PATH,
+  MachineMetrics,
+  README_PATH,
+  SCHEMA_VERSION,
+  SESSION_PATH,
+  Session,
+} from './fleet.types'
 
 /** The fetch the client uses; tests replace it, so no test needs a network. */
 export const FETCH = new InjectionToken<typeof fetch>('fetch', {
@@ -41,17 +52,52 @@ export class ReadmeRequestError extends Error {
   }
 }
 
-const COLLECTIONS = ['machines', 'repositories', 'worktrees', 'branches', 'pull_requests', 'agents'] as const
+/** Which side of a schema mismatch is older, so the page can say what to do. */
+export type SchemaMismatch = 'daemon-older' | 'page-older'
 
-/** Whether `value` is a version 1 document with every collection present. */
-export function isFleetDocument(value: unknown): value is FleetDocument {
+export const UPDATE_WB_MESSAGE = 'update wb on this machine'
+export const RELOAD_MESSAGE = 'reload'
+
+/** A fleet document of a schema version this page does not read (REQ:schema-version-2). */
+export class FleetSchemaError extends Error {
+  constructor(
+    readonly mismatch: SchemaMismatch,
+    readonly daemonVersion: number,
+    readonly pageVersion: number,
+  ) {
+    super(mismatch === 'daemon-older' ? UPDATE_WB_MESSAGE : RELOAD_MESSAGE)
+    this.name = 'FleetSchemaError'
+  }
+}
+
+const COLLECTIONS = ['machines', 'repositories', 'worktrees', 'pull_requests', 'agents'] as const
+
+/** Whether `value` is an object with the collections of a fleet document (the version is checked separately). */
+export function hasFleetShape(value: unknown): value is FleetDocument {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
-  return candidate['schema_version'] === 1 && COLLECTIONS.every((name) => Array.isArray(candidate[name]))
+  return COLLECTIONS.every((name) => Array.isArray(candidate[name]))
+}
+
+/**
+ * Whether `value` is a fleet document of exactly `expected`, with every
+ * collection present.
+ */
+export function isFleetDocument(value: unknown, expected: number = SCHEMA_VERSION): value is FleetDocument {
+  return hasFleetShape(value) && value.schema_version === expected
+}
+
+/** A cheap fingerprint of a response body, so an identical body keeps the document's identity. */
+export function digestOf(text: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) {
+    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193) >>> 0
+  }
+  return `${text.length}:${hash.toString(16)}`
 }
 
 export type FleetRead =
-  | { kind: 'changed'; document: FleetDocument; etag: string }
+  | { kind: 'changed'; document: FleetDocument; etag: string; digest: string }
   | { kind: 'unchanged' }
 
 @Injectable({ providedIn: 'root' })
@@ -59,7 +105,7 @@ export class FleetClient {
   private readonly fetcher = inject(FETCH)
 
   /** Reads the fleet document; with the last ETag, an unchanged one costs a 304. */
-  async readFleet(etag?: string): Promise<FleetRead> {
+  async readFleet(etag?: string, expected: number = SCHEMA_VERSION): Promise<FleetRead> {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (etag) headers['If-None-Match'] = etag
     const response = await this.fetcher(FLEET_PATH, {
@@ -69,9 +115,46 @@ export class FleetClient {
     })
     if (response.status === 304) return { kind: 'unchanged' }
     if (!response.ok) throw new FleetRequestError(response.status)
-    const document: unknown = await response.json()
-    if (!isFleetDocument(document)) throw new FleetFormatError()
-    return { kind: 'changed', document, etag: response.headers.get('ETag') ?? '' }
+    const text = await response.text()
+    let document: unknown
+    try {
+      document = JSON.parse(text)
+    } catch {
+      throw new FleetFormatError()
+    }
+    const version = typeof document === 'object' && document !== null ? (document as Record<string, unknown>)['schema_version'] : undefined
+    if (typeof version !== 'number') throw new FleetFormatError()
+    if (version !== expected) throw new FleetSchemaError(version < expected ? 'daemon-older' : 'page-older', version, expected)
+    if (!hasFleetShape(document)) throw new FleetFormatError()
+    return { kind: 'changed', document, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
+  }
+
+  /** The branches of one repository checkout, read lazily when a repository page or panel opens. */
+  async readBranches(repository: string): Promise<BranchesResponse> {
+    const response = await this.fetcher(`${BRANCHES_PATH}?repository=${encodeURIComponent(repository)}`, {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) throw new FleetRequestError(response.status)
+    const body: unknown = await response.json().catch(() => null)
+    const branches = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['branches'] : undefined
+    if (!Array.isArray(branches)) throw new FleetFormatError()
+    return body as BranchesResponse
+  }
+
+  /** The samples of one machine: local history, live remote, one cached sample, or none. */
+  async readMachineMetrics(machine: string): Promise<MachineMetrics> {
+    const response = await this.fetcher(`${MACHINE_METRICS_PATH}?machine=${encodeURIComponent(machine)}`, {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) throw new FleetRequestError(response.status)
+    const body: unknown = await response.json().catch(() => null)
+    const samples = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['samples'] : undefined
+    if (!Array.isArray(samples)) throw new FleetFormatError()
+    return body as MachineMetrics
   }
 
   async readSession(): Promise<Session> {

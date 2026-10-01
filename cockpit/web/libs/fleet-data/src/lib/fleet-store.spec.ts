@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing'
-import { FleetClient, FleetRead } from './fleet-client'
-import { FleetStore, POLL_INTERVALS } from './fleet-store'
+import { FleetClient, FleetRead, FleetSchemaError } from './fleet-client'
+import { EXPECTED_SCHEMA, FleetStore, MODEL_OPTIONS, POLL_INTERVALS } from './fleet-store'
 import { Session } from './fleet.types'
 import { fleetDocument } from './test-data'
 
@@ -19,6 +19,7 @@ function storeWith(client: Partial<FleetClient>): FleetStore {
 const changed = (warming: boolean, etag: string): FleetRead => ({
   kind: 'changed',
   etag,
+  digest: etag,
   document: fleetDocument({ warming_up: warming, repositories_scanned: 1, repositories_total: 4 }),
 })
 
@@ -48,7 +49,7 @@ describe('FleetStore', () => {
 
   it('exposes the configured provider and whether the session may read content', async () => {
     const owner: Session = { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: '' }
-    const withProvider: FleetRead = { kind: 'changed', etag: '"p"', document: fleetDocument({ code_index_provider: 'codegrapher' }) }
+    const withProvider: FleetRead = { kind: 'changed', etag: '"p"', digest: 'p', document: fleetDocument({ code_index_provider: 'codegrapher' }) }
     const store = storeWith({ readFleet: async () => withProvider, readSession: async () => owner })
     store.start()
     await vi.advanceTimersByTimeAsync(0)
@@ -59,7 +60,7 @@ describe('FleetStore', () => {
 
   it('polls fast while warming up, slowly after, and revalidates with the last ETag', async () => {
     const readFleet = vi
-      .fn<(etag?: string) => Promise<FleetRead>>()
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
       .mockResolvedValueOnce(changed(true, '"a"'))
       .mockResolvedValueOnce(changed(false, '"b"'))
       .mockResolvedValueOnce({ kind: 'unchanged' })
@@ -73,20 +74,20 @@ describe('FleetStore', () => {
     expect(readFleet).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(readFleet).toHaveBeenCalledTimes(2)
-    expect(readFleet).toHaveBeenLastCalledWith('"a"')
+    expect(readFleet).toHaveBeenLastCalledWith('"a"', 2)
     expect(store.warmingUp()).toBe(false)
     await vi.advanceTimersByTimeAsync(99)
     expect(readFleet).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(readFleet).toHaveBeenCalledTimes(3)
-    expect(readFleet).toHaveBeenLastCalledWith('"b"')
+    expect(readFleet).toHaveBeenLastCalledWith('"b"', 2)
     expect(store.document().warming_up).toBe(false)
     store.stop()
   })
 
   it('keeps the last document and shows the error when a read fails, then recovers', async () => {
     const readFleet = vi
-      .fn<(etag?: string) => Promise<FleetRead>>()
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
       .mockResolvedValueOnce(changed(false, '"a"'))
       .mockRejectedValueOnce(new Error('down'))
       .mockRejectedValueOnce('odd')
@@ -117,7 +118,7 @@ describe('FleetStore', () => {
   it('stops polling, also when stopped during a read, and can start again', async () => {
     let release: (read: FleetRead) => void = () => undefined
     const readFleet = vi
-      .fn<(etag?: string) => Promise<FleetRead>>()
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
       .mockImplementationOnce(() => new Promise<FleetRead>((resolve) => (release = resolve)))
       .mockResolvedValue({ kind: 'unchanged' })
     const store = storeWith({ readFleet, readSession: async () => session })
@@ -135,7 +136,7 @@ describe('FleetStore', () => {
   })
 
   it('backs off after failures, doubling up to the slow interval, and resets on success', async () => {
-    const readFleet = vi.fn<(etag?: string) => Promise<FleetRead>>().mockRejectedValue(new Error('down'))
+    const readFleet = vi.fn<(etag?: string, expected?: number) => Promise<FleetRead>>().mockRejectedValue(new Error('down'))
     const store = storeWith({ readFleet, readSession: async () => session })
     store.start()
     await vi.advanceTimersByTimeAsync(0)
@@ -176,6 +177,93 @@ describe('FleetStore', () => {
     expect(store.sessionStatus()).toBe('ready')
     expect(store.codeBrowserUrl()).toBe('https://c.test/')
     expect(readSession).toHaveBeenCalledTimes(2)
+    store.stop()
+  })
+
+  // cockpit-views#ac:client-accepts-only-schema-2
+  it('renders no data for another schema version and says what to do, then recovers', async () => {
+    const readFleet = vi
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
+      .mockResolvedValueOnce(changed(false, '"a"'))
+      .mockRejectedValueOnce(new FleetSchemaError('daemon-older', 1, 2))
+      .mockResolvedValueOnce(changed(false, '"a"'))
+    const store = storeWith({ readFleet, readSession: async () => session })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.schemaMismatch()).toBeNull()
+    expect(store.document().machines).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.schemaMismatch()).toBe('daemon-older')
+    expect(store.error()).toBe('update wb on this machine')
+    expect(store.document().machines).toEqual([])
+    expect(store.warmingUp()).toBe(false)
+    await vi.advanceTimersByTimeAsync(300)
+    // The validator is dropped with the data, so the next read is a full one.
+    expect(readFleet).toHaveBeenNthCalledWith(3, undefined, 2)
+    expect(store.schemaMismatch()).toBeNull()
+    expect(store.document().machines).toHaveLength(2)
+    store.stop()
+  })
+
+  it('reads the expected schema version from its token', async () => {
+    const readFleet = vi.fn(async (): Promise<FleetRead> => ({ kind: 'unchanged' }))
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: FleetClient, useValue: { readFleet, readSession: async () => session } },
+        { provide: EXPECTED_SCHEMA, useValue: 3 },
+      ],
+    })
+    const store = TestBed.inject(FleetStore)
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(readFleet).toHaveBeenCalledWith(undefined, 3)
+    store.stop()
+  })
+
+  // cockpit-views#ac:unchanged-snapshot-does-nothing, cockpit-views#ac:derived-collections-computed-once
+  it('derives each collection once per document: a 304, an identical body and a clock tick recompute nothing', async () => {
+    const derived: string[] = []
+    const same = changed(false, '"a"')
+    const readFleet = vi
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
+      .mockResolvedValueOnce(same)
+      .mockResolvedValueOnce({ kind: 'unchanged' })
+      // The same body again, under a new ETag and as a freshly parsed object.
+      .mockResolvedValueOnce({ ...same, etag: '"b"', document: { ...same.document } })
+      .mockResolvedValueOnce({ ...changed(false, '"c"'), digest: 'different' })
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: FleetClient, useValue: { readFleet, readSession: async () => session } },
+        { provide: POLL_INTERVALS, useValue: { warmingUp: 10, steady: 100 } },
+        { provide: MODEL_OPTIONS, useValue: { now: () => Date.parse('2026-10-01T10:00:00Z'), onDerive: (name: string) => derived.push(name) } },
+      ],
+    })
+    const store = TestBed.inject(FleetStore)
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    const first = store.model()
+    const render = (): void => {
+      void [store.model().repositories, store.model().tasks, store.model().needsYou, store.model().readyToLand, store.model().cleanup]
+    }
+    render()
+    render()
+    const once = [...derived]
+    expect(once.filter((name) => name === 'tasks')).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(readFleet).toHaveBeenCalledTimes(2)
+    store.now.set(store.now() + 5000)
+    render()
+    expect(store.model()).toBe(first)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(readFleet).toHaveBeenCalledTimes(3)
+    expect(store.model()).toBe(first)
+    expect(derived).toEqual(once)
+    // A different document is derived once more.
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.model()).not.toBe(first)
+    render()
+    expect(derived.filter((name) => name === 'tasks')).toHaveLength(2)
+    expect(derived.filter((name) => name === 'repositories')).toHaveLength(2)
     store.stop()
   })
 

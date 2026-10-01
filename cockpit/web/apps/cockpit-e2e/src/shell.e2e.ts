@@ -8,7 +8,7 @@ test('the built shell loads under /cockpit/ with no console errors and no CSP vi
   })
   page.on('pageerror', (error) => consoleErrors.push(`page error: ${error.message}`))
   // The shell reads the daemon's API; this static server has none, so stub it.
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { schema_version: 1, warming_up: false, repositories_total: 0, repositories_scanned: 0, diagnostics: 0, machines: [], repositories: [], worktrees: [], branches: [], pull_requests: [], agents: [] } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { schema_version: 2, warming_up: false, repositories_total: 0, repositories_scanned: 0, diagnostics: 0, machines: [], repositories: [], worktrees: [], pull_requests: [], agents: [] } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: [], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.addInitScript(() => {
     const store = window as unknown as { __violations: unknown[] }
