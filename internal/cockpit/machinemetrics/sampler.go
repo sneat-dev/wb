@@ -43,7 +43,7 @@ type Source interface {
 
 // Options configures a Sampler.
 type Options struct {
-	// Source reads the machine; it is required.
+	// Source reads the machine; nil means a platform with no reader (unsupported).
 	Source Source
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
@@ -80,6 +80,9 @@ type Sampler struct {
 // New builds a Sampler that has taken no sample.
 func New(options Options) *Sampler {
 	sampler := &Sampler{source: options.Source, now: options.Now, tick: options.Tick, logf: options.Logf}
+	if sampler.source == nil {
+		sampler.source = unsupportedSource{}
+	}
 	if sampler.now == nil {
 		sampler.now = time.Now
 	}

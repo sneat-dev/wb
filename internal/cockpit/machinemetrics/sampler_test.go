@@ -96,14 +96,14 @@ func TestPartlyFilledBufferIsOldestFirst(t *testing.T) {
 	if len(got.Samples) != 3 || got.Samples[0].Load1 != 1 || got.Samples[2].Load1 != 3 {
 		t.Errorf("samples = %+v", got.Samples)
 	}
-	if empty := New(Options{Source: unsupportedSource{}}).Snapshot(); len(empty.Samples) != 0 || empty.Samples == nil {
+	if empty := New(Options{}).Snapshot(); len(empty.Samples) != 0 || empty.Samples == nil {
 		t.Errorf("an empty sampler holds %v, want an empty non-nil list", empty.Samples)
 	}
 }
 
 func TestUnsupportedPlatformStopsSamplingWithoutAnError(t *testing.T) {
 	t.Parallel()
-	sampler := New(Options{Source: unsupportedSource{}})
+	sampler := New(Options{})
 	stop := sampler.Start(t.Context())
 	stop() // the loop has already ended; stopping still returns
 	snapshot := sampler.Snapshot()
@@ -138,7 +138,10 @@ func TestCancelStopsTheLoop(t *testing.T) {
 
 func TestDefaultsUseTheRealClockAndTicker(t *testing.T) {
 	t.Parallel()
-	sampler := New(Options{Source: &procSource{}})
+	sampler := New(Options{})
+	if _, err := sampler.source.Read(); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a sampler with no source reads %v, want unsupported", err)
+	}
 	if sampler.now == nil || sampler.tick == nil || sampler.logf == nil {
 		t.Fatal("defaults missing")
 	}

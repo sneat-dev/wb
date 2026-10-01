@@ -1,3 +1,5 @@
+//go:build darwin
+
 package machinemetrics
 
 import (
@@ -5,8 +7,8 @@ import (
 	"errors"
 )
 
-// sysctlSource reads macOS through injected sysctl functions, so it is tested on
-// every platform. It reports memory, load and disk, and never CPU percent: the
+// sysctlSource reads macOS through injected sysctl functions. It is built on
+// macOS only, so no other platform carries it as unreachable code. It reports memory, load and disk, and never CPU percent: the
 // only macOS sources of CPU ticks are the Mach calls host_statistics and
 // host_processor_info, which need cgo (the kernel has no kern.cp_time), and WB
 // builds without cgo. An absent cpu_percent is honest; a number derived from the
