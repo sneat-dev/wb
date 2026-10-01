@@ -10,6 +10,7 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/herdr"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
@@ -39,10 +40,27 @@ func sentinelSources() *fakeSources {
 
 	view := filled[session.View]()
 	view.WBSessionID, view.Runtime, view.Model, view.State = "wbs-1", "claude", "opus", session.StateLive
+	// The view's process id is the sentinel number, as is the declared owner's of
+	// the worktree record, so the session is linked to the worktree; the harness
+	// session id is the one herdr's fake agent carries.
+	view.NativeHarnessID, view.StartedAt = "hid-1", newClock().Now()
+	record.OwnerPID, record.OwnerAgent = view.PID, "claude/hid-1"
 
 	run := filled[agents.Result]()
 	run.AgentID, run.State, run.Repository = "agt-1", agents.StateRunning, "acme/widgets"
 	run.Resolved.Harness, run.Resolved.Model = "codex", "gpt"
+	run.Worktree, run.Branch, run.StartedAt = "task-a", "feature/a", newClock().Now()
+	finished := newClock().Now()
+	failedRun := run
+	failedRun.AgentID, failedRun.State, failedRun.FinishedAt = "agt-2", agents.StateFailed, &finished
+	two := 2
+	failedRun.ExitCode = &two
+
+	// herdr's fake agent has a sentinel in every field but its status and the
+	// harness session id that joins it to the session.
+	herdrAgent := filled[herdr.Agent]()
+	herdrAgent.Status = herdr.StatusBlocked
+	herdrAgent.Session = &herdr.AgentSession{Agent: sentinel + "agent", Kind: "id", Source: sentinel + "source", Value: "hid-1"}
 
 	// The remote entry is built by the filler like the rest, so every field its
 	// types have, and gain later, carries a sentinel except the few the
@@ -67,8 +85,9 @@ func sentinelSources() *fakeSources {
 		branches:  map[string][]BranchRef{"acme/widgets": {ref}},
 		bindings:  []worktrees.RegisteredPullRequestBinding{binding},
 		sessions:  []session.View{view},
-		runs:      []agents.Result{run},
+		runs:      []agents.Result{run, failedRun},
 		remote:    []remotestate.Entry{entry},
+		activity:  HerdrActivity{Open: func() (HerdrLister, error) { return fakeHerdr{agents: []herdr.Agent{herdrAgent}}, nil }},
 	}
 }
 
@@ -161,7 +180,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
-		`"desktop"`, `"v0.9.0"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"desktop"`, `"v0.9.0"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
@@ -191,7 +210,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"KindCount":        {"kind", "count"},
 		"MetricsResponse":  {"machine", "route", "fetched_at", "samples", "reason"},
 		"Sample":           {"cpu_percent", "load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"},
-		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
+		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "activity", "repository", "task", "worktrees", "started_at", "finished_at", "exit_code"}, entry...),
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),

@@ -784,7 +784,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `runtime`, `model` | string | opt. | record | both |
 | `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
 | `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
-| `repository`, `task` | string | opt. | run record; claim or owner for a session | both |
+| `repository`, `task` | string | opt. | run record; for a session, the declared owner process of its worktrees | both |
 | `worktrees` | list of entry ids | opt. | as above | both |
 | `started_at` | time | opt. | record | both |
 | `finished_at` | time | opt. | a finished run's record | both |
@@ -926,7 +926,10 @@ agents once per refresh (`herdr.Client.AgentList`, whose `Agent.Status` has exac
 values) and joins each to a registered session by the harness session id
 (`Agent.HarnessSessionID`). With no herdr or no match the field is omitted and the application says
 "state not reported". It is present only for agents of this machine. Screen text and logs are
-content: they are owner-only and belong to `cockpit-actions`, not to this Feature.
+content: they are owner-only and belong to `cockpit-actions`, not to this Feature. The daemon
+reads herdr as a process of its own, with the environment it was started with: a daemon started by
+launchd or systemd has no `HERDR_SOCKET_PATH` and so reaches only herdr's default server, and the
+agents of any other herdr server have no `activity` (see Open Questions).
 
 #### REQ: agent-fields
 
@@ -935,8 +938,16 @@ populated for a dispatched run from its run record (`agents.Result`: `Repository
 `Branch`, `StartedAt`, `State`, `FinishedAt`, `ExitCode`); a finished run also carries
 `finished_at` and `exit_code`, never its free-text failure, and its `state` is `running`,
 `completed`, `failed`, `timeout` or `abandoned`. A registered session has `state` `live` or
-`parked`, and only `started_at` is populated, plus a worktree and task when a worktree's owner or
-claim names that session; otherwise they are absent and are never guessed. The agents of another
+`parked`, and only `started_at` is populated, plus its worktrees, task and repository when a
+worktree's declared owner process (the process id its Work Log journal records) is the process of
+that live session (a claim records no session, so it links nothing) and the two records agree on
+everything else both carry: the declared runtime and harness session id, and a process start time
+(the owner's process cannot have started after the session registered), which is observed only on
+Linux. Where neither record carries more than the process id, or the platform cannot observe a
+start time, the process id and the owner's liveness are all there is to link by, which is a
+limitation: a reused process id on such a machine can link a session to a worktree it does not
+hold. Otherwise they are absent and are never guessed. A session whose worktrees name more than one task or repository carries none of
+that one; at most 10 worktrees are listed. The agents of another
 machine are capped at 200 per machine when read from a snapshot and when published.
 
 #### REQ: machine-fields
@@ -2588,6 +2599,10 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 
 ## Open Questions
 
+- Which herdr server should the daemon read for `activity`, and should it be configurable? Today
+  it reads the one its own environment reaches (the default server for a launchd or systemd
+  daemon); agents in another herdr server, or another named session, show no activity. Naming a
+  socket or session in configuration is not specified here.
 - `wb worktree land` and cleanup seal most merged work as `removed` (3,410 of 3,679 terminal
   records on the founder's machine, against 62 `landed`), so the Cockpit can report finished
   work but not true landings. Sealing `landed` with merge evidence would let it show them: a

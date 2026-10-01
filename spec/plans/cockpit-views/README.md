@@ -124,7 +124,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-4
 **Verifies:** cockpit-views#ac:agent-activity-joins-herdr-by-session, cockpit-views#ac:agent-entries-carry-run-links
 **Depends-On:** 3
-**Status:** planning
+**Status:** complete
 
 Once per refresh, when herdr is available, list its agents (`herdr.Client.AgentList`) and join each to a registered session by the harness session id, setting `activity` to the herdr status (`working`, `blocked`, `idle`, `done`, `unknown`) and omitting it with no herdr or no match; never read screen text. Populate `worktrees`, `task`, `repository`, `started_at` and the exit code for dispatched runs from the run record (`agents.Result`), and for a session only `started_at` plus the worktree and task a worktree's owner or claim names. Never emit a run's free-text failure.
 

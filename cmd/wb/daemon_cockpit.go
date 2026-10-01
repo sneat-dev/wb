@@ -94,9 +94,16 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	}
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
-		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: withHerdrActivity(local.Collectors(remote)), Interval: config.RefreshInterval,
 		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
+}
+
+// withHerdrActivity adds the herdr read of agent activity to the local
+// collectors. herdr is optional: a machine without it reports no activity.
+func withHerdrActivity(collectors cockpitfleet.Collectors) cockpitfleet.Collectors {
+	collectors.Activity = cockpitfleet.DefaultHerdrActivity()
+	return collectors
 }

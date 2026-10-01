@@ -160,3 +160,41 @@ func (s *Snapshotter) Export(metricsOnly bool) Envelope {
 	answer := sanitizeMetrics(s.metricsAnswerFor(localMachineID(s.machine)), now)
 	return NewEnvelope(document, MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}, now, metricsOnly)
 }
+
+// TestExportCarriesTheAgentActivityAndRunLinkFields proves the envelope of this
+// machine's agents holds activity, task, worktrees, started_at, finished_at and
+// exit_code, that it passes its own strict decoder, and that the same envelope
+// with an activity outside herdr's five values is refused.
+func TestExportCarriesTheAgentActivityAndRunLinkFields(t *testing.T) {
+	t.Parallel()
+	full, now := exportedEnvelope(t, false)
+	var session, finished Agent
+	for _, agent := range full.Fleet.Agents {
+		switch agent.RunID {
+		case "":
+			session = agent
+		case "agt-2":
+			finished = agent
+		}
+	}
+	if session.Activity != ActivityBlocked || session.Task != "task-a" || len(session.Worktrees) != 1 || session.StartedAt.IsZero() {
+		t.Errorf("exported session = %+v", session)
+	}
+	if finished.Task != "task-a" || len(finished.Worktrees) != 1 || finished.StartedAt.IsZero() || finished.FinishedAt.IsZero() || finished.ExitCode == nil || *finished.ExitCode != 2 {
+		t.Errorf("exported finished run = %+v", finished)
+	}
+	body, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeEnvelope(bytes.NewReader(body), false, now); err != nil {
+		t.Fatalf("the exported envelope is refused: %v", err)
+	}
+	hostile := bytes.Replace(body, []byte(`"activity":"blocked"`), []byte(`"activity":"napping"`), 1)
+	if bytes.Equal(hostile, body) {
+		t.Fatal("the test did not change the activity")
+	}
+	if _, err := DecodeEnvelope(bytes.NewReader(hostile), false, now); err == nil || !strings.Contains(err.Error(), "activity is not valid") {
+		t.Errorf("an unknown activity = %v, want it refused", err)
+	}
+}

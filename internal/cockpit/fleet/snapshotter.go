@@ -110,6 +110,9 @@ type Options struct {
 	// StopWait bounds how long stopping waits for a read of the other
 	// machines; zero or less means two seconds.
 	StopWait time.Duration
+	// ActivityTimeout bounds the herdr read of one refresh; zero or less means
+	// three seconds.
+	ActivityTimeout time.Duration
 	// ProviderTimeout bounds one code-index provider ask and ProviderBudget all
 	// the asks of one repository's read; zero or less means 20 s and 2 min.
 	ProviderTimeout time.Duration
@@ -202,6 +205,7 @@ type Snapshotter struct {
 	workers           int
 	repositoryTimeout time.Duration
 	stopWait          time.Duration
+	activityTimeout   time.Duration
 	providerTimeout   time.Duration
 	providerBudget    time.Duration
 	now               func() time.Time
@@ -219,8 +223,10 @@ type Snapshotter struct {
 	refresh    sync.Mutex
 	side       sync.WaitGroup
 	remoteBusy atomic.Bool
-	pullBusy   atomic.Bool
-	mu         sync.RWMutex
+	// activityBusy keeps one herdr read at a time, like remoteBusy.
+	activityBusy atomic.Bool
+	pullBusy     atomic.Bool
+	mu           sync.RWMutex
 
 	doc         Document
 	payload     cockpit.Payload
@@ -234,8 +240,11 @@ type Snapshotter struct {
 	repos       map[string]*repoState
 	agents      []agentRecord
 	truncated   bool
-	bindings    []worktrees.RegisteredPullRequestBinding
-	boundAt     time.Time
+	// activity is herdr's status by harness session id, as of the last herdr
+	// read that answered; nil when herdr is absent or did not answer.
+	activity map[string]string
+	bindings []worktrees.RegisteredPullRequestBinding
+	boundAt  time.Time
 	// observed holds the last successful observation of each recorded pull
 	// request, by pullKey; attempts when each was last asked about and how
 	// many reads in a row failed; spent when the observations of the last hour
@@ -270,7 +279,7 @@ func New(options Options) *Snapshotter {
 	snapshotter := &Snapshotter{
 		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
-		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
+		stopWait: options.StopWait, activityTimeout: options.ActivityTimeout, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
 		repos: map[string]*repoState{}, observed: map[string]pullObservation{}, metricsSources: slices.Clone(options.Metrics),
 		metrics:      metricsCache{entries: map[string]cachedMetrics{}},
@@ -297,6 +306,9 @@ func New(options Options) *Snapshotter {
 	}
 	if snapshotter.stopWait <= 0 {
 		snapshotter.stopWait = defaultStopWait
+	}
+	if snapshotter.activityTimeout <= 0 {
+		snapshotter.activityTimeout = activityTimeout
 	}
 	if snapshotter.providerTimeout <= 0 {
 		snapshotter.providerTimeout = defaultProviderTimeout
@@ -504,6 +516,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 		return err
 	})
 	s.startRemote(ctx)
+	s.startActivity(ctx)
 	if listErr != nil {
 		failures := s.refreshMachineState(ctx)
 		s.startPullRequests(ctx)
@@ -998,6 +1011,35 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 	}()
 }
 
+// startActivity lists herdr's agents in a goroutine of its own, once per
+// refresh and under activityTimeout, unless a read is still running. The pass
+// does not wait for it: the statuses are published when they arrive. A herdr
+// that is absent, fails or is too slow leaves every agent with no activity
+// ("state not reported"), without a diagnostic: most machines have no herdr.
+func (s *Snapshotter) startActivity(ctx context.Context) {
+	if s.collectors.Activity == nil || !s.activityBusy.CompareAndSwap(false, true) {
+		return
+	}
+	s.side.Add(1)
+	go func() {
+		defer s.side.Done()
+		defer s.activityBusy.Store(false)
+		ctx, cancel := context.WithTimeout(ctx, s.activityTimeout)
+		defer cancel()
+		var activity map[string]string
+		if err := catch(func() (err error) {
+			activity, err = s.collectors.Activity.Activity(ctx)
+			return err
+		}); err != nil {
+			activity = nil
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.activity = activity
+		s.publishMaybeLocked()
+	}()
+}
+
 // publishMaybeLocked publishes unless a pass is running and the last
 // publication was less than publishInterval ago; the pass publishes once more
 // when it ends. The caller holds s.mu.
@@ -1039,6 +1081,12 @@ func (s *Snapshotter) publishLocked() {
 	for _, id := range ids {
 		worktreesOf[id] = s.repos[id].entries.worktrees
 	}
+	ownersByPID := map[int][]ownerLink{}
+	for _, id := range ids {
+		for _, link := range s.repos[id].entries.owners {
+			ownersByPID[link.pid] = append(ownersByPID[link.pid], link)
+		}
+	}
 	pullRequests, diagnostics := mapPullRequests(s.machine, s.bindings, s.boundAt, idsBySlug, worktreesOf, s.observed)
 	document.Diagnostics = diagnostics
 	activeOf := map[string]int{}
@@ -1060,11 +1108,11 @@ func (s *Snapshotter) publishLocked() {
 	}
 	document.PullRequests = append(document.PullRequests, pullRequests...)
 	for _, record := range s.agents {
-		agent := record.agent
+		repositoryID := ""
 		if owners := idsBySlug[record.slug]; len(owners) == 1 {
-			agent.Repository = owners[0]
+			repositoryID = owners[0]
 		}
-		document.Agents = append(document.Agents, agent)
+		document.Agents = append(document.Agents, completeAgent(record, repositoryID, worktreesOf, ownersByPID, s.activity))
 	}
 	document.Machines = append(document.Machines, Machine{
 		Entry:     localEntry(localMachineID(s.machine), s.machine, now),

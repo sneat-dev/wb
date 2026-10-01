@@ -27,6 +27,17 @@ type repoEntries struct {
 	repository Repository
 	worktrees  []Worktree
 	branches   []Branch
+	// owners are the worktrees whose declared owner process is alive, by that
+	// process id: the only link between a session and its worktrees.
+	owners []ownerLink
+}
+
+// ownerLink is a worktree held by a live owner process.
+type ownerLink struct {
+	pid                     int
+	agent                   string
+	started                 time.Time
+	worktree, task, project string
 }
 
 // recordedWorktree is a linked worktree joined with what it records about
@@ -110,6 +121,9 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 			activity = item.record.CreatedAt
 		}
 		byBranch[branch] = linkedWorktree{id: id, task: item.record.Task}
+		if item.record.OwnerPID > 0 {
+			mapped.owners = append(mapped.owners, ownerLink{pid: item.record.OwnerPID, worktree: id, task: item.record.Task, project: repositoryID, agent: item.record.OwnerAgent, started: item.record.OwnerStarted})
+		}
 		worktree := Worktree{
 			Entry: entry(id), Repository: repositoryID, Name: item.record.Task, Task: item.record.Task, Branch: branch,
 			OwnerState: localOwnerState(item.record.Owner), LastActivityAt: activity, CodeIndex: codeIndex.byPath[item.linked.Path],
@@ -344,6 +358,12 @@ type agentRecord struct {
 	agent Agent
 	slug  string
 	when  time.Time
+	// pid and harness are a session's process id and harness-native session id,
+	// which join it to a worktree owner and to herdr; branch and task are a
+	// run's. None is emitted.
+	pid            int
+	harness        string
+	branch, taskOf string
 }
 
 // The agents the document carries: at most agentCap, the newest, being
@@ -367,7 +387,8 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		mapped = append(mapped, agentRecord{agent: Agent{
 			Entry: localEntry(entryID(kindAgent, machine, AgentSession, identity), machine, at),
 			Kind:  AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
-		}, when: view.StartedAt})
+			StartedAt: view.StartedAt,
+		}, when: view.StartedAt, pid: view.PID, harness: firstNonEmpty(view.NativeHarnessID, view.AgentID)})
 	}
 	for _, run := range runs {
 		when := run.StartedAt
@@ -380,7 +401,8 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		mapped = append(mapped, agentRecord{agent: Agent{
 			Entry: localEntry(entryID(kindAgent, machine, AgentRun, run.AgentID), machine, at),
 			Kind:  AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
-		}, slug: run.Repository, when: when})
+			Task: plainText(run.Worktree), StartedAt: run.StartedAt, FinishedAt: finishedAt(run), ExitCode: exitCodeOf(run),
+		}, slug: run.Repository, when: when, branch: run.Branch, taskOf: plainText(run.Worktree)})
 	}
 	mapped = uniqueByID(mapped, func(item agentRecord) string { return item.agent.ID })
 	sort.Slice(mapped, func(i, j int) bool {
@@ -393,6 +415,106 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		mapped, truncated = mapped[:agentCap], true
 	}
 	return mapped, truncated
+}
+
+// finishedAt is when a finished run finished, zero while it runs.
+func finishedAt(run agents.Result) time.Time {
+	if run.FinishedAt == nil || run.State == agents.StateRunning {
+		return time.Time{}
+	}
+	return *run.FinishedAt
+}
+
+// exitCodeOf is a finished run's exit code, nil while it runs or when the run
+// recorded none or one outside what the document allows (a negative code, which
+// a signal can leave). The run's free-text failure is never read.
+func exitCodeOf(run agents.Result) *int {
+	if run.ExitCode == nil || run.State == agents.StateRunning || *run.ExitCode < 0 || *run.ExitCode > maxCount {
+		return nil
+	}
+	code := *run.ExitCode
+	return &code
+}
+
+// completeAgent adds to a mapped agent what the rest of the snapshot knows:
+// a run's worktrees (those of its repository on its branch, or named as its
+// task when it recorded no branch), a live session's worktrees, task and
+// repository (those whose declared owner process is the session's: when the
+// links name one task or one repository the entry carries it, and otherwise
+// leaves it out), and a live session's herdr activity by its harness session id.
+// repositoryID is the id of the repository a run works in, "" for none.
+func completeAgent(record agentRecord, repositoryID string, worktreesOf map[string][]Worktree, ownersByPID map[int][]ownerLink, activity map[string]string) Agent {
+	agent := record.agent
+	if agent.Kind == AgentRun {
+		agent.Repository = repositoryID
+		for _, worktree := range worktreesOf[repositoryID] {
+			if (record.branch != "" && worktree.Branch == record.branch) || (record.branch == "" && worktree.Task == record.taskOf) {
+				agent.Worktrees = append(agent.Worktrees, worktree.ID)
+			}
+		}
+		agent.Worktrees = boundedIDs(agent.Worktrees)
+		return agent
+	}
+	if agent.State != session.StateLive {
+		return agent
+	}
+	var links []ownerLink
+	for _, link := range ownersByPID[record.pid] {
+		if record.pid > 0 && sameProcess(agent, record.harness, link) {
+			links = append(links, link)
+		}
+	}
+	if len(links) > 0 {
+		task, project := links[0].task, links[0].project
+		for _, link := range links {
+			agent.Worktrees = append(agent.Worktrees, link.worktree)
+			if link.task != task {
+				task = ""
+			}
+			if link.project != project {
+				project = ""
+			}
+		}
+		agent.Worktrees, agent.Task, agent.Repository = boundedIDs(agent.Worktrees), task, project
+	}
+	if status, found := activity[record.harness]; found && record.harness != "" {
+		agent.Activity = status
+	}
+	return agent
+}
+
+// sameProcess reports whether the session and a worktree's owner, which share a
+// process id, are the same process rather than a reuse of the id: the declared
+// runtime and harness session id must agree wherever both records carry one, and
+// the owner's process cannot have started after the session registered. When
+// neither record carries anything but the id, the id and the owner's liveness
+// are all there is.
+func sameProcess(session Agent, harness string, link ownerLink) bool {
+	runtime, id, split := strings.Cut(link.agent, "/")
+	switch {
+	case !split && link.agent != "" && (session.Runtime != "" || harness != ""):
+		if link.agent != session.Runtime && link.agent != harness {
+			return false
+		}
+	case split:
+		if (runtime != "" && session.Runtime != "" && runtime != session.Runtime) || (id != "" && harness != "" && id != harness) {
+			return false
+		}
+	}
+	return link.started.IsZero() || session.StartedAt.IsZero() || !link.started.After(session.StartedAt.Add(processStartSkew))
+}
+
+// boundedIDs is ids sorted, with no duplicate, at most maxAgentWorktrees.
+func boundedIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Strings(ids)
+	ids = slices.Compact(ids)
+	if len(ids) > maxAgentWorktrees {
+		ids = ids[:maxAgentWorktrees]
+	}
+	return ids
 }
 
 // remoteView is what the other machines' snapshots contribute, mapped.

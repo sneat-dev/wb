@@ -60,16 +60,17 @@ func TestE2ERecordReadsTheRealOwnerLivenessAndWritesNothing(t *testing.T) {
 	for name, test := range map[string]struct {
 		worktree string
 		want     string
+		wantPID  int
 	}{
-		"newest owner is this process": {journalOf(t, 3, true), worktrees.OwnerLive},
-		"every owner is dead":          {journalOf(t, 2, false), worktrees.OwnerGone},
-		"no owner recorded":            {journalOf(t, 0, false), worktrees.OwnerUnstated},
+		"newest owner is this process": {journalOf(t, 3, true), worktrees.OwnerLive, os.Getpid()},
+		"every owner is dead":          {journalOf(t, 2, false), worktrees.OwnerGone, 0},
+		"no owner recorded":            {journalOf(t, 0, false), worktrees.OwnerUnstated, 0},
 	} {
 		gitDir := filepath.Join(filepath.Dir(test.worktree), "repo", ".git")
 		before := fileStates(t, gitDir)
 		record, ok := collectors.Record(test.worktree)
-		if !ok || record.Owner != test.want {
-			t.Errorf("%s: record = %+v, %v; want owner %q", name, record, ok, test.want)
+		if !ok || record.Owner != test.want || record.OwnerPID != test.wantPID {
+			t.Errorf("%s: record = %+v, %v; want owner %q and process %d", name, record, ok, test.want, test.wantPID)
 		}
 		requireUnchanged(t, name+": .git", before, fileStates(t, gitDir))
 	}
@@ -96,7 +97,7 @@ func TestE2EOwnerLivenessCost(t *testing.T) { //nolint:paralleltest // a timing 
 	measure := func() time.Duration {
 		start := time.Now()
 		for _, dir := range dirs {
-			if got := declaredOwner(dir); got != worktrees.OwnerLive {
+			if got, _ := declaredOwner(dir); got != worktrees.OwnerLive {
 				t.Fatalf("owner of %s = %q, want live", dir, got)
 			}
 		}
