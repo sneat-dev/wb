@@ -5,6 +5,7 @@ import { fleetDocument } from '@cockpit/fleet-data/testing'
 import { App, PAGE_LINKS } from './app'
 import { appRoutes } from './app.routes'
 import { providePageTitle } from './shell/page-title'
+import { OverlayLoader } from './shell/overlay-loader'
 import { ShellState } from './shell/shell-state'
 
 describe('App', () => {
@@ -44,6 +45,15 @@ describe('App', () => {
     TestBed.inject(ShellState).openPalette()
     await vi.waitFor(() => expect(root.querySelector('app-overlays [role="dialog"][aria-label="Search"]')).not.toBeNull())
     expect(fixture).toBeDefined()
+  })
+
+  // The sign-in card lives in the overlays chunk: a click on the chip before the idle prefetch must fetch it at once.
+  it('fetches the overlays at once when the sign-in card is asked for, without waiting for the browser to be idle', async () => {
+    const { fixture } = await open('/')
+    const ensure = vi.spyOn(TestBed.inject(OverlayLoader), 'ensure')
+    TestBed.inject(ShellState).toggleOwnerHint()
+    await fixture.whenStable()
+    expect(ensure).toHaveBeenCalled()
   })
 
   it('does not create the overlays in a shell that is already gone', async () => {

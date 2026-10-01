@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, inject, input, output, signal, viewChild } from '@angular/core'
 import { RegistryAction } from '@cockpit/fleet-data'
 import { Glyph } from './glyph'
+import { GLYPH_MORE } from './glyphs'
 
 /** The one explanation an action the caller may not run carries, whatever the action (REQ:owner-gating-is-visible). */
 export const OWNER_ONLY_EXPLANATION = 'Needs an owner session'
@@ -19,24 +20,41 @@ export function disabledReason(action: RegistryAction): string | undefined {
   return action.applicable ? undefined : (action.reason ?? 'Not available now')
 }
 
+/** Only these two safety classes are direct buttons; anything else, a class this build does not know or none at all, goes under the overflow menu. */
+export function isDirect(action: RegistryAction): boolean {
+  return action.safety === 'safe' || action.safety === 'guarded'
+}
+
 const MENU_WIDTH = 224
 const MARGIN = 8
 let nextId = 0
 
+interface Entry {
+  action: RegistryAction
+  reason: string | undefined
+}
+
 /**
  * The action area of one pull request or worktree (REQ:action-slots). It renders
  * exactly what the registry returned and hardcodes no action: `safe` and
- * `guarded` actions are buttons, `destructive` ones sit under an overflow menu
- * ([cockpit-actions] REQ:common-actions-are-direct). An action that cannot run is
- * disabled and carries its reason (the registry's, or, for a caller without the
- * capability, the same single explanation for every action). A disabled control
- * stays focusable (`aria-disabled`) so its reason can be read.
+ * `guarded` actions are buttons; every other class (`destructive`, one this build
+ * does not know, or none) sits under an overflow menu, so an unknown class never
+ * becomes a prominent button ([cockpit-actions] REQ:common-actions-are-direct). An
+ * action that cannot run is `aria-disabled` (still focusable) with its reason read
+ * once, shown in words on hover, focus and tap, and, for a caller without the
+ * capability, the same single explanation for every action.
  *
  * With no registry (`actions` undefined) or no action for the target, nothing is
  * rendered at all: no placeholder, and since the host is `display: contents` no
  * box and no gap. Activating an action only emits `activated`; the preview and
  * the execution belong to the cockpit-actions Feature, and no navigation or
  * request happens here.
+ *
+ * The overflow menu is a manual popover where the browser has them (it is then in
+ * the top layer, so a transformed or clipped row cannot cut it off) and a fixed
+ * box where it has not. Its document, resize and scroll listeners exist only while
+ * it is open; Tab closes it; Escape and choosing an item return focus to its
+ * button; focus moves with the arrow keys, Home and End over one tab stop.
  */
 @Component({
   selector: 'app-action-slot',
@@ -44,7 +62,7 @@ let nextId = 0
   templateUrl: './action-slot.html',
   styleUrl: './action-slot.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(document:click)': 'outside($event)', '(window:resize)': 'close()', '(keydown.escape)': 'escape($event)' },
+  host: { '(keydown.escape)': 'escape($event)' },
 })
 export class ActionSlot {
   /** What the registry returned for the target; undefined when the registry route is absent. */
@@ -56,29 +74,50 @@ export class ActionSlot {
   private readonly document = inject(DOCUMENT)
   private readonly injector = inject(Injector)
   private readonly menu = viewChild<ElementRef<HTMLElement>>('menu')
-  private readonly trigger = viewChild<ElementRef<HTMLElement>>('trigger')
   protected readonly uid = `action-slot-${nextId++}`
+  protected readonly more = GLYPH_MORE
   protected readonly open = signal(false)
   protected readonly position = signal<{ left: number; top?: number; bottom?: number }>({ left: MARGIN })
+  /** The item of the menu that is the one tab stop. */
+  protected readonly active = signal(0)
+  /** The reason of the disabled action under the pointer, focus or finger, in words. */
+  protected readonly shownReason = signal<string | undefined>(undefined)
 
-  /** Each action with its reason, in the registry's order, in the direct buttons and the overflow menu. */
-  private readonly entries = computed(() => (this.actions() ?? []).map((action) => ({ action, reason: disabledReason(action) })))
-  protected readonly direct = computed(() => this.entries().filter((entry) => entry.action.safety !== 'destructive'))
-  protected readonly overflow = computed(() => this.entries().filter((entry) => entry.action.safety === 'destructive'))
+  private readonly entries = computed<Entry[]>(() => (this.actions() ?? []).map((action) => ({ action, reason: disabledReason(action) })))
+  protected readonly direct = computed(() => this.entries().filter((entry) => isDirect(entry.action)))
+  protected readonly overflow = computed(() => this.entries().filter((entry) => !isDirect(entry.action)))
   protected readonly shown = computed(() => this.entries().length > 0)
 
   /** The button the open menu hangs from. */
   private anchor: HTMLElement | undefined
+  private native = false
+  private readonly onDocumentClick = (event: Event): void => {
+    if (!this.host.nativeElement.contains(event.target as Node)) this.close()
+  }
+  private readonly onResize = (): void => this.close()
   /** The menu is fixed, so a scroll moves it with its button instead of leaving it behind. */
   private readonly onScroll = (): void => this.place(this.anchor as HTMLElement)
 
   constructor() {
-    inject(DestroyRef).onDestroy(() => this.document.removeEventListener('scroll', this.onScroll, true))
+    inject(DestroyRef).onDestroy(() => this.release())
   }
 
-  protected activate(entry: { action: RegistryAction; reason: string | undefined }): void {
+  protected showReason(entry: Entry): void {
+    this.shownReason.set(entry.reason === undefined ? undefined : `${entry.action.title}: ${entry.reason}`)
+  }
+
+  protected hideReason(): void {
+    this.shownReason.set(undefined)
+  }
+
+  protected activate(entry: Entry): void {
+    if (entry.reason !== undefined) return this.showReason(entry)
+    this.activated.emit({ action: entry.action, target: this.target() })
+  }
+
+  protected choose(entry: Entry): void {
     if (entry.reason !== undefined) return
-    this.close()
+    this.close(true)
     this.activated.emit({ action: entry.action, target: this.target() })
   }
 
@@ -91,42 +130,61 @@ export class ActionSlot {
   }
 
   protected toggle(trigger: HTMLElement): void {
-    if (this.open()) return this.close()
+    if (this.open()) return this.close(true)
     this.anchor = trigger
     this.place(trigger)
+    this.active.set(0)
     this.open.set(true)
+    this.document.addEventListener('click', this.onDocumentClick)
     this.document.addEventListener('scroll', this.onScroll, true)
-    // The menu is shown by the next render; focus moves into it then.
-    afterNextRender(() => this.focusFirst(), { injector: this.injector })
+    this.document.defaultView?.addEventListener('resize', this.onResize)
+    // The menu is shown by the next render; it goes to the top layer and takes focus then.
+    afterNextRender(
+      () => {
+        const element = (this.menu() as ElementRef<HTMLElement>).nativeElement
+        if (typeof element.showPopover === 'function') {
+          element.showPopover()
+          this.native = true
+        }
+        element.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+      },
+      { injector: this.injector },
+    )
   }
 
-  protected close(): void {
-    this.open.set(false)
+  /** Lets go of the listeners and the top layer. */
+  private release(): void {
+    this.document.removeEventListener('click', this.onDocumentClick)
     this.document.removeEventListener('scroll', this.onScroll, true)
+    this.document.defaultView?.removeEventListener('resize', this.onResize)
+    if (this.native) {
+      this.menu()?.nativeElement.hidePopover()
+      this.native = false
+    }
   }
 
-  protected outside(event: Event): void {
-    if (this.open() && !this.host.nativeElement.contains(event.target as Node)) this.close()
+  /** Closes the menu; `refocus` puts focus back on its button. */
+  protected close(refocus = false): void {
+    this.release()
+    this.open.set(false)
+    if (refocus) this.anchor?.focus()
   }
 
   protected escape(event: Event): void {
     if (!this.open()) return
     event.stopPropagation()
-    this.close()
-    ;(this.trigger() as ElementRef<HTMLElement>).nativeElement.focus()
+    this.close(true)
   }
 
-  /** Arrow keys, Home and End move between the menu's items; focus stays in the menu until it closes. */
+  /** Arrow keys, Home and End move between the menu's items; Tab closes the menu and goes on. */
   protected navigate(event: KeyboardEvent): void {
+    if (event.key === 'Tab') return this.close()
     const items = [...(this.menu() as ElementRef<HTMLElement>).nativeElement.querySelectorAll<HTMLElement>('[role="menuitem"]')]
     const index = items.indexOf(this.document.activeElement as HTMLElement)
-    const target = { ArrowDown: (index + 1) % items.length, ArrowUp: (index - 1 + items.length) % items.length, Home: 0, End: items.length - 1 }[event.key]
+    const last = items.length - 1
+    const target = { ArrowDown: index < 0 || index === last ? 0 : index + 1, ArrowUp: index <= 0 ? last : index - 1, Home: 0, End: last }[event.key]
     if (target === undefined) return
     event.preventDefault()
     items[target].focus()
-  }
-
-  private focusFirst(): void {
-    ;(this.menu() as ElementRef<HTMLElement>).nativeElement.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
   }
 }

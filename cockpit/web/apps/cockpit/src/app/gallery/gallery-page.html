@@ -52,7 +52,7 @@
         @for (item of pullRequests; track item.title) {
           <div class="row">
             <span class="row-label">{{ item.title }}</span>
-            <app-pr-chip [pullRequest]="item.pullRequest" [now]="now" />
+            <app-pr-chip [pullRequest]="item.pullRequest" />
           </div>
         }
       </div>
@@ -61,16 +61,16 @@
         @for (item of machines; track item.title) {
           <div class="row">
             <span class="row-label">{{ item.title }}</span>
-            <app-machine-chip [machine]="item.machine" [stale]="item.stale" [now]="now" />
+            <app-machine-chip [machine]="item.machine" [stale]="item.stale" />
           </div>
         }
         <h4 class="sub">Relative time</h4>
         <div class="row">
           <span class="row-items">
             @for (at of times; track at) {
-              <app-relative-time [at]="at" [now]="now" />
+              <app-relative-time [at]="at" />
             }
-            <app-relative-time [now]="now" />
+            <app-relative-time />
           </span>
         </div>
       </div>

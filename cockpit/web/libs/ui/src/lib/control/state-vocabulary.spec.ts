@@ -1,6 +1,5 @@
 import { TASK_STATES } from '@cockpit/fleet-data'
-import { GLYPHS } from './glyph'
-import { BadgeKind, KIND_NAME, badgeSpec } from './state-vocabulary'
+import { BadgeKind, KIND_NAME, RAW_VALUE_LIMIT, badgeSpec, sanitisedValue } from './state-vocabulary'
 
 const VALUES: Record<BadgeKind, string[]> = {
   task: TASK_STATES.map((info) => info.id),
@@ -13,6 +12,7 @@ const VALUES: Record<BadgeKind, string[]> = {
   route: ['local', 'live', 'live-remote', 'cached', 'stale', 'none'],
   load: ['free', 'busy', 'not-reported'],
   checks: ['passed', 'failed', 'pending', 'unknown'],
+  operation: ['queued', 'running', 'succeeded', 'failed', 'cancelled'],
 }
 
 describe('the state vocabulary', () => {
@@ -23,7 +23,8 @@ describe('the state vocabulary', () => {
       for (const value of VALUES[kind]) {
         const spec = badgeSpec(kind, value)
         expect(['ok', 'warn', 'bad', 'idle'], `${kind}/${value}`).toContain(spec.tone)
-        expect(Object.keys(GLYPHS), `${kind}/${value}`).toContain(spec.icon)
+        expect(spec.icon.length, `${kind}/${value}`).toBeGreaterThan(0)
+        expect(spec.unrecognised, `${kind}/${value}`).toBe(false)
         expect(spec.label.trim(), `${kind}/${value}`).not.toBe('')
       }
     }
@@ -56,14 +57,32 @@ describe('the state vocabulary', () => {
   })
 
   it('shows an absent value as a grey "not reported", by kind', () => {
-    expect(badgeSpec('task', undefined)).toEqual({ tone: 'idle', icon: 'help', label: 'state not reported', unreported: true })
+    expect(badgeSpec('task', undefined)).toMatchObject({ tone: 'idle', label: 'state not reported', unreported: true, unrecognised: false })
     expect(badgeSpec('mergeable', undefined).label).toBe('merge state not reported')
     expect(badgeSpec('load', '').label).toBe('load unknown')
     expect(badgeSpec('checks', undefined).label).toBe('checks not reported')
   })
 
-  it('shows a value outside the vocabulary as itself, in grey and dashed, never as a guess', () => {
-    expect(badgeSpec('pr-state', 'abandoned-by-aliens')).toEqual({ tone: 'idle', icon: 'help', label: 'abandoned-by-aliens', unreported: true })
-    expect(badgeSpec('task', 'whatever').label).toBe('whatever')
+  it('shows a value outside the vocabulary as its sanitised self, in grey and dashed, marked not recognised, never as a guess', () => {
+    expect(badgeSpec('pr-state', 'abandoned-by-aliens')).toMatchObject({ tone: 'idle', label: 'abandoned-by-aliens', unreported: true, unrecognised: true })
+    expect(badgeSpec('task', 'whatever')).toMatchObject({ label: 'whatever', unrecognised: true })
+    expect(badgeSpec('operation', 'exploded').unrecognised).toBe(true)
+  })
+
+  it('looks a value up as an own key only, so a prototype key is not recognised', () => {
+    for (const kind of Object.keys(VALUES) as BadgeKind[]) {
+      for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+        expect(badgeSpec(kind, key), `${kind}/${key}`).toMatchObject({ tone: 'idle', label: key, unrecognised: true })
+      }
+    }
+  })
+
+  it('removes control, invisible and bidirectional characters from a value it shows, keeps one line and caps the length', () => {
+    expect(sanitisedValue('a\u202eb\u200bc\nd\te')).toBe('a b c d e')
+    expect(sanitisedValue('\u200b\u0000')).toBe('unknown')
+    expect(sanitisedValue('x'.repeat(100))).toHaveLength(RAW_VALUE_LIMIT)
+    expect(sanitisedValue('x'.repeat(100)).endsWith('…')).toBe(true)
+    expect(sanitisedValue('x'.repeat(RAW_VALUE_LIMIT))).toBe('x'.repeat(RAW_VALUE_LIMIT))
+    expect(badgeSpec('owner', '\u202egnp.exe').label).not.toMatch(/[\u202e]/)
   })
 })

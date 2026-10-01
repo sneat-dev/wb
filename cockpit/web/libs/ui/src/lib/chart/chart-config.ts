@@ -87,7 +87,7 @@ function timeSeries(spec: TimeSeriesSpec, context: ChartContext): ChartConfigura
           max: spec.max,
           grid: { color: theme.grid },
           border: { display: false },
-          ticks: { ...tick(theme), maxTicksLimit: 5, callback: (value) => `${value}${spec.unit}` },
+          ticks: { ...tick(theme), maxTicksLimit: 5, callback: (value) => formatValue(Number(value), spec.unit) },
         },
       },
     },
@@ -102,7 +102,7 @@ function bars(spec: BarsSpec | HorizontalBarsSpec, context: ChartContext, horizo
     beginAtZero: true,
     grid: { color: theme.grid },
     border: { display: false },
-    ticks: { ...tick(theme), precision: 0, maxTicksLimit: 5 },
+    ticks: { ...tick(theme), precision: 0, maxTicksLimit: 5, callback: (value: string | number) => formatValue(Number(value), '') },
   }
   const category = { grid: { display: false }, border: { color: theme.grid }, ticks: { ...tick(theme), autoSkip: !horizontal, maxRotation: 0 } }
   return {

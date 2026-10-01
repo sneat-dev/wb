@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core'
-import { CopyCommand, PanelCommand } from '@cockpit/fleet-data'
+import { CopyCommand, PLACEHOLDERS, PanelCommand } from '@cockpit/fleet-data'
 import { CopyButton } from './copy-button'
 import { Glyph } from './glyph'
+import { GLYPH_BAN, GLYPH_PENCIL, GLYPH_TERMINAL } from './glyphs'
 
 /** A piece of a command's text: plain, or a placeholder the operator must replace. */
 export interface CommandSegment {
@@ -9,14 +10,24 @@ export interface CommandSegment {
   placeholder: boolean
 }
 
-const PLACEHOLDER = /(<[a-z][a-z-]*>)/
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// The library's own placeholder values (`<message>`, `<model>`, ...), exactly: nothing else in a command is marked.
+const PLACEHOLDER = new RegExp(`(${Object.values(PLACEHOLDERS).map(escapeRegExp).join('|')})`)
 
 /**
- * The same text as `command.text`, cut at the angle-bracket placeholders so
- * those can be marked. Joining the segments gives the text back exactly.
+ * The same text as `command.text`, cut at the library's placeholder values so
+ * those can be marked. Joining the segments gives the text back exactly. A
+ * `<word>` that the library did not write is not a placeholder: it is part of
+ * a quoted value and stays plain.
  */
 export function commandSegments(text: string): CommandSegment[] {
   return text.split(PLACEHOLDER).map((part, index) => ({ text: part, placeholder: index % 2 === 1 })).filter((segment) => segment.text !== '')
+}
+
+/** The accessible name of a command's copy button: a command with parts to edit is a template. */
+export function copyLabel(title: string, needsEdit: boolean): string {
+  return `${needsEdit ? 'Copy command template' : 'Copy command'}: ${title}`
 }
 
 /** Where a command runs: "run here" unless the library labelled it ("run on <machine>"). */
@@ -54,4 +65,9 @@ export class CopyCommandList {
     this.entries().map((entry) => ({ title: entry.title, command: entry.command, segments: entry.command.ok ? commandSegments(entry.command.text) : [] })),
   )
   protected readonly where = runLocation
+  protected readonly label = copyLabel
+  protected readonly terminal = GLYPH_TERMINAL
+  protected readonly pencil = GLYPH_PENCIL
+  protected readonly ban = GLYPH_BAN
+  protected readonly doneStatus = 'Copied; edit the <…> parts before running'
 }

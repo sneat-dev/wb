@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { Machine } from '@cockpit/fleet-data'
 import { Glyph } from './glyph'
+import { GLYPH_SERVER } from './glyphs'
 import { RelativeTime } from './relative-time'
 import { StateBadge } from './state-badge'
 
@@ -15,10 +16,10 @@ import { StateBadge } from './state-badge'
   selector: 'app-machine-chip',
   imports: [Glyph, RelativeTime, StateBadge],
   template: `
-    <span class="name"><app-glyph name="server" />{{ machine().machine }}</span>
+    <span class="name"><app-glyph [paths]="server" />{{ machine().machine }}</span>
     <app-state-badge kind="route" size="small" [value]="route()" />
     @if (machine().route === 'cached') {
-      <app-relative-time [at]="machine().observed_at" [now]="now()" />
+      <app-relative-time [at]="machine().observed_at" />
     }
     @if (stale()) {
       <app-state-badge kind="route" size="small" value="stale" hint="The snapshot is older than the freshness window" />
@@ -63,8 +64,7 @@ export class MachineChip {
   readonly machine = input.required<Machine>()
   /** Whether the snapshot of a cached machine is stale (the view model decides). */
   readonly stale = input(false)
-  /** The clock the age is measured against, in epoch milliseconds. */
-  readonly now = input.required<number>()
 
+  protected readonly server = GLYPH_SERVER
   protected readonly route = computed(() => this.machine().route)
 }

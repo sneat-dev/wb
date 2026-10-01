@@ -21,6 +21,19 @@
   min-width: 0;
 }
 
+/* The empty and unavailable states sit over the plot, which keeps its height. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
 /* The text alternative: visually hidden, never removed. While a button in it has keyboard focus it is shown over the plot. */
 .data {
   position: absolute;

@@ -27,6 +27,8 @@ export class ClipboardWriter {
   }
 
   private fallback(text: string): boolean {
+    // Selecting the field moves focus; the element that had it gets it back.
+    const focused = this.document.activeElement as HTMLElement | null
     const field = this.document.createElement('textarea')
     field.value = text
     field.setAttribute('readonly', '')
@@ -43,6 +45,7 @@ export class ClipboardWriter {
       return false
     } finally {
       field.remove()
+      focused?.focus?.()
     }
   }
 }

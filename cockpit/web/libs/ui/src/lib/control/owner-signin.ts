@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, output } from '@angular/core'
 import { OWNER_SESSION_COMMAND } from '@cockpit/fleet-data'
 import { CopyButton } from './copy-button'
 import { Glyph } from './glyph'
+import { GLYPH_LOCK } from './glyphs'
 
 /**
  * The single place that says how to become an owner (REQ:owner-gating-is-visible):
@@ -14,7 +15,7 @@ import { Glyph } from './glyph'
   imports: [CopyButton, Glyph],
   template: `
     <p class="ask">
-      <app-glyph name="lock" />
+      <app-glyph [paths]="lock" />
       <span>Sign in as owner: run <code>{{ command }}</code></span>
     </p>
     <p class="why">Anonymous readers see fleet metadata. Actions need an owner session.</p>
@@ -58,6 +59,7 @@ import { Glyph } from './glyph'
 })
 export class OwnerSignIn {
   protected readonly command = OWNER_SESSION_COMMAND
+  protected readonly lock = GLYPH_LOCK
   /** Emits the text that was copied. */
   readonly copied = output<string>()
 }

@@ -18,16 +18,20 @@ test('the gallery draws every chart on a canvas under the strict policy, with a 
   await expectClean()
 })
 
-test('the gallery redraws in dark and honours reduced motion', async ({ page }) => {
+test('the gallery redraws its charts in the other colour scheme and honours reduced motion', async ({ page }) => {
   await stub(page)
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
   await page.goto(gallery)
   await expect(page.locator('app-chart canvas')).toHaveCount(6)
-  const pixel = () => page.locator('app-chart canvas').nth(4).evaluate((canvas) => Array.from((canvas as HTMLCanvasElement).getContext('2d')!.getImageData(0, 0, 40, 40).data).join(','))
-  await expect.poll(async () => (await pixel()).length).toBeGreaterThan(0)
-  const light = await page.locator('.gallery').evaluate((element) => getComputedStyle(element).color)
+  const pixels = () => page.locator('app-chart canvas').evaluateAll((canvases) => canvases.map((canvas) => (canvas as HTMLCanvasElement).toDataURL()).join('|'))
+  await expect.poll(async () => (await pixels()).length).toBeGreaterThan(1000)
+  const light = await pixels()
   await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
-  await expect.poll(() => page.locator('.gallery').evaluate((element) => getComputedStyle(element).color)).not.toBe(light)
+  // Every canvas is drawn again with the dark theme's colours, not left as it was.
+  await expect.poll(async () => (await pixels()) !== light).toBe(true)
+  const dark = await page.locator('app-chart canvas').evaluateAll((canvases) => canvases.map((canvas) => (canvas as HTMLCanvasElement).toDataURL()))
+  const lightEach = light.split('|')
+  expect(dark.every((url, index) => url !== lightEach[index])).toBe(true)
 })
 
 test('a copy button puts exactly the library command on the clipboard and says so; an action slot only emits', async ({ page, context }) => {
@@ -54,8 +58,12 @@ test('disabled actions keep their reason, and the absent registry leaves no box'
   await page.goto(gallery)
   const disabled = page.getByRole('button', { name: 'Push branch' }).first()
   await expect(disabled).toHaveAttribute('aria-disabled', 'true')
-  await expect(disabled).toHaveAttribute('title', 'Nothing to push')
-  await expect(page.getByRole('button', { name: 'Open pull request', exact: true }).nth(1)).toHaveAttribute('title', 'Needs an owner session')
+  await expect(disabled).toHaveAccessibleDescription('Nothing to push')
+  // The reason is also in words on hover and focus, and read once (no title).
+  await expect(disabled).not.toHaveAttribute('title', /./)
+  await disabled.hover()
+  await expect(page.getByText('Push branch: Nothing to push')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open pull request', exact: true }).nth(1)).toHaveAccessibleDescription('Needs an owner session')
   await page.getByRole('button', { name: 'More actions' }).first().click()
   await expect(page.getByRole('menuitem', { name: /Delete branch/ }).first()).toBeVisible()
   await page.keyboard.press('Escape')
@@ -88,4 +96,12 @@ test('the anonymous session chip offers "Sign in as owner: run wb cockpit" with 
   await expect(card).toBeHidden()
   await expect(chip).toBeFocused()
   await expectClean()
+})
+
+test('the production build has no /gallery route: the address falls back to Home', async ({ page }) => {
+  await stub(page)
+  await page.goto('/cockpit/gallery')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
+  await expect(page.locator('app-gallery')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/cockpit\/$/)
 })

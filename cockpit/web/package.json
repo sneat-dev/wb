@@ -13,7 +13,7 @@
     "build:preview": "nx build cockpit --configuration=preview",
     "lint": "nx run-many -t lint -p cockpit cockpit-e2e fleet-data ui",
     "test": "node tools/check-component-specs.mjs && vitest run --coverage",
-    "test:e2e": "playwright test -c apps/cockpit-e2e/playwright.config.ts",
+    "test:e2e": "pnpm build:preview && playwright test -c apps/cockpit-e2e/playwright.config.ts",
     "test:journey": "node tools/journey-guard.mjs && pnpm build && playwright test -c apps/cockpit-e2e/playwright.journey.config.ts",
     "preview:fixture": "node tools/preview-fixture.mjs",
     "shots": "node tools/shots.mjs"

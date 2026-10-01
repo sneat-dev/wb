@@ -81,6 +81,13 @@ export class TopBar {
     if (tab) scrollTabIntoView(strip, tab)
   }
 
+  /** The anonymous chip opens the sign-in card; any other session chip is a plain label. Space does not scroll the page. */
+  protected ownerHint(space?: Event): void {
+    if (!this.session().anonymous) return
+    space?.preventDefault()
+    this.shell.toggleOwnerHint()
+  }
+
   protected readonly session = computed(() => {
     const principal = this.store.session()?.principal
     if (principal === undefined) {

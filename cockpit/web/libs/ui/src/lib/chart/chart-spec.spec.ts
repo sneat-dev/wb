@@ -1,5 +1,5 @@
 import type { MetricsSample } from '@cockpit/fleet-data'
-import { TimeSeriesSpec, chartSummary, chartTable, clockTime, formatValue, machineMetricSpecs, withGaps } from './chart-spec'
+import { TABLE_FULL_LIMIT, TABLE_STEP, TimeSeriesSpec, chartSummary, cleanSpec, hasData, chartTable, clockTime, formatValue, machineMetricSpecs, withGaps } from './chart-spec'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const MIN = 60_000
@@ -108,6 +108,55 @@ describe('chart specs', () => {
       expect(chartSummary({ kind: 'bars', title: 'Landed per day', valueLabel: 'x', bars: [{ label: 'a', value: 3 }, { label: 'b', value: 2 }] })).toBe('Landed per day: 2 days, 5 in all')
       expect(chartSummary({ kind: 'horizontal-bars', title: 'Age', valueLabel: 'x', bars: [{ label: 'a', value: 3 }] })).toBe('Age: 1 buckets, 3 in all')
       expect(chartSummary({ kind: 'bars', title: 'Landed per day', valueLabel: 'x', bars: [] })).toBe('Landed per day: no data')
+    })
+  })
+
+  describe('cleanSpec and hasData', () => {
+    it('turns a value that is not a finite number into a gap, drops a point with no time and a bar with no number', () => {
+      const series = cleanSpec<TimeSeriesSpec>({ kind: 'time-series', title: 't', valueLabel: 'v', unit: '', from: 0, to: 1, points: [{ at: 0, value: Number.NaN }, { at: 1, value: Infinity }, { at: 2, value: null }, { at: Number.NaN, value: 1 }, { at: 3, value: 3 }] })
+      expect(series.points).toEqual([{ at: 0, value: null }, { at: 1, value: null }, { at: 2, value: null }, { at: 3, value: 3 }])
+      expect(cleanSpec({ kind: 'bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: 1 }, { label: 'b', value: Number.NaN }] }).bars).toEqual([{ label: 'a', value: 1 }])
+      expect(cleanSpec({ kind: 'horizontal-bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: -Infinity }] }).bars).toEqual([])
+    })
+
+    it('says whether there is anything to draw', () => {
+      expect(hasData({ kind: 'bars', title: 't', valueLabel: 'v', bars: [] })).toBe(false)
+      expect(hasData({ kind: 'bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: 0 }] })).toBe(true)
+      expect(hasData({ kind: 'time-series', title: 't', valueLabel: 'v', unit: '', from: 0, to: 1, points: [{ at: 0, value: null }] })).toBe(false)
+      expect(hasData({ kind: 'time-series', title: 't', valueLabel: 'v', unit: '', from: 0, to: 1, points: [{ at: 0, value: 1 }] })).toBe(true)
+    })
+  })
+
+  describe('a long series in the data table', () => {
+    const long = (count: number, value: (index: number) => number | null): TimeSeriesSpec => ({
+      kind: 'time-series',
+      title: 'CPU',
+      valueLabel: 'CPU %',
+      unit: '%',
+      from: 0,
+      to: 1,
+      points: Array.from({ length: count }, (_, index) => ({ at: new Date(2026, 9, 1, 10, 0).getTime() + index * 10_000, value: value(index) })),
+    })
+
+    it('is listed in full up to the limit', () => {
+      expect(chartTable(long(TABLE_FULL_LIMIT, () => 5)).rows).toHaveLength(TABLE_FULL_LIMIT)
+    })
+
+    it('is summarised above it: minimum, average, maximum and latest, then every tenth point', () => {
+      const table = chartTable(long(360, (index) => (index === 7 ? null : index % 100)))
+      expect(table.rows.slice(0, 4)).toEqual([
+        { label: 'Minimum', value: '0%' },
+        { label: 'Average', value: `${Math.round((Array.from({ length: 360 }, (_, index) => (index === 7 ? null : index % 100)).filter((v): v is number => v !== null).reduce((a, b) => a + b, 0) / 359) * 10) / 10}%` },
+        { label: 'Maximum', value: '99%' },
+        { label: 'Latest', value: '59%' },
+      ])
+      expect(table.rows).toHaveLength(4 + Math.ceil(360 / TABLE_STEP))
+      expect(table.rows[4].label).toBe('10:00')
+      expect(table.rows[5].label).toBe('10:01')
+    })
+
+    it('says "no sample" for the summary of a long series with nothing in it', () => {
+      expect(chartTable(long(100, () => null)).rows.slice(0, 4).map((row) => row.value)).toEqual(['no sample', 'no sample', 'no sample', 'no sample'])
     })
   })
 })

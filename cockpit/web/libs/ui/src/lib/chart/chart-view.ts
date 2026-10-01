@@ -3,7 +3,7 @@ import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, InjectionTo
 import type { AppLink } from '@cockpit/fleet-data'
 import type { ChartEngine, ChartInstance } from './chart-engine'
 import { chartConfiguration } from './chart-config'
-import { ChartSpec, HorizontalBarsSpec, chartSummary, chartTable } from './chart-spec'
+import { ChartSpec, HorizontalBarsSpec, chartSummary, chartTable, cleanSpec, hasData } from './chart-spec'
 import { readChartTheme } from './chart-theme'
 
 /**
@@ -52,8 +52,14 @@ export class ChartView {
   /** Counts colour scheme and motion changes, so the chart is redrawn. */
   private readonly scheme = signal(0)
 
-  protected readonly table = computed(() => chartTable(this.spec()))
-  protected readonly summary = computed(() => chartSummary(this.spec()))
+  private readonly clean = computed(() => cleanSpec(this.spec()))
+  protected readonly table = computed(() => chartTable(this.clean()))
+  protected readonly summary = computed(() => chartSummary(this.clean()))
+  protected readonly empty = computed(() => !hasData(this.clean()))
+  /** The Chart.js chunk could not be fetched: the plot says so and the data table stays. */
+  protected readonly unavailable = signal(false)
+  /** The `kind` the chart on the canvas was created for; a chart cannot change its type in place. */
+  private drawnKind: ChartSpec['kind'] | undefined
 
   constructor() {
     const watched = [this.view.matchMedia?.(DARK), this.view.matchMedia?.(REDUCED_MOTION)].filter((query): query is MediaQueryList => query !== undefined)
@@ -65,7 +71,12 @@ export class ChartView {
       this.chart?.destroy()
     })
     afterNextRender(async () => {
-      this.engine = await this.load()
+      try {
+        this.engine = await this.load()
+      } catch {
+        if (this.alive) this.unavailable.set(true)
+        return
+      }
       if (this.alive) this.draw()
     })
     // A new spec or a new colour scheme redraws the chart that exists.
@@ -77,7 +88,7 @@ export class ChartView {
   }
 
   private draw(): void {
-    const spec = this.spec()
+    const spec = this.clean()
     const view = this.view
     const config = chartConfiguration(spec, {
       theme: readChartTheme(this.box().nativeElement, view),
@@ -88,8 +99,15 @@ export class ChartView {
         if (link !== undefined) this.bucketSelected.emit(link)
       },
     })
-    if (this.chart === undefined) this.chart = (this.engine as ChartEngine).create(this.canvas().nativeElement, config)
-    else this.chart.update(config)
+    // A line chart cannot become a bar chart: when the kind changes the chart is destroyed and made again.
+    if (this.chart !== undefined && this.drawnKind !== spec.kind) {
+      this.chart.destroy()
+      this.chart = undefined
+    }
+    if (this.chart === undefined) {
+      this.chart = (this.engine as ChartEngine).create(this.canvas().nativeElement, config)
+      this.drawnKind = spec.kind
+    } else this.chart.update(config)
   }
 
   protected select(link: AppLink): void {

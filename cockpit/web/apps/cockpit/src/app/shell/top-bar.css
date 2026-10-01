@@ -170,13 +170,11 @@
 }
 
 /* The anonymous chip is a button that opens the sign-in card. */
-button.session {
-  font: inherit;
-  font-size: var(--fs-xs);
+.session[role='button'] {
   cursor: pointer;
 }
 
-button.session:hover {
+.session[role='button']:hover {
   background: var(--surface-hover);
 }
 

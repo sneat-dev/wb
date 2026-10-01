@@ -1,7 +1,9 @@
+import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { PullRequest } from '@cockpit/fleet-data'
 import { pullRequest } from '@cockpit/fleet-data/testing'
 import { PrChip, checksOf, webAddress } from './pr-chip'
+import { UiClock } from './ui-clock'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
 
@@ -9,9 +11,10 @@ const NOW = Date.parse('2026-10-01T10:05:00Z')
 const bare = (extra: Partial<PullRequest>): PullRequest => ({ id: 'p', machine: 'alpha', machine_id: 'mach-alpha', route: 'local', number: 1, ...extra })
 
 async function render(extra: Partial<PullRequest>) {
+  TestBed.resetTestingModule()
+  TestBed.configureTestingModule({ providers: [{ provide: UiClock, useValue: { now: signal(NOW) } }] })
   const fixture = TestBed.createComponent(PrChip)
   fixture.componentRef.setInput('pullRequest', pullRequest('p1', 'r1', 'w1', { number: 42, checked_at: '2026-10-01T10:00:00Z', ...extra }))
-  fixture.componentRef.setInput('now', NOW)
   await fixture.whenStable()
   const root: HTMLElement = fixture.nativeElement
   const badges = [...root.querySelectorAll('app-state-badge')].map((badge) => badge.textContent?.replace(/\s+/g, ' ').trim())

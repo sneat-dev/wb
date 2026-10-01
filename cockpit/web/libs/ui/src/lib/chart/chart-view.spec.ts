@@ -118,14 +118,14 @@ describe('ChartView', () => {
     expect(create.mock.calls[0][1].options?.animation).toEqual({ duration: 240 })
   })
 
-  it('redraws the same chart when the spec changes, and when the colour scheme or the motion preference changes', async () => {
+  it('redraws the same chart when its data changes, and when the colour scheme or the motion preference changes', async () => {
     const queries = stubMedia(false)
     const { fixture, create, chart, loaded } = await render(days)
     await loaded()
-    fixture.componentRef.setInput('spec', series)
+    fixture.componentRef.setInput('spec', { ...days, bars: [{ label: 'Tue', value: 9 }] })
     await fixture.whenStable()
     expect(chart.update).toHaveBeenCalledTimes(1)
-    expect((chart.update.mock.calls[0][0] as ChartConfiguration).type).toBe('line')
+    expect((chart.update.mock.calls[0][0] as ChartConfiguration).type).toBe('bar')
     for (const query of ['(prefers-color-scheme: dark)', '(prefers-reduced-motion: reduce)']) {
       const before = chart.update.mock.calls.length
       queries[query].matches = query.includes('reduced')
@@ -135,6 +135,72 @@ describe('ChartView', () => {
     }
     expect((chart.update.mock.calls.at(-1)?.[0] as ChartConfiguration).options?.animation).toBe(false)
     expect(create).toHaveBeenCalledTimes(1)
+    expect(chart.destroy).not.toHaveBeenCalled()
+  })
+
+  it('destroys the chart and makes a new one when the kind of chart changes, because a chart cannot change its type in place', async () => {
+    stubMedia(false)
+    const { fixture, create, chart, loaded } = await render(days)
+    await loaded()
+    fixture.componentRef.setInput('spec', series)
+    await fixture.whenStable()
+    expect(chart.destroy).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(create.mock.calls[1][1].type).toBe('line')
+    expect(chart.update).not.toHaveBeenCalled()
+    // The same kind again updates the new chart.
+    fixture.componentRef.setInput('spec', { ...series, points: [{ at: 0, value: 7 }] })
+    await fixture.whenStable()
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(chart.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('says "Chart unavailable" when the Chart.js chunk cannot be fetched, and the data table stays', async () => {
+    stubMedia(false)
+    TestBed.resetTestingModule()
+    TestBed.configureTestingModule({ providers: [{ provide: CHART_ENGINE, useValue: () => Promise.reject(new Error('offline')) }] })
+    const fixture = TestBed.createComponent(ChartView)
+    fixture.componentRef.setInput('spec', days)
+    await fixture.whenStable()
+    await vi.waitFor(() => {
+      fixture.detectChanges()
+      expect(fixture.nativeElement.querySelector('.overlay')?.textContent).toContain('Chart unavailable')
+    })
+    expect(fixture.nativeElement.querySelector('.overlay')?.getAttribute('role')).toBe('status')
+    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(1)
+  })
+
+  it('stays quiet about a failed load once destroyed', async () => {
+    stubMedia(false)
+    let fail: (error: Error) => void = () => undefined
+    TestBed.resetTestingModule()
+    TestBed.configureTestingModule({ providers: [{ provide: CHART_ENGINE, useValue: () => new Promise((_, reject) => (fail = reject)) }] })
+    const fixture = TestBed.createComponent(ChartView)
+    fixture.componentRef.setInput('spec', days)
+    await fixture.whenStable()
+    fixture.destroy()
+    fail(new Error('offline'))
+    await new Promise((resolve) => setTimeout(resolve))
+    expect(fixture.componentInstance['unavailable']()).toBe(false)
+  })
+
+  it('says "No data" over an empty chart, drops values that are not finite numbers, and keeps the plot', async () => {
+    stubMedia(false)
+    const empty = await render({ ...days, bars: [{ label: 'a', value: Number.NaN }, { label: 'b', value: Infinity }] })
+    expect(empty.root.querySelector('.overlay')?.textContent).toBe('No data')
+    expect(empty.root.querySelector('.plot')).not.toBeNull()
+    await empty.loaded()
+    expect((empty.create.mock.calls[0][1].data.labels as string[])).toEqual([])
+    const gaps = await render({ ...series, points: [{ at: 0, value: Number.NaN }, { at: 1, value: 4 }, { at: Number.NaN, value: 3 }] })
+    await gaps.loaded()
+    expect(gaps.create.mock.calls[0][1].data.datasets[0].data).toEqual([{ x: 0, y: null }, { x: 1, y: 4 }])
+    expect(gaps.root.querySelector('.overlay')).toBeNull()
+  })
+
+  it('names a clickable bucket button with its label and its value', async () => {
+    stubMedia(false)
+    const { root } = await render(buckets)
+    expect(root.querySelector('.data button')?.getAttribute('aria-label')).toBe('< 1 d: 4')
   })
 
   it('does not draw before the engine has arrived, and not at all when destroyed first', async () => {

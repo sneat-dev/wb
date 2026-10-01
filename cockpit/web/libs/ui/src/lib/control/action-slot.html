@@ -7,8 +7,11 @@
         [class.disabled]="entry.reason !== undefined"
         [attr.aria-disabled]="entry.reason !== undefined ? 'true' : null"
         [attr.aria-describedby]="entry.reason !== undefined ? uid + '-d' + i : null"
-        [attr.title]="entry.reason ?? null"
         (click)="activate(entry)"
+        (mouseenter)="showReason(entry)"
+        (focus)="showReason(entry)"
+        (mouseleave)="hideReason()"
+        (blur)="hideReason()"
       >
         {{ entry.action.title }}
       </button>
@@ -27,13 +30,14 @@
         [attr.aria-controls]="uid + '-menu'"
         (click)="toggle(trigger)"
       >
-        <app-glyph name="more" />
+        <app-glyph [paths]="more" />
       </button>
       <div
         #menu
         class="menu"
         role="menu"
         tabindex="-1"
+        popover="manual"
         aria-label="More actions"
         [id]="uid + '-menu'"
         [hidden]="!open()"
@@ -49,17 +53,20 @@
             class="item"
             [class.disabled]="entry.reason !== undefined"
             [attr.aria-disabled]="entry.reason !== undefined ? 'true' : null"
-            [attr.aria-describedby]="entry.reason !== undefined ? uid + '-m' + i : null"
-            [attr.title]="entry.reason ?? null"
-            (click)="activate(entry)"
+            [attr.tabindex]="i === active() ? 0 : -1"
+            (focus)="active.set(i)"
+            (click)="choose(entry)"
           >
             <span>{{ entry.action.title }}</span>
             @if (entry.reason !== undefined) {
-              <span class="visually-hidden" [id]="uid + '-m' + i">{{ entry.reason }}</span>
+              <span class="why"> {{ entry.reason }}</span>
             }
           </button>
         }
       </div>
+    }
+    @if (shownReason(); as reason) {
+      <p class="note" aria-hidden="true">{{ reason }}</p>
     }
   </div>
 }

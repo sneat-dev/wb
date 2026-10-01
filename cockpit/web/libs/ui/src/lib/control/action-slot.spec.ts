@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing'
 import { ActionsResponse, RegistryAction } from '@cockpit/fleet-data'
 import { fakeControlFetch, registryAction } from '@cockpit/fleet-data/testing'
-import { ActionActivation, ActionSlot, OWNER_ONLY_EXPLANATION, disabledReason } from './action-slot'
+import { ActionActivation, ActionSlot, OWNER_ONLY_EXPLANATION, disabledReason, isDirect } from './action-slot'
 
 const REGISTRY: Record<string, RegistryAction[]> = {
   'worktree:wt-1': [
@@ -31,10 +31,12 @@ async function render(actions: readonly RegistryAction[] | undefined, target = '
   const trigger = () => root.querySelector<HTMLButtonElement>('.more')
   const menu = () => root.querySelector<HTMLElement>('.menu')
   const items = () => [...root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
-  return { fixture, root, activations, buttons, trigger, menu, items }
+  const note = () => root.querySelector('.note')?.textContent
+  return { fixture, root, activations, buttons, trigger, menu, items, note }
 }
 
 const text = (element: Element | null | undefined) => element?.textContent?.replace(/\s+/g, ' ').trim()
+const unclassified = (extra: object): RegistryAction => ({ ...registryAction('x', 'X'), ...extra }) as RegistryAction
 
 describe('ActionSlot', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -42,14 +44,14 @@ describe('ActionSlot', () => {
   // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
   it('renders exactly what the registry returns: direct buttons, the destructive action under the overflow menu, the disabled one with its reason', async () => {
     const actions = await actionsFor('worktree:wt-1', REGISTRY)
-    const { buttons, trigger, items, root } = await render(actions)
+    const { buttons, trigger, items } = await render(actions)
     expect(buttons().map((button) => text(button))).toEqual(['Open pull request', 'An action nobody has heard of'])
     expect(buttons().every((button) => !button.classList.contains('disabled'))).toBe(true)
     expect(trigger()?.getAttribute('aria-haspopup')).toBe('menu')
     expect(items().map((item) => text(item.firstElementChild))).toEqual(['Discard worktree'])
     expect(items()[0].getAttribute('aria-disabled')).toBe('true')
-    expect(items()[0].getAttribute('title')).toBe('2 commits are not on the remote')
-    expect(items()[0].getAttribute('aria-describedby')).toBe(root.querySelector('.menu .visually-hidden')?.id)
+    expect(text(items()[0].querySelector('.why'))).toBe('2 commits are not on the remote')
+    expect(text(items()[0])).toBe('Discard worktree 2 commits are not on the remote')
   })
 
   it('renders a slot per target: a pull request has its landing action, a task has none', async () => {
@@ -64,20 +66,36 @@ describe('ActionSlot', () => {
       const { root, fixture } = await render(actions)
       expect(root.children).toHaveLength(0)
       expect(root.textContent).toBe('')
-      // The registry answering again fills it in place.
       fixture.componentRef.setInput('actions', REGISTRY['pull_request:pr-1'])
       await fixture.whenStable()
       expect(root.querySelector('.slot')).not.toBeNull()
     }
   })
 
-  it('has no overflow control when no action is destructive', async () => {
+  it('has no overflow control when every action is direct', async () => {
     const { trigger, menu } = await render(REGISTRY['pull_request:pr-1'])
     expect(trigger()).toBeNull()
     expect(menu()).toBeNull()
   })
 
-  it('disables a not-applicable action with the registry reason, a default one when it gives none, and keeps it focusable', async () => {
+  // Fail closed: only the two known safe classes are prominent buttons.
+  it('puts an action of an unknown or missing safety class under the overflow menu, never in a direct button', async () => {
+    const odd = [
+      registryAction('a', 'Known safe', { safety: 'safe' }),
+      unclassified({ id: 'b', title: 'Unknown class', safety: 'dangerous-new-class' }),
+      unclassified({ id: 'c', title: 'No class', safety: undefined }),
+      unclassified({ id: 'd', title: 'Null class', safety: null }),
+      registryAction('e', 'Known destructive', { safety: 'destructive' }),
+    ]
+    const { buttons, items } = await render(odd)
+    expect(buttons().map((button) => text(button))).toEqual(['Known safe'])
+    expect(items().map((item) => text(item.firstElementChild))).toEqual(['Unknown class', 'No class', 'Null class', 'Known destructive'])
+    expect(isDirect(odd[0])).toBe(true)
+    expect(isDirect(registryAction('g', 'G', { safety: 'guarded' }))).toBe(true)
+    expect(odd.slice(1).some(isDirect)).toBe(false)
+  })
+
+  it('disables a not-applicable action with the registry reason read once, a default one when it gives none, and keeps it focusable', async () => {
     const { buttons } = await render([
       registryAction('a', 'First', { applicable: false, reason: 'Nothing to commit' }),
       registryAction('b', 'Second', { applicable: false }),
@@ -86,26 +104,50 @@ describe('ActionSlot', () => {
     const [first, second, third] = buttons()
     expect(first.getAttribute('aria-disabled')).toBe('true')
     expect(first.hasAttribute('disabled')).toBe(false)
-    expect(first.getAttribute('title')).toBe('Nothing to commit')
+    // Read once: the description, and no title that a screen reader would read again.
+    expect(first.hasAttribute('title')).toBe(false)
     expect(first.nextElementSibling?.textContent).toBe('Nothing to commit')
     expect(first.getAttribute('aria-describedby')).toBe(first.nextElementSibling?.id)
-    expect(second.getAttribute('title')).toBe('Not available now')
+    expect(second.nextElementSibling?.textContent).toBe('Not available now')
     expect(third.getAttribute('aria-disabled')).toBeNull()
-    expect(third.getAttribute('title')).toBeNull()
     expect(third.getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('shows the reason in words on hover, on focus and on a tap, and takes it away on leaving', async () => {
+    const { fixture, buttons, note } = await render([registryAction('a', 'First', { applicable: false, reason: 'Nothing to commit' }), registryAction('c', 'Third')])
+    const [first, third] = buttons()
+    const settle = () => fixture.whenStable()
+    expect(note()).toBeUndefined()
+    first.dispatchEvent(new MouseEvent('mouseenter'))
+    await settle()
+    expect(note()).toBe('First: Nothing to commit')
+    first.dispatchEvent(new MouseEvent('mouseleave'))
+    await settle()
+    expect(note()).toBeUndefined()
+    first.dispatchEvent(new FocusEvent('focus'))
+    await settle()
+    expect(note()).toBe('First: Nothing to commit')
+    first.dispatchEvent(new FocusEvent('blur'))
+    await settle()
+    expect(note()).toBeUndefined()
+    first.click()
+    await settle()
+    expect(note()).toBe('First: Nothing to commit')
+    // An enabled action has nothing to explain.
+    third.dispatchEvent(new MouseEvent('mouseenter'))
+    await settle()
+    expect(note()).toBeUndefined()
   })
 
   // cockpit-views#ac:owner-gating-is-one-affordance
   it('shows every action the caller may not run disabled with the same single explanation, and no sign-in message of its own', async () => {
-    const { buttons, items, root } = await render(
-      [
-        registryAction('a', 'First', { permitted: false }),
-        registryAction('b', 'Second', { permitted: false, applicable: false, reason: 'Nothing to commit' }),
-        registryAction('c', 'Third', { permitted: false, safety: 'destructive' }),
-      ],
-    )
-    const titles = [...buttons(), ...items()].map((button) => button.getAttribute('title'))
-    expect(titles).toEqual([OWNER_ONLY_EXPLANATION, OWNER_ONLY_EXPLANATION, OWNER_ONLY_EXPLANATION])
+    const { buttons, items, root } = await render([
+      registryAction('a', 'First', { permitted: false }),
+      registryAction('b', 'Second', { permitted: false, applicable: false, reason: 'Nothing to commit' }),
+      registryAction('c', 'Third', { permitted: false, safety: 'destructive' }),
+    ])
+    const reasons = [...buttons().map((button) => button.nextElementSibling?.textContent), ...items().map((item) => item.querySelector('.why')?.textContent?.trim())]
+    expect(reasons).toEqual([OWNER_ONLY_EXPLANATION, OWNER_ONLY_EXPLANATION, OWNER_ONLY_EXPLANATION])
     expect(root.textContent).not.toMatch(/sign in|wb cockpit/i)
     expect(disabledReason(registryAction('x', 'X', { permitted: false }))).toBe(OWNER_ONLY_EXPLANATION)
     expect(disabledReason(registryAction('x', 'X'))).toBeUndefined()
@@ -125,7 +167,7 @@ describe('ActionSlot', () => {
   })
 
   describe('the overflow menu', () => {
-    const DESTRUCTIVE = [registryAction('d1', 'Discard', { safety: 'destructive' }), registryAction('d2', 'Delete branch', { safety: 'destructive' })]
+    const DESTRUCTIVE = [registryAction('d1', 'Discard', { safety: 'destructive' }), registryAction('d2', 'Delete branch', { safety: 'destructive' }), registryAction('d3', 'Third', { safety: 'destructive' })]
 
     function place(trigger: HTMLElement | null, rect: Partial<DOMRect>, innerWidth = 1024, innerHeight = 768) {
       vi.spyOn(trigger as HTMLElement, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0, ...rect } as DOMRect)
@@ -133,7 +175,18 @@ describe('ActionSlot', () => {
       vi.stubGlobal('innerHeight', innerHeight)
     }
 
-    afterEach(() => vi.unstubAllGlobals())
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      document.body.innerHTML = ''
+    })
+
+    async function opened() {
+      const parts = await render(DESTRUCTIVE)
+      document.body.appendChild(parts.fixture.nativeElement)
+      parts.trigger()?.click()
+      await parts.fixture.whenStable()
+      return parts
+    }
 
     it('opens and closes from its button, and says so', async () => {
       const { fixture, trigger, menu } = await render(DESTRUCTIVE)
@@ -149,33 +202,93 @@ describe('ActionSlot', () => {
       expect(menu()?.hidden).toBe(true)
     })
 
-    it('moves focus into the menu, moves it with the arrow keys, Home and End, and returns it to the button on Escape', async () => {
-      const { fixture, trigger, menu, items } = await render(DESTRUCTIVE)
-      document.body.appendChild(fixture.nativeElement)
+    it('is a manual popover, shown in the top layer when the browser has them and hidden again', async () => {
+      const show = vi.fn()
+      const hide = vi.fn()
+      Object.assign(HTMLElement.prototype, { showPopover: show, hidePopover: hide })
+      try {
+        const { fixture, trigger, menu } = await render(DESTRUCTIVE)
+        expect(menu()?.getAttribute('popover')).toBe('manual')
+        trigger()?.click()
+        await fixture.whenStable()
+        expect(show).toHaveBeenCalledTimes(1)
+        trigger()?.click()
+        await fixture.whenStable()
+        expect(hide).toHaveBeenCalledTimes(1)
+        // Destroyed while open: it is let go of too.
+        trigger()?.click()
+        await fixture.whenStable()
+        fixture.destroy()
+        expect(hide).toHaveBeenCalledTimes(2)
+      } finally {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).showPopover
+        delete (HTMLElement.prototype as Partial<HTMLElement>).hidePopover
+      }
+    })
+
+    it('listens to the document and the window only while it is open', async () => {
+      const add = vi.spyOn(document, 'addEventListener')
+      const remove = vi.spyOn(document, 'removeEventListener')
+      const addWindow = vi.spyOn(window, 'addEventListener')
+      const { fixture, trigger } = await render(DESTRUCTIVE)
+      const names = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map((call) => call[0])
+      expect(names(add)).not.toContain('click')
+      expect(names(addWindow)).not.toContain('resize')
       trigger()?.click()
       await fixture.whenStable()
+      expect(names(add)).toEqual(expect.arrayContaining(['click', 'scroll']))
+      expect(names(addWindow)).toContain('resize')
+      trigger()?.click()
+      await fixture.whenStable()
+      expect(names(remove)).toEqual(expect.arrayContaining(['click', 'scroll']))
+    })
+
+    it('moves focus into the menu with one tab stop, and moves it with the arrow keys, wrapping, Home and End', async () => {
+      const { menu, items, fixture } = await opened()
       expect(document.activeElement).toBe(items()[0])
+      expect(items().map((item) => item.getAttribute('tabindex'))).toEqual(['0', '-1', '-1'])
       const press = (key: string) => menu()?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
       press('ArrowDown')
       expect(document.activeElement).toBe(items()[1])
+      await fixture.whenStable()
+      expect(items().map((item) => item.getAttribute('tabindex'))).toEqual(['-1', '0', '-1'])
+      press('ArrowDown')
       press('ArrowDown')
       expect(document.activeElement).toBe(items()[0])
+      press('ArrowUp')
+      expect(document.activeElement).toBe(items()[2])
       press('ArrowUp')
       expect(document.activeElement).toBe(items()[1])
       press('Home')
       expect(document.activeElement).toBe(items()[0])
       press('End')
-      expect(document.activeElement).toBe(items()[1])
+      expect(document.activeElement).toBe(items()[2])
       press('x')
-      expect(document.activeElement).toBe(items()[1])
+      expect(document.activeElement).toBe(items()[2])
+      // With focus on none of the items, Up goes to the last and Down to the first.
+      ;(document.activeElement as HTMLElement).blur()
+      press('ArrowUp')
+      expect(document.activeElement).toBe(items()[2])
+      ;(document.activeElement as HTMLElement).blur()
+      press('ArrowDown')
+      expect(document.activeElement).toBe(items()[0])
+    })
+
+    it('closes on Tab and lets focus go on, and returns focus to its button on Escape; Escape while closed does nothing', async () => {
+      const { fixture, trigger, menu } = await opened()
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      menu()?.dispatchEvent(tab)
+      await fixture.whenStable()
+      expect(menu()?.hidden).toBe(true)
+      expect(tab.defaultPrevented).toBe(false)
+      fixture.nativeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(menu()?.hidden).toBe(true)
+      trigger()?.click()
+      await fixture.whenStable()
       fixture.nativeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       await fixture.whenStable()
       expect(menu()?.hidden).toBe(true)
       expect(document.activeElement).toBe(trigger())
-      // Escape with the menu closed does nothing.
-      fixture.nativeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-      expect(menu()?.hidden).toBe(true)
-      fixture.nativeElement.remove()
     })
 
     it('closes on a click outside and a resize, and not on a click inside', async () => {
@@ -195,7 +308,7 @@ describe('ActionSlot', () => {
       window.dispatchEvent(new Event('resize'))
       await fixture.whenStable()
       expect(menu()?.hidden).toBe(true)
-      // A click outside while closed does nothing.
+      // Closed: a click outside does nothing and nothing is listening.
       document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(menu()?.hidden).toBe(true)
     })
@@ -213,14 +326,24 @@ describe('ActionSlot', () => {
       expect(menu()?.style.top).toBe('64px')
     })
 
-    it('emits and closes when an item is chosen', async () => {
-      const { fixture, trigger, items, activations, menu } = await render(DESTRUCTIVE)
-      trigger()?.click()
-      await fixture.whenStable()
+    it('emits, closes and returns focus to its button when an item is chosen', async () => {
+      const { fixture, trigger, items, activations, menu } = await opened()
       items()[1].click()
       await fixture.whenStable()
       expect(activations.map((activation) => activation.action.id)).toEqual(['d2'])
       expect(menu()?.hidden).toBe(true)
+      expect(document.activeElement).toBe(trigger())
+    })
+
+    it('shows the reason of a disabled item and does nothing when it is chosen', async () => {
+      const parts = await render([registryAction('d1', 'Discard', { safety: 'destructive', applicable: false, reason: 'Unpushed commits' })])
+      parts.trigger()?.click()
+      await parts.fixture.whenStable()
+      expect(text(parts.items()[0])).toBe('Discard Unpushed commits')
+      parts.items()[0].click()
+      await parts.fixture.whenStable()
+      expect(parts.activations).toEqual([])
+      expect(parts.menu()?.hidden).toBe(false)
     })
 
     it('sits below its button, aligned to its right edge and kept on the screen, or above it near the foot', async () => {

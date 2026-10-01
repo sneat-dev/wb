@@ -54,15 +54,43 @@ describe('ClipboardWriter', () => {
     expect(document.querySelector('textarea')).toBeNull()
   })
 
-  it('does not set a style attribute: the field is styled through the CSS object model', async () => {
+  it('hands focus back to the element that had it, and leaves no field behind', async () => {
     stubClipboard(undefined)
-    let attribute: string | null = 'unset'
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
     stubExecCommand(true).mockImplementation(() => {
-      attribute = (document.querySelector('textarea') as HTMLTextAreaElement).getAttribute('style')
+      // While copying, the selected field has focus (as a browser gives it).
+      ;(document.querySelector('textarea') as HTMLTextAreaElement).focus()
+      expect(document.activeElement?.tagName).toBe('TEXTAREA')
       return true
     })
-    await TestBed.inject(ClipboardWriter).copy('x')
-    // jsdom serialises the object-model writes into the attribute; a real browser under the policy allows them.
-    expect(attribute).toContain('position: fixed')
+    const before = document.body.children.length
+    expect(await TestBed.inject(ClipboardWriter).copy('x')).toBe(true)
+    expect(document.activeElement).toBe(input)
+    expect(document.body.children).toHaveLength(before)
+    // A refusal restores it too, and nothing focused is fine.
+    stubExecCommand(false)
+    expect(await TestBed.inject(ClipboardWriter).copy('x')).toBe(false)
+    expect(document.activeElement).toBe(input)
+    input.blur()
+    ;(document.body as HTMLElement).focus()
+    expect(await TestBed.inject(ClipboardWriter).copy('x')).toBe(false)
+  })
+
+  it('passes the text through exactly: no trailing newline or space is added to what is copied', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    stubClipboard(writeText)
+    await TestBed.inject(ClipboardWriter).copy("wb worktree list 'fix-ci'")
+    expect(writeText.mock.calls[0][0]).toBe("wb worktree list 'fix-ci'")
+    expect(writeText.mock.calls[0][0]).not.toMatch(/\s$/)
+    stubClipboard(undefined)
+    let copied = ''
+    stubExecCommand(true).mockImplementation(() => {
+      copied = (document.querySelector('textarea') as HTMLTextAreaElement).value
+      return true
+    })
+    await TestBed.inject(ClipboardWriter).copy("wb worktree list 'fix-ci'")
+    expect(copied).toBe("wb worktree list 'fix-ci'")
   })
 })

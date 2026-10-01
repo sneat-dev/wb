@@ -6,6 +6,9 @@ import type { BadgeKind } from '@cockpit/ui/control'
 // control-surface component in every state): fixtures from the fleet-data
 // library, so a command shown is a command the library built.
 
+/** Written into the gallery's fixtures, so that the production build can prove none of them is in it (tools/lib/finish-build.mjs). */
+export const GALLERY_FIXTURE_MARKER = 'cockpit-gallery-fixture'
+
 /** Every value of every state vocabulary, with one that is outside it and one that is absent. */
 export const BADGE_ROWS: { kind: BadgeKind; title: string; values: (string | undefined)[] }[] = [
   { kind: 'task', title: 'Task state', values: ['at-risk', 'checks-failed', 'blocked', 'ready', 'not-ready', 'working', 'landed', 'idle', 'not-reported'] },
@@ -135,7 +138,7 @@ export function galleryMetrics(now: number): MachineMetrics {
       sampled_at: new Date(now - minute * 60_000).toISOString(),
     })
   }
-  return { machine: 'alpha', route: 'local', fetched_at: new Date(now).toISOString(), samples }
+  return { machine: GALLERY_FIXTURE_MARKER, route: 'local', fetched_at: new Date(now).toISOString(), samples }
 }
 
 /** Landed tasks per day for the last fourteen days. */

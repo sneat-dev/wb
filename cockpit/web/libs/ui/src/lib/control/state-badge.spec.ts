@@ -42,3 +42,17 @@ describe('StateBadge', () => {
     expect((await render({ kind: 'owner', value: 'active' })).badge.classList.contains('unreported')).toBe(false)
   })
 })
+
+describe('StateBadge, a value it does not know', () => {
+  it('shows the sanitised value, dashed, and tells assistive technology "<kind>: not recognised" rather than the raw text', async () => {
+    const fixture = TestBed.createComponent(StateBadge)
+    fixture.componentRef.setInput('kind', 'pr-state')
+    fixture.componentRef.setInput('value', 'abandoned\u202e!')
+    await fixture.whenStable()
+    const badge = fixture.nativeElement.querySelector('.badge') as HTMLElement
+    expect(badge.classList.contains('unreported')).toBe(true)
+    expect(badge.querySelector('.visually-hidden')?.textContent?.trim()).toBe('Pull request state: not recognised')
+    expect(badge.querySelector('.text')?.textContent).toBe('abandoned !')
+    expect(badge.querySelector('.text')?.getAttribute('aria-hidden')).toBe('true')
+  })
+})

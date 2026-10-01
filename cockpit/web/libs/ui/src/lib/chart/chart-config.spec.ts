@@ -74,6 +74,7 @@ describe('chartConfiguration', () => {
     it('labels its axis with clock times and values with the unit, and its tooltip likewise', () => {
       expect(config.options.scales.x.ticks.callback(series.from)).toBe('10:00')
       expect(config.options.scales.y.ticks.callback(40)).toBe('40%')
+      expect(config.options.scales.y.ticks.callback(0.30000000000000004)).toBe('0.3%')
       const callbacks = config.options.plugins.tooltip.callbacks
       expect(callbacks.title([{ parsed: { x: series.from } }])).toBe('10:00')
       expect(callbacks.title([])).toBe('NaN:NaN')
@@ -88,6 +89,7 @@ describe('chartConfiguration', () => {
     expect(config.data.labels).toEqual(['Mon', 'Tue'])
     expect(config.data.datasets[0].data).toEqual([2, 5])
     expect(config.options.scales.y.ticks.precision).toBe(0)
+    expect(config.options.scales.y.ticks.callback(4)).toBe('4')
     expect(config.options.scales.x.ticks.autoSkip).toBe(true)
   })
 

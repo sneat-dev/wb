@@ -1,5 +1,6 @@
 import { TASK_STATES, taskStateInfo, type TaskStateId } from '@cockpit/fleet-data'
-import type { GlyphName } from './glyph'
+import * as G from './glyphs'
+import type { GlyphPaths } from './glyphs'
 
 /**
  * The one table of every state the interface shows (REQ:look-typography-and-state-colour):
@@ -9,18 +10,20 @@ import type { GlyphName } from './glyph'
  */
 export type Tone = 'ok' | 'warn' | 'bad' | 'idle'
 
-export type BadgeKind = 'task' | 'owner' | 'agent-activity' | 'agent-state' | 'pr-state' | 'mergeable' | 'code-index' | 'route' | 'load' | 'checks'
+export type BadgeKind = 'task' | 'owner' | 'agent-activity' | 'agent-state' | 'pr-state' | 'mergeable' | 'code-index' | 'route' | 'load' | 'checks' | 'operation'
 
 export interface BadgeSpec {
   tone: Tone
-  icon: GlyphName
+  icon: GlyphPaths
   /** The word shown. */
   label: string
   /** Whether the value is outside the vocabulary or not reported; the badge is then drawn dashed. */
   unreported: boolean
+  /** The value is not in the vocabulary: `label` is the sanitised raw value, and the accessible name says "not recognised". */
+  unrecognised: boolean
 }
 
-type Entry = [tone: Tone, icon: GlyphName, label: string]
+type Entry = [tone: Tone, icon: GlyphPaths, label: string]
 
 /** What each kind of state is called, said ahead of the value for assistive technology. */
 export const KIND_NAME: Record<BadgeKind, string> = {
@@ -34,85 +37,93 @@ export const KIND_NAME: Record<BadgeKind, string> = {
   route: 'Route',
   load: 'Load',
   checks: 'Checks',
+  operation: 'Operation',
 }
 
 const TASK: Record<TaskStateId, Entry> = {
-  'at-risk': ['bad', 'shield-alert', ''],
-  'checks-failed': ['bad', 'x-circle', ''],
-  blocked: ['warn', 'ban', ''],
-  ready: ['ok', 'check-circle', ''],
-  'not-ready': ['warn', 'clock', ''],
-  working: ['ok', 'activity', ''],
-  landed: ['idle', 'git-merge', ''],
-  idle: ['idle', 'minus-circle', ''],
-  'not-reported': ['idle', 'help', ''],
+  'at-risk': ['bad', G.GLYPH_SHIELD_ALERT, ''],
+  'checks-failed': ['bad', G.GLYPH_X_CIRCLE, ''],
+  blocked: ['warn', G.GLYPH_BAN, ''],
+  ready: ['ok', G.GLYPH_CHECK_CIRCLE, ''],
+  'not-ready': ['warn', G.GLYPH_CLOCK, ''],
+  working: ['ok', G.GLYPH_ACTIVITY, ''],
+  landed: ['idle', G.GLYPH_GIT_MERGE, ''],
+  idle: ['idle', G.GLYPH_MINUS_CIRCLE, ''],
+  'not-reported': ['idle', G.GLYPH_HELP, ''],
 }
 
 const TABLES: Record<Exclude<BadgeKind, 'task'>, Record<string, Entry>> = {
   owner: {
-    active: ['ok', 'activity', 'active'],
-    idle: ['idle', 'minus-circle', 'idle'],
-    orphaned: ['bad', 'alert', 'orphaned'],
-    unknown: ['idle', 'help', 'unknown'],
+    active: ['ok', G.GLYPH_ACTIVITY, 'active'],
+    idle: ['idle', G.GLYPH_MINUS_CIRCLE, 'idle'],
+    orphaned: ['bad', G.GLYPH_ALERT, 'orphaned'],
+    unknown: ['idle', G.GLYPH_HELP, 'unknown'],
   },
   'agent-activity': {
-    working: ['ok', 'activity', 'working'],
-    blocked: ['warn', 'ban', 'blocked'],
-    idle: ['idle', 'minus-circle', 'idle'],
-    done: ['idle', 'check-circle', 'done'],
-    unknown: ['idle', 'help', 'unknown'],
+    working: ['ok', G.GLYPH_ACTIVITY, 'working'],
+    blocked: ['warn', G.GLYPH_BAN, 'blocked'],
+    idle: ['idle', G.GLYPH_MINUS_CIRCLE, 'idle'],
+    done: ['idle', G.GLYPH_CHECK_CIRCLE, 'done'],
+    unknown: ['idle', G.GLYPH_HELP, 'unknown'],
   },
   'agent-state': {
-    running: ['ok', 'activity', 'running'],
-    live: ['ok', 'radio', 'live'],
-    parked: ['idle', 'minus-circle', 'parked'],
-    completed: ['idle', 'check-circle', 'completed'],
-    failed: ['bad', 'x-circle', 'failed'],
-    timeout: ['bad', 'clock', 'timed out'],
-    abandoned: ['warn', 'alert', 'abandoned'],
+    running: ['ok', G.GLYPH_ACTIVITY, 'running'],
+    live: ['ok', G.GLYPH_RADIO, 'live'],
+    parked: ['idle', G.GLYPH_MINUS_CIRCLE, 'parked'],
+    completed: ['idle', G.GLYPH_CHECK_CIRCLE, 'completed'],
+    failed: ['bad', G.GLYPH_X_CIRCLE, 'failed'],
+    timeout: ['bad', G.GLYPH_CLOCK, 'timed out'],
+    abandoned: ['warn', G.GLYPH_ALERT, 'abandoned'],
   },
   'pr-state': {
-    open: ['ok', 'git-pull-request', 'open'],
-    draft: ['idle', 'pencil', 'draft'],
-    merged: ['idle', 'git-merge', 'merged'],
-    closed: ['idle', 'x-circle', 'closed'],
+    open: ['ok', G.GLYPH_GIT_PULL_REQUEST, 'open'],
+    draft: ['idle', G.GLYPH_PENCIL, 'draft'],
+    merged: ['idle', G.GLYPH_GIT_MERGE, 'merged'],
+    closed: ['idle', G.GLYPH_X_CIRCLE, 'closed'],
   },
   mergeable: {
-    clean: ['ok', 'check-circle', 'mergeable'],
-    has_hooks: ['ok', 'check-circle', 'mergeable'],
-    blocked: ['warn', 'ban', 'blocked'],
-    dirty: ['bad', 'x-circle', 'conflicts'],
-    behind: ['warn', 'arrow-down', 'behind'],
-    unstable: ['warn', 'alert', 'unstable'],
-    draft: ['idle', 'pencil', 'draft'],
-    unknown: ['idle', 'help', 'merge state unknown'],
+    clean: ['ok', G.GLYPH_CHECK_CIRCLE, 'mergeable'],
+    has_hooks: ['ok', G.GLYPH_CHECK_CIRCLE, 'mergeable'],
+    blocked: ['warn', G.GLYPH_BAN, 'blocked'],
+    dirty: ['bad', G.GLYPH_X_CIRCLE, 'conflicts'],
+    behind: ['warn', G.GLYPH_ARROW_DOWN, 'behind'],
+    unstable: ['warn', G.GLYPH_ALERT, 'unstable'],
+    draft: ['idle', G.GLYPH_PENCIL, 'draft'],
+    unknown: ['idle', G.GLYPH_HELP, 'merge state unknown'],
   },
   'code-index': {
-    fresh: ['ok', 'check-circle', 'fresh'],
-    stale: ['warn', 'clock', 'stale'],
-    diverged: ['warn', 'alert', 'diverged'],
-    pending: ['idle', 'clock', 'pending'],
-    failed: ['bad', 'x-circle', 'failed'],
-    never: ['idle', 'minus-circle', 'never indexed'],
+    fresh: ['ok', G.GLYPH_CHECK_CIRCLE, 'fresh'],
+    stale: ['warn', G.GLYPH_CLOCK, 'stale'],
+    diverged: ['warn', G.GLYPH_ALERT, 'diverged'],
+    pending: ['idle', G.GLYPH_CLOCK, 'pending'],
+    failed: ['bad', G.GLYPH_X_CIRCLE, 'failed'],
+    never: ['idle', G.GLYPH_MINUS_CIRCLE, 'never indexed'],
   },
   route: {
-    local: ['ok', 'server', 'local'],
-    live: ['ok', 'radio', 'live'],
-    'live-remote': ['ok', 'radio', 'live'],
-    cached: ['idle', 'archive', 'cached'],
-    stale: ['warn', 'clock', 'stale'],
-    none: ['idle', 'minus-circle', 'no data'],
+    local: ['ok', G.GLYPH_SERVER, 'local'],
+    live: ['ok', G.GLYPH_RADIO, 'live'],
+    'live-remote': ['ok', G.GLYPH_RADIO, 'live'],
+    cached: ['idle', G.GLYPH_ARCHIVE, 'cached'],
+    stale: ['warn', G.GLYPH_CLOCK, 'stale'],
+    none: ['idle', G.GLYPH_MINUS_CIRCLE, 'no data'],
   },
   checks: {
-    passed: ['ok', 'check-circle', 'passing'],
-    failed: ['bad', 'x-circle', 'failing'],
-    pending: ['warn', 'clock', 'pending'],
-    unknown: ['idle', 'help', 'checks not reported'],
+    passed: ['ok', G.GLYPH_CHECK_CIRCLE, 'passing'],
+    failed: ['bad', G.GLYPH_X_CIRCLE, 'failing'],
+    pending: ['warn', G.GLYPH_CLOCK, 'pending'],
+    unknown: ['idle', G.GLYPH_HELP, 'checks not reported'],
+  },
+  operation: {
+    queued: ['idle', G.GLYPH_CLOCK, 'queued'],
+    running: ['ok', G.GLYPH_ACTIVITY, 'running'],
+    succeeded: ['ok', G.GLYPH_CHECK_CIRCLE, 'succeeded'],
+    failed: ['bad', G.GLYPH_X_CIRCLE, 'failed'],
+    cancelled: ['idle', G.GLYPH_BAN, 'cancelled'],
   },
   load: {
-    free: ['ok', 'check-circle', 'free'],
-    busy: ['warn', 'activity', 'busy'],
-    'not-reported': ['idle', 'help', 'load unknown'],
+    free: ['ok', G.GLYPH_CHECK_CIRCLE, 'free'],
+    busy: ['warn', G.GLYPH_ACTIVITY, 'busy'],
+    'not-reported': ['idle', G.GLYPH_HELP, 'load unknown'],
   },
 }
 
@@ -128,21 +139,42 @@ const ABSENT: Record<BadgeKind, string> = {
   route: 'not reported',
   load: 'load unknown',
   checks: 'checks not reported',
+  operation: 'not reported',
 }
 
-/** The colour role, glyph and word of a state; an unknown or absent value is a grey, dashed "not reported". */
+// Control, invisible and bidirectional characters, which a value from another machine must not smuggle into text.
+// eslint-disable-next-line no-control-regex
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g
+
+/** The longest raw value shown in a badge. */
+export const RAW_VALUE_LIMIT = 32
+
+/** A value from outside the vocabulary as text that is safe to show: no control or invisible characters, one line, short. */
+export function sanitisedValue(value: string): string {
+  const clean = value.replace(INVISIBLE, ' ').replace(/\s+/g, ' ').trim()
+  if (clean === '') return 'unknown'
+  return clean.length > RAW_VALUE_LIMIT ? `${clean.slice(0, RAW_VALUE_LIMIT - 1)}…` : clean
+}
+
+/**
+ * The colour role, glyph and word of a state. An absent value is a grey dashed
+ * "not reported". A value outside the vocabulary (including an inherited key such as
+ * `constructor`, which is looked up as an own property only) shows its sanitised
+ * raw value, grey and dashed, and is "not recognised" to assistive technology.
+ */
 export function badgeSpec(kind: BadgeKind, value: string | undefined): BadgeSpec {
   if (kind === 'task') {
-    const known = value !== undefined && TASK_STATES.some((info) => info.id === value)
-    if (!known) return unreported(kind, value)
+    if (value === undefined || !TASK_STATES.some((info) => info.id === value)) return unreported(kind, value)
     const [tone, icon] = TASK[value as TaskStateId]
-    return { tone, icon, label: taskStateInfo(value as TaskStateId).label, unreported: value === 'not-reported' }
+    return { tone, icon, label: taskStateInfo(value as TaskStateId).label, unreported: value === 'not-reported', unrecognised: false }
   }
-  const entry = value === undefined ? undefined : TABLES[kind][value]
+  const table = TABLES[kind]
+  const entry = value !== undefined && Object.prototype.hasOwnProperty.call(table, value) ? table[value] : undefined
   if (entry === undefined) return unreported(kind, value)
-  return { tone: entry[0], icon: entry[1], label: entry[2], unreported: value === 'unknown' || value === 'not-reported' }
+  return { tone: entry[0], icon: entry[1], label: entry[2], unreported: value === 'unknown' || value === 'not-reported', unrecognised: false }
 }
 
 function unreported(kind: BadgeKind, value: string | undefined): BadgeSpec {
-  return { tone: 'idle', icon: 'help', label: value === undefined || value === '' ? ABSENT[kind] : value, unreported: true }
+  if (value === undefined || value === '') return { tone: 'idle', icon: G.GLYPH_HELP, label: ABSENT[kind], unreported: true, unrecognised: false }
+  return { tone: 'idle', icon: G.GLYPH_HELP, label: sanitisedValue(value), unreported: true, unrecognised: true }
 }

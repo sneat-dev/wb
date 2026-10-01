@@ -14,7 +14,7 @@ export const OVERLAYS_IMPORT = new InjectionToken<() => Promise<{ Overlays: Type
  * Fetches the palette and the shortcut sheet (a lazy chunk) and puts them in the
  * shell. The shell asks for them when the browser is idle after the first render,
  * and at once if one is opened before. A failed fetch is retried once; if that
- * fails too, whatever was opened is closed again (so the keyboard shortcuts are not
+ * fails too, whatever was opened (the palette, the sheet or the sign-in card) is closed again (so the keyboard shortcuts are not
  * left disabled by an overlay that is not there) and the next attempt starts afresh.
  */
 @Injectable({ providedIn: 'root' })
@@ -49,6 +49,7 @@ export class OverlayLoader {
           console.error('the search and shortcut overlays could not be loaded', error)
           this.shell.closePalette()
           this.shell.closeSheet()
+          this.shell.closeOwnerHint()
           this.pending = undefined
           return
         }

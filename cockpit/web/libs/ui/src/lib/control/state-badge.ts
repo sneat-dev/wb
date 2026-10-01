@@ -6,16 +6,17 @@ import { BadgeKind, KIND_NAME, badgeSpec } from './state-vocabulary'
  * One badge for every state vocabulary the interface shows: a colour role, a
  * glyph and a word, in one of two sizes, light and dark. The kind is said ahead
  * of the word for assistive technology ("Task state: ready to land"), so the
- * accessible name always contains the visible text. A value outside the
- * vocabulary, or an absent one, is a grey dashed "not reported".
+ * accessible name always contains the visible text. An absent value is a grey
+ * dashed "not reported"; a value outside the vocabulary shows its sanitised raw
+ * value, grey and dashed, and is "<kind>: not recognised" to assistive technology.
  */
 @Component({
   selector: 'app-state-badge',
   imports: [Glyph],
   template: `<span [class]="'badge tone-' + spec().tone" [class.small]="size() === 'small'" [class.unreported]="spec().unreported" [attr.title]="hint() ?? null">
-    <app-glyph [name]="spec().icon" />
-    <span class="visually-hidden">{{ kindName() }}: </span>
-    <span class="text">{{ text() }}</span>
+    <app-glyph [paths]="spec().icon" />
+    <span class="visually-hidden">{{ kindName() }}: {{ spec().unrecognised ? 'not recognised' : '' }}</span>
+    <span class="text" [attr.aria-hidden]="spec().unrecognised ? 'true' : null">{{ text() }}</span>
   </span>`,
   styleUrl: './state-badge.css',
   changeDetection: ChangeDetectionStrategy.OnPush,

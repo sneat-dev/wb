@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing'
+import { FleetStore } from '@cockpit/fleet-data'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { OwnerPopover } from './owner-popover'
 import { ShellState } from './shell-state'
@@ -60,5 +61,31 @@ describe('OwnerPopover', () => {
     document.body.click()
     await fixture.whenStable()
     expect(card()).toBeNull()
+  })
+
+  it('closes when focus leaves it, and not while focus moves inside it', async () => {
+    const { fixture, shell, card, root } = await render()
+    shell.toggleOwnerHint()
+    await fixture.whenStable()
+    const copy = root.querySelector('button') as HTMLButtonElement
+    copy.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: card() }))
+    expect(shell.ownerHintOpen()).toBe(true)
+    copy.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: copy }))
+    expect(shell.ownerHintOpen()).toBe(true)
+    copy.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }))
+    expect(shell.ownerHintOpen()).toBe(false)
+    shell.toggleOwnerHint()
+    await fixture.whenStable()
+    card()?.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }))
+    expect(shell.ownerHintOpen()).toBe(false)
+  })
+
+  it('closes when the session turns out to be an owner\'s', async () => {
+    const { fixture, shell } = await render()
+    shell.toggleOwnerHint()
+    await fixture.whenStable()
+    TestBed.inject(FleetStore).session.set({ principal: 'owner', capabilities: [], code_browser_url: '' })
+    await fixture.whenStable()
+    expect(shell.ownerHintOpen()).toBe(false)
   })
 })

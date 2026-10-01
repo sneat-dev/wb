@@ -1,5 +1,6 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, ElementRef, Injector, afterNextRender, effect, inject, viewChild } from '@angular/core'
+import { FleetStore } from '@cockpit/fleet-data'
 import { OwnerSignIn } from '@cockpit/ui/control'
 import { ShellState } from './shell-state'
 
@@ -8,14 +9,15 @@ import { ShellState } from './shell-state'
  * with the command to copy (REQ:owner-gating-is-visible). It is the one place
  * that says so: no action carries a sign-in message of its own. It opens from
  * the anonymous chip, takes focus, and closes on Escape (focus returns to the
- * chip), on a click elsewhere and when the chip is pressed again. It lives in the
+ * chip), when focus leaves it, on a click elsewhere, when the session turns out to be an
+ * owner's and when the chip is pressed again. It lives in the
  * lazy overlays chunk, not in the initial script.
  */
 @Component({
   selector: 'app-owner-popover',
   imports: [OwnerSignIn],
   template: `@if (shell.ownerHintOpen()) {
-    <div #card class="card" role="dialog" aria-label="Sign in as owner" tabindex="-1"><app-owner-signin /></div>
+    <div #card class="card" role="dialog" aria-label="Sign in as owner" tabindex="-1" (focusout)="focusout($event)"><app-owner-signin /></div>
   }`,
   styles: `
     .card {
@@ -36,12 +38,17 @@ import { ShellState } from './shell-state'
 })
 export class OwnerPopover {
   protected readonly shell = inject(ShellState)
+  private readonly store = inject(FleetStore)
   private readonly document = inject(DOCUMENT)
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef)
   private readonly card = viewChild<ElementRef<HTMLElement>>('card')
 
   constructor() {
     const injector = inject(Injector)
+    // An owner session has nothing to sign in to: the card closes.
+    effect(() => {
+      if (this.store.session()?.principal === 'owner') this.shell.closeOwnerHint()
+    })
     // The card takes focus when it opens.
     effect(() => {
       if (this.shell.ownerHintOpen()) afterNextRender(() => this.card()?.nativeElement.focus(), { injector })
@@ -54,6 +61,11 @@ export class OwnerPopover {
     // A press on the chip toggles the card itself; a press inside the card keeps it.
     if (this.host.nativeElement.contains(target) || target.closest('.session') !== null) return
     this.shell.closeOwnerHint()
+  }
+
+  /** Tabbing out of the card closes it. */
+  protected focusout(event: FocusEvent): void {
+    if (!this.card()?.nativeElement.contains(event.relatedTarget as Node | null)) this.shell.closeOwnerHint()
   }
 
   protected escape(): void {

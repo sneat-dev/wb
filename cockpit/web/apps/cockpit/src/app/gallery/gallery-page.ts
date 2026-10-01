@@ -28,7 +28,7 @@ import {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class GalleryPage {
-  protected readonly now = Date.now()
+  private readonly now = Date.now()
   protected readonly badgeRows = BADGE_ROWS
   protected readonly syncRows = SYNC_ROWS
   protected readonly pullRequests = galleryPullRequests(this.now)

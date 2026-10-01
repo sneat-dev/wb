@@ -11,7 +11,7 @@ export function webAddress(url: string | undefined): string | null {
 /**
  * A pull request on one line (REQ:field-tables): its number, its state, how many
  * checks passed, the name of the first failed check (truncated, the full name in
- * the tooltip) and how long ago the daemon observed it. A field the daemon did
+ * the tooltip) and how long ago the daemon observed it (against the shared clock). A field the daemon did
  * not report is said to be unreported, never guessed; a pull request that has
  * never been observed says "not yet checked".
  */
@@ -30,7 +30,7 @@ export function webAddress(url: string | undefined): string | null {
       <span class="failed" [attr.title]="name">{{ name }}</span>
     }
     @if (pullRequest().checked_at) {
-      <span class="observed">checked <app-relative-time [at]="pullRequest().checked_at" [now]="now()" /></span>
+      <span class="observed">checked <app-relative-time [at]="pullRequest().checked_at" /></span>
     } @else {
       <span class="observed">not yet checked</span>
     }
@@ -70,8 +70,6 @@ export function webAddress(url: string | undefined): string | null {
 })
 export class PrChip {
   readonly pullRequest = input.required<PullRequest>()
-  /** The clock the observation age is measured against, in epoch milliseconds. */
-  readonly now = input.required<number>()
 
   protected readonly address = computed(() => webAddress(this.pullRequest().url))
   protected readonly failedCheck = computed(() => (failedOf(this.pullRequest()) ? this.pullRequest().failed_check : undefined))

@@ -141,6 +141,22 @@ export function scriptBudget(dist, entry = FIRST_PAGE_ENTRY) {
   return { problems, initial: { files: initialFiles, total: total(initialFiles) }, firstPage: { files: firstFiles, total: total(firstFiles) }, budget: INITIAL_SCRIPT_BUDGET }
 }
 
+// What only the gallery of the preview build contains: its component's selector and the marker
+// its fixtures carry (apps/cockpit/src/app/gallery/gallery-data.ts). The production build must
+// hold neither, so the gallery is provably not in the binary.
+export const GALLERY_MARKERS = ['app-gallery', 'cockpit-gallery-fixture']
+
+// The files directly under dist that hold a gallery marker.
+export function galleryLeaks(dist) {
+  return readdirSync(dist, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
+    .map((entry) => entry.name)
+    .filter((name) => {
+      const text = readFileSync(join(dist, name), 'utf8')
+      return GALLERY_MARKERS.some((marker) => text.includes(marker))
+    })
+}
+
 export function finishBuild(dist, log, report = () => {}) {
   const index = join(dist, 'index.html')
   if (!existsSync(index)) {
@@ -149,6 +165,11 @@ export function finishBuild(dist, log, report = () => {}) {
   }
   if (!readFileSync(index, 'utf8').includes(NONCE_PLACEHOLDER)) {
     log(`cockpit/web dist/index.html does not contain the ${NONCE_PLACEHOLDER} placeholder, so the daemon cannot issue a style nonce`)
+    return 1
+  }
+  const leaks = galleryLeaks(dist)
+  if (leaks.length > 0) {
+    log(`cockpit/web the gallery of the preview build is in the production build (${leaks.join(', ')}): it must stay behind gallery/gallery-routes.ts`)
     return 1
   }
   const size = scriptBudget(dist)

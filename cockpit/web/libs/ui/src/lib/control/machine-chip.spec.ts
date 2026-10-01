@@ -1,15 +1,18 @@
+import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { Machine } from '@cockpit/fleet-data'
 import { machine } from '@cockpit/fleet-data/testing'
 import { MachineChip } from './machine-chip'
+import { UiClock } from './ui-clock'
 
 const NOW = Date.parse('2026-10-01T13:00:00Z')
 
 async function render(extra: Partial<Machine>, stale = false, name = 'vm') {
+  TestBed.resetTestingModule()
+  TestBed.configureTestingModule({ providers: [{ provide: UiClock, useValue: { now: signal(NOW) } }] })
   const fixture = TestBed.createComponent(MachineChip)
   fixture.componentRef.setInput('machine', { ...machine(name, 'cached'), ...extra })
   fixture.componentRef.setInput('stale', stale)
-  fixture.componentRef.setInput('now', NOW)
   await fixture.whenStable()
   const root: HTMLElement = fixture.nativeElement
   const text = (selector: string) => root.querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim()

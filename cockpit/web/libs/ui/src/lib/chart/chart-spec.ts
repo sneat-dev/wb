@@ -59,16 +59,50 @@ export function formatValue(value: number, unit: string): string {
   return `${Math.round(value * 10) / 10}${unit}`
 }
 
-/** The data table of a spec. */
+/** A spec without what a chart cannot draw: a value that is not a finite number is a gap in a series and no bar in a bar chart, and a point with no time is dropped. */
+export function cleanSpec<T extends ChartSpec>(spec: T): T {
+  const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+  if (spec.kind === 'time-series') {
+    return { ...spec, points: spec.points.filter((point) => finite(point.at)).map((point) => ({ at: point.at, value: finite(point.value) ? point.value : null })) }
+  }
+  return { ...spec, bars: spec.bars.filter((bar) => finite(bar.value)) } as T
+}
+
+/** Whether there is anything to draw. */
+export function hasData(spec: ChartSpec): boolean {
+  return spec.kind === 'time-series' ? spec.points.some((point) => point.value !== null) : spec.bars.length > 0
+}
+
+/** More points than this are summarised in the data table. */
+export const TABLE_FULL_LIMIT = 60
+/** In a summarised table, every this-many-th point is listed. */
+export const TABLE_STEP = 10
+
+/** The data table of a spec. A long series is its minimum, average, maximum and latest value, then every tenth point. */
 export function chartTable(spec: ChartSpec): ChartTable {
   const heading = spec.kind === 'time-series' ? 'Time' : spec.kind === 'bars' ? 'Day' : 'Bucket'
   const rows =
     spec.kind === 'time-series'
-      ? spec.points.map((point) => ({ label: clockTime(point.at), value: point.value === null ? 'no sample' : formatValue(point.value, spec.unit) }))
+      ? seriesRows(spec)
       : spec.kind === 'bars'
         ? spec.bars.map((bar) => ({ label: bar.label, value: String(bar.value) }))
         : spec.bars.map((bar) => ({ label: bar.label, value: String(bar.value), link: bar.link }))
   return { caption: spec.title, columns: [heading, spec.valueLabel], rows }
+}
+
+function seriesRows(spec: TimeSeriesSpec): ChartTable['rows'] {
+  const row = (point: TimeSeriesSpec['points'][number]) => ({ label: clockTime(point.at), value: point.value === null ? 'no sample' : formatValue(point.value, spec.unit) })
+  if (spec.points.length <= TABLE_FULL_LIMIT) return spec.points.map(row)
+  const values = spec.points.flatMap((point) => (point.value === null ? [] : [point.value]))
+  const summary = (label: string, value: number | undefined) => ({ label, value: value === undefined ? 'no sample' : formatValue(value, spec.unit) })
+  const average = values.length === 0 ? undefined : values.reduce((sum, value) => sum + value, 0) / values.length
+  return [
+    summary('Minimum', values.length === 0 ? undefined : Math.min(...values)),
+    summary('Average', average),
+    summary('Maximum', values.length === 0 ? undefined : Math.max(...values)),
+    summary('Latest', values[values.length - 1]),
+    ...spec.points.filter((_, index) => index % TABLE_STEP === 0).map(row),
+  ]
 }
 
 /** One sentence that stands for the chart, for its accessible name. */
