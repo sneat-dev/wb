@@ -1,15 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed } from '@angular/core'
-import {
-  Repository,
-  RUNNING_STATE,
-  agentLabel,
-  codeBrowserLink,
-  filterAgents,
-  filterRepositories,
-  filterWorktrees,
-  repositoryLabel,
-  worktreeLabel,
-} from '@cockpit/fleet-data'
+import { Repository, RUNNING_STATE, repositoryLabel, filterWorktrees, filterAgents } from '@cockpit/fleet-data'
+import { agentLabel, codeBrowserLink, filterRepositories, worktreeLabel } from '@cockpit/fleet-data/list'
 import { CodeIndexLabel, Count, FilterBar, RouteLabel } from '@cockpit/ui'
 import { RouterLink } from '@angular/router'
 import { TableModule } from 'primeng/table'

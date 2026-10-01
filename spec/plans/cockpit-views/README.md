@@ -188,7 +188,7 @@ Verification (allmust pass before the task is complete): targeted `wb run -- go 
 ### Task 10: Frontend: fleet-data library
 
 **Id:** task-10
-**Verifies:** cockpit-views#ac:matcher-grammar, cockpit-views#ac:matcher-limits-and-bare-fields, cockpit-views#ac:matcher-is-linear-time, cockpit-views#ac:filter-vocabulary-is-the-only-link-target, cockpit-views#ac:client-accepts-only-schema-2, cockpit-views#ac:derived-collections-computed-once, cockpit-views#ac:filtering-5000-rows-is-fast, cockpit-views#ac:unchanged-snapshot-does-nothing, cockpit-views#ac:repository-identity-merges-local-and-cached, cockpit-views#ac:task-state-at-risk, cockpit-views#ac:task-state-checks-failed, cockpit-views#ac:task-state-blocked, cockpit-views#ac:task-state-ready-to-land, cockpit-views#ac:task-state-not-ready, cockpit-views#ac:task-state-working, cockpit-views#ac:task-state-landed, cockpit-views#ac:task-state-idle, cockpit-views#ac:task-state-not-reported, cockpit-views#ac:task-state-is-worst-first, cockpit-views#ac:task-state-ignores-unobserved-pull-requests
+**Verifies:** cockpit-views#ac:matcher-grammar, cockpit-views#ac:matcher-limits-and-bare-fields, cockpit-views#ac:matcher-is-linear-time, cockpit-views#ac:filter-vocabulary-is-the-only-link-target, cockpit-views#ac:client-accepts-only-schema-2, cockpit-views#ac:derived-collections-computed-once, cockpit-views#ac:filtering-5000-rows-is-fast, cockpit-views#ac:unchanged-snapshot-does-nothing, cockpit-views#ac:repository-identity-merges-local-and-cached, cockpit-views#ac:task-state-at-risk, cockpit-views#ac:task-state-checks-failed, cockpit-views#ac:task-state-blocked, cockpit-views#ac:task-state-ready-to-land, cockpit-views#ac:task-state-not-ready, cockpit-views#ac:task-state-working, cockpit-views#ac:task-state-landed, cockpit-views#ac:task-state-idle, cockpit-views#ac:task-state-not-reported, cockpit-views#ac:task-state-is-worst-first, cockpit-views#ac:task-state-ignores-unobserved-pull-requests, cockpit-views#ac:copy-command-placeholders-are-syntax-errors, cockpit-views#ac:needs-you-lists-recent-work-at-risk-only, cockpit-views#ac:cleanup-counts-older-at-risk-work, cockpit-views#ac:needs-you-chip-is-the-home-set, cockpit-views#ac:worktree-pr-join-is-one, cockpit-views#ac:web-addresses-are-checked
 **Depends-On:** —
 **Status:** complete
 
@@ -199,7 +199,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 ### Task 11: Frontend: shell, palette, shortcuts and metrics polling
 
 **Id:** task-11
-**Verifies:** cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness, cockpit-views#ac:home-route-and-alias, cockpit-views#ac:warming-up-shows-progress, cockpit-views#ac:no-heading-repeats-the-tab, cockpit-views#ac:palette-groups-results, cockpit-views#ac:shortcuts-navigate-and-respect-typing, cockpit-views#ac:initial-script-fits-the-budget, cockpit-views#ac:metrics-poll-only-while-visible
+**Verifies:** cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness, cockpit-views#ac:home-route-and-alias, cockpit-views#ac:warming-up-shows-progress, cockpit-views#ac:no-heading-repeats-the-tab, cockpit-views#ac:palette-groups-results, cockpit-views#ac:shortcuts-navigate-and-respect-typing, cockpit-views#ac:initial-script-fits-the-budget, cockpit-views#ac:metrics-poll-only-while-visible, cockpit-views#ac:home-badge-is-capped
 **Depends-On:** 10
 **Status:** complete
 

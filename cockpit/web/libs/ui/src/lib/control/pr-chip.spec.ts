@@ -2,7 +2,7 @@ import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { PullRequest } from '@cockpit/fleet-data'
 import { pullRequest } from '@cockpit/fleet-data/testing'
-import { PrChip, checksOf, webAddress } from './pr-chip'
+import { PrChip, checksOf } from './pr-chip'
 import { UiClock } from './ui-clock'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
@@ -70,11 +70,9 @@ describe('PrChip', () => {
     expect(checksOf(bare({ checks_total: undefined, checks_passed: undefined, checks_green: undefined }))).toEqual({ value: 'unknown', label: undefined })
   })
 
-  it('accepts only http and https addresses', () => {
-    expect(webAddress('http://x.test/a')).toBe('http://x.test/a')
-    expect(webAddress('https://x.test/a')).toBe('https://x.test/a')
-    expect(webAddress('ftp://x.test')).toBeNull()
-    expect(webAddress('https://x.test/a b')).toBeNull()
-    expect(webAddress(undefined)).toBeNull()
+  it('links the number only through the library\'s checked web address', async () => {
+    const link = async (url: string | undefined) => (await render({ url })).root.querySelector('a.number')?.getAttribute('href') ?? null
+    expect(await link('https://github.com/sneat-dev/wb/pull/12')).toBe('https://github.com/sneat-dev/wb/pull/12')
+    for (const url of ['http://github.com/a', 'javascript:alert(1)', 'https://user@github.com/a', 'https://github.com/a b', undefined]) expect(await link(url), String(url)).toBeNull()
   })
 })

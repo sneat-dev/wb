@@ -1,7 +1,7 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, viewChild } from '@angular/core'
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router'
-import { FleetStore } from '@cockpit/fleet-data'
+import { BADGE_CAP, FleetStore, badgeLabel } from '@cockpit/fleet-data'
 import { filter } from 'rxjs'
 import { NEW_TASK_PATH, PAGE_LINKS, PageLink, TabSignal } from '../nav'
 import { modifierLabel } from '../shortcuts/platform'
@@ -41,6 +41,7 @@ export class TopBar {
   protected readonly shell = inject(ShellState)
   protected readonly links = PAGE_LINKS
   protected readonly newTaskPath = NEW_TASK_PATH
+  protected readonly badgeCap = BADGE_CAP
   protected readonly modifier = modifierLabel(inject(DOCUMENT).defaultView?.navigator)
 
   /** The signal numbers; undefined until there is data to count. */
@@ -50,11 +51,11 @@ export class TopBar {
     return { 'needs-you': model.homeBadge, running: model.runningAgentCount }
   })
 
-  protected badge(link: PageLink): { count: number; hint: string; hot: boolean } | undefined {
+  protected badge(link: PageLink): { count: number; label: string; hint: string; hot: boolean } | undefined {
     const counts = this.counts()
     if (link.signal === undefined || counts === undefined) return undefined
     const count = counts[link.signal]
-    return { count, hint: BADGE_HINT[link.signal], hot: count > 0 }
+    return { count, label: badgeLabel(count), hint: BADGE_HINT[link.signal], hot: count > 0 }
   }
 
   private timer: ReturnType<typeof setTimeout> | undefined

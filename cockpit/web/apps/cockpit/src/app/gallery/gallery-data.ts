@@ -1,4 +1,6 @@
-import { AgeTerm, FleetModel, MachineMetrics, MetricsSample, PanelCommand, PullRequest, RegistryAction, Machine, branchCleanup, pullRequestCreate, worktreeList } from '@cockpit/fleet-data'
+import { AgeTerm, FleetModel, MachineMetrics, MetricsSample, PullRequest, RegistryAction, Machine } from '@cockpit/fleet-data'
+import { branchCleanup, pullRequestCreate, worktreeList } from '@cockpit/fleet-data/commands'
+import { PanelCommand, buildAgentPanel, buildPullRequestPanel, buildRepositoryPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { agent, machine, pullRequest, registryAction, repository, run, worktree } from '@cockpit/fleet-data/testing'
 import type { BadgeKind } from '@cockpit/ui/control'
 
@@ -89,11 +91,11 @@ const commandsOf = (panel: { commands: PanelCommand[] } | undefined): PanelComma
 export function galleryCommandLists(): { title: string; entries: PanelCommand[] }[] {
   const model = galleryModel()
   return [
-    { title: 'Worktree on this machine', entries: commandsOf(model.worktreeView('w1')) },
-    { title: 'Worktree on another machine, no SSH route', entries: commandsOf(model.worktreeView('w3')) },
-    { title: 'Pull request', entries: commandsOf(model.pullRequestView('p1')) },
-    { title: 'Repository (placeholders to edit)', entries: commandsOf(model.repositoryView('sneat-dev/wb')) },
-    { title: 'Dispatched run', entries: commandsOf(model.agentView('run-1')) },
+    { title: 'Worktree on this machine', entries: commandsOf(buildWorktreePanel(model, 'w1')) },
+    { title: 'Worktree on another machine, no SSH route', entries: commandsOf(buildWorktreePanel(model, 'w3')) },
+    { title: 'Pull request', entries: commandsOf(buildPullRequestPanel(model, 'p1')) },
+    { title: 'Repository (placeholders to edit)', entries: commandsOf(buildRepositoryPanel(model, 'sneat-dev/wb')) },
+    { title: 'Dispatched run', entries: commandsOf(buildAgentPanel(model, 'run-1')) },
     {
       title: 'Refused values',
       entries: [

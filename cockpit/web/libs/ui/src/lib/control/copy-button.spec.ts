@@ -68,7 +68,7 @@ describe('CopyButton', () => {
     TestBed.resetTestingModule()
     TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy } }] })
     const fixture = TestBed.createComponent(CopyButton)
-    fixture.componentRef.setInput('text', 'wb x --message=<message>')
+    fixture.componentRef.setInput('text', 'wb x --message=<<<edit:message>>>')
     fixture.componentRef.setInput('idleWord', 'Copy template')
     fixture.componentRef.setInput('doneStatus', 'Copied; edit the <…> parts before running')
     await fixture.whenStable()

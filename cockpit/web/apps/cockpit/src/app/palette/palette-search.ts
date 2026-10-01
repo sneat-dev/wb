@@ -1,27 +1,5 @@
-import {
-  Agent,
-  AppLink,
-  FleetModel,
-  MachineView,
-  MergedRepository,
-  TaskView,
-  Worktree,
-  ListPageId,
-  ListRow,
-  MatchEnv,
-  Subject,
-  Term,
-  agentDetailLink,
-  agentLabel,
-  declaredFields,
-  EXACT_FIELDS,
-  machineDetailLink,
-  matchesTerms,
-  parseQuery,
-  repositoryDetailLink,
-  taskDetailLink,
-  worktreeDetailLink,
-} from '@cockpit/fleet-data'
+import { Agent, AppLink, FleetModel, MachineView, MergedRepository, TaskView, Worktree, ListPageId, Term, agentDetailLink, declaredFields, machineDetailLink, parseQuery, repositoryDetailLink, taskDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
+import { EXACT_FIELDS, ListRow, MatchEnv, Subject, agentLabel, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows, matchesTerms } from '@cockpit/fleet-data/list'
 import { IconName } from '../ui/icon'
 
 export type PaletteKind = 'task' | 'repository' | 'worktree' | 'branch' | 'agent' | 'machine'
@@ -166,7 +144,7 @@ export function searchPalette(model: FleetModel, text: string, now: number): Pal
   const terms = parseQuery(text)
   if (terms.length === 0) return []
   const describe = describers(model)
-  const worktreeRows = model.worktreeRows
+  const worktreeRows = buildWorktreeRows(model)
   const branches: Candidate[] = []
   const seen = new Set<string>()
   for (const row of worktreeRows) {
@@ -186,12 +164,12 @@ export function searchPalette(model: FleetModel, text: string, now: number): Pal
     })
   }
   const groups = [
-    group('task', rows(model.taskRows, describe.task), 'tasks', terms, now),
-    group('repository', rows(model.repositoryRows, describe.repository), 'repositories', terms, now),
+    group('task', rows(buildTaskRows(model), describe.task), 'tasks', terms, now),
+    group('repository', rows(buildRepositoryRows(model), describe.repository), 'repositories', terms, now),
     group('worktree', rows(worktreeRows, describe.worktree), 'worktrees', terms, now),
     group('branch', branches, 'branch', terms, now),
-    group('agent', rows(model.agentRows, describe.agent, agentIds), 'agents', terms, now),
-    group('machine', rows(model.machineRows, describe.machine), 'machines', terms, now),
+    group('agent', rows(buildAgentRows(model), describe.agent, agentIds), 'agents', terms, now),
+    group('machine', rows(buildMachineRows(model), describe.machine), 'machines', terms, now),
   ]
   return groups.filter((candidate): candidate is PaletteGroup => candidate !== undefined)
 }
@@ -209,27 +187,27 @@ export function resolveResult(model: FleetModel, id: string): PaletteResult | un
   const found = (described: Described | undefined): PaletteResult | undefined => (described ? { id, kind: kind as PaletteKind, ...described } : undefined)
   switch (kind) {
     case 'task': {
-      const row = model.taskRows.find((candidate) => candidate.id === entity)
+      const row = buildTaskRows(model).find((candidate) => candidate.id === entity)
       return found(row && describe.task(row))
     }
     case 'repository': {
-      const row = model.repositoryRows.find((candidate) => candidate.id === entity)
+      const row = buildRepositoryRows(model).find((candidate) => candidate.id === entity)
       return found(row && describe.repository(row))
     }
     case 'worktree': {
-      const row = model.worktreeRows.find((candidate) => candidate.id === entity)
+      const row = buildWorktreeRows(model).find((candidate) => candidate.id === entity)
       return found(row && describe.worktree(row))
     }
     case 'branch': {
-      const worktree = model.worktreeRows.find((candidate) => branchKey(candidate.item) === entity)
+      const worktree = buildWorktreeRows(model).find((candidate) => branchKey(candidate.item) === entity)
       return found(worktree && describe.branch(worktree.item))
     }
     case 'agent': {
-      const row = model.agentRows.find((candidate) => candidate.id === entity)
+      const row = buildAgentRows(model).find((candidate) => candidate.id === entity)
       return found(row && describe.agent(row))
     }
     case 'machine': {
-      const row = model.machineRows.find((candidate) => candidate.id === entity)
+      const row = buildMachineRows(model).find((candidate) => candidate.id === entity)
       return found(row && describe.machine(row))
     }
     default:
