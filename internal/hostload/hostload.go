@@ -81,11 +81,8 @@ func runningInCI() bool {
 // defaultFloor is the admission ceiling when nothing overrides it: twice the
 // host's CPU count, never less than 1.
 func defaultFloor() float64 {
-	def := 2 * float64(runtime.NumCPU())
-	if def < 1 {
-		def = 1
-	}
-	return def
+	// The runtime always reports at least one logical CPU.
+	return 2 * float64(runtime.NumCPU())
 }
 
 // Resolve computes the admission floor and, when admission is disabled,

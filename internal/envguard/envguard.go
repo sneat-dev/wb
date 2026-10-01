@@ -111,7 +111,11 @@ func Inspect(env []string, dirs ...string) AmbientInputs {
 // goWorkAncestors walks from dir up to the filesystem root, collecting every
 // go.work file found along the way, nearest first.
 func goWorkAncestors(dir string) []string {
-	absolute, err := filepath.Abs(dir)
+	return goWorkAncestorsResolved(dir, filepath.Abs)
+}
+
+func goWorkAncestorsResolved(dir string, absolutePath func(string) (string, error)) []string {
+	absolute, err := absolutePath(dir)
 	if err != nil {
 		return nil
 	}
@@ -145,22 +149,18 @@ func goWorkAncestors(dir string) []string {
 func SanitizeEnv(base []string, overrides ...string) []string {
 	order := make([]string, 0, len(base)+len(overrides))
 	values := make(map[string]string, len(base)+len(overrides))
-	present := make(map[string]bool, len(base)+len(overrides))
 	apply := func(entry string, stripAgentVars bool) {
 		name, value, found := strings.Cut(entry, "=")
 		if !found {
 			return
 		}
 		if stripAgentVars && IsAgentVar(name) {
-			delete(values, name)
-			present[name] = false
 			return
 		}
-		if !present[name] {
+		if _, exists := values[name]; !exists {
 			order = append(order, name)
 		}
 		values[name] = value
-		present[name] = true
 	}
 	for _, entry := range base {
 		apply(entry, true)
@@ -170,9 +170,6 @@ func SanitizeEnv(base []string, overrides ...string) []string {
 	}
 	result := make([]string, 0, len(order))
 	for _, name := range order {
-		if !present[name] {
-			continue
-		}
 		result = append(result, name+"="+values[name])
 	}
 	return result
@@ -264,22 +261,10 @@ func GoEnvOverrides(dir string) []string {
 // walking upward from dir (inclusive), or "" when none exists in any
 // ancestor.
 func nearestGoWorkDir(dir string) string {
-	absolute, err := filepath.Abs(dir)
-	if err != nil {
-		return ""
+	if ancestors := goWorkAncestors(dir); len(ancestors) > 0 {
+		return filepath.Dir(ancestors[0])
 	}
-	current := absolute
-	for {
-		candidate := filepath.Join(current, "go.work")
-		if info, statErr := os.Lstat(candidate); statErr == nil && info.Mode().IsRegular() {
-			return current
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
-	}
+	return ""
 }
 
 func gitPathExistsAtHEAD(repoRoot, path string) (bool, error) {

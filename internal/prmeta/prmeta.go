@@ -21,10 +21,8 @@ func Append(body string, provenance Provenance) string {
 	if provenance.Effort == "" || strings.Contains(body, marker) {
 		return body
 	}
-	encoded, err := json.Marshal(provenance)
-	if err != nil {
-		return body
-	}
+	// Provenance contains only strings, which JSON can always encode.
+	encoded, _ := json.Marshal(provenance)
 	lines := []string{"WB effort: `" + provenance.Effort + "`"}
 	if provenance.Stream != "" {
 		lines = append(lines, "WB stream: `"+provenance.Stream+"`")
