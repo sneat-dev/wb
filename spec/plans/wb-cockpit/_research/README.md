@@ -77,3 +77,7 @@ root. Line numbers drift; the function and type names are the stable anchor.
   a root path a feature effort and a nested one a task effort.
 - **`wb dashboard` never opens `/workbench/`.** `--local` opens the pure-Go
   index.
+
+## Open Questions
+
+None at this time.
