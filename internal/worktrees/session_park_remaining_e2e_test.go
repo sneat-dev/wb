@@ -337,6 +337,7 @@ func TestE2EParkedRemoteValidationRetainsExactPushedSource(t *testing.T) {
 	if err := validateRemoteParkedMember(context.Background(), fixture.projectsRoot, &prepared); err != nil {
 		t.Fatalf("unchanged pushed source failed validation: %v", err)
 	}
+	originPath := gitTestOutput(t, worktree, "remote", "get-url", "origin")
 	for _, tc := range []struct {
 		name, want string
 		mutate     func(*testing.T, *parkedSessionCaptureMember) context.Context
@@ -496,9 +497,17 @@ func TestE2EParkedRemoteValidationRetainsExactPushedSource(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			trial := prepared
 			ctx := tc.mutate(t, &trial)
+			headBefore := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+			remoteBefore := gitTestOutput(t, originPath, "rev-parse", "refs/heads/"+branch)
 			err := validateRemoteParkedMember(ctx, fixture.projectsRoot, &trial)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("%s validation = %v, want %q refusal", tc.name, err, tc.want)
+			}
+			if after := gitTestOutput(t, worktree, "rev-parse", "HEAD"); after != headBefore {
+				t.Fatalf("%s changed local HEAD during refusal: %s -> %s", tc.name, headBefore, after)
+			}
+			if after := gitTestOutput(t, originPath, "rev-parse", "refs/heads/"+branch); after != remoteBefore {
+				t.Fatalf("%s changed remote branch during refusal: %s -> %s", tc.name, remoteBefore, after)
 			}
 		})
 	}
