@@ -205,6 +205,12 @@ is this closed set of fields:
   could not answer;
 - the read model's own `error` code and `agents_truncated` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
+- NOT in this list, and never sent to `anonymous-local`: the session response's field
+  `machine_routes` (per machine with an SSH route, its `machine_id` and the `host`, optional
+  `user` and `wb_path` of `session_move.targets.<machine>.ssh`) is OWNER-ONLY, emitted only to a
+  session that holds the `owner` principal, because it names hosts and users that the metadata
+  set does not
+  ([cockpit-views](../cockpit-views/README.md)#req:copy-the-command).
 
 The metadata routes are `session`, `fleet`, `attention`, the action list, and
 two added by [cockpit-views](../cockpit-views/README.md): `GET /api/v1/cockpit/branches?repository=<id>`

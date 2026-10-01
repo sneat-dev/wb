@@ -7,6 +7,7 @@ import {
   FleetDocument,
   Machine,
   Repository,
+  SCHEMA_VERSION,
   Session,
   Worktree,
 } from './fleet.types'
@@ -27,7 +28,7 @@ export type FilterQuery = Record<string, string>
 
 export function emptyDocument(): FleetDocument {
   return {
-    schema_version: 1,
+    schema_version: SCHEMA_VERSION,
     warming_up: true,
     repositories_total: 0,
     repositories_scanned: 0,
@@ -35,7 +36,6 @@ export function emptyDocument(): FleetDocument {
     machines: [],
     repositories: [],
     worktrees: [],
-    branches: [],
     pull_requests: [],
     agents: [],
   }
@@ -124,6 +124,11 @@ export function repositoryLabel(repository: Repository): string {
 
 export function worktreeLabel(worktree: Worktree): string {
   return `${worktree.task} (${worktree.branch})`
+}
+
+/** The agent's runtime and model, or "agent" for neither. */
+export function agentTitle(agent: Agent): string {
+  return [agent.runtime, agent.model].filter((part) => part).join(' ') || 'agent'
 }
 
 export function agentLabel(agent: Agent): string {
