@@ -9,12 +9,16 @@ package web
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/rand"
 	"embed"
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Dist holds every file the Cockpit build emitted, or only .gitkeep in a
@@ -52,6 +56,83 @@ func PolicyFor(nonce string) string {
 // application handler does not write: it is what lets the code that answers
 // ahead of Handler carry the same policy shape.
 func FreshPolicy() string { return PolicyFor(rand.Text()) }
+
+// gzipExtension marks a file the build compressed beside the original
+// (tools/lib/finish-build.mjs): `main-ABC.js` has `main-ABC.js.gz`. The
+// compressed file is served only as the encoding of the original, never under
+// its own name.
+const gzipExtension = ".gz"
+
+// hashedAsset matches the name of a content-hashed build output: a base name,
+// a hyphen, the build's eight-character hash and an extension, as in
+// `main-SS4IWIAX.js`, `styles-J6F5IS5P.css` and `chunk-BzbuF09_.js` (the
+// hash alphabet is letters, digits and underscore).
+var hashedAsset = regexp.MustCompile(`-([A-Za-z0-9_]{8})\.[A-Za-z0-9]+$`)
+
+// isHashedAsset reports whether name is a content-hashed build output, whose
+// content never changes under that name, so it may be cached for a year.
+// Caching a file that can change as immutable is the costly mistake, so the
+// hash must look like one: it holds a letter, and a digit or an upper-case
+// letter. An ordinary word (`theme-standard.css`) and a date (`logo-20240101.svg`)
+// are not hashes.
+func isHashedAsset(name string) bool {
+	match := hashedAsset.FindStringSubmatch(name)
+	if match == nil {
+		return false
+	}
+	hash := match[1]
+	return strings.ContainsFunc(hash, unicode.IsLetter) && strings.ContainsFunc(hash, func(character rune) bool { return !unicode.IsLower(character) && character != '_' })
+}
+
+// immutableCache is the Cache-Control of a content-hashed asset.
+const immutableCache = "public, max-age=31536000, immutable"
+
+// gzipVary is the Vary value of a response whose encoding depends on the
+// request; the cockpit page route has already set Origin.
+const gzipVary = "Origin, Accept-Encoding"
+
+// AcceptsGzip reports whether the Accept-Encoding header values allow gzip: an
+// explicit gzip entry decides (a quality of zero refuses it), and only without
+// one does `*` (again unless its quality is zero). Parameters are read
+// case-insensitively and only `q` counts; an unreadable quality is ignored.
+func AcceptsGzip(values []string) bool {
+	explicit, wildcard := -1, -1 // -1: not listed, 0: refused, 1: allowed
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			name, parameters, _ := strings.Cut(item, ";")
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "gzip" && name != "*" {
+				continue
+			}
+			allowed := 1
+			for _, parameter := range strings.Split(parameters, ";") {
+				key, quality, _ := strings.Cut(strings.ToLower(strings.TrimSpace(parameter)), "=")
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(quality), 64); strings.TrimSpace(key) == "q" && err == nil && parsed == 0 {
+					allowed = 0
+				}
+			}
+			if name == "gzip" {
+				explicit = allowed
+			} else {
+				wildcard = allowed
+			}
+		}
+	}
+	if explicit >= 0 {
+		return explicit == 1
+	}
+	return wildcard == 1
+}
+
+// gzipBytes compresses a document that was changed for this response.
+func gzipBytes(data []byte) []byte {
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	// Writing to a bytes.Buffer cannot fail.
+	_, _ = writer.Write(data)
+	_ = writer.Close()
+	return buffer.Bytes()
+}
 
 const notBuiltPage = "Cockpit was not built into this wb binary. " +
 	"Run `pnpm install && pnpm build` in cockpit/web, then rebuild wb.\n"
@@ -103,7 +184,7 @@ func HandlerFor(files fs.FS) http.Handler {
 			return
 		}
 		name := strings.TrimPrefix(path.Clean("/"+request.URL.Path), "/")
-		if path.Base(name) == ".gitkeep" {
+		if path.Base(name) == ".gitkeep" || path.Ext(name) == gzipExtension {
 			http.NotFound(writer, request)
 			return
 		}
@@ -126,13 +207,33 @@ func HandlerFor(files fs.FS) http.Handler {
 			http.NotFound(writer, request)
 			return
 		}
-		if !isFile || name == indexPage {
-			writer.Header().Set("Cache-Control", "no-cache")
+		header := writer.Header()
+		zipped := AcceptsGzip(request.Header.Values("Accept-Encoding"))
+		header.Set("Vary", gzipVary)
+		switch {
+		case !isFile || name == indexPage:
+			header.Set("Cache-Control", "no-cache")
+		case isHashedAsset(name):
+			header.Set("Cache-Control", immutableCache)
 		}
 		if name == indexPage {
+			// The nonce is per response, so the entry document is compressed per
+			// response too, and never from a build-time file.
 			content = bytes.ReplaceAll(content, []byte(noncePlaceholder), []byte(nonce))
+			if zipped {
+				content = gzipBytes(content)
+			}
+		} else if zipped {
+			if precompressed, err := fs.ReadFile(files, name+gzipExtension); err == nil {
+				content = precompressed
+			} else {
+				zipped = false
+			}
 		}
-		writer.Header().Set("Content-Type", contentType(name))
+		if zipped {
+			header.Set("Content-Encoding", "gzip")
+		}
+		header.Set("Content-Type", contentType(name))
 		_, _ = writer.Write(content)
 	}))
 }

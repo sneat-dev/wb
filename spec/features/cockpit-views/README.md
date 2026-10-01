@@ -698,7 +698,7 @@ object opt. (below); `agents_truncated` bool opt.; the collections `machines`, `
 | `branch` | string | opt. | binding | both |
 | `number` | int | no | binding | both |
 | `state` | string, `open`\|`merged`\|`closed`\|`draft` | opt. | the watcher; a snapshot's value only if in the set | both |
-| `url` | string | opt. | emitted only when `https` with a host of ASCII letters, digits, dots and hyphens, no port and no user information | both |
+| `url` | string | opt. | emitted only when `https` with a host of ASCII letters, digits, dots and hyphens that is not an IP literal or `localhost`, at most 2,048 characters, no port and no user information (a GitHub Enterprise address with a port therefore has no link, by design) | both |
 | `mergeable` | string, a closed enum (`clean`, `blocked`, `dirty`, `behind`, `unstable`, `has_hooks`, `draft`, `unknown`) | opt. | the watcher | local only |
 | `checks_total`, `checks_passed`, `checks_failed`, `checks_skipped`, `checks_pending` | int | opt. | the watcher | local only |
 | `checks_green` | bool | opt. | the watcher's verdict | local only |
@@ -2332,6 +2332,9 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 
 ## Open Questions
 
+- On Windows the owner-process liveness read for `owner_state` cannot tell a gone process from a
+  live one (`Signal(0)` is unsupported there), so a Windows machine's local worktrees read as
+  `unknown` and its `boot_time` from `GetTickCount64` is not checked for 32-bit truncation.
 - Which remote store is the fleet's shared one is undecided: the Mac reads the git
   store and the VM publishes to its own hub. Until it is settled, periodic publish
   uses whatever each machine has configured; it is opt-in and the fallback for machines with

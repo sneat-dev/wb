@@ -64,16 +64,19 @@ func (server *Server) originKindOf(request *http.Request) originKind {
 	return originForeign
 }
 
-// allowHosted writes the cross-origin allowance for the hosted origin. It
-// never allows credentials.
+// allowHosted writes the cross-origin allowance for the hosted origin and
+// exposes the ETag, so the hosted page can revalidate with it
+// (cockpit-views#req:hosted-origin-conditional-requests). It never allows
+// credentials.
 func (server *Server) allowHosted(writer http.ResponseWriter) {
 	writer.Header().Set("Access-Control-Allow-Origin", server.hosted)
+	writer.Header().Set("Access-Control-Expose-Headers", "ETag")
 }
 
 // preflightHeaders are the request headers the hosted page may send: the
 // safelisted ones, which a browser names in a preflight only when their value
-// is unusual.
-var preflightHeaders = []string{"accept", "accept-language", "content-language", "content-type"}
+// is unusual, and If-None-Match, which a conditional request carries.
+var preflightHeaders = []string{"accept", "accept-language", "content-language", "content-type", "if-none-match"}
 
 // preflightMaxAge is how long, in seconds, a browser may reuse a preflight
 // answer.
@@ -83,7 +86,7 @@ const preflightMaxAge = "600"
 // public page asking a loopback address needs the private-network allowance
 // as well. Only GET is allowed, with no header beyond preflightHeaders.
 func (server *Server) preflight(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+	writer.Header().Set("Vary", writer.Header().Get("Vary")+", Access-Control-Request-Method, Access-Control-Request-Headers")
 	if request.Header.Get("Access-Control-Request-Method") != http.MethodGet {
 		writeAPIError(writer, http.StatusForbidden, "only GET is allowed from the hosted origin")
 		return

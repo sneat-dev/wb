@@ -381,7 +381,7 @@ func TestE2EFlatLayoutClonesGetTheirIdentityFromTheirOrigin(t *testing.T) {
 	snapshotter, _ := newSnapshotter(fleet.collectors(store, ""), nil)
 	refreshAndSettle(t, snapshotter)
 	body, _ := snapshotter.Body()
-	if strings.Contains(string(body), "https://") || strings.Contains(strings.ToLower(string(body)), ".git\"") {
+	if text := webURLField.ReplaceAllString(string(body), ""); strings.Contains(text, "https://") || strings.Contains(strings.ToLower(text), ".git\"") {
 		t.Fatalf("the origin URL reached the document: %s", body)
 	}
 	got := codeIndexByName(snapshotter.Document())

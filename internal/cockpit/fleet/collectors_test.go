@@ -182,9 +182,20 @@ func TestRecordReadsTheManifestAndHeartbeatAndNothingElse(t *testing.T) {
 	if !ok || record.Task != "task-q" || record.Branch != "task-q" || !record.CreatedAt.Equal(created) || !record.HeartbeatAt.IsZero() {
 		t.Fatalf("record without a heartbeat = %+v, %v", record, ok)
 	}
+	if record.Owner != worktrees.OwnerUnstated {
+		t.Errorf("a worktree with no journal has owner %q, want none stated", record.Owner)
+	}
 	worktrees.TouchHeartbeat(dir, "test")
 	if record, _ := collectors.Record(dir); record.HeartbeatAt.IsZero() {
 		t.Error("the heartbeat was not read")
+	}
+	var asked []string
+	collectors.DeclaredOwner = func(worktree string) string {
+		asked = append(asked, worktree)
+		return worktrees.OwnerGone
+	}
+	if record, _ := collectors.Record(dir); record.Owner != worktrees.OwnerGone || len(asked) != 1 || asked[0] != dir {
+		t.Errorf("the owner seam was not used: %+v asked %v", record, asked)
 	}
 }
 

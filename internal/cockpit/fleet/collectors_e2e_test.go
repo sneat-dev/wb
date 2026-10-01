@@ -183,7 +183,7 @@ func TestE2ESnapshottingARealRepositoryNeverWritesToItOrFetches(t *testing.T) {
 	// And the snapshot is the real state: the clone, its worktree, its
 	// branches and the other machine.
 	names := map[string]Branch{}
-	for _, branch := range document.Branches {
+	for _, branch := range snapshotter.allBranches() {
 		names[branch.Scope+":"+branch.Name] = branch
 	}
 	var local Repository
@@ -198,7 +198,7 @@ func TestE2ESnapshottingARealRepositoryNeverWritesToItOrFetches(t *testing.T) {
 	if names["local:feature/one"].Name == "" || names["local:task-a"].Worktree == "" || names["local:task-a"].Task != "task-a" || names["remote:origin/main"].Name == "" || names["local:main"].Upstream != "origin/main" {
 		t.Errorf("branches = %+v", names)
 	}
-	if len(document.Worktrees) != 1 || document.Worktrees[0].Task != "task-a" || document.Worktrees[0].OwnerState != OwnerActive {
+	if len(document.Worktrees) != 1 || document.Worktrees[0].Task != "task-a" || document.Worktrees[0].OwnerState != OwnerUnknown {
 		t.Errorf("worktrees = %+v", document.Worktrees)
 	}
 	if len(document.Machines) != 2 || document.Machines[0].Machine != "desk" || document.Machines[0].Route != RouteCached || !document.Machines[0].ObservedAt.Equal(published) {
