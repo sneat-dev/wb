@@ -192,9 +192,11 @@ is this closed set of fields:
   and its start time, the finish time and exit code of a finished run, a
   session's state (`live` or `parked`), and the same agent fields read from
   another machine's snapshot, at most 200 agents per machine;
-- the landed-task throughput block (`throughput`): the window in days, the
-  number of tasks landed per day, and at most five of the slowest landed tasks
-  with their task name, duration in seconds and landing time;
+- the sealed-work throughput block (`throughput`): the window in days, the
+  number of tasks finished and dropped per day (and how many of the finished were
+  sealed `landed`), at most five of the slowest finished tasks with their task name,
+  duration in seconds and sealing time, the median and 90th-percentile finished
+  durations, and whether the collector's bounds cut the scan;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;

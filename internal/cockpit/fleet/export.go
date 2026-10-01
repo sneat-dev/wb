@@ -92,6 +92,10 @@ func NewEnvelope(document Document, metrics MetricsResponse, now time.Time, metr
 		own.Worktrees = keepLocal(document.Worktrees, func(worktree Worktree) Entry { return worktree.Entry })
 		own.PullRequests = keepLocal(document.PullRequests, func(pull PullRequest) Entry { return pull.Entry })
 		own.Agents = keepLocal(document.Agents, func(agent Agent) Entry { return agent.Entry })
+		// The throughput block is local to the daemon that serves the fleet
+		// document and is not exported (cockpit-views#req:throughput-block): a
+		// machine's throughput is read from that machine, never merged.
+		own.Throughput = nil
 		envelope.Fleet = &own
 	}
 	return envelope
