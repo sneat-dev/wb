@@ -50,6 +50,7 @@ async function runStep(page, step) {
     for (let index = 0; index < Number(argument); index++) await page.keyboard.press('j')
     await page.keyboard.press('Enter')
   } else if (kind === 'radio') await page.getByText(argument, { exact: true }).click()
+  else if (kind === 'pick') await page.getByRole('combobox', { name: 'Repository' }).fill(argument)
   else if (kind === 'raw') await page.getByText('Raw data', { exact: true }).click()
   await page.waitForTimeout(200)
 }

@@ -94,7 +94,7 @@ export interface OpenOptions {
  */
 export async function openMachines<T>(url: string, page: Type<T>, options: OpenOptions = {}) {
   const document = options.document ?? machinesDocument()
-  const create = vi.fn((_canvas: HTMLCanvasElement, _config: unknown) => ({ update: vi.fn(), destroy: vi.fn() }))
+  const create = vi.fn(() => ({ update: vi.fn(), destroy: vi.fn() }))
   const fetcher = options.answers === 'never' ? ((() => new Promise<Response>(() => undefined)) as typeof fetch) : metricsFetch(options.answers ?? metricsAnswers())
   const opened = await openPage(url, page, document, options.session ?? SESSION, fetcher, [{ provide: CHART_ENGINE, useValue: async () => ({ create }) }])
   if (options.answers !== 'never' && document.machines.length > 0) await vi.waitFor(() => expect(TestBed.inject(MetricsPoller).entries().size).toBeGreaterThan(0))

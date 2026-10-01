@@ -56,8 +56,17 @@ describe('shotPlan', () => {
     expect(pages.find((shot) => shot.file === 'machine-full-vm-2-dark-390.png')).toMatchObject({ url: '/machines/mach-vm%202', fullPage: true, state: 'ok' })
   })
 
+  it('photographs the New task form filled in with two repositories that can be picked, and with the picker open', () => {
+    const forms = shots.filter((shot) => shot.name.startsWith('tasks-new-'))
+    expect(forms.map((shot) => shot.file).sort()).toEqual(
+      ['tasks-new-filled', 'tasks-new-picker'].flatMap((name) => ['dark', 'light'].flatMap((scheme) => ['1024', '1440', '360', '390'].map((size) => `${name}-${scheme}-${size}.png`))).sort(),
+    )
+    expect(forms.find((shot) => shot.name === 'tasks-new-filled')?.url).toBe('/tasks/new?repo=acme%2Fcached&repo=sneat-co%2Fsneat-go&task=fix-ci&base=main&model=opus')
+    expect(forms.find((shot) => shot.name === 'tasks-new-picker')?.steps).toEqual(['pick:*-go'])
+  })
+
   it('adds the list and its side panel on Worktrees, Tasks, Repositories, Agents and Machines, each with the steps that reach it', () => {
-    const lists = shots.filter((shot) => shot.steps)
+    const lists = shots.filter((shot) => shot.steps && !shot.name.startsWith('tasks-new-'))
     expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
     expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories', '/agents', '/machines']))
     expect(lists.filter((shot) => shot.name.startsWith('repositories')).every((shot) => shot.url === '/repositories')).toBe(true)
