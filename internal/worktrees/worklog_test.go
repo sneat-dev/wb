@@ -708,7 +708,7 @@ func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *test
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	directory, err := openWorkLogCorrections(runDir, claims[1].ClaimID, true)
+	directory, err := correctionPorts().OpenWorkLogCorrections(runDir, claims[1].ClaimID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *test
 	if err := writeJSONImmutableAt(directory, "forged.json", forged, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := projectExecutionIdentity(runDir, claims[1]); err == nil || !strings.Contains(err.Error(), "malformed") {
+	if _, _, err := correctionPorts().ProjectExecutionIdentity(runDir, claims[1]); err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("cross-claim correction error = %v", err)
 	}
 }
@@ -750,7 +750,7 @@ func TestExecutionIdentityCorrectionConcurrentRetryPublishesOneEvent(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	identity, corrections, err := projectExecutionIdentity(runDir, claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, claim)
 	if err != nil || identity.CLI != "opencode" || len(corrections) != 1 {
 		t.Fatalf("concurrent projection=%#v corrections=%#v err=%v", identity, corrections, err)
 	}

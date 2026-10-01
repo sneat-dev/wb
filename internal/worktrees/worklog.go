@@ -21,7 +21,6 @@ import (
 	// to wb#631's harness-identity package.
 	"github.com/sneat-dev/wb/internal/filewrite"
 	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
-	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
@@ -743,13 +742,6 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 		return ExecutionIdentityCorrectionResult{}, err
 	}
 	return correctionPorts().CorrectExecutionIdentity(home, options)
-}
-
-func openWorkLogCorrections(runDir *os.File, claimID string, create bool) (*os.File, error) {
-	return correctionPorts().OpenWorkLogCorrections(runDir, claimID, create)
-}
-func projectExecutionIdentity(runDir *os.File, claim workLogClaim) (ExecutionIdentity, []workLogIdentityCorrection, error) {
-	return correctionPorts().ProjectExecutionIdentity(runDir, claim)
 }
 
 func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim workLogClaim) error {
@@ -2608,16 +2600,8 @@ func openWorkLogOutbox(home, effort string, create bool) (*os.File, error) {
 	return worktreeclaims.OpenWorkLogOutbox(home, effort, create, validSafeSegment)
 }
 
-// openPrivateChild's fd-relative opens go through secureopen.Real, the
-// production Opener; openPrivateChildWith below takes an explicit Opener so
-// a test can substitute secureopen.Fake instead, the seam spec/plans/
-// coverage-to-100 lane cov-seam-fs added.
 func openPrivateChild(parent *os.File, name string, create bool) (*os.File, error) {
 	return worktreesecure.OpenPrivateChild(parent, name, create, validSafeSegment)
-}
-
-func openPrivateChildWith(opener secureopen.Opener, parent *os.File, name string, create bool) (*os.File, error) {
-	return worktreesecure.OpenPrivateChildWith(opener, parent, name, create, validSafeSegment)
 }
 
 func lockClaim(runDir *os.File, claimID string) (func(), error) {
@@ -2660,21 +2644,6 @@ func writeBytesImmutableAt(directory *os.File, name string, content []byte, mode
 	return filewrite.WriteBytesImmutableAt(directory, name, content, mode, idempotent, writeBytesImmutableAtBeforeRename)
 }
 
-// writeBytesImmutableAtInjected is writeBytesImmutableAt's test seam
-// (task-9 PR-3): every production call site reaches it only through
-// writeBytesImmutableAt, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged except for one deliberate flag
-// change (review-756 B3): the temp file's create now goes through
-// filewrite.CreateExclusive, which adds O_CLOEXEC where the old raw
-// unix.Openat here did not, closing a real fd leak into a concurrently
-// exec'd child process (git and friends) rather than preserving it; a
-// test passes its own Injector directly to reach a
-// create/write/sync/close/rename-no-replace/dir-sync failure branch
-// deterministically.
-func writeBytesImmutableAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, idempotent bool, inj *filewrite.Injector) error {
-	return filewrite.WriteBytesImmutableAtInjected(directory, name, content, mode, idempotent, inj, writeBytesImmutableAtBeforeRename)
-}
-
 func readBytesAt(directory *os.File, name string) ([]byte, error) {
 	return filewrite.ReadAt(directory, name)
 }
@@ -2703,33 +2672,8 @@ func writeBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 	return filewrite.WriteBytesAtomicAt(directory, name, content, mode)
 }
 
-// writeBytesAtomicAtInjected is writeBytesAtomicAt's test seam (task-9
-// PR-3): every production call site reaches it only through
-// writeBytesAtomicAt, which always passes a nil *filewrite.Injector, so
-// production behaviour is unchanged except for one deliberate flag change
-// (review-756 B3): the temp file's create now goes through
-// filewrite.CreateExclusive, which adds O_CLOEXEC where the old raw
-// unix.Openat here did not, closing a real fd leak into a concurrently
-// exec'd child process (git and friends) rather than preserving it; a
-// test passes its own Injector directly to reach a
-// create/write/sync/close/rename/dir-sync failure branch
-// deterministically.
-func writeBytesAtomicAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
-	return filewrite.WriteBytesAtomicAtInjected(directory, name, content, mode, inj)
-}
-
 func writeBytesAtomic(directory, name string, content []byte, mode os.FileMode) error {
 	return filewrite.WriteBytesAtomic(directory, name, content, mode)
-}
-
-// writeBytesAtomicInjected is writeBytesAtomic's test seam (task-9 PR-3):
-// every production call site reaches it only through writeBytesAtomic,
-// which always passes a nil *filewrite.Injector, so production behaviour
-// is unchanged; a test passes its own Injector directly to reach a
-// create/chmod/write/sync/close/rename/dir-sync failure branch
-// deterministically.
-func writeBytesAtomicInjected(directory, name string, content []byte, mode os.FileMode, inj *filewrite.Injector) error {
-	return filewrite.WriteBytesAtomicInjected(directory, name, content, mode, inj)
 }
 
 func toClaimOptions(options WorkLogOptions) worktreeclaims.Options {

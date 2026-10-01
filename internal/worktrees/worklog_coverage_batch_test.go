@@ -84,7 +84,7 @@ func TestWorkLogCoverageBatchPublicationAndPromptReuse(t *testing.T) {
 	if err := migrateLegacySingletonClaim(runDir, runPath, fixture.home, fixture.outcome.EffortID, fixture.outcome.RunID); err != nil {
 		t.Fatal(err)
 	}
-	identity, corrections, err := projectExecutionIdentity(runDir, fixture.outcome.claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, fixture.outcome.claim)
 	if err != nil || identity.Model != "unknown" || len(corrections) != 0 {
 		t.Fatalf("projected identity = %#v/%#v, %v", identity, corrections, err)
 	}
@@ -136,7 +136,7 @@ func TestWorkLogCoverageBatchCorrectionsAndTerminalBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	identity, corrections, err := projectExecutionIdentity(runDir, fixture.outcome.claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, fixture.outcome.claim)
 	if err != nil || identity.Model != model || len(corrections) != 1 {
 		t.Fatalf("corrected identity = %#v/%#v, %v", identity, corrections, err)
 	}

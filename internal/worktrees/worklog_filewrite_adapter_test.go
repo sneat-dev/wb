@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 func TestWorkLogFilewriteAdapters(t *testing.T) {
@@ -21,7 +23,7 @@ func TestWorkLogFilewriteAdapters(t *testing.T) {
 	if err := writeBytesImmutableAt(directory, "bytes-immutable", []byte("immutable"), 0o600, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeBytesImmutableAtInjected(directory, "bytes-immutable-injected", []byte("immutable"), 0o600, false, nil); err != nil {
+	if err := filewrite.WriteBytesImmutableAtInjected(directory, "bytes-immutable-injected", []byte("immutable"), 0o600, false, nil, writeBytesImmutableAtBeforeRename); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readBytesAt(directory, "bytes-immutable"); err != nil {
@@ -41,13 +43,13 @@ func TestWorkLogFilewriteAdapters(t *testing.T) {
 	if err := writeBytesAtomicAt(directory, "bytes-atomic", []byte("atomic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeBytesAtomicAtInjected(directory, "bytes-atomic-injected", []byte("atomic"), 0o600, nil); err != nil {
+	if err := filewrite.WriteBytesAtomicAtInjected(directory, "bytes-atomic-injected", []byte("atomic"), 0o600, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeBytesAtomic(directoryPath, "bytes-path", []byte("atomic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeBytesAtomicInjected(directoryPath, "bytes-path-injected", []byte("atomic"), 0o600, nil); err != nil {
+	if err := filewrite.WriteBytesAtomicInjected(directoryPath, "bytes-path-injected", []byte("atomic"), 0o600, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSONAtomic(filepath.Join(directoryPath, "atomic-path.json"), map[string]string{"value": "atomic"}, 0o600); err != nil {

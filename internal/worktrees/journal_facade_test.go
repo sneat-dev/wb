@@ -35,10 +35,10 @@ func TestJournalFacadeAdapters(t *testing.T) {
 		}
 	})
 	event := LocalWorkLogEvent{Version: 1, ID: "facade", Type: LocalEventSteer, At: time.Unix(10, 0).UTC()}
-	if err := validateLocalEventForSequence(event, nil); err != nil {
+	if err := localJournalStore().ValidateLocalEventForSequence(event, nil); err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := encodeLocalEvents([]LocalWorkLogEvent{event})
+	encoded, err := localJournalStore().EncodeLocalEvents([]LocalWorkLogEvent{event})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,14 +46,14 @@ func TestJournalFacadeAdapters(t *testing.T) {
 	if err != nil || len(parsed) != 1 {
 		t.Fatalf("parse=%v/%v", parsed, err)
 	}
-	parsed, repair, err := parseLocalEventsForRepair(encoded)
+	parsed, repair, err := localJournalStore().ParseLocalEventsForRepair(encoded)
 	if err != nil || repair || len(parsed) != 1 {
 		t.Fatalf("repair parse=%v/%v/%v", parsed, repair, err)
 	}
-	if !sameLocalEvent(event, parsed[0]) || localEventID(nil, event) == "" {
+	if !sameLocalEvent(event, parsed[0]) || localJournalStore().LocalEventID(nil, event) == "" {
 		t.Fatal("identity adapters")
 	}
-	if err := rewriteLocalEventJournal(directory, parsed); err != nil {
+	if err := localJournalStore().RewriteLocalEventJournal(directory, parsed); err != nil {
 		t.Fatal(err)
 	}
 	if got, repair, err := readLocalEventsForAppend(directory); err != nil || repair || len(got) != 1 {
@@ -73,13 +73,13 @@ func TestJournalFacadeAdapters(t *testing.T) {
 	if err != nil || len(events) != 2 {
 		t.Fatalf("events=%v/%v", events, err)
 	}
-	if content, err := readLocalWorkLogBytes(worktree, localWorkLogEventsName); err != nil || len(content) == 0 {
+	if content, err := localJournalStore().ReadLocalWorkLogBytes(worktree, localWorkLogEventsName); err != nil || len(content) == 0 {
 		t.Fatalf("bytes=%q/%v", content, err)
 	}
-	if err := repairLocalOutbox(directory, events); err != nil {
+	if err := localJournalStore().RepairLocalOutbox(directory, events); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repairLocalEventDerivatives(worktree, directory, events); err != nil {
+	if _, err := localJournalStore().RepairLocalEventDerivatives(worktree, directory, events); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repairCurrentLocalProjection(worktree); err != nil {
