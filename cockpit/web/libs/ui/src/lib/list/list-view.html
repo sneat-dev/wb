@@ -1,0 +1,129 @@
+<div class="layout" [class.with-panel]="panelOpen()">
+  <section class="list" [attr.aria-label]="noun()">
+    <div class="toolbar">
+      <div class="filter-line">
+        <div class="filter">
+          <app-glyph class="lead" name="search" />
+          <input
+            #filterBox
+            class="filter-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            [attr.aria-label]="'Filter ' + noun()"
+            placeholder="Filter: words, sneat-*/*-go, -excluded, field:value"
+            [attr.aria-describedby]="hintOpen() ? id + '-hint' : null"
+            [value]="text()"
+            (input)="setText(filterBox.value)"
+          />
+          @if (text() !== '') {
+            <button type="button" class="icon" aria-label="Clear the filter text" title="Clear the filter text" (click)="clearText(); filterBox.focus()"><app-glyph name="x" /></button>
+          }
+          <button type="button" class="icon" aria-label="How the filter works" [attr.aria-expanded]="hintOpen()" (click)="hintOpen.set(!hintOpen())"><app-glyph name="help" /></button>
+        </div>
+        <span class="count tnum" role="status">{{ result().rows.length }} of {{ result().total }}</span>
+      </div>
+      @if (hintOpen()) {
+        <p class="hint" role="note" [id]="id + '-hint'">
+          <code>fix ci</code> every word must match &middot; <code>sneat-*/*-go</code> <code>*</code> any run, <code>?</code> one character &middot; <code>-wb</code> leaves out &middot; <code>"fix ci"</code> keeps the space<br />
+          <code>field:value</code> searches one field: {{ fields() }}. A quoted value is matched whole. Not case sensitive; no regular expressions.
+        </p>
+      }
+      <div class="chips">
+        <div class="chip-group" role="group" aria-label="Quick filters">
+          @for (chip of chips(); track chip.id) {
+            <button type="button" class="toggle" [attr.aria-pressed]="query().chips.includes(chip.id)" [attr.title]="chip.hint ?? null" (click)="toggleChip(chip.id)">{{ chip.label }}</button>
+          }
+        </div>
+        @if (machines().length > 0) {
+          <div class="chip-group" role="group" aria-label="Machines">
+            @for (machine of machines(); track machine.id) {
+              <button type="button" class="toggle" [attr.aria-pressed]="query().machines.includes(machine.id)" (click)="toggleMachine(machine.id)">{{ machine.label }}</button>
+            }
+          </div>
+        }
+      </div>
+    </div>
+
+    <div
+      #viewport
+      class="viewport"
+      role="grid"
+      tabindex="0"
+      [attr.aria-label]="noun()"
+      [attr.aria-rowcount]="result().rows.length + 1"
+      [attr.aria-activedescendant]="activeId()"
+      [attr.aria-busy]="skeleton()"
+      (scroll)="scrolled()"
+      (click)="clicked($event)"
+      (keydown)="keydown($event)"
+    >
+      <div class="head" role="row">
+        @for (column of shown(); track column.id) {
+          <div class="cell" role="columnheader" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
+            @if (column.sort; as sortId) {
+              <button type="button" class="sort" (click)="sortBy(sortId)">
+                {{ column.header }}
+                @if (sort().sort === sortId) {
+                  <app-glyph [name]="sort().dir === 'asc' ? 'arrow-up' : 'arrow-down'" />
+                }
+              </button>
+            } @else {
+              {{ column.header }}
+            }
+          </div>
+        }
+      </div>
+
+      @if (skeleton()) {
+        <div class="body" aria-hidden="true">
+          @for (n of skeletonRows; track n) {
+            <div class="row skeleton"><span class="bar"></span></div>
+          }
+        </div>
+      } @else if (result().rows.length === 0) {
+        <div class="empty" role="status">
+          @if (rows().length === 0) {
+            <span>Nothing has been observed yet: no {{ noun() }}.</span>
+          } @else {
+            <span>No {{ noun() }} match {{ nothingMatched() }}.</span>
+            <button type="button" class="clear-filters" (click)="clearFilters()">Clear filters</button>
+          }
+        </div>
+      } @else {
+        <div class="body" [style.height.px]="total()">
+          <div class="window" [style.transform]="'translateY(' + visible().offset + 'px)'">
+            @for (item of visible().rows; track item.row.id) {
+              <div
+                class="row"
+                role="row"
+                [id]="id + '-row-' + item.index"
+                [class.focused]="item.index === focused()"
+                [class.selected]="item.row.id === selected()?.id"
+                [attr.aria-selected]="item.row.id === selected()?.id"
+                [attr.aria-rowindex]="item.index + 2"
+                [attr.data-index]="item.index"
+              >
+                @for (column of shown(); track column.id) {
+                  <div class="cell" role="gridcell" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.title]="column.text?.(item.row.item) ?? null">
+                    @if (cellOf(column.id); as template) {
+                      <ng-container [ngTemplateOutlet]="template" [ngTemplateOutletContext]="{ $implicit: item.row.item, row: item.row }" />
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  </section>
+
+  @if (panelTemplate(); as panel) {
+    @if (selected(); as row) {
+      <app-side-panel [label]="panelLabel()(row.item)" [focusOnOpen]="focusPanel()" (closed)="closePanel()">
+        <ng-container [ngTemplateOutlet]="panel.template" [ngTemplateOutletContext]="{ $implicit: row.item, row: row }" />
+      </app-side-panel>
+    }
+  }
+</div>

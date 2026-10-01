@@ -1,24 +1,27 @@
 .code-index {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.8125rem;
-  color: var(--p-text-muted-color);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
 }
 
 /* Not fresh: bolder as well as worded, so the state never rests on colour
    alone, in either theme. */
 .code-index.attention {
-  color: var(--p-text-color);
-  font-weight: 600;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
 }
 
+/* How old the receipt is, on the same line as the state. */
 .when {
-  display: block;
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--p-text-muted-color);
+  margin-left: var(--space-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  color: var(--text-3);
 }
 
 .unknown {
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }

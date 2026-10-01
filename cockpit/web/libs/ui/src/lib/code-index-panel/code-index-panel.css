@@ -6,7 +6,7 @@
 .panel-note,
 .panel-freshness {
   margin: 0.25rem 0;
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }
 
 .totals {
@@ -23,7 +23,7 @@
 
 .totals dt {
   font-size: 0.75rem;
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }
 
 .totals dd {
