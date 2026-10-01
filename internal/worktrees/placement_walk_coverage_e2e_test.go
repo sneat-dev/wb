@@ -20,8 +20,9 @@ func TestE2EPlacementResidueTraversesHostedAndLegacyLayouts(t *testing.T) {
 	task := "placement-residue"
 	hosted := filepath.Join(root, task, "github.com:8443", "acme", "lost")
 	legacy := filepath.Join(root, task, "acme", "registered")
+	unregisteredLegacy := filepath.Join(root, task, "acme", "unregistered")
 	dotted := filepath.Join(root, task, "github.com:8443", "acme", ".notes")
-	for _, path := range []string{hosted, legacy, dotted, filepath.Join(root, ".hidden", "acme", "ignored"),
+	for _, path := range []string{hosted, legacy, unregisteredLegacy, dotted, filepath.Join(root, ".hidden", "acme", "ignored"),
 		filepath.Join(root, task, "github.com:8443", ".hidden", "ignored")} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
@@ -37,12 +38,19 @@ func TestE2EPlacementResidueTraversesHostedAndLegacyLayouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	residue := residueSweep(projectsRoot, map[string]string{root: LayoutCurrent}, map[string]bool{legacy: true})
-	if len(residue) != 1 || residue[0].Path != hosted || residue[0].Repository != "github.com:8443/acme/lost" ||
-		residue[0].Task != task || residue[0].Layout != LayoutCurrent {
-		t.Fatalf("hosted residue and registered legacy exclusion: %+v", residue)
+	if len(residue) != 2 {
+		t.Fatalf("hosted and unregistered legacy residue: %+v", residue)
 	}
-	if len(residue[0].Evidence) == 0 || residue[0].Remedy == "" {
-		t.Fatalf("hosted residue lacks explanation: %+v", residue[0])
+	byPath := make(map[string]OrphanResidue, len(residue))
+	for _, item := range residue {
+		byPath[item.Path] = item
+	}
+	for path, repository := range map[string]string{hosted: "github.com:8443/acme/lost", unregisteredLegacy: "acme/unregistered"} {
+		item, found := byPath[path]
+		if !found || item.Repository != repository || item.Task != task || item.Layout != LayoutCurrent ||
+			len(item.Evidence) == 0 || item.Remedy == "" {
+			t.Fatalf("residue %q not bound to its exact placement: %+v", path, residue)
+		}
 	}
 	if _, err := os.Stat(hosted); err != nil {
 		t.Fatalf("read-only residue sweep removed checkout: %v", err)
@@ -57,9 +65,10 @@ func TestE2EPlacementResidueTraversesHostedAndLegacyLayouts(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newGitFixture sets process-wide Git environment.
 func TestE2EPlacementListingPreservesMalformedAndAdoptedFilterBoundaries(t *testing.T) {
-	t.Parallel()
-	projectsRoot := t.TempDir()
+	fixture := newGitFixture(t)
+	projectsRoot := fixture.projectsRoot
 	root := filepath.Join(projectsRoot, ".worktrees")
 	task := "placement-list"
 	invalidRepository := filepath.Join(root, task, "acme", "bad name")
@@ -71,7 +80,8 @@ func TestE2EPlacementListingPreservesMalformedAndAdoptedFilterBoundaries(t *test
 			t.Fatal(err)
 		}
 	}
-	pointer, err := json.Marshal(adoptedWorktreePointer{Version: 1, Worktree: filepath.Join(projectsRoot, "elsewhere")})
+	external := fixture.externalWorktree(t, "feature/placement-filter-proof")
+	pointer, err := json.Marshal(adoptedWorktreePointer{Version: 1, Worktree: external})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,23 +99,44 @@ func TestE2EPlacementListingPreservesMalformedAndAdoptedFilterBoundaries(t *test
 	unfiltered := newListing("")
 	unfiltered.walkTasks(entries)
 	foundInvalid := false
+	foundExternal := false
 	for _, diagnostic := range unfiltered.diagnostics {
 		if diagnostic.Path == invalidRepository && strings.Contains(diagnostic.Message, "invalid repository directory name") {
 			foundInvalid = true
 		}
-		if diagnostic.Path == invalidOrganization || diagnostic.Path == hiddenOrganization {
+		if diagnostic.Path == invalidOrganization || strings.HasPrefix(diagnostic.Path, invalidOrganization+string(filepath.Separator)) ||
+			diagnostic.Path == hiddenOrganization || strings.HasPrefix(diagnostic.Path, hiddenOrganization+string(filepath.Separator)) {
 			t.Fatalf("invalid or hidden organization descended into: %+v", diagnostic)
+		}
+	}
+	for _, candidate := range unfiltered.pending {
+		if candidate.path == external && candidate.external {
+			foundExternal = true
+		}
+		if candidate.path == invalidOrganization || strings.HasPrefix(candidate.path, invalidOrganization+string(filepath.Separator)) ||
+			candidate.path == hiddenOrganization || strings.HasPrefix(candidate.path, hiddenOrganization+string(filepath.Separator)) {
+			t.Fatalf("invalid or hidden organization queued for inspection: %+v", candidate)
 		}
 	}
 	if !foundInvalid {
 		t.Fatalf("invalid repository lacked diagnostic: %+v", unfiltered.diagnostics)
 	}
+	if !foundExternal {
+		t.Fatalf("valid adopted Git worktree was not queued without filter: %+v", unfiltered.pending)
+	}
 	// The registration's full path contains the task, while its slug and the
 	// external checkout do not. The second filter must still refuse it.
 	filtered := newListing(task)
 	filtered.walkTasks(entries)
-	if len(filtered.pending) != 0 {
-		t.Fatalf("registration pointer's external path bypassed second filter: %+v", filtered.pending)
+	for _, candidate := range filtered.pending {
+		if candidate.path == external {
+			t.Fatalf("registration pointer's external path bypassed second filter: %+v", filtered.pending)
+		}
+	}
+	for _, diagnostic := range filtered.diagnostics {
+		if diagnostic.Path == registration {
+			t.Fatalf("filtered adoption pointer was inspected: %+v", diagnostic)
+		}
 	}
 }
 
