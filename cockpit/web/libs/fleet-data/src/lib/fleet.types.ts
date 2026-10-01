@@ -35,6 +35,28 @@ export interface CodeIndex {
   state: CodeIndexState
   behind?: number
   receipt_at?: string
+  /** What the configured provider reported; present on the indexer it follows. */
+  statistics?: CodeStatistics
+}
+
+/** The number of symbols of one kind. */
+export interface KindCount {
+  kind: string
+  count: number
+}
+
+/**
+ * A code index's statistics (internal/cockpit/fleet/document.go): counts only.
+ * These are statistics of the index, not counts of Cockpit entities. `error`
+ * is a short code when the provider could not answer.
+ */
+export interface CodeStatistics {
+  indexed: boolean
+  files: number
+  symbols: number
+  edges: number
+  kinds: KindCount[]
+  error?: string
 }
 
 export interface Repository extends Entry {
@@ -102,6 +124,8 @@ export interface FleetDocument {
   repositories_scanned: number
   diagnostics: number
   error?: string
+  /** The configured code-index provider's name; absent when none is configured. */
+  code_index_provider?: string
   machines: Machine[]
   repositories: Repository[]
   worktrees: Worktree[]
@@ -130,3 +154,12 @@ export const RUNNING_STATE = 'running'
 
 export const FLEET_PATH = '/api/v1/cockpit/fleet'
 export const SESSION_PATH = '/api/v1/cockpit/session'
+
+/** The capability that lets a caller read repository content, such as a README. */
+export const CAPABILITY_REPO_CONTENT_READ = 'repo.content.read'
+
+/** The owner-only README route; the repository id travels in the `repository` query parameter. */
+export const README_PATH = '/api/v1/cockpit/readme'
+
+/** Where the session read is: not answered yet, answered, or failed (and retried on the next poll). */
+export type SessionStatus = 'loading' | 'ready' | 'failed'

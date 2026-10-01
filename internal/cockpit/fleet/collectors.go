@@ -143,6 +143,9 @@ type Collectors struct {
 	Remote       RemoteCollector
 	// CodeIndex reads indexer receipts; nil means no code-index freshness.
 	CodeIndex CodeIndexCollector
+	// CodeIndexProvider reports the statistics of a checkout's index; nil means
+	// no provider is configured, which the document reports.
+	CodeIndexProvider CodeIndexProvider
 }
 
 // localIndexMaxAge bounds how long the persisted clone inventory is reused
@@ -164,6 +167,8 @@ type LocalCollectors struct {
 	// CodeIndex reads the indexer receipts; nil means entries carry no code
 	// index.
 	CodeIndex *LocalCodeIndex
+	// CodeIndexProvider is the configured code-index provider; nil means none.
+	CodeIndexProvider CodeIndexProvider
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
@@ -181,7 +186,7 @@ func (c LocalCollectors) git(ctx context.Context, dir string, args ...string) ([
 // Collectors is c as the snapshotter's local sources, with remote as the
 // other machines' source (nil for none).
 func (c LocalCollectors) Collectors(remote RemoteCollector) Collectors {
-	collectors := Collectors{Git: c, Repositories: c, Worktrees: c, Branches: c, Readme: c, Identity: c, Records: c, PullRequests: c, Sessions: c, Runs: c, Remote: remote}
+	collectors := Collectors{Git: c, Repositories: c, Worktrees: c, Branches: c, Readme: c, Identity: c, Records: c, PullRequests: c, Sessions: c, Runs: c, Remote: remote, CodeIndexProvider: c.CodeIndexProvider}
 	if c.CodeIndex != nil {
 		collectors.CodeIndex = *c.CodeIndex
 	}

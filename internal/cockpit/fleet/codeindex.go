@@ -111,6 +111,9 @@ func (p localCodeIndexPass) States(ctx context.Context, identity string, checkou
 // the latest receipt's SHA, which is a successful one, with HEAD.
 func (p localCodeIndexPass) classify(ctx context.Context, checkout, executor string, record lifecyclehooks.Record, head func() (string, verdict)) (CodeIndex, verdict) {
 	state := CodeIndex{Indexer: executor}
+	if record.Last != nil {
+		state.receiptKey = record.Last.SHA + "\x00" + string(record.Last.Status)
+	}
 	if record.Success != nil {
 		state.ReceiptAt = record.Success.At
 	}

@@ -24,7 +24,7 @@
     <ng-template #body let-worktree>
       <tr>
         <td>
-          {{ worktree.task }}
+          <a class="row-link" [routerLink]="['/worktrees', worktree.id]">{{ worktree.task }}</a>
           <span class="narrow-only machine-sub">{{ worktree.machine }}</span>
         </td>
         <td>{{ worktree.branch }}</td>

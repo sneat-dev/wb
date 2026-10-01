@@ -39,10 +39,12 @@ const noncePlaceholder = "__CSP_NONCE__"
 // Scripts come only from the daemon's own origin: no unsafe-inline, no
 // unsafe-eval. Styles come from the own origin plus the response's nonce, which
 // covers the style elements Angular and PrimeNG inject at run time; style
-// attributes in markup are not allowed. Framing is limited to the own origin.
+// attributes in markup are not allowed. Images come only from the own origin
+// (no data: URL, no foreign origin), so content that names an image elsewhere
+// makes no request. Framing is limited to the own origin.
 func PolicyFor(nonce string) string {
 	return "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-" + nonce + "'; " +
-		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"img-src 'self'; font-src 'self'; connect-src 'self'; " +
 		"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 }
 

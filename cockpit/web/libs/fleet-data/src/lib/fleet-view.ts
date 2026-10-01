@@ -1,10 +1,13 @@
 import {
   Agent,
+  CAPABILITY_REPO_CONTENT_READ,
   CodeIndex,
+  CodeStatistics,
   Entry,
   FleetDocument,
   Machine,
   Repository,
+  Session,
   Worktree,
 } from './fleet.types'
 
@@ -169,4 +172,56 @@ export function routeLabel(entry: Entry, now: number): string {
  */
 export function codeIndexText(index: CodeIndex): string {
   return index.state === 'stale' ? `stale, ${index.behind ?? 0} behind` : index.state
+}
+
+/** The command that opens an owner session. */
+export const OWNER_SESSION_COMMAND = 'wb cockpit'
+
+/** Whether the session lets the caller read repository content. No session, no content. */
+export function canReadContent(session: Session | null): boolean {
+  return session?.capabilities.includes(CAPABILITY_REPO_CONTENT_READ) ?? false
+}
+
+/**
+ * What a checkout's code-index panel shows. `unknown` is an entry from another
+ * machine, whose snapshot carries no code index; `none` is no configured
+ * provider; `not-indexed` is a provider that reported no index, or no
+ * statistics yet; `failed` carries the provider's short failure code.
+ */
+export type CodeIndexView =
+  | { kind: 'unknown' }
+  | { kind: 'none' }
+  | { kind: 'not-indexed' }
+  | { kind: 'failed'; code: string }
+  | { kind: 'indexed'; statistics: CodeStatistics }
+
+/** The panel's view of one entry, from its code index and the document's provider. */
+export function codeIndexView(entry: Entry, states: CodeIndex[] | undefined, provider: string | undefined): CodeIndexView {
+  if (entry.route === 'cached') return { kind: 'unknown' }
+  if (!provider) return { kind: 'none' }
+  const statistics = states?.find((state) => state.statistics)?.statistics
+  if (!statistics) return { kind: 'not-indexed' }
+  if (statistics.error) return { kind: 'failed', code: statistics.error }
+  return statistics.indexed ? { kind: 'indexed', statistics } : { kind: 'not-indexed' }
+}
+
+/** The sentence for a README read that was refused or failed, from the status and the daemon's short code. */
+export function readmeFailureText(status: number, code: string): string {
+  switch (code) {
+    case 'readme_not_a_regular_file':
+      return 'README.md is not a regular file in the repository (a link, a directory or a submodule), so it is not shown.'
+    case 'readme_not_found':
+      return 'This repository has no README.md at the tip of its default branch.'
+    case 'default_branch_unknown':
+      return 'The default branch of this repository is not known yet, so its README cannot be read.'
+    case 'unknown_repository':
+      return 'This repository is not on this machine, so its README cannot be read here.'
+    case 'readme_too_large':
+      return 'README.md is larger than 1 MiB, so it is not shown.'
+    case 'git_too_old':
+      return 'The installed Git is too old to read the README safely.'
+  }
+  return status === 401 || status === 403
+    ? `An owner session is needed to read the README. Run \`${OWNER_SESSION_COMMAND}\` to open one.`
+    : `The README could not be read (status ${status}).`
 }

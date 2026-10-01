@@ -305,8 +305,8 @@ func TestCodeIndexStatesPendingFailedAndNeverNeedNoGit(t *testing.T) {
 	}
 	states, complete := pass.States(t.Context(), "github.com/acme/x", []string{pending, failed, never})
 	want := map[string][]CodeIndex{
-		pending: {{Indexer: "index", State: CodeIndexPending, ReceiptAt: at}},
-		failed:  {{Indexer: "index", State: CodeIndexFailed, ReceiptAt: at.Add(time.Hour)}},
+		pending: {{Indexer: "index", State: CodeIndexPending, ReceiptAt: at, receiptKey: "aaa\x00succeeded"}},
+		failed:  {{Indexer: "index", State: CodeIndexFailed, ReceiptAt: at.Add(time.Hour), receiptKey: "bbb\x00failed"}},
 		never:   {{Indexer: "index", State: CodeIndexNever}},
 	}
 	if !complete {

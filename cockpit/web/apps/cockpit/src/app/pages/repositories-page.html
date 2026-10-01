@@ -23,7 +23,7 @@
     <ng-template #body let-repository>
       <tr>
         <td>
-          {{ label(repository) }}
+          <a class="row-link" [routerLink]="['/repositories', repository.id]">{{ label(repository) }}</a>
           <span class="narrow-only machine-sub">{{ repository.machine }}</span>
           @if (repository.error) {
             <span class="row-error">could not be read: {{ repository.error }}</span>

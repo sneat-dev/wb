@@ -155,6 +155,11 @@ is this closed set of fields:
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;
+- code-index statistics: the name of the configured code-index provider (absent
+  when none is configured), and per code-index entry whether an index exists,
+  its totals of files, symbols and edges, the symbols per kind (each kind a short
+  lower-case word, at most 32 kinds), and a short failure code when the provider
+  could not answer;
 - the read model's own `error` code and `agents_truncated` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
 
@@ -320,8 +325,16 @@ The statistics are part of the fleet read model, under each entry's
 provider's own command, once per checkout per indexer receipt; no request
 starts a provider process, and WB does not open the provider's artifacts. A
 new receipt, such as the one a refresh writes, makes the snapshotter ask
-again. When no provider is configured or the checkout has no index, the panel
-says so.
+again. The provider is named by `cockpit.code_index_provider` (`codegrapher`
+is the one provider) and follows the indexer named by `cockpit.code_index_indexer`
+(default `codegrapher`); its statistics sit on that indexer's `code_index`
+entry. Statistics appear only for a checkout the configured indexer has a
+receipt for: the provider's command opens the index read-write and may run Git,
+which the snapshotter's read-only rule forbids for a checkout WB's hook never
+indexed (it could hold an index a hostile repository committed), so such a
+checkout is reported as not indexed and no process starts for it. A failed ask
+is retried on later passes, at most three times per receipt. When no provider
+is configured or the checkout has no index, the panel says so.
 
 #### REQ: code-browser-link
 

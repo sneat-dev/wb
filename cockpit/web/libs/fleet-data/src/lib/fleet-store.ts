@@ -1,7 +1,7 @@
 import { Injectable, InjectionToken, computed, inject, signal } from '@angular/core'
 import { FleetClient } from './fleet-client'
-import { emptyDocument, machineOptions, repositoryLabel } from './fleet-view'
-import { FleetDocument, Session } from './fleet.types'
+import { canReadContent, emptyDocument, machineOptions, repositoryLabel } from './fleet-view'
+import { FleetDocument, Session, SessionStatus } from './fleet.types'
 
 /** How often the store re-reads the fleet document, in milliseconds. */
 export interface PollIntervals {
@@ -33,6 +33,8 @@ export class FleetStore {
 
   readonly document = signal<FleetDocument>(emptyDocument())
   readonly session = signal<Session | null>(null)
+  /** Whether the session read is still going ('loading'), answered ('ready') or failed and will be retried ('failed'). */
+  readonly sessionStatus = signal<SessionStatus>('loading')
   /** Set until the first read has been answered. */
   readonly loaded = signal(false)
   readonly error = signal<string | null>(null)
@@ -45,6 +47,10 @@ export class FleetStore {
     return { scanned, total }
   })
   readonly codeBrowserUrl = computed(() => this.session()?.code_browser_url)
+  /** The configured code-index provider's name, or undefined when none is configured. */
+  readonly codeIndexProvider = computed(() => this.document().code_index_provider)
+  /** Whether this caller holds an owner session, which is what reading a README takes. */
+  readonly canReadContent = computed(() => canReadContent(this.session()))
   readonly machineOptions = computed(() => machineOptions(this.document().machines))
   readonly repositoryById = computed(() => new Map(this.document().repositories.map((repository) => [repository.id, repository])))
 
@@ -102,9 +108,11 @@ export class FleetStore {
     this.loadingSession = true
     try {
       this.session.set(await this.client.readSession())
+      this.sessionStatus.set('ready')
     } catch {
       // Without a session the page still lists the fleet; it has no code links.
       this.session.set(null)
+      this.sessionStatus.set('failed')
     } finally {
       this.loadingSession = false
     }

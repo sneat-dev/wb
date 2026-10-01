@@ -48,9 +48,26 @@ func localRepositoryID(machine string, repository discover.Repo) string {
 // localCodeIndex is the code-index state of a local repository's checkouts:
 // its own, and each recorded worktree's by the worktree's path, which stays
 // inside the daemon.
+//
+// asked is what the provider answered, by checkout, and the receipt each
+// answer was for, so a checkout is asked once per receipt.
 type localCodeIndex struct {
 	repository []CodeIndex
 	byPath     map[string][]CodeIndex
+	asked      map[string]askedStatistics
+	// retry says a provider answer is still owed or failed within its attempt
+	// cap, so the next pass reads the states again instead of reusing them.
+	retry bool
+}
+
+// askedStatistics is a provider's answer for one checkout and the time of the
+// receipt it was asked at; zero for a checkout with no receipt.
+type askedStatistics struct {
+	receipt  time.Time
+	key      string
+	stats    CodeStatistics
+	attempts int
+	final    bool
 }
 
 // mapLocalRepository maps one local repository: its worktrees from their own

@@ -28,6 +28,28 @@ func TestCockpitSectionOverridesEachKey(t *testing.T) {
 	}
 }
 
+func TestCockpitCodeIndexProviderIsConfiguredWithItsIndexer(t *testing.T) {
+	t.Parallel()
+	got, err := parseCockpit([]byte("cockpit:\n  code_index_provider: codegrapher\n"))
+	if err != nil || got.CodeIndexProvider != "codegrapher" || got.CodeIndexIndexer != "" {
+		t.Fatalf("provider only = %+v, %v", got, err)
+	}
+	got, err = parseCockpit([]byte("cockpit:\n  code_index_provider: \" codegrapher \"\n  code_index_indexer: code-graph\n"))
+	if err != nil || got.CodeIndexProvider != "codegrapher" || got.CodeIndexIndexer != "code-graph" {
+		t.Fatalf("provider and indexer = %+v, %v", got, err)
+	}
+	for raw, want := range map[string]string{
+		"cockpit:\n  code_index_provider: other\n":                                  "cockpit.code_index_provider",
+		"cockpit:\n  code_index_provider: \"\"\n":                                   "cockpit.code_index_provider",
+		"cockpit:\n  code_index_indexer: code-graph\n":                              "needs cockpit.code_index_provider",
+		"cockpit:\n  code_index_provider: codegrapher\n  code_index_indexer: A b\n": "cockpit.code_index_indexer",
+	} {
+		if _, err := parseCockpit([]byte(raw)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want it to name %q", raw, err, want)
+		}
+	}
+}
+
 func TestCockpitSectionRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 	for raw, wantKey := range map[string]string{

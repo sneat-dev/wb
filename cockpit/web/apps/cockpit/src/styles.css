@@ -112,3 +112,36 @@ body {
     white-space: normal;
   }
 }
+
+/* A detail page: a back link, then the entry's fields as a definition list. */
+.back {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+}
+
+.back a,
+.row-link {
+  color: var(--p-primary-color);
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1.5rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.detail dt {
+  color: var(--p-text-muted-color);
+}
+
+.detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-section {
+  margin-top: 1.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--p-content-border-color);
+}
