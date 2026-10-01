@@ -1,5 +1,5 @@
 import { TASK_STATES, taskStateInfo, type TaskStateId } from '@cockpit/fleet-data'
-import { GLYPH_ACTIVITY, GLYPH_BAN, GLYPH_CHECK_CIRCLE, GLYPH_CLOCK, GLYPH_GIT_MERGE, GLYPH_HELP, GLYPH_MINUS_CIRCLE, GLYPH_SHIELD_ALERT, GLYPH_X_CIRCLE } from '../glyphs'
+import { GLYPH_ACTIVITY, GLYPH_BAN, GLYPH_CHECK_CIRCLE, GLYPH_CLOCK, GLYPH_GIT_MERGE, GLYPH_HELP, GLYPH_MINUS_CIRCLE, GLYPH_SHIELD_ALERT, GLYPH_X_CIRCLE } from '../glyphs-state'
 import { type BadgeSpec, type Entry, unreportedSpec } from './shared'
 
 /** The words of the task states are the library's (`TASK_STATES`), so only the colour role and glyph are here. */

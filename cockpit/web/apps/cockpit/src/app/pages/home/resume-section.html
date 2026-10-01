@@ -1,0 +1,26 @@
+<section class="home-section" aria-labelledby="home-resume-h">
+  <h2 id="home-resume-h" class="home-h">Resume</h2>
+  @if (tasks().length === 0) {
+    <p class="home-calm"><app-glyph class="home-calm-idle" [paths]="idle" />No tasks yet.</p>
+  } @else {
+    <ul class="home-card">
+      @for (task of tasks(); track task.name) {
+        <li class="home-row resume-row">
+          @if (task.state === 'idle') {
+            <span class="home-idle">idle</span>
+          } @else {
+            <app-state-badge kind="task" size="small" [value]="task.state" />
+          }
+          <div class="home-main">
+            <strong class="home-task">{{ task.name }}</strong>
+            <span class="home-reason">{{ where(task) }}</span>
+          </div>
+          <div class="home-meta"><app-relative-time [at]="iso(task.lastActivityAt)" /></div>
+          <div class="home-action">
+            <a class="home-act quiet stretched" [routerLink]="link(task).path" [queryParams]="link(task).query" [attr.aria-label]="'Open task ' + task.name">Open</a>
+          </div>
+        </li>
+      }
+    </ul>
+  }
+</section>

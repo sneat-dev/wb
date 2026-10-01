@@ -48,6 +48,8 @@ export async function stub(page: Page, codeBrowserUrl = 'https://codegrapher.dev
       json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: codeBrowserUrl },
     }),
   )
+  // A repository's page and panel read its branches when they open (the lazy branches route).
+  await page.route('**/api/v1/cockpit/branches?**', (route) => route.fulfill({ json: { branches: [] } }))
   // Home and Machines read the machine metrics every 10 seconds.
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
 }

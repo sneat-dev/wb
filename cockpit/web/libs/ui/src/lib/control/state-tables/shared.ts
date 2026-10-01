@@ -1,5 +1,5 @@
-import { GLYPH_HELP } from '../glyphs'
-import type { GlyphPaths } from '../glyphs'
+import { GLYPH_HELP } from '../glyphs-state'
+import type { GlyphPaths } from '../glyphs-state'
 
 /**
  * The one vocabulary of every state the interface shows (REQ:look-typography-and-state-colour):
@@ -34,21 +34,6 @@ export interface KindTable {
   entries: Record<string, Entry>
 }
 
-/** What each kind of state is called, said ahead of the value for assistive technology. */
-export const KIND_NAME: Record<BadgeKind, string> = {
-  task: 'Task state',
-  owner: 'Owner state',
-  'agent-activity': 'Agent activity',
-  'agent-state': 'Agent state',
-  'pr-state': 'Pull request state',
-  mergeable: 'Merge state',
-  'code-index': 'Code index',
-  route: 'Route',
-  load: 'Load',
-  checks: 'Checks',
-  operation: 'Operation',
-}
-
 // Control, invisible and bidirectional characters, which a value from another machine must not smuggle into text.
 // eslint-disable-next-line no-control-regex
 const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g
@@ -79,24 +64,5 @@ export function unreportedSpec(absent: string, value: string | undefined): Badge
     label: sanitisedValue(value),
     unreported: true,
     unrecognised: true,
-  }
-}
-
-/**
- * The colour role, glyph and word of a state from one kind's table. An absent
- * value is a grey dashed "not reported". A value outside the vocabulary (including
- * an inherited key such as `constructor`, which is looked up as an own property
- * only) shows its sanitised raw value, grey and dashed, and is "not recognised" to
- * assistive technology.
- */
-export function specFrom(table: KindTable, value: string | undefined): BadgeSpec {
-  const entry = value !== undefined && Object.prototype.hasOwnProperty.call(table.entries, value) ? table.entries[value] : undefined
-  if (entry === undefined) return unreportedSpec(table.absent, value)
-  return {
-    tone: entry[0],
-    icon: entry[1],
-    label: entry[2],
-    unreported: value === 'unknown' || value === 'not-reported',
-    unrecognised: false,
   }
 }

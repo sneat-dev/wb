@@ -24,7 +24,7 @@
   margin: 0.75rem 0;
   padding-left: 0.75rem;
   border-left: 3px solid var(--p-content-border-color, #bbb);
-  color: var(--p-text-muted-color);
+  color: var(--p-text-muted-color, var(--text-3));
 }
 
 .readme-content table {

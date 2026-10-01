@@ -14,10 +14,12 @@ import { OPERATION } from './state-tables/operation'
 import { OWNER } from './state-tables/owner'
 import { PR_STATE } from './state-tables/pr-state'
 import { ROUTE } from './state-tables/route'
-import { BadgeKind, BadgeSpec, KindTable, specFrom } from './state-tables/shared'
+import { KIND_NAME, specFrom } from './state-tables/kinds'
+import { BadgeKind, BadgeSpec, KindTable } from './state-tables/shared'
 import { taskSpec } from './state-tables/task'
 
-export { KIND_NAME, RAW_VALUE_LIMIT, sanitisedValue, specFrom, unreportedSpec } from './state-tables/shared'
+export { KIND_NAME, specFrom }
+export { RAW_VALUE_LIMIT, sanitisedValue, unreportedSpec } from './state-tables/shared'
 export type { BadgeKind, BadgeSpec, Entry, KindTable, Tone } from './state-tables/shared'
 export { taskSpec as taskBadgeSpec } from './state-tables/task'
 

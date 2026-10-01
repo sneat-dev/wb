@@ -31,13 +31,13 @@ describe('the PrimeUI licence check', () => {
   })
 
   it('is not run, and PrimeNG is not loaded, for Home or any page that uses none', () => {
-    for (const path of ['', 'tasks', 'tasks/new', 'tasks/detail', 'worktrees', 'worktrees/:id', 'agents/:id', 'machines/:id', 'repositories/:id']) {
+    for (const path of ['', 'tasks', 'tasks/new', 'tasks/detail', 'worktrees', 'worktrees/:id', 'agents', 'agents/:id', 'machines/:id', 'repositories/:id']) {
       const route = pageRoutes.find((candidate) => candidate.path === path)
       expect(route?.loadChildren, path).toBeUndefined()
       expect(route?.providers, path).toBeUndefined()
     }
     const primeRoutes = pageRoutes.filter((route) => route.loadChildren !== undefined).map((route) => route.path)
-    expect(primeRoutes).toEqual(['repositories', 'agents', 'machines'])
+    expect(primeRoutes).toEqual(['machines'])
   })
 
   it('runs no initializer in an injector that has none', () => {

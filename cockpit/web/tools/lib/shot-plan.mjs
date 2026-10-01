@@ -42,7 +42,8 @@ export function routePlan(document) {
 // The shared list and its side panel, on the Worktrees page: what the operator does
 // (`steps`, run by tools/shots.mjs) before the picture is taken. `filter:<text>` types
 // in the filter, `chip:<label>` toggles a quick filter, `row:<n>` selects the nth row
-// and `raw` opens the "Raw data" block. A shot's `url` is its page; Worktrees by default.
+// and `raw` opens the "Raw data" block; `select:<n>` selects the nth row with the keyboard (for a list whose
+// last cell holds controls) and `radio:<label>` chooses a radio button. A shot's `url` is its page; Worktrees by default.
 export const LIST_SHOTS = [
   { name: 'worktrees-list', steps: [] },
   { name: 'worktrees-filter', steps: ['filter:fix'] },
@@ -50,11 +51,22 @@ export const LIST_SHOTS = [
   { name: 'worktrees-no-match', steps: ['filter:zzzzqq'] },
   { name: 'worktrees-panel', steps: ['row:2'] },
   { name: 'worktrees-panel-raw', steps: ['row:2', 'raw'] },
+  { name: 'repositories-list', url: '/repositories', steps: [] },
+  { name: 'repositories-sort', url: '/repositories', steps: ['radio:Most worktrees'] },
+  { name: 'repositories-chip', url: '/repositories', steps: ['chip:Index needs a look'] },
+  { name: 'repositories-no-match', url: '/repositories', steps: ['filter:zzzzqq'] },
+  { name: 'repositories-panel', url: '/repositories', steps: ['select:1'] },
+  { name: 'repositories-panel-raw', url: '/repositories', steps: ['select:1', 'raw'] },
   { name: 'tasks-list', url: '/tasks', steps: [] },
   { name: 'tasks-chip', url: '/tasks', steps: ['chip:Needs you'] },
   { name: 'tasks-no-match', url: '/tasks', steps: ['filter:zzzzqq'] },
   { name: 'tasks-panel', url: '/tasks', steps: ['row:1'] },
   { name: 'tasks-panel-raw', url: '/tasks', steps: ['row:1', 'raw'] },
+  { name: 'agents-list', url: '/agents', steps: [] },
+  { name: 'agents-chip', url: '/agents', steps: ['chip:Blocked'] },
+  { name: 'agents-no-match', url: '/agents', steps: ['filter:zzzzqq'] },
+  { name: 'agents-panel', url: '/agents', steps: ['row:3'] },
+  { name: 'agents-panel-raw', url: '/agents', steps: ['row:3', 'raw'] },
 ]
 
 // Every shot: the route plan in each scheme and size, then the overlays on Home,
@@ -77,6 +89,45 @@ export function shotPlan(document) {
   for (const list of LIST_SHOTS) {
     for (const scheme of SCHEMES) {
       for (const viewport of LIST_VIEWPORTS) shots.push({ ...list, url: list.url ?? '/worktrees', state: 'ok', scheme, viewport, file: `${list.name}-${scheme}-${viewport.name}.png` })
+    }
+  }
+  return shots
+}
+
+// Home is photographed against hand-made fleets (apps/cockpit/src/app/pages/home/home-fixtures.ts): each case is a fleet and what the
+// preview serves around it (the session and the action registry), at the sizes Home is designed for.
+export const HOME_VIEWPORTS = [
+  { name: '1440', width: 1440, height: 900 },
+  { name: '1024', width: 1024, height: 768 },
+  { name: '390', width: 390, height: 844 },
+  { name: '360', width: 360, height: 800 },
+]
+
+export const HOME_CASES = [
+  // The fleet, then who is looking: an anonymous reader with no registry (copy commands) and an owner with one (action slots).
+  { name: 'busy', home: 'busy' },
+  { name: 'busy-owner', home: 'busy', session: 'owner', registry: true },
+  { name: 'healthy', home: 'healthy' },
+  { name: 'warming', home: 'warming', state: 'warming' },
+  { name: 'throttled', home: 'throttled' },
+  { name: 'remote-error', home: 'remote-error' },
+  { name: 'no-throughput', home: 'no-throughput' },
+  { name: 'only-dropped', home: 'only-dropped' },
+]
+
+// Every case in light and dark at every Home size, whole page and scrolled to the end so the charts have drawn; the
+// phone also gets the "More" disclosure opened.
+export function homeShotPlan() {
+  const shots = []
+  for (const home of HOME_CASES) {
+    for (const scheme of SCHEMES) {
+      for (const viewport of HOME_VIEWPORTS) {
+        const base = { url: '/', state: home.state ?? 'ok', session: home.session, registry: home.registry, home: home.home, scheme, viewport, fullPage: true, ready: 'app-home-rest', scrollEnd: true }
+        shots.push({ ...base, name: `home-${home.name}`, file: `home-${home.name}-${scheme}-${viewport.name}.png` })
+        if (viewport.width <= 480 && home.home === 'busy' && home.name === 'busy') {
+          shots.push({ ...base, name: `home-${home.name}-more`, file: `home-${home.name}-more-${scheme}-${viewport.name}.png`, click: 'button.home-more-toggle' })
+        }
+      }
     }
   }
   return shots

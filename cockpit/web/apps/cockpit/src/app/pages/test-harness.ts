@@ -66,10 +66,3 @@ export async function settle(fixture: ComponentFixture<unknown>, until: () => bo
     if (!until()) throw new Error('the page has not settled')
   })
 }
-
-/** A detail page's fields: each term and the text of its definition, a count showing its number and not its hover card. */
-export function fields(root: HTMLElement): Record<string, string> {
-  return Object.fromEntries(
-    [...root.querySelectorAll('dl.detail > dt')].map((term) => [term.textContent, cellText(term.nextElementSibling as Element)]),
-  )
-}
