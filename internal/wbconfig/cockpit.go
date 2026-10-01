@@ -38,6 +38,9 @@ type CockpitConfig struct {
 	// in one pass (cockpit-views#req:pull-request-fields). Zero means unset:
 	// the consumer chooses its default.
 	PullRequestLimit int
+	// PullRequestHourlyBudget is the most pull request observations in a
+	// rolling hour. Zero means unset: the consumer chooses its default.
+	PullRequestHourlyBudget int
 	// CodeIndexProvider names the code-index provider whose statistics the
 	// panels show; empty means none is configured, which is a normal state.
 	CodeIndexProvider string
@@ -49,6 +52,12 @@ type CockpitConfig struct {
 // MaxCockpitPullRequestLimit bounds cockpit.pull_request_limit, so one pass
 // cannot be configured into an unbounded number of GitHub reads.
 const MaxCockpitPullRequestLimit = 200
+
+// The bounds of cockpit.pull_request_hourly_budget.
+const (
+	MinCockpitPullRequestHourlyBudget = 10
+	MaxCockpitPullRequestHourlyBudget = 2000
+)
 
 // CodeIndexProviderCodeGrapher is the one code-index provider there is.
 const CodeIndexProviderCodeGrapher = "codegrapher"
@@ -64,6 +73,7 @@ type cockpitSection struct {
 	AnonymousMetadata *bool   `yaml:"anonymous_metadata"`
 	RefreshInterval   *string `yaml:"refresh_interval"`
 	PullRequestLimit  *int    `yaml:"pull_request_limit"`
+	PullRequestBudget *int    `yaml:"pull_request_hourly_budget"`
 	CodeIndexProvider *string `yaml:"code_index_provider"`
 	CodeIndexIndexer  *string `yaml:"code_index_indexer"`
 }
@@ -141,6 +151,12 @@ func parseCockpit(raw []byte) (CockpitConfig, error) {
 			return CockpitConfig{}, fmt.Errorf("cockpit.pull_request_limit must be between 1 and %d, got %d", MaxCockpitPullRequestLimit, *section.PullRequestLimit)
 		}
 		config.PullRequestLimit = *section.PullRequestLimit
+	}
+	if section.PullRequestBudget != nil {
+		if *section.PullRequestBudget < MinCockpitPullRequestHourlyBudget || *section.PullRequestBudget > MaxCockpitPullRequestHourlyBudget {
+			return CockpitConfig{}, fmt.Errorf("cockpit.pull_request_hourly_budget must be between %d and %d, got %d", MinCockpitPullRequestHourlyBudget, MaxCockpitPullRequestHourlyBudget, *section.PullRequestBudget)
+		}
+		config.PullRequestHourlyBudget = *section.PullRequestBudget
 	}
 	if err := parseCockpitCodeIndex(section, &config); err != nil {
 		return CockpitConfig{}, err

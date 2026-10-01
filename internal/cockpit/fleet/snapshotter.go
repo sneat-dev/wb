@@ -130,13 +130,14 @@ type Options struct {
 	// PullRequests observes the pull requests recorded locally on the
 	// snapshotter's own ticker; nil means none is observed (the daemon passes a
 	// *prwatch.Watcher). PullRequestLimit is the most observed per pass (zero
-	// or less means DefaultPullRequestLimit), PullRequestInterval the shortest
-	// time between two passes (zero or less means 90 s) and PullRequestTimeout
+	// or less means DefaultPullRequestLimit), PullRequestHourlyBudget the most
+	// observations in a rolling hour (zero or less means
+	// DefaultPullRequestHourlyBudget) and PullRequestTimeout
 	// the bound of one observation (zero or less means 30 s).
-	PullRequests        PullRequestObserver
-	PullRequestLimit    int
-	PullRequestInterval time.Duration
-	PullRequestTimeout  time.Duration
+	PullRequests            PullRequestObserver
+	PullRequestLimit        int
+	PullRequestHourlyBudget int
+	PullRequestTimeout      time.Duration
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
 }
@@ -192,7 +193,7 @@ type Snapshotter struct {
 	logf              func(string, ...any)
 	pullObserver      PullRequestObserver
 	pullLimit         int
-	pullInterval      time.Duration
+	pullBudget        int
 	pullTimeout       time.Duration
 
 	// refresh serialises full passes. side counts the read of the other
@@ -219,11 +220,14 @@ type Snapshotter struct {
 	bindings    []worktrees.RegisteredPullRequestBinding
 	boundAt     time.Time
 	// observed holds the last successful observation of each recorded pull
-	// request, by pullKey; lastPull is when the last pass began.
-	observed    map[string]pullObservation
-	lastPull    time.Time
-	pullStarted bool
-	remote      remoteView
+	// request, by pullKey; attempts when each was last asked about and how
+	// many reads in a row failed; spent when the observations of the last hour
+	// began; throttled that the hourly budget cut the last pass short.
+	observed  map[string]pullObservation
+	attempts  map[string]pullAttempt
+	spent     []time.Time
+	throttled bool
+	remote    remoteView
 	// remoteBranches holds the prepared empty branch lists of the repositories
 	// cached from other machines, dropped whenever remote is replaced.
 	remoteBranches map[string]cockpit.Payload
@@ -240,13 +244,13 @@ func New(options Options) *Snapshotter {
 		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
 		repos: map[string]*repoState{}, observed: map[string]pullObservation{},
-		pullObserver: options.PullRequests, pullLimit: options.PullRequestLimit, pullInterval: options.PullRequestInterval, pullTimeout: options.PullRequestTimeout,
+		pullObserver: options.PullRequests, pullLimit: options.PullRequestLimit, pullBudget: options.PullRequestHourlyBudget, attempts: map[string]pullAttempt{}, pullTimeout: options.PullRequestTimeout,
 	}
 	if snapshotter.pullLimit <= 0 {
 		snapshotter.pullLimit = DefaultPullRequestLimit
 	}
-	if snapshotter.pullInterval <= 0 {
-		snapshotter.pullInterval = defaultPullRequestInterval
+	if snapshotter.pullBudget <= 0 {
+		snapshotter.pullBudget = DefaultPullRequestHourlyBudget
 	}
 	if snapshotter.pullTimeout <= 0 {
 		snapshotter.pullTimeout = defaultPullRequestTimeout
@@ -974,6 +978,7 @@ func (s *Snapshotter) publishLocked() {
 		document.CodeIndexProvider = provider.Name()
 	}
 	document.AgentsTruncated = s.truncated
+	document.PullRequestsThrottled = s.throttled
 	ids := make([]string, 0, len(s.repos))
 	idsBySlug := map[string][]string{}
 	for id, state := range s.repos {

@@ -65,6 +65,16 @@ type Snapshot struct {
 	Err   error
 }
 
+// ReadsPerSettledObservation is how many GitHub reads Observe makes for an open
+// pull request that is green, or red with nothing to explain: the pull request,
+// its check runs, its commit statuses, the target's branch
+// policy and its active rules. A pull request that is not green with nothing
+// pending or failed adds the two policy reads again (to name the missing
+// required check) and a red head adds the annotation reads of its failure
+// details. A test pins this number; the reads are conditional (ETag), and a
+// 304 answer is not charged to the rate limit.
+const ReadsPerSettledObservation = 5
+
 // Observe takes exactly one observation of repository's pull request
 // selector (a number or URL, as orchestrate.ReadPullRequest accepts it) — an
 // exact head's checks, never a poll loop, never a confirming reread. A caller
@@ -73,6 +83,18 @@ type Snapshot struct {
 // daemon watcher's next tick), and compares the two; this package holds no
 // state across calls.
 func Observe(ctx context.Context, repository, selector string) Snapshot {
+	return observe(ctx, repository, selector, false)
+}
+
+// ObserveLean is Observe without the failure details: Failures stays empty. A
+// caller that shows only that a check failed and its name (the cockpit fleet)
+// saves the pull request, check, status and annotation reads that explaining a
+// red head costs.
+func ObserveLean(ctx context.Context, repository, selector string) Snapshot {
+	return observe(ctx, repository, selector, true)
+}
+
+func observe(ctx context.Context, repository, selector string, lean bool) Snapshot {
 	snapshot := Snapshot{Repository: repository, Number: selector}
 	view, err := orchestrate.ReadPullRequest(ctx, repository, selector)
 	if err != nil {
@@ -87,7 +109,7 @@ func Observe(ctx context.Context, repository, selector string) Snapshot {
 	snapshot.URL = view.HTMLURL
 	snapshot.Mergeable = view.MergeableState
 
-	checks, green, err := orchestrate.PullRequestHeadChecks(ctx, repository, selector)
+	checks, green, err := orchestrate.PullRequestHeadChecksOf(ctx, repository, view)
 	if err != nil {
 		// A closed pull request no longer needs its checks read; reporting
 		// the closure is more useful than failing on a head that may be gone.
@@ -120,7 +142,7 @@ func Observe(ctx context.Context, repository, selector string) Snapshot {
 	// Why it is red is only fetched once the head is terminal, and only when
 	// something actually failed. Annotations cost extra reads, and a check
 	// that is still running has nothing to explain yet.
-	if len(snapshot.Failed) > 0 && snapshot.Checks["pending"] == 0 {
+	if !lean && len(snapshot.Failed) > 0 && snapshot.Checks["pending"] == 0 {
 		if failures, failErr := orchestrate.PullRequestFailureDetails(ctx, repository, selector); failErr == nil {
 			snapshot.Failures = failures
 		}

@@ -14,16 +14,26 @@ import (
 
 const (
 	// DefaultPullRequestLimit is the most pull requests observed per pass when
-	// cockpit.pull_request_limit is not set. One observation costs a handful
-	// of GitHub reads (the pull request, its check runs, its commit statuses
-	// and the target's required-check policy, plus the annotations of a red
-	// head), so with the default pass interval this stays far below GitHub's
-	// hourly allowance for an authenticated user.
+	// cockpit.pull_request_limit is not set.
 	DefaultPullRequestLimit = 10
-	// defaultPullRequestInterval is the shortest time between two observation
-	// passes. The refresh interval is a minute by default, so a pass runs on
-	// every other refresh; a longer refresh interval runs one on each.
-	defaultPullRequestInterval = 90 * time.Second
+	// DefaultPullRequestHourlyBudget is the most observations in any rolling
+	// hour when cockpit.pull_request_hourly_budget is not set. An observation
+	// is prsnapshot.ReadsPerSettledObservation GitHub reads, 5 more for a head
+	// that is neither green, pending nor failed, so the default is at most 1200
+	// reads an hour; a read answered 304 by the ETag cache is not charged to
+	// the rate limit.
+	DefaultPullRequestHourlyBudget = 120
+	// pullWindow is the rolling window the budget is counted over.
+	pullWindow = time.Hour
+	// pullPendingEvery is how soon a pull request still waiting for its checks
+	// (or whose mergeability GitHub is still computing) is observed again, and
+	// pullSettledEvery how soon one whose verdict is known.
+	pullPendingEvery = 90 * time.Second
+	pullSettledEvery = 10 * time.Minute
+	// pullBackoffFrom and pullBackoffTo bound the wait after a failed read,
+	// which doubles with each failure in a row.
+	pullBackoffFrom = 2 * time.Minute
+	pullBackoffTo   = 30 * time.Minute
 	// defaultPullRequestTimeout bounds one pull request's observation.
 	defaultPullRequestTimeout = 30 * time.Second
 	// pullRequestWorkers is how many observations of one pass run at once.
@@ -50,12 +60,13 @@ var _ PullRequestObserver = (*prwatch.Watcher)(nil)
 var mergeableStates = []string{"clean", "blocked", "dirty", "behind", "unstable", "has_hooks", "draft", "unknown"}
 
 // pullObservation is what the last successful observation of one pull request
-// said, with when it was taken. merged marks a pull request that has left the
-// watch set.
+// said, with when it was taken. done marks a pull request merged or closed,
+// which has left the watch set; waiting one whose checks have not reached a
+// verdict.
 type pullObservation struct {
 	state, mergeable, failedCheck           string
 	total, passed, failed, skipped, pending int
-	green, merged                           bool
+	green, done, waiting                    bool
 	checkedAt                               time.Time
 }
 
@@ -75,7 +86,7 @@ func observationOf(outcome prwatch.Outcome, at time.Time) (pullObservation, bool
 		return pullObservation{}, false
 	}
 	observation := pullObservation{
-		state: "open", green: snapshot.Green, checkedAt: at, merged: outcome.Kind == prwatch.KindMerged,
+		state: "open", green: snapshot.Green, checkedAt: at, done: outcome.Kind == prwatch.KindMerged || outcome.Kind == prwatch.KindClosed,
 		passed: snapshot.Checks["pass"], failed: snapshot.Checks["fail"] + snapshot.Checks["cancel"],
 		skipped: snapshot.Checks["skipping"], pending: snapshot.Checks["pending"],
 	}
@@ -96,6 +107,12 @@ func observationOf(outcome prwatch.Outcome, at time.Time) (pullObservation, bool
 	if len(snapshot.Failed) > 0 {
 		observation.failedCheck = plainTextMax(snapshot.Failed[0], maxFailedCheckText)
 	}
+	// Checks are awaited while something runs, while GitHub still computes the
+	// merge state, and while an open pull request has no check at all, no
+	// verdict and no required check named missing (CI has not registered yet).
+	// A missing required check, a failure, a draft and a green head are settled.
+	observation.waiting = observation.pending > 0 || snapshot.Mergeable == "unknown" ||
+		(observation.state == "open" && observation.total == 0 && !snapshot.Green && len(snapshot.Blocked) == 0)
 	return observation, true
 }
 
@@ -106,28 +123,88 @@ func (o pullObservation) applyTo(pull *PullRequest) {
 	pull.ChecksGreen = &o.green
 }
 
-// pullBatch picks the bindings one pass observes: those not yet confirmed
-// merged, one for each pull request, the oldest checked_at first (a pull
-// request never observed first), at most limit of them.
-func pullBatch(bindings []worktrees.RegisteredPullRequestBinding, observed map[string]pullObservation, limit int) []worktrees.RegisteredPullRequestBinding {
+// pullAttempt is what the snapshotter remembers of the last time it asked
+// about one pull request: when, and how many reads in a row have failed. The
+// zero value is a pull request not yet asked about.
+type pullAttempt struct {
+	at       time.Time
+	failures int
+}
+
+// pullBackoff is the wait after failures failed reads in a row: two minutes,
+// doubling, at most thirty.
+func pullBackoff(failures int) time.Duration {
+	wait := pullBackoffFrom
+	for range failures - 1 {
+		wait *= 2
+		if wait >= pullBackoffTo {
+			return pullBackoffTo
+		}
+	}
+	return wait
+}
+
+// pullDue is when a pull request is next to be observed, and whether it is
+// watched at all. It is a pure function of the history: a pull request never
+// asked about is due at once; after a failed read it is due after the backoff;
+// otherwise after 90 seconds while its checks are awaited and 10 minutes once
+// they are settled; a merged or closed one is not watched.
+func pullDue(observation pullObservation, observed bool, attempt pullAttempt) (due time.Time, watched bool) {
+	switch {
+	case observed && observation.done:
+		return time.Time{}, false
+	case attempt.at.IsZero():
+		return time.Time{}, true
+	case attempt.failures > 0:
+		return attempt.at.Add(pullBackoff(attempt.failures)), true
+	case !observed || observation.waiting:
+		return attempt.at.Add(pullPendingEvery), true
+	}
+	return attempt.at.Add(pullSettledEvery), true
+}
+
+// pullBatch picks the bindings one pass observes at now: those watched and due,
+// one for each pull request, the oldest due first, at most limit of them and at
+// most allowed (what the hourly budget leaves). It also says whether the budget
+// cut the batch short, which is what throttled means.
+func pullBatch(bindings []worktrees.RegisteredPullRequestBinding, observed map[string]pullObservation, attempts map[string]pullAttempt, now time.Time, limit, allowed int) (batch []worktrees.RegisteredPullRequestBinding, throttled bool) {
 	seen := map[string]bool{}
-	var batch []worktrees.RegisteredPullRequestBinding
+	dues := map[string]time.Time{}
+	var due []worktrees.RegisteredPullRequestBinding
 	for _, binding := range bindings {
 		key := pullKey(binding.Repository, binding.PullRequest)
-		if binding.Repository == "" || binding.PullRequest <= 0 || seen[key] || observed[key].merged {
+		if binding.Repository == "" || binding.PullRequest <= 0 || seen[key] {
 			continue
 		}
 		seen[key] = true
-		batch = append(batch, binding)
+		observation, ok := observed[key]
+		when, watched := pullDue(observation, ok, attempts[key])
+		if watched && !when.After(now) {
+			dues[key] = when
+			due = append(due, binding)
+		}
 	}
-	sort.SliceStable(batch, func(i, j int) bool {
-		left, right := observed[pullKey(batch[i].Repository, batch[i].PullRequest)].checkedAt, observed[pullKey(batch[j].Repository, batch[j].PullRequest)].checkedAt
-		return left.Before(right)
+	sort.SliceStable(due, func(i, j int) bool {
+		return dues[pullKey(due[i].Repository, due[i].PullRequest)].Before(dues[pullKey(due[j].Repository, due[j].PullRequest)])
 	})
-	if len(batch) > limit {
-		batch = batch[:limit]
+	if len(due) > limit {
+		due = due[:limit]
 	}
-	return batch
+	if len(due) > allowed {
+		due, throttled = due[:max(allowed, 0)], true
+	}
+	return due, throttled
+}
+
+// budgetLeft drops the observations that have left the rolling window and says
+// how many of budget remain.
+func budgetLeft(spent []time.Time, now time.Time, budget int) (kept []time.Time, left int) {
+	for _, at := range spent {
+		if now.Sub(at) < pullWindow {
+			kept = append(kept, at)
+		}
+	}
+	return kept, budget - len(kept)
 }
 
 // bindingsRead stores the pull-request records just read and drops what is
@@ -144,6 +221,11 @@ func (s *Snapshotter) bindingsRead(bindings []worktrees.RegisteredPullRequestBin
 			delete(s.observed, key)
 		}
 	}
+	for key := range s.attempts {
+		if !listed[key] {
+			delete(s.attempts, key)
+		}
+	}
 	s.mu.Unlock()
 	if s.pullObserver != nil {
 		s.pullObserver.Retain(bindings)
@@ -151,21 +233,23 @@ func (s *Snapshotter) bindingsRead(bindings []worktrees.RegisteredPullRequestBin
 }
 
 // startPullRequests starts an observation pass in a goroutine of its own, under
-// its own timeouts, unless the interval since the last pass has not passed or
-// one is still running. The refresh does not wait for it: what it learns is
-// published when it arrives, and a failure keeps the previous values.
+// its own timeouts, for the pull requests that are due, unless one is still
+// running. The refresh does not wait for it: what it learns is published when
+// it arrives, and a failure keeps the previous values. The hourly budget is
+// spent when the pass starts; when it cuts the pass short the document says
+// observation is throttled.
 func (s *Snapshotter) startPullRequests(ctx context.Context) {
 	if s.pullObserver == nil || !s.pullBusy.CompareAndSwap(false, true) {
 		return
 	}
 	s.mu.Lock()
 	now := s.now()
-	var batch []worktrees.RegisteredPullRequestBinding
-	if !s.pullStarted || now.Sub(s.lastPull) >= s.pullInterval {
-		batch = pullBatch(s.bindings, s.observed, s.pullLimit)
-	}
-	if len(batch) > 0 {
-		s.pullStarted, s.lastPull = true, now
+	var left int
+	s.spent, left = budgetLeft(s.spent, now, s.pullBudget)
+	batch, throttled := pullBatch(s.bindings, s.observed, s.attempts, now, s.pullLimit, left)
+	s.throttled = throttled
+	for range batch {
+		s.spent = append(s.spent, now)
 	}
 	s.mu.Unlock()
 	if len(batch) == 0 {
@@ -213,13 +297,23 @@ func (s *Snapshotter) observePullRequests(ctx context.Context, batch []worktrees
 	for _, binding := range s.bindings {
 		listed[pullKey(binding.Repository, binding.PullRequest)] = true
 	}
+	at := s.now()
 	for _, result := range results {
 		key := pullKey(result.binding.Repository, result.binding.PullRequest)
-		if !result.ok || !listed[key] {
+		if !listed[key] {
 			continue
 		}
+		attempt := s.attempts[key]
+		attempt.at = at
+		if !result.ok {
+			attempt.failures++
+			s.attempts[key] = attempt
+			continue
+		}
+		attempt.failures = 0
+		s.attempts[key] = attempt
 		s.observed[key] = result.observation
-		if result.observation.merged {
+		if result.observation.done {
 			s.pullObserver.Forget(result.binding)
 		}
 	}

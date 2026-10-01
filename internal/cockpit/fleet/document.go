@@ -165,6 +165,10 @@ type Document struct {
 	PullRequests    []PullRequest `json:"pull_requests"`
 	Agents          []Agent       `json:"agents"`
 	AgentsTruncated bool          `json:"agents_truncated,omitempty"`
+	// PullRequestsThrottled says the hourly budget of pull request
+	// observations ran out with pull requests due, so their state is older than
+	// the cadence promises; each entry's checked_at says how old.
+	PullRequestsThrottled bool `json:"pull_requests_throttled,omitempty"`
 }
 
 // BranchesResponse is what the branches route answers for one repository: its

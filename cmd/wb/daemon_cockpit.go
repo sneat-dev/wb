@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/prwatch"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -19,6 +20,15 @@ import (
 // owner session ends when the daemon restarts (cockpit#req:owner-session).
 func newCockpitServer(address string, config wbconfig.CockpitConfig) *cockpit.Server {
 	return cockpit.New(cockpit.Options{CanonicalHost: cockpit.CanonicalHost(address), Config: config})
+}
+
+// pullRequestWatcher is the watcher the fleet snapshotter runs: the daemon's
+// own prwatch.Watcher over the lean observation, which skips the reads that
+// explain a red head (the cockpit shows only the first failing check's name).
+func pullRequestWatcher() *prwatch.Watcher {
+	watcher := prwatch.NewWatcher()
+	watcher.Observe = prsnapshot.ObserveLean
+	return watcher
 }
 
 // registerCockpitFleet builds the fleet snapshotter for one daemon run and
@@ -47,7 +57,8 @@ func registerCockpitFleet(server *cockpit.Server, options cockpitfleet.Options) 
 // cockpit.code_index_provider, when set, names the provider that reports the
 // statistics of each checkout's index (the snapshotter alone asks it).
 // cockpit.pull_request_limit, when set, bounds the pull requests the
-// snapshotter observes on GitHub in one pass, through a prwatch.Watcher.
+// snapshotter observes on GitHub in one pass and cockpit.pull_request_hourly_budget
+// the observations in a rolling hour, through a prwatch.Watcher.
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(logs, "wb: "+format+"\n", args...) }
 	machine, err := hostname()
@@ -74,7 +85,7 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	}
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
-		PullRequests: prwatch.NewWatcher(), PullRequestLimit: config.PullRequestLimit,
+		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
 }

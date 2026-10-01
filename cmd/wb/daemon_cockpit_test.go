@@ -323,10 +323,11 @@ func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testin
 func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit(t *testing.T) {
 	t.Parallel()
 	config := wbconfig.DefaultCockpitConfig()
-	config.PullRequestLimit = 7
+	config.PullRequestLimit, config.PullRequestHourlyBudget = 7, 55
 	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil })
-	if _, ok := options.PullRequests.(*prwatch.Watcher); !ok || options.PullRequestLimit != 7 {
-		t.Errorf("pull request observer = %T limit %d, want a *prwatch.Watcher and 7", options.PullRequests, options.PullRequestLimit)
+	watcher, ok := options.PullRequests.(*prwatch.Watcher)
+	if !ok || watcher.Observe == nil || options.PullRequestLimit != 7 || options.PullRequestHourlyBudget != 55 {
+		t.Errorf("pull request observer = %T limit %d budget %d, want a lean *prwatch.Watcher, 7 and 55", options.PullRequests, options.PullRequestLimit, options.PullRequestHourlyBudget)
 	}
 }
 

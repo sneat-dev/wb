@@ -169,6 +169,13 @@ func PullRequestHeadChecks(ctx context.Context, repository, selector string) ([]
 	if err != nil {
 		return nil, false, err
 	}
+	return PullRequestHeadChecksOf(ctx, repository, view)
+}
+
+// PullRequestHeadChecksOf is PullRequestHeadChecks for a caller that has just
+// read the pull request itself: it does not read it a second time, which saves
+// one GitHub read for each observation.
+func PullRequestHeadChecksOf(ctx context.Context, repository string, view PullRequestView) ([]HeadCheck, bool, error) {
 	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
 	runs, runsPending, reason := commitCheckRuns(ctx, options)
 	if reason != "" {
