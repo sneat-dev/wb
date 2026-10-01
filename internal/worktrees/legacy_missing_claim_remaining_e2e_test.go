@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,6 +100,10 @@ func assertLegacyEvidenceBytesUnchanged(t *testing.T, paths ...string) func() {
 			before[path] = content
 		case errors.Is(err, os.ErrNotExist):
 			missing = append(missing, path)
+		case errors.Is(err, syscall.ENOTDIR):
+			// A tracked child may sit below a separate blocking parent file.
+		default:
+			t.Fatalf("read immutable evidence %s: %v", path, err)
 		}
 	}
 	return func() {
@@ -308,7 +313,16 @@ func TestE2ELegacyMissingClaimRecoveryRefusesChangedPrivateEvidence(t *testing.T
 				t.Fatal(err)
 			}
 			tc.change(t, fixture, plan)
-			assertBytes := assertLegacyEvidenceBytesUnchanged(t, fixture.claimPath, fixture.recoveryPath)
+			evidencePaths := []string{fixture.claimPath, fixture.recoveryPath}
+			switch tc.name {
+			case "blocked-lock-directory":
+				evidencePaths = append(evidencePaths, filepath.Join(fixture.runPath, "locks"))
+			case "blocked-claims-directory":
+				evidencePaths = append(evidencePaths, filepath.Dir(fixture.claimPath))
+			case "blocked-recoveries-directory":
+				evidencePaths = append(evidencePaths, filepath.Dir(fixture.recoveryPath))
+			}
+			assertBytes := assertLegacyEvidenceBytesUnchanged(t, evidencePaths...)
 			if err := recoverLegacyMissingClaimForAbort(fixture.git.home, fixture.options, fixture.entry); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("%s recovery refusal = %v, want %q", tc.name, err, tc.want)
 			}
