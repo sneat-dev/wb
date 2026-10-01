@@ -2,12 +2,14 @@ package runner_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -462,5 +464,34 @@ func TestRealHandleSignalAfterWaitReportsAnErrorRatherThanPanicking(t *testing.T
 	}
 	if err := handle.Signal(os.Interrupt); err == nil {
 		t.Fatal("want an error signalling an already-waited-on process, not a panic or a silent success")
+	}
+}
+
+//nolint:paralleltest // AllowRealProcess and the helper-process variables are t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestRealRunOptsStdoutLimitKeepsOnlyWhatFitted(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_STDOUT", strings.Repeat("x", 64))
+
+	over, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{StdoutLimit: 8}, os.Args[0], helperArgs()...)
+	if !errors.Is(err, runner.ErrOutputTooLarge) || len(over.Stdout) > 8 {
+		t.Fatalf("over the limit = %q, %v, want ErrOutputTooLarge and at most 8 bytes held", over.Stdout, err)
+	}
+	within, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{StdoutLimit: 64}, os.Args[0], helperArgs()...)
+	if err != nil || len(within.Stdout) != 64 {
+		t.Fatalf("within the limit = %d bytes, %v, want all 64 and no error", len(within.Stdout), err)
+	}
+}
+
+//nolint:paralleltest // AllowRealProcess and the helper-process variables are t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestRealRunOptsDiscardStderrKeepsNoStandardError(t *testing.T) {
+	runnertest.AllowRealProcess(t)
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_STDOUT", "out")
+	t.Setenv("WB_RUNNER_STDERR", "private-path")
+
+	result, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{DiscardStderr: true}, os.Args[0], helperArgs()...)
+	if err != nil || result.Stdout != "out" || result.Stderr != "" {
+		t.Fatalf("result = %+v, %v, want stdout kept and no standard error", result, err)
 	}
 }

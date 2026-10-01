@@ -1611,7 +1611,6 @@ internal/prwatch::TestWatcherEvaluateReportsHeadDriftThenConfirmsOnTheNewHead	se
 internal/prwatch::TestWatcherEvaluateUnavailableNeverBreaksAStreak	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/prwatch::TestWatcherEvaluateUsesTheInjectedClock	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/prwatch::TestZeroValueWatcherIsSafe	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/quality::TestComputeBaselineAtRefFailsClosedWhenTempDirIsUnwritable	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/quality::TestComputeBaselineAtRefFailsWhenGitWorktreeAddFails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/quality::TestDqCovCoverWithOptionsReportsUnusableTemporaryRoot	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)

@@ -42,9 +42,14 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 )
+
+// ErrOutputTooLarge is what RunOpts returns when a child's standard output
+// passed RunOptions.StdoutLimit.
+var ErrOutputTooLarge = errors.New("runner: child output passed its limit")
 
 // Result is one Run or Start/Wait call's captured output.
 type Result struct {
@@ -78,6 +83,17 @@ type RunOptions struct {
 	// grandchild and exits early) sets one explicitly rather than relying on
 	// whatever internal/process happens to default to today.
 	WaitDelay time.Duration
+	// StdoutLimit, when positive, caps the standard output RunOpts buffers:
+	// the first write that would pass it is refused, nothing beyond the cap
+	// is ever held, the child is stopped by its closed pipe or by ctx, and
+	// RunOpts returns ErrOutputTooLarge with Result.Stdout holding only what
+	// fitted. It does not apply with CaptureCombined.
+	StdoutLimit int
+	// DiscardStderr sends the child's standard error to the null device
+	// instead of buffering it: Result.Stderr stays empty. For a caller that
+	// runs a child it does not trust and must neither hold nor surface what
+	// that child prints there.
+	DiscardStderr bool
 }
 
 // Handle is a process started by Start: callers wait for it or signal it

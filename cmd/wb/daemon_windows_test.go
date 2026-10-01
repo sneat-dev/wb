@@ -127,3 +127,11 @@ func setWindowsTestDACL(t *testing.T, path, sddl string) {
 		t.Fatal(err)
 	}
 }
+
+// Off macOS there is no fixed-label launchd service for a start to remove, so
+// the other-root check never refuses.
+func TestDaemonCheckOtherRootNeverRefusesOffMacOS(t *testing.T) {
+	if err := daemonCheckOtherRoot(t.TempDir(), false); err != nil {
+		t.Fatalf("daemonCheckOtherRoot = %v", err)
+	}
+}

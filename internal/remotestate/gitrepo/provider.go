@@ -357,16 +357,25 @@ func (p *Provider) Status(ctx context.Context) (remotestate.StatusSnapshot, erro
 // readMachines reads the already-refreshed clone. The caller must hold the
 // clone lock so a concurrent writer cannot change the working tree midway.
 func (p *Provider) readMachines() ([]remotestate.Entry, error) {
+	return p.readMachinesCtx(context.Background(), false)
+}
+
+// readMachinesCtx is readMachines that stops when ctx ends and, when
+// regularOnly is set, reads only regular files, never following a link.
+func (p *Provider) readMachinesCtx(ctx context.Context, regularOnly bool) ([]remotestate.Entry, error) {
 	root := filepath.Join(p.opts.ClonePath, "machines")
 	var entries []remotestate.Entry
 	err := filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && file == root {
 				return nil
 			}
 			return err
 		}
-		if d.IsDir() || d.Name() != "snapshot.yaml" {
+		if d.IsDir() || d.Name() != "snapshot.yaml" || (regularOnly && !d.Type().IsRegular()) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, file)
@@ -397,4 +406,41 @@ func (p *Provider) readMachines() ([]remotestate.Entry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Snapshot.Key() < entries[j].Snapshot.Key() })
 	return entries, nil
+}
+
+// ReadLocal reads the machines' snapshots from the existing local clone of the
+// state repository and does nothing else: it clones nothing, fetches nothing,
+// pulls nothing, takes no lock file and writes nothing, so it never contacts a
+// network. It stops when ctx ends and reads only regular files. A clone that
+// does not exist yet means nothing is known, which is no error; a directory
+// that is a clone of a different repository is one.
+func (p *Provider) ReadLocal(ctx context.Context) ([]remotestate.Entry, error) {
+	config, err := os.ReadFile(filepath.Join(p.opts.ClonePath, ".git", "config"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if origin := configuredOrigin(string(config)); !sameRemote(origin, p.opts.CloneURL) {
+		return nil, fmt.Errorf("the local state clone is not a clone of the configured remote store")
+	}
+	return p.readMachinesCtx(ctx, true)
+}
+
+// configuredOrigin reads the url of [remote "origin"] from a Git config's
+// text, without running Git; it is empty when there is none.
+func configuredOrigin(config string) string {
+	inOrigin := false
+	for _, line := range strings.Split(config, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inOrigin = line == `[remote "origin"]`
+			continue
+		}
+		if key, value, found := strings.Cut(line, "="); inOrigin && found && strings.TrimSpace(key) == "url" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

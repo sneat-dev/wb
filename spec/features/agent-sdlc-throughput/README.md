@@ -354,7 +354,11 @@ when its caller cannot probe the API. `stop` and `restart` are explicit and
 preserve the durable queue handoff record; genuine startup failure remains an
 error with the daemon log path.
 
-The loopback HTTP dashboard remains read-only. Operation mutations use
+The loopback HTTP dashboard remains read-only. (Amended 2026-10-01:
+[cockpit-actions](../cockpit-actions/README.md) adds a second,
+owner-session-authenticated entry on the loopback listener that admits typed
+actions only, never an argument vector; the owner-token RPC described next is
+unchanged, and the existing dashboard stays read-only until it is retired.) Operation mutations use
 ConnectRPC on a separate mode-0600 Unix socket and require the private lifecycle
 owner token, which is not passed in process arguments or operation receipts.
 Raw command execution remains disabled by default even for an authenticated

@@ -1,0 +1,13 @@
+@for (item of states(); track item.indexer) {
+  <span class="code-index" [class.attention]="item.state !== 'fresh'" [attr.title]="item.receipt_at ? 'Receipt ' + item.receipt_at : null">
+    @if (states()!.length > 1) {
+      {{ item.indexer }}:
+    }
+    {{ text(item) }}
+    @if (item.receipt_at) {
+      <span class="when">{{ age(item.receipt_at, now()) }}</span>
+    }
+  </span>
+} @empty {
+  <span class="unknown" title="Not known for this entry">—</span>
+}

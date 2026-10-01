@@ -552,11 +552,15 @@ jobs:
       cancel-in-progress: false
     # Resolve smoke-test metadata alongside the artifact build, then verify
     # published artifacts and Homebrew installs in parallel after promotion.
-    uses: strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c
+    uses: strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504
     permissions:
       contents: write
     with:
       go_version: '1.27'
+      # .goreleaser.yml before-hooks build hub/web and cockpit/web with pnpm;
+      # Angular 22 needs Node ^22.22.3 || ^24.15.0 (cockpit/web engines), the
+      # same major cockpit-web.yml verifies on.
+      node_version: '24.15.0'
       allow_major_version_bump: false
       # A CLI-changing merge without a conventional terminal title must still
       # produce a patch release.

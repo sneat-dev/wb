@@ -1,0 +1,25 @@
+@if (store.error(); as error) {
+  <p class="notice error" role="alert">{{ error }}</p>
+}
+@if (!store.loaded()) {
+  <p class="notice" role="status">Loading the fleet…</p>
+} @else if (store.warmingUp()) {
+  <p class="notice" role="status">
+    <label for="scan-progress"
+      >Scanning repositories: {{ store.progress().scanned }} of {{ store.progress().total }}. What is listed so far is complete for
+      those repositories.</label
+    >
+    <progress id="scan-progress" [max]="store.progress().total" [value]="store.progress().scanned"></progress>
+  </p>
+}
+@if (documentError(); as problem) {
+  <p class="notice error" role="alert">{{ problem }}</p>
+}
+@if (document().diagnostics > 0) {
+  <p class="notice" role="status">
+    {{ document().diagnostics }} pull request{{ document().diagnostics === 1 ? '' : 's' }} could not be matched to a single repository.
+  </p>
+}
+@if (document().agents_truncated) {
+  <p class="notice" role="status">The agents list is capped; not every agent is shown.</p>
+}

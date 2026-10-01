@@ -1,0 +1,57 @@
+.panel-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.panel-note,
+.panel-freshness {
+  margin: 0.25rem 0;
+  color: var(--p-text-muted-color);
+}
+
+.totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0.5rem 0;
+}
+
+.totals div {
+  display: flex;
+  flex-direction: column;
+}
+
+.totals dt {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.totals dd {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.kinds-title {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.875rem;
+}
+
+.kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.25rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kinds li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.kind-count {
+  font-variant-numeric: tabular-nums;
+}
