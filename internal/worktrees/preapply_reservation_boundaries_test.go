@@ -126,7 +126,7 @@ func TestLegacyPreApplyReservationRequiresExactPromptOnlyRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	runPath := filepath.Join(home, "worklogs", "destination", "runs", "legacy-run")
 	prompt := []byte("legacy exact prompt\n")
 	digest := sha256.Sum256(prompt)
@@ -251,7 +251,7 @@ func TestPreApplyReservationLockAndShellRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.close()
+	t.Cleanup(held.close)
 	resolution := wbhome.Resolution{Write: wbhome.Layout{Home: home}}
 	if second, err := acquirePreApplyReservationTask(resolution, "destination"); err == nil || second != nil {
 		if second != nil {
