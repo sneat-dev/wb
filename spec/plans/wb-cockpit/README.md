@@ -65,6 +65,10 @@ in this plan:
 - Fleet reach: typed actions on other machines over the peer link, and the
   SSH fallback. The peer WebSocket session answers 501 today, so this waits
   on `peer-connectivity` being built.
+- Source and diff viewers, and CodeGrapher navigation inside them: jumping
+  to a symbol's definition, callers and callees, and showing the impact and
+  the affected tests of a change. The first slice has no source or diff
+  viewer for this to live in.
 - Publishing the application at the hosted URL.
 - Retiring the existing dashboards. That is a full cutover and needs every
   consumer of the old surfaces replaced first: the `wb dashboard` command and

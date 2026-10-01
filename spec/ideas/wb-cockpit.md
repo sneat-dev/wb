@@ -95,6 +95,7 @@ good" to the whole set without discussing that row on its own.
 | Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
 | Test coverage | All new code targets 100% test coverage. |
+| CodeGrapher | Cockpit integrates with CodeGrapher. The first slice may be minimal; deeper integration comes later, for example code navigation from source and diff viewers. *Proposed* minimal form: show each checkout's code-index freshness, which `code-index-freshness` already defines from receipts. |
 | Command | `wb cockpit` starts or reuses the daemon and opens its own Cockpit with an owner session. `wb cockpit --hosted` opens the hosted page. `wb dashboard` becomes an alias. |
 
 ## Recommended Direction
