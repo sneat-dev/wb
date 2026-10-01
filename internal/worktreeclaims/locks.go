@@ -417,6 +417,11 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 	if err := QuarantineLockEntry(lock.directory, lock.identity, options...); err != nil {
 		return fmt.Errorf("quarantine operation lock: %w", err)
 	}
+	// A fork or duplicate can retain this open-file-description after Close.
+	// Unlock only the owned inode after its exact retirement has succeeded.
+	if err := unix.Flock(int(lock.file.Fd()), unix.LOCK_UN); err != nil {
+		return fmt.Errorf("unlock retired operation lock: %w", err)
+	}
 	return nil
 }
 
