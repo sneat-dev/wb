@@ -252,12 +252,14 @@ func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWo
 	// An already-claimed worktree — adopted before, or genuinely created by
 	// `wb worktree create` and merely discovered here — is a no-op. Re-running
 	// a sweep over hundreds of worktrees after an interruption must be safe.
-	if _, _, _, err := activeWorkLogClaim(home, candidate.Path); err == nil {
+	claimed, claimErr := adoptionClaimState(home, candidate.Path)
+	if claimed {
 		result.Action = AdoptAlreadyAdopted
 		return result
-	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
+	}
+	if claimErr != nil {
 		result.Action = AdoptSkipped
-		result.Reason = fmt.Sprintf("existing Work Log state is inconsistent, refusing to adopt: %v", err)
+		result.Reason = fmt.Sprintf("existing Work Log state is inconsistent, refusing to adopt: %v", claimErr)
 		return result
 	}
 	_, _, owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, candidate.Path)
@@ -315,10 +317,12 @@ func adoptApply(home, owner, repository string, manifest Manifest, worktree, ini
 	defer func() { _ = lock.release() }()
 	// Re-check under the lock: another sweep or session may have adopted this
 	// exact worktree in the window between the pre-lock check and here.
-	if _, _, _, err := activeWorkLogClaim(home, worktree); err == nil {
+	claimed, claimErr := adoptionClaimState(home, worktree)
+	if claimed {
 		return nil
-	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
-		return fmt.Errorf("existing Work Log state is inconsistent, refusing to adopt: %w", err)
+	}
+	if claimErr != nil {
+		return fmt.Errorf("existing Work Log state is inconsistent, refusing to adopt: %w", claimErr)
 	}
 	if _, err := createAdoptionRegistration(operation.Directory, operation.Path, owner, repository, worktree, now); err != nil {
 		return err
@@ -332,4 +336,18 @@ func adoptApply(home, owner, repository string, manifest Manifest, worktree, ini
 		return fmt.Errorf("record adoption Work Log claim: %w", err)
 	}
 	return nil
+}
+
+// adoptionClaimState makes absence the sole admissible unclaimed state. Both
+// callers use it: once for a nonmutating preview and again under the task lock
+// before publishing registration and claim evidence.
+func adoptionClaimState(home, worktree string) (claimed bool, err error) {
+	_, _, _, err = activeWorkLogClaim(home, worktree)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return false, nil
+	}
+	return false, err
 }
