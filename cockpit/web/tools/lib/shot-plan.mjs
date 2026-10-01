@@ -36,6 +36,18 @@ export function routePlan(document) {
   ]
 }
 
+// The shared list and its side panel, on the Worktrees page: what the operator does
+// (`steps`, run by tools/shots.mjs) before the picture is taken. `filter:<text>` types
+// in the filter, `chip:<label>` toggles a quick filter, `row:<n>` selects the nth row
+// and `raw` opens the "Raw data" block.
+export const LIST_SHOTS = [
+  { name: 'worktrees-filter', steps: ['filter:fix'] },
+  { name: 'worktrees-chip', steps: ['chip:Active'] },
+  { name: 'worktrees-no-match', steps: ['filter:zzzzqq'] },
+  { name: 'worktrees-panel', steps: ['row:2'] },
+  { name: 'worktrees-panel-raw', steps: ['row:2', 'raw'] },
+]
+
 // Every shot: the route plan in each scheme and size, then the overlays on Home,
 // then the states of the daemon. A `state` shot needs a server in that state.
 export function shotPlan(document) {
@@ -51,6 +63,11 @@ export function shotPlan(document) {
         shots.push({ name, url: '/', state: 'ok', keys, scheme, viewport, file: `${name}-${scheme}-${viewport.name}.png` })
       }
       for (const state of ['warming', 'daemon-older']) shots.push({ name: `state-${state}`, url: '/', state, scheme, viewport, file: `state-${state}-${scheme}-${viewport.name}.png` })
+    }
+  }
+  for (const list of LIST_SHOTS) {
+    for (const scheme of SCHEMES) {
+      for (const viewport of VIEWPORTS) shots.push({ ...list, url: '/worktrees', state: 'ok', scheme, viewport, file: `${list.name}-${scheme}-${viewport.name}.png` })
     }
   }
   return shots

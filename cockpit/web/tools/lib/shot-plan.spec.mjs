@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SCHEMES, VIEWPORTS, routePlan, shotPlan } from './shot-plan.mjs'
+import { LIST_SHOTS, SCHEMES, VIEWPORTS, routePlan, shotPlan } from './shot-plan.mjs'
 
 const document = {
   repositories: [{ id: 'r0', name: 'acme/cached' }, { id: 'r1', host: 'github.com', name: 'sneat-co/sneat-go' }],
@@ -33,7 +33,7 @@ describe('shotPlan', () => {
   it('photographs each route in light and dark at a desktop, a phone and the narrowest size', () => {
     expect(VIEWPORTS.map((viewport) => `${viewport.width}x${viewport.height}`)).toEqual(['1440x900', '390x844', '360x800'])
     expect(SCHEMES).toEqual(['light', 'dark'])
-    const routes = shots.filter((shot) => shot.state === 'ok' && !shot.keys)
+    const routes = shots.filter((shot) => shot.state === 'ok' && !shot.keys && !shot.steps)
     expect(routes).toHaveLength(13 * 2 * 3)
     expect(routes.map((shot) => shot.file)).toContain('home-dark-390.png')
     expect(routes.map((shot) => shot.file)).toContain('machine-detail-light-1440.png')
@@ -46,6 +46,14 @@ describe('shotPlan', () => {
     expect(shots.filter((shot) => shot.state !== 'ok').map((shot) => shot.file).sort()).toEqual(
       ['daemon-older', 'warming'].flatMap((state) => ['dark', 'light'].flatMap((scheme) => ['1440', '390', '360'].map((size) => `state-${state}-${scheme}-${size}.png`))).sort(),
     )
+  })
+
+  it('adds the list and its side panel on Worktrees, each with the steps that reach it', () => {
+    const lists = shots.filter((shot) => shot.steps)
+    expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 3)
+    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees']))
+    expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')
+    expect(LIST_SHOTS.find((shot) => shot.name === 'worktrees-panel-raw')?.steps).toEqual(['row:2', 'raw'])
   })
 
   it('gives every shot a distinct file', () => {
