@@ -49,9 +49,8 @@ func NewStore(root string) Store {
 
 func NewID() (string, error) {
 	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate parked task ID: %w", err)
-	}
+	// Go 1.27 crypto/rand.Read fills the buffer or terminates the process.
+	_, _ = rand.Read(raw[:])
 	return "task-" + hex.EncodeToString(raw[:]), nil
 }
 
