@@ -76,7 +76,7 @@ good" to the whole set without discussing that row on its own.
 | Cloud data | No cloud transit by default. Publishing allowlisted snapshots to the hosted hub is an explicit opt-in; the snapshot privacy allowlist is unchanged. |
 | Frontend | Angular with Material/CDK. No React. An open-source chart library is still to be chosen. |
 | Permissions | Every action declares a required capability from the first slice, and Cockpit discovers effective permissions. The MVP has three fixed principals: anonymous-local (metadata read), owner session (everything), peer (typed remote operations). Per-user grants and non-loopback binding wait for the OAuth2/OIDC feature in decision 0002. |
-| Unit of work | No new Goal entity. WB owns a native parent/child task hierarchy: a task may have a plan of child tasks behind it. SpecScore tasks and plans map onto it when present. Streams stay orthogonal. |
+| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URL whose fragment names the task, for example `https://example.com/spec/plan.md#task1`. The URL without its fragment identifies the plan; the hierarchy and any not-yet-started tasks live in whatever the URL points to. WB groups worktrees that reference the same plan. Without a reference a task is the worktree's name, as today. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
 | Dispatch | Every dispatched agent runs in a herdr pane. The detached headless mode is removed from `agent-dispatch`. |
 | Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
@@ -122,6 +122,10 @@ lost first.
 - **A new Goal entity above tasks.** More expressive for multi-task efforts.
   It lost because SpecScore's task and plan hierarchy already covers the need,
   and a second unit of work would have to be stored, synced and explained.
+- **A native parent/child task hierarchy stored by WB.** It would show planned
+  work with no planning system present. It lost because a parent task has no
+  worktree, Work Log or claim to live in, so WB would need task storage and
+  cross-machine sync of its own; a reference to an external plan needs neither.
 - **Keeping headless dispatch beside herdr.** It avoids a herdr prerequisite on
   every machine. It lost to having one dispatch path and one run lifecycle.
 - **Porting only the operational pages.** A smaller MVP. It lost because the
@@ -167,7 +171,7 @@ last slice, not the first.
 
 - **New Features this would create:** TBD at spec time. Likely: the Cockpit
   shell and command; work-loss risk and durability; the action registry and
-  safety classes; capability-based permissions; native task hierarchy; herdr
+  safety classes; capability-based permissions; worktree task reference; herdr
   dispatch and agent controls; SSH fallback adapter; planning-reference
   integration.
 - **Existing Features affected:**
@@ -192,10 +196,14 @@ last slice, not the first.
 
 ## Open Questions
 
-- Does SpecScore let a task carry a plan of child tasks, as the hierarchy
-  decision assumes? The CLI specs show plans with embedded tasks and a task
-  board; the task-to-plan link was not confirmed when this idea was written.
-- Where is the task hierarchy stored, and how does it travel between machines?
+- Where does the task reference live so that it survives worktree cleanup and
+  is visible from other machines? The Work Log creation manifest is the
+  natural home inside the worktree; whether the claim or the published
+  snapshot can carry it was not confirmed.
+- May the task reference enter an opt-in cloud snapshot? A plan URL names a
+  repository and a plan, and the snapshot allowlist currently excludes
+  anything of that kind.
+- Do SpecScore plan tasks have stable anchors a URL fragment can name?
 - How do Stop, Cancel and Kill map onto herdr's actual pane controls? No
   existing semantics were found in `agent-dispatch` or
   `herdr-session-transport`, by keyword search rather than a full read.
