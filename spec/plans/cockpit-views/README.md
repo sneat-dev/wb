@@ -256,7 +256,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-16
 **Verifies:** cockpit-views#ac:repositories-merge-across-machines, cockpit-views#ac:repository-actions-follow-configuration, cockpit-views#ac:repositories-sort-presets, cockpit-views#ac:repositories-quick-filters, cockpit-views#ac:repository-detail-loads-branches-lazily, cockpit-views#ac:default-sorts
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build the Repositories page (merged per identity, machine chips with cached age and stale mark, icon actions, the Recent, Most worktrees and Most branches sort presets, chips including `index` and `errors`), the repository panel and `/repositories/:host/:owner/:name` with lazily loaded branches from task 1's route (stubbed), and the repository "Copy command" list. Detail pages are lazy chunks; no edit to the routes, tabs or shared fixtures.
 

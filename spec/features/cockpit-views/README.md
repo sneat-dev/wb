@@ -486,7 +486,9 @@ external-link icon, to `remote_url_web`, shown only when that field is present),
 with `rel="noopener noreferrer"` on every external link. There is no text "Code"
 link. The chip `index` means the code index is `stale`, `diverged` or `failed`; the
 chip `errors` leaves repositories with a scan error. The other quick filters are
-those of REQ:filter-vocabulary.
+those of REQ:filter-vocabulary. That is eight columns and an actions cell, and
+REQ:default-columns-are-few allows seven: the list drops the quietest first, Agents
+then PRs, whose counts and links are then the panel's, and a narrow list drops more.
 
 #### REQ: repository-detail
 
@@ -496,7 +498,9 @@ facts, worktrees and branches; the code-index panel; the README for an owner, as
 [cockpit](../cockpit/README.md) defines; and the "Raw data" block. Repository ids
 that worked before this Feature keep working. Branches load lazily from
 `GET /api/v1/cockpit/branches` when the page or panel opens, and while they load
-the section shows skeleton rows.
+the section shows skeleton rows. The first machine's section is open, and reads its
+checkout's branches, when the page or panel opens; another machine's section reads its own
+when it is opened.
 
 ### Worktrees
 
