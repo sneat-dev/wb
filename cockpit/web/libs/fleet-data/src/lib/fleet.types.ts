@@ -29,10 +29,14 @@ export interface Machine extends Entry {
   transport?: 'http' | 'ssh'
   /** Why the last live export failed (a code of REMOTE_ERRORS); unknown codes are tolerated. */
   remote_error?: string
+  /** How many entries the live export left out (over a bound); above zero is a Fleet health line. Absent: not reported. */
+  export_dropped?: number
 }
 
 /** The typed codes of a machine's `remote_error` (REQ:remote-error-is-visible). */
 export const REMOTE_ERRORS = [
+  'remote_warming_up',
+  'export_too_large',
   'http_unavailable',
   'http_auth_failed',
   'ssh_unavailable',
@@ -137,7 +141,8 @@ export interface Branch extends Entry {
 }
 
 /** The merge states a pull request entry can carry. */
-export type Mergeable = 'clean' | 'blocked' | 'dirty' | 'behind' | 'unstable' | 'has_hooks' | 'draft' | 'unknown'
+export const MERGEABLE_STATES = ['clean', 'blocked', 'dirty', 'behind', 'unstable', 'has_hooks', 'draft', 'unknown'] as const
+export type Mergeable = (typeof MERGEABLE_STATES)[number]
 
 /** The pull request states of REQ:pull-request-fields; `draft` is an open draft. */
 export type PullRequestState = 'open' | 'merged' | 'closed' | 'draft'
@@ -166,7 +171,8 @@ export interface PullRequest extends Entry {
 }
 
 /** What a herdr-backed session is doing (REQ:agent-activity); absent: not reported. */
-export type AgentActivity = 'working' | 'blocked' | 'idle' | 'done' | 'unknown'
+export const AGENT_ACTIVITIES = ['working', 'blocked', 'idle', 'done', 'unknown'] as const
+export type AgentActivity = (typeof AGENT_ACTIVITIES)[number]
 
 /** The terminal states of a dispatched run, plus `running`. */
 export type RunState = 'running' | 'completed' | 'failed' | 'timeout' | 'abandoned'
@@ -191,11 +197,27 @@ export interface Agent extends Entry {
   finished_at?: string
 }
 
-/** The landed-task throughput block (REQ:throughput-block); omitted when no record has both timestamps. */
+/** One UTC day of the throughput block: the tasks finished and dropped that day; `landed` (a subset of `finished`) only when above zero. */
+export interface ThroughputDay {
+  date: string
+  finished: number
+  dropped: number
+  landed?: number
+}
+
+/**
+ * The sealed-work throughput block (REQ:throughput-block); omitted when no record is usable. `per_day` lists only
+ * the days with a sealing, `landed_at` of a slowest entry is the time the task was sealed.
+ */
 export interface Throughput {
   window_days: number
-  per_day: { date: string; landed: number }[]
+  per_day: ThroughputDay[]
   slowest: { task: string; duration_seconds: number; landed_at: string }[]
+  /** Median and 90th percentile (nearest rank) of the finished durations; absent when no task finished. */
+  median_seconds?: number
+  p90_seconds?: number
+  /** True only when a safety bound cut the scan. */
+  capped?: boolean
 }
 
 export interface FleetDocument {
@@ -216,7 +238,10 @@ export interface FleetDocument {
   /** No `branches` collection since schema 2: see BranchesResponse. */
   pull_requests: PullRequest[]
   agents: Agent[]
+  /** The agents of a machine are capped; true when some were left out. */
   agents_truncated?: boolean
+  /** True when the pull request watcher was rate-limited, so some observations are older than usual. */
+  pull_requests_throttled?: boolean
   throughput?: Throughput
 }
 
