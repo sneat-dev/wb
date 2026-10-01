@@ -17,6 +17,11 @@ describe('WorktreesPage', () => {
     ])
   })
 
+  it('links each worktree to its page', async () => {
+    const { root } = await openPage('/worktrees', WorktreesPage)
+    expect([...root.querySelectorAll('a.row-link')].map((link) => link.getAttribute('href'))).toEqual(['/worktrees/w1', '/worktrees/w2', '/worktrees/w3'])
+  })
+
   // cockpit#ac:code-index-freshness-appears
   it('shows fresh, stale with its count, and never, and a dash when not known', async () => {
     const withIndex = (id: string, code_index?: CodeIndex[]) => ({ ...worktree(id, 'r1', 'alpha'), code_index })

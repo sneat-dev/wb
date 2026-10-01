@@ -1,5 +1,9 @@
 import {
+  OWNER_SESSION_COMMAND,
+  canReadContent,
   codeBrowserLink,
+  codeIndexView,
+  readmeFailureText,
   codeIndexText,
   agentLabel,
   emptyDocument,
@@ -169,5 +173,65 @@ describe('mostRecentWorktrees', () => {
     expect(mostRecentWorktrees(rows, 3).map((w) => w.id)).toEqual(['new', 'mid', 'old'])
     expect(mostRecentWorktrees(rows, 10).map((w) => w.id)).toEqual(['new', 'mid', 'old', 'none'])
     expect(rows[0].id).toBe('none')
+  })
+})
+
+describe('canReadContent', () => {
+  it('is true only for a session that holds the content capability', () => {
+    const session = { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: '' }
+    expect(canReadContent(session)).toBe(true)
+    expect(canReadContent({ ...session, principal: 'anonymous-local', capabilities: ['fleet.read'] })).toBe(false)
+    expect(canReadContent(null)).toBe(false)
+  })
+})
+
+describe('codeIndexView', () => {
+  const local = repository('r1', 'alpha')
+  const stats = { indexed: true, files: 12, symbols: 40, edges: 90, kinds: [{ kind: 'function', count: 40 }] }
+  const state = (statistics?: typeof stats | { indexed: false; files: 0; symbols: 0; edges: 0; kinds: []; error?: string }) =>
+    [{ indexer: 'codegrapher', state: 'fresh' as const, statistics }]
+
+  it('says unknown for another machine, whatever the provider', () => {
+    expect(codeIndexView(repository('r2', 'beta', { route: 'cached' }), undefined, 'codegrapher')).toEqual({ kind: 'unknown' })
+  })
+
+  it('says no provider when the document names none', () => {
+    expect(codeIndexView(local, state(stats), undefined)).toEqual({ kind: 'none' })
+    expect(codeIndexView(local, undefined, '')).toEqual({ kind: 'none' })
+  })
+
+  it('shows the statistics of an indexed checkout', () => {
+    expect(codeIndexView(local, state(stats), 'codegrapher')).toEqual({ kind: 'indexed', statistics: stats })
+  })
+
+  it('says not indexed for a checkout with no statistics, or one the provider found no index for', () => {
+    expect(codeIndexView(local, undefined, 'codegrapher')).toEqual({ kind: 'not-indexed' })
+    expect(codeIndexView(local, state(), 'codegrapher')).toEqual({ kind: 'not-indexed' })
+    expect(codeIndexView(local, state({ indexed: false, files: 0, symbols: 0, edges: 0, kinds: [] }), 'codegrapher')).toEqual({ kind: 'not-indexed' })
+  })
+
+  it('carries the failure code of a provider that could not answer', () => {
+    const failed = { indexed: false as const, files: 0 as const, symbols: 0 as const, edges: 0 as const, kinds: [] as [], error: 'provider_timeout' }
+    expect(codeIndexView(local, state(failed), 'codegrapher')).toEqual({ kind: 'failed', code: 'provider_timeout' })
+  })
+})
+
+describe('readmeFailureText', () => {
+  it('names the command that opens an owner session when the read is refused', () => {
+    expect(OWNER_SESSION_COMMAND).toBe('wb cockpit')
+    for (const status of [401, 403]) expect(readmeFailureText(status, '')).toContain('`wb cockpit`')
+  })
+
+  it('has a sentence for each short code the daemon answers', () => {
+    expect(readmeFailureText(403, 'readme_not_a_regular_file')).toContain('not a regular file')
+    expect(readmeFailureText(404, 'readme_not_found')).toContain('no README.md')
+    expect(readmeFailureText(404, 'default_branch_unknown')).toContain('default branch')
+    expect(readmeFailureText(404, 'unknown_repository')).toContain('not on this machine')
+    expect(readmeFailureText(413, 'readme_too_large')).toContain('1 MiB')
+    expect(readmeFailureText(503, 'git_too_old')).toContain('Git is too old')
+  })
+
+  it('falls back to the status for anything else', () => {
+    expect(readmeFailureText(500, 'read_failed')).toBe('The README could not be read (status 500).')
   })
 })

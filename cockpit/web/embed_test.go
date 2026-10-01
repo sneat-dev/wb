@@ -247,6 +247,16 @@ func TestEndToEndServerSendsTheDaemonsPolicy(t *testing.T) {
 	}
 }
 
+// Untrusted README content is rendered in this origin: no image may load from
+// another origin or from a data: URL (cockpit#ac:hostile-readme-is-inert).
+func TestPolicyAllowsImagesFromTheOwnOriginOnly(t *testing.T) {
+	t.Parallel()
+	policy := PolicyFor("n")
+	if !strings.Contains(policy, "img-src 'self';") || strings.Contains(policy, "data:") || strings.Contains(policy, "https:") {
+		t.Fatalf("policy = %q, want img-src 'self' alone", policy)
+	}
+}
+
 func TestFreshPolicyIsThePageShapeWithANewNonceEachTime(t *testing.T) {
 	t.Parallel()
 	first, second := FreshPolicy(), FreshPolicy()

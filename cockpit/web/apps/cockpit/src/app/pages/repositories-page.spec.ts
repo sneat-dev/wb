@@ -31,6 +31,11 @@ describe('RepositoriesPage', () => {
     expect(bodyRows(root).map((row) => row[6])).toEqual(['stale, 3 behind', 'never', '—', 'fresh 5 min ago'])
   })
 
+  it('links each repository to its page', async () => {
+    const { root } = await openPage('/repositories', RepositoriesPage)
+    expect([...root.querySelectorAll('a.row-link')].map((link) => link.getAttribute('href'))).toEqual(['/repositories/r1', '/repositories/r2'])
+  })
+
   it('keeps only the machine named in the URL query', async () => {
     const { root, component } = await openPage('/repositories?machine=mach-beta', RepositoriesPage)
     expect(bodyRows(root).map((row) => row[0])).toEqual(['acme/r2'])

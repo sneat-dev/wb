@@ -1,5 +1,5 @@
 import { Injectable, InjectionToken, inject } from '@angular/core'
-import { FLEET_PATH, FleetDocument, SESSION_PATH, Session } from './fleet.types'
+import { FLEET_PATH, FleetDocument, README_PATH, SESSION_PATH, Session } from './fleet.types'
 
 /** The fetch the client uses; tests replace it, so no test needs a network. */
 export const FETCH = new InjectionToken<typeof fetch>('fetch', {
@@ -27,6 +27,17 @@ export class FleetFormatError extends Error {
   constructor() {
     super('The daemon sent a fleet document this page cannot read; showing the last good one.')
     this.name = 'FleetFormatError'
+  }
+}
+
+/** A README read that was answered with other than 200: the status and the daemon's short error code ('' when it sent none). */
+export class ReadmeRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(`The daemon answered the README request with status ${status}.`)
+    this.name = 'ReadmeRequestError'
   }
 }
 
@@ -71,5 +82,23 @@ export class FleetClient {
     })
     if (!response.ok) throw new FleetRequestError(response.status)
     return (await response.json()) as Session
+  }
+
+  /**
+   * Reads a repository's README as Markdown text: the owner-only route, so
+   * callers ask only with an owner session. The text is untrusted.
+   */
+  async readReadme(repository: string): Promise<string> {
+    const response = await this.fetcher(`${README_PATH}?repository=${encodeURIComponent(repository)}`, {
+      headers: { Accept: 'text/markdown' },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null)
+      const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['error'] : undefined
+      throw new ReadmeRequestError(response.status, typeof code === 'string' ? code : '')
+    }
+    return response.text()
   }
 }

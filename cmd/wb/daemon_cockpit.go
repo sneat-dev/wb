@@ -42,7 +42,9 @@ func registerCockpitFleet(server *cockpit.Server, options cockpitfleet.Options) 
 // DefaultDispatcher), so this daemon's own XDG_STATE_HOME and home are honoured
 // exactly as the worker's are. The machine is named after the
 // remote section's machine, else after hostname's answer ("local" when it has
-// none). cockpit.refresh_interval, when set, is the refresh interval.
+// none). cockpit.refresh_interval, when set, is the refresh interval, and
+// cockpit.code_index_provider, when set, names the provider that reports the
+// statistics of each checkout's index (the snapshotter alone asks it).
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(logs, "wb: "+format+"\n", args...) }
 	machine, err := hostname()
@@ -63,6 +65,9 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	local := cockpitfleet.LocalCollectors{
 		ProjectsRoot: projectsRoot, Home: home, IndexCachePath: filepath.Join(home, "cockpit-fleet-index.json"),
 		CodeIndex: &cockpitfleet.LocalCodeIndex{Reader: lifecyclehooks.NewFreshnessReader(lifecyclehooks.Dispatcher{ConfigPath: configPath})},
+	}
+	if config.CodeIndexProvider == wbconfig.CodeIndexProviderCodeGrapher {
+		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,

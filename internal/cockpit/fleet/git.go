@@ -115,8 +115,18 @@ func gitOutput(ctx context.Context, binary, dir string, args ...string) ([]byte,
 // killed when ctx ends, and its pipes are abandoned after gitWaitDelay, so a
 // descendant that holds stdout open cannot keep the call from returning.
 func gitOutputLimited(ctx context.Context, binary, dir string, limit int, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, binary, gitArguments(dir, args)...)
-	command.Env = gitEnvironment(os.Environ())
+	return runCapped(ctx, binary, gitEnvironment(os.Environ()), limit, gitArguments(dir, args))
+}
+
+// runCapped runs binary with args and env, in its own process group, and
+// returns its standard output, up to limit bytes: past it the command is
+// stopped and errGitOutputTooLarge returned. The group is killed when ctx ends,
+// and the pipes are abandoned after gitWaitDelay. Standard input is empty and
+// standard error is discarded, so what a command prints to it, which can carry
+// a path, never comes back. A non-zero exit is an exitError.
+func runCapped(ctx context.Context, binary string, env []string, limit int, args []string) ([]byte, error) {
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Env = env
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
 	command.WaitDelay = gitWaitDelay

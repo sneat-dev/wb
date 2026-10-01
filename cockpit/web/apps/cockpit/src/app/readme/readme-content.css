@@ -1,0 +1,49 @@
+.readme-content {
+  max-width: 60rem;
+  overflow-wrap: anywhere;
+}
+
+.readme-content pre {
+  overflow-x: auto;
+  padding: 0.5rem 0.75rem;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+  border-radius: 4px;
+}
+
+.readme-content pre.raw-html {
+  border-left: 3px solid var(--p-content-border-color, #bbb);
+  white-space: pre-wrap;
+}
+
+.readme-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+.readme-content blockquote {
+  margin: 0.75rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--p-content-border-color, #bbb);
+  color: var(--p-text-muted-color);
+}
+
+.readme-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.readme-content th,
+.readme-content td {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--p-content-border-color, #ccc);
+}
+
+.readme-content .align-center {
+  text-align: center;
+}
+
+.readme-content .align-right {
+  text-align: right;
+}

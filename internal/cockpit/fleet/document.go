@@ -71,11 +71,46 @@ const (
 // its state, for a stale index the number of commits HEAD is ahead of the
 // receipt (Behind), and the time of the receipt the state was read from, when
 // there is one. Nothing else of a receipt, and no path, reaches the document.
+//
+// Statistics is what the configured code-index provider reported for the
+// checkout when the receipt was written (cockpit#req:code-index-summary): it is
+// present only on the indexer the provider follows, and absent when the
+// provider has not been asked. Statistics appear only for a checkout the
+// configured indexer has a receipt for: the provider's command opens the index
+// read-write and may run Git, which the snapshotter's read-only rule forbids
+// for a checkout WB's hook never indexed (it may hold an index a hostile
+// repository committed).
 type CodeIndex struct {
-	Indexer   string    `json:"indexer"`
-	State     string    `json:"state"`
-	Behind    int       `json:"behind,omitempty"`
-	ReceiptAt time.Time `json:"receipt_at,omitzero"`
+	Indexer    string          `json:"indexer"`
+	State      string          `json:"state"`
+	Behind     int             `json:"behind,omitempty"`
+	ReceiptAt  time.Time       `json:"receipt_at,omitzero"`
+	Statistics *CodeStatistics `json:"statistics,omitempty"`
+	// receiptKey identifies the receipt the state was read from (its commit and
+	// status); it stays inside the daemon and keys the provider's answer.
+	receiptKey string
+}
+
+// CodeStatistics is a code index's statistics, counts only
+// (cockpit#req:code-index-summary): whether the checkout has an index, and when
+// it does the number of files, symbols and edges and the symbols by kind. These
+// are statistics of the index, not counts of Cockpit entities. Error is a short
+// code when the provider could not answer, and then the counts are zero; it is
+// never the text a command printed or a path. Kinds is a list, never null.
+type CodeStatistics struct {
+	Indexed bool        `json:"indexed"`
+	Files   int         `json:"files"`
+	Symbols int         `json:"symbols"`
+	Edges   int         `json:"edges"`
+	Kinds   []KindCount `json:"kinds"`
+	Error   string      `json:"error,omitempty"`
+}
+
+// KindCount is the number of symbols of one kind. The kind is a short
+// lower-case word that matched kindPattern.
+type KindCount struct {
+	Kind  string `json:"kind"`
+	Count int    `json:"count"`
 }
 
 // PullRequestUnknown is the state of a locally recorded pull request: the
@@ -105,20 +140,23 @@ type Entry struct {
 // agents and other machines are still read. AgentsTruncated says the agents
 // were capped.
 type Document struct {
-	SchemaVersion       int           `json:"schema_version"`
-	SnapshotAt          time.Time     `json:"snapshot_at,omitzero"`
-	WarmingUp           bool          `json:"warming_up"`
-	RepositoriesTotal   int           `json:"repositories_total"`
-	RepositoriesScanned int           `json:"repositories_scanned"`
-	Diagnostics         int           `json:"diagnostics"`
-	Error               string        `json:"error,omitempty"`
-	Machines            []Machine     `json:"machines"`
-	Repositories        []Repository  `json:"repositories"`
-	Worktrees           []Worktree    `json:"worktrees"`
-	Branches            []Branch      `json:"branches"`
-	PullRequests        []PullRequest `json:"pull_requests"`
-	Agents              []Agent       `json:"agents"`
-	AgentsTruncated     bool          `json:"agents_truncated,omitempty"`
+	SchemaVersion       int       `json:"schema_version"`
+	SnapshotAt          time.Time `json:"snapshot_at,omitzero"`
+	WarmingUp           bool      `json:"warming_up"`
+	RepositoriesTotal   int       `json:"repositories_total"`
+	RepositoriesScanned int       `json:"repositories_scanned"`
+	Diagnostics         int       `json:"diagnostics"`
+	Error               string    `json:"error,omitempty"`
+	// CodeIndexProvider is the name of the configured code-index provider, or
+	// absent when none is configured, which is a normal state.
+	CodeIndexProvider string        `json:"code_index_provider,omitempty"`
+	Machines          []Machine     `json:"machines"`
+	Repositories      []Repository  `json:"repositories"`
+	Worktrees         []Worktree    `json:"worktrees"`
+	Branches          []Branch      `json:"branches"`
+	PullRequests      []PullRequest `json:"pull_requests"`
+	Agents            []Agent       `json:"agents"`
+	AgentsTruncated   bool          `json:"agents_truncated,omitempty"`
 }
 
 // Machine is this machine or another machine the remote provider has a

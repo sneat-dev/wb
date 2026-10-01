@@ -107,6 +107,10 @@ type Options struct {
 	// StopWait bounds how long stopping waits for a read of the other
 	// machines; zero or less means two seconds.
 	StopWait time.Duration
+	// ProviderTimeout bounds one code-index provider ask and ProviderBudget all
+	// the asks of one repository's read; zero or less means 20 s and 2 min.
+	ProviderTimeout time.Duration
+	ProviderBudget  time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// Tick delivers the refresh ticks for an interval and a function that
@@ -156,6 +160,8 @@ type Snapshotter struct {
 	workers           int
 	repositoryTimeout time.Duration
 	stopWait          time.Duration
+	providerTimeout   time.Duration
+	providerBudget    time.Duration
 	now               func() time.Time
 	tick              func(time.Duration) (<-chan time.Time, func())
 	fingerprint       func(string) (string, error)
@@ -195,7 +201,7 @@ func New(options Options) *Snapshotter {
 	snapshotter := &Snapshotter{
 		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, collectors: options.Collectors,
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
-		stopWait: options.StopWait, now: options.Now, tick: options.Tick,
+		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
 		repos: map[string]*repoState{},
 	}
@@ -210,6 +216,12 @@ func New(options Options) *Snapshotter {
 	}
 	if snapshotter.stopWait <= 0 {
 		snapshotter.stopWait = defaultStopWait
+	}
+	if snapshotter.providerTimeout <= 0 {
+		snapshotter.providerTimeout = defaultProviderTimeout
+	}
+	if snapshotter.providerBudget <= 0 {
+		snapshotter.providerBudget = defaultProviderBudget
 	}
 	if snapshotter.now == nil {
 		snapshotter.now = time.Now
@@ -429,8 +441,10 @@ func hostOfIdentity(identity string) string {
 // codeIndexOf is the code-index state of a repository's checkouts. Its Git
 // state is read again only when Git state was just read or the receipts, the
 // queue or the checkouts for it are not what the held state was computed
-// from; otherwise the held state is reused and no Git command runs.
-func (s *Snapshotter) codeIndexOf(ctx context.Context, held repoState, recorded []recordedWorktree, gitRead bool) (key string, indexed bool, index localCodeIndex) {
+// from, or a provider answer is still owed; otherwise the held state is reused
+// and no Git command runs. ctx is the repository's Git budget and parent the
+// pass's context, from which the provider's own budget is derived.
+func (s *Snapshotter) codeIndexOf(ctx, parent context.Context, held repoState, recorded []recordedWorktree, gitRead bool) (key string, indexed bool, index localCodeIndex) {
 	pass := s.codeIndexPassForRead()
 	if pass == nil {
 		return "", false, localCodeIndex{}
@@ -448,14 +462,86 @@ func (s *Snapshotter) codeIndexOf(ctx context.Context, held repoState, recorded 
 		paths = append(paths, item.linked.Path)
 	}
 	key = pass.Key(identity, paths)
-	if !gitRead && held.indexed && key == held.indexKey {
+	if !gitRead && held.indexed && key == held.indexKey && !held.codeIndex.retry {
 		return key, true, held.codeIndex
 	}
 	var states map[string][]CodeIndex
 	if err := catch(func() error { states, indexed = pass.States(ctx, identity, paths); return nil }); err != nil {
 		return "", false, localCodeIndex{}
 	}
-	return key, indexed, localCodeIndex{repository: states[held.repo.Path], byPath: states}
+	asked, retry := s.attachStatistics(parent, states, held.codeIndex.asked)
+	// The receipt key has done its work; the held states carry only what the
+	// document does.
+	for _, items := range states {
+		for index := range items {
+			items[index].receiptKey = ""
+		}
+	}
+	return key, indexed, localCodeIndex{repository: states[held.repo.Path], byPath: states, asked: asked, retry: retry}
+}
+
+// attachStatistics puts the provider's statistics on the code-index entry of
+// the indexer the provider follows, for each checkout in states, and returns
+// what was answered and whether an answer is still owed.
+//
+// Only a checkout the indexer has a receipt for is asked: the provider's
+// command opens the index read-write and may run Git and scan the tree, which
+// the snapshotter's read-only rule forbids for a checkout WB's hook never
+// indexed (it could hold an index a hostile repository committed). Such a
+// checkout is reported as not indexed and no process starts.
+//
+// A checkout whose receipt (time, commit and status) is the one the held answer
+// was for keeps that answer, so the provider is asked once per receipt, here
+// inside the fingerprint-gated read and never on a request. A failed answer is
+// asked again on later passes, at most maxProviderAttempts per receipt, then
+// the code stays. An ask that never ran or was cut short by the budget ending
+// records nothing. A checkout no longer in states drops out of the answers.
+func (s *Snapshotter) attachStatistics(parent context.Context, states map[string][]CodeIndex, held map[string]askedStatistics) (asked map[string]askedStatistics, retry bool) {
+	provider := s.collectors.CodeIndexProvider
+	if provider == nil {
+		return nil, false
+	}
+	budget, cancel := context.WithTimeout(parent, s.providerBudget)
+	defer cancel()
+	asked = map[string]askedStatistics{}
+	for path, items := range states {
+		for index := range items {
+			item := &items[index]
+			if item.Indexer != provider.Indexer() {
+				continue
+			}
+			if item.ReceiptAt.IsZero() {
+				item.Statistics = &CodeStatistics{Kinds: []KindCount{}}
+				continue
+			}
+			previous, found := held[path]
+			same := found && previous.receipt.Equal(item.ReceiptAt) && previous.key == item.receiptKey
+			if !same || (!previous.final && previous.attempts < maxProviderAttempts) {
+				stats, answered := CodeStatistics{}, false
+				if budget.Err() == nil {
+					stats, answered = askProvider(budget, provider, path, s.providerTimeout)
+				}
+				switch {
+				case answered:
+					attempts := 1
+					if same {
+						attempts = previous.attempts + 1
+					}
+					previous = askedStatistics{receipt: item.ReceiptAt, key: item.receiptKey, stats: stats, attempts: attempts, final: stats.Error == ""}
+					retry = retry || (!previous.final && attempts < maxProviderAttempts)
+				case same:
+					retry = true
+				default:
+					retry = true
+					continue
+				}
+			}
+			asked[path] = previous
+			statistics := previous.stats
+			item.Statistics = &statistics
+		}
+	}
+	return asked, retry
 }
 
 // track makes the repositories discovered the ones the snapshotter holds,
@@ -651,7 +737,7 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 	}); readErr == nil {
 		readErr = recordErr
 	}
-	indexKey, indexed, codeIndex := s.codeIndexOf(ctx, held, recorded, gitRead)
+	indexKey, indexed, codeIndex := s.codeIndexOf(ctx, parent, held, recorded, gitRead)
 	errCode := ""
 	if readErr != nil {
 		errCode = ErrorReadFailed
@@ -764,6 +850,9 @@ func (s *Snapshotter) publishLocked() {
 		document.Error = ErrorGitTooOld
 	}
 	document.RepositoriesTotal = len(s.repos)
+	if provider := s.collectors.CodeIndexProvider; provider != nil {
+		document.CodeIndexProvider = provider.Name()
+	}
 	document.AgentsTruncated = s.truncated
 	ids := make([]string, 0, len(s.repos))
 	idsBySlug := map[string][]string{}

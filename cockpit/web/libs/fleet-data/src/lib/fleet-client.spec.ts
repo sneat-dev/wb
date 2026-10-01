@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing'
-import { FETCH, FleetClient, FleetFormatError, FleetRequestError, FleetRead, isFleetDocument } from './fleet-client'
+import { FETCH, FleetClient, FleetFormatError, FleetRequestError, FleetRead, ReadmeRequestError, isFleetDocument } from './fleet-client'
 import { fleetDocument } from './test-data'
 
 function respond(status: number, body: unknown, etag?: string): Response {
@@ -87,5 +87,28 @@ describe('FleetClient', () => {
     TestBed.configureTestingModule({})
     expect(await TestBed.inject(FleetClient).readFleet()).toMatchObject({ etag: '"g"' })
     global.mockRestore()
+  })
+
+  // cockpit#ac:readme-needs-owner
+  it('reads a README as text from the owner route, naming the repository in the query', async () => {
+    const fetcher = vi.fn(async () => new Response('# Title\n', { status: 200, headers: { 'Content-Type': 'text/markdown' } }))
+    expect(await clientWith(fetcher).readReadme('repo/a b')).toBe('# Title\n')
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/readme?repository=repo%2Fa%20b', {
+      headers: { Accept: 'text/markdown' },
+      credentials: 'same-origin',
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('fails a README read with the status and the daemon short code, or none when it sent none', async () => {
+    const failure = async (response: Response) => (await clientWith(async () => response).readReadme('r').catch((error: unknown) => error)) as ReadmeRequestError
+    const refused = await failure(new Response(JSON.stringify({ error: 'readme_not_found' }), { status: 404 }))
+    expect(refused).toBeInstanceOf(ReadmeRequestError)
+    expect([refused.status, refused.code]).toEqual([404, 'readme_not_found'])
+    expect(refused.message).toContain('404')
+    for (const body of ['not json', '"text"', 'null', JSON.stringify({ error: 5 }), JSON.stringify({})]) {
+      const other = await failure(new Response(body, { status: 500 }))
+      expect([other.status, other.code]).toEqual([500, ''])
+    }
   })
 })

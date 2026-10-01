@@ -295,6 +295,27 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	}
 }
 
+// TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed covers the
+// provider the daemon hands the snapshotter: none by default, which the
+// document reports, and CodeGrapher, following the configured indexer, when
+// cockpit.code_index_provider names it. Nothing here runs it.
+func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testing.T) {
+	t.Parallel()
+	host := func() (string, error) { return "the-host", nil }
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	none := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, wbconfig.DefaultCockpitConfig(), io.Discard, host)
+	if none.Collectors.CodeIndexProvider != nil {
+		t.Errorf("a provider with none configured = %+v", none.Collectors.CodeIndexProvider)
+	}
+	config := wbconfig.DefaultCockpitConfig()
+	config.CodeIndexProvider, config.CodeIndexIndexer = wbconfig.CodeIndexProviderCodeGrapher, "code-graph"
+	named := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, config, io.Discard, host)
+	provider := named.Collectors.CodeIndexProvider
+	if provider == nil || provider.Name() != "codegrapher" || provider.Indexer() != "code-graph" {
+		t.Errorf("the configured provider = %+v", provider)
+	}
+}
+
 // TestCockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithoutNetworkOrWrites
 // builds the snapshotter from the daemon's own options for a remote section
 // whose local state clone exists and whose origin could not be reached: it reads

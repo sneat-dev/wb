@@ -446,7 +446,9 @@ func jsonFields(value any) []string {
 				continue
 			}
 			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-			names = append(names, name)
+			if name != "" {
+				names = append(names, name)
+			}
 		}
 	}
 	walk(reflect.TypeOf(value))

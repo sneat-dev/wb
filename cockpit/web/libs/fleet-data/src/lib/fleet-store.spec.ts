@@ -40,6 +40,20 @@ describe('FleetStore', () => {
     expect(store.repositoryName('r-gone')).toBe('r-gone')
     expect(store.repositoryName(undefined)).toBe('—')
     expect(store.error()).toBeNull()
+    expect(store.sessionStatus()).toBe('ready')
+    expect(store.codeIndexProvider()).toBeUndefined()
+    expect(store.canReadContent()).toBe(false)
+    store.stop()
+  })
+
+  it('exposes the configured provider and whether the session may read content', async () => {
+    const owner: Session = { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: '' }
+    const withProvider: FleetRead = { kind: 'changed', etag: '"p"', document: fleetDocument({ code_index_provider: 'codegrapher' }) }
+    const store = storeWith({ readFleet: async () => withProvider, readSession: async () => owner })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.codeIndexProvider()).toBe('codegrapher')
+    expect(store.canReadContent()).toBe(true)
     store.stop()
   })
 
@@ -95,6 +109,7 @@ describe('FleetStore', () => {
     store.start()
     await vi.advanceTimersByTimeAsync(0)
     expect(store.session()).toBeNull()
+    expect(store.sessionStatus()).toBe('failed')
     expect(store.codeBrowserUrl()).toBeUndefined()
     store.stop()
   })
@@ -151,12 +166,14 @@ describe('FleetStore', () => {
     store.start()
     await vi.advanceTimersByTimeAsync(0)
     expect(readSession).toHaveBeenCalledTimes(1)
+    expect(store.sessionStatus()).toBe('failed')
     await vi.advanceTimersByTimeAsync(100)
     expect(readSession).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(100)
     expect(readSession).toHaveBeenCalledTimes(2)
     release(session)
     await vi.advanceTimersByTimeAsync(100)
+    expect(store.sessionStatus()).toBe('ready')
     expect(store.codeBrowserUrl()).toBe('https://c.test/')
     expect(readSession).toHaveBeenCalledTimes(2)
     store.stop()

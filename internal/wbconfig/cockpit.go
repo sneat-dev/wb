@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,7 +34,20 @@ type CockpitConfig struct {
 	// RefreshInterval is how often the daemon refreshes the fleet snapshot.
 	// Zero means unset: the consumer chooses its default.
 	RefreshInterval time.Duration
+	// CodeIndexProvider names the code-index provider whose statistics the
+	// panels show; empty means none is configured, which is a normal state.
+	CodeIndexProvider string
+	// CodeIndexIndexer is the hooks executor whose receipts the provider
+	// follows; empty means the provider's own default.
+	CodeIndexIndexer string
 }
+
+// CodeIndexProviderCodeGrapher is the one code-index provider there is.
+const CodeIndexProviderCodeGrapher = "codegrapher"
+
+// codeIndexIndexerName is what the lifecycle-hook worker allows an executor to
+// be called.
+var codeIndexIndexerName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // cockpitSection is the keys cockpit: may hold; an unknown key is an error.
 type cockpitSection struct {
@@ -41,6 +55,8 @@ type cockpitSection struct {
 	CodeBrowserURL    *string `yaml:"code_browser_url"`
 	AnonymousMetadata *bool   `yaml:"anonymous_metadata"`
 	RefreshInterval   *string `yaml:"refresh_interval"`
+	CodeIndexProvider *string `yaml:"code_index_provider"`
+	CodeIndexIndexer  *string `yaml:"code_index_indexer"`
 }
 
 // DefaultCockpitConfig is the section's value when wb.yaml sets nothing.
@@ -111,7 +127,31 @@ func parseCockpit(raw []byte) (CockpitConfig, error) {
 		}
 		config.RefreshInterval = interval
 	}
+	if err := parseCockpitCodeIndex(section, &config); err != nil {
+		return CockpitConfig{}, err
+	}
 	return config, nil
+}
+
+// parseCockpitCodeIndex applies the code-index keys: a provider that is known,
+// and an indexer name only beside a provider.
+func parseCockpitCodeIndex(section cockpitSection, config *CockpitConfig) error {
+	if section.CodeIndexProvider != nil {
+		config.CodeIndexProvider = strings.TrimSpace(*section.CodeIndexProvider)
+		if config.CodeIndexProvider != CodeIndexProviderCodeGrapher {
+			return fmt.Errorf("cockpit.code_index_provider must be %q, got %q", CodeIndexProviderCodeGrapher, config.CodeIndexProvider)
+		}
+	}
+	if section.CodeIndexIndexer != nil {
+		config.CodeIndexIndexer = strings.TrimSpace(*section.CodeIndexIndexer)
+		if config.CodeIndexProvider == "" {
+			return errors.New("cockpit.code_index_indexer needs cockpit.code_index_provider")
+		}
+		if !codeIndexIndexerName.MatchString(config.CodeIndexIndexer) {
+			return fmt.Errorf("cockpit.code_index_indexer must be a hooks executor name (lower-case letters, digits and hyphens), got %q", config.CodeIndexIndexer)
+		}
+	}
+	return nil
 }
 
 // LoadCockpit reads the cockpit: section from path. An absent file or section

@@ -172,7 +172,7 @@ tables.
 **Id:** task-8
 **Verifies:** cockpit#ac:readme-needs-owner, cockpit#ac:hostile-readme-is-inert, cockpit#ac:code-index-panel
 **Depends-On:** 4, 6, 7
-**Status:** planning
+**Status:** complete
 
 Render the README as sanitized Markdown on the repository page, with the
 owner-session notice for other callers. Add the code-index provider
