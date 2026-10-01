@@ -1,6 +1,8 @@
 package worktrees
 
 import (
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,7 +57,7 @@ func TestZeroCoverageHelpersBatch2TerminalWrappers(t *testing.T) {
 	}
 
 	plain := testWrapper("plain", func(home string, runDir *os.File, claim workLogClaim) (time.Time, error) {
-		return writeWorkLogTerminal(home, runDir, claim, strings.Repeat("c", 40), "landed", "", "", nil)
+		return sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{Claim: claim, FinalCommit: strings.Repeat("c", 40), Disposition: "landed"})
 	})
 	if plain.DirtyCapture != nil || plain.Supersession != nil {
 		t.Fatalf("plain terminal carried optional evidence: %#v", plain)
@@ -63,17 +65,17 @@ func TestZeroCoverageHelpersBatch2TerminalWrappers(t *testing.T) {
 
 	dirty := &DirtyWorktreeEvidence{SHA256: strings.Repeat("d", 64), Bytes: 12, Files: 2}
 	dirtyTerminal := testWrapper("dirty", func(home string, runDir *os.File, claim workLogClaim) (time.Time, error) {
-		return writeWorkLogTerminalWithDirtyCapture(home, runDir, claim, strings.Repeat("e", 40), "discarded", "", "", nil, dirty)
+		return sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{Claim: claim, FinalCommit: strings.Repeat("e", 40), Disposition: "discarded", Evidence: worktreeclaims.TerminalEvidence{DirtyCapture: dirty}})
 	})
-	if !sameDirtyWorktreeEvidence(dirtyTerminal.DirtyCapture, dirty) {
+	if !worktreeclaims.SameDirtyWorktreeEvidence(dirtyTerminal.DirtyCapture, dirty) {
 		t.Fatalf("dirty terminal evidence = %#v", dirtyTerminal.DirtyCapture)
 	}
 
 	supersession := &SupersessionReceipt{Version: 1, Repository: "acme/app", Task: "coverage", Branch: "wb/coverage"}
 	supersededTerminal := testWrapper("superseded", func(home string, runDir *os.File, claim workLogClaim) (time.Time, error) {
-		return writeWorkLogTerminalWithSupersession(home, runDir, claim, strings.Repeat("f", 40), "superseded", "", "", nil, supersession)
+		return sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{Claim: claim, FinalCommit: strings.Repeat("f", 40), Disposition: "superseded", Evidence: worktreeclaims.TerminalEvidence{Supersession: supersession}})
 	})
-	if !sameSupersessionReceipt(supersededTerminal.Supersession, supersession) {
+	if !worktreeproof.SameSupersessionReceipt(supersededTerminal.Supersession, supersession) {
 		t.Fatalf("superseded terminal evidence = %#v", supersededTerminal.Supersession)
 	}
 }

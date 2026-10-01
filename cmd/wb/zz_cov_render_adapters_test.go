@@ -13,6 +13,8 @@ import (
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCwCovHumanAgeAndPublishedAgo(t *testing.T) {
@@ -352,7 +354,10 @@ func TestCwCovStreamLeaseIdentity(t *testing.T) {
 }
 
 func TestCwCovStreamSessionIdentityWithoutRegistration(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	projects := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, projects)
+	installSessionResolver(testInvocation(t, projects))
+	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
 	if identity := streamSessionIdentity(); identity != "" {
 		t.Fatalf("streamSessionIdentity() = %q, want empty with no registered session", identity)
 	}

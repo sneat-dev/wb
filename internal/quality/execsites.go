@@ -79,7 +79,7 @@ var execSiteAllowedFunctionNames = map[string]bool{
 	"setHooksPathAt": true, "RunSecureHooksGitHelper": true,
 	"runCanonicalGitBytes": true, "RunSecureCanonicalGitHelper": true,
 	"RunSecureCanonicalPolicyGitHelper": true,
-	"runSecureStageHelper":              true, "RunSecureStageGitHelper": true,
+	"runSecureStageHelper":              true, "RunSecureStageGitHelper": true, "runSecureStageGitHelperWithOps": true,
 	"runSecureStageCanonicalGitHelper": true, "RunSecureStageCanonicalGitHelper": true,
 	"runSecureRenameGitBytesWithHeldWorktree": true, "RunSecureRenameGitHelper": true,
 	"runSecureCleanupGitHelper": true, "RunSecureCleanupGitHelper": true,

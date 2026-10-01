@@ -47,8 +47,15 @@ type RunOptions struct {
 	// process invokes it again.
 	GoTestShards int
 	// GoShardPackages are module-relative package patterns such as
-	// ./internal/worktrees. Packages not named here still run exactly once.
+	// ./internal/worktrees. Selected packages not named here still run exactly once.
 	GoShardPackages []string
+	// GoTestPackages limits coverage to these module-relative Go package
+	// patterns. An empty slice retains the default whole-module ./... scope.
+	GoTestPackages []string
+	// ExplicitGoTestSharding records that the caller selected GoTestShards and
+	// GoShardPackages on the command line. Repository policy remains validated
+	// and supplies lint commands, but cannot silently broaden this selection.
+	ExplicitGoTestSharding bool
 	// GoLintCommands replaces the default `go vet ./...` lint step with the
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.
@@ -60,6 +67,10 @@ type RunOptions struct {
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
+	// IncludeE2E merges a separately measured native tier into default coverage.
+	IncludeE2E bool
+	// coverPackages is internal instrumentation scope for a combined run.
+	coverPackages []string
 	// CoverageDiagnosticsDir retains raw output from failed process-isolated
 	// coverage jobs beside the durable coverage report. The human-facing error
 	// remains bounded; this private artifact is the lossless recovery path.

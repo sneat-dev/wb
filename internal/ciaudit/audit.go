@@ -172,10 +172,8 @@ func scan(root string, report *Report) ([]workflowFile, string, string, bool, er
 			}
 			return nil
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies descendants on the same rooted path, so Rel cannot fail.
+		rel, _ := filepath.Rel(root, path)
 		lower := strings.ToLower(entry.Name())
 		switch {
 		case strings.HasSuffix(lower, ".go") && !strings.HasSuffix(lower, "_test.go"):

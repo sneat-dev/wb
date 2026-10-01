@@ -15,6 +15,11 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
 `json`.
 
+`coverage --include-e2e` measures the default tier and native E2E/contract tests
+separately, then merges their actual coverage profiles. It is disabled by default
+and rejected with `--ci` or `--resume`. `coverage baseline --include-e2e` records
+the same tier identity; a mismatched baseline triggers a fresh merge-base run.
+
 `cockpit` also has the command-specific `--listen <host:port>` (loopback only; names the
 address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format` and `--json`.
 
@@ -99,6 +104,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
 | `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree join`, `leave`, `take-ownership`, `transfer-ownership`, `message send`, `message inbox`, `message ack` | yes | rejected | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
 | `pr update` | yes | rejected | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |

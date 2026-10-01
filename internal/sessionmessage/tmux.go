@@ -42,14 +42,18 @@ type osTmux struct {
 }
 
 func newOSTmux() (*osTmux, error) {
-	executable, err := exec.LookPath("tmux")
+	return newOSTmuxWithResolver(exec.LookPath, os.Stat)
+}
+
+func newOSTmuxWithResolver(lookPath func(string) (string, error), stat func(string) (os.FileInfo, error)) (*osTmux, error) {
+	executable, err := lookPath("tmux")
 	if err != nil {
 		return nil, fmt.Errorf("resolve fixed tmux executable for session message: %w", err)
 	}
 	if !filepath.IsAbs(executable) || filepath.Clean(executable) != executable {
 		return nil, fmt.Errorf("resolved tmux executable %q is not one clean absolute path", executable)
 	}
-	info, err := os.Stat(executable)
+	info, err := stat(executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		if err != nil {
 			return nil, fmt.Errorf("inspect fixed tmux executable: %w", err)

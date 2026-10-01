@@ -1,0 +1,760 @@
+package worktreebranches
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"path"
+	"sort"
+	"strings"
+
+	"github.com/sneat-dev/wb/internal/worktreeproof"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
+	"gopkg.in/yaml.v3"
+)
+
+// SupersessionEntry captures only the live identities needed to verify a
+// reviewed replacement against an exact source and fetched target.
+type SupersessionEntry struct {
+	Task, Repository, Branch, Base, HeadSHA, RemoteTargetSHA string
+	CanonicalDir, WorktreeDir                                string
+	OpenPullRequest                                          *PullRequest
+}
+
+// SupersessionPorts supplies read-only observations. The facade retains the
+// worktree, claim, and deletion transactions that consume a verified receipt.
+type SupersessionPorts struct {
+	Git                worktreeproof.GitQuery
+	IsAncestor         func(context.Context, string, string, string) (bool, error)
+	ReadReceipt        func(string) ([]byte, error)
+	ReadCampaignMarker func(string) (bool, error)
+}
+
+type SupersessionService struct{ Ports SupersessionPorts }
+
+// Shared receipt contracts are neutral proof data; branch policy verifies them.
+type SupersessionReceipt = worktreeproof.SupersessionReceipt
+type SupersessionDependencyDelta = worktreeproof.SupersessionDependencyDelta
+type SupersessionReplacement = worktreeproof.SupersessionReplacement
+type SupersessionResidual = worktreeproof.SupersessionResidual
+type SupersessionApproval = worktreeproof.SupersessionApproval
+
+func sortedDependencyDeltas(deltas []SupersessionDependencyDelta) []SupersessionDependencyDelta {
+	return worktreeproof.SortedDependencyDeltas(deltas)
+}
+
+var supersessionClassifications = map[string]bool{
+	"replaced":   true,
+	"obsolete":   true,
+	"regressive": true,
+	"cosmetic":   true,
+}
+
+// SupersessionReceiptForEntry loads and independently verifies one receipt
+// against the current exact source and fetched target identities.
+func (service SupersessionService) SupersessionReceiptForEntry(ctx context.Context, path string, entry SupersessionEntry) (*SupersessionReceipt, string) {
+	contents, err := service.Ports.ReadReceipt(path)
+	if err != nil {
+		return nil, fmt.Sprintf("read supersession receipt %s: %v", path, err)
+	}
+	var receipt SupersessionReceipt
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&receipt); err != nil {
+		return nil, fmt.Sprintf("decode supersession receipt %s: %v", path, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Sprintf("supersession receipt %s contains trailing JSON", path)
+	}
+	if rejection := service.ValidateSupersessionReceipt(ctx, receipt, entry); rejection != "" {
+		return nil, rejection
+	}
+	return &receipt, ""
+}
+
+func (service SupersessionService) ValidateSupersessionReceipt(ctx context.Context, receipt SupersessionReceipt, entry SupersessionEntry) string {
+	if receipt.Version != 1 {
+		return fmt.Sprintf("supersession receipt version %d is unsupported", receipt.Version)
+	}
+	if receipt.Repository != entry.Repository || receipt.Task != entry.Task || receipt.Branch != entry.Branch {
+		return "supersession receipt source identity does not match the live worktree"
+	}
+	if receipt.OriginalHead != entry.HeadSHA {
+		return fmt.Sprintf("supersession receipt original head %s does not match live head %s", receipt.OriginalHead, entry.HeadSHA)
+	}
+	if receipt.Target != entry.Base {
+		return fmt.Sprintf("supersession receipt target %q does not match requested target %q", receipt.Target, entry.Base)
+	}
+	if receipt.TargetHead == "" || receipt.TargetHead != entry.RemoteTargetSHA {
+		return fmt.Sprintf("supersession receipt target head %s does not match exact fetched origin/%s head %s", receipt.TargetHead, entry.Base, entry.RemoteTargetSHA)
+	}
+	if len(receipt.Replacements) == 0 {
+		return "supersession receipt has no replacement PRs or commits"
+	}
+	if rejection := service.ValidateDependencyDeltasReason(ctx, receipt, entry); rejection != "" {
+		return rejection
+	}
+	for index, replacement := range receipt.Replacements {
+		kind := strings.ToLower(strings.TrimSpace(replacement.Kind))
+		if kind != "pr" && kind != "commit" {
+			return fmt.Sprintf("replacement %d has unsupported kind %q", index+1, replacement.Kind)
+		}
+		if strings.TrimSpace(replacement.Ref) == "" && strings.TrimSpace(replacement.SHA) == "" {
+			return fmt.Sprintf("replacement %d has no PR or commit reference", index+1)
+		}
+		if kind == "commit" && !worktreeproof.IsGitObjectID(replacement.SHA) {
+			return fmt.Sprintf("replacement %d commit has no valid landed SHA", index+1)
+		}
+		if !worktreeproof.IsGitObjectID(replacement.SHA) {
+			return fmt.Sprintf("replacement %d has no valid landed commit SHA", index+1)
+		}
+		landed, err := service.Ports.IsAncestor(ctx, entry.CanonicalDir, replacement.SHA, entry.RemoteTargetSHA)
+		if err != nil {
+			return fmt.Sprintf("verify replacement %d landed in target: %v", index+1, err)
+		}
+		if !landed {
+			return fmt.Sprintf("replacement %d commit %s is not contained in the exact target", index+1, replacement.SHA)
+		}
+	}
+	if !receipt.ResidualsComplete {
+		return "supersession receipt does not declare a complete residual inventory"
+	}
+	if len(receipt.Residuals) == 0 {
+		return "supersession receipt has no classified residuals"
+	}
+	if receipt.Approval.Actor == "" || !receipt.Approval.Trusted || strings.ToLower(receipt.Approval.Decision) != "approved" || receipt.Approval.ReceiptID == "" || receipt.Approval.ApprovedAt.IsZero() {
+		return "supersession receipt has no complete trusted-reviewer approval"
+	}
+
+	commitsOutput, err := service.Ports.Git(ctx, entry.CanonicalDir, "rev-list", "--reverse", "--end-of-options", entry.RemoteTargetSHA+".."+entry.HeadSHA)
+	if err != nil {
+		return fmt.Sprintf("enumerate original branch commits: %v", err)
+	}
+	original := strings.Fields(commitsOutput)
+	if len(original) == 0 {
+		return "supersession receipt names a branch with no residual commits outside the target"
+	}
+	originalSet := make(map[string]bool, len(original))
+	for _, commit := range original {
+		originalSet[commit] = true
+	}
+	seen := make(map[string]bool, len(receipt.Residuals))
+	for index, residual := range receipt.Residuals {
+		if !worktreeproof.IsGitObjectID(residual.Commit) {
+			return fmt.Sprintf("residual %d has invalid commit %q", index+1, residual.Commit)
+		}
+		if !originalSet[residual.Commit] {
+			return fmt.Sprintf("residual %s is not a commit in the original branch", residual.Commit)
+		}
+		if seen[residual.Commit] {
+			return fmt.Sprintf("residual %s is classified more than once", residual.Commit)
+		}
+		seen[residual.Commit] = true
+		classification := strings.ToLower(strings.TrimSpace(residual.Classification))
+		if !supersessionClassifications[classification] {
+			return fmt.Sprintf("residual %s is unclassified (classification %q)", residual.Commit, residual.Classification)
+		}
+		if strings.TrimSpace(residual.Reason) == "" {
+			return fmt.Sprintf("residual %s has no reviewer reason", residual.Commit)
+		}
+		if !residual.Reviewed {
+			return fmt.Sprintf("residual %s is unreviewed", residual.Commit)
+		}
+		if classification == "replaced" && strings.TrimSpace(residual.ReplacementRef) == "" {
+			return fmt.Sprintf("replaced residual %s has no replacement reference", residual.Commit)
+		}
+	}
+	missing := make([]string, 0)
+	for _, commit := range original {
+		if !seen[commit] {
+			missing = append(missing, commit)
+		}
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return fmt.Sprintf("supersession receipt has unclassified residual commit(s): %s", strings.Join(missing, ", "))
+	}
+	return ""
+}
+
+// ValidateDependencyDeltasReason is called while source and target identities are
+// still the exact ones used for cleanup. Generic worktree receipts retain
+// their existing schema; dependency PR receipts opt into this fail-closed
+// proof boundary.
+func (service SupersessionService) ValidateDependencyDeltasReason(ctx context.Context, receipt SupersessionReceipt, entry SupersessionEntry) string {
+	if strings.TrimSpace(receipt.OriginalPR) == "" {
+		if service.DependencyCampaignWorktree(ctx, entry) {
+			return "dependency campaign supersession requires original_pr and exact dependency delta evidence"
+		}
+		if receipt.DependencyDeltasComplete || len(receipt.DependencyDeltas) > 0 {
+			return "dependency delta evidence requires original_pr"
+		}
+		return ""
+	}
+	if rejection := ValidateAuthoritativeSourcePullRequest(receipt, entry); rejection != "" {
+		return rejection
+	}
+	deltas, rejection := DependencyDeltasForValidation(receipt, entry)
+	if rejection != "" {
+		return rejection
+	}
+	for index, delta := range deltas {
+		prefix := fmt.Sprintf("dependency delta %d", index+1)
+		manifest, err := service.Ports.Git(ctx, entry.CanonicalDir, "show", entry.RemoteTargetSHA+":"+delta.Manifest)
+		if err != nil {
+			return fmt.Sprintf("%s cannot read exact target manifest %q: %v", prefix, delta.Manifest, err)
+		}
+		candidateValues, rejection, _ := directDependencyEvidence(delta, []byte(manifest))
+		if rejection != "" {
+			return prefix + " " + rejection
+		}
+		if rejection := validateObservedDependencyVersions(delta, candidateValues, delta.RequestedAfter, false); rejection != "" {
+			return prefix + " " + rejection
+		}
+		observedCandidate := candidateValues[0]
+		if observedCandidate != delta.CandidateAfter {
+			return fmt.Sprintf("%s candidate manifest value %q does not match recorded candidate %q", prefix, observedCandidate, delta.CandidateAfter)
+		}
+		baseHead, err := service.Ports.Git(ctx, entry.CanonicalDir, "merge-base", delta.SourceHead, receipt.TargetHead)
+		if err != nil {
+			return fmt.Sprintf("%s cannot derive source PR base for before-version proof: %v", prefix, err)
+		}
+		beforeManifest, err := service.Ports.Git(ctx, entry.CanonicalDir, "show", strings.TrimSpace(baseHead)+":"+delta.Manifest)
+		if err != nil {
+			return fmt.Sprintf("%s cannot read source PR base manifest %q at %s: %v", prefix, delta.Manifest, strings.TrimSpace(baseHead), err)
+		}
+		if rejection := ValidateDependencyManifest(delta, []byte(beforeManifest), delta.Before, true); rejection != "" {
+			return prefix + " source PR before-version proof: " + rejection
+		}
+		sourceManifest, err := service.Ports.Git(ctx, entry.CanonicalDir, "show", delta.SourceHead+":"+delta.Manifest)
+		if err != nil {
+			return fmt.Sprintf("%s cannot read exact source PR manifest %q at %s: %v", prefix, delta.Manifest, delta.SourceHead, err)
+		}
+		if rejection := ValidateDependencyManifest(delta, []byte(sourceManifest), delta.RequestedAfter, true); rejection != "" {
+			return prefix + " source PR requested-after proof: " + rejection
+		}
+		applicableLockfile, hasLockfile, err := service.DependencyLockfile(ctx, entry.CanonicalDir, entry.RemoteTargetSHA, delta)
+		if err != nil {
+			return fmt.Sprintf("%s cannot inspect lockfiles for exact manifest %q: %v", prefix, delta.Manifest, err)
+		}
+		if hasLockfile && delta.Lockfile == "" {
+			return fmt.Sprintf("%s is missing resolved lockfile proof for %q", prefix, applicableLockfile)
+		}
+		if delta.Lockfile != "" && !hasLockfile {
+			return fmt.Sprintf("%s names lockfile %q but no applicable lockfile exists for %q", prefix, delta.Lockfile, delta.Manifest)
+		}
+		if delta.Lockfile != "" {
+			if delta.LockfileSelector == "" || delta.LockfileVersion == "" {
+				return fmt.Sprintf("%s lockfile proof is incomplete", prefix)
+			}
+			if delta.Lockfile != applicableLockfile {
+				return fmt.Sprintf("%s lockfile %q is not the exact lockfile for manifest %q (want %q)", prefix, delta.Lockfile, delta.Manifest, applicableLockfile)
+			}
+			lockfile, err := service.Ports.Git(ctx, entry.CanonicalDir, "show", entry.RemoteTargetSHA+":"+delta.Lockfile)
+			if err != nil {
+				return fmt.Sprintf("%s cannot read exact target lockfile %q: %v", prefix, delta.Lockfile, err)
+			}
+			if delta.LockfileVersion != delta.RequestedAfter {
+				return fmt.Sprintf("%s lockfile version %q does not satisfy requested %q", prefix, delta.LockfileVersion, delta.RequestedAfter)
+			}
+			if path.Base(delta.Lockfile) == "yarn.lock" {
+				return fmt.Sprintf("%s lockfile format yarn.lock is unsupported; terminal supersession is refused", prefix)
+			}
+			if !SelectorNamesExactPackage(delta.LockfileSelector, delta.Package) || !LockfileEntryContainsVersion(delta.Ecosystem, delta.Lockfile, lockfile, delta.LockfileSelector, delta.LockfileVersion) {
+				return fmt.Sprintf("%s lockfile does not prove exact selector %q at %q", prefix, delta.LockfileSelector, delta.LockfileVersion)
+			}
+		}
+	}
+	return ""
+}
+
+func DependencyDeltasForValidation(receipt SupersessionReceipt, entry SupersessionEntry) ([]SupersessionDependencyDelta, string) {
+	if !receipt.DependencyDeltasComplete {
+		return nil, "dependency delta evidence is incomplete; terminal supersession is refused"
+	}
+	if len(receipt.DependencyDeltas) == 0 {
+		return nil, "dependency PR supersession has no exact manifest/importer delta"
+	}
+	deltas := sortedDependencyDeltas(receipt.DependencyDeltas)
+	for index, delta := range deltas {
+		prefix := fmt.Sprintf("dependency delta %d", index+1)
+		if delta.SourcePR != receipt.OriginalPR {
+			return nil, fmt.Sprintf("%s source PR %q does not match original PR %q", prefix, delta.SourcePR, receipt.OriginalPR)
+		}
+		if delta.SourceHead != receipt.OriginalHead || delta.SourceHead != entry.HeadSHA {
+			return nil, fmt.Sprintf("%s source head %q does not match exact original head %q (source PR may have been force-updated)", prefix, delta.SourceHead, entry.HeadSHA)
+		}
+		if delta.Consumer != entry.Repository {
+			return nil, fmt.Sprintf("%s consumer %q does not match exact repository %q", prefix, delta.Consumer, entry.Repository)
+		}
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{name: "ecosystem", value: delta.Ecosystem},
+			{name: "package", value: delta.Package},
+			{name: "manifest", value: delta.Manifest},
+			{name: "selector", value: delta.Selector},
+			{name: "before", value: delta.Before},
+			{name: "requested_after", value: delta.RequestedAfter},
+			{name: "candidate_after", value: delta.CandidateAfter},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return nil, fmt.Sprintf("%s is missing %s proof", prefix, field.name)
+			}
+		}
+		if !delta.Reviewed {
+			return nil, fmt.Sprintf("%s is unreviewed", prefix)
+		}
+		if !DependencyVersionSatisfies(delta.Ecosystem, delta.CandidateAfter, delta.RequestedAfter) {
+			return nil, fmt.Sprintf("%s candidate version %q does not satisfy requested %q", prefix, delta.CandidateAfter, delta.RequestedAfter)
+		}
+	}
+	return deltas, ""
+}
+
+// ValidateDependencyDeltas exposes the same fail-closed dependency proof used
+// by supersession cleanup to campaign/report integrations and their tests.
+// Callers must provide the live SupersessionEntry, including authoritative PR data.
+func (service SupersessionService) ValidateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry SupersessionEntry) error {
+	if rejection := service.ValidateDependencyDeltasReason(ctx, receipt, entry); rejection != "" {
+		return fmt.Errorf("%s", rejection)
+	}
+	return nil
+}
+
+func ValidateAuthoritativeSourcePullRequest(receipt SupersessionReceipt, entry SupersessionEntry) string {
+	pr := entry.OpenPullRequest
+	if pr == nil {
+		return "dependency receipt has no authoritative source pull request in the live inventory"
+	}
+	if pr.Number <= 0 || strings.TrimSpace(pr.URL) == "" || strings.TrimSpace(pr.Repository) == "" || strings.TrimSpace(pr.HeadSHA) == "" {
+		return "dependency receipt authoritative source pull request is missing URL, number, repository, or head"
+	}
+	if receipt.OriginalPR != pr.URL {
+		return fmt.Sprintf("dependency receipt original_pr %q does not match authoritative source pull request URL %q", receipt.OriginalPR, pr.URL)
+	}
+	if receipt.OriginalPRNumber <= 0 || receipt.OriginalPRNumber != pr.Number {
+		return fmt.Sprintf("dependency receipt original PR number %d does not match authoritative source pull request number %d", receipt.OriginalPRNumber, pr.Number)
+	}
+	if receipt.OriginalPRRepository == "" || receipt.OriginalPRRepository != pr.Repository || pr.Repository != entry.Repository {
+		return fmt.Sprintf("dependency receipt original PR repository %q does not match authoritative source repository %q", receipt.OriginalPRRepository, pr.Repository)
+	}
+	if receipt.OriginalPRHead == "" || receipt.OriginalPRHead != pr.HeadSHA || pr.HeadSHA != receipt.OriginalHead || pr.HeadSHA != entry.HeadSHA {
+		return fmt.Sprintf("dependency receipt original PR head %q does not match authoritative source head %q", receipt.OriginalPRHead, pr.HeadSHA)
+	}
+	return ""
+}
+
+func (service SupersessionService) DependencyCampaignWorktree(ctx context.Context, entry SupersessionEntry) bool {
+	if strings.HasPrefix(entry.Task, "deps-") || strings.HasPrefix(entry.Branch, "wb/deps/") {
+		return true
+	}
+	if entry.WorktreeDir == "" {
+		return false
+	}
+	campaign, err := service.Ports.ReadCampaignMarker(entry.WorktreeDir)
+	if err == nil && campaign {
+		return true
+	}
+	if entry.CanonicalDir == "" || entry.HeadSHA == "" || entry.RemoteTargetSHA == "" {
+		return false
+	}
+	changed, err := service.Ports.Git(ctx, entry.CanonicalDir, "diff", "--name-only", "--diff-filter=ACMR", entry.RemoteTargetSHA, entry.HeadSHA)
+	if err != nil {
+		// With exact source and target identities present, an unreadable diff
+		// must fail closed instead of allowing a generic terminalization.
+		return true
+	}
+	for _, file := range strings.Fields(changed) {
+		if IsDependencyManifestOrImporter(file) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsDependencyManifestOrImporter(file string) bool {
+	file = path.Clean(strings.TrimSpace(file))
+	base := path.Base(file)
+	switch base {
+	case "package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.sum":
+		return true
+	}
+	return strings.HasPrefix(file, ".github/workflows/") && (strings.HasSuffix(file, ".yml") || strings.HasSuffix(file, ".yaml"))
+}
+
+func (service SupersessionService) DependencyLockfile(ctx context.Context, canonical, target string, delta SupersessionDependencyDelta) (string, bool, error) {
+	contents, err := service.Ports.Git(ctx, canonical, "ls-tree", "-r", "--name-only", target)
+	if err != nil {
+		return "", false, err
+	}
+	manifestDir := path.Dir(delta.Manifest)
+	if manifestDir == "." {
+		manifestDir = ""
+	}
+	var names []string
+	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
+	case "npm":
+		names = []string{"pnpm-lock.yaml", "package-lock.json", "yarn.lock"}
+	case "go":
+		names = []string{"go.sum"}
+	default:
+		return "", false, nil
+	}
+	var best string
+	for _, candidate := range strings.Fields(contents) {
+		base := path.Base(candidate)
+		if !containsString(names, base) {
+			continue
+		}
+		dir := path.Dir(candidate)
+		if dir == "." {
+			dir = ""
+		}
+		if manifestDir != dir && dir != "" && !strings.HasPrefix(manifestDir, dir+"/") {
+			continue
+		}
+		if best == "" || len(dir) > len(path.Dir(best)) || (len(dir) == len(path.Dir(best)) && candidate < best) {
+			best = candidate
+		}
+	}
+	return best, best != "", nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func SelectorNamesExactPackage(selector, packageName string) bool {
+	if selector == packageName {
+		return packageName != ""
+	}
+	for _, lockfile := range []string{"package-lock.json", "pnpm-lock.yaml"} {
+		if _, ok := ParseLockfileSelector("npm", lockfile, selector, packageName); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func LockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, version string) bool {
+	if strings.EqualFold(ecosystem, "go") {
+		for _, line := range strings.Split(contents, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == selector && fields[1] == version {
+				return true
+			}
+		}
+		return false
+	}
+	if path.Base(lockfilePath) == "yarn.lock" {
+		return false
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(contents), &document); err != nil {
+		return false
+	}
+	node := &document
+	if len(node.Content) == 1 {
+		node = node.Content[0]
+	}
+	packageName := SelectorPackageFromLockfileSelector(selector)
+	segments, ok := ParseLockfileSelector(ecosystem, lockfilePath, selector, packageName)
+	if !ok {
+		return false
+	}
+	for _, segment := range segments {
+		if node.Kind != yaml.MappingNode {
+			return false
+		}
+		var next *yaml.Node
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			if node.Content[index].Value == segment {
+				next = node.Content[index+1]
+				break
+			}
+		}
+		if next == nil {
+			return false
+		}
+		node = next
+	}
+	return node.Kind == yaml.ScalarNode && node.Value == version
+}
+
+func SelectorPackageFromLockfileSelector(selector string) string {
+	segments := strings.Split(selector, "|")
+	if len(segments) != 3 {
+		return ""
+	}
+	switch segments[0] {
+	case "packages":
+		return strings.TrimPrefix(segments[1], "node_modules/")
+	case "snapshots":
+		key := strings.TrimPrefix(segments[1], "/")
+		if at := strings.LastIndex(key, "@"); at > 0 {
+			return key[:at]
+		}
+	}
+	return ""
+}
+
+// ParseLockfileSelector accepts only the selectors emitted by the dependency
+// campaign report. Package identity is parsed as a token, never searched as a
+// substring, so nx cannot be proven by nxfoo or @nx/js.
+func ParseLockfileSelector(ecosystem, lockfilePath, selector, packageName string) ([]string, bool) {
+	if !strings.EqualFold(ecosystem, "npm") || packageName == "" {
+		return nil, false
+	}
+	segments := strings.Split(selector, "|")
+	if len(segments) != 3 || segments[2] != "version" {
+		return nil, false
+	}
+	switch path.Base(lockfilePath) {
+	case "package-lock.json":
+		if segments[0] != "packages" || segments[1] != "node_modules/"+packageName {
+			return nil, false
+		}
+	case "pnpm-lock.yaml":
+		if segments[0] != "snapshots" || !strings.HasPrefix(segments[1], "/"+packageName+"@") {
+			return nil, false
+		}
+		// Reject a package token that only matches a prefix of a scoped or
+		// unscoped package key. The required @ delimiter is the grammar bound.
+		if strings.TrimPrefix(segments[1], "/"+packageName+"@") == "" {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	return segments, true
+}
+
+// DependencyVersionSatisfies applies the version semantics of the supported
+// ecosystem instead of treating a requested range as a literal string. npm
+// ranges commonly arrive as ^ or ~ constraints; Go module requirements remain
+// exact versions here. Unknown syntax fails closed.
+func DependencyVersionSatisfies(ecosystem, candidate, requested string) bool {
+	candidate = NormalizeDependencyVersion(candidate)
+	requested = strings.TrimSpace(requested)
+	if requested == "" || candidate == "" {
+		return false
+	}
+	if strings.EqualFold(ecosystem, "go") {
+		return semver.IsValid(candidate) && semver.IsValid(NormalizeDependencyVersion(requested)) && candidate == NormalizeDependencyVersion(requested)
+	}
+	if !strings.EqualFold(ecosystem, "npm") {
+		return candidate == NormalizeDependencyVersion(requested)
+	}
+	for _, alternative := range strings.Split(requested, "||") {
+		if NpmRangeAlternativeSatisfies(candidate, strings.TrimSpace(alternative)) {
+			return true
+		}
+	}
+	return false
+}
+
+func NormalizeDependencyVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if value != "" && value[0] != 'v' {
+		return "v" + value
+	}
+	return value
+}
+
+func NpmRangeAlternativeSatisfies(candidate, requested string) bool {
+	if semver.IsValid(candidate) && semver.IsValid(NormalizeDependencyVersion(requested)) {
+		return semver.Compare(candidate, NormalizeDependencyVersion(requested)) == 0
+	}
+	if strings.HasPrefix(requested, "^") || strings.HasPrefix(requested, "~") {
+		operator, base := requested[:1], NormalizeDependencyVersion(requested[1:])
+		if !semver.IsValid(base) || !semver.IsValid(candidate) || semver.Compare(candidate, base) < 0 {
+			return false
+		}
+		parts := strings.Split(strings.TrimPrefix(base, "v"), ".")
+		if len(parts) != 3 {
+			return false
+		}
+		var upper string
+		if operator == "^" {
+			switch {
+			case parts[0] != "0":
+				upper = "v" + fmt.Sprintf("%d.0.0", MustAtoi(parts[0])+1)
+			case parts[1] != "0":
+				upper = "v0." + fmt.Sprintf("%d.0", MustAtoi(parts[1])+1)
+			default:
+				upper = "v0.0." + fmt.Sprintf("%d", MustAtoi(parts[2])+1)
+			}
+		} else {
+			upper = "v" + parts[0] + "." + fmt.Sprintf("%d.0", MustAtoi(parts[1])+1)
+		}
+		return semver.Compare(candidate, upper) < 0
+	}
+	constraints := strings.Fields(requested)
+	if len(constraints) > 1 {
+		for _, constraint := range constraints {
+			if !NpmComparatorSatisfies(candidate, constraint) {
+				return false
+			}
+		}
+		return true
+	}
+	return NpmComparatorSatisfies(candidate, requested)
+}
+
+func NpmComparatorSatisfies(candidate, constraint string) bool {
+	operator := "="
+	for _, candidateOperator := range []string{"<=", ">=", "<", ">", "="} {
+		if strings.HasPrefix(constraint, candidateOperator) {
+			operator = candidateOperator
+			constraint = strings.TrimSpace(strings.TrimPrefix(constraint, candidateOperator))
+			break
+		}
+	}
+	if strings.ContainsAny(constraint, "xX*") {
+		parts := strings.Split(strings.TrimPrefix(NormalizeDependencyVersion(constraint), "v"), ".")
+		candidateParts := strings.Split(strings.TrimPrefix(candidate, "v"), ".")
+		for index, part := range parts {
+			if part == "x" || part == "X" || part == "*" {
+				break
+			}
+			if index >= len(candidateParts) || part != candidateParts[index] {
+				return false
+			}
+		}
+		return true
+	}
+	version := NormalizeDependencyVersion(constraint)
+	if !semver.IsValid(candidate) || !semver.IsValid(version) {
+		return false
+	}
+	comparison := semver.Compare(candidate, version)
+	switch operator {
+	case "<":
+		return comparison < 0
+	case "<=":
+		return comparison <= 0
+	case ">":
+		return comparison > 0
+	case ">=":
+		return comparison >= 0
+	default:
+		return comparison == 0
+	}
+}
+
+func MustAtoi(value string) int {
+	var result int
+	for _, digit := range value {
+		result = result*10 + int(digit-'0')
+	}
+	return result
+}
+
+type npmDependencyManifest struct {
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+}
+
+func (manifest npmDependencyManifest) directDependencies(field string) (map[string]string, bool) {
+	switch field {
+	case "dependencies":
+		return manifest.Dependencies, true
+	case "devDependencies":
+		return manifest.DevDependencies, true
+	case "peerDependencies":
+		return manifest.PeerDependencies, true
+	case "optionalDependencies":
+		return manifest.OptionalDependencies, true
+	default:
+		return nil, false
+	}
+}
+
+// directDependencyEvidence parses a manifest once and retains every Go
+// requirement for the named module. The validator checks every value, while
+// the reporting accessor preserves its historical first-value result.
+func directDependencyEvidence(delta SupersessionDependencyDelta, contents []byte) (values []string, rejection string, parseErr error) {
+	switch strings.ToLower(strings.TrimSpace(delta.Ecosystem)) {
+	case "npm":
+		var manifest npmDependencyManifest
+		if err := json.Unmarshal(contents, &manifest); err != nil {
+			return nil, fmt.Sprintf("cannot parse npm manifest %q: %v", delta.Manifest, err), err
+		}
+		parts := strings.Split(delta.Selector, ".")
+		if len(parts) != 2 || parts[0] == "" || parts[1] != delta.Package {
+			return nil, fmt.Sprintf("npm selector %q is not the exact direct package selector for %q", delta.Selector, delta.Package), nil
+		}
+		dependencies, direct := manifest.directDependencies(parts[0])
+		if !direct {
+			return nil, fmt.Sprintf("npm selector %q is not a direct dependency field", delta.Selector), nil
+		}
+		value, ok := dependencies[delta.Package]
+		if !ok {
+			return nil, fmt.Sprintf("npm direct package %q is absent from selector %q", delta.Package, delta.Selector), nil
+		}
+		return []string{value}, "", nil
+	case "go":
+		parsed, err := modfile.Parse(delta.Manifest, contents, nil)
+		if err != nil {
+			return nil, fmt.Sprintf("cannot parse Go manifest %q: %v", delta.Manifest, err), err
+		}
+		if delta.Selector != "require:"+delta.Package {
+			return nil, fmt.Sprintf("Go selector %q is not the exact direct require selector for %q", delta.Selector, delta.Package), nil
+		}
+		for _, requirement := range parsed.Require {
+			if requirement.Mod.Path == delta.Package {
+				values = append(values, requirement.Mod.Version)
+			}
+		}
+		if len(values) == 0 {
+			return nil, fmt.Sprintf("Go direct module %q is absent", delta.Package), nil
+		}
+		return values, "", nil
+	default:
+		err := fmt.Errorf("unsupported dependency ecosystem %q", delta.Ecosystem)
+		return nil, err.Error(), err
+	}
+}
+
+func validateObservedDependencyVersions(delta SupersessionDependencyDelta, values []string, expectedVersion string, exact bool) string {
+	for _, value := range values {
+		if exact && value == expectedVersion || !exact && DependencyVersionSatisfies(delta.Ecosystem, value, expectedVersion) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(delta.Ecosystem), "npm") {
+			return fmt.Sprintf("npm direct package %q at %q is %q, want %q", delta.Package, delta.Selector, value, expectedVersion)
+		}
+		return fmt.Sprintf("Go direct module %q is %q, want %q", delta.Package, value, expectedVersion)
+	}
+	return ""
+}
+
+func ValidateDependencyManifest(delta SupersessionDependencyDelta, contents []byte, expectedVersion string, exact bool) string {
+	values, rejection, _ := directDependencyEvidence(delta, contents)
+	if rejection != "" {
+		return rejection
+	}
+	return validateObservedDependencyVersions(delta, values, expectedVersion, exact)
+}
+
+func DependencyManifestValue(delta SupersessionDependencyDelta, contents []byte) (string, bool, error) {
+	values, _, err := directDependencyEvidence(delta, contents)
+	if err != nil || len(values) == 0 {
+		return "", false, err
+	}
+	return values[0], true, nil
+}

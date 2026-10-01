@@ -284,9 +284,10 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
         run: >-
           go run ./cmd/wb coverage .
+          --include-e2e
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=87
+          --minimum=94
           --format json
           --non-interactive
           --timeout 35m
@@ -309,9 +310,10 @@ jobs:
           --baseline-file coverage-baseline.json
           --baseline-timeout 15m
           --timeout 20m
+          --include-e2e
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=87
+          --minimum=94
           --format json
           --non-interactive
       - name: wb ci audit --strict against the PR base branch
@@ -344,7 +346,7 @@ jobs:
           retention-days: 14
       - name: Publish per-package coverage baseline
         if: ${{ github.event_name == 'push' }}
-        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ github.sha }}" --out coverage-baseline.json
+        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ github.sha }}" --include-e2e --out coverage-baseline.json
       - name: Upload coverage baseline artifact
         if: ${{ github.event_name == 'push' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -410,8 +412,9 @@ jobs:
     name: E2E tier (real git)
     needs: [release-eligibility, validation-reuse, go-scope]
     # spec/plans/coverage-to-100/README.md task-24: the e2e tier is a
-    # required job on every PR (founder decision 19), never a source of
-    # coverage (decision 17) -- this job carries no coverage step at all.
+    # required job on every PR (founder decision 19). The coverage job also
+    # measures this tier under the later native-coverage authorization; this
+    # independent job remains its pass/fail contract.
     # It follows the same go-scope/validation-reuse condition as source,
     # static, lint, and race.
     if: >-

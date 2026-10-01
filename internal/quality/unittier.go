@@ -100,7 +100,8 @@ const (
 // Every name below was found in this repository on 2026-09-25 by grepping
 // every function whose body directly invokes exec.Command/exec.CommandContext
 // with a literal "git" argv[0] (production helpers), plus every _test.go
-// helper conventionally named after the same shape. Task-24's Note is that
+// helper conventionally named after the same shape. Later leaf-package entries
+// also include wrappers that reach real Git through gitcli. Task-24's Note is that
 // "the check keeps the full list" -- add a name here, with a short comment
 // naming where it is defined, whenever a new one is found; removing a name
 // is a mechanical no-op once its only caller is gone.
@@ -134,8 +135,8 @@ var UnitTierGitHelperNames = map[string]bool{
 	"localBranchExists":              true, // internal/worktrees/worktrees.go
 	"atomicLocalBranchRename":        true, // internal/worktrees/branches_quarantine.go
 	"mergeResultTree":                true, // internal/worktrees/lifecycle.go
-	"retireGitBytes":                 true, // internal/worktrees/retire.go
-	"retireGitObjectSHA":             true, // internal/worktrees/retire.go
+	"GitBytes":                       true, // internal/worktreeretire/archive.go
+	"GitObjectSHA":                   true, // internal/worktreeretire/archive.go
 
 	// Test-local wrapper helpers: each is defined inside a _test.go file
 	// (so its own exec.Command call already trips UnitTierPatternExecStart

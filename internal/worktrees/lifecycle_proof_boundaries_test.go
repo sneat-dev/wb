@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 type lifecycleGitReply struct {
@@ -38,29 +39,29 @@ func TestLifecycleProofGitOutputParsers(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	parent := strings.Repeat("b", 40)
 
-	branch, err := parseRemoteDefaultBranch("noise\nref: refs/heads/main HEAD\n", func(value string) bool { return value == "main" })
+	branch, err := worktreeproof.ParseRemoteDefaultBranch("noise\nref: refs/heads/main HEAD\n", func(value string) bool { return value == "main" })
 	if err != nil || branch != "main" {
 		t.Fatalf("default branch = %q, %v", branch, err)
 	}
-	if _, err := parseRemoteDefaultBranch("ref: refs/tags/v1 HEAD\n", func(string) bool { return true }); err == nil {
+	if _, err := worktreeproof.ParseRemoteDefaultBranch("ref: refs/tags/v1 HEAD\n", func(string) bool { return true }); err == nil {
 		t.Fatal("tag accepted as the remote default branch")
 	}
-	if _, err := parseRemoteDefaultBranch("ref: refs/heads/bad HEAD\n", func(string) bool { return false }); err == nil {
+	if _, err := worktreeproof.ParseRemoteDefaultBranch("ref: refs/heads/bad HEAD\n", func(string) bool { return false }); err == nil {
 		t.Fatal("invalid remote default branch accepted")
 	}
-	if got, err := parseCommitFirstParent("revision", sha); err != nil || got != "" {
+	if got, err := worktreeproof.ParseCommitFirstParent("revision", sha); err != nil || got != "" {
 		t.Fatalf("root first parent = %q, %v", got, err)
 	}
-	if got, err := parseCommitFirstParent("revision", sha+" "+parent); err != nil || got != parent {
+	if got, err := worktreeproof.ParseCommitFirstParent("revision", sha+" "+parent); err != nil || got != parent {
 		t.Fatalf("first parent = %q, %v", got, err)
 	}
-	if _, err := parseCommitFirstParent("revision", sha+" invalid"); err == nil {
+	if _, err := worktreeproof.ParseCommitFirstParent("revision", sha+" invalid"); err == nil {
 		t.Fatal("invalid first parent accepted")
 	}
-	if got, err := parseCommitTree("revision", sha); err != nil || got != sha {
+	if got, err := worktreeproof.ParseCommitTree("revision", sha); err != nil || got != sha {
 		t.Fatalf("commit tree = %q, %v", got, err)
 	}
-	if _, err := parseCommitTree("revision", "invalid"); err == nil {
+	if _, err := worktreeproof.ParseCommitTree("revision", "invalid"); err == nil {
 		t.Fatal("invalid tree accepted")
 	}
 }
@@ -68,7 +69,7 @@ func TestLifecycleProofGitOutputParsers(t *testing.T) {
 func TestLifecycleProofGitHubBranchReader(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	if _, err := githubPullRequestsForBranch(ctx, "", "invalid", "source", "main"); err == nil {
+	if _, err := landingReceiptService().GitHubPullRequestsForBranch(ctx, "", "invalid", "source", "main"); err == nil {
 		t.Fatal("branch pull-request query accepted an invalid repository")
 	}
 
@@ -163,7 +164,7 @@ func TestLifecycleProofExactReceiptSelection(t *testing.T) {
 	}
 	duplicate := candidate
 	duplicate.Number = 2
-	if _, err := selectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{candidate, duplicate}, "source", "main", head); err == nil {
+	if _, err := landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{candidate, duplicate}, "source", "main", head); err == nil {
 		t.Fatal("ambiguous exact pull-request receipts accepted")
 	}
 	if _, err := exactDeletedTargetDefaultBranchReceipt(context.Background(), "", "acme/app", "source", "main", "invalid"); err == nil {
@@ -172,16 +173,19 @@ func TestLifecycleProofExactReceiptSelection(t *testing.T) {
 	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{{Head: githubRef{SHA: head}, Base: githubRef{Ref: "bad\nbase"}, MergedAt: &mergedAt}}, head, "source"); ok || target != "" {
 		t.Fatalf("invalid replacement target = %q, %t", target, ok)
 	}
+	if receipt := absorbingPullRequest([]githubPullRequest{candidate}, "main"); receipt == nil || receipt.Number != candidate.Number {
+		t.Fatalf("absorbing pull request = %#v", receipt)
+	}
 }
 
 func TestLifecycleProofFetchExactRemotePullRequestHeadFailures(t *testing.T) {
 	t.Parallel()
 	expected := strings.Repeat("a", 40)
 	other := strings.Repeat("b", 40)
-	if _, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 0, expected, nil); err == nil {
+	if _, err := landingReceiptService().FetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 0, expected, nil); err == nil {
 		t.Fatal("non-positive pull request number accepted")
 	}
-	if _, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 1, "invalid", nil); err == nil {
+	if _, err := landingReceiptService().FetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 1, "invalid", nil); err == nil {
 		t.Fatal("invalid expected head accepted")
 	}
 	for _, tc := range []struct {
@@ -225,7 +229,7 @@ func TestLifecycleProofFetchExactRemotePullRequestHeadFailures(t *testing.T) {
 				call++
 				return result.output, result.err
 			}
-			if _, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 1, expected, run); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := landingReceiptService().FetchExactRemotePullRequestHeadWithRun(context.Background(), "repo", 1, expected, run); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("fetch error = %v, want %q", err, tc.want)
 			}
 		})
@@ -269,10 +273,10 @@ func TestLifecycleProofAttestedPullRequestShapes(t *testing.T) {
 		lifecycleGitReply{operation: "rev-parse", output: tree},
 		lifecycleGitReply{operation: "rev-parse", output: tree},
 	)
-	if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, source, merge, "#7", pullRequest); err != nil || rejection != "" {
+	if rejection, err := landingReceiptService().VerifyAttestedSquashPullRequest(ctx, repository, source, merge, "#7", pullRequest); err != nil || rejection != "" {
 		t.Fatalf("squash receipt = %q, %v", rejection, err)
 	}
-	if rejection, err := verifyAttestedMergeCommitPullRequest(context.Background(), repository, merge, merge, "#7", pullRequest); err != nil || rejection != "" {
+	if rejection, err := landingReceiptService().VerifyAttestedMergeCommitPullRequest(context.Background(), repository, merge, merge, "#7", pullRequest); err != nil || rejection != "" {
 		t.Fatalf("merge receipt = %q, %v", rejection, err)
 	}
 	if ok, err := rebaseMergedPullRequestIntegrated(lifecycleGitContext(t, repository,
@@ -295,10 +299,10 @@ func TestLifecycleProofAttestedPullRequestFailures(t *testing.T) {
 	pullRequest := &PullRequest{Number: 7, Base: "main", HeadSHA: pullHead, MergeSHA: merge, Merged: &mergedAt}
 	boom := errors.New("injected proof failure")
 
-	if rejection, err := verifyAttestedSquashPullRequest(context.Background(), repository, source, target, "#7", nil); err != nil || !strings.Contains(rejection, "incomplete") {
+	if rejection, err := landingReceiptService().VerifyAttestedSquashPullRequest(context.Background(), repository, source, target, "#7", nil); err != nil || !strings.Contains(rejection, "incomplete") {
 		t.Fatalf("incomplete squash receipt = %q, %v", rejection, err)
 	}
-	if rejection, err := verifyAttestedMergeCommitPullRequest(context.Background(), repository, source, target, "#7", nil); err != nil || !strings.Contains(rejection, "incomplete") {
+	if rejection, err := landingReceiptService().VerifyAttestedMergeCommitPullRequest(context.Background(), repository, source, target, "#7", nil); err != nil || !strings.Contains(rejection, "incomplete") {
 		t.Fatalf("incomplete merge receipt = %q, %v", rejection, err)
 	}
 
@@ -330,18 +334,18 @@ func TestLifecycleProofAttestedPullRequestFailures(t *testing.T) {
 	for _, tc := range squashCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := verifyAttestedSquashPullRequest(lifecycleGitContext(t, repository, tc.replies...), repository, tc.source, tc.target, "#7", pullRequest); err == nil {
+			if _, err := landingReceiptService().VerifyAttestedSquashPullRequest(lifecycleGitContext(t, repository, tc.replies...), repository, tc.source, tc.target, "#7", pullRequest); err == nil {
 				t.Fatal("squash proof failure was accepted")
 			}
 		})
 	}
 
-	if _, err := verifyAttestedMergeCommitPullRequest(lifecycleGitContext(t, repository,
+	if _, err := landingReceiptService().VerifyAttestedMergeCommitPullRequest(lifecycleGitContext(t, repository,
 		lifecycleGitReply{operation: "merge-base", err: boom},
 	), repository, source, target, "#7", pullRequest); err == nil {
 		t.Fatal("merge-target ancestry failure was accepted")
 	}
-	if _, err := verifyAttestedMergeCommitPullRequest(lifecycleGitContext(t, repository,
+	if _, err := landingReceiptService().VerifyAttestedMergeCommitPullRequest(lifecycleGitContext(t, repository,
 		lifecycleGitReply{operation: "merge-base", err: boom},
 	), repository, source, merge, "#7", pullRequest); err == nil {
 		t.Fatal("source-target ancestry failure was accepted")
@@ -383,9 +387,7 @@ func TestLifecycleProofCleanupBoundaries(t *testing.T) {
 	}
 
 	proofEntry := ListResult{WorktreeDir: "/worktree"}
-	if err := applyMergeReceiptCleanupProof(context.Background(), []MergeReceiptCleanupProof{{SourceWorktree: "/other"}}, &proofEntry); err != nil {
-		t.Fatal(err)
-	}
+	applyMergeReceiptCleanupProof(context.Background(), []MergeReceiptCleanupProof{{SourceWorktree: "/other"}}, &proofEntry)
 	if rejection := mergeReceiptCleanupProofRejection(context.Background(), MergeReceiptCleanupProof{}, proofEntry); !strings.Contains(rejection, "receipt has no") {
 		t.Fatalf("empty receipt rejection = %q", rejection)
 	}
@@ -455,26 +457,26 @@ func TestLifecycleProofRemoteAndCommitFailures(t *testing.T) {
 	if _, err := remoteDefaultBranch(lifecycleGitContext(t, repository, lifecycleGitReply{operation: "ls-remote", err: boom}), repository); err == nil || !strings.Contains(err.Error(), "read origin default branch") {
 		t.Fatalf("remote default failure = %v", err)
 	}
-	if _, err := commitFirstParent(lifecycleGitContext(t, repository, lifecycleGitReply{operation: "rev-list", err: boom}), repository, "revision"); err == nil || !strings.Contains(err.Error(), "resolve parents") {
+	if _, err := worktreeproof.CommitFirstParent(lifecycleGitContext(t, repository, lifecycleGitReply{operation: "rev-list", err: boom}), repository, "revision", git); err == nil || !strings.Contains(err.Error(), "resolve parents") {
 		t.Fatalf("first-parent failure = %v", err)
 	}
 	if _, err := commitTree(lifecycleGitContext(t, repository, lifecycleGitReply{operation: "rev-parse", err: boom}), repository, "revision"); err == nil || !strings.Contains(err.Error(), "resolve tree") {
 		t.Fatalf("tree failure = %v", err)
 	}
-	if _, _, rejection, err := resolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", ""); err != nil || !strings.Contains(rejection, "requires") {
+	if _, _, rejection, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", ""); err != nil || !strings.Contains(rejection, "requires") {
 		t.Fatalf("empty absorbed-by = %q, %v", rejection, err)
 	}
-	if _, _, rejection, err := resolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", "https://github.com/acme/other/pull/1"); err != nil || !strings.Contains(rejection, "not the requested") {
+	if _, _, rejection, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", "https://github.com/acme/other/pull/1"); err != nil || !strings.Contains(rejection, "not the requested") {
 		t.Fatalf("cross-repository absorbed-by = %q, %v", rejection, err)
 	}
-	if _, _, rejection, err := resolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", "#0"); err != nil || !strings.Contains(rejection, "not positive") {
+	if _, _, rejection, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", "#0"); err != nil || !strings.Contains(rejection, "not positive") {
 		t.Fatalf("non-positive absorbed-by = %q, %v", rejection, err)
 	}
 	tooLarge := "https://github.com/acme/app/pull/999999999999999999999999999999999999999999"
-	if _, _, rejection, err := resolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", tooLarge); err != nil || !strings.Contains(rejection, "invalid pull request number") {
+	if _, _, rejection, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), "", repository, "acme/app", "main", tooLarge); err != nil || !strings.Contains(rejection, "invalid pull request number") {
 		t.Fatalf("oversized absorbed-by = %q, %v", rejection, err)
 	}
-	if _, _, rejection, err := resolveAbsorbedBy(lifecycleGitContext(t, repository,
+	if _, _, rejection, err := landingReceiptService().ResolveAbsorbedBy(lifecycleGitContext(t, repository,
 		lifecycleGitReply{operation: "rev-parse", output: "invalid"},
 	), "", repository, "acme/app", "main", "landing"); err != nil || !strings.Contains(rejection, "invalid commit") {
 		t.Fatalf("invalid commit absorbed-by = %q, %v", rejection, err)

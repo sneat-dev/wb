@@ -25,6 +25,81 @@ func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // dqCovSetGoEnv changes process-wide fake-go controls for this subprocess fixture.
+func TestRunCoverageUsesSelectedPackageScope(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	commandLog := filepath.Join(module, "go.log")
+	dqCovSetGoEnv(t, map[string]string{
+		"DQCOV_GO_LOG":           commandLog,
+		"DQCOV_GO_WRITE_PROFILE": "1",
+	})
+	if _, _, err := runCoverageWithOptions(context.Background(), RunOptions{GoTestPackages: []string{"./selected"}}, module, filepath.Join(module, "coverage.out")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command := string(raw); !strings.Contains(command, "./selected") || strings.Contains(command, "./...") {
+		t.Fatalf("go test command = %q, want only selected package", command)
+	}
+}
+
+//nolint:paralleltest // nested cases use dqCovSetGoEnv to change process-wide fake-go controls.
+func TestRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
+	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
+		for name, options := range map[string]RunOptions{
+			"ordinary": {GoTestPackages: []string{pattern}},
+			"sharded":  {GoTestShards: 2, GoShardPackages: []string{"./serial"}, GoTestPackages: []string{pattern}},
+		} {
+			//nolint:paralleltest // dqCovSetGoEnv changes process-wide fake-go controls for each case.
+			t.Run(name+"/"+pattern, func(t *testing.T) {
+				module := t.TempDir()
+				dqCovFakeGo(t, module)
+				commandLog := filepath.Join(module, "go.log")
+				dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LOG": commandLog})
+				if _, _, err := runCoverageWithOptions(context.Background(), options, module, filepath.Join(module, "coverage.out")); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+					t.Fatalf("package %q error = %v, want flag-shaped package rejection", pattern, err)
+				}
+				if _, err := os.Stat(commandLog); !os.IsNotExist(err) {
+					t.Fatalf("flag-shaped package %q started a subprocess: stat log = %v", pattern, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *testing.T) {
+	t.Parallel()
+	if err := ValidateGoCoveragePackagePatterns([]string{"./internal/worktrees", "github.com/sneat-dev/wb/internal/quality"}); err != nil {
+		t.Fatalf("valid package patterns = %v", err)
+	}
+	if err := ValidateGoCoveragePackagePatterns([]string{""}); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty package pattern error = %v", err)
+	}
+}
+
+func TestCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		options RunOptions
+		want    string
+	}{
+		{name: "default scope", want: "go test -coverprofile … ./..."},
+		{name: "selected scope", options: RunOptions{GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two"},
+		{name: "selected sharded scope", options: RunOptions{GoTestShards: 2, GoShardPackages: []string{"./one"}, GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two (2 process-isolated shards for ./one)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := coverageCommandDescription(tc.options); got != tc.want {
+				t.Fatalf("description = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves an explicit
 // logical check deadline (not only the per-shard attempt deadline) terminates
 // the run and is named in the returned error.

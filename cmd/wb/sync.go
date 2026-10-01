@@ -332,8 +332,8 @@ func runSyncPlain(ctx context.Context, repos []discover.Repo, projectsRoot strin
 
 // runSyncTUI runs the worker pool while a bubbletea progress program renders
 // overall + per-org bars and a live tail of in-flight repos.
-func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun, pruneArchived bool, errOut io.Writer) []fleetsync.Result {
-	p := tea.NewProgram(tui.NewProgressModel(orgTotal, workers))
+func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun, pruneArchived bool, errOut io.Writer, programOptions ...tea.ProgramOption) []fleetsync.Result {
+	p := tea.NewProgram(tui.NewProgressModel(orgTotal, workers), programOptions...)
 
 	go func() {
 		jobs := make(chan discover.Repo)

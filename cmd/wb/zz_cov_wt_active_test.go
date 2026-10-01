@@ -362,8 +362,12 @@ func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
 		t.Fatal("listActiveSessions with an unresolvable projects root must fail")
 	}
 
-	// Default dependencies against an empty root.
+	// Default dependencies against an empty root. Isolate the user home too:
+	// the default claim reader includes the retired $HOME/.wb layout.
 	projects := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	t.Setenv(wbhome.EnvOverride, projects)
 	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--local-only")
 	if err != nil {

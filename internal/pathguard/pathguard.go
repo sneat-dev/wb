@@ -233,6 +233,12 @@ func osProbeInjected(path string, inj *filewrite.Injector) error {
 // nearestExistingDirectory returns path itself when it is a directory, else
 // its nearest existing ancestor directory.
 func nearestExistingDirectory(path string) (string, error) {
+	return nearestExistingDirectoryWithStat(path, os.Stat)
+}
+
+// nearestExistingDirectoryWithStat preserves native stat errors while allowing
+// tests to model an unavailable volume root on hosts where all roots exist.
+func nearestExistingDirectoryWithStat(path string, stat func(string) (os.FileInfo, error)) (string, error) {
 	// A symlink at the declared path is refused rather than probed through.
 	// WB never writes state or a store through a symlinked leaf (see
 	// wbhome.EnsureHome), and a dangling one would otherwise be probed through
@@ -243,7 +249,7 @@ func nearestExistingDirectory(path string) (string, error) {
 	}
 	current := filepath.Clean(path)
 	for {
-		info, err := os.Stat(current)
+		info, err := stat(current)
 		if err == nil {
 			if !info.IsDir() {
 				// The declared path exists as a non-directory: WB cannot write

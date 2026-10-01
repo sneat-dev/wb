@@ -119,8 +119,9 @@ func readCoverageProfile(path string) (string, []coverageBlock, error) {
 	if mode != "set" && mode != "count" && mode != "atomic" {
 		return "", nil, fmt.Errorf("unsupported coverage mode %q in %s", mode, path)
 	}
+	// Multi-package -coverpkg output can repeat a source block. Preserve every
+	// occurrence so the merger validates statement identity and combines counts.
 	var blocks []coverageBlock
-	seen := map[string]bool{}
 	for line := 2; scanner.Scan(); line++ {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 3 {
@@ -131,10 +132,6 @@ func readCoverageProfile(path string) (string, []coverageBlock, error) {
 		if statementErr != nil || statements < 0 || countErr != nil || count < 0 {
 			return "", nil, fmt.Errorf("invalid coverage profile %s at line %d", path, line)
 		}
-		if seen[fields[0]] {
-			return "", nil, fmt.Errorf("duplicate coverage block %s in %s", fields[0], path)
-		}
-		seen[fields[0]] = true
 		blocks = append(blocks, coverageBlock{location: fields[0], statements: statements, count: count})
 	}
 	if err := scanner.Err(); err != nil {

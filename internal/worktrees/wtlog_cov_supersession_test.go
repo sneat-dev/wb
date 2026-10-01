@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 func TestWtLogCovDependencyDeltasForValidation(t *testing.T) {
@@ -18,7 +21,7 @@ func TestWtLogCovDependencyDeltasForValidation(t *testing.T) {
 		DependencyDeltasComplete: true, DependencyDeltas: []SupersessionDependencyDelta{valid},
 	}
 	entry := ListResult{Repository: valid.Consumer, HeadSHA: valid.SourceHead}
-	if deltas, rejection := dependencyDeltasForValidation(receipt, entry); rejection != "" || len(deltas) != 1 {
+	if deltas, rejection := worktreebranches.DependencyDeltasForValidation(receipt, supersessionEntry(entry)); rejection != "" || len(deltas) != 1 {
 		t.Fatalf("valid deltas = %#v, %q", deltas, rejection)
 	}
 
@@ -40,7 +43,7 @@ func TestWtLogCovDependencyDeltasForValidation(t *testing.T) {
 			candidate.DependencyDeltas = append([]SupersessionDependencyDelta(nil), receipt.DependencyDeltas...)
 			candidateEntry := entry
 			mutate(&candidate, &candidateEntry)
-			if _, rejection := dependencyDeltasForValidation(candidate, candidateEntry); rejection == "" {
+			if _, rejection := worktreebranches.DependencyDeltasForValidation(candidate, supersessionEntry(candidateEntry)); rejection == "" {
 				t.Fatal("invalid dependency deltas were accepted")
 			}
 		})
@@ -49,7 +52,7 @@ func TestWtLogCovDependencyDeltasForValidation(t *testing.T) {
 	second := valid
 	second.Manifest = "a.json"
 	receipt.DependencyDeltas = []SupersessionDependencyDelta{valid, second}
-	deltas, rejection := dependencyDeltasForValidation(receipt, entry)
+	deltas, rejection := worktreebranches.DependencyDeltasForValidation(receipt, supersessionEntry(entry))
 	if rejection != "" || deltas[0].Manifest != "a.json" || receipt.DependencyDeltas[0].Manifest != "package.json" {
 		t.Fatalf("sorted validation deltas = %#v, original = %#v, rejection = %q", deltas, receipt.DependencyDeltas, rejection)
 	}
@@ -71,7 +74,7 @@ func TestWtLogCovSelectorPackageFromLockfileSelector(t *testing.T) {
 		{"", ""},
 	}
 	for _, tc := range cases {
-		if got := selectorPackageFromLockfileSelector(tc.selector); got != tc.want {
+		if got := worktreebranches.SelectorPackageFromLockfileSelector(tc.selector); got != tc.want {
 			t.Errorf("selectorPackageFromLockfileSelector(%q) = %q, want %q", tc.selector, got, tc.want)
 		}
 	}
@@ -102,7 +105,7 @@ func TestWtLogCovParseLockfileSelector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			segments, ok := parseLockfileSelector(tc.ecosystem, tc.lockfile, tc.selector, tc.packageName)
+			segments, ok := worktreebranches.ParseLockfileSelector(tc.ecosystem, tc.lockfile, tc.selector, tc.packageName)
 			if ok != tc.wantOK {
 				t.Fatalf("parseLockfileSelector(%q,%q,%q,%q) ok = %t, want %t", tc.ecosystem, tc.lockfile, tc.selector, tc.packageName, ok, tc.wantOK)
 			}
@@ -116,34 +119,34 @@ func TestWtLogCovParseLockfileSelector(t *testing.T) {
 func TestWtLogCovLockfileEntryContainsVersion(t *testing.T) {
 	t.Parallel()
 	goSum := "example.com/nx v1.2.3 h1:aaa=\nexample.com/nx v1.2.3/go.mod h1:bbb=\nexample.com/other v9.9.9 h1:ccc=\n"
-	if !lockfileEntryContainsVersion("go", "go.sum", goSum, "example.com/nx", "v1.2.3") {
+	if !worktreebranches.LockfileEntryContainsVersion("go", "go.sum", goSum, "example.com/nx", "v1.2.3") {
 		t.Fatal("go.sum exact module at version was not proven")
 	}
-	if lockfileEntryContainsVersion("go", "go.sum", goSum, "example.com/nx", "v1.2.4") {
+	if worktreebranches.LockfileEntryContainsVersion("go", "go.sum", goSum, "example.com/nx", "v1.2.4") {
 		t.Fatal("go.sum accepted the wrong version")
 	}
-	if lockfileEntryContainsVersion("go", "go.sum", "shortline\n", "shortline", "v1.0.0") {
+	if worktreebranches.LockfileEntryContainsVersion("go", "go.sum", "shortline\n", "shortline", "v1.0.0") {
 		t.Fatal("go.sum accepted a line without two fields")
 	}
-	if lockfileEntryContainsVersion("npm", "yarn.lock", "nx@1.0.0:\n", "packages|node_modules/nx|version", "1.0.0") {
+	if worktreebranches.LockfileEntryContainsVersion("npm", "yarn.lock", "nx@1.0.0:\n", "packages|node_modules/nx|version", "1.0.0") {
 		t.Fatal("yarn.lock is not a supported proof format")
 	}
-	if lockfileEntryContainsVersion("npm", "package-lock.json", "not: [valid", "packages|node_modules/nx|version", "1.0.0") {
+	if worktreebranches.LockfileEntryContainsVersion("npm", "package-lock.json", "not: [valid", "packages|node_modules/nx|version", "1.0.0") {
 		t.Fatal("invalid YAML was accepted")
 	}
 
 	pnpm := "snapshots:\n  /nx@22.7.7:\n    version: 22.7.7\n"
-	if !lockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/nx@22.7.7|version", "22.7.7") {
+	if !worktreebranches.LockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/nx@22.7.7|version", "22.7.7") {
 		t.Fatal("structured pnpm proof was not accepted")
 	}
-	if lockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/nx@22.7.7|version", "22.7.8") {
+	if worktreebranches.LockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/nx@22.7.7|version", "22.7.8") {
 		t.Fatal("pnpm proof accepted the wrong version")
 	}
-	if lockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/other@22.7.7|version", "22.7.7") {
+	if worktreebranches.LockfileEntryContainsVersion("npm", "pnpm-lock.yaml", pnpm, "snapshots|/other@22.7.7|version", "22.7.7") {
 		t.Fatal("pnpm proof accepted a missing selector")
 	}
 	scalar := "snapshots: not-a-mapping\n"
-	if lockfileEntryContainsVersion("npm", "pnpm-lock.yaml", scalar, "snapshots|/nx@22.7.7|version", "22.7.7") {
+	if worktreebranches.LockfileEntryContainsVersion("npm", "pnpm-lock.yaml", scalar, "snapshots|/nx@22.7.7|version", "22.7.7") {
 		t.Fatal("pnpm proof walked into a scalar node")
 	}
 }
@@ -152,7 +155,7 @@ func TestWtLogCovNormalizeDependencyVersion(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{"1.2.3": "v1.2.3", "v1.2.3": "v1.2.3", "  v2.0.0 ": "v2.0.0", " 2.0.0": "v2.0.0", "": ""}
 	for input, want := range cases {
-		if got := normalizeDependencyVersion(input); got != want {
+		if got := worktreebranches.NormalizeDependencyVersion(input); got != want {
 			t.Errorf("normalizeDependencyVersion(%q) = %q, want %q", input, got, want)
 		}
 	}
@@ -188,7 +191,7 @@ func TestWtLogCovDependencyVersionSatisfiesEcosystems(t *testing.T) {
 		{"pypi", "v1.2.4", "1.2.3", false},
 	}
 	for _, tc := range cases {
-		if got := dependencyVersionSatisfies(tc.ecosystem, tc.candidate, tc.requested); got != tc.want {
+		if got := worktreebranches.DependencyVersionSatisfies(tc.ecosystem, tc.candidate, tc.requested); got != tc.want {
 			t.Errorf("dependencyVersionSatisfies(%q,%q,%q) = %t, want %t", tc.ecosystem, tc.candidate, tc.requested, got, tc.want)
 		}
 	}
@@ -214,7 +217,7 @@ func TestWtLogCovNpmRangeAlternativeSatisfies(t *testing.T) {
 		{"v2.5.0", ">=1.0.0 <2.0.0", false},
 	}
 	for _, tc := range cases {
-		if got := npmRangeAlternativeSatisfies(tc.candidate, tc.requested); got != tc.want {
+		if got := worktreebranches.NpmRangeAlternativeSatisfies(tc.candidate, tc.requested); got != tc.want {
 			t.Errorf("npmRangeAlternativeSatisfies(%q,%q) = %t, want %t", tc.candidate, tc.requested, got, tc.want)
 		}
 	}
@@ -248,7 +251,7 @@ func TestWtLogCovNpmComparatorSatisfies(t *testing.T) {
 		{"v1.0.0", ">=notaversion", false},
 	}
 	for _, tc := range cases {
-		if got := npmComparatorSatisfies(tc.candidate, tc.constraint); got != tc.want {
+		if got := worktreebranches.NpmComparatorSatisfies(tc.candidate, tc.constraint); got != tc.want {
 			t.Errorf("npmComparatorSatisfies(%q,%q) = %t, want %t", tc.candidate, tc.constraint, got, tc.want)
 		}
 	}
@@ -279,7 +282,7 @@ func TestWtLogCovValidateDependencyManifestNPM(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rejection := validateDependencyManifest(tc.delta, contents, tc.expected, tc.exact)
+			rejection := worktreebranches.ValidateDependencyManifest(tc.delta, contents, tc.expected, tc.exact)
 			if tc.want == "" {
 				if rejection != "" {
 					t.Fatalf("valid npm manifest rejected: %s", rejection)
@@ -291,10 +294,10 @@ func TestWtLogCovValidateDependencyManifestNPM(t *testing.T) {
 			}
 		})
 	}
-	if rejection := validateDependencyManifest(SupersessionDependencyDelta{Ecosystem: "npm"}, []byte("{"), "1.0.0", true); !strings.Contains(rejection, "cannot parse npm manifest") {
+	if rejection := worktreebranches.ValidateDependencyManifest(SupersessionDependencyDelta{Ecosystem: "npm"}, []byte("{"), "1.0.0", true); !strings.Contains(rejection, "cannot parse npm manifest") {
 		t.Fatalf("invalid JSON rejection = %q", rejection)
 	}
-	if rejection := validateDependencyManifest(SupersessionDependencyDelta{Ecosystem: "cargo"}, nil, "1.0.0", true); !strings.Contains(rejection, "unsupported dependency ecosystem") {
+	if rejection := worktreebranches.ValidateDependencyManifest(SupersessionDependencyDelta{Ecosystem: "cargo"}, nil, "1.0.0", true); !strings.Contains(rejection, "unsupported dependency ecosystem") {
 		t.Fatalf("unsupported ecosystem rejection = %q", rejection)
 	}
 }
@@ -303,34 +306,34 @@ func TestWtLogCovValidateDependencyManifestGo(t *testing.T) {
 	t.Parallel()
 	manifest := []byte("module example.com/app\n\ngo 1.21\n\nrequire example.com/nx v1.2.3\n")
 	delta := SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod", Selector: "require:example.com/nx", Package: "example.com/nx"}
-	if rejection := validateDependencyManifest(delta, manifest, "v1.2.3", true); rejection != "" {
+	if rejection := worktreebranches.ValidateDependencyManifest(delta, manifest, "v1.2.3", true); rejection != "" {
 		t.Fatalf("exact Go requirement rejected: %s", rejection)
 	}
 	// Validation examines every require entry; the value accessor intentionally
 	// reports the first one. Keep those distinct contracts when sharing parsers.
 	duplicates := []byte("module example.com/app\n\ngo 1.21\n\nrequire example.com/nx v1.2.3\nrequire example.com/nx v1.2.4\n")
-	if rejection := validateDependencyManifest(delta, duplicates, "v1.2.3", true); !strings.Contains(rejection, "v1.2.4") {
+	if rejection := worktreebranches.ValidateDependencyManifest(delta, duplicates, "v1.2.3", true); !strings.Contains(rejection, "v1.2.4") {
 		t.Fatalf("later duplicate Go requirement was ignored: %q", rejection)
 	}
-	if value, found, err := dependencyManifestValue(delta, duplicates); err != nil || !found || value != "v1.2.3" {
+	if value, found, err := worktreebranches.DependencyManifestValue(delta, duplicates); err != nil || !found || value != "v1.2.3" {
 		t.Fatalf("first Go requirement value = %q, found=%t, err=%v", value, found, err)
 	}
-	if rejection := validateDependencyManifest(delta, manifest, "v1.2.4", true); !strings.Contains(rejection, "want") {
+	if rejection := worktreebranches.ValidateDependencyManifest(delta, manifest, "v1.2.4", true); !strings.Contains(rejection, "want") {
 		t.Fatalf("mismatched Go requirement rejection = %q", rejection)
 	}
 	// Go requirements stay exact even on the non-exact range path.
-	if rejection := validateDependencyManifest(delta, manifest, "v1.2.4", false); !strings.Contains(rejection, "want") {
+	if rejection := worktreebranches.ValidateDependencyManifest(delta, manifest, "v1.2.4", false); !strings.Contains(rejection, "want") {
 		t.Fatalf("Go range check must stay exact: %q", rejection)
 	}
 	renamed := SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod", Selector: "require:example.com/other", Package: "example.com/nx"}
-	if rejection := validateDependencyManifest(renamed, manifest, "v1.2.3", true); !strings.Contains(rejection, "exact direct require selector") {
+	if rejection := worktreebranches.ValidateDependencyManifest(renamed, manifest, "v1.2.3", true); !strings.Contains(rejection, "exact direct require selector") {
 		t.Fatalf("Go selector rejection = %q", rejection)
 	}
 	absent := SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod", Selector: "require:example.com/missing", Package: "example.com/missing"}
-	if rejection := validateDependencyManifest(absent, manifest, "v1.2.3", true); !strings.Contains(rejection, "absent") {
+	if rejection := worktreebranches.ValidateDependencyManifest(absent, manifest, "v1.2.3", true); !strings.Contains(rejection, "absent") {
 		t.Fatalf("absent Go module rejection = %q", rejection)
 	}
-	if rejection := validateDependencyManifest(delta, []byte("not a module\n"), "v1.2.3", true); !strings.Contains(rejection, "cannot parse Go manifest") {
+	if rejection := worktreebranches.ValidateDependencyManifest(delta, []byte("not a module\n"), "v1.2.3", true); !strings.Contains(rejection, "cannot parse Go manifest") {
 		t.Fatalf("invalid Go manifest rejection = %q", rejection)
 	}
 }
@@ -358,7 +361,7 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			value, found, err := dependencyManifestValue(tc.delta, tc.contents)
+			value, found, err := worktreebranches.DependencyManifestValue(tc.delta, tc.contents)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %t", err, tc.wantErr)
 			}
@@ -370,21 +373,21 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 
 	goManifest := []byte("module example.com/app\n\ngo 1.21\n\nrequire example.com/nx v1.2.3\n")
 	goDelta := SupersessionDependencyDelta{Ecosystem: "go", Selector: "require:example.com/nx", Package: "example.com/nx"}
-	if value, found, err := dependencyManifestValue(goDelta, goManifest); err != nil || !found || value != "v1.2.3" {
+	if value, found, err := worktreebranches.DependencyManifestValue(goDelta, goManifest); err != nil || !found || value != "v1.2.3" {
 		t.Fatalf("go value = %q found = %t err = %v", value, found, err)
 	}
 	absent := SupersessionDependencyDelta{Ecosystem: "go", Selector: "require:example.com/missing", Package: "example.com/missing"}
-	if _, found, err := dependencyManifestValue(absent, goManifest); err != nil || found {
+	if _, found, err := worktreebranches.DependencyManifestValue(absent, goManifest); err != nil || found {
 		t.Fatalf("absent go module found = %t err = %v", found, err)
 	}
 	renamed := SupersessionDependencyDelta{Ecosystem: "go", Selector: "require:example.com/other", Package: "example.com/nx"}
-	if _, found, err := dependencyManifestValue(renamed, goManifest); err != nil || found {
+	if _, found, err := worktreebranches.DependencyManifestValue(renamed, goManifest); err != nil || found {
 		t.Fatalf("renamed go selector found = %t err = %v", found, err)
 	}
-	if _, _, err := dependencyManifestValue(goDelta, []byte("not a module\n")); err == nil {
+	if _, _, err := worktreebranches.DependencyManifestValue(goDelta, []byte("not a module\n")); err == nil {
 		t.Fatal("invalid go manifest should error")
 	}
-	if _, _, err := dependencyManifestValue(SupersessionDependencyDelta{Ecosystem: "cargo"}, nil); err == nil {
+	if _, _, err := worktreebranches.DependencyManifestValue(SupersessionDependencyDelta{Ecosystem: "cargo"}, nil); err == nil {
 		t.Fatal("unsupported ecosystem should error")
 	}
 }
@@ -392,18 +395,18 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 func TestWtLogCovSameSupersessionReceipt(t *testing.T) {
 	t.Parallel()
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app"}
-	if !sameSupersessionReceipt(nil, nil) {
+	if !worktreeproof.SameSupersessionReceipt(nil, nil) {
 		t.Fatal("two nil receipts should match")
 	}
-	if sameSupersessionReceipt(left, nil) || sameSupersessionReceipt(nil, left) {
+	if worktreeproof.SameSupersessionReceipt(left, nil) || worktreeproof.SameSupersessionReceipt(nil, left) {
 		t.Fatal("nil and non-nil receipts must not match")
 	}
 	right := &SupersessionReceipt{Version: 1, Repository: "acme/app"}
-	if !sameSupersessionReceipt(left, right) {
+	if !worktreeproof.SameSupersessionReceipt(left, right) {
 		t.Fatal("equal receipts should match")
 	}
 	right.Repository = "acme/other"
-	if sameSupersessionReceipt(left, right) {
+	if worktreeproof.SameSupersessionReceipt(left, right) {
 		t.Fatal("different receipts must not match")
 	}
 }
@@ -415,7 +418,7 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17,
 		OriginalPRRepository: "acme/app", OriginalPRHead: "head-1", OriginalHead: "head-1",
 	}
-	if rejection := validateAuthoritativeSourcePullRequest(receipt, entry); rejection != "" {
+	if rejection := worktreebranches.ValidateAuthoritativeSourcePullRequest(receipt, supersessionEntry(entry)); rejection != "" {
 		t.Fatalf("authoritative source PR rejected: %s", rejection)
 	}
 	cases := []struct {
@@ -436,7 +439,7 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 			mutatedReceipt, mutatedEntry := receipt, entry
 			mutatedEntry.OpenPullRequest = dependencyTestPullRequest("head-1")
 			tc.mutate(&mutatedReceipt, &mutatedEntry)
-			if rejection := validateAuthoritativeSourcePullRequest(mutatedReceipt, mutatedEntry); !strings.Contains(rejection, tc.wantSub) {
+			if rejection := worktreebranches.ValidateAuthoritativeSourcePullRequest(mutatedReceipt, supersessionEntry(mutatedEntry)); !strings.Contains(rejection, tc.wantSub) {
 				t.Fatalf("rejection %q does not contain %q", rejection, tc.wantSub)
 			}
 		})
@@ -463,12 +466,12 @@ func TestWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
 func TestWtLogCovIsDependencyManifestOrImporter(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{"package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.sum", "apps/web/package.json", ".github/workflows/ci.yml", ".github/workflows/ci.yaml"} {
-		if !isDependencyManifestOrImporter(want) {
+		if !worktreebranches.IsDependencyManifestOrImporter(want) {
 			t.Errorf("isDependencyManifestOrImporter(%q) = false, want true", want)
 		}
 	}
 	for _, unwanted := range []string{"README.md", ".github/workflows/ci.txt", "src/package.json.bak", "cmd/main.go", ""} {
-		if isDependencyManifestOrImporter(unwanted) {
+		if worktreebranches.IsDependencyManifestOrImporter(unwanted) {
 			t.Errorf("isDependencyManifestOrImporter(%q) = true, want false", unwanted)
 		}
 	}

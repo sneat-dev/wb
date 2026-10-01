@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 // The following tests exercise the filewrite.Injector-reachable error
@@ -193,7 +194,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 	t.Parallel()
 	result := RetireResult{ReportPath: filepath.Join(t.TempDir(), "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 }
@@ -203,7 +204,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
 	dir := t.TempDir()
 	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
@@ -214,7 +215,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	dir := t.TempDir()
 	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
@@ -225,7 +226,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 	dir := t.TempDir()
 	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
@@ -236,7 +237,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 	dir := t.TempDir()
 	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
@@ -247,7 +248,7 @@ func TestWriteRetireReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
 	dir := t.TempDir()
 	result := RetireResult{ReportPath: filepath.Join(dir, "retire.json")}
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomPR3}
-	if err := writeRetireReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
+	if err := worktreeretire.WriteReportInjected(result, inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("writeRetireReportInjected error = %v", err)
 	}
 	assertNoLeftoverPR3TempFile(t, dir, ".retire-*.tmp")
@@ -379,7 +380,7 @@ func TestCopyFileSHA256ComputesTheDigestOfTheCopiedBytes(t *testing.T) {
 	}
 }
 
-// --- retireCaptureFile (retire.go) ---
+// --- worktreeretire.CaptureFile (archive.go) ---
 
 func TestRetireCaptureFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 	t.Parallel()
@@ -389,7 +390,7 @@ func TestRetireCaptureFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR3}
-	if _, err := retireCaptureFileInjected(source, filepath.Join(dir, "dest"), inj); !errors.Is(err, errBoomPR3) {
+	if _, err := worktreeretire.CaptureFileInjected(source, filepath.Join(dir, "dest"), inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("retireCaptureFileInjected error = %v", err)
 	}
 }
@@ -402,7 +403,7 @@ func TestRetireCaptureFileInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR3}
-	if _, err := retireCaptureFileInjected(source, filepath.Join(dir, "dest"), inj); !errors.Is(err, errBoomPR3) {
+	if _, err := worktreeretire.CaptureFileInjected(source, filepath.Join(dir, "dest"), inj); !errors.Is(err, errBoomPR3) {
 		t.Fatalf("retireCaptureFileInjected error = %v", err)
 	}
 }
@@ -415,7 +416,7 @@ func TestRetireCaptureFileComputesTheDigestOfTheCapturedBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "dest")
-	digest, err := retireCaptureFile(source, dest)
+	digest, err := worktreeretire.CaptureFile(source, dest)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestBranchCleanupRelativeReportDirectoryAndYoungerBranch(t *testing.T) {
@@ -23,9 +25,9 @@ func TestBranchCleanupRelativeReportDirectoryAndYoungerBranch(t *testing.T) {
 		t.Fatalf("relative report path was not normalized: %q", normalized.ReportDir)
 	}
 	now := time.Date(2026, time.September, 29, 12, 0, 0, 0, time.UTC)
-	results := planBranchCleanup([]BranchEntry{{Repository: "acme/app", Branch: "feature/recent",
+	results := worktreebranches.PlanBranchCleanup([]BranchEntry{{Repository: "acme/app", Branch: "feature/recent",
 		Scope: BranchScopeLocal, Disposition: BranchContained, CommitterDate: now}},
-		branchSweepOptions{Now: now, OlderThan: time.Hour})
+		branchSweepOptions{Now: now, OlderThan: time.Hour}.branchPolicyOptions())
 	if len(results) != 1 || results[0].Eligible || !strings.Contains(results[0].SkipReason, "younger") {
 		t.Fatalf("recent branch cleanup plan = %#v", results)
 	}

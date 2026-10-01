@@ -21,20 +21,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
 	}
 	// Disable git's detached gc/maintenance for every git this binary
 	// starts, including this package's own fixture clones and pushes, so

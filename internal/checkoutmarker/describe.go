@@ -39,6 +39,12 @@ type DescribeOptions struct {
 // and `wb worktree create` refresh markers across the whole fleet without
 // paying for a fork per checkout.
 func Describe(path string, options DescribeOptions) (Inspection, error) {
+	return describeWithPathResolver(path, options, filepath.Abs)
+}
+
+// describeWithPathResolver keeps path-resolution failures testable on hosts
+// where an unlinked working directory remains resolvable.
+func describeWithPathResolver(path string, options DescribeOptions, resolve func(string) (string, error)) (Inspection, error) {
 	now := time.Now
 	if options.Now != nil {
 		now = options.Now
@@ -47,7 +53,7 @@ func Describe(path string, options DescribeOptions) (Inspection, error) {
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := resolve(path)
 	if err != nil {
 		return Inspection{}, fmt.Errorf("resolve %s: %w", path, err)
 	}

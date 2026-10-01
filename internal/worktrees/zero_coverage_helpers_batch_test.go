@@ -16,6 +16,9 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func TestZeroCoverageBatchValueHelpers(t *testing.T) {
@@ -53,22 +56,22 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 		t.Fatal("an unencodable local event was equal")
 	}
 
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
 		t.Fatalf("default archive preservation = %q", got)
 	}
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
 		t.Fatalf("explicit archive preservation = %q", got)
 	}
-	if mustAtoi("") != 0 || mustAtoi("2048") != 2048 {
+	if worktreebranches.MustAtoi("") != 0 || worktreebranches.MustAtoi("2048") != 2048 {
 		t.Fatal("decimal parser returned an unexpected value")
 	}
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app", Task: "old"}
 	right := *left
-	if !sameSupersessionReceipt(nil, nil) || sameSupersessionReceipt(left, nil) || !sameSupersessionReceipt(left, &right) {
+	if !worktreeproof.SameSupersessionReceipt(nil, nil) || worktreeproof.SameSupersessionReceipt(left, nil) || !worktreeproof.SameSupersessionReceipt(left, &right) {
 		t.Fatal("supersession receipt equality mishandled nil or equal values")
 	}
 	right.Task = "new"
-	if sameSupersessionReceipt(left, &right) {
+	if worktreeproof.SameSupersessionReceipt(left, &right) {
 		t.Fatal("different supersession receipts were equal")
 	}
 

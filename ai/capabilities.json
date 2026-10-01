@@ -1802,10 +1802,12 @@
                 "--changed",
                 "--ci",
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--match",
                 "--minimum",
+                "--package",
                 "--parallel",
                 "--regex",
                 "--report-dir",
@@ -1834,6 +1836,7 @@
               "command": "wb coverage --help",
               "contains": [
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--minimum",
@@ -1931,6 +1934,7 @@
             {
               "path": "wb coverage baseline",
               "flags": [
+                "--include-e2e",
                 "--module",
                 "--out",
                 "--sha"
@@ -10026,6 +10030,7 @@
               "flags": [
                 "--agent-id",
                 "--handoff-id",
+                "--join",
                 "--machine",
                 "--model",
                 "--native-harness-id",
@@ -10036,7 +10041,7 @@
                 "--wb-session-id"
               ],
               "modes": [
-                "Announces an agent session so later WB writes are attributed to it without per-command declaration."
+                "Announces an agent session so later WB writes are attributed to it without per-command declaration; --join then joins an already owned linked worktree and reports registration separately if joining fails."
               ]
             }
           ],
@@ -10049,6 +10054,7 @@
               "command": "wb session register --help",
               "contains": [
                 "--pid",
+                "--join",
                 "--runtime",
                 "--model",
                 "--wb-session-id",
@@ -10091,6 +10097,11 @@
             {
               "path": "internal/session/session_test.go",
               "name": "TestResolveForProcessFindsAnAncestorSession",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_collaboration_e2e_test.go",
+              "name": "TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree",
               "kind": "integration"
             },
             {
@@ -13980,6 +13991,7 @@
     {
       "id": "wb.worktree.info",
       "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md",
         "spec/features/work-log/README.md"
       ],
       "since": "unreleased",
@@ -13993,7 +14005,7 @@
                 "--format"
               ],
               "modes": [
-                "Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, and live Git evidence for one worktree."
+                "Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, live Git evidence, one effective owner and joined sessions for one worktree."
               ]
             }
           ],
@@ -14044,6 +14056,66 @@
         }
       },
       "notes": "Safe default inspect surface. Prompt bodies are never included; use wb worktree log for the private agent dump."
+    },
+    {
+      "id": "wb.worktree.join",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree join",
+              "flags": [],
+              "modes": [
+                "Join an already explicitly owned linked worktree without changing its owner or immutable claim."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree join --help",
+              "contains": [
+                "Join",
+                "worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree join ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     },
     {
       "id": "wb.worktree.land",
@@ -14132,6 +14204,66 @@
         }
       },
       "notes": "The primary completion verb validates one candidate, proves the remote landing receipt, and defaults receipt-gated cleanup on."
+    },
+    {
+      "id": "wb.worktree.leave",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree leave",
+              "flags": [],
+              "modes": [
+                "Leave only after transferring current ownership."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree leave --help",
+              "contains": [
+                "Leave",
+                "worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree leave ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     },
     {
       "id": "wb.worktree.list",
@@ -16985,6 +17117,189 @@
       "notes": "The separate transition is for an unlanded prepare failure only; its acknowledgement binds the exact receipt hash, current remote target, replacement identity, and immutable source roots without modifying a receipt or Work Log."
     },
     {
+      "id": "wb.worktree.message.ack",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message ack",
+              "flags": [],
+              "modes": [
+                "Acknowledge consumption of the next exact inbox message."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message send --help",
+              "contains": [
+                "--to-session",
+                "--idempotency-key",
+                "--message-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message ack . <message-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.message.inbox",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message inbox",
+              "flags": [],
+              "modes": [
+                "Read unacknowledged local messages and the latest independent owner notice."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message inbox --help",
+              "contains": [
+                "inbox"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message inbox ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.message.send",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message send",
+              "flags": [
+                "--idempotency-key",
+                "--message-file",
+                "--to-session"
+              ],
+              "modes": [
+                "Record a bounded private peer message with a stable client retry key."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message ack --help",
+              "contains": [
+                "message-id"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message send . --to-session <wb-session-id> --idempotency-key <key> --message-file <file>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
       "id": "wb.worktree.orphans",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -17657,6 +17972,132 @@
         }
       },
       "notes": "Task-scoped brief overview of live linked checkouts only; archived Work Log history is not joined. Contrasts with list (flat inventory, optional task) and info/log (single-checkout journal views)."
+    },
+    {
+      "id": "wb.worktree.take-ownership",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree take-ownership",
+              "flags": [
+                "--expected-owner",
+                "--force",
+                "--reason"
+              ],
+              "modes": [
+                "Compare the exact current or observed owner under lock; force requires an audited reason and never bypasses comparison."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree take-ownership --help",
+              "contains": [
+                "--expected-owner",
+                "--force",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree take-ownership . --expected-owner none"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.transfer-ownership",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree transfer-ownership",
+              "flags": [
+                "--to-session"
+              ],
+              "modes": [
+                "The authenticated current owner appoints a live joined successor."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree transfer-ownership --help",
+              "contains": [
+                "--to-session"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree transfer-ownership . --to-session <wb-session-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     }
   ]
 }

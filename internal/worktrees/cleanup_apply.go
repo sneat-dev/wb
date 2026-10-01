@@ -1,9 +1,12 @@
 package worktrees
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // The apply phase, not the inventory walk, is where a fleet sweep spends its
@@ -210,4 +213,27 @@ func runCleanupApply(
 	}
 	wait.Wait()
 	return errs
+}
+
+// cleanupTaskApplicationPorts keep the task lock and artifact custody here
+// while letting one locked task's preflight and member phases be fault-tested
+// without creating a Git repository for every failure boundary.
+type cleanupTaskApplicationPorts struct {
+	Inventory        func(context.Context, ListOptions) (ListOutcome, error)
+	Preflight        func(context.Context, CleanupOptions, time.Time, *cleanupTaskHandle, CleanupResult, string) (ListResult, error)
+	PrepareArtifacts func(string, *cleanupTaskHandle, []int, []LifecycleArtifact) (*os.File, string, []cleanupLifecycleArtifactHandle, error)
+	CloseArtifacts   func([]cleanupLifecycleArtifactHandle)
+	ApplyMember      func(*cleanupRun, *cleanupTaskHandle, int, *remoteBranchDeletionGate, bool, *int) error
+	ArchiveArtifacts func(*cleanupTaskHandle, *os.File, string, []cleanupLifecycleArtifactHandle, []LifecycleArtifact) error
+}
+
+func productionCleanupTaskApplicationPorts() cleanupTaskApplicationPorts {
+	return cleanupTaskApplicationPorts{
+		Inventory:        ListWithDiagnostics,
+		Preflight:        preflightCleanupRepository,
+		PrepareArtifacts: prepareCleanupLifecycleArtifacts,
+		CloseArtifacts:   closeCleanupLifecycleArtifacts,
+		ApplyMember:      (*cleanupRun).applyCleanupMember,
+		ArchiveArtifacts: archiveCleanupLifecycleArtifacts,
+	}
 }

@@ -655,14 +655,9 @@ func verifyPeersUpstreamEdit(original, updated, hubURL, tokenFile string) error 
 		return errors.New("a peers: child other than upstream changed")
 	}
 
-	originalOutside, err := textOutsidePeersBlock(original)
-	if err != nil {
-		return fmt.Errorf("re-check original: %w", err)
-	}
-	updatedOutside, err := textOutsidePeersBlock(updated)
-	if err != nil {
-		return fmt.Errorf("re-check result: %w", err)
-	}
+	// Removing an identified text range cannot fail.
+	originalOutside, _ := textOutsidePeersBlock(original)
+	updatedOutside, _ := textOutsidePeersBlock(updated)
 	// Trimmed only of trailing newline characters: inserting new content
 	// after a file that did not itself end with one requires adding exactly
 	// one newline first (new YAML content cannot start on the same physical

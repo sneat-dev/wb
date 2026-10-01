@@ -29,6 +29,51 @@ func TestRepositoryRunOptionsLoadsExplicitShardingPolicy(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunOptionsRetainsExplicitShardingAfterValidatingPolicy(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, repositoryQualityConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\ngo_lint:\n  commands:\n    - [go, vet, ./...]\ngo_test:\n  shards: 8\n  packages: [./internal/worktrees, ./internal/orchestrate]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options, err := RepositoryRunOptions(root, RunOptions{
+		GoTestShards:           4,
+		GoShardPackages:        []string{"./internal/worktrees"},
+		ExplicitGoTestSharding: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.GoTestShards != 4 || strings.Join(options.GoShardPackages, ",") != "./internal/worktrees" {
+		t.Fatalf("explicit sharding was broadened: %+v", options)
+	}
+	if len(options.GoLintCommands) != 1 || strings.Join(options.GoLintCommands[0], " ") != "go vet ./..." {
+		t.Fatalf("policy lint command was lost: %#v", options.GoLintCommands)
+	}
+}
+
+func TestRepositoryRunOptionsExplicitShardingStillFailsClosedOnMalformedPolicy(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, repositoryQualityConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\ngo_test:\n  shards: 1\n  packages: [./internal/orchestrate]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RepositoryRunOptions(root, RunOptions{
+		GoTestShards:           4,
+		GoShardPackages:        []string{"./internal/worktrees"},
+		ExplicitGoTestSharding: true,
+	}); err == nil {
+		t.Fatal("explicit sharding bypassed malformed repository policy")
+	}
+}
+
 func TestRepositoryRunOptionsLoadsGoLintWithoutGoTest(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

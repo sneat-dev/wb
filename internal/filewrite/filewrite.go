@@ -77,6 +77,9 @@ const (
 	// separate from StepSync so a test can fail the directory fsync
 	// without also failing the regular file's own fsync.
 	StepDirSync Step = "dir_sync"
+	// StepOpenDirectory covers opening the parent directory for the final
+	// durability sync in a path-based atomic write.
+	StepOpenDirectory Step = "open_directory"
 	// StepRename covers a path-based os.Rename publish -- the sequence
 	// this package's cmd/wb call sites use in place of the fd-relative
 	// Linkat every internal/sessionpark/internal/sessionmove call site
@@ -201,8 +204,7 @@ func (e *ShortWriteError) Error() string {
 // O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC. Most write-once-immutable
 // call sites in this repository already used exactly this flag set before
 // migrating here. The two task-9 PR-3 exceptions --
-// internal/worktrees/worklog.go's writeBytesImmutableAtInjected and
-// writeBytesAtomicAtInjected -- previously opened their temp file with a
+// former internal/worktrees/worklog.go injected-write forwarders -- previously opened their temp file with a
 // raw unix.Openat that omitted O_CLOEXEC; routing them through
 // CreateExclusive is a deliberate behaviour change (review-756 B3), not an
 // oversight: it closes a real fd leak, where a child process exec'd while

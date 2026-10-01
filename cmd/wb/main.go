@@ -390,7 +390,7 @@ func main() {
 }
 
 // processHandlers are the pre-cobra entry points dispatch routes to. They are
-// function values rather than direct calls because the six secure Git helpers
+// function values rather than direct calls because the secure Git helpers
 // deliberately operate on inherited file descriptors 3..9: invoking one
 // in-process against the test binary's own descriptors corrupts the Go
 // runtime, so the routing can only be asserted by substituting the handler.
@@ -407,29 +407,25 @@ type processHandlers struct {
 	setEnv          func(string, string) error
 }
 
-// secureGitHelpers maps every hidden argv value that must be resolved before
-// cobra to its handler. It is a function rather than a package-level map so the
-// table is rebuilt per process, and so a test can assert its membership without
-// invoking a helper that expects inherited descriptors 3..9.
-func secureGitHelpers() map[string]func([]string) int {
-	return map[string]func([]string) int{
-		worktrees.SecureCleanupGitHelperArgument:        worktrees.RunSecureCleanupGitHelper,
-		hooks.SecureHooksGitHelperArgument:              hooks.RunSecureHooksGitHelper,
-		worktrees.SecureStageGitHelperArgument:          worktrees.RunSecureStageGitHelper,
-		worktrees.SecureCanonicalGitHelperArgument:      worktrees.RunSecureCanonicalGitHelper,
-		worktrees.SecureStageCanonicalGitHelperArgument: worktrees.RunSecureStageCanonicalGitHelper,
-		worktrees.SecureRenameGitHelperArgument:         worktrees.RunSecureRenameGitHelper,
+// secureGitHelperForArgument shares the worktrees protocol selector with every
+// other process owner. Hooks keep their separate post-runtime-setup path.
+func secureGitHelperForArgument(argument string) (func([]string) int, bool) {
+	if helper, known := worktrees.SecureGitHelperForArgument(argument); known {
+		return helper, true
 	}
+	if argument == hooks.SecureHooksGitHelperArgument {
+		return hooks.RunSecureHooksGitHelper, true
+	}
+	return nil, false
 }
 
 func defaultProcessHandlers() processHandlers {
-	helpers := secureGitHelpers()
 	return processHandlers{
 		privateLauncher: sessionlaunch.RunPrivateLauncher,
 		ownerCLI:        agents.OwnerCLI,
 		agentRemote:     RunAgentRemote,
 		secureGitHelper: func(argument string, args []string) (int, bool) {
-			helper, known := helpers[argument]
+			helper, known := secureGitHelperForArgument(argument)
 			if !known {
 				return 0, false
 			}
@@ -476,6 +472,12 @@ func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Read
 		// reach a flag parser, and so its request cannot be reinterpreted as
 		// shell text.
 		return handlers.agentRemote(inv, stdin, stdout, stderr)
+	}
+	// The former worktrees package init handled these child modes before any
+	// CLI setup. Keep that ordering; hooks still run after runtime setup below.
+	if _, known := worktrees.SecureGitHelperForArgument(first); known {
+		code, _ := handlers.secureGitHelper(first, rest)
+		return code
 	}
 	installSessionResolver(inv)
 	if err := propagateRuntimeWBExecutable(handlers.lookupEnv, handlers.executable, handlers.setEnv); err != nil {

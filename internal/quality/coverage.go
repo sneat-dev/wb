@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -181,10 +180,14 @@ func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path s
 }
 
 func coverageCommandDescription(options RunOptions) string {
-	if options.GoTestShards > 1 {
-		return fmt.Sprintf("go test -coverprofile … ./... (%d process-isolated shards for %s)", options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+	packages := strings.Join(goCoveragePackagePatterns(options), ",")
+	if options.IncludeE2E {
+		return "default and native E2E/contract coverage for " + packages
 	}
-	return "go test -coverprofile … ./..."
+	if options.GoTestShards > 1 {
+		return fmt.Sprintf("go test -coverprofile … %s (%d process-isolated shards for %s)", packages, options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+	}
+	return fmt.Sprintf("go test -coverprofile … %s", packages)
 }
 
 // NewCoverageReport aggregates reports in deterministic repository order.
@@ -255,26 +258,14 @@ func goModules(root string) ([]string, error) {
 }
 
 func profileTotals(path string) (statements, covered int, err error) {
-	contents, err := os.ReadFile(path)
+	blocks, err := parseCoverageProfile(path, true)
 	if err != nil {
 		return 0, 0, err
 	}
-	for lineNumber, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
-		if lineNumber == 0 && strings.HasPrefix(line, "mode: ") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
-		}
-		count, countErr := strconv.ParseInt(fields[2], 10, 64)
-		statementCount, statementErr := strconv.Atoi(fields[1])
-		if countErr != nil || statementErr != nil {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
-		}
-		statements += statementCount
-		if count > 0 {
-			covered += statementCount
+	for _, block := range blocks {
+		statements += block.Statements
+		if block.Count > 0 {
+			covered += block.Statements
 		}
 	}
 	return statements, covered, nil

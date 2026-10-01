@@ -76,7 +76,8 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 		Runtime: "codex", Model: "gpt-5.6-luna", StartedAt: time.Now().UTC(),
 	}
 	sessionDir := filepath.Join(sourceHome, session.DirName)
-	if _, err := session.Register(sessionDir, source); err != nil {
+	var err error
+	if source, err = session.Register(sessionDir, source); err != nil {
 		t.Fatal(err)
 	}
 	for _, member := range sourceMembers {
@@ -91,8 +92,47 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	if err := os.WriteFile(continuationPath, []byte(continuation+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Model a crash after immutable aggregate publication but before lifecycle
+	// marking. The real CLI must recapture the same members through its
+	// aggregate function variable and repair the original parked identity.
+	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: sourceRoot, Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedListed := make([]worktrees.ListResult, 0, len(listed))
+	for _, result := range listed {
+		if ownedBySession(result, source) {
+			ownedListed = append(ownedListed, result)
+		}
+	}
+	parkedStore := sessionpark.NewStore(filepath.Join(sourceHome, "parked-sessions"))
+	const parkedID = "park-journey-crash-retry"
+	if err := worktrees.CaptureParkedSessionAggregate(context.Background(), sourceRoot, ownedListed, source, func(captured []sessionpark.Worktree) error {
+		_, createErr := parkedStore.Create(sessionpark.Bundle{
+			SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: parkedID,
+			Source: source, Continuation: continuation, Worktrees: captured, ParkedAt: time.Now().UTC(),
+		})
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preParked, err := parkedStore.Load(parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worktrees.CaptureParkedSessionAggregate(context.Background(), sourceRoot, ownedListed, source, func(captured []sessionpark.Worktree) error {
+		request := preParked.Bundle
+		request.Worktrees = captured
+		if !sessionpark.EqualBundle(preParked.Bundle, request) {
+			t.Fatalf("pre-CLI recapture differs: stored=%#v recaptured=%#v", preParked.Bundle.Worktrees, captured)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	parkedRaw := runJourneyWB(t, binary, sourceRoot, "session", "park", "--context-file", continuationPath, "--format", "json")
+	parkedRaw := runJourneyWB(t, binary, sourceRoot, "session", "park", "--wb-session-id", source.WBSessionID,
+		"--context-file", continuationPath, "--format", "json")
 	if bytes.Contains(parkedRaw, []byte(continuation)) {
 		t.Fatalf("park output disclosed private continuation: %s", parkedRaw)
 	}
@@ -106,7 +146,7 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	}
 	// The public park output deliberately no longer republishes per-member
 	// evidence, so assert the durable aggregate instead of the public surface.
-	parkedState, err := sessionpark.NewStore(filepath.Join(sourceHome, "parked-sessions")).Load(parked.ParkedSessionID)
+	parkedState, err := parkedStore.Load(parked.ParkedSessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +155,9 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	}
 	assertJourneyParkedBundle(t, parkedState.Bundle.Worktrees, sourceMembers)
 	assertJourneySourceCustody(t, sourceHome, parkedState.Bundle.Worktrees, source)
+	if parked.ParkedSessionID != parkedID || parked.MemberCount != len(ownedListed) {
+		t.Fatalf("park repair changed immutable identity: %#v", parked)
+	}
 
 	targetConfig := filepath.Join(targetHome, ".config", "wb", "wb.yaml")
 	if err := os.MkdirAll(filepath.Dir(targetConfig), 0o755); err != nil {

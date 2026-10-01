@@ -14,6 +14,10 @@ import (
 // sealed at retiring_remote, and origin still holds the branch the interrupted
 // run had already authorized itself to delete.
 func strandAtRetiringRemote(t *testing.T, fixture *gitFixture, task string) lifecycleBacklogRecord {
+	return strandAtRetiringRemoteDisposition(t, fixture, task, "removed")
+}
+
+func strandAtRetiringRemoteDisposition(t *testing.T, fixture *gitFixture, task, disposition string) lifecycleBacklogRecord {
 	t.Helper()
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -30,13 +34,20 @@ func strandAtRetiringRemote(t *testing.T, fixture *gitFixture, task string) life
 	gitTest(t, result.WorktreeDir, "commit", "-m", "work")
 	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
 	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	if disposition == string(AbortDiscarded) {
+		if err := sealDiscardedWorkLogAfterAbsorbedByProof(fixture.home, result.WorktreeDir, head, nil); err != nil {
+			t.Fatal(err)
+		}
+	} else if disposition != "removed" {
+		t.Fatalf("unsupported retiring-remote fixture disposition %q", disposition)
+	}
 
 	record := newLifecycleBacklogRecord(fixture.projectsRoot, ListResult{
 		Task: task, Repository: "acme/app",
 		CanonicalDir: fixture.canonical, WorktreesRoot: filepath.Join(fixture.canonical, ".worktrees"),
 		WorktreeDir: result.WorktreeDir, Branch: result.Branch, Base: "main",
 		HeadSHA: head, RemoteHeadSHA: head, Local: true,
-	}, "removed")
+	}, disposition)
 	if err := persistLifecycleBacklog(fixture.home, &record, lifecycleStageRetiringRemote); err != nil {
 		t.Fatal(err)
 	}

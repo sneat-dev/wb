@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T) {
@@ -58,6 +59,9 @@ func TestQuarantineRepositoryDiscoveryAndDigestFailures(t *testing.T) {
 	}
 	if _, err := quarantineRepositoryPaths(fixture.projectsRoot, []BranchQuarantineRequest{{Repository: "other/missing"}}); err == nil || !strings.Contains(err.Error(), "not discovered") {
 		t.Fatalf("missing repository error = %v", err)
+	}
+	if _, err := quarantineRepositoryPaths(filepath.Join(t.TempDir(), "missing-root"), nil); err == nil {
+		t.Fatal("missing repository root was accepted")
 	}
 	missing := filepath.Join(t.TempDir(), "missing.json")
 	if _, err := QuarantineManifestDigest(missing); !os.IsNotExist(err) {
@@ -168,7 +172,7 @@ func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/old")
 	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
-	destination := retiredBranchDestination(time.Now(), "feature/old", sha)
+	destination := worktreebranches.RetiredBranchDestination(time.Now(), "feature/old", sha)
 	gitTest(t, fixture.canonical, "branch", destination)
 	result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha}, Destination: destination, Outcome: "planned"}
 	applyBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, &result)

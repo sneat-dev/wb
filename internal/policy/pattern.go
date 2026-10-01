@@ -172,9 +172,6 @@ func expandBraces(raw string) ([]string, error) {
 	}
 	closing += open
 	choices := strings.Split(raw[open+1:closing], ",")
-	if len(choices) == 0 {
-		return nil, fmt.Errorf("empty brace group")
-	}
 	var expanded []string
 	for _, choice := range choices {
 		if choice == "" {

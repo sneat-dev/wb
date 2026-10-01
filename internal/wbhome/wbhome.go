@@ -280,12 +280,16 @@ func hasWorktrees(home string) bool {
 // os.TempDir returns) unresolved precisely when the directory is about to be
 // created for the first time.
 func resolveAbs(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
+	return resolveAbsWith(path, filepath.Abs, filepath.EvalSymlinks)
+}
+
+func resolveAbsWith(path string, abs func(string) (string, error), eval func(string) (string, error)) (string, error) {
+	absolute, err := abs(path)
 	if err != nil {
 		return "", err
 	}
 	absolute = filepath.Clean(absolute)
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+	if resolved, err := eval(absolute); err == nil {
 		return resolved, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -296,7 +300,7 @@ func resolveAbs(path string) (string, error) {
 		// to strip. Treat the root itself as already resolved.
 		return absolute, nil
 	}
-	resolvedParent, err := resolveAbs(parent)
+	resolvedParent, err := resolveAbsWith(parent, abs, eval)
 	if err != nil {
 		return "", err
 	}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/worktreecollab"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -83,6 +86,7 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 		child.command.GroupID = child.group
 		command.AddCommand(child.command)
 	}
+	addCollaborationCommands(command, inv)
 	return command
 }
 
@@ -251,6 +255,19 @@ target branch.`,
 }
 
 func newWorktreeInfoCmd(inv *invocation) *cobra.Command {
+	return newWorktreeInfoCmdWithPorts(inv, worktreeInfoPorts{
+		load: worktrees.LoadWorkLogView, lane: activeMergeLaneClaimForWorktreeInfo,
+		collaboration: func() (worktreecollab.Service, error) { return newCollaborationService(inv) },
+	})
+}
+
+type worktreeInfoPorts struct {
+	load          func(context.Context, worktrees.LoadWorkLogOptions) (worktrees.WorkLogView, error)
+	lane          func(string, worktrees.WorkLogView) (*orchestrate.MergeLaneClaim, error)
+	collaboration collaborationServiceFactory
+}
+
+func newWorktreeInfoCmdWithPorts(inv *invocation, ports worktreeInfoPorts) *cobra.Command {
 	var format string
 	command := &cobra.Command{
 		Use:   "info [worktree-path]",
@@ -272,7 +289,7 @@ as one JSON document on stdout.`,
 			if len(args) == 1 {
 				path = args[0]
 			}
-			view, err := worktrees.LoadWorkLogView(command.Context(), worktrees.LoadWorkLogOptions{
+			view, err := ports.load(command.Context(), worktrees.LoadWorkLogOptions{
 				ProjectsRoot:        inv.projectsRoot,
 				Worktree:            path,
 				IncludePromptBodies: false,
@@ -280,16 +297,31 @@ as one JSON document on stdout.`,
 			if err != nil {
 				return err
 			}
-			laneClaim, err := activeMergeLaneClaimForWorktreeInfo(inv.projectsRoot, view)
+			laneClaim, err := ports.lane(inv.projectsRoot, view)
 			if err != nil {
 				return err
+			}
+			service, err := ports.collaboration()
+			if err != nil {
+				return err
+			}
+			coordination, err := service.Inspect(command.Context(), path)
+			if err != nil && !errors.Is(err, worktrees.ErrCollaborationCanonicalClone) {
+				return err
+			}
+			var collaboration *worktreecollab.View
+			if err == nil {
+				collaboration = &coordination
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(worktreeInfoDocument{WorkLogView: view, MergerLaneClaim: laneClaim})
+				return encoder.Encode(worktreeInfoDocument{WorkLogView: view, MergerLaneClaim: laneClaim, Collaboration: collaboration})
 			}
 			text := worktrees.FormatWorktreeInfoText(view) + formatMergerLaneClaimText(laneClaim)
+			if collaboration != nil {
+				text += formatCollaborationInfo(*collaboration)
+			}
 			_, err = io.WriteString(command.OutOrStdout(), text)
 			return err
 		},
@@ -306,6 +338,7 @@ as one JSON document on stdout.`,
 type worktreeInfoDocument struct {
 	worktrees.WorkLogView
 	MergerLaneClaim *orchestrate.MergeLaneClaim `json:"merger_lane_claim,omitempty"`
+	Collaboration   *worktreecollab.View        `json:"collaboration,omitempty"`
 }
 
 // activeMergeLaneClaimForWorktreeInfo resolves the exact repository and

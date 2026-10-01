@@ -175,11 +175,11 @@ func TestAbsorbedByAcceptsPullRequestURL(t *testing.T) {
 	mergeSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	installAbsorbingPullRequestFixture(t, head, mergeSHA, mergedAt)
 
-	shaByNumber, prByNumber, rejectionByNumber, err := resolveAbsorbedBy(context.Background(), result.WorktreeDir, fixture.canonical, "acme/app", "main", "77")
+	shaByNumber, prByNumber, rejectionByNumber, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), result.WorktreeDir, fixture.canonical, "acme/app", "main", "77")
 	if err != nil {
 		t.Fatal(err)
 	}
-	shaByURL, prByURL, rejectionByURL, err := resolveAbsorbedBy(context.Background(), result.WorktreeDir, fixture.canonical, "acme/app", "main", "https://github.com/acme/app/pull/77")
+	shaByURL, prByURL, rejectionByURL, err := landingReceiptService().ResolveAbsorbedBy(context.Background(), result.WorktreeDir, fixture.canonical, "acme/app", "main", "https://github.com/acme/app/pull/77")
 	if err != nil {
 		t.Fatal(err)
 	}

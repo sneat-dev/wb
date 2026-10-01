@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestMain pins WB_PROJECTS_ROOT for the whole package.
@@ -16,6 +17,11 @@ import (
 // removing a clone, an unpinned test would deposit receipts in a real home.
 // Pinning here rather than per-test means a future test cannot forget.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	root, err := os.MkdirTemp("", "fleetsync-wbroot-")
 	if err != nil {
 		panic(err)

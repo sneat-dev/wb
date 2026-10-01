@@ -1,17 +1,14 @@
 package worktrees
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,9 +22,13 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreelanding"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -243,17 +244,7 @@ func (r *listProgressReporter) finish(token progressToken, task, repository, pat
 
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
 // to clean up. HeadSHA must match the current branch tip.
-type PullRequest struct {
-	Number     int        `json:"number"`
-	URL        string     `json:"url"`
-	Repository string     `json:"repository,omitempty"`
-	State      string     `json:"state"`
-	Base       string     `json:"base"`
-	BaseSHA    string     `json:"base_sha,omitempty"`
-	HeadSHA    string     `json:"head_sha"`
-	MergeSHA   string     `json:"merge_sha,omitempty"`
-	Merged     *time.Time `json:"merged_at,omitempty"`
-}
+type PullRequest = worktreebranches.PullRequest
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {
@@ -669,15 +660,7 @@ type CleanupOutcome struct {
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
 // explicitly named interrupted task lock a cleanup command inspected.
-type InterruptedLockRecovery struct {
-	Task          string `json:"task"`
-	WorktreesRoot string `json:"worktrees_root"`
-	Path          string `json:"path"`
-	PID           int    `json:"pid"`
-	Disposition   string `json:"disposition"`
-	Applied       bool   `json:"applied"`
-	Reason        string `json:"reason,omitempty"`
-}
+type InterruptedLockRecovery = worktreeclaims.InterruptedLockRecovery
 
 type cleanupReport struct {
 	GeneratedAt  time.Time                `json:"generated_at"`
@@ -1049,25 +1032,9 @@ func (handle *cleanupWorktreeHandle) close() {
 	}
 }
 
-type githubPullRequest struct {
-	Number         int        `json:"number"`
-	URL            string     `json:"html_url"`
-	State          string     `json:"state"`
-	Base           githubRef  `json:"base"`
-	Head           githubRef  `json:"head"`
-	MergeCommitSHA string     `json:"merge_commit_sha"`
-	MergedAt       *time.Time `json:"merged_at"`
-}
-
-type githubRef struct {
-	Ref  string            `json:"ref"`
-	SHA  string            `json:"sha"`
-	Repo *githubRepository `json:"repo"`
-}
-
-type githubRepository struct {
-	FullName string `json:"full_name"`
-}
+type githubPullRequest = worktreebranches.GitHubPullRequest
+type githubRef = worktreebranches.GitHubRef
+type githubRepository = worktreebranches.GitHubRepository
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
 // Callers that present diagnostics should use ListWithDiagnostics.
@@ -1598,6 +1565,22 @@ func listClaimedRegistryWorktrees(
 	reporter *listProgressReporter,
 	policy inspectPolicy,
 ) ([]ListResult, []ListDiagnostic) {
+	return listClaimedRegistryWorktreesWithClaimReader(ctx, projectsRoot, home, known, tasks, base, filter, absorbedBy,
+		withGitHub, workers, reporter, policy, activeWorkLogClaim)
+}
+
+func listClaimedRegistryWorktreesWithClaimReader(
+	ctx context.Context,
+	projectsRoot, home string,
+	known map[string]bool,
+	tasks map[string]bool,
+	base, filter, absorbedBy string,
+	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
+	policy inspectPolicy,
+	readClaim func(string, string) (workLogClaim, workLogProjection, string, error),
+) ([]ListResult, []ListDiagnostic) {
 	if len(tasks) > 0 {
 		return listTaskScopedClaimedRegistryWorktrees(ctx, projectsRoot, home, known, tasks, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
 	}
@@ -1625,12 +1608,12 @@ func listClaimedRegistryWorktrees(
 					continue
 				}
 				if claim != nil {
-					layout, layoutErr := claimedSharedWorktreeLayout(path, *claim)
-					root := ""
-					if layoutErr == nil {
-						root = layout.WorktreesRoot
+					layout, layoutErr := claimedSharedWorktreeLayoutFromClaim(home, path, *claim)
+					if layoutErr != nil {
+						diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, fmt.Sprintf("verify missing registered worktree ownership: %v", layoutErr)))
+						continue
 					}
-					diagnostics = append(diagnostics, listDiagnostic(root, claim.Task, path,
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, path,
 						"Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
 				}
 				continue
@@ -1638,7 +1621,7 @@ func listClaimedRegistryWorktrees(
 			if known[path] {
 				continue
 			}
-			claim, _, _, claimErr := activeWorkLogClaim(home, path)
+			claim, _, _, claimErr := readClaim(home, path)
 			if claimErr != nil {
 				// Most Git worktrees are not WB-managed. A real local manifest
 				// makes a claim failure material evidence rather than absence.
@@ -1647,16 +1630,13 @@ func listClaimedRegistryWorktrees(
 				}
 				continue
 			}
-			if !taskSelectionMatches(tasks, claim.Task) {
-				continue
-			}
 			if _, localErr := claimedLocalWorktreeLayout(projectsRoot, path, claim); localErr == nil {
 				// The canonical-local walk already owns this deterministic path.
 				// If its inspection failed (for example a GitHub query did), do not
 				// add a misleading second diagnostic that calls it shared.
 				continue
 			}
-			layout, layoutErr := claimedSharedWorktreeLayout(path, claim)
+			layout, layoutErr := claimedSharedWorktreeLayoutFromClaim(home, path, claim)
 			if layoutErr != nil {
 				diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, layoutErr.Error()))
 				continue
@@ -1682,12 +1662,12 @@ func listClaimedRegistryWorktrees(
 	// a time. This retains the normal per-canonical serialization while not
 	// treating the currently configured shared root as an ownership oracle.
 	for _, pendingEntry := range pending {
-		claim, _, _, err := activeWorkLogClaim(home, pendingEntry.path)
+		claim, _, _, err := readClaim(home, pendingEntry.path)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, fmt.Sprintf("re-read managed registry claim: %v", err)))
 			continue
 		}
-		layout, err := claimedSharedWorktreeLayout(pendingEntry.path, claim)
+		layout, err := claimedSharedWorktreeLayoutFromClaim(home, pendingEntry.path, claim)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, err.Error()))
 			continue
@@ -1731,15 +1711,22 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 					continue
 				}
-				raw, err := os.ReadFile(filepath.Join(claimsRoot, entry.Name()))
+				claimID := strings.TrimSuffix(entry.Name(), ".json")
+				if !validClaimID(claimID) {
+					continue
+				}
+				runDirectory, _, err := openWorkLogRun(home, task, run.Name(), false)
 				if err != nil {
 					continue
 				}
-				var claim workLogClaim
-				if json.Unmarshal(raw, &claim) != nil || claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
+				claim, readErr := readWorkLogClaimAt(runDirectory, claimID)
+				_ = runDirectory.Close()
+				if readErr != nil ||
+					claim.EffortID != task || claim.RunID != run.Name() || claim.ClaimID != claimID ||
+					claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
 					continue
 				}
-				layout, err := claimedSharedWorktreeLayout(claim.Worktree, claim)
+				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
 					continue
 				}
@@ -1776,6 +1763,12 @@ func listTaskScopedClaimedRegistryWorktrees(
 // longer be read. It is deliberately task-scoped before opening private claim
 // runs: one named cleanup must neither report nor act on another task.
 func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*workLogClaim, error) {
+	return activeWorkLogClaimAtPathWithReadNames(home, worktree, tasks,
+		func(directory *os.File) ([]string, error) { return directory.Readdirnames(-1) })
+}
+
+func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[string]bool,
+	readNames func(*os.File) ([]string, error)) (*workLogClaim, error) {
 	worklogs, err := openAbsoluteDirectoryNoFollow(filepath.Join(home, "worklogs"), false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1784,7 +1777,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 		return nil, err
 	}
 	defer func() { _ = worklogs.Close() }()
-	efforts, err := worklogs.Readdirnames(-1)
+	efforts, err := readNames(worklogs)
 	if err != nil {
 		return nil, err
 	}
@@ -1802,7 +1795,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 		if runErr != nil {
 			return nil, runErr
 		}
-		runNames, readErr := runs.Readdirnames(-1)
+		runNames, readErr := readNames(runs)
 		if readErr != nil {
 			_ = runs.Close()
 			return nil, readErr
@@ -1824,7 +1817,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 				_ = runs.Close()
 				return nil, claimsErr
 			}
-			claimNames, namesErr := claims.Readdirnames(-1)
+			claimNames, namesErr := readNames(claims)
 			if namesErr != nil {
 				_ = claims.Close()
 				_ = runs.Close()
@@ -1847,6 +1840,9 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 				if claim.Lifecycle == "active" && claim.Task == effort && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
 					_ = claims.Close()
 					_ = runs.Close()
+					if claim.EffortID != effort || claim.RunID != run || claim.ClaimID != claimID {
+						return nil, fmt.Errorf("immutable Work Log claim entry identity mismatch")
+					}
 					return &claim, nil
 				}
 			}
@@ -1858,9 +1854,8 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 }
 
 // claimedSharedWorktreeLayout proves the sole accepted old-shared-root shape.
-// An adopted checkout has an active claim too, but it is intentionally not
-// accepted here: adoption remains represented by its WB-home pointer and its
-// ListResult.External flag rather than becoming a managed shared worktree.
+// Callers must establish immutable acquisition lineage before using geometry
+// to grant managed placement.
 func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout, error) {
 	owner, repository, err := splitRepository(claim.Repository)
 	if err != nil || !validSafeSegment(claim.Task) {
@@ -1882,6 +1877,86 @@ func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout
 		}
 	}
 	return wbhome.Layout{}, fmt.Errorf("active WB claim does not corroborate shared worktree layout")
+}
+
+// claimedSharedWorktreeLayoutFromClaim follows immutable predecessor claims
+// before giving a registry-only checkout managed placement. A successor's
+// AcquiredVia describes its latest handoff, not the original adoption.
+func claimedSharedWorktreeLayoutFromClaim(home, path string, claim workLogClaim) (wbhome.Layout, error) {
+	adopted, err := claimLineageWasAdopted(home, claim)
+	if err != nil {
+		return wbhome.Layout{}, fmt.Errorf("verify managed registry claim lineage: %w", err)
+	}
+	if adopted {
+		return wbhome.Layout{}, fmt.Errorf("adopted worktree claim requires external registration")
+	}
+	return claimedSharedWorktreeLayout(path, claim)
+}
+
+// claimLineageWasAdopted reads the original acquisition through the same
+// no-follow private run and immutable claim reader used by Work Log history.
+// Missing, invalid, or cyclic predecessors cannot grant managed placement.
+func claimLineageWasAdopted(home string, claim workLogClaim) (bool, error) {
+	if claim.ParentClaimID == "" {
+		if claim.AcquiredVia != "" && claim.AcquiredVia != "adopted" && claim.AcquiredVia != legacyMissingClaimRecoveryType {
+			return false, fmt.Errorf("unsupported root Work Log acquisition cannot establish managed placement")
+		}
+	} else if claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" {
+		return false, fmt.Errorf("cross-custody Work Log claim cannot establish managed placement")
+	}
+	if err := validateStaticWorkLogClaim(claim, claim.EffortID, claim.RunID); err != nil {
+		return false, err
+	}
+	if claim.AcquiredVia == "adopted" {
+		return true, nil
+	}
+	if claim.ParentClaimID == "" {
+		return false, nil
+	}
+	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = run.Close() }()
+	claims, err := openPrivateChild(run, "claims", false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = claims.Close() }()
+	seen := map[string]bool{claim.ClaimID: true}
+	for claim.ParentClaimID != "" {
+		var parent workLogClaim
+		readErr := readJSONAt(claims, claim.ParentClaimID+".json", &parent)
+		if readErr != nil {
+			return false, readErr
+		}
+		if parent.ClaimID != claim.ParentClaimID {
+			return false, fmt.Errorf("immutable Work Log claim predecessor identity mismatch")
+		}
+		if seen[parent.ParentClaimID] {
+			return false, fmt.Errorf("immutable Work Log claim predecessor cycle")
+		}
+		if parent.ParentClaimID == "" {
+			if parent.AcquiredVia != "" && parent.AcquiredVia != "adopted" && parent.AcquiredVia != legacyMissingClaimRecoveryType {
+				return false, fmt.Errorf("unsupported root Work Log predecessor cannot establish managed placement")
+			}
+		} else if parent.AcquiredVia != "handoff" && parent.AcquiredVia != "not_landed" && parent.AcquiredVia != "recycle_failed" {
+			return false, fmt.Errorf("cross-custody Work Log predecessor cannot establish managed placement")
+		}
+		if validateErr := validateStaticWorkLogClaim(parent, claim.EffortID, claim.RunID); validateErr != nil {
+			return false, validateErr
+		}
+		if parent.Task != claim.Task || parent.Repository != claim.Repository || parent.Worktree != claim.Worktree ||
+			parent.Branch != claim.Branch || parent.Base != claim.Base || parent.BaseSHA != claim.BaseSHA {
+			return false, fmt.Errorf("immutable Work Log claim predecessor placement mismatch")
+		}
+		seen[parent.ClaimID] = true
+		if parent.AcquiredVia == "adopted" {
+			return true, nil
+		}
+		claim = parent
+	}
+	return false, nil
 }
 
 // claimedLocalWorktreeLayout recognizes the one deterministic default-local
@@ -2556,9 +2631,7 @@ func (run *cleanupRun) gatherInventory() error {
 		run.listed.Results = selected
 	}
 	for index := range run.listed.Results {
-		if err := applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &run.listed.Results[index]); err != nil {
-			return err
-		}
+		applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &run.listed.Results[index])
 		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &run.listed.Results[index]); err != nil {
 			return err
 		}
@@ -2795,19 +2868,15 @@ func (run *cleanupRun) applyCleanup() (CleanupOutcome, error) {
 		for resultIndex := range run.outcome.Results {
 			if run.outcome.Results[resultIndex].BacklogID == run.backlog[backlogIndex].ID {
 				run.outcome.Results[resultIndex].Applied = true
-				run.outcome.Results[resultIndex].BranchDeleted = true
+				// Recovery may remove a checkout while deliberately preserving
+				// pre-existing refs, or may retire a detached checkout with no ref.
+				run.outcome.Results[resultIndex].BranchDeleted = !run.backlog[backlogIndex].Detached && !run.backlog[backlogIndex].PreserveLocalBranch
 				run.outcome.Results[resultIndex].WorktreeResidueRemoved = residuePresent
-				// resumeLifecycleBacklog never deletes a remote branch itself: it
-				// refuses to proceed unless a fresh `git ls-remote` already shows
-				// origin/<branch> gone (see its remoteBranchHead check). A record
-				// with a non-empty RemoteHeadSHA means a remote branch existed at
-				// seal time — the interrupted attempt that sealed it, not this
-				// resume, is what deleted it, most likely moments before the crash
-				// that left this backlog behind. That successful resume is itself
-				// the proof the remote branch is gone now, so the report must
-				// credit the deletion instead of defaulting to false and silently
-				// under-claiming what WB actually did.
-				run.outcome.Results[resultIndex].RemoteDeleted = run.backlog[backlogIndex].RemoteHeadSHA != ""
+				// A retiring_remote record can delete the exact observed remote
+				// head under a lease during resume. Otherwise, successful resume
+				// proves that a previously observed remote head was already gone.
+				// A create-recovery record may instead preserve that branch.
+				run.outcome.Results[resultIndex].RemoteDeleted = !run.backlog[backlogIndex].PreserveLocalBranch && run.backlog[backlogIndex].RemoteHeadSHA != ""
 				run.outcome.Results[resultIndex].Reason = "resumed durable cleanup backlog"
 			}
 		}
@@ -2900,6 +2969,10 @@ func (run *cleanupRun) applyCleanup() (CleanupOutcome, error) {
 // lifecycle artifacts before releasing (or, for a recovered lock, retiring)
 // the task's coordination lock.
 func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *remoteBranchDeletionGate) error {
+	return run.applyCleanupTaskWithPorts(entry, remoteGate, productionCleanupTaskApplicationPorts())
+}
+
+func (run *cleanupRun) applyCleanupTaskWithPorts(entry cleanupApplyEntry, remoteGate *remoteBranchDeletionGate, ports cleanupTaskApplicationPorts) error {
 	selection := entry.selection
 	// A recovered lock may only become a normal cleanup transaction after the
 	// named task itself has an eligible, present worktree. Lifecycle artifacts
@@ -2943,7 +3016,7 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 			// A filtered cleanup may leave physical members in other canonical
 			// repositories. Check the whole task while its lock is still held;
 			// an empty coordination directory alone does not prove terminality.
-			inventory, inventoryErr := ListWithDiagnostics(run.ctx, ListOptions{
+			inventory, inventoryErr := ports.Inventory(run.ctx, ListOptions{
 				ProjectsRoot: run.normalized.ProjectsRoot, Task: selection.Task, Workers: 1,
 			})
 			retireNamespace = inventoryErr == nil && len(inventory.Results) == 0 && len(inventory.Diagnostics) == 0
@@ -2971,13 +3044,13 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 	// lock prevents another WB lifecycle operation from racing this phase;
 	// every destructive step still repeats its local/network recheck below.
 	for _, index := range entry.resultIndices {
-		refreshed, preflightErr := preflightCleanupRepository(run.ctx, run.normalized, run.now, task, run.outcome.Results[index], run.resolution.Write.Home)
+		refreshed, preflightErr := ports.Preflight(run.ctx, run.normalized, run.now, task, run.outcome.Results[index], run.resolution.Write.Home)
 		if preflightErr != nil {
 			return preflightErr
 		}
 		run.outcome.Results[index].ListResult = refreshed
 	}
-	artifactArchive, artifactArchivePath, artifactHandles, artifactErr := prepareCleanupLifecycleArtifacts(
+	artifactArchive, artifactArchivePath, artifactHandles, artifactErr := ports.PrepareArtifacts(
 		run.resolution.Write.Home, task, entry.artifactIndices, run.outcome.Artifacts,
 	)
 	if artifactErr != nil {
@@ -2986,227 +3059,14 @@ func (run *cleanupRun) applyCleanupTask(entry cleanupApplyEntry, remoteGate *rem
 	if artifactArchive != nil {
 		defer func() { _ = artifactArchive.Close() }()
 	}
-	defer closeCleanupLifecycleArtifacts(artifactHandles)
+	defer ports.CloseArtifacts(artifactHandles)
 	// Each call owns one member's descriptors until it returns to this task transaction.
-	applyCleanupWorktree := func(index int) error {
-		worktree, err := openCleanupWorktree(task, run.outcome.Results[index])
-		if err != nil {
-			return err
-		}
-		defer worktree.close()
-		if err := worktree.validate(); err != nil {
-			return err
-		}
-		refreshed, err := inspectLifecycleWorktree(
-			run.ctx,
-			run.normalized.ProjectsRoot,
-			run.resolution.Write.Home,
-			wbhome.Layout{WorktreesRoot: run.outcome.Results[index].WorktreesRoot, Local: run.outcome.Results[index].Local},
-			run.outcome.Results[index].Task,
-			run.outcome.Results[index].WorktreeDir,
-			run.normalized.Base,
-			run.normalized.AbsorbedBy,
-			true,
-			false, // The task is locked by this cleanup operation.
-			run.outcome.Results[index].External,
-			cleanupInspectPolicy(run.normalized),
-		)
-		if err != nil {
-			return err
-		}
-		if err := applyMergeReceiptCleanupProof(run.ctx, run.normalized.MergeReceiptProofs, &refreshed); err != nil {
-			return fmt.Errorf("cleanup receipt proof for %s: %w", refreshed.Repository, err)
-		}
-		if err := applyAbsorbedConflictAcknowledgementCleanupProof(run.ctx, run.resolution.Write.Home, &refreshed); err != nil {
-			return fmt.Errorf("cleanup absorbed-conflict acknowledgement proof for %s: %w", refreshed.Repository, err)
-		}
-		applySupersessionReceipt(run.ctx, run.normalized.SupersededBy, &refreshed)
-		if err := worktree.validate(); err != nil {
-			return err
-		}
-		eligible, reason := cleanupEligibility(refreshed, run.normalized, run.now)
-		if !eligible {
-			return fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
-		}
-		if refreshed.HeadSHA != run.outcome.Results[index].HeadSHA {
-			return fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository)
-		}
-		run.outcome.Results[index].ListResult = refreshed
-		canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
-		if err != nil {
-			return fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err)
-		}
-		defer canonical.close()
-		if err := canonical.validate(); err != nil {
-			return fmt.Errorf("cleanup canonical repository changed before Git operations: %w", err)
-		}
-		if run.normalized.beforeCleanupWorktreeRemoval != nil {
-			run.normalized.beforeCleanupWorktreeRemoval(refreshed.WorktreeDir)
-		}
-		// Git's worktree-remove command requires the registered lexical path
-		// (it rejects descriptor aliases such as /dev/fd/N). Reauthorize that
-		// spelling against the retained task/owner/worktree descriptors at the
-		// last possible point; any substitution conservatively aborts before Git
-		// can remove a checkout or its registration.
-		if err := worktree.validate(); err != nil {
-			return err
-		}
-		if err := preflightWorkLogSeal(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
-			if recoveryErr := recordLegacyRepositoryRelocationForCleanup(run.ctx, run.resolution.Write.Home, run.normalized.ProjectsRoot, refreshed, run.normalized.beforeLegacyRelocationReceipt); recoveryErr != nil {
-				return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)
-			}
-		}
-		// Archive the recoverable run record while every Git asset still
-		// exists. Remote branch deletion is destructive too, so it must never
-		// precede the durable terminal/outbox record.
-		var sealErr error
-		if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
-			sealErr = sealWorkLogForSupersession(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
-		} else {
-			sealErr = sealWorkLogForCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA)
-		}
-		if sealErr != nil {
-			return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
-		}
-		backlogRecord := newLifecycleBacklogRecord(run.normalized.ProjectsRoot, refreshed, "removed")
-		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageSealed); err != nil {
-			return err
-		}
-		pendingLifecycleBacklogs++
-		run.outcome.Results[index].BacklogID = backlogRecord.ID
-		if run.normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
-			if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRetiringRemote); err != nil {
-				return err
-			}
-			// Every authorization and the network call itself sit inside one
-			// gate slot, so the bound counts branch deletions actually in
-			// flight against origin rather than tasks that intend one. The
-			// slot is taken after this task's repository locks and released
-			// before them; nothing holding a slot waits for a lock, so the
-			// two resources cannot form a cycle.
-			deleteErr := func() error {
-				releaseRemoteSlot := remoteGate.enter()
-				defer releaseRemoteSlot()
-				if err := worktree.validate(); err != nil {
-					return err
-				}
-				if run.normalized.beforeCleanupNetworkBranchOperation != nil {
-					run.normalized.beforeCleanupNetworkBranchOperation(refreshed.WorktreeDir)
-				}
-				if err := worktree.validate(); err != nil {
-					return err
-				}
-				if run.normalized.afterCleanupGitAuthorization != nil {
-					run.normalized.afterCleanupGitAuthorization("delete remote branch")
-				}
-				if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
-					return err
-				}
-				if err := runSecureCleanupGitHelper(run.ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.RemoteHeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
-					return fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.RemoteHeadSHA, err)
-				}
-				return nil
-			}()
-			if deleteErr != nil {
-				return deleteErr
-			}
-			run.outcome.Results[index].RemoteDeleted = true
-			if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemoteRetired); err != nil {
-				return err
-			}
-		}
-		if err := worktree.validate(); err != nil {
-			return err
-		}
-		if run.normalized.afterCleanupGitAuthorization != nil {
-			run.normalized.afterCleanupGitAuthorization("remove worktree")
-		}
-		if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
-			return err
-		}
-		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemovingWorktree); err != nil {
-			return err
-		}
-		if removeErr := runSecureCleanupGitHelper(run.ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); removeErr != nil {
-			// Git deletes the working tree first and the registration
-			// second, and it deletes the registration even when the
-			// tree delete failed partway. Ask which of the two failures
-			// this was before deciding whether the task is finishable.
-			residue, residueErr := worktreeRemovalLeftResidue(run.ctx, canonical, refreshed.WorktreeDir)
-			if residueErr != nil {
-				return fmt.Errorf("remove worktree %s: %w; inspect its registration afterwards: %v", refreshed.WorktreeDir, removeErr, residueErr)
-			}
-			if !residue {
-				return fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, removeErr)
-			}
-			if run.normalized.beforeCleanupResidueRemoval != nil {
-				if err := run.normalized.beforeCleanupResidueRemoval(refreshed.WorktreeDir); err != nil {
-					return err
-				}
-			}
-			removed, repairErr := removeUnregisteredWorktreeResidue(worktree, refreshed.WorktreeDir)
-			if repairErr != nil {
-				return fmt.Errorf("remove worktree %s: %w; %v", refreshed.WorktreeDir, removeErr, repairErr)
-			}
-			run.outcome.Results[index].WorktreeResidueRemoved = removed
-		}
-		run.outcome.Results[index].WorktreeGone = true
-		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageWorktreeRemoved); err != nil {
-			return err
-		}
-		if run.normalized.afterCleanupWorktreeRemoval != nil {
-			if err := run.normalized.afterCleanupWorktreeRemoval(refreshed.WorktreeDir); err != nil {
-				return fmt.Errorf("after worktree removal for %s: %w", refreshed.Repository, err)
-			}
-		}
-		if err := task.validate(); err != nil {
-			return err
-		}
-		if run.normalized.afterCleanupGitAuthorization != nil {
-			run.normalized.afterCleanupGitAuthorization("delete local branch")
-		}
-		if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
-			return err
-		}
-		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
-			return err
-		}
-		// A detached checkout has no branch ref of its own: a review
-		// checkout points straight at a commit. Deleting the checkout is
-		// the whole of its retirement, and asking Git to delete
-		// refs/heads/ with an empty name would be a request to remove
-		// something that was never created.
-		if refreshed.Branch != "" {
-			if err := runSecureCleanupGitHelper(run.ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-				return fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
-			}
-			run.outcome.Results[index].BranchDeleted = true
-		}
-		if err := worktree.removeEmptyParent(run.normalized.afterCleanupParentAuthorization, run.normalized.afterCleanupOwnerRetirement); err != nil {
-			return err
-		}
-		if refreshed.External {
-			owner, repository, splitErr := splitRepository(refreshed.Repository)
-			if splitErr != nil {
-				return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
-			}
-			if err := removeAdoptedRegistration(task, owner, repository); err != nil {
-				return err
-			}
-		}
-		if err := persistLifecycleBacklog(run.resolution.Write.Home, &backlogRecord, lifecycleStageComplete); err != nil {
-			return err
-		}
-		pendingLifecycleBacklogs--
-		run.outcome.Results[index].Applied = true
-		return nil
-	}
 	for _, index := range entry.resultIndices {
-		if err := applyCleanupWorktree(index); err != nil {
+		if err := ports.ApplyMember(run, task, index, remoteGate, recoveredTransaction, &pendingLifecycleBacklogs); err != nil {
 			return err
 		}
 	}
-	if err := archiveCleanupLifecycleArtifacts(task, artifactArchive, artifactArchivePath, artifactHandles, run.outcome.Artifacts); err != nil {
+	if err := ports.ArchiveArtifacts(task, artifactArchive, artifactArchivePath, artifactHandles, run.outcome.Artifacts); err != nil {
 		return err
 	}
 	if recoveredTransaction {
@@ -4138,930 +3998,173 @@ func isUnfetchedGitObjectError(err error) bool {
 		strings.Contains(message, "could not get object info")
 }
 
-// applyWorktreeAge records who holds a checkout and how long it has been
-// there. Nothing in WB could previously tell an abandoned worktree from a
-// paused one: the inventory showed `owners=orphaned` for 20 of them and no age
-// at all, so nothing ever prompted a sweep and the sweep only happened when the
-// disk filled.
+// applyWorktreeAge records the owner and age using facade-owned manifest readers.
 func applyWorktreeAge(result *ListResult, worktree string, policy inspectPolicy) {
-	result.Owner = worktreeOwnerName(result.Owners, result.OwnerState)
-	if manifest, err := ReadManifest(worktree); err == nil && !manifest.CreatedAt.IsZero() {
-		result.CreatedAt = manifest.CreatedAt.UTC()
-	} else if info, statErr := os.Stat(worktree); statErr == nil {
-		// A checkout WB did not create — an adopted or hand-made one — still
-		// has an age, and reporting the directory's own is honest as long as
-		// nothing claims it came from a manifest.
-		result.CreatedAt = info.ModTime().UTC()
+	owners := make([]string, len(result.Owners))
+	for i, owner := range result.Owners {
+		owners[i] = owner.Agent
 	}
-	if result.CreatedAt.IsZero() {
-		return
-	}
-	now := policy.clock()
-	if age := now.Sub(result.CreatedAt); age > 0 {
-		result.AgeSeconds = int64(age / time.Second)
-	}
-	if policy.ttl > 0 {
-		result.TTLSeconds = int64(policy.ttl / time.Second)
-		result.Expired = now.Sub(result.CreatedAt) > policy.ttl
-	}
-}
-
-// worktreeOwnerName names the agent to ask before removing a checkout.
-func worktreeOwnerName(owners []OwnerView, state string) string {
-	for index := len(owners) - 1; index >= 0; index-- {
-		if agent := strings.TrimSpace(owners[index].Agent); agent != "" {
-			return agent
-		}
-	}
-	return state
+	fields := worktreeproof.AgeFields{Owner: result.Owner, CreatedAt: result.CreatedAt, AgeSeconds: result.AgeSeconds, TTLSeconds: result.TTLSeconds, Expired: result.Expired}
+	worktreeproof.ApplyWorktreeAge(&fields, worktree, owners, result.OwnerState, policy.ttl, policy.clock,
+		func(path string) (time.Time, error) {
+			manifest, err := ReadManifest(path)
+			return manifest.CreatedAt, err
+		},
+		func(path string) (time.Time, error) {
+			info, err := os.Stat(path)
+			if err != nil {
+				return time.Time{}, err
+			}
+			return info.ModTime(), nil
+		})
+	result.Owner, result.CreatedAt, result.AgeSeconds, result.TTLSeconds, result.Expired =
+		fields.Owner, fields.CreatedAt, fields.AgeSeconds, fields.TTLSeconds, fields.Expired
 }
 
 func isAncestor(ctx context.Context, repository, ancestor, descendant string) (bool, error) {
-	// A commit is trivially its own ancestor. One fleet listing issued 71 of
-	// these self-comparisons as real git processes.
-	if ancestor == descendant {
-		return true, nil
-	}
-	memo := gitQueryMemoFrom(ctx)
 	args := []string{"merge-base", "--is-ancestor", ancestor, descendant}
-	memoKey := gitQueryMemoKey(repository, args)
+	memo := gitQueryMemoFrom(ctx)
+	key := gitQueryMemoKey(repository, args)
+	var lookup func(string) (bool, bool)
+	var store func(string, bool)
 	if memo != nil {
-		if cached, ok := memo.get(memoKey); ok {
-			return cached == "true", nil
-		}
-	}
-	var commandRunner runner.Runner = runner.Real{}
-	if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
-		commandRunner = injected
-	}
-	// Keep the process cwd inherited; -C selects the repository as before.
-	result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", append([]string{"-C", repository}, args...)...)
-	remember := func(verdict bool) {
-		if memo != nil && ctx.Err() == nil {
+		lookup = func(string) (bool, bool) { value, ok := memo.get(key); return value == "true", ok }
+		store = func(_ string, verdict bool) {
 			if verdict {
-				memo.put(memoKey, "true")
+				memo.put(key, "true")
 			} else {
-				memo.put(memoKey, "false")
+				memo.put(key, "false")
 			}
 		}
 	}
-	if err == nil {
-		remember(true)
-		return true, nil
-	}
-	if result.ExitCode == 1 && ctx.Err() == nil {
-		remember(false)
-		return false, nil
-	}
-	return false, fmt.Errorf("check whether %s is merged into %s: %w", ancestor, descendant, err)
+	return worktreeproof.IsAncestor(ctx, repository, ancestor, descendant,
+		func(ctx context.Context, repository, ancestor, descendant string) (int, error) {
+			var commandRunner runner.Runner = runner.Real{}
+			if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
+				commandRunner = injected
+			}
+			result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git",
+				"-C", repository, "merge-base", "--is-ancestor", ancestor, descendant)
+			return result.ExitCode, err
+		}, lookup, store)
 }
 
 func remoteBranchHead(ctx context.Context, repository, branch string) (string, error) {
-	output, err := git(ctx, repository, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return "", nil
-	}
-	if len(fields) != 2 {
-		return "", fmt.Errorf("unexpected remote branch response for %s: %q", branch, output)
-	}
-	return fields[0], nil
+	return worktreelanding.RemoteBranchHead(ctx, repository, branch, git)
 }
 
-// fetchRemoteTargetHead obtains the exact origin target object used for the
-// integration decision through an invocation-private ref rather than a stale
-// tracking ref or shared FETCH_HEAD. Cleanup repeats this immediately before
-// deletion, so a force-pushed target cannot reuse old evidence.
 func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
-	if cache := targetHeadCacheFrom(ctx); cache != nil {
-		return cache.resolve(repository, branch, func() (string, error) {
-			return fetchRemoteTargetHeadUncached(ctx, repository, branch)
-		})
-	}
-	return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+	return worktreelanding.FetchRemoteTargetHead(ctx, repository, branch, remoteTargetFetchTimeout, fetchRemoteTargetPrivate)
 }
 
-// remoteTargetFetchTimeout bounds one exact-target fetch. A fleet walk makes one
-// of these per repository and a healthy fetch of a single ref answers in
-// seconds, so this is generous rather than tight — its job is to convert a
-// remote that will never answer into a reported state, not to police slow ones.
-// A live sweep once sat 38 minutes on a single unanswered fetch, holding a task
-// lock, with no output and no way to tell it apart from ordinary slowness.
-//
-// It is a var so tests can shorten it.
+// A live remote fetch is bounded, while tests can shorten this timeout.
 var remoteTargetFetchTimeout = 90 * time.Second
 
 func isMissingRemoteTargetError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	// These are the explicit missing-ref diagnostics emitted by Git's fetch
-	// transport. Do not broaden on generic network, authentication, or timeout
-	// failures: those must remain non-recoverable for cleanup safety.
-	for _, marker := range []string{
-		"couldn't find remote ref",
-		"could not find remote ref",
-		"remote ref does not exist",
-		"no such ref",
-	} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
+	return worktreelanding.IsMissingRemoteTargetError(err)
 }
 
-func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
-	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
-	defer cancel()
-	head, err := fetchOriginBranchToPrivateRef(fetchCtx, repository, branch, func(runCtx context.Context, args ...string) (string, error) {
+func fetchRemoteTargetPrivate(ctx context.Context, repository, branch string) (string, error) {
+	return fetchOriginBranchToPrivateRef(ctx, repository, branch, func(runCtx context.Context, args ...string) (string, error) {
 		return git(runCtx, repository, args...)
 	}, nil)
-	if err != nil {
-		// Distinguish our own deadline from a caller who cancelled the whole run:
-		// the operator needs to know this one remote never answered, and which
-		// budget it blew, rather than reading a bare "signal: killed".
-		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return "", fmt.Errorf("fetch exact origin/%s target: remote did not answer within %s", branch, remoteTargetFetchTimeout)
-		}
-		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
-	}
-	return head, nil
 }
 
-// remoteDefaultBranch obtains the repository's current default branch from
-// origin itself. A caller's --base is a useful fallback for legacy manifests,
-// but it cannot authorize replacing a deleted recorded target with an
-// arbitrary release branch.
 func remoteDefaultBranch(ctx context.Context, repository string) (string, error) {
-	output, err := git(ctx, repository, "ls-remote", "--symref", "origin", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("read origin default branch: %w", err)
-	}
-	return parseRemoteDefaultBranch(output, func(branch string) bool { return validBranch(ctx, branch) })
+	return worktreelanding.RemoteDefaultBranch(ctx, repository, git, func(branch string) bool { return validBranch(ctx, branch) })
 }
 
-func parseRemoteDefaultBranch(output string, valid func(string) bool) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "ref: ") {
-			continue
-		}
-		fields := strings.Fields(strings.TrimPrefix(line, "ref: "))
-		if len(fields) != 2 || fields[1] != "HEAD" || !strings.HasPrefix(fields[0], "refs/heads/") {
-			continue
-		}
-		branch := strings.TrimPrefix(fields[0], "refs/heads/")
-		if !valid(branch) {
-			return "", fmt.Errorf("origin default branch is invalid: %q", branch)
-		}
-		return branch, nil
-	}
-	return "", fmt.Errorf("origin did not resolve a default branch")
+// landingReceiptService binds repository observations to the neutral receipt
+// policy. Worktree and cleanup transaction ownership remains in this package.
+func landingReceiptService() worktreelanding.ReceiptService {
+	return worktreelanding.ReceiptService{Ports: worktreelanding.ReceiptPorts{
+		Git: git, IsAncestor: isAncestor,
+		ValidBranch: func(ctx context.Context, branch string) bool { return validBranch(ctx, branch) },
+		GitHubExecute: func(ctx context.Context, path string, args ...string) worktreelanding.GitHubCommand {
+			result := githubobserver.Execute(ctx, path, args...)
+			return worktreelanding.GitHubCommand{Stdout: result.Stdout, Stderr: result.Stderr, Err: result.Err}
+		},
+		GitHubGet: func(ctx context.Context, request worktreelanding.GitHubGetRequest) ([]byte, error) {
+			response, err := githubobserver.Get(ctx, githubobserver.GetRequest{
+				Dir: request.Dir, Repository: request.Repository, Target: request.Target,
+				Endpoint: request.Endpoint, FreshWindow: 0,
+			})
+			return response.Body, err
+		},
+		MergeTreeRun: func(ctx context.Context, repository, ours, theirs string) (string, string, int, error) {
+			var commandRunner runner.Runner = runner.Real{}
+			if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
+				commandRunner = injected
+			}
+			result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", "-C", repository,
+				"merge-tree", "--write-tree", "--no-messages", "--end-of-options", ours, theirs)
+			return result.Stdout, result.Stderr, result.ExitCode, err
+		},
+	}}
 }
 
-// githubPullRequests reads pull requests associated with the immutable source
-// commit rather than filtering by the current branch name. A branch can be
-// renamed, deleted, or (as in a rebase merge) differ from the managed
-// worktree's branch while the exact head SHA remains the durable receipt.
 func githubPullRequests(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, error) {
-	pullRequests, _, err := githubPullRequestsForCommit(ctx, worktree, repository, head)
-	return pullRequests, err
+	return landingReceiptService().GitHubPullRequests(ctx, worktree, repository, head)
 }
-
-// githubPullRequestsForCommit additionally reports whether GitHub knows the
-// commit at all. A commit it has never seen was never pushed, and a checkout
-// holding one is the single class that can still lose work — so it is the one
-// class no widening may ever retire, and saying "never pushed" out loud is the
-// difference between a refusal an operator can act on and a mystery.
 func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, bool, error) {
-	result := githubobserver.Execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/commits/"+head+"/pulls")
-	if result.Err != nil {
-		if unknownGitHubCommit(result.Stdout) {
-			// A commit GitHub has never seen has no pull request associated
-			// with it, which is an answer rather than a failure. Local commits
-			// on an unpushed branch are ordinary, and treating them as fatal
-			// hid the whole worktree behind a malformed-candidate diagnostic —
-			// including from --absorbed-by, which exists precisely for work
-			// that reached the target without this commit ever being pushed.
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf(
-			"query pull requests for %s source commit %s: %w: %s",
-			repository, head, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)),
-		)
-	}
-	var pullRequests []githubPullRequest
-	if err := json.Unmarshal(result.Stdout, &pullRequests); err != nil {
-		return nil, true, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
-	}
-	return pullRequests, true, nil
+	return landingReceiptService().GitHubPullRequestsForCommit(ctx, worktree, repository, head)
 }
-
-// githubPullRequestsForBranch reads closed pull requests for an exact recorded
-// source branch. It is used only after that branch disappeared from origin:
-// GitHub keeps the PR's immutable head SHA after deleting its ref, whereas the
-// commit-to-PR index can point solely to the earlier PR into that branch.
-func githubPullRequestsForBranch(ctx context.Context, worktree, repository, branch, base string) ([]githubPullRequest, error) {
-	return githubPullRequestsForBranchWithExecute(ctx, worktree, repository, branch, base, githubobserver.Execute)
+func githubPullRequestsForBranchWithExecute(ctx context.Context, worktree, repository, branch, base string,
+	execute func(context.Context, string, ...string) githubobserver.CommandResponse) ([]githubPullRequest, error) {
+	return landingReceiptService().GitHubPullRequestsForBranchWithExecute(ctx, worktree, repository, branch, base,
+		func(ctx context.Context, path string, args ...string) worktreelanding.GitHubCommand {
+			result := execute(ctx, path, args...)
+			return worktreelanding.GitHubCommand{Stdout: result.Stdout, Stderr: result.Stderr, Err: result.Err}
+		})
 }
-
-func githubPullRequestsForBranchWithExecute(
-	ctx context.Context,
-	worktree, repository, branch, base string,
-	execute func(context.Context, string, ...string) githubobserver.CommandResponse,
-) ([]githubPullRequest, error) {
-	owner, _, ok := strings.Cut(repository, "/")
-	if !ok || owner == "" || branch == "" || base == "" {
-		return nil, fmt.Errorf("query exact merged pull request requires repository, source branch, and default base")
-	}
-	query := url.Values{
-		"base":  []string{base},
-		"head":  []string{owner + ":" + branch},
-		"state": []string{"closed"},
-	}.Encode()
-	result := execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/pulls?"+query)
-	if result.Err != nil {
-		return nil, fmt.Errorf("query pull requests for deleted target %s in %s: %w: %s", branch, repository, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)))
-	}
-	var pullRequests []githubPullRequest
-	if err := json.Unmarshal(result.Stdout, &pullRequests); err != nil {
-		return nil, fmt.Errorf("decode pull requests for deleted target %s in %s: %w", branch, repository, err)
-	}
-	return pullRequests, nil
-}
-
-// exactDeletedTargetDefaultBranchReceipt selects the only receipt that may
-// replace a missing recorded target. It binds the recorded branch and current
-// worktree head to a merged PR into the repository default branch, and keeps
-// both immutable GitHub commit identities for the subsequent ancestry check.
 func exactDeletedTargetDefaultBranchReceipt(ctx context.Context, worktree, repository, recordedTarget, defaultBase, head string) (*PullRequest, error) {
-	if !validBranch(ctx, recordedTarget) || !validBranch(ctx, defaultBase) || !isGitObjectID(head) {
-		return nil, fmt.Errorf("invalid deleted-target recovery identity")
-	}
-	pullRequests, err := githubPullRequestsForBranch(ctx, worktree, repository, recordedTarget, defaultBase)
-	if err != nil {
-		return nil, err
-	}
-	return selectExactDeletedTargetDefaultBranchReceipt(ctx, repository, pullRequests, recordedTarget, defaultBase, head)
+	return landingReceiptService().ExactDeletedTargetDefaultBranchReceipt(ctx, worktree, repository, recordedTarget, defaultBase, head)
 }
-
-func selectExactDeletedTargetDefaultBranchReceipt(ctx context.Context, repository string, pullRequests []githubPullRequest, recordedTarget, defaultBase, head string) (*PullRequest, error) {
-	var receipt *PullRequest
-	for _, candidate := range pullRequests {
-		if candidate.MergedAt == nil || !strings.EqualFold(candidate.State, "closed") ||
-			candidate.Head.Ref != recordedTarget || candidate.Head.SHA != head ||
-			candidate.Base.Ref != defaultBase || !isGitObjectID(candidate.Head.SHA) || !isGitObjectID(candidate.MergeCommitSHA) {
-			continue
-		}
-		candidateReceipt := mergedPullRequestReceipt(repository, candidate)
-		if receipt != nil && (receipt.Number != candidateReceipt.Number || receipt.MergeSHA != candidateReceipt.MergeSHA) {
-			return nil, fmt.Errorf("multiple exact merged pull-request receipts found for deleted target %s at head %s", recordedTarget, head)
-		}
-		receipt = candidateReceipt
-	}
-	return receipt, nil
-}
-
-// unknownGitHubCommit recognizes only GitHub's own structured answer that the
-// commit does not exist there. It reads the API error body rather than
-// matching human-readable text anywhere in the output, so an unrelated
-// failure that merely mentions a commit is never mistaken for this one.
-func unknownGitHubCommit(body []byte) bool {
-	var failure struct {
-		Message string `json:"message"`
-		Status  string `json:"status"`
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(body), &failure); err != nil {
-		return false
-	}
-	return failure.Status == "422" && strings.HasPrefix(failure.Message, "No commit found for SHA")
-}
-
 func matchingPullRequests(pullRequests []githubPullRequest, repository, base, branch, head string) (open, merged *PullRequest) {
-	for _, candidate := range pullRequests {
-		pullRequest := &PullRequest{
-			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
-			Repository: repository, Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
-		}
-		if candidate.MergedAt != nil {
-			pullRequest.State = "MERGED"
-		}
-		pullRequest.MergeSHA = candidate.MergeCommitSHA
-		if strings.EqualFold(candidate.State, "OPEN") {
-			// A SHA can name several branches after a child lands directly or
-			// starts with zero changes over its target. Only the exact source
-			// repository and branch owns an open-PR cleanup veto. Merged PR
-			// recovery below deliberately remains bound to immutable head/base
-			// identities because its source ref may already be renamed or gone.
-			if candidate.Head.SHA != head || candidate.Head.Ref != branch || candidate.Head.Repo == nil ||
-				!strings.EqualFold(candidate.Head.Repo.FullName, repository) {
-				continue
-			}
-			if open == nil || candidate.Number > open.Number {
-				open = pullRequest
-			}
-			continue
-		}
-		if !strings.EqualFold(pullRequest.State, "MERGED") ||
-			candidate.Base.Ref != base ||
-			candidate.Head.SHA != head ||
-			candidate.MergedAt == nil {
-			continue
-		}
-		if merged == nil || candidate.MergedAt.After(*merged.Merged) {
-			merged = pullRequest
-		}
-	}
-	return open, merged
+	return landingReceiptService().MatchingPullRequests(pullRequests, repository, base, branch, head)
 }
-
-// mergedPullRequestTarget returns the replacement target branch of an exact-head
-// merged PR when the recorded lifecycle target is missing or stale. It deliberately
-// refuses ambiguity: two merged PRs for the same head targeting different
-// branches do not identify which remote target should authorize cleanup.
 func mergedPullRequestTarget(ctx context.Context, pullRequests []githubPullRequest, head, recordedBase string) (string, bool) {
-	target := ""
-	for _, candidate := range pullRequests {
-		if candidate.Head.SHA != head || candidate.MergedAt == nil || candidate.Base.Ref == recordedBase {
-			continue
-		}
-		if !validBranch(ctx, candidate.Base.Ref) {
-			continue
-		}
-		if target != "" && target != candidate.Base.Ref {
-			return "", false
-		}
-		target = candidate.Base.Ref
-	}
-	return target, target != ""
+	return landingReceiptService().MergedPullRequestTarget(ctx, pullRequests, head, recordedBase)
 }
-
-// rebaseMergedPullRequestIntegrated recognizes the one case in which a
-// branch's exact source head is correctly absent from the target history: a
-// GitHub rebase merge. The immutable PR receipt must bind that exact source
-// head to an exact merge-result commit. That result must be in the freshly
-// fetched target and have precisely the same tree as the source; matching a
-// PR number, title, or a merely similar patch is deliberately insufficient.
 func rebaseMergedPullRequestIntegrated(ctx context.Context, repository, head, target string, pullRequest *PullRequest) (bool, error) {
-	if pullRequest == nil || pullRequest.HeadSHA != head || !isGitObjectID(pullRequest.MergeSHA) {
-		return false, nil
-	}
-	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
-	if err != nil || !mergeInTarget {
-		return mergeInTarget, err
-	}
-	sourceTree, err := commitTree(ctx, repository, head)
-	if err != nil {
-		return false, err
-	}
-	mergeTree, err := commitTree(ctx, repository, pullRequest.MergeSHA)
-	if err != nil {
-		return false, err
-	}
-	return sourceTree == mergeTree, nil
+	return landingReceiptService().RebaseMergedPullRequestIntegrated(ctx, repository, head, target, pullRequest)
 }
 
-// absorbedReceipt is the landing evidence for a branch whose exact head can
-// never reach the target because a differently named integration branch
-// carried its content there. A merger batching several completed candidates
-// onto one integration branch and landing that branch once is the workflow a
-// repository requiring linear history forces; the source branch tips are then
-// absent from the target by construction, not by omission.
-type absorbedReceipt struct {
-	// LandingSHA is the exact commit in the target that introduced the work.
-	LandingSHA string
-	// PullRequest is the merged pull-request receipt when GitHub supplied one.
-	PullRequest *PullRequest
+type absorbedReceipt = worktreelanding.AbsorbedReceipt
+
+func absorbedLandingReceipt(ctx context.Context, worktree, repository, slug, head, base, target, absorbedBy string,
+	pullRequests []githubPullRequest) (*absorbedReceipt, string, error) {
+	return landingReceiptService().AbsorbedLandingReceipt(ctx, worktree, repository, slug, head, base, target, absorbedBy, pullRequests)
+}
+func attestedAbsorbedReceipt(ctx context.Context, worktree, repository, slug, head, base, target, absorbedBy string) (*absorbedReceipt, string, error) {
+	return landingReceiptService().AttestedAbsorbedReceipt(ctx, worktree, repository, slug, head, base, target, absorbedBy)
 }
 
-// absorbedLandingReceipt establishes, with evidence only, that a branch's
-// content reached the exact fetched origin target inside another branch.
-//
-// Two receipt sources are accepted, never a bare assertion. GitHub's own
-// commit-to-pull-request index is preferred: it is computed by GitHub, not
-// written by the author, and it already binds this immutable source commit to
-// the pull request that introduced it. An operator pointer (--absorbed-by)
-// covers the landings GitHub cannot associate, such as content cherry-picked
-// rather than merged into the integration branch, and is held to a stricter
-// bar precisely because a human chose it.
-//
-// Every path proves containment locally and cryptographically: merging the
-// branch into the landing commit must add nothing to it, and merging it into
-// the freshly fetched target must add nothing there either. The second proof
-// is what refuses a branch whose work landed and was later reverted.
-//
-// A discovered receipt that does not hold is an ordinary negative answer. An
-// explicitly supplied one that does not hold is returned as a rejection
-// string, so the operator reads exactly which verification refused it rather
-// than a generic awaiting_push verdict.
-func absorbedLandingReceipt(
-	ctx context.Context,
-	worktree, repository, slug, head, base, target, absorbedBy string,
-	pullRequests []githubPullRequest,
-) (*absorbedReceipt, string, error) {
-	if absorbedBy != "" {
-		return attestedAbsorbedReceipt(ctx, worktree, repository, slug, head, base, target, absorbedBy)
-	}
-	pullRequest := absorbingPullRequest(pullRequests, base)
-	if pullRequest == nil || !isGitObjectID(pullRequest.MergeSHA) {
-		return nil, "", nil
-	}
-	landed, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
-	if err != nil || !landed {
-		return nil, "", err
-	}
-	absorbed, err := contentAbsorbed(ctx, repository, head, pullRequest.MergeSHA, target)
-	if err != nil || !absorbed {
-		return nil, "", err
-	}
-	return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+type pullRequestHeadMismatchError = worktreelanding.PullRequestHeadMismatchError
+
+func resolveAbsorbedByPullRequestWithGet(ctx context.Context, worktree, slug, base string, number int,
+	get func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error)) (string, *PullRequest, string, error) {
+	return landingReceiptService().ResolveAbsorbedByPullRequestWithGet(ctx, worktree, slug, base, number,
+		func(ctx context.Context, request worktreelanding.GitHubGetRequest) ([]byte, error) {
+			response, err := get(ctx, githubobserver.GetRequest{Dir: request.Dir, Repository: request.Repository,
+				Target: request.Target, Endpoint: request.Endpoint, FreshWindow: 0})
+			return response.Body, err
+		})
 }
-
-// attestedAbsorbedReceipt verifies an operator-supplied pointer. The pointer
-// selects which commit to examine; it grants nothing. Beyond the containment
-// proofs every receipt needs, the named commit must be exactly where the work
-// entered the target: without that test an operator could name the target tip
-// itself and silently reduce the flag to an unreceipted content assertion.
-func attestedAbsorbedReceipt(
-	ctx context.Context,
-	worktree, repository, slug, head, base, target, absorbedBy string,
-) (*absorbedReceipt, string, error) {
-	landingSHA, pullRequest, rejection, err := resolveAbsorbedBy(ctx, worktree, repository, slug, base, absorbedBy)
-	if err != nil || rejection != "" {
-		return nil, rejection, err
-	}
-	if pullRequest != nil {
-		receiptAfterContentProof := func(landing string) (*absorbedReceipt, string, error) {
-			absorbed, err := contentAbsorbed(ctx, repository, head, landing, target)
-			if err != nil {
-				return nil, "", err
-			}
-			if !absorbed {
-				return nil, fmt.Sprintf(
-					"work absorbed by %s no longer survives in the exact fetched origin/%s target %s",
-					landing, base, target,
-				), nil
-			}
-			return &absorbedReceipt{LandingSHA: landing, PullRequest: pullRequest}, "", nil
-		}
-		// A numbered PR has a stronger, topology-aware proof than generic
-		// patch containment: the exact source head is in the fetched PR
-		// head, and the reported merge is in the fresh target. Two landing
-		// shapes are recognized. A squash (or rebase) landing creates a new
-		// commit disconnected from the source branch's own history, so tree
-		// equality between the PR head and the merge commit is the only
-		// available proof there. A genuine "Create a merge commit" landing
-		// instead keeps the exact source head reachable through the merge
-		// commit's own parent chain — Git ancestry, not tree equality, is the
-		// correct proof there, and unlike tree equality it is not defeated by
-		// the target having advanced past the source's last sync with it
-		// before the merge, which is the common case in an actively landing
-		// repository.
-		squashRejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
-		if err != nil {
-			return nil, "", err
-		}
-		if squashRejection == "" {
-			return receiptAfterContentProof(landingSHA)
-		}
-		mergeCommitRejection, err := verifyAttestedMergeCommitPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
-		if err != nil {
-			return nil, "", err
-		}
-		if mergeCommitRejection == "" {
-			return receiptAfterContentProof(pullRequest.MergeSHA)
-		}
-		return nil, squashRejection + "; " + mergeCommitRejection, nil
-	}
-	landed, err := isAncestor(ctx, repository, landingSHA, target)
-	if err != nil {
-		return nil, "", err
-	}
-	if !landed {
-		return nil, fmt.Sprintf(
-			"--absorbed-by %s resolved to %s, which is not contained in the exact fetched origin/%s target %s",
-			absorbedBy, landingSHA, base, target,
-		), nil
-	}
-	inLanding, err := contentContained(ctx, repository, head, landingSHA)
-	if err != nil {
-		return nil, "", err
-	}
-	if !inLanding {
-		return nil, fmt.Sprintf(
-			"--absorbed-by %s resolved to %s, which does not contain this branch's content",
-			absorbedBy, landingSHA,
-		), nil
-	}
-	inTarget, err := contentContained(ctx, repository, head, target)
-	if err != nil {
-		return nil, "", err
-	}
-	if !inTarget {
-		return nil, fmt.Sprintf(
-			"work absorbed by %s no longer survives in the exact fetched origin/%s target %s",
-			landingSHA, base, target,
-		), nil
-	}
-	parent, err := commitFirstParent(ctx, repository, landingSHA)
-	if err != nil {
-		return nil, "", err
-	}
-	if parent != "" {
-		beforeLanding, err := contentContained(ctx, repository, head, parent)
-		if err != nil {
-			return nil, "", err
-		}
-		if beforeLanding {
-			return nil, fmt.Sprintf(
-				"--absorbed-by %s resolved to %s, which is not where this work entered the target: %s already contained it",
-				absorbedBy, landingSHA, parent,
-			), nil
-		}
-	}
-	return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
-}
-
-// verifyAttestedSquashPullRequest proves the physical relationship that a
-// squash landing hides from ordinary ancestry. GitHub supplies the immutable
-// pull-request head and merge commit; Git supplies the exact source, the
-// freshly fetched target, and both trees. No commit message, title, or branch
-// name can stand in for any part of this proof.
-func verifyAttestedSquashPullRequest(
-	ctx context.Context,
-	repository, sourceHead, target, absorbedBy string,
-	pullRequest *PullRequest,
-) (string, error) {
-	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
-		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.HeadSHA) || !isGitObjectID(pullRequest.MergeSHA) {
-		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
-	}
-	if _, err := fetchExactRemotePullRequestHead(ctx, repository, pullRequest.Number, pullRequest.HeadSHA); err != nil {
-		var mismatch *pullRequestHeadMismatchError
-		if errors.As(err, &mismatch) {
-			return mismatch.Error(), nil
-		}
-		return "", fmt.Errorf("fetch pull request %d head %s for --absorbed-by %s: %w", pullRequest.Number, pullRequest.HeadSHA, absorbedBy, err)
-	}
-	sourceInPullRequest, err := isAncestor(ctx, repository, sourceHead, pullRequest.HeadSHA)
-	if err != nil {
-		return "", err
-	}
-	if !sourceInPullRequest {
-		return fmt.Sprintf("--absorbed-by %s pull request head %s does not contain exact source head %s", absorbedBy, pullRequest.HeadSHA, sourceHead), nil
-	}
-	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
-	if err != nil {
-		return "", err
-	}
-	if !mergeInTarget {
-		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
-	}
-	pullRequestTree, err := commitTree(ctx, repository, pullRequest.HeadSHA)
-	if err != nil {
-		return "", err
-	}
-	mergeTree, err := commitTree(ctx, repository, pullRequest.MergeSHA)
-	if err != nil {
-		return "", err
-	}
-	if pullRequestTree != mergeTree {
-		return fmt.Sprintf("--absorbed-by %s pull request head tree %s does not equal merge tree %s", absorbedBy, pullRequestTree, mergeTree), nil
-	}
-	return "", nil
-}
-
-// verifyAttestedMergeCommitPullRequest proves a genuine (non-squash,
-// non-rebase) "Create a merge commit" landing, tried after the squash shape
-// above finds a tree mismatch. Unlike a squash commit, a real merge commit's
-// tree can legitimately differ from its own PR head's tree — it only needs
-// to record whatever else the target carried at merge time — so tree
-// equality is the wrong test here and would reject a landing that Git's own
-// object graph already proves. The one fact that is both necessary and
-// sufficient is that the pull request really has a recorded merge commit and
-// that the exact source head — not merely the PR's reported head — is
-// reachable from it via `git merge-base --is-ancestor` into the freshly
-// fetched target. This is the same ordinary containment cleanup itself
-// already trusts without any receipt; it is re-run here only because
-// abort's own --absorbed-by safety gate requires the stronger,
-// explicitly-attested AbsorbedAtOrigin before it will rely on that ancestry.
-func verifyAttestedMergeCommitPullRequest(
-	ctx context.Context,
-	repository, sourceHead, target, absorbedBy string,
-	pullRequest *PullRequest,
-) (string, error) {
-	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
-		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.MergeSHA) {
-		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
-	}
-	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
-	if err != nil {
-		return "", err
-	}
-	if !mergeInTarget {
-		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
-	}
-	sourceInTarget, err := isAncestor(ctx, repository, sourceHead, target)
-	if err != nil {
-		return "", err
-	}
-	if !sourceInTarget {
-		return fmt.Sprintf(
-			"--absorbed-by %s names a merge commit, but exact source head %s is not contained in the exact fetched origin/%s target %s (a squash or rebase landing needs the squash-tree proof instead)",
-			absorbedBy, sourceHead, pullRequest.Base, target,
-		), nil
-	}
-	return "", nil
-}
-
-// fetchExactRemotePullRequestHead obtains GitHub's stable numbered pull-head
-// ref without creating a local ref or touching FETCH_HEAD. An API-reported SHA
-// alone is not proof that the configured origin exposes the named pull request;
-// conversely, fetching an arbitrary object SHA relies on server configuration
-// and can accidentally accept an unrelated reachable object.
-type pullRequestHeadMismatchError struct{ message string }
-
-func (err *pullRequestHeadMismatchError) Error() string { return err.message }
-
-func fetchExactRemotePullRequestHead(ctx context.Context, repository string, number int, expectedSHA string) (string, error) {
-	return fetchExactRemotePullRequestHeadWithRun(ctx, repository, number, expectedSHA, func(runCtx context.Context, args ...string) (string, error) {
-		return git(runCtx, repository, args...)
-	})
-}
-
-func fetchExactRemotePullRequestHeadWithRun(
-	ctx context.Context,
-	repository string,
-	number int,
-	expectedSHA string,
-	run func(context.Context, ...string) (string, error),
-) (string, error) {
-	if number <= 0 {
-		return "", fmt.Errorf("invalid pull request number %d", number)
-	}
-	if !isGitObjectID(expectedSHA) {
-		return "", fmt.Errorf("invalid expected pull request head %q", expectedSHA)
-	}
-	ref := "refs/pull/" + strconv.Itoa(number) + "/head"
-	remote, err := run(ctx, "ls-remote", "--exit-code", "origin", ref)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(remote)
-	if len(fields) != 2 || fields[1] != ref || !isGitObjectID(fields[0]) {
-		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin returned malformed %s response %q", ref, remote)}
-	}
-	if fields[0] != expectedSHA {
-		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin advertises %s as %s, expected exact API head %s", ref, fields[0], expectedSHA)}
-	}
-	if _, err := run(ctx, "fetch", "--no-tags", "--no-write-fetch-head", "--", "origin", ref); err != nil {
-		return "", err
-	}
-	fetched, err := run(ctx, "rev-parse", "--verify", "--end-of-options", expectedSHA+"^{commit}")
-	if err != nil {
-		return "", err
-	}
-	if fetched != expectedSHA {
-		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("fetched %s resolved to %s, expected exact API head %s", ref, fetched, expectedSHA)}
-	}
-	return fetched, nil
-}
-
-// absorbedByPullRequestURLPattern matches a GitHub pull-request URL, web
-// (".../pull/<N>") or API (".../pulls/<N>") shape, with an optional
-// trailing path/query/fragment (e.g. "/files", "?diff=split"). The captured
-// repository slug is checked against the command's own --repository so a
-// URL naming a different repository is refused rather than silently
-// resolved against the wrong one.
-var absorbedByPullRequestURLPattern = regexp.MustCompile(`(?i)^https?://(?:www\.)?github\.com/([^/\s]+/[^/\s]+)/pulls?/(\d+)(?:[/?#].*)?$`)
-
-// resolveAbsorbedBy turns an operator pointer into one exact landing commit.
-// A pull-request number, "#"-prefixed number, or full GitHub pull-request
-// URL must name a pull request that really merged into this exact base;
-// anything else must resolve to a commit already present in the canonical
-// object database, which a genuine landing always is because the target was
-// just fetched. All three pointer shapes are accepted consistently for both
-// squash and merge-commit landings (S63): a URL used to fail with "does not
-// resolve to a commit" because only a bare/"#"-prefixed number and a
-// commit-ish were ever tried.
-func resolveAbsorbedBy(
-	ctx context.Context,
-	worktree, repository, slug, base, absorbedBy string,
-) (string, *PullRequest, string, error) {
-	trimmed := strings.TrimSpace(absorbedBy)
-	if trimmed == "" {
-		return "", nil, "--absorbed-by requires a pull request number, pull request URL, or landing commit", nil
-	}
-	if match := absorbedByPullRequestURLPattern.FindStringSubmatch(trimmed); match != nil {
-		if !strings.EqualFold(match[1], slug) {
-			return "", nil, fmt.Sprintf("--absorbed-by URL %s names repository %q, not the requested %q", trimmed, match[1], slug), nil
-		}
-		number, err := strconv.Atoi(match[2])
-		if err != nil || number <= 0 {
-			return "", nil, fmt.Sprintf("--absorbed-by URL %s has an invalid pull request number", trimmed), nil
-		}
-		return resolveAbsorbedByPullRequest(ctx, worktree, slug, base, number)
-	}
-	pointer := strings.TrimPrefix(trimmed, "#")
-	if number, err := strconv.Atoi(pointer); err == nil {
-		if number <= 0 {
-			return "", nil, fmt.Sprintf("--absorbed-by pull request number %d is not positive", number), nil
-		}
-		return resolveAbsorbedByPullRequest(ctx, worktree, slug, base, number)
-	}
-	landingSHA, err := git(ctx, repository, "rev-parse", "--verify", "--end-of-options", pointer+"^{commit}")
-	if err != nil {
-		return "", nil, fmt.Sprintf("--absorbed-by %s does not resolve to a commit in %s", absorbedBy, repository), nil
-	}
-	if !isGitObjectID(landingSHA) {
-		return "", nil, fmt.Sprintf("--absorbed-by %s resolved to invalid commit %q", absorbedBy, landingSHA), nil
-	}
-	return landingSHA, nil, "", nil
-}
-
-func resolveAbsorbedByPullRequest(
-	ctx context.Context,
-	worktree, slug, base string,
-	number int,
-) (string, *PullRequest, string, error) {
-	return resolveAbsorbedByPullRequestWithGet(ctx, worktree, slug, base, number, githubobserver.Get)
-}
-
-func resolveAbsorbedByPullRequestWithGet(
-	ctx context.Context,
-	worktree, slug, base string,
-	number int,
-	get func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error),
-) (string, *PullRequest, string, error) {
-	response, err := get(ctx, githubobserver.GetRequest{
-		Dir:         worktree,
-		Repository:  slug,
-		Target:      base,
-		Endpoint:    "repos/" + slug + "/pulls/" + strconv.Itoa(number),
-		FreshWindow: 0,
-	})
-	if err != nil {
-		return "", nil, "", fmt.Errorf("read %s pull request %d: %w", slug, number, err)
-	}
-	var candidate githubPullRequest
-	if err := json.Unmarshal(response.Body, &candidate); err != nil {
-		return "", nil, "", fmt.Errorf("decode %s pull request %d: %w", slug, number, err)
-	}
-	if candidate.MergedAt == nil {
-		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not merged", slug, number), nil
-	}
-	if !strings.EqualFold(candidate.State, "closed") {
-		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not closed", slug, number), nil
-	}
-	if candidate.Base.Ref != base {
-		return "", nil, fmt.Sprintf(
-			"--absorbed-by pull request %s#%d merged into %q, not the requested base %q",
-			slug, number, candidate.Base.Ref, base,
-		), nil
-	}
-	if !isGitObjectID(candidate.MergeCommitSHA) {
-		return "", nil, fmt.Sprintf(
-			"--absorbed-by pull request %s#%d has invalid merge commit %q",
-			slug, number, candidate.MergeCommitSHA,
-		), nil
-	}
-	if !isGitObjectID(candidate.Head.SHA) {
-		return "", nil, fmt.Sprintf(
-			"--absorbed-by pull request %s#%d has invalid head commit %q",
-			slug, number, candidate.Head.SHA,
-		), nil
-	}
-	return candidate.MergeCommitSHA, mergedPullRequestReceipt(slug, candidate), "", nil
-}
-
-func mergedPullRequestReceipt(repository string, candidate githubPullRequest) *PullRequest {
-	return &PullRequest{
-		Number: candidate.Number, URL: candidate.URL, Repository: repository, State: "MERGED",
-		Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
-		MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
-	}
-}
-
-// absorbingPullRequest selects the newest merged pull request into the exact
-// base that GitHub associates with the immutable source commit. Unlike
-// matchingPullRequests it deliberately does not require the pull-request head
-// to equal that commit: when a merger batches candidates onto one integration
-// branch, the branch name is evidence of nothing and the commit association is
-// the receipt. An open pull request is never a landing receipt.
 func absorbingPullRequest(pullRequests []githubPullRequest, base string) *PullRequest {
-	var absorbing *PullRequest
-	for _, candidate := range pullRequests {
-		if candidate.MergedAt == nil || candidate.Base.Ref != base {
-			continue
-		}
-		if absorbing != nil && !candidate.MergedAt.After(*absorbing.Merged) {
-			continue
-		}
-		absorbing = &PullRequest{
-			Number: candidate.Number, URL: candidate.URL, State: "MERGED",
-			Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
-			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
-		}
-	}
-	return absorbing
+	return landingReceiptService().AbsorbingPullRequest(pullRequests, base)
 }
-
-// contentAbsorbed requires both containment proofs a landing receipt needs:
-// the work is wholly inside the commit that carried it, and it is still wholly
-// inside the target that was just fetched. Proving only the first would clean
-// up a branch whose landing was later reverted.
 func contentAbsorbed(ctx context.Context, repository, head, landingSHA, target string) (bool, error) {
-	inLanding, err := contentContained(ctx, repository, head, landingSHA)
-	if err != nil || !inLanding {
-		return false, err
-	}
-	return contentContained(ctx, repository, head, target)
+	return landingReceiptService().ContentAbsorbed(ctx, repository, head, landingSHA, target)
 }
-
-// contentContained proves that a branch head adds nothing to a commit. The
-// three-way merge of the branch into that commit must both succeed and produce
-// exactly that commit's own tree; a conflict, or any residual delta, means part
-// of the branch is missing from it. A branch containing a revert of work the
-// commit still carries therefore fails, because merging it would remove that
-// work.
 func contentContained(ctx context.Context, repository, head, commit string) (bool, error) {
-	merged, clean, err := mergeResultTree(ctx, repository, commit, head)
-	if err != nil || !clean {
-		return false, err
-	}
-	existing, err := commitTree(ctx, repository, commit)
-	if err != nil {
-		return false, err
-	}
-	return merged == existing, nil
+	return landingReceiptService().ContentContained(ctx, repository, head, commit)
 }
-
-// mergeResultTree performs a real three-way merge and reports the resulting
-// tree without touching any ref, index, or working tree; only unreferenced
-// objects are written. A conflicted merge is a normal negative containment
-// answer, not an error.
 func mergeResultTree(ctx context.Context, repository, ours, theirs string) (string, bool, error) {
-	var commandRunner runner.Runner = runner.Real{}
-	if injected, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner); ok {
-		commandRunner = injected
-	}
-	// Keep the process cwd inherited; -C selects the repository as before.
-	result, err := commandRunner.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "git", "-C", repository, "merge-tree", "--write-tree", "--no-messages", "--end-of-options", ours, theirs)
-	if err != nil {
-		if result.ExitCode == 1 && ctx.Err() == nil {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf(
-			"merge %s into %s in %s: %w: %s", theirs, ours, repository, err, strings.TrimSpace(result.Stderr),
-		)
-	}
-	tree, _, _ := strings.Cut(strings.TrimSpace(result.Stdout), "\n")
-	tree = strings.TrimSpace(tree)
-	if !isGitObjectID(tree) {
-		return "", false, fmt.Errorf("merge %s into %s in %s produced invalid tree %q", theirs, ours, repository, tree)
-	}
-	return tree, true, nil
+	return landingReceiptService().MergeResultTree(ctx, repository, ours, theirs)
 }
-
-// commitFirstParent returns the first parent of a commit, or an empty string
-// for a root commit.
-func commitFirstParent(ctx context.Context, repository, revision string) (string, error) {
-	parents, err := git(ctx, repository, "rev-list", "--parents", "-n", "1", "--end-of-options", revision)
-	if err != nil {
-		return "", fmt.Errorf("resolve parents of %s: %w", revision, err)
-	}
-	return parseCommitFirstParent(revision, parents)
-}
-
-func parseCommitFirstParent(revision, parents string) (string, error) {
-	fields := strings.Fields(parents)
-	if len(fields) < 2 {
-		return "", nil
-	}
-	if !isGitObjectID(fields[1]) {
-		return "", fmt.Errorf("commit %s resolved to invalid first parent %q", revision, fields[1])
-	}
-	return fields[1], nil
-}
-
 func commitTree(ctx context.Context, repository, revision string) (string, error) {
-	tree, err := git(ctx, repository, "rev-parse", revision+"^{tree}")
-	if err != nil {
-		return "", fmt.Errorf("resolve tree for %s: %w", revision, err)
-	}
-	return parseCommitTree(revision, tree)
-}
-
-func parseCommitTree(revision, tree string) (string, error) {
-	if !isGitObjectID(tree) {
-		return "", fmt.Errorf("revision %s resolved to invalid tree SHA %q", revision, tree)
-	}
-	return tree, nil
+	return worktreeproof.CommitTree(ctx, repository, revision, git)
 }
 
 // cleanupEligibility answers whether one candidate may be retired now. Safety
@@ -5129,23 +4232,22 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 // repeats every identity-bearing Git observation needed for the special
 // squash-landing shape. Ordinary cleanup continues to use its generic
 // containment and --absorbed-by checks unchanged.
-func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCleanupProof, entry *ListResult) error {
+func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCleanupProof, entry *ListResult) {
 	for _, proof := range proofs {
 		if filepath.Clean(proof.SourceWorktree) != filepath.Clean(entry.WorktreeDir) {
 			continue
 		}
 		if rejection := mergeReceiptCleanupProofRejection(ctx, proof, *entry); rejection != "" {
 			entry.AbsorbedByRejection = "worktree-merge receipt cleanup proof: " + rejection
-			return nil
+			return
 		}
 		entry.IntegratedAtOrigin = true
 		entry.AbsorbedAtOrigin = true
 		entry.AbsorbedBySHA = proof.LandingSHA
 		entry.mergeReceiptCandidateSHA = proof.CandidateSHA
 		entry.AbsorbedByRejection = ""
-		return nil
+		return
 	}
-	return nil
 }
 
 // mergeReceiptCleanupTargetOverride changes only the target used by this
@@ -5371,305 +4473,68 @@ func preflightCleanupRepository(
 	entry CleanupResult,
 	home string,
 ) (ListResult, error) {
-	worktree, err := openCleanupWorktree(task, entry)
-	if err != nil {
-		return ListResult{}, err
-	}
-	defer worktree.close()
-	if err := worktree.validate(); err != nil {
-		return ListResult{}, err
-	}
-	refreshed, err := inspectLifecycleWorktree(
-		ctx,
-		options.ProjectsRoot,
-		home,
-		wbhome.Layout{WorktreesRoot: entry.WorktreesRoot, Local: entry.Local},
-		entry.Task,
-		entry.WorktreeDir,
-		options.Base,
-		options.AbsorbedBy,
-		true,
-		false,
-		entry.External,
-		cleanupInspectPolicy(options),
-	)
-	if err != nil {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s: %w", entry.Repository, err)
-	}
-	if err := applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, &refreshed); err != nil {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s receipt proof: %w", entry.Repository, err)
-	}
-	if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, home, &refreshed); err != nil {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s absorbed-conflict acknowledgement proof: %w", entry.Repository, err)
-	}
-	applySupersessionReceipt(ctx, options.SupersededBy, &refreshed)
-	if refreshed.SupersessionRejection != "" {
-		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt refused: %s", entry.Repository, refreshed.SupersessionRejection)
-	}
-	if err := worktree.validate(); err != nil {
-		return ListResult{}, err
-	}
-	if eligible, reason := cleanupEligibility(refreshed, options, now); !eligible {
-		return ListResult{}, fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
-	}
-	if refreshed.HeadSHA != entry.HeadSHA {
-		return ListResult{}, fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository)
-	}
-	canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
-	if err != nil {
-		return ListResult{}, fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err)
-	}
-	defer canonical.close()
-	if err := canonical.validate(); err != nil {
-		return ListResult{}, fmt.Errorf("cleanup canonical repository changed during preflight: %w", err)
-	}
-	if err := preflightWorkLogSealForCleanup(ctx, home, options.ProjectsRoot, refreshed); err != nil {
-		return ListResult{}, fmt.Errorf("preflight Work Log for %s: %w", refreshed.Repository, err)
-	}
-	return refreshed, nil
+	return preflightCleanupRepositoryWithPorts(ctx, options, now, task, entry, home, productionCleanupPreflightPorts())
 }
 
-func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	return acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, false)
-}
-
-// acquireCleanupTaskAtOrCreate creates only the WB_HOME coordination shell
-// when an older/manual local checkout has no prior lifecycle metadata there.
-// The returned descriptors remain held for the full transaction.
-func acquireCleanupTaskAtOrCreate(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	task, err := acquireCleanupTaskAt(worktreesRoot, taskName)
-	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		return task, err
-	}
-	home := filepath.Dir(filepath.Clean(worktreesRoot))
-	op, prepareErr := prepareOperationRoot(home, taskName, nil)
-	if prepareErr != nil {
-		return nil, prepareErr
-	}
-	lock, lockErr := acquireLockAt(op.Directory, taskName)
-	if lockErr != nil {
-		op.close()
-		return nil, lockErr
-	}
-	return &cleanupTaskHandle{worktreesPath: filepath.Clean(worktreesRoot), taskPath: op.Path, worktrees: op.Worktrees, task: op.Directory, lock: lock}, nil
-}
-
-// purgeTerminalTaskLockDebris removes every retired operation lock left
-// directly under a task directory, immediately after this cleanup
-// transaction released its own — but only when the directory now holds
-// nothing except retired locks: no owner-namespace directory, no live
-// `.lock`, nothing else. That is exactly what a genuinely terminal task
-// leaves behind release after release: `.wb-retired-lock-*` is created only
-// so a *later* operation on the very same task directory can reclaim it (see
-// claimRetiredLock), and a task nobody ever touches again just accumulates
-// them forever. removeEmptyParent has by this point already retired every
-// owner directory that became empty, so a task whose last repository just
-// finished cleanup normally satisfies the all-retired-locks test below.
-//
-// It is deliberately best-effort and never returns an error: a live `.lock`
-// created by a concurrent operation in the narrow window after release
-// simply fails the "every entry is a retired lock" test and the directory is
-// left untouched, to be reclaimed normally by that operation or swept later
-// by `wb worktree cleanup --retire-shells`. It never inspects, let alone
-// deletes, anything that is not a plain, single-link `.wb-retired-lock-*`
-// entry this package itself could have created (see
-// exclusivelyOwnedLockIdentity for the same reasoning).
-func purgeTerminalTaskLockDebris(task *cleanupTaskHandle) {
-	if task == nil || task.task == nil {
-		return
-	}
-	if _, err := task.task.Seek(0, 0); err != nil {
-		return
-	}
-	entries, err := task.task.ReadDir(-1)
-	if err != nil {
-		return
-	}
-	retired := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, ".wb-retired-lock-") {
-			return // an owner directory, a live .lock, or anything else: not terminal.
-		}
-		retired = append(retired, name)
-	}
-	for _, name := range retired {
-		var stat unix.Stat_t
-		if statErr := unix.Fstatat(int(task.task.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
-			continue
-		}
-		if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
-			continue // never remove anything that is not an ordinary WB-owned lock retirement.
-		}
-		_ = unix.Unlinkat(int(task.task.Fd()), name, 0)
-	}
-}
-
-// acquireCleanupTaskAtReclaimingInterrupted is the resume-only form. See
-// acquireLockAtReclaimingInterrupted for why reclaiming an interrupted lock is
-// restricted to a caller that can describe and revalidate exactly what the
-// interruption left behind.
-func acquireCleanupTaskAtReclaimingInterrupted(
-	worktreesRoot, taskName string, reclaimInterrupted bool,
-) (*cleanupTaskHandle, error) {
-	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
-	if err != nil {
-		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", worktreesRoot, err)
-	}
-	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-cleanup-task",
-		"open cleanup task "+taskName+" without following links", "wrap cleanup task "+taskName)
-	if err != nil {
-		_ = worktrees.Close()
-		return nil, err
-	}
-	handle := &cleanupTaskHandle{
-		worktreesPath: worktreesRoot,
-		taskPath:      filepath.Join(worktreesRoot, taskName),
-		worktrees:     worktrees,
-		task:          task,
-	}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	lock, err := acquireLockAtReclaimingInterrupted(task, reclaimInterrupted, taskName)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("lock cleanup task %s: %w", taskName, err)
-	}
-	handle.lock = lock
-	return handle, nil
-}
-
-// reclaimNamedInterruptedCleanupTask opens only one exact named task directory
-// below a resolver-recognized WB root. It never scans or reclaims any sibling
-// task. The retained descriptor is kept through cleanup, which makes a late
-// replacement fail closed rather than turning validation into a pathname race.
-func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
-	// A default-local or relocated-shared checkout keeps its task lock in
-	// WB_HOME, not below its physical checkout root. Search the distinct logical
-	// lock roots so an explicit recovery reaches the same inode normal cleanup
-	// and Create serialize through. Legacy layouts retain their physical root.
-	roots := make([]string, 0, 1)
-	seenRoots := make(map[string]bool)
-	for _, layout := range resolution.Read {
-		root := filepath.Clean(lifecycleTaskLockRoot(resolution.Write.Home, layout))
-		if seenRoots[root] {
-			continue
-		}
-		seenRoots[root] = true
-		worktrees, err := openAbsoluteDirectoryNoFollow(root, false)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, nil, fmt.Errorf("open recovery worktrees root %s: %w", root, err)
-		}
-		fd, openErr := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-		_ = worktrees.Close()
-		if openErr != nil {
-			if errors.Is(openErr, unix.ENOENT) {
-				continue
-			}
-			return nil, nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, openErr)
-		}
-		_ = unix.Close(fd)
-		roots = append(roots, root)
-	}
-	if len(roots) != 1 {
-		return nil, nil, fmt.Errorf("interrupted recovery for task %q requires exactly one WB task directory, found %d", taskName, len(roots))
-	}
-	handle, err := acquireCleanupTaskAtReclaimingInterruptedLock(roots[0], taskName)
-	if err != nil {
-		return nil, nil, err
-	}
-	pid, validateErr := interruptedTaskLockPID(handle.lock.file, taskName)
-	if validateErr != nil {
-		handle.preserveLock()
-		handle.close()
-		return nil, nil, validateErr
-	}
-	recovery := &InterruptedLockRecovery{
-		Task: taskName, WorktreesRoot: roots[0], Path: filepath.Join(roots[0], taskName, ".lock"),
-		PID: pid, Disposition: "validated", Reason: "exact interrupted lock has a conclusively dead owner PID",
-	}
-	return handle, recovery, nil
-}
-
-// acquireCleanupTaskAtReclaimingInterruptedLock deliberately bypasses retired
-// lock reuse: an explicit recovery may touch only an existing `.lock` proven
-// to match the named task, never a similarly named retirement.
-func acquireCleanupTaskAtReclaimingInterruptedLock(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
-	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
-	if err != nil {
-		return nil, fmt.Errorf("open recovery worktrees root %s: %w", worktreesRoot, err)
-	}
-	task, err := openDirectoryAtNoFollow(int(worktrees.Fd()), taskName, "wb-recovery-task",
-		"open recovery task "+taskName+" without following links", "wrap recovery task "+taskName)
-	if err != nil {
-		_ = worktrees.Close()
-		return nil, err
-	}
-	handle := &cleanupTaskHandle{worktreesPath: worktreesRoot, taskPath: filepath.Join(worktreesRoot, taskName), worktrees: worktrees, task: task}
-	if err := handle.validate(); err != nil {
-		handle.close()
-		return nil, err
-	}
-	lock, err := reclaimInterruptedLock(task, true)
-	if err != nil {
-		handle.close()
-		return nil, fmt.Errorf("recover interrupted cleanup task %s: %w", taskName, err)
-	}
-	handle.lock = lock
-	return handle, nil
-}
-
-func (handle *cleanupTaskHandle) preserveLock() {
-	if handle == nil || handle.lock.file == nil {
-		return
-	}
-	_ = handle.lock.file.Close()
-	handle.lock = operationLock{}
-}
-
-func (handle *cleanupTaskHandle) validateHeldLock() error {
-	if handle == nil || handle.task == nil || handle.lock.file == nil ||
-		!lockEntryStillMatches(handle.task, ".lock", handle.lock.identity) {
-		return fmt.Errorf("interrupted cleanup lock changed after recovery")
-	}
-	return nil
-}
-
-func validateRecoveredCleanupLock(recovered bool, handle *cleanupTaskHandle) error {
-	if !recovered {
+func cleanupTaskFromClaim(task *worktreeclaims.CleanupTask) *cleanupTaskHandle {
+	if task == nil {
 		return nil
 	}
-	return handle.validateHeldLock()
+	return &cleanupTaskHandle{worktreesPath: task.WorktreesPath, taskPath: task.TaskPath, worktrees: task.Worktrees, task: task.Task, lock: facadeLockFromClaim(task.Lock)}
 }
-
+func cleanupTaskToClaim(task *cleanupTaskHandle) *worktreeclaims.CleanupTask {
+	if task == nil {
+		return nil
+	}
+	return &worktreeclaims.CleanupTask{WorktreesPath: task.worktreesPath, TaskPath: task.taskPath, Worktrees: task.worktrees, Task: task.task, Lock: claimLockFromFacade(task.lock)}
+}
+func cleanupLockPorts() worktreeclaims.CleanupLockPorts {
+	return worktreeclaims.CleanupLockPorts{
+		PID: os.Getpid, ProcessIsDead: processIsDead,
+		PrepareTask: func(home, name string) (*worktreeclaims.CleanupTask, error) {
+			op, err := prepareOperationRoot(home, name, nil)
+			if err != nil {
+				return nil, err
+			}
+			if op.Home != nil {
+				_ = op.Home.Close()
+			}
+			return &worktreeclaims.CleanupTask{WorktreesPath: filepath.Join(home, "worktrees"), TaskPath: op.Path, Worktrees: op.Worktrees, Task: op.Directory}, nil
+		},
+	}
+}
+func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAt(worktreesRoot, taskName)
+	return cleanupTaskFromClaim(task), err
+}
+func acquireCleanupTaskAtOrCreate(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAtOrCreate(worktreesRoot, taskName)
+	return cleanupTaskFromClaim(task), err
+}
+func purgeTerminalTaskLockDebris(task *cleanupTaskHandle) {
+	worktreeclaims.PurgeTerminalTaskLockDebris(cleanupTaskToClaim(task))
+}
+func acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName string, reclaimInterrupted bool) (*cleanupTaskHandle, error) {
+	task, err := cleanupLockPorts().AcquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, reclaimInterrupted)
+	return cleanupTaskFromClaim(task), err
+}
+func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
+	task, recovery, err := cleanupLockPorts().ReclaimNamedInterruptedCleanupTask(resolution, taskName)
+	return cleanupTaskFromClaim(task), recovery, err
+}
+func (handle *cleanupTaskHandle) preserveLock() {
+	task := cleanupTaskToClaim(handle)
+	task.PreserveLock()
+	handle.lock = facadeLockFromClaim(task.Lock)
+}
+func (handle *cleanupTaskHandle) validateHeldLock() error {
+	return cleanupTaskToClaim(handle).ValidateHeldLock()
+}
+func validateRecoveredCleanupLock(recovered bool, handle *cleanupTaskHandle) error {
+	return worktreeclaims.ValidateRecoveredCleanupLock(recovered, cleanupTaskToClaim(handle))
+}
 func interruptedTaskLockPID(file *os.File, task string) (int, error) {
-	if file == nil {
-		return 0, fmt.Errorf("interrupted task %q lock descriptor is unavailable", task)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("seek interrupted task %q lock: %w", task, err)
-	}
-	contents, err := io.ReadAll(io.LimitReader(file, 4097))
-	if err != nil || len(contents) > 4096 {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	lines := strings.Split(string(contents), "\n")
-	if len(lines) != 3 || lines[2] != "" || lines[0] != "operation="+task {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	pid, err := strconv.Atoi(strings.TrimPrefix(lines[1], "pid="))
-	if err != nil || pid <= 0 || lines[1] != fmt.Sprintf("pid=%d", pid) {
-		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
-	}
-	if !processIsDead(pid) {
-		return 0, fmt.Errorf("interrupted task %q lock owner PID %d is live or ambiguous", task, pid)
-	}
-	return pid, nil
+	return worktreeclaims.InterruptedTaskLockPID(file, task, processIsDead)
 }
 
 // SecureCleanupGitHelperArgument selects the private WB child process that
@@ -5816,19 +4681,19 @@ func securePushRepositoryArgument(gitArgs []string) (string, error) {
 // worktree. Both canonical descriptors and the optional parent/worktree pair
 // are reauthorized immediately before Git executes.
 func RunSecureCleanupGitHelper(args []string) int {
+	return runSecureCleanupGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureCleanupGitHelperWithOps(args []string, ops secureHelperOps) int {
 	if len(args) < 7 {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: missing worktree path or Git command")
 		return 1
 	}
 	canonical := os.NewFile(uintptr(3), "wb-cleanup-canonical")
 	common := os.NewFile(uintptr(4), "wb-cleanup-canonical-git")
-	if closeIncompleteInheritedFiles(canonical, common) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited canonical repository is unavailable")
-		return 1
-	}
 	defer func() { _ = canonical.Close() }()
 	defer func() { _ = common.Close() }()
-	if err := unix.Fchdir(int(canonical.Fd())); err != nil {
+	if err := ops.chdir(int(canonical.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: enter inherited canonical repository: %v\n", err)
 		return 1
 	}
@@ -5836,7 +4701,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: canonical repository path changed before Git operation")
 		return 1
 	}
-	if err := unix.Fchdir(int(common.Fd())); err != nil {
+	if err := ops.chdir(int(common.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: enter inherited canonical Git directory: %v\n", err)
 		return 1
 	}
@@ -5844,10 +4709,6 @@ func RunSecureCleanupGitHelper(args []string) int {
 	if args[1] != "" {
 		parent = os.NewFile(uintptr(5), "wb-cleanup-worktree-parent")
 		worktree := os.NewFile(uintptr(6), "wb-cleanup-worktree")
-		if closeIncompleteInheritedFiles(parent, worktree) {
-			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited worktree is unavailable")
-			return 1
-		}
 		defer func() { _ = parent.Close() }()
 		defer func() { _ = worktree.Close() }()
 		if !directoryStillMatches(args[2], parent) || !directoryStillMatches(args[1], worktree) {
@@ -5866,10 +4727,6 @@ func RunSecureCleanupGitHelper(args []string) int {
 			return 1
 		}
 		remote := os.NewFile(uintptr(remoteFD), "wb-cleanup-local-remote")
-		if remote == nil {
-			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited local remote is unavailable")
-			return 1
-		}
 		defer func() { _ = remote.Close() }()
 		if !directoryStillMatches(args[4], remote) {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: local remote path changed before Git operation")

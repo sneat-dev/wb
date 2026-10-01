@@ -473,57 +473,56 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	}
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]
-		if !entry.Eligible {
-			// Every repository this pass did not retire is one the operator
-			// must be told about, whatever kept it: a coordinated task that
-			// retires two of three repositories has to name the third, and
-			// keying that on the class silently dropped the ones held back by
-			// the merge-grace window.
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
-		}
-		cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
-			ProjectsRoot:    options.ProjectsRoot,
-			Tasks:           []string{entry.Task},
-			ExactRepository: entry.Repository,
-			Base:            options.Base,
-			Apply:           true,
-			AllowResidue:    options.AllowResidue,
-			SupersededBy:    options.SupersededBy,
-			IncludeDetached: !options.SkipDetached,
-			Activity:        true,
-			OlderThan:       options.OlderThan,
-			TTL:             options.TTL,
-			ResidueDepth:    options.ResidueDepth,
-			// Retire an exact matching remote or a proved older ancestor of an
-			// already-landed local head. Cleanup leases the independently observed
-			// remote SHA, so ref drift still refuses before local removal.
-			DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
-				(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
-			Workers: 1,
-			Now:     options.Now,
-			// One sweep writes one receipt tree, with a directory per retired
-			// checkout. Letting each delegated cleanup pick its own timestamped
-			// default would make two repositories retired in the same instant
-			// overwrite each other's audit record.
-			ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
-		})
-		if err != nil {
-			entry.Error = err.Error()
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
-		}
-		for _, result := range cleanupOutcome.Results {
-			if result.WorktreeDir == entry.WorktreeDir && result.Applied {
-				entry.Applied = true
+		retiredThisPass := entry.Eligible
+		if retiredThisPass {
+			cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
+				ProjectsRoot:    options.ProjectsRoot,
+				Tasks:           []string{entry.Task},
+				ExactRepository: entry.Repository,
+				Base:            options.Base,
+				Apply:           true,
+				AllowResidue:    options.AllowResidue,
+				SupersededBy:    options.SupersededBy,
+				IncludeDetached: !options.SkipDetached,
+				Activity:        true,
+				OlderThan:       options.OlderThan,
+				TTL:             options.TTL,
+				ResidueDepth:    options.ResidueDepth,
+				// Retire an exact matching remote or a proved older ancestor of an
+				// already-landed local head. Cleanup leases the independently observed
+				// remote SHA, so ref drift still refuses before local removal.
+				DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
+					(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
+				Workers: 1,
+				Now:     options.Now,
+				// One sweep writes one receipt tree, with a directory per retired
+				// checkout. Letting each delegated cleanup pick its own timestamped
+				// default would make two repositories retired in the same instant
+				// overwrite each other's audit record.
+				ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
+			})
+			if err != nil {
+				entry.Error = err.Error()
+				retiredThisPass = false
+			} else {
+				for _, result := range cleanupOutcome.Results {
+					if result.WorktreeDir == entry.WorktreeDir && result.Applied {
+						entry.Applied = true
+					}
+				}
+				if !entry.Applied {
+					entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
+					retiredThisPass = false
+				}
 			}
 		}
-		if !entry.Applied {
-			entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
+		if retiredThisPass {
+			retired[entry.Task] = append(retired[entry.Task], entry.Repository)
+		} else {
+			// Name every repository left behind, including a refused entry with
+			// stale Applied or Error fields from a prior observation.
 			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
 		}
-		retired[entry.Task] = append(retired[entry.Task], entry.Repository)
 	}
 	for task, repositories := range retired {
 		if len(left[task]) == 0 {

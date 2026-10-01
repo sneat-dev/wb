@@ -166,7 +166,7 @@ func TestBatch7MicroValueCoverage(t *testing.T) {
 	if got := mismatch.Error(); !strings.Contains(got, "acme/old") || !strings.Contains(got, "acme/new") {
 		t.Fatalf("rename mismatch = %q", got)
 	}
-	if got := (&pullRequestHeadMismatchError{message: "head moved"}).Error(); got != "head moved" {
+	if got := (&pullRequestHeadMismatchError{Message: "head moved"}).Error(); got != "head moved" {
 		t.Fatalf("head mismatch = %q", got)
 	}
 

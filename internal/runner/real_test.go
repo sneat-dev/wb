@@ -46,6 +46,27 @@ func helperArgs() []string {
 	return []string{"-test.run=^TestRunnerHelperProcess$"}
 }
 
+// assertStrictUnitTierPolicy verifies the real-process boundary in both test
+// tiers. The e2e tier deliberately permits a real helper subprocess even
+// when the strict-unit environment variable is set.
+func assertStrictUnitTierPolicy(t *testing.T, call func() error) {
+	t.Helper()
+	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
+	t.Setenv("WB_RUNNER_ALLOW_REAL_PROCESS", "0")
+	t.Setenv("WB_RUNNER_HELPER", "1")
+	t.Setenv("WB_RUNNER_EXIT", "0")
+	err := call()
+	if strictUnitTierBlocksRealProcess {
+		if err != runner.ErrRealProcessBlocked {
+			t.Fatalf("real-process call error = %v, want runner.ErrRealProcessBlocked in the unit tier", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("real-process helper failed in the e2e tier: %v", err)
+	}
+}
+
 func TestRealRunCapturesStdoutStderrAndExitStatus(t *testing.T) {
 	runnertest.AllowRealProcess(t)
 	t.Setenv("WB_RUNNER_HELPER", "1")
@@ -239,11 +260,11 @@ func TestRealRunWithInputReportsNonZeroExitStatus(t *testing.T) {
 	}
 }
 
-func TestRealRunWithInputBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if _, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("RunWithInput() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealRunWithInputHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		_, err := runner.New().RunWithInput(context.Background(), t.TempDir(), nil, os.Args[0], helperArgs()...)
+		return err
+	})
 }
 
 // TestRunnerHelperProcessEchoesAnEnvironmentVariable is the child half of
@@ -304,11 +325,11 @@ func TestRealRunOptsWritesStdinAndHonorsWaitDelay(t *testing.T) {
 	}
 }
 
-func TestRealRunOptsBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if _, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{}, os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("RunOpts() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealRunOptsHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		_, err := runner.New().RunOpts(context.Background(), t.TempDir(), runner.RunOptions{}, os.Args[0], helperArgs()...)
+		return err
+	})
 }
 
 func TestRealStartAndHandleWaitReportOutputAndExitStatus(t *testing.T) {
@@ -398,32 +419,35 @@ func TestRealInteractiveReportsNonZeroExitStatus(t *testing.T) {
 	}
 }
 
-func TestRealRunBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if _, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("Run() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealRunHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		_, err := runner.New().Run(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+		return err
+	})
 }
 
-func TestRealStartBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if _, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("Start() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealStartHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		handle, err := runner.New().Start(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+		if err != nil {
+			return err
+		}
+		_, err = handle.Wait()
+		return err
+	})
 }
 
-func TestRealDetachBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if _, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("Detach() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealDetachHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		_, err := runner.New().Detach(t.TempDir(), os.Args[0], helperArgs()...)
+		return err
+	})
 }
 
-func TestRealInteractiveBlockedByTheRuntimeGuardReturnsErrRealProcessBlocked(t *testing.T) {
-	t.Setenv("WB_RUNNER_STRICT_UNIT_TIER", "1")
-	if err := runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...); err != runner.ErrRealProcessBlocked {
-		t.Fatalf("Interactive() err = %v, want runner.ErrRealProcessBlocked", err)
-	}
+func TestRealInteractiveHonorsStrictUnitTierPolicy(t *testing.T) {
+	assertStrictUnitTierPolicy(t, func() error {
+		return runner.New().Interactive(context.Background(), t.TempDir(), os.Args[0], helperArgs()...)
+	})
 }
 
 func TestRealHandleSignalAfterWaitReportsAnErrorRatherThanPanicking(t *testing.T) {

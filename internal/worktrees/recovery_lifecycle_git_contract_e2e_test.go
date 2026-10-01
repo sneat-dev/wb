@@ -12,7 +12,7 @@ import (
 )
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestTransferAbsentDestinationProofs(t *testing.T) {
+func TestE2ETransferAbsentDestinationProofs(t *testing.T) {
 	for _, scenario := range []string{"origin changed", "remote head changed", "fetched branch missing"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -38,7 +38,7 @@ func TestTransferAbsentDestinationProofs(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferPlanningRefusals(t *testing.T) {
+func TestE2ERepositoryTransferPlanningRefusals(t *testing.T) {
 	for _, scenario := range []string{"fetch ambiguous", "push ambiguous", "source identity changed", "remote absent", "quarantine occupied", "destination stat denied"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -90,7 +90,7 @@ func TestRepositoryTransferPlanningRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
+func TestE2ERepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
 	fixture := newRepositoryTransferFixture(t)
 	fixture.moveRemote(t)
 	fixture.cloneDestination(t)
@@ -116,7 +116,7 @@ func TestRepositoryTransferRestoresAfterCheckpointRefusal(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestDisposableDestinationRefusals(t *testing.T) {
+func TestE2EDisposableDestinationRefusals(t *testing.T) {
 	for _, scenario := range []string{"fetch ambiguous", "push ambiguous", "push identity", "linked worktree", "wrong branch", "wrong head", "remote refs unavailable"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -152,7 +152,7 @@ func TestDisposableDestinationRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferCleanupInterruptions(t *testing.T) {
+func TestE2ERepositoryTransferCleanupInterruptions(t *testing.T) {
 	for _, scenario := range []string{"intent publication denied", "retirement paused", "terminal publication paused", "restored terminal denied"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestRepositoryTransferCleanupInterruptions(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestDiscardedBacklogProofRefusals(t *testing.T) {
+func TestE2EDiscardedBacklogProofRefusals(t *testing.T) {
 	for _, scenario := range []string{"backlog absent", "invalid record", "nonterminal record", "local branch remains", "malformed neighbor"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
@@ -261,8 +261,8 @@ func TestDiscardedBacklogProofRefusals(t *testing.T) {
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestTaskBoundLocalStageRecovery(t *testing.T) {
-	for _, scenario := range []string{"empty unregistered", "registered checkout", "destination occupied"} {
+func TestE2ETaskBoundLocalStageRecovery(t *testing.T) {
+	for _, scenario := range []string{"empty unregistered", "registered checkout", "destination occupied", "destination symlink", "source checkout symlink", "ambiguous registered stages"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {
 			fixture := newGitFixture(t)
@@ -283,9 +283,59 @@ func TestTaskBoundLocalStageRecovery(t *testing.T) {
 			if scenario != "empty unregistered" {
 				gitTest(t, fixture.canonical, "worktree", "add", filepath.Join(stage, "checkout"), "-b", "wb/recover-local")
 			}
+			expectedTip := ""
+			if scenario != "empty unregistered" {
+				expectedTip = gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/wb/recover-local")
+			}
 			if scenario == "destination occupied" {
 				if err := os.Mkdir(filepath.Join(root, task), 0o700); err != nil {
 					t.Fatal(err)
+				}
+			}
+			var protectedPath, expectedLinkTarget, secondCheckout string
+			if scenario == "destination symlink" {
+				outside := t.TempDir()
+				protectedPath = filepath.Join(outside, "protected")
+				if err := os.WriteFile(protectedPath, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				expectedLinkTarget = outside
+				if err := os.Symlink(outside, filepath.Join(root, task)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "source checkout symlink" {
+				checkout := filepath.Join(stage, "checkout")
+				moved := filepath.Join(stage, "held-checkout")
+				if err := os.Rename(checkout, moved); err != nil {
+					t.Fatal(err)
+				}
+				protectedPath = filepath.Join(moved, "protected")
+				if err := os.WriteFile(protectedPath, []byte("outside"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				expectedLinkTarget = moved
+				if err := os.Symlink(moved, checkout); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "ambiguous registered stages" {
+				secondStage := filepath.Join(root, taskBoundLocalStagePrefix(task)+"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+				if err := os.Mkdir(secondStage, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				secondCheckout = filepath.Join(secondStage, "checkout")
+				gitTest(t, fixture.canonical, "worktree", "add", "--force", secondCheckout, "wb/recover-local")
+			}
+			registrationBefore := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+			stagedIdentities := map[string]os.FileInfo{}
+			if scenario == "ambiguous registered stages" {
+				for _, checkout := range []string{filepath.Join(stage, "checkout"), secondCheckout} {
+					info, err := os.Stat(checkout)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stagedIdentities[checkout] = info
 				}
 			}
 			recovered, err := recoverTaskBoundLocalStage(context.Background(), canonical, root, task, "wb/recover-local")
@@ -308,13 +358,63 @@ func TestTaskBoundLocalStageRecovery(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(stage, "checkout")); err != nil {
 					t.Fatalf("staged checkout lost: %v", err)
 				}
+			case "destination symlink", "source checkout symlink":
+				wantError := "refusing symlinked worktree destination"
+				if scenario == "source checkout symlink" {
+					wantError = "recover task-bound local stage: descriptor-relative worktree move"
+				}
+				if err == nil || recovered || !strings.Contains(err.Error(), wantError) {
+					t.Fatalf("%s recovery accepted: recovered=%v err=%v", scenario, recovered, err)
+				}
+				if data, readErr := os.ReadFile(protectedPath); readErr != nil || string(data) != "outside" {
+					t.Fatalf("protected content changed: data=%q err=%v", data, readErr)
+				}
+				if _, statErr := os.Lstat(filepath.Join(stage, "checkout")); statErr != nil {
+					t.Fatalf("staged checkout entry lost: %v", statErr)
+				}
+				link := filepath.Join(root, task)
+				if scenario == "source checkout symlink" {
+					link = filepath.Join(stage, "checkout")
+				}
+				if target, linkErr := os.Readlink(link); linkErr != nil || target != expectedLinkTarget {
+					t.Fatalf("refused recovery changed symlink: target=%q err=%v want=%q", target, linkErr, expectedLinkTarget)
+				}
+				if got := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain"); got != registrationBefore {
+					t.Fatalf("refused recovery changed registrations: got=%q want=%q", got, registrationBefore)
+				}
+				if scenario == "source checkout symlink" {
+					if _, statErr := os.Lstat(filepath.Join(root, task)); !errors.Is(statErr, os.ErrNotExist) {
+						t.Fatalf("failed move published destination: %v", statErr)
+					}
+				}
+				if got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/wb/recover-local"); got != expectedTip {
+					t.Fatalf("branch tip changed: got=%q want=%q", got, expectedTip)
+				}
+			case "ambiguous registered stages":
+				for checkout, before := range stagedIdentities {
+					if after, statErr := os.Stat(checkout); statErr != nil || !os.SameFile(before, after) {
+						t.Fatalf("ambiguous recovery changed staged checkout %s: %v", checkout, statErr)
+					}
+				}
+				if got := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain"); got != registrationBefore {
+					t.Fatalf("ambiguous recovery changed registrations: got=%q want=%q", got, registrationBefore)
+				}
+				if err == nil || recovered || !strings.Contains(err.Error(), "multiple task-bound local stages") {
+					t.Fatalf("ambiguous recovery accepted: recovered=%v err=%v", recovered, err)
+				}
+				if _, statErr := os.Lstat(filepath.Join(root, task)); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("ambiguous recovery published destination: %v", statErr)
+				}
+				if got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/wb/recover-local"); got != expectedTip {
+					t.Fatalf("branch tip changed: got=%q want=%q", got, expectedTip)
+				}
 			}
 		})
 	}
 }
 
 //nolint:paralleltest // newGitFixture and related real Git commands configure process-wide test environment.
-func TestRepositoryTransferAfterMoveFailures(t *testing.T) {
+func TestE2ERepositoryTransferAfterMoveFailures(t *testing.T) {
 	for _, scenario := range []string{"quarantine contents unreadable", "terminal receipt unwritable", "quarantine moved before restore", "source moved before publish"} {
 		//nolint:paralleltest // the case configures WB environment or mutates a shared filesystem fixture.
 		t.Run(scenario, func(t *testing.T) {

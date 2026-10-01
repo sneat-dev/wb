@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/gitremote"
-	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -32,6 +31,10 @@ type RelocateOptions struct {
 	// process interruption has the same durable state: an intent exists and Git
 	// has registered the destination, but no completion receipt exists yet.
 	afterWorktreeMoveBeforeReceipt func() error
+	ports                          *relocationEntryPorts
+	planPorts                      *relocationPlanPorts
+	applyPorts                     *relocationApplyPorts
+	finalizePorts                  *relocationFinalizePorts
 }
 
 type RelocateResult struct {
@@ -171,11 +174,15 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	resolution, err := wbhome.Resolve(options.ProjectsRoot)
+	ports := productionRelocationEntryPorts()
+	if options.ports != nil {
+		ports = *options.ports
+	}
+	resolution, err := ports.resolve(options.ProjectsRoot)
 	if err != nil {
 		return RelocateOutcome{}, err
 	}
-	listed, err := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: options.ProjectsRoot, Task: options.Task, Filter: options.Filter, GitHub: false})
+	listed, err := ports.list(ctx, ListOptions{ProjectsRoot: options.ProjectsRoot, Task: options.Task, Filter: options.Filter, GitHub: false})
 	if err != nil {
 		return RelocateOutcome{}, err
 	}
@@ -184,7 +191,7 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 	}
 	outcome := RelocateOutcome{SchemaVersion: 1, Diagnostics: listed.Diagnostics}
 	for _, entry := range listed.Results {
-		result, planErr := planRelocation(ctx, resolution, options, entry)
+		result, planErr := ports.plan(ctx, resolution, options, entry)
 		if planErr != nil {
 			return outcome, planErr
 		}
@@ -218,16 +225,29 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 			if !result.RecoveryPending {
 				continue
 			}
-			if err := finalizeInterruptedRelocation(result.claimHome, options, entry, result); err != nil {
+			if err := ports.finalize(result.claimHome, options, entry, result); err != nil {
 				return outcome, err
 			}
 			continue
 		}
-		if err := applyRelocation(ctx, result.claimHome, options, entry, result); err != nil {
+		if err := ports.apply(ctx, result.claimHome, options, entry, result); err != nil {
 			return outcome, err
 		}
 	}
 	return outcome, nil
+}
+
+type relocationEntryPorts struct {
+	resolve  func(string) (wbhome.Resolution, error)
+	list     func(context.Context, ListOptions) (ListOutcome, error)
+	plan     func(context.Context, wbhome.Resolution, RelocateOptions, ListResult) (RelocateResult, error)
+	finalize func(string, RelocateOptions, ListResult, *RelocateResult) error
+	apply    func(context.Context, string, RelocateOptions, ListResult, *RelocateResult) error
+}
+
+func productionRelocationEntryPorts() relocationEntryPorts {
+	return relocationEntryPorts{resolve: wbhome.Resolve, list: ListWithDiagnostics, plan: planRelocation,
+		finalize: finalizeInterruptedRelocation, apply: applyRelocation}
 }
 
 func findRelocationEntry(entries []ListResult, path string) (ListResult, bool) {
@@ -240,9 +260,13 @@ func findRelocationEntry(entries []ListResult, path string) (ListResult, bool) {
 }
 
 func planRelocation(ctx context.Context, resolution wbhome.Resolution, options RelocateOptions, entry ListResult) (RelocateResult, error) {
+	ports := productionRelocationPlanPorts()
+	if options.planPorts != nil {
+		ports = *options.planPorts
+	}
 	result := RelocateResult{Task: entry.Task, Repository: entry.Repository, CanonicalDir: entry.CanonicalDir,
 		WorktreeDir: entry.WorktreeDir, Branch: entry.Branch, HeadSHA: entry.HeadSHA, To: options.To}
-	claim, _, _, claimHome, claimErr := activeWorkLogClaimAcrossHomes(resolution, entry.WorktreeDir)
+	claim, _, _, claimHome, claimErr := ports.claim(resolution, entry.WorktreeDir)
 	if claimErr != nil {
 		result.Reason = "active Work Log claim is not corroborated: " + claimErr.Error()
 		return result, nil
@@ -250,7 +274,7 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 	result.ClaimID = claim.ClaimID
 	result.claimHome = claimHome
 	home := claimHome
-	placement, err := ResolveUserWorktreePlacement(options.ProjectsRoot, entry.CanonicalDir)
+	placement, err := ports.placement(options.ProjectsRoot, entry.CanonicalDir)
 	if err != nil {
 		return result, err
 	}
@@ -272,11 +296,11 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 	}
 	if filepath.Clean(destination) == filepath.Clean(entry.WorktreeDir) {
 		result.Eligible, result.AlreadyThere = true, true
-		if receipt, path, receiptErr := latestRelocationReceipt(home, claim, destination); receiptErr == nil && receipt != nil {
+		if receipt, path, receiptErr := ports.receipt(home, claim, destination); receiptErr == nil && receipt != nil {
 			result.ReceiptPath = path
 		} else if receiptErr != nil {
 			return result, receiptErr
-		} else if intent, _, intentErr := pendingRelocationIntent(home, claim, destination, entry.Branch, entry.HeadSHA); intentErr != nil {
+		} else if intent, _, intentErr := ports.pending(home, claim, destination, entry.Branch, entry.HeadSHA); intentErr != nil {
 			return result, intentErr
 		} else if intent != nil {
 			// The prior invocation moved Git's registry but was interrupted before
@@ -286,7 +310,7 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 		}
 		return result, nil
 	}
-	if _, statErr := os.Lstat(destination); statErr == nil {
+	if _, statErr := ports.lstat(destination); statErr == nil {
 		result.Reason = "destination already exists: " + destination
 		return result, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -294,6 +318,19 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 	}
 	result.Eligible = true
 	return result, nil
+}
+
+type relocationPlanPorts struct {
+	claim     func(wbhome.Resolution, string) (workLogClaim, workLogProjection, string, string, error)
+	placement func(string, string) (WorktreePlacement, error)
+	receipt   func(string, workLogClaim, string) (*workLogRelocationReceipt, string, error)
+	pending   func(string, workLogClaim, string, string, string) (*workLogRelocationIntent, string, error)
+	lstat     func(string) (os.FileInfo, error)
+}
+
+func productionRelocationPlanPorts() relocationPlanPorts {
+	return relocationPlanPorts{claim: activeWorkLogClaimAcrossHomes, placement: ResolveUserWorktreePlacement,
+		receipt: latestRelocationReceipt, pending: pendingRelocationIntent, lstat: os.Lstat}
 }
 
 func relocationEligibility(entry ListResult) (bool, string) {
@@ -312,96 +349,180 @@ func relocationEligibility(entry ListResult) (bool, string) {
 }
 
 func applyRelocation(ctx context.Context, home string, options RelocateOptions, planned ListResult, result *RelocateResult) error {
+	ports := productionRelocationApplyPorts()
+	if options.applyPorts != nil {
+		ports = *options.applyPorts
+	}
 	// Re-list through the exact original layout while holding the task lock.
-	refreshed, err := inspectLifecycleWorktree(ctx, options.ProjectsRoot, "", wbhome.Layout{WorktreesRoot: planned.WorktreesRoot, Local: planned.Local},
-		planned.Task, planned.WorktreeDir, planned.Base, "", false, false, false, inspectPolicy{})
+	refreshed, err := ports.recheck(ctx, options, planned)
 	if err != nil {
 		return fmt.Errorf("recheck %s before relocation: %w", planned.Repository, err)
 	}
 	if refreshed.Locked || refreshed.OwnerState == "active" || !refreshed.Clean || refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch {
 		return fmt.Errorf("relocation safety changed for %s; rerun the plan", planned.Repository)
 	}
-	claim, _, _, err := activeWorkLogClaim(home, refreshed.WorktreeDir)
+	claim, _, _, err := ports.claim(home, refreshed.WorktreeDir)
 	if err != nil {
 		return fmt.Errorf("recheck active Work Log claim for %s: %w", planned.Repository, err)
 	}
 	if claim.ClaimID != result.ClaimID {
 		return fmt.Errorf("recheck active Work Log claim for %s: claim identity changed", planned.Repository)
 	}
-	if _, statErr := os.Lstat(result.Destination); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := ports.lstat(result.Destination); !errors.Is(statErr, os.ErrNotExist) {
 		if statErr == nil {
 			return fmt.Errorf("relocation destination already exists: %s", result.Destination)
 		}
 		return fmt.Errorf("recheck relocation destination %s: %w", result.Destination, statErr)
 	}
-	// destinationRoot is the worktrees root the destination sits below and
-	// relative is the destination's repository suffix below its task directory
-	// (<host>/<org>/<repository>, or the legacy <org>/<repository>), so the
-	// host level is handled without assuming a fixed depth.
-	destinationRelative, relativeErr := canonicalRelativeAddress(ctx, options.ProjectsRoot, refreshed.CanonicalDir)
-	if relativeErr != nil {
-		return relativeErr
-	}
-	destinationRoot := relocationDestinationRoot(result.Destination, destinationRelative, options.To)
-	if err := prepareRelocationDestination(ctx, refreshed, claim.BaseSHA, result.Destination, destinationRelative, options.To); err != nil {
+	destinationRoot, placement, err := ports.prepare(ctx, options.ProjectsRoot, refreshed, claim.BaseSHA, result.Destination, options.To)
+	if err != nil {
 		return err
 	}
-	// Record the destination relative to the root that produced it, so the
-	// receipt still names the checkout after `worktrees.root` is reconfigured.
-	placementRelative, placementErr := filepath.Rel(destinationRoot, result.Destination)
-	if placementErr != nil || placementRelative == "." || strings.HasPrefix(placementRelative, "..") {
-		placementRelative = ""
-	}
-	intent, _, err := appendRelocationIntent(home, claim, result.WorktreeDir, result.Destination, options.To, result.HeadSHA,
-		relocationPlacementRecord{Root: destinationRoot, Relative: placementRelative}, options.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("record relocation intent before moving %s: %w", refreshed.Repository, err)
-	}
-	move, err := moveWorktree(ctx, refreshed.CanonicalDir, destinationRoot, refreshed.WorktreeDir, result.Destination, worktreeMoveHooks{})
+	move, path, err := ports.move(ctx, relocationMoveRequest{
+		home: home, claim: claim, canonicalDir: refreshed.CanonicalDir, destinationRoot: destinationRoot,
+		source: refreshed.WorktreeDir, intentSource: result.WorktreeDir, destination: result.Destination, to: options.To, head: result.HeadSHA,
+		placement: placement, now: options.Now, afterMove: options.afterWorktreeMoveBeforeReceipt,
+		intentContext:  "record relocation intent before moving " + refreshed.Repository,
+		receiptContext: "record relocation receipt after moving " + refreshed.Repository,
+		missingReceipt: "record relocation receipt after moving " + refreshed.Repository + " returned no receipt",
+	})
 	result.Repaired = move.Repaired
 	if err != nil {
 		return err
-	}
-	if options.afterWorktreeMoveBeforeReceipt != nil {
-		if err := options.afterWorktreeMoveBeforeReceipt(); err != nil {
-			return err
-		}
-	}
-	receipt, path, err := appendRelocationReceipt(home, claim, intent, options.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("record relocation receipt after moving %s: %w", refreshed.Repository, err)
-	}
-	if receipt == nil {
-		return fmt.Errorf("record relocation receipt after moving %s returned no receipt", refreshed.Repository)
 	}
 	result.Applied, result.Finalized, result.ReceiptPath = true, true, path
 	return nil
 }
 
+type relocationApplyPorts struct {
+	recheck func(context.Context, RelocateOptions, ListResult) (ListResult, error)
+	claim   func(string, string) (workLogClaim, workLogProjection, string, error)
+	lstat   func(string) (os.FileInfo, error)
+	prepare func(context.Context, string, ListResult, string, string, string) (string, relocationPlacementRecord, error)
+	move    func(context.Context, relocationMoveRequest) (worktreeMoveOutcome, string, error)
+}
+
+func productionRelocationApplyPorts() relocationApplyPorts {
+	return relocationApplyPorts{
+		recheck: func(ctx context.Context, options RelocateOptions, planned ListResult) (ListResult, error) {
+			return inspectLifecycleWorktree(ctx, options.ProjectsRoot, "", wbhome.Layout{WorktreesRoot: planned.WorktreesRoot, Local: planned.Local},
+				planned.Task, planned.WorktreeDir, planned.Base, "", false, false, false, inspectPolicy{})
+		},
+		claim: activeWorkLogClaim, lstat: os.Lstat, prepare: prepareRelocationMove,
+		move: func(ctx context.Context, request relocationMoveRequest) (worktreeMoveOutcome, string, error) {
+			return runRelocationMove(ctx, request, productionRelocationMovePorts())
+		},
+	}
+}
+
+type relocationMoveRequest struct {
+	home, canonicalDir, destinationRoot, source, intentSource, destination, to, head string
+	claim                                                                            workLogClaim
+	placement                                                                        relocationPlacementRecord
+	now                                                                              func() time.Time
+	prepareMove, afterMove                                                           func() error
+	intentContext, receiptContext, missingReceipt                                    string
+}
+
+type relocationMovePorts struct {
+	appendIntent  func(string, workLogClaim, string, string, string, string, relocationPlacementRecord, time.Time) (*workLogRelocationIntent, string, error)
+	move          func(context.Context, string, string, string, string, worktreeMoveHooks) (worktreeMoveOutcome, error)
+	appendReceipt func(string, workLogClaim, *workLogRelocationIntent, time.Time) (*workLogRelocationReceipt, string, error)
+}
+
+func productionRelocationMovePorts() relocationMovePorts {
+	return relocationMovePorts{appendIntent: appendRelocationIntent, move: moveWorktree, appendReceipt: appendRelocationReceipt}
+}
+
+func runRelocationMove(ctx context.Context, request relocationMoveRequest, ports relocationMovePorts) (worktreeMoveOutcome, string, error) {
+	intent, _, err := ports.appendIntent(request.home, request.claim, request.intentSource, request.destination, request.to, request.head, request.placement, request.now().UTC())
+	if err != nil {
+		return worktreeMoveOutcome{}, "", fmt.Errorf("%s: %w", request.intentContext, err)
+	}
+	if request.prepareMove != nil {
+		if err := request.prepareMove(); err != nil {
+			return worktreeMoveOutcome{}, "", err
+		}
+	}
+	move, err := ports.move(ctx, request.canonicalDir, request.destinationRoot, request.source, request.destination, worktreeMoveHooks{})
+	if err != nil {
+		return move, "", err
+	}
+	if request.afterMove != nil {
+		if err := request.afterMove(); err != nil {
+			return move, "", err
+		}
+	}
+	receipt, path, err := ports.appendReceipt(request.home, request.claim, intent, request.now().UTC())
+	if err != nil {
+		return move, "", fmt.Errorf("%s: %w", request.receiptContext, err)
+	}
+	if request.missingReceipt != "" && receipt == nil {
+		return move, "", errors.New(request.missingReceipt)
+	}
+	return move, path, nil
+}
+
+// prepareRelocationMove records a path relative to the root that produced it,
+// so a later worktrees.root change cannot reinterpret the durable receipt.
+func prepareRelocationMove(ctx context.Context, projectsRoot string, entry ListResult, baseSHA, destination, to string) (string, relocationPlacementRecord, error) {
+	relative, err := canonicalRelativeAddress(ctx, projectsRoot, entry.CanonicalDir)
+	if err != nil {
+		return "", relocationPlacementRecord{}, err
+	}
+	root := relocationDestinationRoot(destination, relative, to)
+	if err := prepareRelocationDestination(ctx, entry, baseSHA, destination, relative, to); err != nil {
+		return "", relocationPlacementRecord{}, err
+	}
+	return root, relocationPlacement(root, destination), nil
+}
+
+func relocationPlacement(root, destination string) relocationPlacementRecord {
+	placementRelative, err := filepath.Rel(root, destination)
+	if err != nil || placementRelative == "." || strings.HasPrefix(placementRelative, "..") {
+		placementRelative = ""
+	}
+	return relocationPlacementRecord{Root: root, Relative: placementRelative}
+}
+
 func finalizeInterruptedRelocation(home string, options RelocateOptions, entry ListResult, result *RelocateResult) error {
+	ports := productionRelocationFinalizePorts()
+	if options.finalizePorts != nil {
+		ports = *options.finalizePorts
+	}
 	if eligible, reason := relocationEligibility(entry); !eligible {
 		return fmt.Errorf("interrupted relocation safety changed for %s: %s", entry.Repository, reason)
 	}
-	claim, _, _, err := activeWorkLogClaim(home, entry.WorktreeDir)
+	claim, _, _, err := ports.claim(home, entry.WorktreeDir)
 	if err != nil {
 		return fmt.Errorf("recheck active Work Log claim for %s: %w", entry.Repository, err)
 	}
 	if claim.ClaimID != result.ClaimID {
 		return fmt.Errorf("recheck active Work Log claim for %s: claim identity changed", entry.Repository)
 	}
-	intent, _, err := pendingRelocationIntent(home, claim, entry.WorktreeDir, entry.Branch, entry.HeadSHA)
+	intent, _, err := ports.pending(home, claim, entry.WorktreeDir, entry.Branch, entry.HeadSHA)
 	if err != nil {
 		return err
 	}
 	if intent == nil {
 		return fmt.Errorf("interrupted relocation for %s has no matching durable intent", entry.Repository)
 	}
-	_, path, err := appendRelocationReceipt(home, claim, intent, options.Now().UTC())
+	_, path, err := ports.receipt(home, claim, intent, options.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("finalize interrupted relocation for %s: %w", entry.Repository, err)
 	}
 	result.Applied, result.Finalized, result.ReceiptPath = true, true, path
 	return nil
+}
+
+type relocationFinalizePorts struct {
+	claim   func(string, string) (workLogClaim, workLogProjection, string, error)
+	pending func(string, workLogClaim, string, string, string) (*workLogRelocationIntent, string, error)
+	receipt func(string, workLogClaim, *workLogRelocationIntent, time.Time) (*workLogRelocationReceipt, string, error)
+}
+
+func productionRelocationFinalizePorts() relocationFinalizePorts {
+	return relocationFinalizePorts{claim: activeWorkLogClaim, pending: pendingRelocationIntent, receipt: appendRelocationReceipt}
 }
 
 // relocationDestinationRoot returns the worktrees root a relocation
@@ -421,6 +542,14 @@ func relocationDestinationRoot(destination, relative, to string) string {
 }
 
 func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA, destination, relative, to string) error {
+	return prepareRelocationDestinationWithHooks(ctx, entry, baseSHA, destination, relative, to, relocationDestinationHooks{})
+}
+
+type relocationDestinationHooks struct {
+	afterSharedRootOpen func()
+}
+
+func prepareRelocationDestinationWithHooks(ctx context.Context, entry ListResult, baseSHA, destination, relative, to string, hooks relocationDestinationHooks) error {
 	if to == "local" {
 		canonical, err := openCanonicalRepository(entry.CanonicalDir)
 		if err != nil {
@@ -448,6 +577,9 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 		return fmt.Errorf("open shared relocation root: %w", err)
 	}
 	defer func() { _ = root.Close() }()
+	if hooks.afterSharedRootOpen != nil {
+		hooks.afterSharedRootOpen()
+	}
 	if !directoryStillMatches(rootPath, root) {
 		return fmt.Errorf("shared relocation root changed: %s", rootPath)
 	}
@@ -458,11 +590,10 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 	if err != nil {
 		return err
 	}
+	// A successful OpenOrCreateNoFollowDirectory returns an opened descriptor.
+	// os.NewFile returns nil only for an invalid descriptor/handle; the opener
+	// reports those as errors rather than returning them on this path.
 	taskDir := os.NewFile(uintptr(taskFD), "wb-relocate-task")
-	if taskDir == nil {
-		_ = unix.Close(taskFD)
-		return fmt.Errorf("wrap relocation task directory")
-	}
 	defer func() { _ = taskDir.Close() }()
 	parent, repository := splitCloneRelative(relative)
 	parentDirectory, _, err := openRelativeParentDirectory(taskDir, taskPath, parent)
@@ -808,15 +939,39 @@ func corroborateRepositoryRelocation(ctx context.Context, worktree, repository s
 // task lock of its own; a caller reversing a completed relocation (such as
 // `wb layout migrate --undo`) already holds its own run-wide lock.
 func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destination, source string, now time.Time) error {
+	return reverseRelocationWithPorts(ctx, projectsRoot, canonicalDir, destination, source, now, productionRelocationReversePorts())
+}
+
+type relocationReversePorts struct {
+	lstat         func(string) (os.FileInfo, error)
+	resolve       func(string) (wbhome.Resolution, error)
+	claim         func(wbhome.Resolution, string) (workLogClaim, *workLogTerminalRecord, string, error)
+	head          func(context.Context, string) (string, error)
+	prepareParent func(string) error
+	move          func(context.Context, relocationMoveRequest) (worktreeMoveOutcome, string, error)
+}
+
+func productionRelocationReversePorts() relocationReversePorts {
+	return relocationReversePorts{
+		lstat: os.Lstat, resolve: wbhome.Resolve, claim: claimForRelocationAcrossHomes,
+		head:          func(ctx context.Context, path string) (string, error) { return git(ctx, path, "rev-parse", "HEAD") },
+		prepareParent: func(path string) error { return os.MkdirAll(path, 0o755) },
+		move: func(ctx context.Context, request relocationMoveRequest) (worktreeMoveOutcome, string, error) {
+			return runRelocationMove(ctx, request, productionRelocationMovePorts())
+		},
+	}
+}
+
+func reverseRelocationWithPorts(ctx context.Context, projectsRoot, canonicalDir, destination, source string, now time.Time, ports relocationReversePorts) error {
 	if !filepath.IsAbs(destination) || !filepath.IsAbs(source) {
 		return fmt.Errorf("relocation reversal paths must be absolute")
 	}
-	if _, statErr := os.Lstat(source); statErr == nil {
+	if _, statErr := ports.lstat(source); statErr == nil {
 		return fmt.Errorf("relocation-reversal destination already exists: %s", source)
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("inspect relocation-reversal destination %s: %w", source, statErr)
 	}
-	resolution, err := wbhome.Resolve(projectsRoot)
+	resolution, err := ports.resolve(projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -826,22 +981,15 @@ func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destinat
 	// the founder's decision (2026-09-18) that a finished task's checkout is
 	// the safe case. This does not change `wb worktree relocate` itself,
 	// which never calls ReverseRelocation.
-	claim, _, home, err := claimForRelocationAcrossHomes(resolution, destination)
+	claim, _, home, err := ports.claim(resolution, destination)
 	if err != nil {
 		return fmt.Errorf("recheck Work Log claim before relocation reversal: %w", err)
 	}
-	headOutput, err := git(ctx, destination, "rev-parse", "HEAD")
+	headOutput, err := ports.head(ctx, destination)
 	if err != nil {
 		return fmt.Errorf("read HEAD before relocation reversal: %w", err)
 	}
 	head := strings.TrimSpace(headOutput)
-	intent, _, err := appendRelocationIntent(home, claim, destination, source, "local", head, relocationPlacementRecord{}, now)
-	if err != nil {
-		return fmt.Errorf("record relocation-reversal intent: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
-		return fmt.Errorf("prepare relocation-reversal destination parent: %w", err)
-	}
 	// filepath.Dir(source), not filepath.Dir(destination): moveWorktree's
 	// worktreesRoot argument must bound the NEW path (here, source, the
 	// restoration target) so the secure Git helper's write-capability root
@@ -850,13 +998,18 @@ func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destinat
 	// the same way; this reversal path had it backwards, which only
 	// surfaced where Landlock actually confines the child (CI), not on a
 	// machine where the secure Git capability is unavailable.
-	if _, err := moveWorktree(ctx, canonicalDir, filepath.Dir(source), destination, source, worktreeMoveHooks{}); err != nil {
-		return err
-	}
-	if _, _, err := appendRelocationReceipt(home, claim, intent, now); err != nil {
-		return fmt.Errorf("record relocation-reversal receipt: %w", err)
-	}
-	return nil
+	_, _, err = ports.move(ctx, relocationMoveRequest{
+		home: home, claim: claim, canonicalDir: canonicalDir, destinationRoot: filepath.Dir(source),
+		source: destination, intentSource: destination, destination: source, to: "local", head: head, now: func() time.Time { return now },
+		intentContext: "record relocation-reversal intent", receiptContext: "record relocation-reversal receipt",
+		prepareMove: func() error {
+			if err := ports.prepareParent(filepath.Dir(source)); err != nil {
+				return fmt.Errorf("prepare relocation-reversal destination parent: %w", err)
+			}
+			return nil
+		},
+	})
+	return err
 }
 
 func pendingRelocationIntent(home string, claim workLogClaim, destination, branch, head string) (*workLogRelocationIntent, string, error) {

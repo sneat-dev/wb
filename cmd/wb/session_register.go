@@ -16,7 +16,12 @@ var (
 )
 
 func newSessionRegisterCmd(inv *invocation) *cobra.Command {
+	return newSessionRegisterCmdWithJoin(inv, collaborationFactory(inv))
+}
+
+func newSessionRegisterCmdWithJoin(inv *invocation, join collaborationServiceFactory) *cobra.Command {
 	var record session.Record
+	var joinWorktree string
 	command := &cobra.Command{
 		Use:   "register",
 		Short: "Announce this agent session so later WB writes can be attributed to it",
@@ -74,9 +79,23 @@ corrects its model does not have to clean up after itself.`,
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(command.OutOrStdout(),
+			if _, err := fmt.Fprintf(command.OutOrStdout(),
 				"registered %s (pid %d) using wb %s\n",
-				sessionLabel(written), written.PID, written.WBVersion)
+				sessionLabel(written), written.PID, written.WBVersion); err != nil {
+				return err
+			}
+			if joinWorktree != "" {
+				service, err := join()
+				if err != nil {
+					return fmt.Errorf("registered but not joined: %w", err)
+				}
+				if _, err := service.Join(command.Context(), joinWorktree); err != nil {
+					return fmt.Errorf("registered but not joined: %w", err)
+				}
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "joined %s\n", joinWorktree); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
@@ -90,6 +109,7 @@ corrects its model does not have to clean up after itself.`,
 	command.Flags().StringVar(&record.TmuxName, "tmux-name", "", "tmux session containing this agent")
 	command.Flags().StringVar(&record.PredecessorWBSessionID, "predecessor-wb-session-id", "", "WB session ID that handed off to this session")
 	command.Flags().StringVar(&record.HandoffID, "handoff-id", "", "handoff that created this session")
+	command.Flags().StringVar(&joinWorktree, "join", "", "join an already owned worktree after registration")
 	return command
 }
 

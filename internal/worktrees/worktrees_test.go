@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,23 +22,13 @@ import (
 const secureHookRunTestHelperArgument = "--wb-hook-run-test-helper"
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
-		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == secureHookRunTestHelperArgument {
-		os.Exit(runSecureHookTestHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
-		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalGitHelperArgument {
-		os.Exit(RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageCanonicalGitHelperArgument {
-		os.Exit(RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureRenameGitHelperArgument {
-		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
+	if len(os.Args) > 1 {
+		if helper, known := SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+		if os.Args[1] == secureHookRunTestHelperArgument {
+			os.Exit(runSecureHookTestHelper(os.Args[2:]))
+		}
 	}
 	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
 	// before any worktrees test (relocate, autoregister, worklog, ...) runs.
@@ -47,6 +38,36 @@ func TestMain(m *testing.M) {
 	// background writer can race TempDir cleanup (task-21).
 	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
+}
+
+func TestSecureGitHelperForArgumentSelectsExactHandler(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		argument string
+		helper   func([]string) int
+	}{
+		{SecureCleanupGitHelperArgument, RunSecureCleanupGitHelper},
+		{SecureStageGitHelperArgument, RunSecureStageGitHelper},
+		{SecureCanonicalGitHelperArgument, RunSecureCanonicalGitHelper},
+		{SecureCanonicalPolicyGitHelperArgument, RunSecureCanonicalPolicyGitHelper},
+		{SecureStageCanonicalGitHelperArgument, RunSecureStageCanonicalGitHelper},
+		{SecureRenameGitHelperArgument, RunSecureRenameGitHelper},
+	}
+	for _, tc := range cases {
+		t.Run(tc.argument, func(t *testing.T) {
+			t.Parallel()
+			got, known := SecureGitHelperForArgument(tc.argument)
+			if !known || got == nil || reflect.ValueOf(got).Pointer() != reflect.ValueOf(tc.helper).Pointer() {
+				t.Fatalf("helper for %q was not the expected handler; known=%t", tc.argument, known)
+			}
+		})
+	}
+	for _, argument := range []string{"", "--unknown-helper", secureHookRunTestHelperArgument} {
+		got, known := SecureGitHelperForArgument(argument)
+		if got != nil || known {
+			t.Fatalf("unexpected worktrees helper for %q; known=%t", argument, known)
+		}
+	}
 }
 
 func runSecureHookTestHelper(args []string) int {
@@ -2434,6 +2455,11 @@ func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {
 
 func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *gitFixture {
 	t.Helper()
+	return newGitFixtureAtRepositoryWithConfig(t, root, home, repository, seedFreshFixtureGitConfig)
+}
+
+func newGitFixtureAtRepositoryWithConfig(t *testing.T, root, home, repository string, configure func(*testing.T, string, bool)) *gitFixture {
+	t.Helper()
 	// The suite's fixtures were written against the repository-local layout.
 	// Selecting that machine-local store mode explicitly keeps each test
 	// exercising the layout it describes; the central default, its literal host
@@ -2449,14 +2475,14 @@ func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *git
 	// environment it hands its server-side receive-pack child, so the env
 	// vars gitTest sets never reach it -- the repository's own config must
 	// carry the disabled settings directly (testenv.ConfigureGitAutoMaintenanceOff).
-	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
+	configure(t, remote, true)
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", repository)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, root, "clone", remote, canonical)
-	configureGitUser(t, canonical)
+	configure(t, canonical, false)
 	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2465,11 +2491,34 @@ func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *git
 	// don't inherit gitTest's per-command env override -- so the disabled
 	// settings must live in the repository's own config, not only in the
 	// test process's environment.
-	testenv.ConfigureGitAutoMaintenanceOff(t, canonical)
 	gitTest(t, canonical, "add", "README.md")
 	gitTest(t, canonical, "commit", "-m", "initial")
 	gitTest(t, canonical, "push", "-u", "origin", "main")
 	return resolvedGitFixture(t, projectsRoot, canonical, remote, home)
+}
+
+// seedFreshFixtureGitConfig configures only repositories just created by the
+// fixture, before any other Git operation can use them. Existing repositories
+// continue to use ConfigureGitAutoMaintenanceOff's normal Git config path.
+func seedFreshFixtureGitConfig(t *testing.T, directory string, bare bool) {
+	t.Helper()
+	config := filepath.Join(directory, "config")
+	settings := "\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n[receive]\n\tautogc = false\n"
+	if !bare {
+		config = filepath.Join(directory, ".git", "config")
+		settings += "[user]\n\tname = WB Test\n\temail = wb@example.test\n"
+	}
+	file, err := os.OpenFile(config, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(settings); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func resolvedGitFixture(t *testing.T, projectsRoot, canonical, remote, home string) *gitFixture {
