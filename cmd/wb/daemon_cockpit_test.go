@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +260,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	bare := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host)
 	if bare.Machine != "the-host" || bare.Collectors.Remote != nil || bare.Interval != 90*time.Second || bare.Collectors.Repositories == nil || bare.Collectors.CodeIndex == nil {
 		t.Errorf("options with no remote section = %+v", bare)
+	}
+	if hardware := bare.Hardware; hardware.OS != runtime.GOOS || hardware.Arch != runtime.GOARCH || hardware.CPUCount != runtime.NumCPU() {
+		t.Errorf("hardware = %+v, want this machine's", hardware)
 	}
 	bare.Logf("refresh failed: %v", "boom")
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {

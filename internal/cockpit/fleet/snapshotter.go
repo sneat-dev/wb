@@ -2,12 +2,11 @@ package fleet
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
@@ -113,6 +113,13 @@ type Options struct {
 	// the asks of one repository's read; zero or less means 20 s and 2 min.
 	ProviderTimeout time.Duration
 	ProviderBudget  time.Duration
+	// Hardware is this machine's hardware facts for its machine entry; the zero
+	// value omits them. The daemon passes LocalHardware().
+	Hardware Hardware
+	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
+	// for each snapshot stored and once for each repository's branch list that
+	// is first asked for after a change, never per request; a test counts it.
+	Compress func([]byte) []byte
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// Tick delivers the refresh ticks for an interval and a function that
@@ -146,6 +153,9 @@ type repoState struct {
 	applied       int
 	passPrint     string
 	entries       repoEntries
+	// branches is the branch list's body prepared for serving, built on the
+	// first request after entries changed and dropped when they change again.
+	branches *cockpit.Payload
 }
 
 // Snapshotter builds the fleet document in the background and holds the last
@@ -157,6 +167,8 @@ type Snapshotter struct {
 	version           string
 	login             string
 	projectsRoot      string
+	hardware          Hardware
+	compress          func([]byte) []byte
 	collectors        Collectors
 	interval          time.Duration
 	workers           int
@@ -178,8 +190,7 @@ type Snapshotter struct {
 	mu         sync.RWMutex
 
 	doc         Document
-	body        []byte
-	etag        string
+	payload     cockpit.Payload
 	complete    bool
 	passing     bool
 	listError   string
@@ -193,15 +204,18 @@ type Snapshotter struct {
 	bindings    []worktrees.RegisteredPullRequestBinding
 	boundAt     time.Time
 	remote      remoteView
-	codePass    CodeIndexPass
-	codeErr     string
+	// remoteBranches holds the prepared empty branch lists of the repositories
+	// cached from other machines, dropped whenever remote is replaced.
+	remoteBranches map[string]cockpit.Payload
+	codePass       CodeIndexPass
+	codeErr        string
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
 // warming-up document until the first repository completes.
 func New(options Options) *Snapshotter {
 	snapshotter := &Snapshotter{
-		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, collectors: options.Collectors,
+		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
 		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
@@ -225,6 +239,9 @@ func New(options Options) *Snapshotter {
 	if snapshotter.providerBudget <= 0 {
 		snapshotter.providerBudget = defaultProviderBudget
 	}
+	if snapshotter.compress == nil {
+		snapshotter.compress = cockpit.Gzip
+	}
 	if snapshotter.now == nil {
 		snapshotter.now = time.Now
 	}
@@ -237,7 +254,7 @@ func New(options Options) *Snapshotter {
 	if snapshotter.logf == nil {
 		snapshotter.logf = func(string, ...any) {}
 	}
-	snapshotter.store(emptyDocument())
+	snapshotter.store(emptyDocument(snapshotter.interval))
 	return snapshotter
 }
 
@@ -247,21 +264,68 @@ func tickEvery(interval time.Duration) (<-chan time.Time, func()) {
 	return ticker.C, ticker.Stop
 }
 
-// store makes document the published one and marshals it once, with a strong
-// ETag over the bytes, so a request copies bytes and runs no encoder. The
-// document types cannot fail to marshal.
+// store makes document the published one and prepares its body once: the JSON,
+// its gzip encoding and their strong ETags, so a request copies bytes and runs
+// neither an encoder nor a compressor (cockpit-views#req:compressed-responses).
+// The document types cannot fail to marshal.
 func (s *Snapshotter) store(document Document) {
 	body, _ := json.Marshal(document)
-	sum := sha256.Sum256(body)
-	s.doc, s.body, s.etag = document, append(body, '\n'), `"`+hex.EncodeToString(sum[:12])+`"`
+	s.doc, s.payload = document, cockpit.NewPayload(append(body, '\n'), s.compress)
+}
+
+// Payload returns the last published document prepared for serving.
+func (s *Snapshotter) Payload() cockpit.Payload {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.payload
 }
 
 // Body returns the last published document as marshalled JSON, and its strong
 // ETag.
 func (s *Snapshotter) Body() (body []byte, etag string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.body, s.etag
+	return s.Payload().Identity()
+}
+
+// Branches returns the branch list of the local repository with id, prepared for
+// serving, from the last scan and without running anything (cockpit-views#req:
+// lazy-branches-route). A repository cached from another machine is known and has no
+// branches here: the answer is an empty list and its reason. An id that is
+// neither is not found.
+func (s *Snapshotter) Branches(id string) (payload cockpit.Payload, found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state, local := s.repos[id]; local && state.scanned {
+		if state.branches == nil {
+			branches := slices.Clone(state.entries.branches)
+			sortByName(branches, func(item Branch) string { return item.Name }, func(item Branch) string { return item.ID })
+			state.branches = s.branchesPayload(BranchesResponse{Repository: id, Branches: branches})
+		}
+		return *state.branches, true
+	}
+	if payload, held := s.remoteBranches[id]; held {
+		return payload, true
+	}
+	for _, repository := range s.remote.repositories {
+		if repository.ID == id {
+			payload = *s.branchesPayload(BranchesResponse{Repository: id, Reason: ReasonCachedRepository})
+			if s.remoteBranches == nil {
+				s.remoteBranches = map[string]cockpit.Payload{}
+			}
+			s.remoteBranches[id] = payload
+			return payload, true
+		}
+	}
+	return cockpit.Payload{}, false
+}
+
+// branchesPayload marshals response, with a list that is never null.
+func (s *Snapshotter) branchesPayload(response BranchesResponse) *cockpit.Payload {
+	if response.Branches == nil {
+		response.Branches = []Branch{}
+	}
+	body, _ := json.Marshal(response)
+	payload := cockpit.NewPayload(append(body, '\n'), s.compress)
+	return &payload
 }
 
 // readmeTarget is the repository with id and its default branch, which is empty
@@ -619,6 +683,7 @@ func (s *Snapshotter) markFailed(id string) {
 			state.entries.repository.Error = ErrorReadFailed
 		} else {
 			state.entries = mapLocalRepository(s.machine, state.repo, "", nil, nil, ErrorReadFailed, localCodeIndex{}, "", s.now())
+			state.branches = nil
 		}
 		state.scanned = true
 	}
@@ -753,7 +818,7 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 	if state, found := s.repos[id]; found && ticket > state.applied {
 		state.applied = ticket
 		state.fingerprint, state.gitRead, state.linked, state.refs, state.defaultBranch, state.identity = held.fingerprint, held.gitRead, held.linked, held.refs, held.defaultBranch, held.identity
-		state.scanned, state.entries = true, entries
+		state.scanned, state.entries, state.branches = true, entries, nil
 		state.indexKey, state.indexed, state.codeIndex = indexKey, indexed, codeIndex
 	}
 	if errCode != "" {
@@ -826,7 +891,7 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 		view := mapRemote(s.machine, s.login, s.projectsRoot, entries)
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.remote = view
+		s.remote, s.remoteBranches = view, nil
 		s.publishMaybeLocked()
 	}()
 }
@@ -846,7 +911,7 @@ func (s *Snapshotter) publishMaybeLocked() {
 // other machines. The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
-	document := emptyDocument()
+	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
 		document.Error = ErrorGitTooOld
@@ -888,7 +953,6 @@ func (s *Snapshotter) publishLocked() {
 		repository.LocalBranchCount, repository.RemoteBranchCount, repository.ActiveAgentCount = &localBranches, &remoteBranches, &active
 		document.Repositories = append(document.Repositories, repository)
 		document.Worktrees = append(document.Worktrees, entries.worktrees...)
-		document.Branches = append(document.Branches, entries.branches...)
 	}
 	document.PullRequests = append(document.PullRequests, pullRequests...)
 	for _, record := range s.agents {
@@ -901,6 +965,7 @@ func (s *Snapshotter) publishLocked() {
 	document.Machines = append(document.Machines, Machine{
 		Entry:     localEntry(localMachineID(s.machine), s.machine, now),
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
+		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
 	})
 	document.Machines = append(document.Machines, s.remote.machines...)
 	document.Repositories = append(document.Repositories, s.remote.repositories...)
@@ -909,7 +974,6 @@ func (s *Snapshotter) publishLocked() {
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })
-	sortByName(document.Branches, func(item Branch) string { return item.Name }, func(item Branch) string { return item.ID })
 	sortByName(document.PullRequests, func(item PullRequest) string { return fmt.Sprintf("%09d", item.Number) }, func(item PullRequest) string { return item.ID })
 	sortByName(document.Agents, func(item Agent) string { return item.Kind }, func(item Agent) string { return item.ID })
 	s.store(document)

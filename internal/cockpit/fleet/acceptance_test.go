@@ -87,7 +87,7 @@ func TestFleetReadModelListsLocalStateAndCachedMachines(t *testing.T) {
 	if local2 != 2 || cached != 1 {
 		t.Errorf("worktrees: %d local, %d cached", local2, cached)
 	}
-	for _, branch := range document.Branches {
+	for _, branch := range snapshotter.allBranches() {
 		if branch.Route != RouteLocal {
 			t.Errorf("branch %+v: want a local route", branch)
 		}
@@ -95,8 +95,8 @@ func TestFleetReadModelListsLocalStateAndCachedMachines(t *testing.T) {
 			t.Errorf("branch %+v: want its worktree, task and tracking state", branch)
 		}
 	}
-	if len(document.Branches) != 3 {
-		t.Errorf("branches = %d, want 3", len(document.Branches))
+	if len(snapshotter.allBranches()) != 3 {
+		t.Errorf("branches = %d, want 3", len(snapshotter.allBranches()))
 	}
 	prs := map[int]PullRequest{}
 	for _, pull := range document.PullRequests {
@@ -124,7 +124,7 @@ func TestFleetReadModelListsLocalStateAndCachedMachines(t *testing.T) {
 	}
 	idsAreUnique(t, "worktrees", ids)
 	ids = nil
-	for _, item := range document.Branches {
+	for _, item := range snapshotter.allBranches() {
 		ids = append(ids, item.ID)
 	}
 	idsAreUnique(t, "branches", ids)
@@ -174,7 +174,7 @@ func TestRequestBeforeTheFirstSnapshotIsEmptyAndWarmingUp(t *testing.T) {
 	t.Parallel()
 	snapshotter, _ := newSnapshotter(forbidden{t}.collectors(), nil)
 	recorder := newCockpitServer(t, snapshotter).get(cockpit.APIPrefix+FleetRoute, nil)
-	want := `{"schema_version":1,"warming_up":true,"repositories_total":0,"repositories_scanned":0,"diagnostics":0,"machines":[],"repositories":[],"worktrees":[],"branches":[],"pull_requests":[],"agents":[]}` + "\n"
+	want := `{"schema_version":2,"warming_up":true,"repositories_total":0,"repositories_scanned":0,"diagnostics":0,"refresh_interval_seconds":60,"machines":[],"repositories":[],"worktrees":[],"pull_requests":[],"agents":[]}` + "\n"
 	if recorder.Code != http.StatusOK || recorder.Body.String() != want {
 		t.Fatalf("cold fleet = %d %q, want %q", recorder.Code, recorder.Body.String(), want)
 	}

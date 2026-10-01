@@ -22,8 +22,8 @@ import (
 // TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint proves
 // cockpit#req:snapshot-refresh: a repository whose fingerprint did not move
 // costs no worktree or branch read however many passes run, a moved one costs
-// one, and its worktrees' heartbeats are read on every pass, so an owner state
-// that changes outside Git still shows.
+// one, and its worktrees' records and owner liveness are read on every pass, so
+// an owner state that changes outside Git still shows.
 func TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
@@ -56,13 +56,22 @@ func TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint(t *testing.
 		}
 		return ""
 	}
-	if ownerOf("task-a") != OwnerActive || ownerOf("task-b") != OwnerIdle {
+	if ownerOf("task-a") != OwnerActive || ownerOf("task-b") != OwnerOrphaned {
 		t.Fatalf("owner states = %q, %q", ownerOf("task-a"), ownerOf("task-b"))
 	}
 	clock.advance(7 * time.Hour)
 	refresh()
-	if ownerOf("task-a") != OwnerIdle || sources.worktreeCalls.Load() != 1 {
-		t.Errorf("task-a is %q after its heartbeat aged, with %d Git reads", ownerOf("task-a"), sources.worktreeCalls.Load())
+	if ownerOf("task-a") != OwnerActive {
+		t.Errorf("task-a is %q after its heartbeat aged; the heartbeat must play no part", ownerOf("task-a"))
+	}
+	sources.change(func(f *fakeSources) {
+		record := f.records["/wt/task-a"]
+		record.Owner = worktrees.OwnerGone
+		f.records["/wt/task-a"] = record
+	})
+	refresh()
+	if ownerOf("task-a") != OwnerOrphaned || sources.worktreeCalls.Load() != 1 {
+		t.Errorf("task-a is %q after its owner process died, with %d Git reads", ownerOf("task-a"), sources.worktreeCalls.Load())
 	}
 	fingerprint.value.Store("two")
 	refresh()
@@ -82,6 +91,7 @@ func TestFailingRepositoryIsRecordedWithACodeAndKeepsItsLastState(t *testing.T) 
 	})
 	refreshAndSettle(t, snapshotter)
 	before := snapshotter.Document()
+	branchesBefore := len(snapshotter.allBranches())
 
 	sources.change(func(f *fakeSources) {
 		f.worktreeErr, f.sessionErr, f.remoteErr, f.bindingErr = errBoom, errBoom, errBoom, errBoom
@@ -104,7 +114,7 @@ func TestFailingRepositoryIsRecordedWithACodeAndKeepsItsLastState(t *testing.T) 
 	if len(snapshotter.Document().Machines) != 2 {
 		t.Errorf("a failing remote read dropped the other machine: %+v", snapshotter.Document().Machines)
 	}
-	if local.Error != ErrorReadFailed || local.WorktreeCount != 2 || len(after.Worktrees) != len(before.Worktrees) || len(after.Branches) != len(before.Branches) || len(after.Agents) != 1 || len(after.Machines) != 2 {
+	if local.Error != ErrorReadFailed || local.WorktreeCount != 2 || len(after.Worktrees) != len(before.Worktrees) || len(snapshotter.allBranches()) != branchesBefore || len(after.Agents) != 1 || len(after.Machines) != 2 {
 		t.Errorf("failed sources dropped state: repository %+v, %d worktrees, %d agents, %d machines", local, len(after.Worktrees), len(after.Agents), len(after.Machines))
 	}
 	body, _ := jsonString(after)
@@ -572,7 +582,7 @@ func TestRemoteMachinesAreCachedAndSkipOurOwnPublication(t *testing.T) {
 }
 
 // TestLocalEntriesMapRecordsBranchesAndDropDuplicates covers the owner state
-// from the heartbeat (falling back to creation), a detached worktree taking
+// from the owner process's liveness, a detached worktree taking
 // its branch from the manifest, the tracking fields, the worktree link and
 // duplicate identities. No lifecycle or stream is derived.
 func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
@@ -580,9 +590,9 @@ func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
 	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	repo := discover.Repo{Host: "github.com", Org: "o", Name: "r", Path: "/p"}
 	recorded := []recordedWorktree{
-		{linked: LinkedWorktree{Path: "/a", Branch: "a"}, record: WorktreeRecord{Task: "fresh", CreatedAt: at.Add(-time.Hour)}},
-		{linked: LinkedWorktree{Path: "/b"}, record: WorktreeRecord{Task: "detached", Branch: "b", CreatedAt: at.Add(-30 * time.Hour), HeartbeatAt: at.Add(-time.Minute)}},
-		{linked: LinkedWorktree{Path: "/c", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour)}},
+		{linked: LinkedWorktree{Path: "/a", Branch: "a"}, record: WorktreeRecord{Task: "fresh", CreatedAt: at.Add(-time.Hour), Owner: worktrees.OwnerLive}},
+		{linked: LinkedWorktree{Path: "/b"}, record: WorktreeRecord{Task: "detached", Branch: "b", CreatedAt: at.Add(-30 * time.Hour), HeartbeatAt: at.Add(-time.Minute), Owner: worktrees.OwnerLive}},
+		{linked: LinkedWorktree{Path: "/c", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour), Owner: worktrees.OwnerUnstated}},
 		{linked: LinkedWorktree{Path: "/c2", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour)}},
 	}
 	mapped := mapLocalRepository(testMachine, repo, "trunk", recorded, []BranchRef{
@@ -593,7 +603,7 @@ func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
 	want := map[string]struct {
 		branch, owner string
 		activity      time.Time
-	}{"fresh": {"a", OwnerActive, at.Add(-time.Hour)}, "detached": {"b", OwnerActive, at.Add(-time.Minute)}, "old": {"c", OwnerIdle, at.Add(-30 * time.Hour)}}
+	}{"fresh": {"a", OwnerActive, at.Add(-time.Hour)}, "detached": {"b", OwnerActive, at.Add(-time.Minute)}, "old": {"c", OwnerUnknown, at.Add(-30 * time.Hour)}}
 	if len(mapped.worktrees) != 3 || mapped.repository.DefaultBranch != "trunk" || mapped.repository.Host != "github.com" {
 		t.Fatalf("worktrees = %d, repository %+v", len(mapped.worktrees), mapped.repository)
 	}
@@ -688,14 +698,14 @@ func TestDocumentOrdersEqualNamesByIDAndHostsDoNotCollide(t *testing.T) {
 	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
 	refreshAndSettle(t, snapshotter)
 	document := snapshotter.Document()
-	if len(document.Repositories) != 2 || len(document.Worktrees) != 2 || len(document.Branches) != 2 || len(document.Machines) != 3 {
+	if len(document.Repositories) != 2 || len(document.Worktrees) != 2 || len(snapshotter.allBranches()) != 2 || len(document.Machines) != 3 {
 		t.Fatalf("document = %d repositories, %d worktrees, %d branches, %d machines",
-			len(document.Repositories), len(document.Worktrees), len(document.Branches), len(document.Machines))
+			len(document.Repositories), len(document.Worktrees), len(snapshotter.allBranches()), len(document.Machines))
 	}
 	if len(document.PullRequests) != 2 || document.PullRequests[0].ID >= document.PullRequests[1].ID || document.Diagnostics != 2 {
 		t.Errorf("pull requests = %+v, diagnostics %d", document.PullRequests, document.Diagnostics)
 	}
-	if document.Worktrees[0].ID >= document.Worktrees[1].ID || document.Branches[0].ID >= document.Branches[1].ID || document.Machines[0].ID >= document.Machines[1].ID {
+	if document.Worktrees[0].ID >= document.Worktrees[1].ID || document.Machines[0].ID >= document.Machines[1].ID {
 		t.Error("entries with equal names are not ordered by id")
 	}
 	first, _ := snapshotter.Checkout(localRepositoryID(testMachine, sources.repos[0]))
@@ -1096,8 +1106,8 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 		if gate.asked.Load() != 1 || logged.Load() != 1 || document.Error != ErrorGitTooOld {
 			t.Errorf("%s: gate asked %d times, logged %d, document error %q", name, gate.asked.Load(), logged.Load(), document.Error)
 		}
-		if len(document.Branches) != 0 || len(localWorktrees(document)) != 2 {
-			t.Errorf("%s: %d branches, %d worktrees; Git-backed reads must be off and file reads kept", name, len(document.Branches), len(localWorktrees(document)))
+		if len(snapshotter.allBranches()) != 0 || len(localWorktrees(document)) != 2 {
+			t.Errorf("%s: %d branches, %d worktrees; Git-backed reads must be off and file reads kept", name, len(snapshotter.allBranches()), len(localWorktrees(document)))
 		}
 		server := newCockpitServer(t, snapshotter)
 		var id string
@@ -1116,8 +1126,8 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	collectors.Git = usable
 	snapshotter, _ := newSnapshotter(collectors, nil)
 	refreshAndSettle(t, snapshotter)
-	if document := snapshotter.Document(); document.Error != "" || len(document.Branches) == 0 {
-		t.Errorf("with Git usable: error %q, %d branches", document.Error, len(document.Branches))
+	if document := snapshotter.Document(); document.Error != "" || len(snapshotter.allBranches()) == 0 {
+		t.Errorf("with Git usable: error %q, %d branches", document.Error, len(snapshotter.allBranches()))
 	}
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -1207,7 +1217,7 @@ func TestEveryEntryCarriesItsMachinesUniqueId(t *testing.T) {
 	for _, entry := range document.Worktrees {
 		ids = append(ids, entry.MachineID)
 	}
-	for _, entry := range document.Branches {
+	for _, entry := range snapshotter.allBranches() {
 		ids = append(ids, entry.MachineID)
 	}
 	for _, entry := range document.PullRequests {
@@ -1251,7 +1261,10 @@ func TestPublishedDocumentMarshalsEveryCollectionAsAList(t *testing.T) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"machines", "repositories", "worktrees", "branches", "pull_requests", "agents"} {
+	if _, present := raw["branches"]; present {
+		t.Error("the document carries a branches collection")
+	}
+	for _, name := range []string{"machines", "repositories", "worktrees", "pull_requests", "agents"} {
 		if value := string(raw[name]); !strings.HasPrefix(value, "[") {
 			t.Errorf("%s = %s, want a list", name, value)
 		}

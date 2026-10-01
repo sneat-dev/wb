@@ -48,10 +48,12 @@ func sentinelSources() *fakeSources {
 	published, _ := time.Parse(time.RFC3339, remotePublish)
 	entry.Error = ""
 	entry.Snapshot.Login, entry.Snapshot.Machine, entry.Snapshot.WBVersion, entry.Snapshot.PublishedAt = "someone", "desktop", "v0.9.0", published
+	// The machine's hardware facts are fields the document may show.
+	entry.Snapshot.OS, entry.Snapshot.Arch, entry.Snapshot.CPUCount, entry.Snapshot.BootTime = "linux", "arm64", 8, published
 	entry.Snapshot.KnownRepositories = []string{"acme/gadgets"}
 	state := &entry.Snapshot.Worktrees[0]
 	state.Task, state.Stream, state.Repository, state.Branch = "task-x", "stream-x", "acme/gadgets", "feature/x"
-	state.Lifecycle, state.OwnerState = "active", "active"
+	state.Lifecycle, state.OwnerState = "working", "orphaned"
 	state.PullRequest.Number, state.PullRequest.State, state.PullRequest.URL = 3, "OPEN", "https://github.com/acme/gadgets/pull/3"
 
 	return &fakeSources{
@@ -77,6 +79,16 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	refreshAndSettle(t, snapshotter)
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
+	// The branches are served by their own route, so the same checks cover it.
+	for _, repository := range snapshotter.Document().Repositories {
+		if repository.Route == RouteLocal {
+			recorder := server.get("/api/v1/cockpit/branches?repository="+repository.ID, nil)
+			if recorder.Code != 200 {
+				t.Fatalf("branches route = %d %s", recorder.Code, recorder.Body.String())
+			}
+			body += recorder.Body.String()
+		}
+	}
 	if strings.Contains(body, strconv.Itoa(sentinelNumber)) {
 		t.Fatalf("the document carries a sentinel number from a source field: %s", body)
 	}
@@ -86,7 +98,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"task-a"`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
-		`"desktop"`, `"v0.9.0"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"desktop"`, `"v0.9.0"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
@@ -101,21 +113,22 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	t.Parallel()
 	entry := []string{"id", "machine", "machine_id", "route", "observed_at"}
 	want := map[string][]string{
-		"Document":       {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "machines", "repositories", "worktrees", "branches", "pull_requests", "agents", "agents_truncated"},
-		"Machine":        append([]string{"wb_version", "repository_count", "worktree_count"}, entry...),
-		"Repository":     append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "code_index"}, entry...),
-		"Worktree":       append([]string{"repository", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "code_index"}, entry...),
-		"Branch":         append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
-		"PullRequest":    append([]string{"repository", "worktree", "branch", "number", "state", "url"}, entry...),
-		"CodeIndex":      {"indexer", "state", "behind", "receipt_at", "statistics"},
-		"CodeStatistics": {"indexed", "files", "symbols", "edges", "kinds", "error"},
-		"KindCount":      {"kind", "count"},
-		"Agent":          append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
+		"Document":         {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "refresh_interval_seconds", "machines", "repositories", "worktrees", "pull_requests", "agents", "agents_truncated"},
+		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time"}, entry...),
+		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
+		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
+		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
+		"PullRequest":      append([]string{"repository", "worktree", "branch", "number", "state", "url"}, entry...),
+		"BranchesResponse": {"repository", "branches", "reason"},
+		"CodeIndex":        {"indexer", "state", "behind", "receipt_at", "statistics"},
+		"CodeStatistics":   {"indexed", "files", "symbols", "edges", "kinds", "error"},
+		"KindCount":        {"kind", "count"},
+		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
-		"CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
+		"BranchesResponse": jsonFields(BranchesResponse{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])
