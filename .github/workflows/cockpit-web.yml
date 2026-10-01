@@ -30,7 +30,7 @@ jobs:
   test:
     name: Cockpit web
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: What changed?
         id: changes
@@ -87,6 +87,7 @@ jobs:
       # Angular 22 needs Node ^22.22.3, ^24.15 or >=26 (cockpit/web
       # package.json "engines"); this job names the major it was verified on.
       - name: Setup Node, dependencies and Playwright browser
+        id: setup
         if: steps.changes.outputs.journey == 'true'
         uses: ./.github/actions/playwright-web-setup
         with:
@@ -118,8 +119,12 @@ jobs:
       # Builds the web application and a wb that embeds it, starts that wb's own
       # daemon on a free port under a temporary directory and drives it in a
       # browser. Linux only: the test refuses to run anywhere else.
+      # Runs even when lint, build or the unit tests failed, so one failure does
+      # not hide the journey's result; the journey builds the web application
+      # and wb itself (test:journey), and needs only the shared setup, so it is
+      # skipped when that failed.
       - name: Whole-journey end-to-end test
-        if: steps.changes.outputs.journey == 'true'
+        if: ${{ !cancelled() && steps.changes.outputs.journey == 'true' && steps.setup.outcome == 'success' }}
         working-directory: cockpit/web
         run: pnpm test:journey
 

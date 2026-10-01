@@ -112,8 +112,34 @@ func commandMentions(text string) func(gitCall) bool {
 	return func(c gitCall) bool { return strings.Contains(c.String(), text) }
 }
 
-func (f *fakeGitRunner) RunOpts(ctx context.Context, _ string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+// pinRunOptions fails t unless a command was started the way every command of
+// the snapshotter must be: no working directory of its own (Git is told its
+// repository by -C), no standard input, standard error discarded, the wait
+// delay, an output cap (zero would be uncapped), one output stream, and an
+// environment that is set (a nil one would inherit the daemon's).
+func pinRunOptions(t *testing.T, dir string, opts runner.RunOptions) {
+	t.Helper()
+	switch {
+	case dir != "":
+		t.Errorf("the command was given a working directory %q", dir)
+	case len(opts.Stdin) != 0:
+		t.Errorf("the command was given standard input")
+	case !opts.DiscardStderr:
+		t.Errorf("the command's standard error was not discarded")
+	case opts.WaitDelay != gitWaitDelay:
+		t.Errorf("the command's wait delay is %v, want %v", opts.WaitDelay, gitWaitDelay)
+	case opts.StdoutLimit <= 0:
+		t.Errorf("the command's output is not capped")
+	case opts.CaptureCombined:
+		t.Errorf("the command's output streams are combined")
+	case opts.Env == nil:
+		t.Errorf("the command's environment is nil, which inherits the daemon's")
+	}
+}
+
+func (f *fakeGitRunner) RunOpts(ctx context.Context, workdir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
 	f.t.Helper()
+	pinRunOptions(f.t, workdir, opts)
 	if len(args) < 3 || args[1] != "-C" {
 		f.t.Errorf("the command %s %v does not carry the hardening settings", name, args)
 		return runner.Result{}, errBoom

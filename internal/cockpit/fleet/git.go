@@ -96,11 +96,21 @@ func readGit(ctx context.Context, run runner.Runner, binary, dir string, args ..
 
 // gitOutputLimited is readGit with an output cap: past limit bytes the
 // command is stopped and errGitOutputTooLarge returned, with nothing beyond
-// the cap ever buffered. The command runs in its own process group, which is
-// killed when ctx ends, and its pipes are abandoned after gitWaitDelay, so a
-// descendant that holds stdout open cannot keep the call from returning.
+// the cap ever buffered. On darwin and linux the command runs in its own
+// process group, which ctx ending stops with SIGTERM, a 250 ms grace and then
+// SIGKILL (other systems kill the process only). Its pipes are abandoned after
+// gitWaitDelay, and a descendant that keeps stdout open after the command has
+// exited cleanly does not fail the call.
 func gitOutputLimited(ctx context.Context, run runner.Runner, binary, dir string, limit int, args ...string) ([]byte, error) {
 	return runCapped(ctx, run, binary, gitEnvironment(os.Environ()), limit, gitArguments(dir, args))
+}
+
+// orReal is run, or the real runner when run is nil.
+func orReal(run runner.Runner) runner.Runner {
+	if run == nil {
+		return runner.New()
+	}
+	return run
 }
 
 // errCommandMissing says the command could not be started because it is not
@@ -117,21 +127,28 @@ func (commandMissingError) Is(target error) bool {
 
 // runCapped runs binary with args and env through run (the real runner when
 // nil), and returns its standard output, up to limit bytes: past it the command
-// is stopped and errGitOutputTooLarge returned. The runner puts the command in
-// its own process group, killed when ctx ends, and the pipes are abandoned
-// after gitWaitDelay. Standard input is empty and standard error is discarded,
-// so what a command prints to it, which can carry a path, never comes back. A
-// non-zero exit is an exitError.
+// is stopped and errGitOutputTooLarge returned. A limit that is not positive is
+// refused (the runner reads zero as uncapped). On darwin and linux the runner
+// puts the command in its own process group, ended with SIGTERM, a 250 ms grace
+// and then SIGKILL when ctx ends (other systems kill the process only), and
+// abandons the pipes after gitWaitDelay; a descendant that keeps stdout open
+// after a clean exit does not fail the call. Standard input is empty and
+// standard error is discarded, so what a command prints to it, which can carry
+// a path, never comes back. A call whose ctx ended is errGit whatever the
+// command exited with: a child that trapped the signal and exited 1 must not
+// read as Git's "no". Otherwise a non-zero exit is an exitError.
 func runCapped(ctx context.Context, run runner.Runner, binary string, env []string, limit int, args []string) ([]byte, error) {
-	if run == nil {
-		run = runner.New()
+	if limit <= 0 {
+		return nil, errGit
 	}
-	result, err := run.RunOpts(ctx, "", runner.RunOptions{
+	result, err := orReal(run).RunOpts(ctx, "", runner.RunOptions{
 		Env: env, WaitDelay: gitWaitDelay, StdoutLimit: limit, DiscardStderr: true,
 	}, binary, args...)
 	switch {
 	case err == nil:
 		return []byte(result.Stdout), nil
+	case ctx.Err() != nil:
+		return nil, errGit
 	case errors.Is(err, runner.ErrOutputTooLarge):
 		return nil, errGitOutputTooLarge
 	case result.ExitCode != 0:

@@ -613,7 +613,8 @@ func newFakeCommand(t *testing.T, reply func(commandCall) gitReply) *fakeCommand
 	return &fakeCommandRunner{fakeGitRunner: fakeGitRunner{t: t}, reply: reply}
 }
 
-func (f *fakeCommandRunner) RunOpts(_ context.Context, _ string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+func (f *fakeCommandRunner) RunOpts(_ context.Context, workdir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	pinRunOptions(f.t, workdir, opts)
 	call := commandCall{Binary: name, Args: args, Opts: opts}
 	f.commands = append(f.commands, call)
 	return resultOf(f.reply(call), opts)
@@ -722,6 +723,9 @@ func TestProviderEnvironmentKeepsOnlyTheAllowList(t *testing.T) {
 	if fmt.Sprint(got) != "[PATH=/bin HOME=/h TMPDIR=/t LANG=C LC_ALL=C]" {
 		t.Fatalf("environment = %v", got)
 	}
+	if none := providerEnvironment([]string{"TOKEN=y"}); none == nil || len(none) != 0 {
+		t.Fatalf("an environment with nothing allowed = %#v, want an empty slice that is not nil", none)
+	}
 }
 
 // TestFailureCodesOfTheProviderAreFixed covers each mapping of an error to its
@@ -739,5 +743,18 @@ func TestFailureCodesOfTheProviderAreFixed(t *testing.T) {
 	data, err := json.Marshal(failedStatistics(ErrorProviderFailed))
 	if err != nil || string(data) != `{"indexed":false,"files":0,"symbols":0,"edges":0,"kinds":[],"error":"provider_failed"}` {
 		t.Fatalf("a failure marshals as %s, %v", data, err)
+	}
+}
+
+// TestAnEmptyProviderEnvironmentReachesTheRunnerAsEmptyNotNil: a nil
+// environment is read by the runner as "inherit the daemon's".
+func TestAnEmptyProviderEnvironmentReachesTheRunnerAsEmptyNotNil(t *testing.T) {
+	t.Parallel()
+	command := newFakeCommand(t, func(commandCall) gitReply { return gitReply{Out: "{}"} })
+	if _, err := runCapped(t.Context(), command, "codegrapher", providerEnvironment([]string{"TOKEN=y"}), 10, []string{"status"}); err != nil {
+		t.Fatal(err)
+	}
+	if env := command.commands[0].Opts.Env; env == nil || len(env) != 0 {
+		t.Fatalf("environment = %#v, want an empty slice that is not nil", env)
 	}
 }

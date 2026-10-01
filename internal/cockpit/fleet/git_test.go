@@ -5,12 +5,12 @@ import (
 	"errors"
 	"io/fs"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // TestGitEnvironmentIsAnAllowListPlusTheHardeningSettings requires nothing
@@ -224,8 +224,12 @@ func TestGitOutputNeverHoldsMoreThanItsCap(t *testing.T) {
 			t.Errorf("%s: %v, want exit status %d", name, err, test.code)
 		}
 	}
-	if _, err := readGit(ctx, nil, filepath.Join(t.TempDir(), "no-such-git"), t.TempDir(), "x"); !errors.Is(err, errGit) {
-		t.Errorf("the real runner on a Git binary that cannot start = %v", err)
+	if _, ok := orReal(nil).(runner.Real); !ok {
+		t.Errorf("no runner is the real runner, got %T", orReal(nil))
+	}
+	fake := newFakeGit(t)
+	if orReal(fake) != runner.Runner(fake) {
+		t.Error("a given runner was replaced")
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -235,5 +239,36 @@ func TestGitOutputNeverHoldsMoreThanItsCap(t *testing.T) {
 	var exit error = exitError{code: 1}
 	if !errors.Is(exit, errGit) || exit.Error() != errGit.Error() {
 		t.Error("an exit error is not errGit")
+	}
+}
+
+// TestACommandThatEndedWithItsContextIsNeverGitsNo scripts a child that
+// trapped the signal sent when its context ended and exited 1: Git's "no"
+// (status 1) must not be read from it, or the code index would hold a gap as
+// certain.
+func TestACommandThatEndedWithItsContextIsNeverGitsNo(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	late := newFakeCommand(t, func(commandCall) gitReply {
+		cancel()
+		return gitReply{Exit: 1}
+	})
+	if _, err := runCapped(ctx, late, "git", []string{}, 10, []string{"x"}); !errors.Is(err, errGit) || notFound(err) {
+		t.Errorf("a command that exited 1 as its context ended = %v, want errGit and no \"no\"", err)
+	}
+}
+
+// TestACapThatIsNotPositiveIsRefused: the runner reads a zero cap as no cap, so
+// a zero or negative one is refused before anything runs.
+func TestACapThatIsNotPositiveIsRefused(t *testing.T) {
+	t.Parallel()
+	git := newFakeGit(t)
+	for _, limit := range []int{0, -1} {
+		if _, err := gitOutputLimited(t.Context(), git, "git", "/repo", limit, "x"); !errors.Is(err, errGit) {
+			t.Errorf("a cap of %d = %v, want errGit", limit, err)
+		}
+	}
+	if len(git.running()) != 0 {
+		t.Errorf("a refused call ran %v", git.running())
 	}
 }

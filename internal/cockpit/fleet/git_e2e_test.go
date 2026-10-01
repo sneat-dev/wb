@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -204,7 +205,7 @@ func TestE2EGitOutputNeverHoldsMoreThanItsCap(t *testing.T) {
 	if _, err := gitOutputLimited(t.Context(), nil, fakeGit(t, "head -c 100000 /dev/zero"), t.TempDir(), 10, "x"); !errors.Is(err, errGitOutputTooLarge) {
 		t.Errorf("a command past its output cap = %v", err)
 	}
-	if _, err := readGit(t.Context(), nil, filepath.Join(t.TempDir(), "no-such-git"), t.TempDir(), "x"); !errors.Is(err, errGit) {
+	if _, err := readGit(t.Context(), nil, filepath.Join(t.TempDir(), "no-such-git"), t.TempDir(), "x"); !errors.Is(err, errGit) || !errors.Is(err, errCommandMissing) {
 		t.Errorf("a Git binary that cannot start = %v", err)
 	}
 	var exit error = exitError{code: 1}
@@ -225,5 +226,60 @@ func TestE2EReadmeOfAMissingBranchIsAbsentAndOtherFailuresAreNot(t *testing.T) {
 	}
 	if _, err := (LocalCollectors{Git: fakeGit(t, "exit 2")}).Readme(t.Context(), repo, "main"); !errors.Is(err, errGit) || errors.Is(err, errReadmeAbsent) {
 		t.Errorf("README when Git fails = %v, want a failure", err)
+	}
+}
+
+// TestE2EAGitCommandThatIgnoresSIGTERMIsKilledWithItsGroupOnTimeout runs a
+// stand-in Git that ignores SIGTERM (as does the child it starts, which inherits
+// the setting): the group is ended only by the SIGKILL the runner escalates to,
+// so the call must still return within its budget, as errGit and not as Git's
+// "no", and the child must be gone.
+func TestE2EAGitCommandThatIgnoresSIGTERMIsKilledWithItsGroupOnTimeout(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(realTempDir(t), "child.pid")
+	binary := fakeGit(t, "trap '' TERM\nsleep 30 &\necho $! > "+pidFile+".tmp\nmv "+pidFile+".tmp "+pidFile+"\nwait")
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	returned := make(chan error, 1)
+	go func() {
+		_, err := readGit(ctx, nil, binary, t.TempDir(), "for-each-ref")
+		returned <- err
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(pidFile); err == nil {
+			break
+		}
+		select {
+		case err := <-returned:
+			t.Fatalf("the command returned before its child started: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the child to start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	started := time.Now()
+	cancel()
+	err := <-returned
+	if !errors.Is(err, errGit) || notFound(err) {
+		t.Fatalf("a command that ignored SIGTERM = %v, want errGit and not Git's no", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the call took %v to return after its context ended", elapsed)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(3 * time.Second); processAlive(pid); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("the child process %d outlived its command", pid)
+		}
 	}
 }

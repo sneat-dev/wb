@@ -195,7 +195,8 @@ func (p CodeGrapherProvider) Indexer() string {
 
 // providerEnvironment is the parent's PATH, HOME, TMPDIR and locale only.
 func providerEnvironment(parent []string) []string {
-	var env []string
+	// Never nil: the runner reads a nil environment as "inherit the daemon's".
+	env := []string{}
 	for _, variable := range parent {
 		for _, prefix := range []string{"PATH=", "HOME=", "TMPDIR=", "LANG=", "LC_"} {
 			if strings.HasPrefix(variable, prefix) {
