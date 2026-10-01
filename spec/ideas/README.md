@@ -27,7 +27,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [scratch-has-an-owner](scratch-has-an-owner.md) | Draft | 2026-09-18 | ai | — |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |
 | [unify-session-move-and-park-continuation-storage](unify-session-move-and-park-continuation-storage.md) | Draft | 2026-08-27 | alex | — |
-| [wb-cockpit](wb-cockpit.md) | Draft | 2026-10-01 | alex | — |
+| [wb-cockpit](wb-cockpit.md) | Specifying | 2026-10-01 | alex | cockpit, cockpit-actions, work-loss-risk |
 
 ## Open Questions
 

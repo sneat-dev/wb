@@ -185,7 +185,10 @@ proof, because tunnels and proxies deliver there.
   route `POST /v0/workbench/machines/enroll` is no longer mounted on a
   self-hosted hub; the hosted instance keeps it with its OAuth viewer.
 - **The dashboard** gets an admin session through
-  `wb dashboard --admin`. That command obtains a single-use code over the
+  `wb dashboard --admin`. (Amended 2026-10-01: this session is provided by
+  [cockpit](../cockpit/README.md)#req:owner-session, where the command is
+  `wb cockpit` and the login path is `/cockpit/session/login`; the rules in
+  this list are otherwise unchanged.) That command obtains a single-use code over the
   owner RPC, valid for 60 seconds. It prints the login URL for the loopback
   address and, when configured, for the hub's public URL, and opens a browser
   only on a desktop session.

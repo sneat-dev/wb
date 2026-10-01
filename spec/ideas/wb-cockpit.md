@@ -1,13 +1,13 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Specifying
 ---
 # Idea: WB Cockpit — the operational control plane for an AI-assisted development fleet
 
-**Status:** Draft
+**Status:** Specifying
 **Date:** 2026-10-01
 **Owner:** alex
-**Promotes To:** —
+**Promotes To:** cockpit, cockpit-actions, work-loss-risk
 **Supersedes:** —
 **Related Ideas:** extends:daemon-as-coordinator
 
@@ -24,8 +24,8 @@ WB has two web surfaces today, and neither is operational:
 - `internal/dashboard` — pure-Go embedded HTML on the loopback daemon
   (`http://127.0.0.1:8766`, `/metrics`, `/coverage`). Read-only.
 - `hub/web` — an Astro site embedded in the binary at `/workbench/` and hosted
-  at `https://sneat.work/bench/dashboard`. Read-only apart from the peers admin
-  buttons specified in `peer-connectivity`.
+  at `https://sneat.work/bench/dashboard`. Read-only. The peers pages and
+  admin buttons `peer-connectivity` specifies for it are not built.
 
 The founder's engineering prompt for WB Cockpit (2026-10-01) asks for an
 operational UI: select, inspect, act. It was compared against the specs on
@@ -55,6 +55,20 @@ Design principles the prompt asks to record explicitly:
 12. Self-hostable in full; a hosted page exists for a first look.
 13. Reuse existing WB capabilities before adding parallel systems.
 
+A code discovery on 2026-10-01
+([discovery note](../plans/wb-cockpit/_research/README.md)) found four
+facts that bear on the decisions below:
+
+- The peer link the *Topology* decision names as the primary path is not
+  built: the WebSocket session answers 501. Snapshots and SSH are what exist.
+- Dispatch is Codex-only, detached, and does not use herdr, so the *Dispatch*
+  decision replaces the execution owner rather than adding a mode.
+- The Work Log already carries a hierarchy: `effort_id` is a dot-separated
+  path whose parent is derived lexically. The *Unit of work* decision does
+  not yet say how the task reference relates to it.
+- The fingerprinted inventory holds no Git state, so durability cannot be
+  read from it.
+
 Principle 12 is narrower than the prompt's "hosted by default"; see the
 *Hosted reach* and *Default open* decisions.
 
@@ -80,6 +94,7 @@ good" to the whole set without discussing that row on its own.
 | Dispatch | Every dispatched agent runs in a herdr pane. The detached headless mode is removed from `agent-dispatch`. |
 | Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
+| Test coverage | All new code targets 100% test coverage. |
 | Command | `wb cockpit` starts or reuses the daemon and opens its own Cockpit with an owner session. `wb cockpit --hosted` opens the hosted page. `wb dashboard` becomes an alias. |
 
 ## Recommended Direction
@@ -165,7 +180,7 @@ last slice, not the first.
 | Must-be-true | Herdr can be installed and checked by `wb setup` on every machine that receives dispatched work, including SSH-only VMs. | Run `wb setup --check` on the laptop and the Hetzner VM and dispatch one task to each. |
 | Must-be-true | A loopback `Host` check with no CORS allowance, plus one exact allowed origin, keeps unauthenticated metadata unreadable by other websites. | Browser tests from a foreign origin, a DNS-rebinding fixture and a forwarded-header proxy fixture, all expecting refusal. |
 | Should-be-true | Angular Material/CDK tables and overlays are dense enough for the repository and worktree grids without a commercial grid. | Build the repository table with hover cards against a 200-repository fixture. |
-| Should-be-true | Durability can be computed for a whole fleet from the existing fingerprinted index without a fresh scan per page load. | Measure against the current local index on the founder's projects root. |
+| Should-be-true | Durability for a whole fleet can be kept current by a background snapshot in the daemon, so no page load waits on a Git scan. The existing fingerprinted index cannot serve this: it lists repositories only. | Measure a full snapshot on the founder's projects root and choose the refresh trigger from the result. |
 | Might-be-true | Peer snapshots carry enough to show work at risk on an unreachable machine without widening the privacy allowlist. | Compare the hosted snapshot schema with the fields the risk view needs. |
 
 ## SpecScore Integration
@@ -196,6 +211,14 @@ last slice, not the first.
   decision builds on.
 
 ## Open Questions
+
+- Should Cockpit incorporate the SpecScore Studio and Synchestra ideas and
+  functionality, with Synchestra perhaps becoming only the communication and
+  persistence layer of WB? The founder raised this on 2026-10-01 as a
+  direction to be decided, including whether either product stands on its own
+  afterwards. Nothing in the first slice depends on the answer.
+- How does the worktree task reference relate to the Work Log's existing
+  `effort_id` hierarchy?
 
 - The task reference lives in the Work Log creation manifest, which is inside
   the worktree. What carries it to other machines and keeps it after cleanup —

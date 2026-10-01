@@ -11,6 +11,8 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | Plan | Status | Source | Date | Owner |
 |---|---|---|---|---|
 | [agent-session-move](agent-session-move.md) | Implemented | agent-session-move | 2026-08-25 | codex |
+| [cockpit](cockpit/README.md) | Draft | cockpit | 2026-10-01 | alex |
+| [cockpit-actions](cockpit-actions/README.md) | Draft | cockpit-actions | 2026-10-01 | alex |
 | [coverage-to-100](coverage-to-100/README.md) | Executing | idea:quality-diff-and-thresholds | 2026-09-23 | alex |
 | [fleet-metrics-web](fleet-metrics-web.md) | Implemented | fleet-quality | 2026-09-26 | alex |
 | [herdr-session-transport](herdr-session-transport.md) | Draft | herdr-session-transport | 2026-09-19 | ai |
@@ -20,8 +22,10 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | [projects-root-layout](projects-root-layout/README.md) | Blocked | projects-root-layout | 2026-09-16 | trakhimenok |
 | [remote-ci-coverage](remote-ci-coverage.md) | Approved | fleet-quality | 2026-09-26 | alex |
 | [self-hosted-bench](self-hosted-bench.md) | Implemented | self-hosted-bench | 2026-09-11 | alex |
+| [wb-cockpit](wb-cockpit/README.md) | Draft | idea:wb-cockpit | 2026-10-01 | alex |
 | [wb-home-worktree-guard](wb-home-worktree-guard.md) | Approved | worktree-lifecycle | 2026-07-28 | codex |
 | [work-log-recovery](work-log-recovery.md) | Draft | work-log | 2026-08-10 | codex |
+| [work-loss-risk](work-loss-risk/README.md) | Draft | work-loss-risk | 2026-10-01 | alex |
 
 ## Recently Closed
 
