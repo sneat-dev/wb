@@ -624,6 +624,16 @@ type relocationJournal struct {
 }
 
 func openRelocationJournal(run *os.File, runPath string, claim workLogClaim) (relocationJournal, error) {
+	return openRelocationJournalWithNames(run, runPath, claim, func(directory *os.File) ([]string, error) {
+		return directory.Readdirnames(-1)
+	})
+}
+
+// openRelocationJournalWithNames preserves defensive validation for arbitrary
+// enumeration input. The native caller reads names from the owned directory;
+// a caller-local enumerator also exposes directory read failures without a
+// global filesystem hook.
+func openRelocationJournalWithNames(run *os.File, runPath string, claim workLogClaim, namesFrom func(*os.File) ([]string, error)) (relocationJournal, error) {
 	journal := relocationJournal{intents: map[string]workLogRelocationIntent{}, receipts: map[string]workLogRelocationReceipt{}, paths: map[string]string{}}
 	directory, err := openPrivateChild(run, "relocations", false)
 	if errors.Is(err, os.ErrNotExist) {
@@ -633,7 +643,7 @@ func openRelocationJournal(run *os.File, runPath string, claim workLogClaim) (re
 		return journal, err
 	}
 	defer func() { _ = directory.Close() }()
-	names, err := directory.Readdirnames(-1)
+	names, err := namesFrom(directory)
 	if err != nil {
 		return journal, err
 	}
