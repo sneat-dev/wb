@@ -1,13 +1,14 @@
 package worktrees
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
+//nolint:paralleltest // A concurrent fork can inherit the held flock until exec, delaying its release on Linux.
 func TestCleanupLockAdaptersPreserveDescriptorOwnership(t *testing.T) {
-	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +28,14 @@ func TestCleanupLockAdaptersPreserveDescriptorOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.close()
+	for name, descriptor := range map[string]*os.File{"lock": first.lock.file, "task": first.task, "worktrees": first.worktrees} {
+		if _, err := descriptor.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("released %s descriptor remains open: %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(worktreesRoot, "task", ".lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released lock still occupies active name: %v", err)
+	}
 	second, err := acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, "task", false)
 	if err != nil {
 		t.Fatal(err)
