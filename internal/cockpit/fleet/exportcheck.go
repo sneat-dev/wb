@@ -343,7 +343,10 @@ var stringRules = map[string]textRule{
 	"Agent.runtime":             matching(tokenPattern),
 	"Agent.model":               matching(modelPattern),
 	"Agent.state":               required(oneOf("live", "parked", "running", "completed", "failed", "timeout", "abandoned")),
+	"Agent.activity":            oneOf(ActivityWorking, ActivityBlocked, ActivityIdle, ActivityDone, ActivityUnknown),
 	"Agent.repository":          matching(idPattern),
+	"Agent.task":                isText,
+	"Agent.worktrees":           matching(idPattern),
 	"CodeIndex.indexer":         required(matching(tokenPattern)),
 	"CodeIndex.state":           required(oneOf(CodeIndexFresh, CodeIndexStale, CodeIndexDiverged, CodeIndexPending, CodeIndexFailed, CodeIndexNever)),
 	"CodeStatistics.error":      oneOf(ErrorProviderUnavailable, ErrorProviderTimeout, ErrorProviderFailed, ErrorProviderOutput),
@@ -532,6 +535,9 @@ func validateDocument(document *Document) error {
 	}
 	for index, agent := range document.Agents {
 		entries = append(entries, located{"fleet.agents", index, agent.Entry})
+		if len(agent.Worktrees) > maxAgentWorktrees {
+			return refuse("fleet.agents[%d].worktrees has more than %d entries", index, maxAgentWorktrees)
+		}
 	}
 	seen := map[string]bool{}
 	for _, item := range entries {

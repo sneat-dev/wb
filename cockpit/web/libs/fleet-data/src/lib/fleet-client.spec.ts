@@ -9,12 +9,14 @@ import {
   RELOAD_MESSAGE,
   ReadmeRequestError,
   UPDATE_WB_MESSAGE,
+  cleanOptionalFields,
+  cleanThroughput,
   digestOf,
   dropBadEntries,
   hasFleetShape,
   isFleetDocument,
 } from './fleet-client'
-import { fleetDocument, pullRequest } from './test-data'
+import { agent, fleetDocument, machine, pullRequest } from './test-data'
 
 function respond(status: number, body: unknown, etag?: string): Response {
   return new Response(status === 304 ? null : JSON.stringify(body), {
@@ -243,5 +245,64 @@ describe('FleetClient', () => {
       const other = await failure(new Response(body, { status: 500 }))
       expect([other.status, other.code]).toEqual([500, ''])
     }
+  })
+})
+
+
+describe('optional fields of schema 2 (REQ:field-tables)', () => {
+  const block = { window_days: 30, per_day: [{ date: '2026-10-01', finished: 2, dropped: 1, landed: 1 }], slowest: [{ task: 't', duration_seconds: 60, landed_at: '2026-10-01T00:00:00Z' }], median_seconds: 60, p90_seconds: 90, capped: true }
+
+  it('keeps a document whose optional fields are valid, and the document object when it has no throughput', () => {
+    const document = fleetDocument({
+      machines: [{ ...machine('alpha'), export_dropped: 2, remote_error: 'something_new' }],
+      pull_requests: [pullRequest('p', 'r1', undefined, { mergeable: 'has_hooks' })],
+      agents: [agent('a', 'r1', 'live', { activity: 'done', task: 't', worktrees: ['w1'], started_at: '2026-10-01T00:00:00Z', finished_at: '2026-10-01T01:00:00Z', exit_code: 0 })],
+      agents_truncated: true,
+      pull_requests_throttled: false,
+    })
+    expect(cleanOptionalFields(document)).toBe(document)
+    expect(cleanThroughput(block)).toEqual(block)
+  })
+
+  it('removes a field of the wrong type or an enum value outside its set, and keeps the entry', () => {
+    const document = fleetDocument({
+      machines: [{ ...machine('alpha'), export_dropped: 'many' as never, remote_error: 5 as never }],
+      pull_requests: [pullRequest('p', 'r1', undefined, { mergeable: 'wobbly' as never }), pullRequest('q', 'r1', undefined, { mergeable: 'dirty' })],
+      agents: [agent('a', 'r1', 'live', { activity: 'sleeping' as never, task: 4 as never, worktrees: [1] as never, started_at: 3 as never, finished_at: false as never, exit_code: 'x' as never })],
+      agents_truncated: 'yes' as never,
+      pull_requests_throttled: 1 as never,
+    })
+    const cleaned = cleanOptionalFields(document)
+    expect(cleaned.machines[0]).not.toHaveProperty('export_dropped')
+    expect(cleaned.machines[0]).not.toHaveProperty('remote_error')
+    expect(cleaned.pull_requests.map((p) => p.mergeable)).toEqual([undefined, 'dirty'])
+    expect(cleaned.agents[0]).toEqual(agent('a', 'r1', 'live'))
+    expect(cleaned).not.toHaveProperty('agents_truncated')
+    expect(cleaned).not.toHaveProperty('pull_requests_throttled')
+    expect(cleaned.pull_requests[1]).toBe(document.pull_requests[1])
+  })
+
+  it('accepts a well-formed throughput block through the client, and drops a malformed one', async () => {
+    const read = async (throughput: unknown) => ((await clientWith(async () => respond(200, { ...fleetDocument(), throughput })).readFleet()) as Extract<FleetRead, { kind: 'changed' }>).document.throughput
+    expect(await read(block)).toEqual(block)
+    for (const bad of [5, null, { window_days: 'x', per_day: [], slowest: [] }, { window_days: 30, per_day: {}, slowest: [] }, { window_days: 30, per_day: [], slowest: 'none' }]) {
+      expect(await read(bad)).toBeUndefined()
+    }
+  })
+
+  it('leaves out the days and slowest entries that are malformed, and optional numbers of the wrong type', () => {
+    const cleaned = cleanThroughput({
+      window_days: 30,
+      per_day: [{ date: '2026-10-01', finished: 1, dropped: 0, landed: 'x' }, { date: '2026-09-30', landed: 3 }, 'day', null, { date: '2026-09-29', finished: 0, dropped: 2 }],
+      slowest: [{ task: 'a', duration_seconds: 'long', landed_at: 'x' }, { task: 'b', duration_seconds: 5, landed_at: '2026-10-01T00:00:00Z' }, 7, null],
+      median_seconds: 'x',
+      p90_seconds: null,
+      capped: 'true',
+    })
+    expect(cleaned).toEqual({
+      window_days: 30,
+      per_day: [{ date: '2026-10-01', finished: 1, dropped: 0 }, { date: '2026-09-29', finished: 0, dropped: 2 }],
+      slowest: [{ task: 'b', duration_seconds: 5, landed_at: '2026-10-01T00:00:00Z' }],
+    })
   })
 })

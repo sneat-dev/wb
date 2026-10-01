@@ -273,6 +273,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if bare.Sampler == nil {
 		t.Error("this machine has no metrics sampler")
 	}
+	if bare.Collectors.Activity == nil {
+		t.Error("this machine does not read herdr for agent activity")
+	}
 	if terminals, ok := bare.Terminals.(*cockpitfleet.LocalTerminals); !ok || terminals.ProjectsRoot != root || terminals.Home != home {
 		t.Errorf("the throughput source = %+v, want this machine's terminal records", bare.Terminals)
 	}

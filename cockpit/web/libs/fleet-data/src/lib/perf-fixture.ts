@@ -251,8 +251,10 @@ export function performanceFixture(seed = 20261001): PerformanceFixture {
     agents,
     throughput: {
       window_days: 30,
-      per_day: Array.from({ length: 12 }, (_, index) => ({ date: new Date(PERF_NOW - index * 2 * DAY).toISOString().slice(0, 10), landed: 1 + (index % 4) })),
+      per_day: Array.from({ length: 12 }, (_, index) => ({ date: new Date(PERF_NOW - index * 2 * DAY).toISOString().slice(0, 10), finished: 1 + (index % 4), dropped: index % 3, ...(index % 2 === 0 ? { landed: 1 } : {}) })),
       slowest: Array.from({ length: 5 }, (_, index) => ({ task: taskNames[index], duration_seconds: 86_400 * (5 - index), landed_at: new Date(PERF_NOW - index * DAY).toISOString() })),
+      median_seconds: 3 * 86_400,
+      p90_seconds: 5 * 86_400,
     },
   }
 

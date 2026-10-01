@@ -881,6 +881,7 @@ func TestHostileTextInEveryFreeTextFieldArrivesOnlyAsText(t *testing.T) {
 		"Worktree.branch":           func(e *Envelope, text string) { e.Fleet.Worktrees[0].Branch = text },
 		"PullRequest.branch":        func(e *Envelope, text string) { e.Fleet.PullRequests[0].Branch = text },
 		"PullRequest.failed_check":  func(e *Envelope, text string) { e.Fleet.PullRequests[0].FailedCheck = text },
+		"Agent.task":                func(e *Envelope, text string) { e.Fleet.Agents[0].Task = text },
 	}
 	for key, rule := range stringRules {
 		if _, covered := fields[key]; reflect.ValueOf(rule).Pointer() == reflect.ValueOf(textRule(isText)).Pointer() && !covered {
@@ -937,8 +938,13 @@ func TestHostileTextInEveryFreeTextFieldArrivesOnlyAsText(t *testing.T) {
 			arrived++
 		}
 	}
-	if arrived != 3 {
-		t.Errorf("the hostile text arrived intact in %d of 3 entries", arrived)
+	for _, agent := range document.Agents {
+		if agent.MachineID == vm.ID && agent.Task == hostileText {
+			arrived++
+		}
+	}
+	if arrived != 4 {
+		t.Errorf("the hostile text arrived intact in %d of 4 entries", arrived)
 	}
 	for key, set := range fields {
 		for name, text := range map[string]string{"a bidirectional override": "task\u202Egnp.exe", "a NUL": "task\x00", "a line break": "task\nSet-Cookie: x", "an escape": "task\x1b[2J"} {
@@ -1048,11 +1054,27 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 	document.Worktrees[0].Entry, document.Worktrees[0].Repository = own("wt-1"), "repo-1"
 	pull := &document.PullRequests[0]
 	pull.Entry, pull.Repository, pull.Worktree, pull.URL, pull.Mergeable = own("pr-1"), "repo-1", "wt-1", "https://github.com/acme/x/pull/3", "clean"
-	document.Agents[0].Entry, document.Agents[0].Repository = own("ag-1"), "repo-1"
+	// An agent names its worktrees by id: one of them is carried here, one is not.
+	document.Agents[0].Entry, document.Agents[0].Repository, document.Agents[0].Worktrees = own("ag-1"), "repo-1", []string{"wt-gone", "wt-1"}
 
 	view := mapLive(vmKey, "mach-vm", &document, now, 1)
 	if len(view.repositories) != 1 || len(view.worktrees) != 1 || len(view.pullRequests) != 1 || len(view.agents) != 1 {
 		t.Fatalf("the mapping kept %d, %d, %d and %d entries of one each", len(view.repositories), len(view.worktrees), len(view.pullRequests), len(view.agents))
+	}
+	// An agent's worktree ids are re-derived under the configured key, and one
+	// that is no worktree carried here is dropped, never kept as received.
+	if agent, source := view.agents[0], document.Agents[0]; !slices.Equal(agent.Worktrees, []string{view.worktrees[0].ID}) || view.worktrees[0].ID == "wt-1" ||
+		agent.ExitCode == source.ExitCode || *agent.ExitCode != *source.ExitCode || agent.Activity != source.Activity || agent.Task != source.Task ||
+		!agent.StartedAt.Equal(source.StartedAt) || !agent.FinishedAt.Equal(source.FinishedAt) {
+		t.Errorf("the agent is mapped as %+v", agent)
+	}
+	for _, code := range []int{-1, maxCount + 1} {
+		odd := document
+		odd.Agents = []Agent{document.Agents[0]}
+		odd.Agents[0].ExitCode = &code
+		if mapped := mapLive(vmKey, "mach-vm", &odd, now, 0); mapped.agents[0].ExitCode != nil {
+			t.Errorf("an exit code of %d is carried", code)
+		}
 	}
 	var missing []string
 	for path, entry := range map[string]any{

@@ -447,9 +447,24 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time, dropped
 			truncated = true
 			continue
 		}
+		// An agent's worktrees are the ids of this view's worktrees, re-derived
+		// like every other id: one that is not a worktree carried here is left out.
+		var linked []string
+		for _, id := range agent.Worktrees {
+			if mapped := worktreeIDs[id]; mapped != "" {
+				linked = append(linked, mapped)
+			}
+		}
+		var exitCode *int
+		if agent.ExitCode != nil && *agent.ExitCode >= 0 && *agent.ExitCode <= maxCount {
+			code := *agent.ExitCode
+			exitCode = &code
+		}
 		view.agents = append(view.agents, Agent{
 			Entry: entry(kindAgent, agent.ID), Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID,
-			Runtime: agent.Runtime, Model: agent.Model, State: agent.State, Repository: repositoryIDs[agent.Repository],
+			Runtime: agent.Runtime, Model: agent.Model, State: agent.State, Activity: agent.Activity,
+			Repository: repositoryIDs[agent.Repository], Task: agent.Task, Worktrees: boundedIDs(linked),
+			StartedAt: agent.StartedAt, FinishedAt: agent.FinishedAt, ExitCode: exitCode,
 		})
 	}
 	view.repositories = uniqueByID(view.repositories, func(item Repository) string { return item.ID })

@@ -337,19 +337,18 @@ Feature does not type its input. The second arm of row 7 applies only to worktre
 first arm applies. A pull request whose `state` is not reported is never counted as open,
 ready or landed.
 
-Trust across machines: a task is joined by name, so an entry of another machine (`route` `cached`
-or `live-remote`) can share a name with a task of this machine, and what another machine says is
-only its claim. The fleet-data library MUST compute a task's state from the entries of one machine
-at a time and MUST NOT let an entry of another machine move a task that has entries of this machine
-to `ready` or `landed`, or out of `at-risk`, `checks-failed`, `blocked` or `not-ready`: rows 4 and 7
-count only `local` pull requests and worktrees for such a task, and a remote entry may only make
-its state worse (rows 2, 3 and 5) or add a "working" signal (row 6). The remote fields that reach a
-state are: a pull request's `state`, `checks_failed`, `checks_green`, `mergeable` and `checked_at`
-(rows 2, 4, 5, 7; `live-remote` only, a `cached` one carries `state` `open` alone), a worktree's
-`owner_state` (rows 6 and 8; row 1 reads this machine's worktrees only) and `lifecycle` (row 7),
-and an agent's `state` (rows 3 and 6). `ahead` and `has_upstream` of a live-remote worktree are
-shown and never enter row 1 or row 7 of a task of this machine. A task that exists only on another
-machine shows that machine's state with its route, and offers no action (REQ:action-slots).
+**Trust rule.** Tasks are joined by name across machines, so an entry of another machine
+(`route` `cached` or `live-remote`) MUST NOT decide the good states of a task that has an entry of this
+machine (a worktree, pull request or agent with `route` `local`). For such a task: row 4 is `ready`
+only when at least one of its open pull requests is local and every open pull request, local or
+remote, is ready (a remote open pull request that is not ready still blocks, a remote ready one alone
+cannot make the task ready); row 7 (both arms and the unpushed-work veto) reads only local pull
+requests and local worktrees; remote entries may still worsen the state (rows 2, 3 and 5) or add
+`working` (row 6). A task with no local entry is computed from its remote entries, and its state is
+that machine's report: the view model carries `stateSource` (`local` or `remote`) and `reportedBy`
+(the machines) so the page can say "as reported by <machine>", and every pull request in a Home row
+says which machine it came from. Home lists such a task, and offers no land or push action for it
+(REQ:home-needs-you, REQ:home-ready-to-land).
 
 #### REQ: tasks-list
 
@@ -383,6 +382,8 @@ or a pull request that needs the operator still has that row, which is not age-l
 Agent blocked and Run failed. A pull request link of a row is the pull request's `url` only when
 it is an `https` address with a plain host (the check the daemon applies, applied again here);
 otherwise the row names the pull request and has no link. Rows
+of a task whose state is only another machine's report (REQ:task-state, `stateSource` `remote`) say "as reported by <machine>"; a land or push action is offered only for a task whose `stateSource` is `local` (a remote row has only its "Open" links). Agent finished and Agent blocked are read from the agent's `activity` only when it is reported.
+Rows
 are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
 last activity, newest first. Items disappear when their state changes; there is no acknowledge
 or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
@@ -408,7 +409,7 @@ with no task", whose action opens Agents with chip `blocked`. The kinds, in rank
 Serves J2. The second section, "Ready to land", MUST list the tasks in state `ready`, one row
 per task: the task, the number of repositories, the pull request numbers, the checks passed
 over total and the age of the pull request observation (`checked_at`, the oldest among them).
-The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
+A task whose `stateSource` is `remote` (REQ:task-state) is listed with "as reported by <machine>" and with no action at all, and the pull requests of a task decided here show the machine each one came from. The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
 task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
 `wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
 on checks are shown below them muted, with how long ago their checks were read and no action.
@@ -450,8 +451,8 @@ theme's colours in light and dark.
 
 Serves J7. The sixth section, "Fleet health", MUST be shown only when something is not OK, as
 one line per problem: a stale machine (state older than 24 hours), a machine running an older
-WB than the newest in the fleet, a scan error, or a machine's `remote_error`
-(REQ:remote-error-is-visible). Each has a "Copy fix command": `wb remote publish` labelled "run
+WB than the newest in the fleet, a scan error, a machine's `remote_error`
+(REQ:remote-error-is-visible), or a machine whose `export_dropped` is above zero ("N entries left out of <machine>'s export", with the export command to try). Each has a "Copy fix command": `wb remote publish` labelled "run
 on <machine>" for a stale machine, `wb self-update` labelled "run on <machine>" for an older WB,
 `wb fleet status --filter=<owner/repository>` for a scan error, and the command of
 REQ:remote-error-is-visible for a remote error.
@@ -795,7 +796,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `runtime`, `model` | string | opt. | record | both |
 | `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
 | `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
-| `repository`, `task` | string | opt. | run record; claim or owner for a session | both |
+| `repository`, `task` | string | opt. | run record; for a session, the declared owner process of its worktrees | both |
 | `worktrees` | list of entry ids | opt. | as above | both |
 | `started_at` | time | opt. | record | both |
 | `finished_at` | time | opt. | a finished run's record | both |
@@ -937,7 +938,10 @@ agents once per refresh (`herdr.Client.AgentList`, whose `Agent.Status` has exac
 values) and joins each to a registered session by the harness session id
 (`Agent.HarnessSessionID`). With no herdr or no match the field is omitted and the application says
 "state not reported". It is present only for agents of this machine. Screen text and logs are
-content: they are owner-only and belong to `cockpit-actions`, not to this Feature.
+content: they are owner-only and belong to `cockpit-actions`, not to this Feature. The daemon
+reads herdr as a process of its own, with the environment it was started with: a daemon started by
+launchd or systemd has no `HERDR_SOCKET_PATH` and so reaches only herdr's default server, and the
+agents of any other herdr server have no `activity` (see Open Questions).
 
 #### REQ: agent-fields
 
@@ -946,8 +950,16 @@ populated for a dispatched run from its run record (`agents.Result`: `Repository
 `Branch`, `StartedAt`, `State`, `FinishedAt`, `ExitCode`); a finished run also carries
 `finished_at` and `exit_code`, never its free-text failure, and its `state` is `running`,
 `completed`, `failed`, `timeout` or `abandoned`. A registered session has `state` `live` or
-`parked`, and only `started_at` is populated, plus a worktree and task when a worktree's owner or
-claim names that session; otherwise they are absent and are never guessed. The agents of another
+`parked`, and only `started_at` is populated, plus its worktrees, task and repository when a
+worktree's declared owner process (the process id its Work Log journal records) is the process of
+that live session (a claim records no session, so it links nothing) and the two records agree on
+everything else both carry: the declared runtime and harness session id, and a process start time
+(the owner's process cannot have started after the session registered), which is observed only on
+Linux. Where neither record carries more than the process id, or the platform cannot observe a
+start time, the process id and the owner's liveness are all there is to link by, which is a
+limitation: a reused process id on such a machine can link a session to a worktree it does not
+hold. Otherwise they are absent and are never guessed. A session whose worktrees name more than one task or repository carries none of
+that one; at most 10 worktrees are listed. The agents of another
 machine are capped at 200 per machine when read from a snapshot and when published.
 
 #### REQ: machine-fields
@@ -1291,7 +1303,9 @@ that a remote's clock cannot keep stale data live, they replace that machine's c
 configured machine name (and under this machine's login when it is known). The machine entry is
 named by the configured key and keeps one id: the id of its published entry when exactly one
 exists, otherwise an id derived from the login and the key; every other id is derived from the
-configured key and never used as received. A configured machine with a failure and no published
+configured key and never used as received. An agent's `activity`, `task`, `started_at`,
+`finished_at` and `exit_code` are carried under the envelope's rules, and its `worktrees` are the
+re-derived ids of that machine's carried worktrees: an id that is not one of them is dropped. A configured machine with a failure and no published
 entry is shown as a bare machine entry carrying `remote_error`. A target configured under this
 machine's own name is never read, and an export that is this machine's own (its envelope names this
 machine, or its one machine entry has this machine's id: a tunnel, a proxy or a mistaken address
@@ -2694,6 +2708,10 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
   a machine bearer of the host owner to override the opt-out, since that credential is not an
   anonymous reader.
 
+- Which herdr server should the daemon read for `activity`, and should it be configurable? Today
+  it reads the one its own environment reaches (the default server for a launchd or systemd
+  daemon); agents in another herdr server, or another named session, show no activity. Naming a
+  socket or session in configuration is not specified here.
 - `wb worktree land` and cleanup seal most merged work as `removed` (3,410 of 3,679 terminal
   records on the founder's machine, against 62 `landed`), so the Cockpit can report finished
   work but not true landings. Sealing `landed` with merge evidence would let it show them: a

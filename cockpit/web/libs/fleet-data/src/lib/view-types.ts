@@ -3,7 +3,7 @@
 
 import { Agent, AgentActivity, Machine, MetricsRoute, PullRequest, Worktree } from './fleet.types'
 import { AppLink } from './vocabulary'
-import { TaskStateId, TaskStateInfo } from './task-state'
+import { StateSource, TaskStateId, TaskStateInfo } from './task-state'
 import { AgeTerm } from './matcher'
 
 /** One task: the worktrees that share a name, with the pull requests and agents that belong to it. */
@@ -14,6 +14,14 @@ export interface TaskView {
   agents: Agent[]
   state: TaskStateId
   stateInfo: TaskStateInfo
+  /**
+   * `local` when the task has any entry of this machine (the state is decided here; a remote entry can only worsen it
+   * or add `working`), `remote` when every entry is another machine's: then `state` is as reported by `reportedBy`
+   * and the UI says so and offers no land or push action.
+   */
+  stateSource: StateSource
+  /** The machines whose entries make up the task, in order of appearance (what "as reported by" names for a remote task). */
+  reportedBy: { id: string; name: string }[]
   /** Distinct `owner/name` of its worktrees' repositories, in order of appearance. */
   repositories: string[]
   machines: { id: string; name: string }[]
@@ -32,6 +40,8 @@ interface NeedsYouBase {
   id: string
   kind: NeedsYouKind
   task: string
+  /** Where the task's state is decided (`TaskView.stateSource`); a `remote` row is shown as that machine's report. */
+  stateSource: StateSource
   /** The rank of the kind (REQ:home-needs-you): the order of the rows. */
   rank: number
   lastActivityAt?: number
@@ -86,6 +96,10 @@ export interface ReadyPullRequest {
   repository?: string
   number: number
   url?: string
+  /** The machine that reported this pull request, and whether it is another machine than this one. */
+  machine: string
+  machineId: string
+  remote: boolean
   /** Absent when the daemon did not report them. */
   checksPassed?: number
   checksTotal?: number
@@ -99,6 +113,10 @@ export interface ReadyPullRequest {
 
 export interface ReadyToLandRow {
   task: string
+  /** `remote`: no entry of this task is on this machine, so no pull request here carries a land command. */
+  stateSource: StateSource
+  /** The machines that reported the task (named when `stateSource` is `remote`). */
+  reportedBy: { id: string; name: string }[]
   repositories: string[]
   pullRequests: ReadyPullRequest[]
   checksPassed?: number
@@ -114,6 +132,7 @@ export interface ReadyToLandRow {
 /** A task whose checks are not all in: shown muted, with how long ago they were read. */
 export interface NotReadyRow {
   task: string
+  stateSource: StateSource
   /** The oldest observation among its open pull requests. */
   checkedAt?: number
   reasons: string[]
@@ -195,17 +214,39 @@ export interface FleetHealth {
   staleMachines: HealthItem[]
   olderWb: HealthItem[]
   remoteErrors: HealthItem[]
+  /** Machines whose live export left entries out (`export_dropped` above zero). */
+  exportDropped: HealthItem[]
   scanErrors: ScanErrorItem[]
+}
+
+export interface ThroughputSeriesDay {
+  date: string
+  finished: number
+  dropped: number
+  /** Tasks sealed `landed` that day (a subset of `finished`); 0 when none. */
+  landed: number
 }
 
 export interface ThroughputSeries {
   windowDays: number
-  /** One entry per day of the window, oldest first; days without a landing are 0. */
-  perDay: { date: string; landed: number }[]
+  /** One entry per day of the window (today and the days before), oldest first; days without a sealing are zero. */
+  perDay: ThroughputSeriesDay[]
+  totalFinished: number
+  totalDropped: number
+  /** The most tasks sealed on one day (finished plus dropped, the height of the stacked bar); 0 for an empty window. */
+  maxPerDay: number
+  /** True only when some day has a landed count: the landed series is drawn only then. */
+  hasLanded: boolean
   totalLanded: number
+  /** Kept from the earlier shape: the most landed on one day. */
   maxLanded: number
-  /** The slowest tasks to land, slowest first. */
+  /** The slowest finished tasks, slowest first, at most five; never links. */
   slowest: { task: string; durationSeconds: number; landedAt: string }[]
+  /** The caption numbers; absent when no task finished. */
+  medianSeconds?: number
+  p90Seconds?: number
+  /** A safety bound cut the scan, so the numbers may be incomplete. */
+  capped: boolean
 }
 
 export type MachineStateId = 'live' | 'cached' | 'stale'
