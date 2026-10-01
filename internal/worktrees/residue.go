@@ -214,34 +214,52 @@ func openResidueDirectoryWithOpener(parent *os.File, path, name string, expected
 	return directory, nil
 }
 
+type residueRemovalIO struct {
+	unlink func(int, string, int) error
+	stat   func(int, *unix.Stat_t) error
+	chmod  func(int, uint32) error
+}
+
+func nativeResidueRemovalIO() residueRemovalIO {
+	return residueRemovalIO{unlink: unix.Unlinkat, stat: unix.Fstat, chmod: unix.Fchmod}
+}
+
 // unlinkResidueEntry removes one entry, granting the containing directory owner
 // write permission when that is what denies the unlink. This is the failure
 // that stranded the task in the first place: the mode that stopped Git is
 // carried by a directory inside WB's own residue, and WB holds it open.
 func unlinkResidueEntry(parent *os.File, parentPath, name string, flags int) error {
+	return unlinkResidueEntryWithIO(parent, parentPath, name, flags, nativeResidueRemovalIO())
+}
+
+func unlinkResidueEntryWithIO(parent *os.File, parentPath, name string, flags int, access residueRemovalIO) error {
 	entryPath := filepath.Join(parentPath, name)
-	err := unix.Unlinkat(int(parent.Fd()), name, flags)
+	err := access.unlink(int(parent.Fd()), name, flags)
 	if err == nil || errors.Is(err, unix.ENOENT) {
 		return nil
 	}
 	if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) {
 		return fmt.Errorf("remove residue %s: %w", entryPath, err)
 	}
-	if grantErr := grantOwnerWriteAt(parent, parentPath); grantErr != nil {
+	if grantErr := grantOwnerWriteWithIO(parent, parentPath, access); grantErr != nil {
 		return fmt.Errorf("remove residue %s: %w", entryPath, errors.Join(err, grantErr))
 	}
-	if retryErr := unix.Unlinkat(int(parent.Fd()), name, flags); retryErr != nil && !errors.Is(retryErr, unix.ENOENT) {
+	if retryErr := access.unlink(int(parent.Fd()), name, flags); retryErr != nil && !errors.Is(retryErr, unix.ENOENT) {
 		return fmt.Errorf("remove residue %s after granting %s owner write permission: %w", entryPath, parentPath, retryErr)
 	}
 	return nil
 }
 
 func grantOwnerWriteAt(directory *os.File, path string) error {
+	return grantOwnerWriteWithIO(directory, path, nativeResidueRemovalIO())
+}
+
+func grantOwnerWriteWithIO(directory *os.File, path string, access residueRemovalIO) error {
 	var status unix.Stat_t
-	if err := unix.Fstat(int(directory.Fd()), &status); err != nil {
+	if err := access.stat(int(directory.Fd()), &status); err != nil {
 		return fmt.Errorf("inspect residue directory %s: %w", path, err)
 	}
-	if err := unix.Fchmod(int(directory.Fd()), uint32(status.Mode&0o7777|0o300)); err != nil {
+	if err := access.chmod(int(directory.Fd()), uint32(status.Mode&0o7777|0o300)); err != nil {
 		return fmt.Errorf("grant owner write permission on residue directory %s: %w", path, err)
 	}
 	return nil
