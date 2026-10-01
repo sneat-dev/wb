@@ -188,7 +188,10 @@ separate sessions. The login response redirects to `/cockpit/`
 so the code does not stay in the address bar. A used or expired code is
 refused and establishes nothing.
 
-Sessions are held in the daemon's memory. `POST /cockpit/session/logout` ends
+Sessions are held in the daemon's memory. The cookie is scoped to the host,
+not the port, so every HTTP server on the same loopback address receives it;
+the session identifier is useless to them without the daemon, and it is
+stored by the daemon only as a digest. `POST /cockpit/session/logout` ends
 the caller's session, and every session ends when the daemon restarts.
 
 This is the admin session
@@ -376,7 +379,9 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   later Feature, after the port is complete.
 - Protecting the existing `/api/v1/*` routes — they keep today's behavior
   until that Feature. They share an origin with Cockpit and their pages allow
-  inline scripts; they render no repository content.
+  inline scripts; they render no repository content. A script injected into
+  one of those pages would run in the origin that holds the owner session;
+  retiring them, or giving them the strict policy, closes that.
 - Reaching Cockpit through a host name other than loopback. Remote access is
   an SSH port forward, to any local port, which keeps the `Host` on
   loopback. Exposure through a

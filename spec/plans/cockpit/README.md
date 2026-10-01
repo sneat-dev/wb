@@ -64,7 +64,7 @@ Tests: the guard table, the unbuilt page, and a regression test that `/`,
 **Id:** task-2
 **Verifies:** cockpit#ac:login-code-is-single-use, cockpit#ac:session-ends-on-logout-and-restart, cockpit#ac:proxied-request-needs-a-session, cockpit#ac:only-the-hosted-origin-may-read-cross-origin, cockpit#ac:session-reports-principal-and-capabilities
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add a login-code operation to the owner-token service on the daemon's unix
 socket: single use, 60-second life, injectable clock. Add

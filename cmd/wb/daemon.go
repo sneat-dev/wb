@@ -2515,10 +2515,11 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		peersSource = emptyPeersSource{}
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
+	cockpitServer := newCockpitServer(address, cockpitConfig)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
-		Mounts: cockpit.MountsWith(mount.handlers(), cockpit.Options{CanonicalHost: cockpit.CanonicalHost(address), Config: cockpitConfig}), Hub: mount.hubHealth(), LogPath: logPath,
+		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
@@ -2529,6 +2530,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	// TCP dashboard listener (peer-connectivity#req:admin-requires-owner-
 	// credential).
 	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
+	// So does the route that mints a Cockpit login code: holding the owner
+	// token is what entitles a caller to an owner session
+	// (cockpit#req:owner-session). The file bridge below is handed this mux
+	// too, but dispatches only the DaemonService procedures
+	// daemonFilePrepareRequest lists, so it never reaches this route.
+	rpcMux.Handle(cockpit.LoginCodeRPCPath, authenticatedDaemonHandler(ownerToken, cockpitServer.LoginCodeHandler()))
 	fileBridge, err := newDaemonFileBridgeServer(inv.projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
 		return fmt.Errorf("prepare daemon file bridge: %w", err)

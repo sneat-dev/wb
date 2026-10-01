@@ -119,9 +119,9 @@ func TestPagePrefixIsTheWebMountPath(t *testing.T) {
 	}
 }
 
-func TestAPIHandlerAnswersAJSON404(t *testing.T) {
+func TestUnknownAPIRouteAnswersAJSON404(t *testing.T) {
 	t.Parallel()
-	recorder := do(APIHandler(), "127.0.0.1:8766", "/api/v1/cockpit/fleet")
+	recorder := do(New(Options{CanonicalHost: "127.0.0.1"}).Mounts()[APIPrefix], "127.0.0.1:8766", "/api/v1/cockpit/fleet")
 	var body map[string]string
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestAPIHandlerAnswersAJSON404(t *testing.T) {
 
 func TestMountsServeBothSubtreesBehindTheGuard(t *testing.T) {
 	t.Parallel()
-	mounts := mountsFor("127.0.0.1", served)
+	mounts := newServer(Options{CanonicalHost: "127.0.0.1"}, served).Mounts()
 	if len(mounts) != 2 {
 		t.Fatalf("mounts = %v", mounts)
 	}
@@ -153,7 +153,7 @@ func TestMountsServeBothSubtreesBehindTheGuard(t *testing.T) {
 func TestUnbuiltCockpitPageIsOneLinePlainText(t *testing.T) {
 	t.Parallel()
 	unbuilt := web.HandlerFor(fstest.MapFS{})
-	recorder := do(mountsFor("127.0.0.1", unbuilt)[PagePrefix], "127.0.0.1:8766", "/cockpit/")
+	recorder := do(newServer(Options{CanonicalHost: "127.0.0.1"}, unbuilt).Mounts()[PagePrefix], "127.0.0.1:8766", "/cockpit/")
 	body := recorder.Body.String()
 	if recorder.Code != 200 || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/plain") ||
 		strings.Count(body, "\n") != 1 || !strings.Contains(body, "pnpm install && pnpm build") {
@@ -163,7 +163,7 @@ func TestUnbuiltCockpitPageIsOneLinePlainText(t *testing.T) {
 
 func TestMountsServesTheEmbeddedApplicationBehindTheGuard(t *testing.T) {
 	t.Parallel()
-	mounts := Mounts(Options{CanonicalHost: "127.0.0.1"})
+	mounts := New(Options{CanonicalHost: "127.0.0.1"}).Mounts()
 	if recorder := do(mounts[PagePrefix], "127.0.0.1:1", "/cockpit/"); recorder.Code != 200 {
 		t.Errorf("page = %d", recorder.Code)
 	}
@@ -175,11 +175,11 @@ func TestMountsServesTheEmbeddedApplicationBehindTheGuard(t *testing.T) {
 func TestMountsWithKeepsTheOthersAndDoesNotModifyThem(t *testing.T) {
 	t.Parallel()
 	hub := map[string]http.Handler{"/workbench/": served}
-	merged := MountsWith(hub, Options{CanonicalHost: "127.0.0.1"})
+	merged := New(Options{CanonicalHost: "127.0.0.1"}).MountsWith(hub)
 	if len(hub) != 1 || len(merged) != 3 || merged["/workbench/"] == nil || merged[PagePrefix] == nil || merged[APIPrefix] == nil {
 		t.Fatalf("hub = %v, merged = %v", hub, merged)
 	}
-	if len(MountsWith(nil, Options{CanonicalHost: "::1"})) != 2 {
+	if len(New(Options{CanonicalHost: "::1"}).MountsWith(nil)) != 2 {
 		t.Fatal("Cockpit is not mounted without a hub")
 	}
 }
@@ -202,7 +202,7 @@ func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 	hub := map[string]http.Handler{"/workbench/": served, "/v0/workbench/": served}
 	for name, others := range map[string]map[string]http.Handler{"hub": hub, "no hub": nil} {
 		before := dashboard.NewHandler(options(others))
-		after := dashboard.NewHandler(options(MountsWith(others, Options{CanonicalHost: "127.0.0.1"})))
+		after := dashboard.NewHandler(options(New(Options{CanonicalHost: "127.0.0.1"}).MountsWith(others)))
 		for _, target := range []string{"/", "/metrics", "/coverage", "/api/v1/health", "/api/v1/overview", "/api/v1/log", "/api/v1/peers", "/workbench/", "/v0/workbench/x", "/nowhere"} {
 			want, got := do(before, "127.0.0.1:8766", target), do(after, "127.0.0.1:8766", target)
 			if want.Code != got.Code || cacheHit.ReplaceAllString(want.Body.String(), "") != cacheHit.ReplaceAllString(got.Body.String(), "") || !reflect.DeepEqual(want.Header(), got.Header()) {
