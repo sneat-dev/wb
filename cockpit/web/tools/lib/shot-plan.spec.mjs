@@ -5,7 +5,7 @@ const document = {
   repositories: [{ id: 'r0', name: 'acme/cached' }, { id: 'r1', host: 'github.com', name: 'sneat-co/sneat-go' }],
   worktrees: [{ id: 'wt 1', task: 'fix & go' }],
   agents: [{ id: 'ag/1' }],
-  machines: [{ id: 'mach-mac' }],
+  machines: [{ id: 'mach-mac', machine: 'mac' }, { id: 'mach-vm 2', machine: 'vm/2' }],
 }
 
 describe('routePlan', () => {
@@ -33,7 +33,7 @@ describe('shotPlan', () => {
   it('photographs each route in light and dark at a desktop, a phone and the narrowest size', () => {
     expect(VIEWPORTS.map((viewport) => `${viewport.width}x${viewport.height}`)).toEqual(['1440x900', '390x844', '360x800'])
     expect(SCHEMES).toEqual(['light', 'dark'])
-    const routes = shots.filter((shot) => shot.state === 'ok' && !shot.keys && !shot.steps)
+    const routes = shots.filter((shot) => shot.state === 'ok' && !shot.keys && !shot.steps && !shot.scrollEnd)
     expect(routes).toHaveLength(13 * 2 * 3)
     expect(routes.map((shot) => shot.file)).toContain('home-dark-390.png')
     expect(routes.map((shot) => shot.file)).toContain('machine-detail-light-1440.png')
@@ -48,10 +48,27 @@ describe('shotPlan', () => {
     )
   })
 
-  it('adds the list and its side panel on Worktrees, Tasks, Repositories and Agents, each with the steps that reach it', () => {
-    const lists = shots.filter((shot) => shot.steps)
+  it('photographs the whole page of each of the first three machines, once its charts have drawn, in each scheme and size', () => {
+    const pages = shots.filter((shot) => shot.scrollEnd)
+    expect(pages.map((shot) => shot.file).sort()).toEqual(
+      ['machine-full-mac', 'machine-full-vm-2'].flatMap((name) => ['dark', 'light'].flatMap((scheme) => ['1024', '1440', '360', '390'].map((size) => `${name}-${scheme}-${size}.png`))).sort(),
+    )
+    expect(pages.find((shot) => shot.file === 'machine-full-vm-2-dark-390.png')).toMatchObject({ url: '/machines/mach-vm%202', fullPage: true, state: 'ok' })
+  })
+
+  it('photographs the New task form filled in with two repositories that can be picked, and with the picker open', () => {
+    const forms = shots.filter((shot) => shot.name.startsWith('tasks-new-'))
+    expect(forms.map((shot) => shot.file).sort()).toEqual(
+      ['tasks-new-filled', 'tasks-new-picker'].flatMap((name) => ['dark', 'light'].flatMap((scheme) => ['1024', '1440', '360', '390'].map((size) => `${name}-${scheme}-${size}.png`))).sort(),
+    )
+    expect(forms.find((shot) => shot.name === 'tasks-new-filled')?.url).toBe('/tasks/new?repo=acme%2Fcached&repo=sneat-co%2Fsneat-go&task=fix-ci&base=main&model=opus')
+    expect(forms.find((shot) => shot.name === 'tasks-new-picker')?.steps).toEqual(['pick:*-go'])
+  })
+
+  it('adds the list and its side panel on Worktrees, Tasks, Repositories, Agents and Machines, each with the steps that reach it', () => {
+    const lists = shots.filter((shot) => shot.steps && !shot.name.startsWith('tasks-new-'))
     expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
-    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories', '/agents']))
+    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories', '/agents', '/machines']))
     expect(lists.filter((shot) => shot.name.startsWith('repositories')).every((shot) => shot.url === '/repositories')).toBe(true)
     expect(lists.map((shot) => shot.file)).toContain('repositories-panel-dark-360.png')
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')

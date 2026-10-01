@@ -1,13 +1,20 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core'
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
+import { RouterLink } from '@angular/router'
+import { FleetStore } from '@cockpit/fleet-data'
+import { MachinePanelView } from './machine-panel'
 
 /**
- * A placeholder for the Machine page: its route is registered and lazy-loaded
- * already, so the task that builds the page replaces this file's body and
- * touches neither app.routes.ts nor the tab list.
+ * One machine as a page, `/machines/:id`: the same content as the side panel of the Machines list, because it is the
+ * same component (REQ:detail-routes-share-the-panel, REQ:machine-detail).
  */
 @Component({
   selector: 'app-machine-detail-page',
-  template: '<p class="placeholder">This page is not built yet.</p>',
+  imports: [RouterLink, MachinePanelView],
+  templateUrl: './machine-detail-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class MachineDetailPage {}
+export class MachineDetailPage {
+  protected readonly store = inject(FleetStore)
+  readonly id = input.required<string>()
+  protected readonly exists = computed(() => this.store.model().machineById(this.id()) !== undefined)
+}

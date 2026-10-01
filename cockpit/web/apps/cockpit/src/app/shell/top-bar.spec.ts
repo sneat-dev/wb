@@ -4,7 +4,6 @@ import { provideRouter } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
 import { FleetStore, Session } from '@cockpit/fleet-data'
 import { agent, fleetDocument, pullRequest, run, worktree } from '@cockpit/fleet-data/testing'
-import { appRoutes } from '../app.routes'
 import { ShellState } from './shell-state'
 import { TopBar, scrollTabIntoView } from './top-bar'
 
@@ -12,11 +11,15 @@ const NOW = Date.parse('2026-10-01T10:05:00Z')
 
 const text = (element: Element | null | undefined) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
+/** Any address is a blank page: the tabs read only the address, and no page of the application is rendered under them. */
+@Component({ template: '' })
+class Blank {}
+
 describe('TopBar', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
     vi.setSystemTime(NOW)
-    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes)] })
+    TestBed.configureTestingModule({ providers: [provideRouter([{ path: '**', component: Blank }])] })
   })
   afterEach(() => vi.useRealTimers())
 

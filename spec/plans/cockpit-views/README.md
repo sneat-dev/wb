@@ -278,7 +278,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-18
 **Verifies:** cockpit-views#ac:machines-table-title-and-links, cockpit-views#ac:machines-filter-and-stale-chip, cockpit-views#ac:machine-detail-metrics-charts, cockpit-views#ac:machine-without-metrics-says-so, cockpit-views#ac:default-sorts
 **Depends-On:** 12, 13, 2
-**Status:** planning
+**Status:** complete
 
 Build the Machines page (title column, filter box, `stale` and `outdated` chips, state age, version mark, CPU and Memory with route and age) and the machine panel and `/machines/:id` with its four last-hour charts from `GET /api/v1/cockpit/machine-metrics` through task 11's polling service, with the `local`, `live-remote`, `cached` and `none` states from the task 2 contract (stubbed).
 
@@ -289,7 +289,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-19
 **Verifies:** cockpit-views#ac:new-task-form-produces-commands
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build the "New task" form: the repository picker (wildcard matcher, only names matching `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`), task name, optional base branch, required model, and the two commands it produces (`wb worktree create` with `--model` and `--original-prompt-file`, and `wb agent dispatch`), with the quoting and refusal rules of task 13. It runs nothing.
 

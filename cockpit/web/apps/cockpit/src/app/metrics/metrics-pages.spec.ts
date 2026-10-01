@@ -64,4 +64,16 @@ describe('machine metrics polling on the pages', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(requests.filter((url) => url.startsWith(MACHINE_METRICS_PATH))).toEqual([`${MACHINE_METRICS_PATH}?machine=mach-beta`])
   })
+
+  // cockpit-views#ac:metrics-poll-only-while-visible: the machine's own page reads its machine, every 10 seconds, only while it is shown.
+  it('polls only the machine of a machine page, and stops when the page is left', async () => {
+    const harness = await RouterTestingHarness.create()
+    await harness.navigateByUrl('/machines/mach-beta')
+    await vi.advanceTimersByTimeAsync(30_000 - 1)
+    const metricsRequests = () => requests.filter((url) => url.startsWith(MACHINE_METRICS_PATH))
+    expect(metricsRequests()).toEqual(Array(3).fill(`${MACHINE_METRICS_PATH}?machine=mach-beta`))
+    await harness.navigateByUrl('/worktrees')
+    await vi.advanceTimersByTimeAsync(3 * METRICS_INTERVAL_MS)
+    expect(metricsRequests()).toHaveLength(3)
+  })
 })
