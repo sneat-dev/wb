@@ -1,0 +1,24 @@
+.code-index {
+  display: block;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  color: var(--p-text-muted-color);
+}
+
+/* Not fresh: bolder as well as worded, so the state never rests on colour
+   alone, in either theme. */
+.code-index.attention {
+  color: var(--p-text-color);
+  font-weight: 600;
+}
+
+.when {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--p-text-muted-color);
+}
+
+.unknown {
+  color: var(--p-text-muted-color);
+}

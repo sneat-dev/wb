@@ -1,0 +1,49 @@
+<h2 class="page-title">Machines</h2>
+<app-filter-bar
+  [machines]="store.machineOptions()"
+  [repositories]="repositoryOptions()"
+  [machine]="machine()"
+  [repository]="repository()"
+  (changed)="filter($event)"
+/>
+<div class="table-scroll">
+  <p-table [value]="rows()" dataKey="id" size="small" [stripedRows]="true">
+    <ng-template #header>
+      <tr>
+        <th scope="col">Machine</th>
+        <th scope="col">Source</th>
+        <th scope="col">Repositories</th>
+        <th scope="col">Worktrees</th>
+        <th scope="col" class="wide">WB version</th>
+      </tr>
+    </ng-template>
+    <ng-template #body let-machine>
+      <tr>
+        <td>{{ machine.machine }}</td>
+        <td><app-route-label [entry]="machine" [now]="store.now()" /></td>
+        <td>
+          <app-count
+            label="repositories"
+            [names]="repositoryNames(machine)"
+            target="/repositories"
+            [query]="{ machine: machine.id }"
+          />
+        </td>
+        <td>
+          <app-count
+            label="worktrees"
+            [names]="worktreeNames(machine)"
+            target="/worktrees"
+            [query]="{ machine: machine.id }"
+          />
+        </td>
+        <td class="wide">{{ machine.wb_version ?? '—' }}</td>
+      </tr>
+    </ng-template>
+    <ng-template #emptymessage>
+      <tr>
+        <td colspan="5">No machines{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
+      </tr>
+    </ng-template>
+  </p-table>
+</div>

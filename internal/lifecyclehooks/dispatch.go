@@ -355,6 +355,15 @@ func RepositoryIdentity(checkout string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return IdentityFromOrigin(origin)
+}
+
+// IdentityFromOrigin is the lower-case host/owner/name identity a checkout's
+// origin URL names: the identity the worker puts in every event and receipt,
+// and the one bindings are matched against. A reader that cannot ask Git the
+// way RepositoryIdentity does, because it must run Git through its own
+// hardened helper, derives the identity from the URL it read with this.
+func IdentityFromOrigin(origin string) (string, error) {
 	remote, err := gitremote.Parse(origin)
 	if err != nil {
 		return "", err

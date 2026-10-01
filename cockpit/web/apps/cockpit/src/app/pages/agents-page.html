@@ -1,0 +1,45 @@
+<h2 class="page-title">Agents</h2>
+<app-filter-bar
+  [machines]="store.machineOptions()"
+  [repositories]="repositoryOptions()"
+  [machine]="machine()"
+  [repository]="repository()"
+  (changed)="filter($event)"
+/>
+@if (state()) {
+  <p class="state-filter">Showing agents in the “{{ state() }}” state.</p>
+}
+<div class="table-scroll">
+  <p-table [value]="rows()" dataKey="id" size="small" [stripedRows]="true" [paginator]="rows().length > 50" [rows]="50">
+    <ng-template #header>
+      <tr>
+        <th scope="col">Agent</th>
+        <th scope="col">State</th>
+        <th scope="col">Repository</th>
+        <th scope="col" class="wide">Machine</th>
+        <th scope="col">Source</th>
+        <th scope="col" class="wide">Runtime</th>
+        <th scope="col" class="wide">Model</th>
+      </tr>
+    </ng-template>
+    <ng-template #body let-agent>
+      <tr>
+        <td>
+          {{ label(agent) }}
+          <span class="narrow-only machine-sub">{{ agent.machine }}</span>
+        </td>
+        <td>{{ agent.state }}</td>
+        <td>{{ store.repositoryName(agent.repository) }}</td>
+        <td class="wide">{{ agent.machine }}</td>
+        <td><app-route-label [entry]="agent" [now]="store.now()" /></td>
+        <td class="wide">{{ agent.runtime ?? '—' }}</td>
+        <td class="wide">{{ agent.model ?? '—' }}</td>
+      </tr>
+    </ng-template>
+    <ng-template #emptymessage>
+      <tr>
+        <td colspan="7">No agents{{ machine() || repository() || state() ? ' match the filters' : ' yet' }}.</td>
+      </tr>
+    </ng-template>
+  </p-table>
+</div>

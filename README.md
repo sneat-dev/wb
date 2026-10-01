@@ -2526,6 +2526,15 @@ out of `wb daemon start` forever by a supervisor that is long gone.
 `--force-detached` is the explicit override for the cases that check cannot
 resolve either way.
 
+On macOS, the launchd service has one fixed label per user, so a start for one
+projects root would remove the service registered for another (and overwrite
+its plist). `wb daemon start` and `wb daemon restart` read the installed plist
+first and refuse, changing nothing, when it serves a different projects root or
+cannot be read as a plist, naming that root and its listen address.
+`--replace-other-root` is the only way to proceed; `wb cockpit`,
+`wb dashboard --local` and the implicit daemon starts have no flag and refuse
+with the same instruction to run `wb daemon start --replace-other-root` first.
+
 The canonical systemd user unit:
 
 ```ini

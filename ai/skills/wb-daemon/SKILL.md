@@ -15,6 +15,27 @@ Use `wb dashboard --local` to start or reuse this machine's daemon and open its
 loopback view. `wb dashboard --format=json` and non-interactive invocations
 return the resolved URL without launching a browser.
 
+Find Cockpit's address, or open it. Agents run the JSON form:
+
+```sh
+wb cockpit --format=json
+wb cockpit
+wb cockpit --hosted
+```
+
+`wb cockpit --format=json` (or `--json`) starts or reuses the loopback daemon and
+prints `{url, scope, opened}` with the plain Cockpit URL: no login code, no
+browser. Bare `wb cockpit` is for the human operator: it requests a login code
+over the owner channel and prints `/cockpit/session/login?code=...`. That code is
+a single-use owner credential valid for 60 seconds, and an agent running it
+would put it in its transcript. The browser opens only in text format, on an
+interactive session whose stdout is a terminal. `--hosted` uses
+`cockpit.hosted_url` from wb.yaml and starts no daemon. Without `--listen` it
+uses a daemon already running here wherever it listens, else starts one on
+`127.0.0.1:8766`. `--listen <host:port>` (loopback only) names the address to start
+on; it never moves a running daemon: if one is recorded on another address the
+command refuses and names it (use `--listen` with that address, or stop it first).
+
 Start and inspect the local read-only API and embedded dashboard:
 
 ```sh
@@ -23,6 +44,16 @@ wb daemon status --format json
 wb daemon stop
 wb daemon restart --if-running
 ```
+
+On macOS the daemon's launchd service has one fixed label per user, so starting
+the daemon for one projects root would silently remove a service registered
+for another. `wb daemon start` and `wb daemon restart` therefore read the
+installed plist first and refuse, changing nothing, when it serves a different
+projects root or cannot be read; the error names that root and its listen
+address. Only `--replace-other-root` (never an environment variable) lets the
+replacement proceed. `wb cockpit`, `wb dashboard --local` and the commands
+that start the daemon implicitly have no such flag: they refuse and tell you to
+run `wb daemon start --replace-other-root` first.
 
 `wb daemon status` reports identity, not just reachability: read `identity`,
 `ready_verified` and `reported_state` before believing `state=ready`. A daemon

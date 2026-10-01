@@ -1,0 +1,27 @@
+<div class="filters" role="group" aria-label="Filters">
+  <p-select
+    inputId="filter-machine"
+    ariaLabel="Machine"
+    placeholder="All machines"
+    optionLabel="label"
+    optionValue="id"
+    [options]="machineOptions()"
+    [ngModel]="machine() ?? null"
+    [showClear]="true"
+    (ngModelChange)="set('machine', $event)"
+  />
+  @if (repositories() !== null) {
+    <p-select
+      inputId="filter-repository"
+      ariaLabel="Repository"
+      placeholder="All repositories"
+      optionLabel="label"
+      optionValue="id"
+      [options]="repositoryOptions()"
+      [ngModel]="repository() ?? null"
+      [showClear]="true"
+      [filter]="true"
+      (ngModelChange)="set('repository', $event)"
+    />
+  }
+</div>

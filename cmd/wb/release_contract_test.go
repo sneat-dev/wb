@@ -155,14 +155,14 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504" {
 		t.Fatalf("release uses=%v", got)
 	}
 	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility", "go-scope"})
 	assert("release gate", strings.Join(strings.Fields(fmt.Sprint(release["if"])), " "),
 		"${{ !cancelled() && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' && needs.release-eligibility.result == 'success' && needs.release-eligibility.outputs.eligible == 'true' }}")
 	assert("release inputs", release["with"], map[string]any{
-		"go_version": "1.27", "default_bump": "patch",
+		"go_version": "1.27", "node_version": "24.15.0", "default_bump": "patch",
 		"require_notarized_macos": true, "allow_major_version_bump": false,
 	})
 	expectedSecrets := map[string]any{"GORELEASER_GITHUB_TOKEN": "${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}"}

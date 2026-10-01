@@ -1,0 +1,23 @@
+<section class="readme" aria-labelledby="readme-heading">
+  <h3 id="readme-heading" class="section-title">README</h3>
+  @if (sessionStatus() === 'loading') {
+    <p class="readme-note">Reading the README…</p>
+  } @else if (sessionStatus() === 'failed') {
+    <p class="readme-note">The session could not be read, so the README is not shown. An owner session is needed to read it: run <code>{{ command }}</code> to open one.</p>
+  } @else if (!canRead()) {
+    <p class="readme-note">An owner session is needed to read the README. Run <code>{{ command }}</code> to open one.</p>
+  } @else {
+    @let current = state();
+    @switch (current.kind) {
+      @case ('ready') {
+        <app-readme-content [source]="current.source" />
+      }
+      @case ('failed') {
+        <p class="readme-note">{{ current.text }}</p>
+      }
+      @default {
+        <p class="readme-note">Reading the README…</p>
+      }
+    }
+  }
+</section>

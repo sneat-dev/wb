@@ -14,6 +14,18 @@ before:
     # A build that emitted nothing must fail the release here rather than
     # ship a binary that looks fine until someone opens the dashboard.
     - sh -c 'test -f hub/web/dist/dashboard/index.html'
+    # The Cockpit application is embedded by cockpit/web/embed.go from
+    # cockpit/web/dist, which is git-ignored, so the release builds it too or
+    # ships a wb whose /cockpit/ serves the "not built" page. corepack pins
+    # pnpm to the version in cockpit/web/package.json; the build script itself
+    # also fails when it emits no dist/index.html. Angular 22 needs Node
+    # ^22.22.3, ^24.15 or >=26 (the "engines" field of cockpit/web/package.json,
+    # which pnpm enforces); the release workflow must provide such a Node on
+    # the runner before this hook runs.
+    - sh -c 'corepack enable pnpm && cd cockpit/web && pnpm install --frozen-lockfile && pnpm build'
+    # Same guard as for the dashboard: fail the release here, naming the
+    # missing output, rather than ship a binary with no Cockpit in it.
+    - sh -c 'test -f cockpit/web/dist/index.html || { echo "cockpit/web/dist/index.html is missing, the Cockpit build emitted nothing" >&2; exit 1; }'
 
 builds:
   - id: wb

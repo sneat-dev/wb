@@ -1,0 +1,7 @@
+@if (plain()) {
+  <p class="readme-notice">This README is larger than 256 Ki characters, so it is shown as plain text.</p>
+}
+@if (failed()) {
+  <p class="readme-failed">The README could not be rendered.</p>
+}
+<article class="readme-content" #root></article>

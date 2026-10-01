@@ -62,6 +62,8 @@ daemon. It MUST obtain an owner login (REQ:owner-session) and print the login
 URL. It opens the platform browser only in text format on an interactive
 desktop session.
 
+`--listen <host:port>` names the loopback address of the daemon to start (default `127.0.0.1:8766`); without it a daemon already running on this machine is used wherever it listens. A running daemon recorded on a different address is never replaced: the command refuses and names that address. Non-loopback addresses are refused before anything starts.
+
 `--hosted` resolves the hosted Cockpit URL instead and starts no daemon. The
 hosted URL is the single configuration value `cockpit.hosted_url`, whose
 default is `https://sneat.dev/wb/cockpit/`; no other code path may spell that
@@ -121,7 +123,8 @@ port. Any other host name is refused with status 421 before any handler runs.
 This is what stops a page that rebinds DNS to the loopback address. The port
 is not checked, so an SSH forward to a different local port works.
 
-The canonical origin is `http://127.0.0.1:<port>`, with the port the request
+The canonical origin is `http://127.0.0.1:<port>`, or `http://[::1]:<port>`
+when the daemon listens on the IPv6 loopback address, with the port the request
 arrived on. A request for a page under `/cockpit/` on another loopback name
 is redirected to the same path on the canonical origin, so the session
 cookie, which browsers scope by host, is always set and read on one host.
@@ -145,13 +148,22 @@ A request that passes the two checks above and has no owner session is the
 principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
-- machine name, WB version, route and observation time;
+- machine name, the machine's unique id, WB version, route and observation time;
 - repository forge host, `owner/name` and default branch name;
 - task name, stream name, branch name, lifecycle and owner state, last
   activity time;
 - pull request number, state and URL;
 - agent run and session identifiers, runtime, model and state;
-- counts, durability levels, risk reason codes and code-index freshness.
+- counts, durability levels, risk reason codes, and code-index freshness: per
+  configured indexer its configured name, its state, for a stale index the
+  number of commits behind, and the time of the receipt it was read from;
+- code-index statistics: the name of the configured code-index provider (absent
+  when none is configured), and per code-index entry whether an index exists,
+  its totals of files, symbols and edges, the symbols per kind (each kind a short
+  lower-case word, at most 32 kinds), and a short failure code when the provider
+  could not answer;
+- the read model's own `error` code and `agents_truncated` flag;
+- the configured code browser base (`cockpit.code_browser_url`), on the session response.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
@@ -187,7 +199,10 @@ separate sessions. The login response redirects to `/cockpit/`
 so the code does not stay in the address bar. A used or expired code is
 refused and establishes nothing.
 
-Sessions are held in the daemon's memory. `POST /cockpit/session/logout` ends
+Sessions are held in the daemon's memory. The cookie is scoped to the host,
+not the port, so every HTTP server on the same loopback address receives it;
+the session identifier is useless to them without the daemon, and it is
+stored by the daemon only as a digest. `POST /cockpit/session/logout` ends
 the caller's session, and every session ends when the daemon restarts.
 
 This is the admin session
@@ -233,13 +248,15 @@ unavailable control.
 `GET /api/v1/cockpit/fleet` MUST return one versioned document
 (`schema_version`) with `snapshot_at` and these collections:
 
-- **machines** — this machine, and every other machine the configured remote
-  provider has a snapshot for;
+- **machines** — this machine, and every other machine whose snapshot is
+  already in the local copy of the remote state store; the snapshot reads that
+  copy and does not fetch it;
 - **repositories** — with counts of worktrees, local branches, remote
   branches, open pull requests where known, and active agents;
 - **worktrees** — task, repository, branch, owner state, last activity;
 - **branches** — local and remote;
-- **pull_requests** — every open pull request WB has evidence for, tied to
+- **pull_requests** — every open pull request recorded locally, without a
+  network call, tied to
   its repository and, where one exists, its worktree;
 - **agents** — registered sessions and dispatched agent runs.
 
@@ -261,6 +278,8 @@ background. A request MUST NOT wait for a Git scan of every repository. A
 request made before the first snapshot exists returns an empty, well-formed
 document marked as warming up.
 
+The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned.
+
 #### REQ: snapshot-refresh
 
 The daemon refreshes the snapshot on an interval, `cockpit.refresh_interval`.
@@ -281,6 +300,20 @@ indexer, the state defined by
 application shows it on the Repositories and Worktrees tables. WB stays
 indexer-agnostic; CodeGrapher is the indexer the founder uses.
 
+A clone is matched to its indexer by the repository its `origin` names, derived
+as the lifecycle-hook worker derives it (lower-case host/owner/name), whatever
+its layout, so a flat clone with no host directory is matched like any other;
+a clone with no origin, or an origin that names no forge, has no indexer. The
+same origin supplies the `host` of a flat clone, which its placement lacks, so
+its code-browser link works. The origin URL is never in the read model.
+
+A shallow clone lacks history on purpose, so it gets only what it can prove: a
+receipt at `HEAD` is `fresh`, a receipt commit that is present and is an
+ancestor of `HEAD` is `stale` with its count, and one that is present and is not
+an ancestor is `diverged`. A receipt commit the clone does not have gets no
+state at all (the entry is left out and the page shows a dash), never a count it
+cannot trust.
+
 #### REQ: code-index-summary
 
 A repository page and a worktree page MUST show a code-index panel for that
@@ -294,8 +327,16 @@ The statistics are part of the fleet read model, under each entry's
 provider's own command, once per checkout per indexer receipt; no request
 starts a provider process, and WB does not open the provider's artifacts. A
 new receipt, such as the one a refresh writes, makes the snapshotter ask
-again. When no provider is configured or the checkout has no index, the panel
-says so.
+again. The provider is named by `cockpit.code_index_provider` (`codegrapher`
+is the one provider) and follows the indexer named by `cockpit.code_index_indexer`
+(default `codegrapher`); its statistics sit on that indexer's `code_index`
+entry. Statistics appear only for a checkout the configured indexer has a
+receipt for: the provider's command opens the index read-write and may run Git,
+which the snapshotter's read-only rule forbids for a checkout WB's hook never
+indexed (it could hold an index a hostile repository committed), so such a
+checkout is reported as not indexed and no process starts for it. A failed ask
+is retried on later passes, at most three times per receipt. When no provider
+is configured or the checkout has no index, the panel says so.
 
 #### REQ: code-browser-link
 
@@ -324,15 +365,15 @@ card contains no control that changes state.
 
 #### REQ: repository-readme
 
-A repository page MUST render the `README.md` of the repository's default
-branch checkout for a caller holding `repo.content.read`. Without it the page
+A repository page MUST render the `README.md` committed at the tip of the
+repository's default branch for a caller holding `repo.content.read`. Without it the page
 says an owner session is needed and names the command that provides one.
 
 The README is untrusted content shown in the origin that holds the owner
 session. It MUST be rendered as sanitized Markdown: raw HTML, scripts, event
-handler attributes and `javascript:` links are dropped. The file MUST resolve
-to a regular file inside the checkout; a symbolic link that leaves it is not
-followed.
+handler attributes and `javascript:` links are dropped. It is read from Git's
+object store, never from the working tree; an entry that is a symbolic link or
+not a regular file is not served.
 
 #### REQ: strict-content-security-policy
 
@@ -354,7 +395,7 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   statement in an existing one, measured by `wb coverage --changed`, the
   repository's existing gate.
 - **`cockpit/web`:** the test run enforces thresholds of 100 for statements,
-  branches, functions and lines over the files under `cockpit/web/src`,
+  branches, functions and lines over the application and library sources (`cockpit/web/apps/*/src`, `cockpit/web/libs/**/src`) and the build tools (`cockpit/web/tools`),
   excluding test files and the one bootstrap file. Coverage tooling does not
   measure Angular templates, so every component MUST also have a test that
   renders it.
@@ -375,7 +416,9 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   later Feature, after the port is complete.
 - Protecting the existing `/api/v1/*` routes — they keep today's behavior
   until that Feature. They share an origin with Cockpit and their pages allow
-  inline scripts; they render no repository content.
+  inline scripts; they render no repository content. A script injected into
+  one of those pages would run in the origin that holds the owner session;
+  retiring them, or giving them the strict policy, closes that.
 - Reaching Cockpit through a host name other than loopback. Remote access is
   an SSH port forward, to any local port, which keeps the `Host` on
   loopback. Exposure through a
@@ -589,7 +632,7 @@ Then the hover card names both worktrees and has no button, the click opens the 
 **Requirements:** cockpit#req:repository-readme
 
 Scenario: With and without a session
-Given a repository whose default branch checkout has a `README.md`
+Given a repository whose default branch tip has a committed `README.md`
 When its page is opened with an owner session and then without one
 Then the first renders the README and the second shows that an owner session is needed and names `wb cockpit`
 
@@ -598,7 +641,7 @@ Then the first renders the README and the second shows that an owner session is 
 **Requirements:** cockpit#req:repository-readme, cockpit#req:strict-content-security-policy
 
 Scenario: A README that tries to act
-Given a repository whose `README.md` contains a `<script>` element, an image with an `onerror` attribute and a `javascript:` link, and another whose `README.md` is a symbolic link to a file outside the checkout
+Given a repository whose `README.md` contains a `<script>` element, an image with an `onerror` attribute and a `javascript:` link, and another whose `README.md` is committed as a symbolic link
 When each repository page is opened with an owner session
 Then the first page renders the text with no script executed and no request made by the injected content, the response carries a policy without `unsafe-inline` for scripts, and the second page shows no content from outside the checkout
 
@@ -622,9 +665,6 @@ Then the Dashboard appears signed in as owner, the filtered Worktrees table show
 
 ## Open Questions
 
-- The CodeGrapher web UI was on Angular 21 and PrimeNG 21 on 2026-10-01.
-  Sharing components with it needs it upgraded to 22, which is tracked
-  outside this Feature.
 - `code-index-freshness` is a Draft Feature and its freshness report was not
   found in code on 2026-10-01. Building the part Cockpit reads is in this
   Feature's plan if it is still missing.

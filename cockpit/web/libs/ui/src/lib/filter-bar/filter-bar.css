@@ -1,0 +1,11 @@
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.filters p-select {
+  min-width: 0;
+  flex: 1 1 11rem;
+  max-width: 20rem;
+}
