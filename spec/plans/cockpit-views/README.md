@@ -311,6 +311,10 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 - Which remote store is the fleet's shared one (the Mac reads the git store, the VM
   publishes to its own hub) is undecided; periodic publish uses what each machine has
   configured, as the fallback for machines without an SSH route.
+- The published metrics sample can be up to 6 hours old on an idle machine (the keepalive
+  publishes it; the digest ignores it): follow-up, not built. A reader shows its age, and one older
+  than 24 hours is not served; whether an idle machine should republish its sample more often is
+  undecided.
 - The PrimeUI licence key is a pending founder decision outside this plan.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts is
   undecided.
