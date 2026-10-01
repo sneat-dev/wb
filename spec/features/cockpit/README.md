@@ -152,7 +152,8 @@ is this closed set of fields:
   activity time;
 - pull request number, state and URL;
 - agent run and session identifiers, runtime, model and state;
-- counts, durability levels, risk reason codes and code-index freshness.
+- counts, durability levels, risk reason codes and code-index freshness;
+- the read model's own `error` code and `agents_truncated` flag.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
@@ -237,13 +238,15 @@ unavailable control.
 `GET /api/v1/cockpit/fleet` MUST return one versioned document
 (`schema_version`) with `snapshot_at` and these collections:
 
-- **machines** — this machine, and every other machine the configured remote
-  provider has a snapshot for;
+- **machines** — this machine, and every other machine whose snapshot is
+  already in the local copy of the remote state store; the snapshot reads that
+  copy and does not fetch it;
 - **repositories** — with counts of worktrees, local branches, remote
   branches, open pull requests where known, and active agents;
 - **worktrees** — task, repository, branch, owner state, last activity;
 - **branches** — local and remote;
-- **pull_requests** — every open pull request WB has evidence for, tied to
+- **pull_requests** — every open pull request recorded locally, without a
+  network call, tied to
   its repository and, where one exists, its worktree;
 - **agents** — registered sessions and dispatched agent runs.
 
@@ -264,6 +267,8 @@ The read model MUST be served from a snapshot the daemon refreshes in the
 background. A request MUST NOT wait for a Git scan of every repository. A
 request made before the first snapshot exists returns an empty, well-formed
 document marked as warming up.
+
+The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned.
 
 #### REQ: snapshot-refresh
 
@@ -328,15 +333,15 @@ card contains no control that changes state.
 
 #### REQ: repository-readme
 
-A repository page MUST render the `README.md` of the repository's default
-branch checkout for a caller holding `repo.content.read`. Without it the page
+A repository page MUST render the `README.md` committed at the tip of the
+repository's default branch for a caller holding `repo.content.read`. Without it the page
 says an owner session is needed and names the command that provides one.
 
 The README is untrusted content shown in the origin that holds the owner
 session. It MUST be rendered as sanitized Markdown: raw HTML, scripts, event
-handler attributes and `javascript:` links are dropped. The file MUST resolve
-to a regular file inside the checkout; a symbolic link that leaves it is not
-followed.
+handler attributes and `javascript:` links are dropped. It is read from Git's
+object store, never from the working tree; an entry that is a symbolic link or
+not a regular file is not served.
 
 #### REQ: strict-content-security-policy
 
@@ -595,7 +600,7 @@ Then the hover card names both worktrees and has no button, the click opens the 
 **Requirements:** cockpit#req:repository-readme
 
 Scenario: With and without a session
-Given a repository whose default branch checkout has a `README.md`
+Given a repository whose default branch tip has a committed `README.md`
 When its page is opened with an owner session and then without one
 Then the first renders the README and the second shows that an owner session is needed and names `wb cockpit`
 
@@ -604,7 +609,7 @@ Then the first renders the README and the second shows that an owner session is 
 **Requirements:** cockpit#req:repository-readme, cockpit#req:strict-content-security-policy
 
 Scenario: A README that tries to act
-Given a repository whose `README.md` contains a `<script>` element, an image with an `onerror` attribute and a `javascript:` link, and another whose `README.md` is a symbolic link to a file outside the checkout
+Given a repository whose `README.md` contains a `<script>` element, an image with an `onerror` attribute and a `javascript:` link, and another whose `README.md` is committed as a symbolic link
 When each repository page is opened with an owner session
 Then the first page renders the text with no script executed and no request made by the injected content, the response carries a policy without `unsafe-inline` for scripts, and the second page shows no content from outside the checkout
 

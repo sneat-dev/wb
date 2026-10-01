@@ -821,7 +821,9 @@ func TestSessionsAndCodesAreSafeUnderConcurrentUse(t *testing.T) {
 	f := newFixture(t, nil)
 	now := f.now
 	sessions := f.server.sessions
-	const workers = 32
+	// Each worker holds at most one pending code, so no more workers than the
+	// pending bound: beyond it a mint evicts another worker's unexchanged code.
+	const workers = maxPendingLoginCodes
 	done := make(chan error, workers)
 	for range workers {
 		go func() {

@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +19,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
+	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -88,9 +93,17 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	if want := "http://127.0.0.1:" + port + "/cockpit/"; response.StatusCode != http.StatusTemporaryRedirect || response.Header.Get("Location") != want {
 		t.Fatalf("loopback alias = %s %q %q, want a redirect to %s", response.Status, response.Header.Get("Location"), body, want)
 	}
-	response, body = get(address, "/api/v1/cockpit/fleet")
+	response, body = get(address, "/api/v1/cockpit/nothing-here")
 	if response.StatusCode != http.StatusNotFound || !strings.Contains(body, `"error"`) {
 		t.Fatalf("unknown cockpit api route = %s %q, want a JSON 404", response.Status, body)
+	}
+	// The fleet read model is a metadata route, so with anonymous_metadata off
+	// a request with no session is refused like the session route is, and so
+	// is the README route, which is an owner route.
+	for _, path := range []string{"/api/v1/cockpit/fleet", cockpitfleet.ReadmePath + "?repository=repo-x"} {
+		if response, body = get(address, path); response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s with no session = %s %q, want 401", path, response.Status, body)
+		}
 	}
 	response, body = get("attacker.example:"+port, "/")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB operations") {
@@ -198,6 +211,189 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	_ = owned.Body.Close()
 	if owned.StatusCode != http.StatusOK || !strings.Contains(string(ownedBody), `"principal":"owner"`) || !strings.Contains(string(ownedBody), `"repo.content.read"`) {
 		t.Fatalf("session with the cookie = %s %q", owned.Status, ownedBody)
+	}
+
+	// The daemon started the fleet snapshotter with its own context: the
+	// first snapshot completes on its own and lists this machine, and the
+	// README route answers an unknown repository with a 404, not a path.
+	owner := func(path string) (int, string) {
+		t.Helper()
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+address+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.AddCookie(cookies[0])
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		body, _ := io.ReadAll(response.Body)
+		return response.StatusCode, string(body)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status, fleetBody := owner("/api/v1/cockpit/fleet")
+		if status == http.StatusOK && strings.Contains(fleetBody, `"warming_up":false`) && strings.Contains(fleetBody, `"route":"local"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon's fleet snapshot did not complete: %d %q", status, fleetBody)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status, body := owner(cockpitfleet.ReadmePath + "?repository=repo-x"); status != http.StatusNotFound || !strings.Contains(body, "unknown_repository") {
+		t.Fatalf("README of an unknown repository = %d %q, want 404", status, body)
+	}
+}
+
+// TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote covers what
+// the daemon hands the fleet snapshotter: the host's name and no other
+// machines without a remote section, the configured machine name and a
+// provider with one, "local" when the host has no name, the refresh interval,
+// and a log that writes to the daemon's stderr.
+func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) {
+	t.Parallel()
+	root, home := t.TempDir(), t.TempDir()
+	host := func() (string, error) { return "the-host", nil }
+	config := wbconfig.DefaultCockpitConfig()
+	config.RefreshInterval = 90 * time.Second
+	var logs bytes.Buffer
+
+	bare := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host)
+	if bare.Machine != "the-host" || bare.Collectors.Remote != nil || bare.Interval != 90*time.Second || bare.Collectors.Repositories == nil {
+		t.Errorf("options with no remote section = %+v", bare)
+	}
+	bare.Logf("refresh failed: %v", "boom")
+	if got := logs.String(); got != "wb: refresh failed: boom\n" {
+		t.Errorf("log = %q", got)
+	}
+	nameless := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, func() (string, error) { return "", io.EOF })
+	if nameless.Machine != "local" {
+		t.Errorf("machine without a host name = %q, want local", nameless.Machine)
+	}
+	remote := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")(), config, &logs, host)
+	if remote.Machine != "laptop-1" || remote.Collectors.Remote == nil {
+		t.Errorf("options with a remote section = machine %q, remote %v", remote.Machine, remote.Collectors.Remote)
+	}
+
+	// A hub provider and an unlocatable store know no other machines, and the
+	// daemon's log says so, once, while the options are built.
+	logs.Reset()
+	hub := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: /tmp/token\n  machine: laptop-2\n")(), config, &logs, host)
+	if hub.Machine != "laptop-2" || hub.Collectors.Remote != nil || !strings.Contains(logs.String(), "not read from the hub remote provider") {
+		t.Errorf("options with a hub provider = machine %q, remote %v, log %q", hub.Machine, hub.Collectors.Remote, logs.String())
+	}
+	logs.Reset()
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlocatable := cockpitFleetOptions(file, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-3\n")(), config, &logs, host)
+	if unlocatable.Collectors.Remote != nil || !strings.Contains(logs.String(), "cannot be located") {
+		t.Errorf("options with an unlocatable store = remote %v, log %q", unlocatable.Collectors.Remote, logs.String())
+	}
+}
+
+// TestCockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithoutNetworkOrWrites
+// builds the snapshotter from the daemon's own options for a remote section
+// whose local state clone exists and whose origin could not be reached: it reads
+// the other machine from the clone and changes nothing under it.
+func TestCockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithoutNetworkOrWrites(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(root, "github.com", "acme", "wb-state")
+	published := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	data, err := remotestate.Encode(remotestate.Snapshot{SchemaVersion: remotestate.SchemaVersion, Login: "alice", Machine: "desk", PublishedAt: published, WBVersion: "v0.9.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath := filepath.Join(clone, "machines", "alice", "desk", "snapshot.yaml")
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshotPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"remote", "add", "origin", "git@github.com:acme/wb-state.git"}, {"add", "."}, {"commit", "-m", "snapshot"}} {
+		command := exec.CommandContext(t.Context(), "git", args...)
+		command.Dir = clone
+		command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_CONFIG_GLOBAL=/dev/null")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	states := func() map[string]string {
+		found := map[string]string{}
+		_ = filepath.WalkDir(clone, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr == nil {
+				info, _ := entry.Info()
+				found[path] = info.ModTime().String() + info.Mode().String() + strconv.FormatInt(info.Size(), 10)
+			}
+			return nil
+		})
+		return found
+	}
+	before := states()
+	configPath := cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")()
+	options := cockpitFleetOptions(root, t.TempDir(), configPath, wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil })
+	snapshotter := cockpitfleet.New(options)
+	if err := snapshotter.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	machines := func() []cockpitfleet.Machine {
+		body, _ := snapshotter.Body()
+		var document cockpitfleet.Document
+		if err := json.Unmarshal(body, &document); err != nil {
+			t.Fatal(err)
+		}
+		return document.Machines
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for len(machines()) != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the other machine was not read: %+v", machines())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if desk := machines()[0]; desk.Machine != "desk" || desk.Route != cockpitfleet.RouteCached || !desk.ObservedAt.Equal(published) {
+		t.Errorf("machines = %+v", machines())
+	}
+	after := states()
+	for path, state := range before {
+		if after[path] != state {
+			t.Errorf("%s changed during a snapshot", path)
+		}
+	}
+	if len(after) != len(before) {
+		t.Errorf("%d files appeared under the state clone", len(after)-len(before))
+	}
+}
+
+// TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot
+// registers the fleet routes on a server and requests them before the
+// snapshotter has started: an empty warming-up document and a 401 for the
+// README without a session.
+func TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot(t *testing.T) {
+	t.Parallel()
+	const address = "127.0.0.1:8766"
+	server := newCockpitServer(address, wbconfig.DefaultCockpitConfig())
+	snapshotter := registerCockpitFleet(server, cockpitfleet.Options{})
+	api := server.Mounts()[cockpit.APIPrefix]
+	for target, want := range map[string]int{"/api/v1/cockpit/fleet": http.StatusOK, cockpitfleet.ReadmePath + "?repository=x": http.StatusUnauthorized} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Host = address
+		recorder := httptest.NewRecorder()
+		api.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Errorf("%s = %d %s, want %d", target, recorder.Code, recorder.Body.String(), want)
+		}
+	}
+	if body, _ := snapshotter.Body(); !strings.Contains(string(body), `"warming_up":true`) {
+		t.Error("a snapshotter that has not started is not warming up")
 	}
 }
 
