@@ -2315,30 +2315,26 @@ func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository
 	return runCanonicalGitBytes(ctx, canonical, SecureCanonicalPolicyGitHelperArgument, "canonical policy Git", console.Env, args...)
 }
 
-// init makes every package-owned descriptor helper available from any Go binary
-// that imports worktrees. Lifecycle APIs are also used by packages such as
-// deps, which have no WB-specific TestMain to dispatch a re-executed helper.
-// Each runner independently validates its arguments and inherited descriptors
-// before it permits Git to run.
-func init() {
-	if len(os.Args) < 2 {
-		return
-	}
-	arguments := os.Args[2:]
-	switch os.Args[1] {
+// SecureGitHelperForArgument selects the package-owned child protocol without
+// running it. Every executable that calls a worktrees API using a secure Git
+// child must dispatch the returned handler before its ordinary startup work.
+// The handler itself authenticates inherited descriptors before it runs Git.
+func SecureGitHelperForArgument(argument string) (func([]string) int, bool) {
+	switch argument {
 	case SecureCleanupGitHelperArgument:
-		os.Exit(RunSecureCleanupGitHelper(arguments))
+		return RunSecureCleanupGitHelper, true
 	case SecureStageGitHelperArgument:
-		os.Exit(RunSecureStageGitHelper(arguments))
+		return RunSecureStageGitHelper, true
 	case SecureCanonicalGitHelperArgument:
-		os.Exit(RunSecureCanonicalGitHelper(arguments))
+		return RunSecureCanonicalGitHelper, true
 	case SecureCanonicalPolicyGitHelperArgument:
-		os.Exit(RunSecureCanonicalPolicyGitHelper(arguments))
+		return RunSecureCanonicalPolicyGitHelper, true
 	case SecureStageCanonicalGitHelperArgument:
-		os.Exit(RunSecureStageCanonicalGitHelper(arguments))
+		return RunSecureStageCanonicalGitHelper, true
 	case SecureRenameGitHelperArgument:
-		os.Exit(RunSecureRenameGitHelper(arguments))
+		return RunSecureRenameGitHelper, true
 	}
+	return nil, false
 }
 
 func canonicalPolicyGitArgumentsAllowed(args []string) bool {

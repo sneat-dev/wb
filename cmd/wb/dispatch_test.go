@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func stubProcessHandlers(calls *[]string) processHandlers {
 			return routedAgentRemote
 		},
 		secureGitHelper: func(argument string, args []string) (int, bool) {
-			if _, known := secureGitHelpers()[argument]; !known {
+			if _, known := secureGitHelperForArgument(argument); !known {
 				return 0, false
 			}
 			*calls = append(*calls, "secureGitHelper:"+argument+":"+strings.Join(args, " "))
@@ -55,27 +56,33 @@ func stubProcessHandlers(calls *[]string) processHandlers {
 	}
 }
 
-// TestSecureGitHelpersTableIsExactlyTheDocumentedProtocolArguments pins the
-// table's membership. Growing the protocol surface without teaching dispatch
-// about it would otherwise silently downgrade a hidden helper into an unknown
-// cobra command.
-func TestSecureGitHelpersTableIsExactlyTheDocumentedProtocolArguments(t *testing.T) {
-	table := secureGitHelpers()
-	want := []string{
-		worktrees.SecureCleanupGitHelperArgument,
-		hooks.SecureHooksGitHelperArgument,
-		worktrees.SecureStageGitHelperArgument,
-		worktrees.SecureCanonicalGitHelperArgument,
-		worktrees.SecureStageCanonicalGitHelperArgument,
-		worktrees.SecureRenameGitHelperArgument,
+// documentedSecureGitHelpers is the complete CLI protocol inventory, including
+// the hooks-owned mode that stays after runtime setup.
+func documentedSecureGitHelpers() map[string]func([]string) int {
+	return map[string]func([]string) int{
+		worktrees.SecureCleanupGitHelperArgument:         worktrees.RunSecureCleanupGitHelper,
+		worktrees.SecureStageGitHelperArgument:           worktrees.RunSecureStageGitHelper,
+		worktrees.SecureCanonicalGitHelperArgument:       worktrees.RunSecureCanonicalGitHelper,
+		worktrees.SecureCanonicalPolicyGitHelperArgument: worktrees.RunSecureCanonicalPolicyGitHelper,
+		worktrees.SecureStageCanonicalGitHelperArgument:  worktrees.RunSecureStageCanonicalGitHelper,
+		worktrees.SecureRenameGitHelperArgument:          worktrees.RunSecureRenameGitHelper,
+		hooks.SecureHooksGitHelperArgument:               hooks.RunSecureHooksGitHelper,
 	}
-	if len(table) != len(want) {
-		t.Fatalf("secureGitHelpers() has %d entries, want %d: %v", len(table), len(want), table)
+}
+
+func TestSecureGitHelperSelectorMatchesDocumentedProtocol(t *testing.T) {
+	t.Parallel()
+	for argument, expected := range documentedSecureGitHelpers() {
+		t.Run(argument, func(t *testing.T) {
+			t.Parallel()
+			got, known := secureGitHelperForArgument(argument)
+			if !known || got == nil || reflect.ValueOf(got).Pointer() != reflect.ValueOf(expected).Pointer() {
+				t.Fatalf("helper for %q was not the expected handler; known=%t", argument, known)
+			}
+		})
 	}
-	for _, argument := range want {
-		if _, known := table[argument]; !known {
-			t.Errorf("secureGitHelpers() has no handler for %q", argument)
-		}
+	if got, known := secureGitHelperForArgument("--unknown-helper"); got != nil || known {
+		t.Fatalf("unknown helper was selected; known=%t", known)
 	}
 }
 
@@ -124,11 +131,10 @@ func TestDispatchWithHandlersRoutesHiddenArgumentsBeforeCobra(t *testing.T) {
 	}
 }
 
-// TestDispatchWithHandlersRoutesEverySecureGitHelper covers all six helpers,
-// including the three that cannot be invoked in-process at all. This is the
-// only place that routing is proven for them.
+// TestDispatchWithHandlersRoutesEverySecureGitHelper covers all worktrees
+// helpers and the hooks-owned mode without invoking inherited descriptors.
 func TestDispatchWithHandlersRoutesEverySecureGitHelper(t *testing.T) {
-	for argument := range secureGitHelpers() {
+	for argument := range documentedSecureGitHelpers() {
 		t.Run(argument, func(t *testing.T) {
 			var calls []string
 			var out, errOut bytes.Buffer
@@ -140,6 +146,41 @@ func TestDispatchWithHandlersRoutesEverySecureGitHelper(t *testing.T) {
 			want := "secureGitHelper:" + argument + ":extra"
 			if len(calls) != 1 || calls[0] != want {
 				t.Fatalf("handlers called %v, want exactly [%s]", calls, want)
+			}
+		})
+	}
+}
+
+func TestDispatchPreservesSecureHelperStartupOrdering(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		argument         string
+		wantRuntimeFirst bool
+	}{
+		{"worktrees policy before runtime setup", worktrees.SecureCanonicalPolicyGitHelperArgument, false},
+		{"hooks after runtime setup", hooks.SecureHooksGitHelperArgument, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls []string
+			handlers := stubProcessHandlers(&calls)
+			handlers.lookupEnv = func(string) (string, bool) {
+				calls = append(calls, "runtime setup")
+				return "/opt/wb/current/wb", true
+			}
+			var out, errOut bytes.Buffer
+			code := dispatchWithHandlers(handlers, []string{tc.argument}, strings.NewReader(""), &out, &errOut)
+			if code != routedSecureGitHelper {
+				t.Fatalf("dispatch(%q) = %d, stderr=%q", tc.argument, code, errOut.String())
+			}
+			wantHelper := "secureGitHelper:" + tc.argument + ":"
+			if tc.wantRuntimeFirst {
+				if len(calls) != 2 || calls[0] != "runtime setup" || calls[1] != wantHelper {
+					t.Fatalf("startup ordering = %q, want runtime then helper", calls)
+				}
+			} else if len(calls) != 1 || calls[0] != wantHelper {
+				t.Fatalf("startup ordering = %q, want only helper", calls)
 			}
 		})
 	}

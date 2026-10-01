@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,23 +22,13 @@ import (
 const secureHookRunTestHelperArgument = "--wb-hook-run-test-helper"
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
-		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == secureHookRunTestHelperArgument {
-		os.Exit(runSecureHookTestHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
-		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalGitHelperArgument {
-		os.Exit(RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageCanonicalGitHelperArgument {
-		os.Exit(RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureRenameGitHelperArgument {
-		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
+	if len(os.Args) > 1 {
+		if helper, known := SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+		if os.Args[1] == secureHookRunTestHelperArgument {
+			os.Exit(runSecureHookTestHelper(os.Args[2:]))
+		}
 	}
 	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
 	// before any worktrees test (relocate, autoregister, worklog, ...) runs.
@@ -47,6 +38,36 @@ func TestMain(m *testing.M) {
 	// background writer can race TempDir cleanup (task-21).
 	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
+}
+
+func TestSecureGitHelperForArgumentSelectsExactHandler(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		argument string
+		helper   func([]string) int
+	}{
+		{SecureCleanupGitHelperArgument, RunSecureCleanupGitHelper},
+		{SecureStageGitHelperArgument, RunSecureStageGitHelper},
+		{SecureCanonicalGitHelperArgument, RunSecureCanonicalGitHelper},
+		{SecureCanonicalPolicyGitHelperArgument, RunSecureCanonicalPolicyGitHelper},
+		{SecureStageCanonicalGitHelperArgument, RunSecureStageCanonicalGitHelper},
+		{SecureRenameGitHelperArgument, RunSecureRenameGitHelper},
+	}
+	for _, tc := range cases {
+		t.Run(tc.argument, func(t *testing.T) {
+			t.Parallel()
+			got, known := SecureGitHelperForArgument(tc.argument)
+			if !known || got == nil || reflect.ValueOf(got).Pointer() != reflect.ValueOf(tc.helper).Pointer() {
+				t.Fatalf("helper for %q was not the expected handler; known=%t", tc.argument, known)
+			}
+		})
+	}
+	for _, argument := range []string{"", "--unknown-helper", secureHookRunTestHelperArgument} {
+		got, known := SecureGitHelperForArgument(argument)
+		if got != nil || known {
+			t.Fatalf("unexpected worktrees helper for %q; known=%t", argument, known)
+		}
+	}
 }
 
 func runSecureHookTestHelper(args []string) int {

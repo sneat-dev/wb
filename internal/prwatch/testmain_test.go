@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestMain disables git's detached gc/maintenance dispatch for every git this
@@ -14,6 +15,11 @@ import (
 // configured directly with testenv.ConfigureGitAutoMaintenanceOff, because
 // git strips GIT_CONFIG_* before spawning the server-side receive-pack.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
 }
