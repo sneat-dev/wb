@@ -649,8 +649,9 @@ Questions).
 Serves J5. The palette MUST be visible with no network request and no route navigation before it
 appears, and an action slot MUST open its preview without a route navigation (the preview itself
 is `cockpit-actions`'). Both are measured with a fake registry. The palette's code is a lazy chunk
-that the shell fetches as soon as it has rendered, not part of the initial script (REQ:initial-script-size),
-so opening the palette makes no request. Operation feedback and action
+that the shell fetches when the browser is idle after the first render (an idle callback with a timeout), and it
+is not part of the code needed to render the first page (REQ:initial-script-size); once it has arrived, opening
+the palette makes no request, and a palette opened before then waits for that one fetch. Operation feedback and action
 results in the palette are specified by `cockpit-actions` (its Task 8).
 
 ### Read-model contract v2
@@ -1096,10 +1097,14 @@ The fleet document MUST be at most 150 kB over the wire with gzip.
 
 #### REQ: initial-script-size
 
-The initial JavaScript MUST be at most 350 kB raw, checked over JavaScript files
-only by `cockpit/web/tools/finish-build.mjs`, which fails the build when it is
-larger. Chart.js and the detail pages are lazy chunks, loaded only by the routes
-that use them.
+The JavaScript needed to render the first page, Home, MUST be at most 350 kB raw: the scripts the entry
+document loads (with the chunks they import statically) and the chunks Home's route loads before Home
+renders. `cockpit/web/tools/finish-build.mjs` checks it over JavaScript files only, from the build's
+metafile, and fails the build when it is larger, and also when a script the document names is missing
+or is not a file directly under `dist`, or when the metafile is absent (it fails closed). It reports the
+initial static graph and the first page separately. Chart.js, the detail pages and every page other than
+Home are lazy chunks, loaded only by the routes that use them; PrimeNG, while a page still uses it,
+loads only with that page's route, never for the shell or for a page that uses none.
 
 #### REQ: bounded-row-elements
 
@@ -2262,7 +2267,7 @@ Then the response body is at most 150 kB
 Scenario: Production build
 Given the production build of `cockpit/web`
 When `tools/finish-build.mjs` runs its JavaScript budget check, and Home, then a detail page, are opened
-Then the initial JavaScript, counted over JavaScript files only, is at most 350 kB raw, the build fails when it is larger, and Chart.js and the detail-page code load as separate chunks only on the routes that use them
+Then the JavaScript needed to render Home, counted over JavaScript files only, is at most 350 kB raw, the build fails when it is larger or cannot be measured, and Chart.js and the detail-page code load as separate chunks only on the routes that use them
 
 ### AC: list-never-exceeds-60-row-elements
 

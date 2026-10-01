@@ -24,6 +24,11 @@ import { ChangeDetectionStrategy, Component, computed, input } from '@angular/co
       background-size: 200% 100%;
       animation: shimmer 1.4s ease-in-out infinite;
     }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton-row {
+        animation: none;
+      }
+    }
     @keyframes shimmer {
       from {
         background-position: 100% 0;

@@ -59,6 +59,23 @@ describe('FreshnessChip', () => {
     expect(chip().classList.contains('tone-ok')).toBe(true)
   })
 
+  it('announces only the state, never the ticking numbers, in a status node apart from the chip', async () => {
+    const { fixture, chip } = render((store) => loaded(store, { snapshot_at: new Date(NOW - 10_000).toISOString() }))
+    await fixture.whenStable()
+    const root = fixture.nativeElement as HTMLElement
+    expect(chip().getAttribute('role')).toBeNull()
+    expect(chip().getAttribute('data-testid')).toBe('freshness-chip')
+    const status = root.querySelector('[role="status"]') as HTMLElement
+    expect(status.classList.contains('visually-hidden')).toBe(true)
+    expect(status.textContent).toBe('The snapshot is up to date')
+    await vi.advanceTimersByTimeAsync(5 * CLOCK_TICK_MS)
+    await fixture.whenStable()
+    expect(status.textContent).toBe('The snapshot is up to date')
+    await vi.advanceTimersByTimeAsync(60 * CLOCK_TICK_MS)
+    await fixture.whenStable()
+    expect(status.textContent).toBe('The snapshot is out of date')
+  })
+
   it('shows the scanned count while the daemon warms up', async () => {
     const { fixture, chip } = render((store) => loaded(store, { warming_up: true, repositories_scanned: 120, repositories_total: 438 }))
     await fixture.whenStable()

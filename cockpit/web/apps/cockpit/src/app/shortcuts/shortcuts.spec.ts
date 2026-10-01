@@ -178,4 +178,56 @@ describe('Shortcuts', () => {
     expect(shell.sheetOpen()).toBe(false)
     detach = shortcuts.attach()
   })
+
+  it('leaves every key to an input method that is composing, Esc and Cmd+K included', () => {
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      shell.openPalette()
+      press('Escape', init)
+      expect(shell.paletteOpen()).toBe(true)
+      shell.closePalette()
+      press('k', { ...init, metaKey: true })
+      press('?', init)
+      expect(shell.modalOpen()).toBe(false)
+    }
+  })
+
+  it('does not close anything on an Esc that something else already handled', () => {
+    shell.openPalette()
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    document.addEventListener('keydown', (e) => e.preventDefault(), { once: true, capture: true })
+    document.body.dispatchEvent(event)
+    expect(shell.paletteOpen()).toBe(true)
+  })
+
+  it('lets an empty focused filter pass Esc to the panel, and clears one that has text', () => {
+    const element = document.createElement('input')
+    document.body.append(element)
+    element.focus()
+    let empty = true
+    const filter = { element, focus: vi.fn(), clear: vi.fn(), isEmpty: () => empty }
+    shortcuts.registerFilter(filter)
+    const panel = vi.fn(() => true)
+    shortcuts.registerPanel(panel)
+    press('Escape', {}, element)
+    expect(panel).toHaveBeenCalledTimes(1)
+    expect(filter.clear).not.toHaveBeenCalled()
+    empty = false
+    press('Escape', {}, element)
+    expect(filter.clear).toHaveBeenCalledTimes(1)
+    expect(panel).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats content-editable elements the browser reports as editable as inputs', () => {
+    const div = document.createElement('div')
+    Object.defineProperty(div, 'isContentEditable', { value: true })
+    expect(isEditable(div)).toBe(true)
+  })
+
+  it('closes an overlay even when nothing has the focus', () => {
+    shell.openSheet()
+    const active = vi.spyOn(document, 'activeElement', 'get').mockReturnValue(null)
+    press('Escape')
+    expect(shell.sheetOpen()).toBe(false)
+    active.mockRestore()
+  })
 })

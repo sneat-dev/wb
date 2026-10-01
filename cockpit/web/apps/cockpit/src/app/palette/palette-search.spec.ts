@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing'
 import { FleetDocument, FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { agent, fleetDocument, repository, worktree } from '@cockpit/fleet-data/testing'
-import { PALETTE_KINDS, PaletteGroup, RESULTS_PER_KIND, searchPalette } from './palette-search'
+import { PALETTE_KINDS, PaletteGroup, RESULTS_PER_KIND, resolveResult, searchPalette } from './palette-search'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
 
@@ -130,5 +130,33 @@ describe('searchPalette', () => {
     const branches = groupOf(searchPalette(model(doc), 'shared', NOW), 'branch')
     expect(branches.results).toHaveLength(1)
     expect(searchPalette(model(doc), 'task-w3', NOW).find((group) => group.kind === 'branch')).toBeUndefined()
+  })
+})
+
+describe('resolveResult', () => {
+  it('reads a remembered id again from the model, for every kind, and says nothing for what is gone', () => {
+    const doc = goFleet()
+    const current = model(doc)
+    const all = searchPalette(current, 'go', NOW).flatMap((group) => group.results)
+    for (const kind of ['task', 'repository', 'worktree', 'branch', 'agent']) {
+      const shown = all.find((result) => result.kind === kind)!
+      expect(resolveResult(current, shown.id), kind).toEqual(shown)
+    }
+    const machine = searchPalette(model(fleetDocument()), 'alpha', NOW).flatMap((group) => group.results).find((result) => result.kind === 'machine')!
+    expect(resolveResult(model(fleetDocument()), machine.id)).toEqual(machine)
+    for (const gone of ['task:nothing', 'repository:nothing', 'worktree:nothing', 'branch:x|y', 'agent:nothing', 'machine:nothing', 'nonsense:1']) {
+      expect(resolveResult(current, gone), gone).toBeUndefined()
+    }
+  })
+
+  it('builds a label and a detail only for the results it shows', () => {
+    const agents = Array.from({ length: 30 }, (_, index) => agent(`a${index}`, 'r1', 'live', { runtime: 'golang' }))
+    const current = model(fleetDocument({ agents }))
+    searchPalette(current, 'zzzz', NOW)
+    const spy = vi.spyOn(current, 'tasksOfAgent')
+    const groups = searchPalette(current, 'golang', NOW)
+    expect(groupOf(groups, 'agent').results).toHaveLength(8)
+    // The agent detail asks for the agent's task: 8 times, not 30.
+    expect(spy).toHaveBeenCalledTimes(8)
   })
 })

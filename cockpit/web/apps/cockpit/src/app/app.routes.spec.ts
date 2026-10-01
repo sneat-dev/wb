@@ -39,12 +39,19 @@ describe('pageRoutes', () => {
     }
   })
 
-  it('loads each page lazily', async () => {
-    const pages = pageRoutes.filter((route): route is Route => route.loadComponent !== undefined)
-    expect(pages).toHaveLength(13)
-    for (const route of pages) {
+  it('loads each page lazily, those that still use PrimeNG through the route that provides it', async () => {
+    const plain = pageRoutes.filter((route): route is Route => route.loadComponent !== undefined)
+    const prime = pageRoutes.filter((route): route is Route => route.loadChildren !== undefined)
+    expect(plain.map((route) => route.path)).toEqual(['', 'tasks', 'tasks/new', 'tasks/detail', 'repositories/:host/:owner/:name', 'repositories/:id', 'worktrees/:id', 'agents/:id', 'machines/:id'])
+    expect(prime.map((route) => route.path)).toEqual(['repositories', 'worktrees', 'agents', 'machines'])
+    for (const route of plain) {
       const loaded = await (route.loadComponent as () => Promise<unknown>)()
       expect(typeof loaded, route.path).toBe('function')
+    }
+    for (const route of prime) {
+      const [child] = await (route.loadChildren as () => Promise<Route[]>)()
+      expect(typeof (await (child.loadComponent as () => Promise<unknown>)()), route.path).toBe('function')
+      expect(child.providers, route.path).toHaveLength(1)
     }
   })
 
@@ -58,12 +65,7 @@ describe('pageRoutes', () => {
 })
 
 describe('appRoutes', () => {
-  it('loads the pages inside the group that provides PrimeNG, so it is not in the initial script', async () => {
-    expect(appRoutes).toHaveLength(1)
-    expect(appRoutes[0].component).toBeUndefined()
-    const children = await (appRoutes[0].loadChildren as () => Promise<Route[]>)()
-    expect(children).toHaveLength(1)
-    expect(children[0].providers).toHaveLength(2)
-    expect(children[0].children).toBe(pageRoutes)
+  it('is the page table', () => {
+    expect(appRoutes).toBe(pageRoutes)
   })
 })

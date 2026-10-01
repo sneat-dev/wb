@@ -1,32 +1,21 @@
 import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { PrimeNG } from 'primeng/config'
-import { CockpitPreset, runInitializers, withPrimeNg } from './prime-theme'
+import { CockpitPreset, primePage } from './prime-theme'
 
-describe('withPrimeNg', () => {
-  it('wraps the routes in one group that provides PrimeNG with the Cockpit theme', () => {
-    const routes = [{ path: 'x' }]
-    const [group] = withPrimeNg(routes)
-    expect(group.path).toBe('')
-    expect(group.providers).toHaveLength(2)
-    expect(group.children).toBe(routes)
-  })
-
-  it('configures PrimeNG with the theme and the style nonce when the group is created, not at bootstrap', () => {
+describe('primePage', () => {
+  it('routes to the page, and configures PrimeNG with the theme and the style nonce when the route is created, not at bootstrap', async () => {
     document.body.innerHTML = '<app-root ngCspNonce="nonce-1"></app-root>'
-    const [group] = withPrimeNg([])
-    const injector = createEnvironmentInjector(group.providers as never[], TestBed.inject(EnvironmentInjector))
+    class Page {}
+    const [route] = primePage(async () => Page)
+    expect(route.path).toBe('')
+    expect(await (route.loadComponent as () => Promise<unknown>)()).toBe(Page)
+    const injector = createEnvironmentInjector(route.providers as never[], TestBed.inject(EnvironmentInjector))
     const config = injector.get(PrimeNG)
     expect(config.csp().nonce).toBe('nonce-1')
     expect(config.theme()).toMatchObject({ options: { darkModeSelector: 'system' } })
     injector.destroy()
     document.body.innerHTML = ''
-  })
-})
-
-describe('runInitializers', () => {
-  it('runs none in an injector that has none', () => {
-    expect(() => TestBed.runInInjectionContext(() => runInitializers())).not.toThrow()
   })
 })
 

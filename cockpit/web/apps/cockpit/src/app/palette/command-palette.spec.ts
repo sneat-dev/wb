@@ -96,6 +96,21 @@ describe('CommandPalette', () => {
     expect(shell.paletteOpen()).toBe(false)
   })
 
+  it('leaves Enter and the arrows to an input method that is composing', async () => {
+    const { input, type, fixture, selected, options } = await open()
+    await type('go-live')
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      for (const key of ['Enter', 'ArrowDown']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init })
+        input.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(false)
+      }
+    }
+    await fixture.whenStable()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(selected()).toBe(options()[0])
+  })
+
   it('wraps the highlight around the ends of the list', async () => {
     const { type, press, options, selected } = await open()
     await type('go-live')
@@ -145,11 +160,52 @@ describe('CommandPalette', () => {
     expect(options().map((option) => option.querySelector('.label')?.textContent)).toEqual(['golang session s-a1'])
   })
 
-  it('lists the recents of the browser when the input is empty, and opens one', async () => {
-    const { root, options } = await open([{ id: 'task:x', kind: 'task', label: 'x', detail: 'working', link: { path: '/tasks/detail', query: { task: 'x' } } }])
+  it('lists the recents of the browser read again from the model, drops what is gone, and opens one', async () => {
+    const stale = { detail: 'stale state', link: { path: '/tasks/detail', query: { task: 'go-live' } } }
+    const { root, options } = await open([
+      { id: 'task:go-live', kind: 'task', label: 'stale name', ...stale },
+      { id: 'task:deleted-long-ago', kind: 'task', label: 'deleted', ...stale },
+      { id: 'weird', kind: 'task', label: 'weird', ...stale },
+    ])
     expect(root.querySelector('.group-title')?.textContent).toBe('Recent')
+    expect(options()).toHaveLength(1)
+    // The label and the detail are the model's now, not what was stored.
+    expect(options()[0].querySelector('.label')?.textContent).toBe('go-live')
+    expect(options()[0].querySelector('.detail')?.textContent).not.toContain('stale')
     ;(options()[0] as HTMLElement).click()
-    expect(navigate).toHaveBeenCalledWith('/tasks/detail?task=x')
+    expect(navigate).toHaveBeenCalledWith('/tasks/detail?task=go-live')
+  })
+
+  it('keeps the highlight on the same result when the results are reordered by a poll, and says how many there are', async () => {
+    const { fixture, type, options, selected, press, root } = await open()
+    await type('go-live')
+    await press('ArrowDown')
+    const detailOf = () => selected()?.querySelector('.detail')?.textContent
+    const chosen = detailOf()
+    expect(root.querySelector('[role="status"]')?.textContent).toBe('3 results')
+    // The model changes: a new task that ranks first. The same option is still the highlighted one.
+    const store = TestBed.inject(FleetStore)
+    store.document.set({ ...store.document(), worktrees: [{ ...worktree('w0', 'g1', 'alpha'), task: 'go-live', branch: 'x' }, ...store.document().worktrees] })
+    await fixture.whenStable()
+    expect(detailOf()).toBe(chosen)
+    expect(options().length).toBe(4)
+  })
+
+  it('has only options inside the listbox, and an expanded state that follows the results', async () => {
+    const { root, type, fixture } = await open()
+    const input = root.querySelector('input') as HTMLInputElement
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    await type('go-live')
+    expect(input.getAttribute('aria-expanded')).toBe('true')
+    const listbox = root.querySelector('[role="listbox"]') as HTMLElement
+    for (const child of listbox.children) expect(child.getAttribute('role')).toBe('group')
+    for (const group of listbox.querySelectorAll('[role="group"]')) {
+      for (const child of group.children) expect(['option', null].includes(child.getAttribute('role')) || child.classList.contains('group-title') || child.getAttribute('aria-hidden') === 'true').toBe(true)
+    }
+    await type('zzzz')
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    expect(root.querySelector('[role="status"]')?.textContent).toBe('No results')
+    expect(fixture).toBeDefined()
   })
 
   it('closes from its backdrop and forgets the typed text', async () => {

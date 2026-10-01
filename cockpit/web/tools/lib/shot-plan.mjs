@@ -5,6 +5,8 @@
 export const VIEWPORTS = [
   { name: '1440', width: 1440, height: 900 },
   { name: '390', width: 390, height: 844 },
+  // The narrowest width the application works at (REQ:responsive-to-360).
+  { name: '360', width: 360, height: 800 },
 ]
 
 export const SCHEMES = ['light', 'dark']

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing'
-import { PAGE_LOCATION, SchemaMismatch } from './schema-mismatch'
+import { PAGE_LOCATION, SchemaMismatch, commandText } from './schema-mismatch'
 
 describe('SchemaMismatch', () => {
   function render(mismatch: 'daemon-older' | 'page-older') {
@@ -15,6 +15,14 @@ describe('SchemaMismatch', () => {
     expect(root.querySelector('[role="alert"]')).not.toBeNull()
     expect(root.textContent).toContain('update wb on this machine')
     expect(root.querySelector('code')?.textContent).toBe('wb self-update')
+  })
+
+  it('names no command, and shows no empty code, when the command was refused', async () => {
+    const fixture = render('daemon-older')
+    ;(fixture.componentInstance as unknown as { command: string | undefined }).command = undefined
+    await fixture.whenStable()
+    expect(fixture.nativeElement.textContent).toContain('update wb on this machine')
+    expect(fixture.nativeElement.querySelector('code')).toBeNull()
   })
 
   it('tells the operator to reload when the page is older', async () => {
@@ -37,5 +45,12 @@ describe('SchemaMismatch', () => {
 
   it('reloads through the location of the document by default', () => {
     expect(TestBed.inject(PAGE_LOCATION)).toBe(document.location)
+  })
+})
+
+describe('commandText', () => {
+  it('is the text of a command, and nothing for a command that was refused', () => {
+    expect(commandText({ ok: true, text: 'wb self-update', needsEdit: false })).toBe('wb self-update')
+    expect(commandText({ ok: false, reason: 'refused' })).toBeUndefined()
   })
 })

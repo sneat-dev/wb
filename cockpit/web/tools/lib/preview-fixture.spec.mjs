@@ -121,6 +121,10 @@ describe('the preview server', () => {
     await expect(startPreview({ distRoot: dist, data }, port)).rejects.toThrow()
   })
 
+  it('refuses to listen on the daemon port or the end-to-end port, whoever asks', async () => {
+    for (const port of REFUSED_PORTS) await expect(startPreview({ distRoot: dist, data }, port)).rejects.toThrow('refused')
+  })
+
   it('creates a handler without listening', () => {
     expect(typeof createPreviewHandler({ distRoot: dist, data })).toBe('function')
   })

@@ -3,9 +3,8 @@
 <main id="main" class="shell-main" tabindex="-1" #main>
   <h1 class="visually-hidden">{{ pageTitle() }}</h1>
   <app-fleet-banner />
-  @if (store.schemaMismatch(); as mismatch) {
-    <app-schema-mismatch [mismatch]="mismatch" />
-  } @else {
+  <!-- With another schema version no page and no data is shown; the explanation is in the lazy overlays chunk. -->
+  @if (store.schemaMismatch() === null) {
     @if (store.loaded()) {
       <!-- Hidden until the first page has been routed to (its code is a lazy chunk), so that nothing that is on screen moves when it arrives. -->
       <div class="page-slot" [hidden]="!pageShown()">

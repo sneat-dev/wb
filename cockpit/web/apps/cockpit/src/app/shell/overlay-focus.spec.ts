@@ -1,6 +1,6 @@
 import { Component, signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { OverlayFocus, restoreFocus } from './overlay-focus'
+import { OverlayFocus, restoreFocus, returnTarget } from './overlay-focus'
 
 @Component({
   imports: [OverlayFocus],
@@ -86,9 +86,46 @@ describe('OverlayFocus', () => {
     document.body.append(button)
     restoreFocus(button)
     expect(document.activeElement).toBe(button)
+    const gone = document.createElement('button')
+    document.body.append(gone)
+    gone.remove()
+    restoreFocus(gone)
+    expect(document.activeElement).toBe(button)
     restoreFocus(null)
     restoreFocus(document.createElementNS('http://www.w3.org/2000/svg', 'svg'))
     expect(document.activeElement).toBe(button)
     button.remove()
+  })
+})
+
+describe('returnTarget', () => {
+  it('is the active element, or what the overlay around it will give back when it is in one', () => {
+    const plain = document.createElement('button')
+    expect(returnTarget(plain)).toBe(plain)
+    expect(returnTarget(null)).toBeNull()
+  })
+
+  it('hands the focus back past an overlay that has gone when another opened over it', async () => {
+    @Component({
+      imports: [OverlayFocus],
+      template: `
+        <button id="origin">origin</button>
+        @if (first()) {
+          <div appOverlayFocus id="first"><button id="inside" data-autofocus>in</button></div>
+        }
+      `,
+    })
+    class Stack {
+      readonly first = signal(false)
+    }
+    const fixture = TestBed.createComponent(Stack)
+    document.body.append(fixture.nativeElement)
+    const origin = fixture.nativeElement.querySelector('#origin') as HTMLElement
+    origin.focus()
+    fixture.componentInstance.first.set(true)
+    await fixture.whenStable()
+    // A second overlay opens while the focus is inside the first, which then closes.
+    expect(returnTarget(document.activeElement)).toBe(origin)
+    fixture.nativeElement.remove()
   })
 })

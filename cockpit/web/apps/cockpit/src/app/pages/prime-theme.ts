@@ -1,8 +1,8 @@
-import { APP_INITIALIZER, inject, provideEnvironmentInitializer } from '@angular/core'
+import { Type, inject, provideEnvironmentInitializer } from '@angular/core'
 import { Routes } from '@angular/router'
 import { definePreset } from '@primeuix/themes'
 import Aura from '@primeuix/themes/aura'
-import { providePrimeNG } from 'primeng/config'
+import { PrimeNG } from 'primeng/config'
 import { readCspNonce } from '../csp-nonce'
 
 /**
@@ -106,32 +106,25 @@ export const CockpitPreset = definePreset(Aura, {
 })
 
 /**
- * `providePrimeNG` configures PrimeNG (its theme, its style nonce and its
- * licence check) in an application initializer, which Angular runs only at
- * bootstrap. This group is created later, when the first page is routed to, so
- * its initializers are run here, when the group's injector is created.
+ * The route of a page that still uses PrimeNG components: PrimeNG is configured
+ * (the Cockpit theme and the style nonce) when the route's injector is created,
+ * so the shell and every page that uses no PrimeNG never load it. This file is
+ * itself a lazy chunk, fetched only by those routes (app.routes.ts).
  */
-export function runInitializers(): void {
-  for (const initialize of inject(APP_INITIALIZER, { self: true, optional: true }) ?? []) initialize()
-}
-
-/** The routes of the pages, in a group that provides PrimeNG with the Cockpit theme. */
-export function withPrimeNg(routes: Routes): Routes {
+export function primePage(loadComponent: () => Promise<Type<unknown>>): Routes {
   return [
     {
       path: '',
       providers: [
-        providePrimeNG({
-          csp: { nonce: readCspNonce(document) },
-          theme: {
-            preset: CockpitPreset,
+        provideEnvironmentInitializer(() =>
+          inject(PrimeNG).setConfig({
+            csp: { nonce: readCspNonce(document) },
             // 'system' follows the browser's prefers-color-scheme.
-            options: { darkModeSelector: 'system' },
-          },
-        }),
-        provideEnvironmentInitializer(runInitializers),
+            theme: { preset: CockpitPreset, options: { darkModeSelector: 'system' } },
+          }),
+        ),
       ],
-      children: routes,
+      loadComponent,
     },
   ]
 }

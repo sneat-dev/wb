@@ -30,21 +30,21 @@ describe('routePlan', () => {
 describe('shotPlan', () => {
   const shots = shotPlan(document)
 
-  it('photographs each route in light and dark at a desktop and a phone size', () => {
-    expect(VIEWPORTS.map((viewport) => `${viewport.width}x${viewport.height}`)).toEqual(['1440x900', '390x844'])
+  it('photographs each route in light and dark at a desktop, a phone and the narrowest size', () => {
+    expect(VIEWPORTS.map((viewport) => `${viewport.width}x${viewport.height}`)).toEqual(['1440x900', '390x844', '360x800'])
     expect(SCHEMES).toEqual(['light', 'dark'])
     const routes = shots.filter((shot) => shot.state === 'ok' && !shot.keys)
-    expect(routes).toHaveLength(13 * 2 * 2)
+    expect(routes).toHaveLength(13 * 2 * 3)
     expect(routes.map((shot) => shot.file)).toContain('home-dark-390.png')
     expect(routes.map((shot) => shot.file)).toContain('machine-detail-light-1440.png')
   })
 
   it('adds the palette, its results, the shortcut sheet and the states of the daemon', () => {
     expect(shots.filter((shot) => shot.keys).map((shot) => shot.file).sort()).toEqual(
-      ['palette', 'palette-results', 'shortcuts'].flatMap((name) => ['dark', 'light'].flatMap((scheme) => ['1440', '390'].map((size) => `${name}-${scheme}-${size}.png`))).sort(),
+      ['palette', 'palette-results', 'shortcuts'].flatMap((name) => ['dark', 'light'].flatMap((scheme) => ['1440', '390', '360'].map((size) => `${name}-${scheme}-${size}.png`))).sort(),
     )
     expect(shots.filter((shot) => shot.state !== 'ok').map((shot) => shot.file).sort()).toEqual(
-      ['daemon-older', 'warming'].flatMap((state) => ['dark', 'light'].flatMap((scheme) => ['1440', '390'].map((size) => `state-${state}-${scheme}-${size}.png`))).sort(),
+      ['daemon-older', 'warming'].flatMap((state) => ['dark', 'light'].flatMap((scheme) => ['1440', '390', '360'].map((size) => `state-${state}-${scheme}-${size}.png`))).sort(),
     )
   })
 

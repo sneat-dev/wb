@@ -1,7 +1,7 @@
 import { Component } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { FleetClient, MachineMetrics } from '@cockpit/fleet-data'
-import { METRICS_INTERVAL_MS, MetricsPoller, watchMetrics } from './metrics-poller'
+import { FleetClient, FleetRequestError, MachineMetrics } from '@cockpit/fleet-data'
+import { METRICS_INTERVAL_MS, METRICS_MAX_BACKOFF_MS, MetricsPoller, watchMetrics } from './metrics-poller'
 
 function metrics(machine: string): MachineMetrics {
   return { machine, route: 'local', samples: [] }
@@ -92,21 +92,113 @@ describe('MetricsPoller', () => {
     expect(read).toHaveBeenCalledTimes(2)
   })
 
-  it('does not start a second loop when the pages leave and return while a read is out', async () => {
+  it('does not overlap rounds, nor start a second loop, when the pages change while a read is out', async () => {
+    const poller = TestBed.inject(MetricsPoller)
+    let finish: (value: MachineMetrics) => void = () => undefined
+    let inFlight = 0
+    let overlapped = false
+    read.mockImplementation(
+      (machine) =>
+        new Promise((resolve) => {
+          if (++inFlight > 1) overlapped = true
+          finish = (value) => {
+            inFlight--
+            resolve(value)
+          }
+          void machine
+        }),
+    )
+    // Home is shown, then Machines replaces it while Home's read is still out.
+    const home = poller.watch(() => ['m1'])
+    await advance(0)
+    home()
+    poller.watch(() => ['m1'])
+    await advance(0)
+    expect(read).toHaveBeenCalledTimes(1)
+    finish(metrics('m1'))
+    await advance(0)
+    // The old generation's answer is dropped; the new round reads once the old one has settled.
+    expect(read).toHaveBeenCalledTimes(2)
+    finish(metrics('m1'))
+    await advance(METRICS_INTERVAL_MS)
+    finish(metrics('m1'))
+    await advance(0)
+    expect(overlapped).toBe(false)
+    expect(read).toHaveBeenCalledTimes(3)
+  })
+
+  it('lets a round that was waiting for the one before it give up when its pages have gone', async () => {
+    const poller = TestBed.inject(MetricsPoller)
+    let finish: (value: MachineMetrics) => void = () => undefined
+    read.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+    const first = poller.watch(() => ['m1'])
+    await advance(0)
+    first()
+    const second = poller.watch(() => ['m1'])
+    await advance(0)
+    second()
+    finish(metrics('m1'))
+    await advance(5 * METRICS_INTERVAL_MS)
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops what a stopped generation read, and keeps the loop alive when a page throws asking for its machines', async () => {
     const poller = TestBed.inject(MetricsPoller)
     let finish: (value: MachineMetrics) => void = () => undefined
     read.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
     const stop = poller.watch(() => ['m1'])
     await advance(0)
     stop()
-    poller.watch(() => ['m1'])
-    await advance(0)
-    expect(read).toHaveBeenCalledTimes(2)
     finish(metrics('m1'))
     await advance(0)
+    expect(poller.entries().size).toBe(0)
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let throws = true
+    poller.watch(() => {
+      if (throws) throw new Error('page broke')
+      return ['m1']
+    })
+    await advance(0)
+    expect(error).toHaveBeenCalled()
+    throws = false
+    await advance(2 * METRICS_INTERVAL_MS)
+    expect(poller.metricsOf('m1')?.machine).toBe('m1')
+    error.mockRestore()
+  })
+
+  it('backs off exponentially, up to two minutes, while the daemon refuses or fails, and recovers', async () => {
+    const poller = TestBed.inject(MetricsPoller)
+    read.mockRejectedValue(new FleetRequestError(502))
+    poller.watch(() => ['m1'])
+    await advance(0)
+    expect(read).toHaveBeenCalledTimes(1)
+    // One failure: the next read after 20 s, then 40 s, 80 s, then 120 s at most.
+    for (const [wait, total] of [[METRICS_INTERVAL_MS * 2, 2], [METRICS_INTERVAL_MS * 4, 3], [METRICS_INTERVAL_MS * 8, 4], [METRICS_MAX_BACKOFF_MS, 5], [METRICS_MAX_BACKOFF_MS, 6]]) {
+      await advance(wait - 1)
+      expect(read).toHaveBeenCalledTimes(total - 1)
+      await advance(1)
+      expect(read).toHaveBeenCalledTimes(total)
+    }
+    read.mockResolvedValue(metrics('m1'))
+    await advance(METRICS_MAX_BACKOFF_MS)
     await advance(METRICS_INTERVAL_MS)
-    // One loop: one read per interval.
+    expect(read.mock.calls.length).toBeGreaterThanOrEqual(8)
+  })
+
+  it('treats a refusal of 401 as a reason to back off, and a 404 as not', async () => {
+    const poller = TestBed.inject(MetricsPoller)
+    read.mockRejectedValue(new FleetRequestError(404))
+    poller.watch(() => ['m1'])
+    await advance(0)
+    await advance(METRICS_INTERVAL_MS)
+    expect(read).toHaveBeenCalledTimes(2)
+    read.mockRejectedValue(new FleetRequestError(401))
+    await advance(METRICS_INTERVAL_MS)
+    await advance(METRICS_INTERVAL_MS)
     expect(read).toHaveBeenCalledTimes(3)
+    await advance(METRICS_INTERVAL_MS)
+    expect(read).toHaveBeenCalledTimes(4)
   })
 
   it('stops with the application, and watchMetrics ends with its component', async () => {

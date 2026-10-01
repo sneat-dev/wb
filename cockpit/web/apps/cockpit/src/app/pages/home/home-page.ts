@@ -2,16 +2,13 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import { Params } from '@angular/router'
 import {
   FleetStore,
-  agentLabel,
   RUNNING_STATE,
   filterAgents,
   mostRecentWorktrees,
-  repositoryLabel,
-  worktreeLabel,
 } from '@cockpit/fleet-data'
-import { Count, RouteLabel } from '@cockpit/ui'
+import { RouterLink } from '@angular/router'
+import { RouteLabel } from '@cockpit/ui/route-label'
 import { watchMetrics } from '../../metrics/metrics-poller'
-import { TableModule } from 'primeng/table'
 
 /** How many of the most recently active worktrees the dashboard lists. */
 export const RECENT_WORKTREES = 10
@@ -19,7 +16,7 @@ export const RECENT_WORKTREES = 10
 interface Tile {
   title: string
   label: string
-  names: string[]
+  count: number
   target: string
   query: Params
 }
@@ -27,7 +24,7 @@ interface Tile {
 /** The fleet at a glance: one tile per collection, the machines, and recent work. */
 @Component({
   selector: 'app-home-page',
-  imports: [TableModule, Count, RouteLabel],
+  imports: [RouterLink, RouteLabel],
   templateUrl: './home-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -42,14 +39,14 @@ export class HomePage {
   protected readonly tiles = computed<Tile[]>(() => {
     const document = this.store.document()
     return [
-      { title: 'Machines', label: 'machines', names: document.machines.map((m) => m.machine), target: '/machines', query: {} },
-      { title: 'Repositories', label: 'repositories', names: document.repositories.map(repositoryLabel), target: '/repositories', query: {} },
-      { title: 'Worktrees', label: 'worktrees', names: document.worktrees.map(worktreeLabel), target: '/worktrees', query: {} },
-      { title: 'Agents', label: 'agents', names: document.agents.map(agentLabel), target: '/agents', query: {} },
+      { title: 'Machines', label: 'machines', count: document.machines.length, target: '/machines', query: {} },
+      { title: 'Repositories', label: 'repositories', count: document.repositories.length, target: '/repositories', query: {} },
+      { title: 'Worktrees', label: 'worktrees', count: document.worktrees.length, target: '/worktrees', query: {} },
+      { title: 'Agents', label: 'agents', count: document.agents.length, target: '/agents', query: {} },
       {
         title: 'Running agents',
         label: 'running agents',
-        names: filterAgents(document.agents, { state: RUNNING_STATE }).map(agentLabel),
+        count: filterAgents(document.agents, { state: RUNNING_STATE }).length,
         target: '/agents',
         query: { state: 'running' },
       },

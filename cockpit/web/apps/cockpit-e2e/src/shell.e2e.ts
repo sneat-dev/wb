@@ -63,7 +63,7 @@ test('the top bar shows the tabs, the signals, the freshness and the session, an
   await expect(tabs.getByRole('link', { name: /^Home/ })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByRole('link', { name: 'New task' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Search' })).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: /updated \d+ s ago/ })).toBeVisible()
+  await expect(page.getByTestId('freshness-chip').filter({ hasText: /updated \d+ s ago/ })).toBeVisible()
   await expect(page.getByText('anonymous', { exact: true })).toBeVisible()
   await expect(page).toHaveTitle('Home')
   // No heading on screen repeats the tab.
@@ -117,7 +117,7 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   await expectClean()
 })
 
-test('g then a letter switches tabs, a typed g w stays text, ? shows the sheet and Esc closes it', async ({ page }) => {
+test('g then a letter switches tabs, keys typed into an input stay text, ? shows the sheet and Esc closes it', async ({ page }) => {
   await stub(page)
   const expectClean = await watch(page)
   await page.goto('/cockpit/')
@@ -132,7 +132,8 @@ test('g then a letter switches tabs, a typed g w stays text, ? shows the sheet a
   await page.keyboard.press('h')
   await expect(page).toHaveURL(/\/cockpit\/$/)
 
-  // In an input the keys are text.
+  // In an input the keys are text. (The palette's input stands for any input here; the page filter box
+  // and the side panel half of cockpit-views#ac:shortcuts-navigate-and-respect-typing is Task 12's.)
   await page.keyboard.press('/')
   const search = page.getByRole('dialog', { name: 'Search' }).getByRole('combobox')
   await search.pressSequentially('g w')
@@ -183,7 +184,7 @@ test('while the daemon warms up the chip counts the scan and skeleton rows wait,
     }).observe({ type: 'layout-shift', buffered: true })
   })
   await page.goto('/cockpit/')
-  const chip = page.getByRole('status').filter({ hasText: /scanned|updated/ })
+  const chip = page.getByTestId('freshness-chip')
   await expect(chip).toContainText('scanned 120 of 438')
   await expect(page.locator('app-skeleton-rows.warming .skeleton-row')).toHaveCount(6)
   expect(await page.locator('app-skeleton-rows.warming .skeleton-row').first().evaluate((row) => row.getBoundingClientRect().height)).toBe(32)
@@ -211,4 +212,25 @@ test('a page loads its own script chunk only when it is opened', async ({ page }
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Worktree')
   const detailOnly = [...scripts].filter((url) => !home.has(url))
   expect(detailOnly.length).toBeGreaterThan(0)
+})
+
+// cockpit-views#req:responsive-to-360: nothing makes a page scroll sideways at the narrowest width, overlays included.
+test('no route scrolls sideways at 360 px, and the palette and the sheet fit', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 })
+  await stub(page)
+  for (const path of ['', 'tasks', 'tasks/new', 'tasks/detail?task=add-search', 'repositories/-/acme/far', 'agents/ag-1', 'machines/mach-alpha', 'worktrees/wt-1', 'repositories/repo-cli']) {
+    await page.goto(`/cockpit/${path}`)
+    await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('')
+    await page.locator('app-overlays').waitFor({ state: 'attached' })
+    const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
+    expect(widths.page, path).toBeLessThanOrEqual(widths.window)
+  }
+  await page.keyboard.press('Control+k')
+  const box = await page.getByRole('dialog', { name: 'Search' }).boundingBox()
+  expect(box!.x).toBeGreaterThanOrEqual(0)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(360)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('?')
+  const sheet = await page.getByRole('dialog', { name: 'Keyboard shortcuts' }).boundingBox()
+  expect(sheet!.x + sheet!.width).toBeLessThanOrEqual(360)
 })

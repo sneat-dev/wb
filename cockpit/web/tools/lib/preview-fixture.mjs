@@ -98,6 +98,8 @@ export function createPreviewHandler({ distRoot, data, state = 'ok', session = '
 
 // Serves on `port`, loopback only; resolves with the server once it listens.
 export function startPreview(options, port) {
+  // Whoever calls it, the daemon's port and the end-to-end port are never served on; 0 is a free port.
+  if (REFUSED_PORTS.includes(port)) return Promise.reject(new Error(`preview: port ${port} is refused: it belongs to the wb daemon or to the end-to-end run`))
   return new Promise((resolve, reject) => {
     const server = createServer(createPreviewHandler(options))
     server.once('error', reject)

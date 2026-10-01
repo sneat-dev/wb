@@ -146,7 +146,8 @@ describe('App', () => {
     store.schemaMismatch.set('daemon-older')
     store.error.set('update wb on this machine')
     const { fixture, root } = await open('/')
-    expect(root.querySelector('app-schema-mismatch')?.textContent).toContain('update wb on this machine')
+    // The explanation is in the lazy overlays chunk, which is fetched at once for it.
+    await vi.waitFor(() => expect(root.querySelector('app-schema-mismatch')?.textContent).toContain('update wb on this machine'))
     expect(root.querySelector('main router-outlet')).toBeNull()
     expect(root.querySelector('app-skeleton-rows')).toBeNull()
     expect(root.querySelectorAll('[role="alert"]')).toHaveLength(1)
