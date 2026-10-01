@@ -347,7 +347,7 @@ func TestE2EExternalTargetClaimLoadRefusesCorruptEvidenceAndReleasesClaimFence(t
 		request := prepared.fixture.base.request
 		request.RepositoryRemote = "not-a-remote"
 		_, _, unlock, err := loadExternalTargetClaim(prepared.fixture.base.projectsRoot, request, prepared.fixture.digest, prepared.fixture.worktree)
-		if err == nil || unlock != nil {
+		if err == nil || unlock != nil || !strings.Contains(err.Error(), "repository remote must be an absolute local path or a supported URL") {
 			t.Fatalf("invalid remote returned unlock=%t, err=%v", unlock != nil, err)
 		}
 		prepared.assertPrivateUnchanged(t, true)
