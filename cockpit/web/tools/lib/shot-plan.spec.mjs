@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { GALLERY_DIST, LIST_SHOTS, SCHEMES, VIEWPORTS, galleryPlan, routePlan, shotPlan } from './shot-plan.mjs'
+import { GALLERY_DIST, HOME_CASES, HOME_VIEWPORTS, LIST_SHOTS, SCHEMES, VIEWPORTS, galleryPlan, homeShotPlan, routePlan, shotPlan } from './shot-plan.mjs'
 
 const document = {
   repositories: [{ id: 'r0', name: 'acme/cached' }, { id: 'r1', host: 'github.com', name: 'sneat-co/sneat-go' }],
@@ -48,10 +48,10 @@ describe('shotPlan', () => {
     )
   })
 
-  it('adds the list and its side panel on Worktrees, Tasks and Repositories, each with the steps that reach it', () => {
+  it('adds the list and its side panel on Worktrees, Tasks, Repositories and Agents, each with the steps that reach it', () => {
     const lists = shots.filter((shot) => shot.steps)
     expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
-    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories']))
+    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories', '/agents']))
     expect(lists.filter((shot) => shot.name.startsWith('repositories')).every((shot) => shot.url === '/repositories')).toBe(true)
     expect(lists.map((shot) => shot.file)).toContain('repositories-panel-dark-360.png')
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')
@@ -71,5 +71,25 @@ describe('galleryPlan', () => {
     expect(GALLERY_DIST).toBe('dist-preview')
     expect(shots.map((shot) => shot.file).sort()).toEqual(['gallery-dark-1440.png', 'gallery-dark-360.png', 'gallery-dark-390.png', 'gallery-light-1440.png', 'gallery-light-360.png', 'gallery-light-390.png'])
     for (const shot of shots) expect(shot).toMatchObject({ url: '/gallery', state: 'ok', dist: 'dist-preview', fullPage: true, ready: 'canvas' })
+  })
+})
+
+describe('homeShotPlan', () => {
+  const shots = homeShotPlan()
+
+  it('photographs every case in light and dark at 1440, 1024, 390 and 360, and the phone with More opened', () => {
+    expect(HOME_VIEWPORTS.map((viewport) => viewport.name)).toEqual(['1440', '1024', '390', '360'])
+    expect(HOME_CASES.map((home) => home.name)).toEqual(['busy', 'busy-owner', 'healthy', 'warming', 'throttled', 'remote-error', 'no-throughput', 'only-dropped'])
+    expect(shots).toHaveLength(HOME_CASES.length * 2 * 4 + 2 * 2)
+    expect(shots.map((shot) => shot.file)).toContain('home-busy-more-dark-360.png')
+    expect(shots.map((shot) => shot.file)).not.toContain('home-healthy-more-dark-360.png')
+    expect(new Set(shots.map((shot) => shot.file)).size).toBe(shots.length)
+  })
+
+  it('serves each case its fleet, session and registry, and scrolls to the end', () => {
+    const owner = shots.find((shot) => shot.file === 'home-busy-owner-light-1440.png')
+    expect(owner).toMatchObject({ home: 'busy', session: 'owner', registry: true, state: 'ok', fullPage: true, scrollEnd: true, ready: 'app-home-rest' })
+    expect(shots.find((shot) => shot.file === 'home-warming-dark-390.png')).toMatchObject({ state: 'warming', home: 'warming' })
+    expect(shots.find((shot) => shot.file === 'home-busy-more-light-390.png')?.click).toBe('button.home-more-toggle')
   })
 })

@@ -1,0 +1,65 @@
+:host {
+  display: inline-flex;
+  flex: none;
+}
+
+.home-copy {
+  --glyph-size: 0.875rem;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 1.75rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition),
+    border-color var(--transition);
+}
+
+.home-copy:hover {
+  background: var(--surface-hover);
+}
+
+.home-copy.done {
+  border-color: var(--ok-border);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.home-copy.failed {
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.home-copy.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.home-copy.quiet:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.home-copy.quiet.done {
+  color: var(--ok);
+}
+
+.home-copy.quiet.failed {
+  color: var(--bad);
+}
+
+.home-copy.icon-only {
+  min-width: 1.75rem;
+}

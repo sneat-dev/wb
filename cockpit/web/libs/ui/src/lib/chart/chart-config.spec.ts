@@ -1,5 +1,5 @@
 import { chartConfiguration, ChartContext } from './chart-config'
-import { BarsSpec, HorizontalBarsSpec, TimeSeriesSpec } from './chart-spec'
+import { BarsSpec, HorizontalBarsSpec, StackedBarsSpec, TimeSeriesSpec } from './chart-spec'
 import type { ChartTheme } from './chart-theme'
 
 const theme: ChartTheme = {
@@ -7,6 +7,8 @@ const theme: ChartTheme = {
   fill: 'rgb(2, 2, 2)',
   bar: 'rgb(3, 3, 3)',
   barHover: 'rgb(4, 4, 4)',
+  barMuted: 'rgb(9, 9, 9)',
+  barSoft: 'rgb(10, 10, 10)',
   grid: 'rgb(5, 5, 5)',
   tick: 'rgb(6, 6, 6)',
   tooltipBackground: 'rgb(7, 7, 7)',
@@ -29,6 +31,13 @@ const series: TimeSeriesSpec = {
   ],
 }
 const days: BarsSpec = { kind: 'bars', title: 'Landed', valueLabel: 'Landed', bars: [{ label: 'Mon', value: 2 }, { label: 'Tue', value: 5 }] }
+const stackedDays: StackedBarsSpec = {
+  kind: 'stacked-bars',
+  title: 'Finished',
+  valueLabel: 'Tasks',
+  series: [{ name: 'landed', tone: 'primary' }, { name: 'finished', tone: 'soft' }, { name: 'dropped', tone: 'muted' }],
+  bars: [{ label: '09-30', values: [1, 2, 3] }, { label: '10-01', values: [0, 1] }],
+}
 const link = { path: '/worktrees', query: { q: 'age:<1d' } }
 const buckets: HorizontalBarsSpec = { kind: 'horizontal-bars', title: 'Age', valueLabel: 'Worktrees', bars: [{ label: '< 1 d', value: 4, link }, { label: '1-7 d', value: 1, link }] }
 
@@ -37,7 +46,7 @@ type Loose = any // eslint-disable-line @typescript-eslint/no-explicit-any
 
 describe('chartConfiguration', () => {
   it('themes every colour from the resolved tokens, and never from a literal', () => {
-    for (const spec of [series, days, buckets]) {
+    for (const spec of [series, days, buckets, stackedDays]) {
       const text = JSON.stringify(chartConfiguration(spec, context()), (_key, value) => (typeof value === 'function' ? 'fn' : value))
       expect(text).toContain('rgb(5, 5, 5)')
       expect(text).toContain('rgb(6, 6, 6)')
@@ -91,6 +100,33 @@ describe('chartConfiguration', () => {
     expect(config.options.scales.y.ticks.precision).toBe(0)
     expect(config.options.scales.y.ticks.callback(4)).toBe('4')
     expect(config.options.scales.x.ticks.autoSkip).toBe(true)
+  })
+
+  describe('the stacked bars', () => {
+    const config = chartConfiguration(stackedDays, context()) as Loose
+
+    it('stacks one dataset per series on both axes, each in the colour of its tone, with a missing value as zero', () => {
+      expect(config.type).toBe('bar')
+      expect(config.data.labels).toEqual(['09-30', '10-01'])
+      expect(config.data.datasets.map((dataset: Loose) => [dataset.label, dataset.backgroundColor, dataset.data])).toEqual([
+        ['landed', 'rgb(3, 3, 3)', [1, 0]],
+        ['finished', 'rgb(10, 10, 10)', [2, 1]],
+        ['dropped', 'rgb(9, 9, 9)', [3, 0]],
+      ])
+      expect(config.options.scales.x.stacked).toBe(true)
+      expect(config.options.scales.y).toMatchObject({ stacked: true, beginAtZero: true })
+      expect(config.options.scales.y.ticks.precision).toBe(0)
+    })
+
+    it('shows all the series of a day in one tooltip, with their colours, and no legend of its own', () => {
+      expect(config.options.interaction).toEqual({ mode: 'index', intersect: false })
+      expect(config.options.plugins.tooltip.displayColors).toBe(true)
+      expect(config.options.plugins.legend.display).toBe(false)
+    })
+
+    it('is never clickable', () => {
+      expect(config.options.onClick).toBeUndefined()
+    })
   })
 
   describe('the horizontal bars', () => {

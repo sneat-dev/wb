@@ -36,6 +36,8 @@ describe('machine metrics polling on the pages', () => {
     const harness = await RouterTestingHarness.create()
     const metricsRequests = () => requests.filter((url) => url.startsWith(MACHINE_METRICS_PATH))
 
+    // The machine strip, whose polling it is, is part of Home's lazy chunk: have the module loaded so the page gets it at once.
+    await import('../pages/home/home-rest')
     await harness.navigateByUrl('/')
     await vi.advanceTimersByTimeAsync(30_000 - 1)
     // Two machines, read at 0, 10 and 20 seconds.

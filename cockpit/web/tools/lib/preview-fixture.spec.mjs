@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { REFUSED_PORTS, STATES, createPreviewHandler, documentFor, previewPort, shiftTimes, startPreview } from './preview-fixture.mjs'
+import { REFUSED_PORTS, STATES, createPreviewHandler, documentFor, previewPort, registryActions, shiftTimes, startPreview } from './preview-fixture.mjs'
 
 describe('previewPort', () => {
   it('takes the port from the environment', () => {
@@ -123,6 +123,29 @@ describe('the preview server', () => {
 
   it('refuses to listen on the daemon port or the end-to-end port, whoever asks', async () => {
     for (const port of REFUSED_PORTS) await expect(startPreview({ distRoot: dist, data }, port)).rejects.toThrow('refused')
+  })
+
+  it('serves an action registry only when asked: the push of a worktree and the landing of a pull request, and an owner session that carries their capabilities', async () => {
+    const without = await open({ session: 'owner' })
+    expect((await without('/api/v1/cockpit/actions?target=worktree%3Aw1')).status).toBe(404)
+    expect((await (await without('/api/v1/cockpit/session')).json()).capabilities).toEqual(['fleet.read', 'repo.content.read'])
+    await new Promise((done) => server.close(done))
+    const owner = await open({ registry: true, session: 'owner' })
+    expect((await (await owner('/api/v1/cockpit/session')).json()).capabilities).toEqual(['fleet.read', 'repo.content.read', 'branch.push', 'pr.land'])
+    const push = (await (await owner('/api/v1/cockpit/actions?target=worktree%3Aw1')).json()).actions
+    expect(push).toMatchObject([{ id: 'branch.push', title: 'Push', safety: 'guarded', permitted: true, applicable: true }])
+    expect((await (await owner('/api/v1/cockpit/actions?target=pull_request%3Ap1')).json()).actions[0]).toMatchObject({ id: 'pr.land', permitted: true })
+    expect(await (await owner('/api/v1/cockpit/actions?target=machine%3Am1')).json()).toEqual({ actions: [] })
+    expect(await (await owner('/api/v1/cockpit/actions')).json()).toEqual({ actions: [] })
+    await new Promise((done) => server.close(done))
+    const anonymous = await open({ registry: true })
+    expect((await (await anonymous('/api/v1/cockpit/session')).json()).capabilities).toEqual(['fleet.read'])
+  })
+
+  it('names the registry actions of a target type', () => {
+    expect(registryActions('worktree:x')[0].id).toBe('branch.push')
+    expect(registryActions('pull_request:x')[0]).toMatchObject({ id: 'pr.land', permitted: true })
+    expect(registryActions('repository:x')).toEqual([])
   })
 
   it('creates a handler without listening', () => {

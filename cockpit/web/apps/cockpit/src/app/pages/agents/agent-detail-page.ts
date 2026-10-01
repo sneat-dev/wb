@@ -1,13 +1,20 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core'
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
+import { RouterLink } from '@angular/router'
+import { FleetStore } from '@cockpit/fleet-data'
+import { AgentPanelView } from './agent-panel'
 
 /**
- * A placeholder for the Agent page: its route is registered and lazy-loaded
- * already, so the task that builds the page replaces this file's body and
- * touches neither app.routes.ts nor the tab list.
+ * One agent as a page, `/agents/:id`: the same content as the side panel of the Agents list, because it is the same
+ * component (REQ:detail-routes-share-the-panel). The route's path parameter is named `id` (see list-page.ts).
  */
 @Component({
   selector: 'app-agent-detail-page',
-  template: '<p class="placeholder">This page is not built yet.</p>',
+  imports: [RouterLink, AgentPanelView],
+  templateUrl: './agent-detail-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class AgentDetailPage {}
+export class AgentDetailPage {
+  protected readonly store = inject(FleetStore)
+  readonly id = input.required<string>()
+  protected readonly exists = computed(() => this.store.model().agentById(this.id()) !== undefined)
+}

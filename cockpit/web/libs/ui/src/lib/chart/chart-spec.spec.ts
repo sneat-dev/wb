@@ -1,5 +1,5 @@
 import type { MetricsSample } from '@cockpit/fleet-data'
-import { TABLE_FULL_LIMIT, TABLE_STEP, TimeSeriesSpec, chartSummary, cleanSpec, hasData, chartTable, clockTime, formatValue, machineMetricSpecs, withGaps } from './chart-spec'
+import { TABLE_FULL_LIMIT, TABLE_STEP, StackedBarsSpec, TimeSeriesSpec, chartSummary, cleanSpec, hasData, chartTable, clockTime, formatValue, machineMetricSpecs, withGaps } from './chart-spec'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const MIN = 60_000
@@ -109,6 +109,17 @@ describe('chart specs', () => {
       expect(chartSummary({ kind: 'horizontal-bars', title: 'Age', valueLabel: 'x', bars: [{ label: 'a', value: 3 }] })).toBe('Age: 1 buckets, 3 in all')
       expect(chartSummary({ kind: 'bars', title: 'Landed per day', valueLabel: 'x', bars: [] })).toBe('Landed per day: no data')
     })
+
+    it('lists each day of stacked bars with the value of every series, and sums each series in its summary', () => {
+      const stacked: StackedBarsSpec = { kind: 'stacked-bars', title: 'Finished per day', valueLabel: 'Tasks per day', series: [{ name: 'finished', tone: 'primary' }, { name: 'dropped', tone: 'muted' }], bars: [{ label: '09-30', values: [3, 1] }, { label: '10-01', values: [2] }] }
+      expect(chartTable(stacked)).toEqual({
+        caption: 'Finished per day',
+        columns: ['Day', 'Tasks per day'],
+        rows: [{ label: '09-30', value: '3 finished, 1 dropped' }, { label: '10-01', value: '2 finished, 0 dropped' }],
+      })
+      expect(chartSummary(stacked)).toBe('Finished per day: 2 days, 5 finished, 1 dropped')
+      expect(chartSummary({ ...stacked, bars: [{ label: 'x', values: [1] }] })).toBe('Finished per day: 1 days, 1 finished, 0 dropped')
+    })
   })
 
   describe('cleanSpec and hasData', () => {
@@ -117,6 +128,8 @@ describe('chart specs', () => {
       expect(series.points).toEqual([{ at: 0, value: null }, { at: 1, value: null }, { at: 2, value: null }, { at: 3, value: 3 }])
       expect(cleanSpec({ kind: 'bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: 1 }, { label: 'b', value: Number.NaN }] }).bars).toEqual([{ label: 'a', value: 1 }])
       expect(cleanSpec({ kind: 'horizontal-bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: -Infinity }] }).bars).toEqual([])
+      const stacked: StackedBarsSpec = { kind: 'stacked-bars', title: 't', valueLabel: 'v', series: [{ name: 'a', tone: 'primary' }, { name: 'b', tone: 'soft' }], bars: [{ label: 'ok', values: [1, 2] }, { label: 'bad', values: [1, Number.NaN] }] }
+      expect(cleanSpec(stacked).bars).toEqual([{ label: 'ok', values: [1, 2] }])
     })
 
     it('says whether there is anything to draw', () => {
@@ -124,6 +137,10 @@ describe('chart specs', () => {
       expect(hasData({ kind: 'bars', title: 't', valueLabel: 'v', bars: [{ label: 'a', value: 0 }] })).toBe(true)
       expect(hasData({ kind: 'time-series', title: 't', valueLabel: 'v', unit: '', from: 0, to: 1, points: [{ at: 0, value: null }] })).toBe(false)
       expect(hasData({ kind: 'time-series', title: 't', valueLabel: 'v', unit: '', from: 0, to: 1, points: [{ at: 0, value: 1 }] })).toBe(true)
+      const stacked = (values: number[]): StackedBarsSpec => ({ kind: 'stacked-bars', title: 't', valueLabel: 'v', series: [{ name: 'a', tone: 'primary' }], bars: [{ label: 'x', values }] })
+      expect(hasData(stacked([0, 0]))).toBe(false)
+      expect(hasData(stacked([0, 2]))).toBe(true)
+      expect(hasData({ ...stacked([1]), bars: [] })).toBe(false)
     })
   })
 

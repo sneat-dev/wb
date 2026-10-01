@@ -1,64 +1,88 @@
+import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { provideRouter } from '@angular/router'
-import { fleetDocument, worktree } from '@cockpit/fleet-data/testing'
-import { HomePage, RECENT_WORKTREES } from './home-page'
-import { bodyRows, openPage } from '../test-harness'
+import { provideRouter, withComponentInputBinding } from '@angular/router'
+import { RouterTestingHarness } from '@angular/router/testing'
+import { FETCH, FleetStore } from '@cockpit/fleet-data'
+import { CHART_ENGINE } from '@cockpit/ui/chart'
+import { ClipboardWriter, UiClock } from '@cockpit/ui/control'
+import { appRoutes } from '../../app.routes'
+import { MetricsPoller } from '../../metrics/metrics-poller'
+import { NOW, fleet } from './home-testing'
+import { HomePage } from './home-page'
+
+const headings = (root: HTMLElement) => [...root.querySelectorAll('h2')].map((heading) => (heading.textContent ?? '').replace(/\s+/g, ' ').trim())
+
+// Home opened through the application's routes, with a document in the store and a stubbed fetch (the test harness of the
+// pages, with the clock and the chart engine replaced).
+async function open(document = fleet()) {
+  const requests: string[] = []
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    requests.push(String(input))
+    return new Response('{}', { status: 404 })
+  })
+  TestBed.resetTestingModule()
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter(appRoutes, withComponentInputBinding()),
+      { provide: FETCH, useValue: fetcher },
+      { provide: UiClock, useValue: { now: signal(NOW) } },
+      { provide: CHART_ENGINE, useValue: async () => ({ create: () => ({ update: vi.fn(), destroy: vi.fn() }) }) },
+      { provide: ClipboardWriter, useValue: { copy: vi.fn() } },
+    ],
+  })
+  const store = TestBed.inject(FleetStore)
+  store.document.set(document)
+  store.now.set(NOW)
+  store.loaded.set(true)
+  const harness = await RouterTestingHarness.create()
+  await harness.navigateByUrl('/', HomePage)
+  await harness.fixture.whenStable()
+  return { harness, store, requests, root: harness.routeNativeElement as HTMLElement }
+}
 
 describe('HomePage', () => {
-  it('shows a tile per collection whose count opens its list', async () => {
-    const { root } = await openPage('/', HomePage)
-    const tiles = [...root.querySelectorAll('.tile')].map((tile) => ({
-      title: tile.querySelector('.tile-title')?.textContent,
-      count: tile.querySelector('a')?.textContent,
-      href: tile.querySelector('a')?.getAttribute('href'),
-    }))
-    expect(tiles).toEqual([
-      { title: 'Machines', count: '2', href: '/machines' },
-      { title: 'Repositories', count: '2', href: '/repositories' },
-      { title: 'Worktrees', count: '3', href: '/worktrees' },
-      { title: 'Agents', count: '3', href: '/agents' },
-      { title: 'Running agents', count: '2', href: '/agents?state=running' },
-    ])
-  })
-
-  it('lists the machines and the most recent worktrees, with route and age', async () => {
-    const { root } = await openPage('/', HomePage)
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
-    expect(bodyRows(machines)).toEqual([
-      ['alpha', 'local', '—'],
-      ['beta', 'cached, 5 min ago', '—'],
-    ])
-    expect(bodyRows(worktrees)).toEqual([
-      ['task-w1', 'github.com/acme/r1', 'alpha', 'local'],
-      ['task-w2', 'github.com/acme/r1', 'alpha', 'local'],
-      ['task-w3', 'acme/r2', 'beta', 'local'],
-    ])
-  })
-
-  it('shows a machine version, names a repository by its id when unlisted, and caps the recent list', async () => {
-    const many = Array.from({ length: RECENT_WORKTREES + 2 }, (_, i) => worktree(`w${i}`, 'r-gone', 'alpha'))
-    const doc = fleetDocument({ worktrees: many })
-    doc.machines[0].wb_version = '1.2.3'
-    const { root } = await openPage('/', HomePage, doc)
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
-    expect(bodyRows(machines)[0][2]).toBe('1.2.3')
-    expect(bodyRows(worktrees)).toHaveLength(RECENT_WORKTREES)
-    expect(bodyRows(worktrees)[0][1]).toBe('r-gone')
-  })
-
-  it('says when the fleet is empty', async () => {
-    const { root } = await openPage('/', HomePage, fleetDocument({ machines: [], worktrees: [], repositories: [], agents: [] }))
-    const [machines, worktrees] = [...root.querySelectorAll<HTMLElement>('table')]
-    expect(bodyRows(machines)).toEqual([['No machines yet.']])
-    expect(bodyRows(worktrees)).toEqual([['No worktrees yet.']])
-    expect(root.querySelector('.tile a')?.textContent).toBe('0')
-  })
-
-  it('renders on its own over an empty, warming-up fleet', async () => {
-    TestBed.configureTestingModule({ providers: [provideRouter([])] })
+  it('renders on its own, over an empty fleet that is still warming up', async () => {
+    TestBed.resetTestingModule()
+    TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: FETCH, useValue: async () => new Response('{}', { status: 404 }) }] })
     const fixture = TestBed.createComponent(HomePage)
     await fixture.whenStable()
-    expect(fixture.nativeElement.querySelector('.page-title')).toBeNull()
-    expect(fixture.nativeElement.querySelectorAll('tbody tr').length).toBeGreaterThan(0)
+    expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('Needs you')
+    expect(fixture.nativeElement.querySelector('app-lazy-mount')).not.toBeNull()
+  })
+
+  it('renders "Needs you" at once from the model that is already loaded', async () => {
+    const { root } = await open()
+    expect(headings(root)[0]).toBe('Needs you 6')
+    expect(root.querySelectorAll('.needs-row')).toHaveLength(6)
+  })
+
+  it('then appends the rest of Home from its lazy chunk, below, in order', async () => {
+    const { harness, root } = await open()
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(headings(root)).toEqual(['Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2', 'Throughput'])
+    })
+    expect(root.querySelector('app-home-rest')).not.toBeNull()
+  })
+
+  it('keeps the rest current with the model, and shows a skeleton and not "Nothing needs you" while the daemon is scanning', async () => {
+    const { harness, root, store } = await open({ ...fleet('warming'), warming_up: true })
+    expect(root.querySelector('.home-calm')).toBeNull()
+    expect(root.querySelector('app-skeleton-rows')).not.toBeNull()
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(root.querySelector('app-home-rest')).not.toBeNull()
+    })
+    store.document.set({ ...fleet('healthy'), warming_up: false })
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(root.querySelector('.home-calm')?.textContent).toContain('Nothing needs you.')
+    })
+  })
+
+  it('polls the metrics of the machines while it is shown (REQ:machine-metrics-polling)', async () => {
+    const { requests } = await open()
+    await vi.waitFor(() => expect(requests.filter((url) => url.startsWith('/api/v1/cockpit/machine-metrics'))).toHaveLength(3))
+    expect(TestBed.inject(MetricsPoller)).toBeDefined()
   })
 })

@@ -37,7 +37,18 @@ export interface HorizontalBarsSpec extends Base {
   bars: { label: string; value: number; link?: AppLink }[]
 }
 
-export type ChartSpec = TimeSeriesSpec | BarsSpec | HorizontalBarsSpec
+/**
+ * One stacked bar per day, with one value per series (bottom first). `tone` picks the series' colour
+ * from the chart tokens: `primary` is the accent, `soft` a lighter tint of it and `muted` the neutral one. The legend is the caller's
+ * (text beside the chart); the data table names every series in each row.
+ */
+export interface StackedBarsSpec extends Base {
+  kind: 'stacked-bars'
+  series: { name: string; tone: 'primary' | 'soft' | 'muted' }[]
+  bars: { label: string; values: number[] }[]
+}
+
+export type ChartSpec = TimeSeriesSpec | BarsSpec | HorizontalBarsSpec | StackedBarsSpec
 
 /** The data table of a chart: the text alternative, always present. */
 export interface ChartTable {
@@ -65,11 +76,13 @@ export function cleanSpec<T extends ChartSpec>(spec: T): T {
   if (spec.kind === 'time-series') {
     return { ...spec, points: spec.points.filter((point) => finite(point.at)).map((point) => ({ at: point.at, value: finite(point.value) ? point.value : null })) }
   }
+  if (spec.kind === 'stacked-bars') return { ...spec, bars: spec.bars.filter((bar) => bar.values.every(finite)) } as T
   return { ...spec, bars: spec.bars.filter((bar) => finite(bar.value)) } as T
 }
 
 /** Whether there is anything to draw. */
 export function hasData(spec: ChartSpec): boolean {
+  if (spec.kind === 'stacked-bars') return spec.bars.some((bar) => bar.values.some((value) => value > 0))
   return spec.kind === 'time-series' ? spec.points.some((point) => point.value !== null) : spec.bars.length > 0
 }
 
@@ -80,13 +93,15 @@ export const TABLE_STEP = 10
 
 /** The data table of a spec. A long series is its minimum, average, maximum and latest value, then every tenth point. */
 export function chartTable(spec: ChartSpec): ChartTable {
-  const heading = spec.kind === 'time-series' ? 'Time' : spec.kind === 'bars' ? 'Day' : 'Bucket'
+  const heading = spec.kind === 'time-series' ? 'Time' : spec.kind === 'bars' || spec.kind === 'stacked-bars' ? 'Day' : 'Bucket'
   const rows =
     spec.kind === 'time-series'
       ? seriesRows(spec)
       : spec.kind === 'bars'
         ? spec.bars.map((bar) => ({ label: bar.label, value: String(bar.value) }))
-        : spec.bars.map((bar) => ({ label: bar.label, value: String(bar.value), link: bar.link }))
+        : spec.kind === 'stacked-bars'
+          ? spec.bars.map((bar) => ({ label: bar.label, value: spec.series.map((series, index) => `${bar.values[index] ?? 0} ${series.name}`).join(', ') }))
+          : spec.bars.map((bar) => ({ label: bar.label, value: String(bar.value), link: bar.link }))
   return { caption: spec.title, columns: [heading, spec.valueLabel], rows }
 }
 
@@ -112,6 +127,10 @@ export function chartSummary(spec: ChartSpec): string {
     if (values.length === 0) return `${spec.title}: no samples in the last hour`
     const latest = values[values.length - 1]
     return `${spec.title}: latest ${formatValue(latest, spec.unit)}, from ${formatValue(Math.min(...values), spec.unit)} to ${formatValue(Math.max(...values), spec.unit)} over ${values.length} samples`
+  }
+  if (spec.kind === 'stacked-bars') {
+    const totals = spec.series.map((series, index) => `${spec.bars.reduce((sum, bar) => sum + (bar.values[index] ?? 0), 0)} ${series.name}`)
+    return `${spec.title}: ${spec.bars.length} days, ${totals.join(', ')}`
   }
   if (spec.bars.length === 0) return `${spec.title}: no data`
   const total = spec.bars.reduce((sum, bar) => sum + bar.value, 0)

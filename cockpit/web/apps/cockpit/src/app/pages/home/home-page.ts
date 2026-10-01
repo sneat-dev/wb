@@ -1,52 +1,28 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
-import { Params } from '@angular/router'
-import { FleetStore, RUNNING_STATE, filterAgents, mostRecentWorktrees } from '@cockpit/fleet-data'
-import { RouterLink } from '@angular/router'
-import { RouteLabel } from '@cockpit/ui/route-label'
-import { watchMetrics } from '../../metrics/metrics-poller'
+import { FleetStore } from '@cockpit/fleet-data'
+import { LazyMount } from './lazy-mount'
+import { NeedsYouSection } from './needs-you-section'
 
-/** How many of the most recently active worktrees the dashboard lists. */
-export const RECENT_WORKTREES = 10
+/** The rest of Home, one lazy chunk requested as soon as the page is created. */
+const loadRest = () => import('./home-rest').then((module) => module.HomeRest)
 
-interface Tile {
-  title: string
-  label: string
-  count: number
-  target: string
-  query: Params
-}
-
-/** The fleet at a glance: one tile per collection, the machines, and recent work. */
+/**
+ * Home, the front door: a dispatcher's inbox. "Needs you" is the first page: it renders from the
+ * model that is already loaded, with no request and no lazy code of its own, so it is there at
+ * first paint. Everything below it ("Ready to land", "In flight" with the machine strip,
+ * "Resume", "Cleanup", "Fleet health" when something is wrong, the throughput charts) is one lazy
+ * chunk, requested when the page is created and appended below, so nothing on screen moves
+ * (REQ:initial-script-size keeps Home's first-page script under 350 kB: what is left in the first
+ * page is "Needs you", the task badge and glyphs it draws, and the code that mounts the lazy chunk). Chart.js loads only when the charts scroll near the viewport.
+ */
 @Component({
   selector: 'app-home-page',
-  imports: [RouterLink, RouteLabel],
+  imports: [LazyMount, NeedsYouSection],
   templateUrl: './home-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class HomePage {
   protected readonly store = inject(FleetStore)
-
-  constructor() {
-    // The machines are polled every 10 seconds while Home is shown (REQ:machine-metrics-polling).
-    watchMetrics(() => this.store.document().machines.map((machine) => machine.id))
-  }
-
-  protected readonly tiles = computed<Tile[]>(() => {
-    const document = this.store.document()
-    return [
-      { title: 'Machines', label: 'machines', count: document.machines.length, target: '/machines', query: {} },
-      { title: 'Repositories', label: 'repositories', count: document.repositories.length, target: '/repositories', query: {} },
-      { title: 'Worktrees', label: 'worktrees', count: document.worktrees.length, target: '/worktrees', query: {} },
-      { title: 'Agents', label: 'agents', count: document.agents.length, target: '/agents', query: {} },
-      {
-        title: 'Running agents',
-        label: 'running agents',
-        count: filterAgents(document.agents, { state: RUNNING_STATE }).length,
-        target: '/agents',
-        query: { state: 'running' },
-      },
-    ]
-  })
-
-  protected readonly recentWorktrees = computed(() => mostRecentWorktrees(this.store.document().worktrees, RECENT_WORKTREES))
+  protected readonly loadRest = loadRest
+  protected readonly restInputs = computed(() => ({ model: this.store.model(), warming: this.store.warmingUp(), dropped: this.store.droppedEntries() }))
 }
