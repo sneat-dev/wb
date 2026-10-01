@@ -760,22 +760,46 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 	return appendRelocationIntentForRepository(home, claim, source, destination, to, head, "", "", "", placement, at)
 }
 
-func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
+// lockedRelocationJournal owns both the claim lock/run descriptor and the
+// private journal descriptor. Failed admission releases both; successful callers
+// defer close until their immutable publication or replay decision is complete.
+type lockedRelocationJournal struct {
+	locked  *lockedWorkLogRun
+	records *os.File
+	journal relocationJournal
+}
+
+func openLockedRelocationJournal(home string, claim workLogClaim) (*lockedRelocationJournal, error) {
 	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	defer locked.close()
-	run, runPath := locked.directory, locked.path
-	receipts, err := openPrivateChild(run, "relocations", true)
+	records, err := openPrivateChild(locked.directory, "relocations", true)
+	if err != nil {
+		locked.close()
+		return nil, err
+	}
+	journal, err := openRelocationJournal(locked.directory, locked.path, claim)
+	if err != nil {
+		_ = records.Close()
+		locked.close()
+		return nil, err
+	}
+	return &lockedRelocationJournal{locked: locked, records: records, journal: journal}, nil
+}
+
+func (journal *lockedRelocationJournal) close() {
+	_ = journal.records.Close()
+	journal.locked.close()
+}
+
+func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
+	owned, err := openLockedRelocationJournal(home, claim)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = receipts.Close() }()
-	journal, err := openRelocationJournal(run, runPath, claim)
-	if err != nil {
-		return nil, "", err
-	}
+	defer owned.close()
+	receipts, runPath, journal := owned.records, owned.locked.path, owned.journal
 	if existing, path, err := matchingPendingIntent(journal, claim, source, destination, to, claim.Branch, head); err != nil || existing != nil {
 		return existing, path, err
 	}
@@ -795,30 +819,28 @@ func appendRelocationIntentForRepository(home string, claim workLogClaim, source
 }
 
 func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRelocationIntent, at time.Time) (*workLogRelocationReceipt, string, error) {
+	return appendRelocationReceiptWithRead(home, claim, intent, at, readBytesAt)
+}
+
+// appendRelocationReceiptWithRead retains the post-snapshot byte read. A
+// caller-local reader can expose real permission/replacement failures between
+// journal validation and replay without a process-global filesystem hook.
+func appendRelocationReceiptWithRead(home string, claim workLogClaim, intent *workLogRelocationIntent, at time.Time, read func(*os.File, string) ([]byte, error)) (*workLogRelocationReceipt, string, error) {
 	if err := validateRelocationRecord(*intent, claim, true); err != nil {
 		return nil, "", err
 	}
-	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, false)
+	owned, err := openLockedRelocationJournal(home, claim)
 	if err != nil {
 		return nil, "", err
 	}
-	defer locked.close()
-	run, runPath := locked.directory, locked.path
-	receipts, err := openPrivateChild(run, "relocations", true)
-	if err != nil {
-		return nil, "", err
-	}
-	defer func() { _ = receipts.Close() }()
-	journal, err := openRelocationJournal(run, runPath, claim)
-	if err != nil {
-		return nil, "", err
-	}
+	defer owned.close()
+	receipts, runPath, journal := owned.records, owned.locked.path, owned.journal
 	durableIntent, exists := journal.intents[intent.OperationID]
 	if !exists || durableIntent != *intent {
 		return nil, "", fmt.Errorf("relocation completion is not bound to its durable intent %s", intent.OperationID)
 	}
 	name := relocationReceiptName(claim.ClaimID, intent.OperationID)
-	if existingBytes, readErr := readBytesAt(receipts, name); readErr == nil {
+	if existingBytes, readErr := read(receipts, name); readErr == nil {
 		var existing workLogRelocationReceipt
 		if err := json.Unmarshal(existingBytes, &existing); err != nil {
 			return nil, "", fmt.Errorf("decode existing relocation receipt: %w", err)
