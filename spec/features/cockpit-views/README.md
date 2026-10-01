@@ -575,11 +575,13 @@ Serves J7. The Machines page MUST NOT have a separate section heading plus a
 "Machine" column: the first column header reads "Machines" and is the section
 title, in larger type. It has a filter box and the chip `stale`. Each machine name
 links to its page. The columns are Machines; State (live or cached with its age,
-stale marked); WB version (marked when older than the newest in the fleet);
-Repositories; Worktrees; Agents; CPU; Memory. CPU and Memory show the latest
-sample with its route and age, and are empty for a machine that reports no
-metrics. The chip `outdated` leaves the machines running a WB older than the newest in
-the fleet.
+stale marked, a remote error as a quiet warning with its text); WB version (marked
+when older than the newest in the fleet); Repositories; Worktrees; Agents; Load. Load
+is the free, busy or unknown verdict with the CPU and Memory bars of the latest
+sample (its route and age are the cell's tooltip), because the list shows at most
+seven columns (REQ:default-columns-are-few); it reads unknown, with no bar and no
+zero, for a machine that reports no metrics. The chip `outdated` leaves the machines
+running a WB older than the newest in the fleet.
 
 #### REQ: machine-detail
 
@@ -2131,7 +2133,7 @@ Then the page shows identity, state, a link to its machine, the repository, both
 Scenario: Three machines
 Given three machines, one live and two cached more than 24 hours ago, and one running an older WB version than another
 When the Machines page is opened
-Then the first column header reads "Machines" in larger type with no separate section heading, each name links to its page, the cached machines show their age and are marked stale, the older version is marked, and CPU and Memory are empty for the machines without metrics
+Then the first column header reads "Machines" in larger type with no separate section heading, each name links to its page, the cached machines show their age and are marked stale, the older version is marked, and the Load cell shows unknown with no CPU or Memory bar for the machines without metrics
 
 ### AC: machines-filter-and-stale-chip
 

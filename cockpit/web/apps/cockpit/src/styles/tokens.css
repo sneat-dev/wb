@@ -1,9 +1,8 @@
 /*
  * Design tokens of the Cockpit: one stylesheet, CSS custom properties only.
  * Colour roles are written once with light-dark(); the page follows the
- * browser's colour scheme (color-scheme: light dark), and the PrimeNG theme
- * (app/pages/prime-theme.ts) reads these same properties, so a component from
- * either source looks like the other.
+ * browser's colour scheme (color-scheme: light dark). No page uses a component
+ * library: every component reads these properties.
  *
  * Rules the tokens encode (cockpit-views REQ:look-typography-and-state-colour,
  * REQ:look-layout):
