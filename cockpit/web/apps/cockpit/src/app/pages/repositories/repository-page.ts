@@ -1,33 +1,23 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { FleetStore, RUNNING_STATE, Repository, repositoryLabel, filterWorktrees, filterAgents } from '@cockpit/fleet-data'
-import { agentLabel, codeBrowserLink, worktreeLabel } from '@cockpit/fleet-data/list'
-import { CodeIndexLabel, CodeIndexPanel, Count, RouteLabel } from '@cockpit/ui'
-import { ReadmeSection } from '../../readme/readme-section'
+import { FleetStore } from '@cockpit/fleet-data'
+import { buildRepositories, findMergedRepository } from '@cockpit/fleet-data/list'
+import { RepositoryPanelView } from './repository-panel'
 
 /**
- * One repository: the fleet document's metadata for it, its code-index panel
- * and its README. The README is read only with an owner session. The route's
- * path parameter is named `id` (see list-page.ts).
+ * A repository by the id of one of its entries, the address that worked before the Repositories page
+ * merged the machines (`/repositories/:id`, REQ:repository-detail): it still opens the repository's
+ * page, which is the merged panel, from whichever checkout's id it carries. The route's path
+ * parameter is named `id` (see list-page.ts).
  */
 @Component({
   selector: 'app-repository-page',
-  imports: [RouterLink, Count, RouteLabel, CodeIndexLabel, CodeIndexPanel, ReadmeSection],
+  imports: [RouterLink, RepositoryPanelView],
   templateUrl: './repository-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RepositoryPage {
   protected readonly store = inject(FleetStore)
-
   readonly id = input.required<string>()
-
-  protected readonly entry = computed(() => this.store.repositoryById().get(this.id()))
-  protected readonly label = repositoryLabel
-
-  protected link(repository: Repository): string | null {
-    return codeBrowserLink(this.store.codeBrowserUrl(), repository)
-  }
-
-  protected readonly worktreeNames = computed(() => filterWorktrees(this.store.document().worktrees, { repository: this.id() }).map(worktreeLabel))
-  protected readonly runningAgentNames = computed(() => filterAgents(this.store.document().agents, { repository: this.id(), state: RUNNING_STATE }).map(agentLabel))
+  protected readonly row = computed(() => findMergedRepository(buildRepositories(this.store.model()), this.id()))
 }
