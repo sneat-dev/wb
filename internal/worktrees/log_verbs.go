@@ -1058,24 +1058,27 @@ func writeArchiveTargetNoFollow(path string, content []byte, sourceMode os.FileM
 	}
 	defer func() { _ = parent.Close() }()
 	name := filepath.Base(path)
-	mode, err := archiveTargetMode(parent, name, sourceMode)
+	mode, existing, err := archiveTargetMode(parent, name, sourceMode)
 	if err != nil {
 		return err
 	}
-	return filewrite.WriteBytesAtomicAtExactMode(parent, name, content, mode)
+	if existing {
+		return filewrite.WriteBytesAtomicAtExactMode(parent, name, content, mode)
+	}
+	return filewrite.WriteBytesAtomicAt(parent, name, content, mode)
 }
 
-func archiveTargetMode(parent *os.File, name string, sourceMode os.FileMode) (os.FileMode, error) {
+func archiveTargetMode(parent *os.File, name string, sourceMode os.FileMode) (os.FileMode, bool, error) {
 	var stat unix.Stat_t
 	err := unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
 	if errors.Is(err, os.ErrNotExist) {
-		return sourceMode, nil
+		return sourceMode, false, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		return 0, fmt.Errorf("archive refuses nonregular target %s", name)
+		return 0, false, fmt.Errorf("archive refuses nonregular target %s", name)
 	}
-	return os.FileMode(stat.Mode) & os.ModePerm, nil
+	return os.FileMode(stat.Mode) & os.ModePerm, true, nil
 }

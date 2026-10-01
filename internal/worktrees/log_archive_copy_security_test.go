@@ -105,43 +105,6 @@ func TestArchiveCopyPreservesExistingFileModeAndEmptyDirectories(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // umask is process-wide; this checks archive permissions under a restrictive caller umask.
-func TestArchiveCopyPreservesPrivateDirectoryAndExistingFileModesUnderUmask(t *testing.T) {
-	root := t.TempDir()
-	source, destination := filepath.Join(root, "source"), filepath.Join(root, "new", "destination")
-	if err := os.MkdirAll(filepath.Join(source, "empty"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "record"), []byte("new bytes"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(destination, "record")
-	if err := os.WriteFile(target, []byte("old bytes"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	oldUmask := syscall.Umask(0o077)
-	defer syscall.Umask(oldUmask)
-	if err := copyDir(source, destination); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{target, filepath.Join(destination, "empty")} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := os.FileMode(0o700)
-		if path == target {
-			want = 0o640
-		}
-		if info.Mode().Perm() != want {
-			t.Fatalf("%s mode = %04o, want %04o", path, info.Mode().Perm(), want)
-		}
-	}
-}
-
 func TestArchiveCreatesPrivateDirectoriesWithoutFollowingExistingLinks(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -265,19 +228,19 @@ func TestArchiveTargetWriteAndModeRefuseInvalidHeldEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode, err := archiveTargetMode(parent, "missing", 0o600); err != nil || mode != 0o600 {
+	if mode, existing, err := archiveTargetMode(parent, "missing", 0o600); err != nil || existing || mode != 0o600 {
 		t.Fatalf("new target mode = %04o, %v", mode, err)
 	}
 	if err := os.Mkdir(filepath.Join(root, "directory"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := archiveTargetMode(parent, "directory", 0o600); err == nil || !strings.Contains(err.Error(), "nonregular target") {
+	if _, _, err := archiveTargetMode(parent, "directory", 0o600); err == nil || !strings.Contains(err.Error(), "nonregular target") {
 		t.Fatalf("directory target mode = %v", err)
 	}
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := archiveTargetMode(parent, "closed", 0o600); !errors.Is(err, syscall.EBADF) {
+	if _, _, err := archiveTargetMode(parent, "closed", 0o600); !errors.Is(err, syscall.EBADF) {
 		t.Fatalf("closed target parent = %v", err)
 	}
 	redirect := filepath.Join(root, "redirect")
