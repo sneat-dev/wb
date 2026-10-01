@@ -9,11 +9,13 @@ import {
   blockingRuns,
   interimAtRiskWorktrees,
   isBlocked,
+  hasLocalEntry,
   isObserved,
   isOpenPullRequest,
   notReadyReasons,
   openObserved,
   startedAt,
+  stateSourceOf,
   taskState,
   taskStateInfo,
 } from './task-state'
@@ -267,5 +269,63 @@ describe('the table', () => {
     expect(startedAt({ started_at: OBSERVED } as Agent)).toBe(Date.parse(OBSERVED))
     expect(startedAt({} as Agent)).toBeUndefined()
     expect(startedAt({ started_at: 'x' } as Agent)).toBeUndefined()
+  })
+})
+
+
+describe('task state: remote entries never decide a local task\'s good states (REQ:task-state trust rule)', () => {
+  // cockpit-views#ac:task-state-ready-to-land, cockpit-views#ac:task-state-landed
+  const cached = { route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' }
+  const liveRemote = { route: 'live-remote' as const, machine: 'vm', machine_id: 'mach-vm' }
+  const local = (): Worktree => wt({ id: 'mine' })
+
+  it('names where the state is decided: any entry of this machine makes it local', () => {
+    expect(stateSourceOf(inputs({ worktrees: [local()] }))).toBe('local')
+    expect(stateSourceOf(inputs({ pullRequests: [pr()] }))).toBe('local')
+    expect(stateSourceOf(inputs({ agents: [agent('a', 'r1', 'live')] }))).toBe('local')
+    expect(stateSourceOf(inputs({ worktrees: [wt(cached)], pullRequests: [pr(liveRemote)] }))).toBe('remote')
+    expect(hasLocalEntry(inputs({ worktrees: [wt(cached)], agents: [agent('a', 'r1', 'live', cached), agent('b', 'r1', 'live')] }))).toBe(true)
+    expect(hasLocalEntry(inputs())).toBe(false)
+  })
+
+  it('row 4: a ready remote pull request alone does not make a local task ready', () => {
+    for (const remote of [cached, liveRemote]) {
+      expect(state({ worktrees: [local()], pullRequests: [pr(remote)] })).toBe('not-ready')
+      // With a ready local one beside it, the task is ready.
+      expect(state({ worktrees: [local()], pullRequests: [pr({ id: 'l' }), pr(remote)] })).toBe('ready')
+      // A remote open pull request that is not ready still blocks a local ready one.
+      expect(state({ worktrees: [local()], pullRequests: [pr({ id: 'l' }), pr({ ...remote, id: 'r', mergeable: 'blocked' })] })).toBe('not-ready')
+    }
+  })
+
+  it('row 4: a local entry that is not a pull request still trusts only local pull requests', () => {
+    expect(state({ agents: [agent('a', 'r1', 'live')], pullRequests: [pr(cached)] })).toBe('not-ready')
+  })
+
+  it('row 7: a merged remote pull request or merged remote worktrees do not land a local task', () => {
+    expect(state({ worktrees: [local()], pullRequests: [pr({ ...cached, state: 'merged' })] })).toBe('idle')
+    expect(state({ worktrees: [local(), wt({ ...cached, id: 'r', lifecycle: 'merged' })] })).toBe('not-reported')
+    // The same evidence on this machine lands it.
+    expect(state({ worktrees: [local()], pullRequests: [pr({ state: 'merged' })] })).toBe('landed')
+    expect(state({ worktrees: [wt({ lifecycle: 'merged' }), wt({ ...cached, id: 'r', lifecycle: 'working' })] })).toBe('landed')
+    // The unpushed veto reads local worktrees only: a remote one does not veto, a local one does.
+    expect(state({ worktrees: [wt({ lifecycle: 'merged' }), wt({ ...cached, id: 'r', ahead: 4 })] })).toBe('landed')
+    expect(state({ worktrees: [wt({ lifecycle: 'merged', ahead: 1 })], pullRequests: [pr({ state: 'merged' })] })).toBe('idle')
+  })
+
+  it('rows 2, 3, 5 and 6: a remote entry may still worsen the state or add working', () => {
+    expect(state({ worktrees: [local()], pullRequests: [pr({ id: 'l' }), pr({ ...cached, id: 'r', checks_failed: 1, checks_green: false })] })).toBe('checks-failed')
+    expect(state({ worktrees: [local()], pullRequests: [pr({ ...cached, mergeable: 'dirty' }), pr({ id: 'l' })] })).toBe('not-ready')
+    expect(state({ worktrees: [local()], agents: [agent('a', 'r1', 'live', { ...cached, activity: 'blocked' })] })).toBe('blocked')
+    expect(state({ worktrees: [local()], agents: [agent('a', 'r1', 'live', { ...cached, activity: 'working' })] })).toBe('working')
+    expect(state({ worktrees: [local(), wt({ ...cached, id: 'r', owner_state: 'active' })] })).toBe('working')
+  })
+
+  it('a task with no local entry is computed from its remote entries, as before', () => {
+    expect(state({ worktrees: [wt(cached)], pullRequests: [pr(cached)] })).toBe('ready')
+    expect(state({ worktrees: [wt(cached)], pullRequests: [pr({ ...cached, state: 'merged' })] })).toBe('landed')
+    expect(state({ worktrees: [wt({ ...cached, lifecycle: 'merged' })] })).toBe('landed')
+    expect(state({ worktrees: [wt(cached)], pullRequests: [pr({ ...cached, checks_failed: 1 })] })).toBe('checks-failed')
+    expect(state({ worktrees: [wt({ ...cached, owner_state: 'active' })] })).toBe('working')
   })
 })
