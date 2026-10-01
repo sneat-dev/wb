@@ -85,7 +85,7 @@ canonical origin plus JSON on state-changing routes.
 **Id:** task-3
 **Verifies:** cockpit#ac:command-opens-local-cockpit, cockpit#ac:json-output-carries-no-code, cockpit#ac:hosted-flag-uses-configured-url, cockpit#ac:manifest-rows-exist
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add `cmd/wb/cockpit.go`, reusing the daemon start-or-reuse path that
 `wb dashboard --local` uses. It requests a login code over the owner RPC,

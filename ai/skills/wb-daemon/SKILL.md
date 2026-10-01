@@ -15,6 +15,23 @@ Use `wb dashboard --local` to start or reuse this machine's daemon and open its
 loopback view. `wb dashboard --format=json` and non-interactive invocations
 return the resolved URL without launching a browser.
 
+Find Cockpit's address, or open it. Agents run the JSON form:
+
+```sh
+wb cockpit --format=json
+wb cockpit
+wb cockpit --hosted
+```
+
+`wb cockpit --format=json` (or `--json`) starts or reuses the loopback daemon and
+prints `{url, scope, opened}` with the plain Cockpit URL: no login code, no
+browser. Bare `wb cockpit` is for the human operator: it requests a login code
+over the owner channel and prints `/cockpit/session/login?code=...`. That code is
+a single-use owner credential valid for 60 seconds, and an agent running it
+would put it in its transcript. The browser opens only in text format, on an
+interactive session whose stdout is a terminal. `--hosted` uses
+`cockpit.hosted_url` from wb.yaml and starts no daemon.
+
 Start and inspect the local read-only API and embedded dashboard:
 
 ```sh
