@@ -2,16 +2,36 @@
 
 The Cockpit's data layer: schema 2 types and client, the filter matcher and vocabulary, the task
 state, the memoised view model, the copy-command templates and the shared fixtures. Pages are
-built only from this library's exports (`@cockpit/fleet-data`); fixtures come from
-`@cockpit/fleet-data/testing`. Contract: `spec/features/cockpit-views/README.md` (REQ:field-tables
-for every field). Pure TypeScript except `FleetClient` and `FleetStore`, which are Angular
-services.
+built only from this library's exports; fixtures come from `@cockpit/fleet-data/testing`.
+Contract: `spec/features/cockpit-views/README.md` (REQ:field-tables for every field). Pure
+TypeScript except `FleetClient` and `FleetStore`, which are Angular services.
+
+## Entry points
+
+The shell and the first paint of Home import only what they render; everything else is behind an
+entry point that a page imports lazily (REQ:initial-script-fits-the-budget: the bundler assigns code
+to chunks by file, so a lazy name must not live in a file the first page imports).
+
+| Entry | What is in it | Who imports it |
+|---|---|---|
+| `@cockpit/fleet-data` | the types, `FleetClient`, `FleetStore`, `FleetModel`/`FleetModels` with the Home sections above the fold (`needsYou`, `readyToLand`, `inFlight`, `resume`, `machines`, `tasks`, `taskNamed`, `worktreePullRequests`, `homeBadge`, `homeBadgeLabel`, `runningAgentCount`), the task state, `webAddress`, the link builders and `ListQuery` (`vocabulary.ts`), `parseQuery`, the helpers of `fleet-view.ts` (freshness `formatAge`, labels, `emptyDocument`, the small entity filters), the control types, and the few commands Home and the shell copy (`PLACEHOLDERS`, `pullRequestLand`, `selfUpdate`, ...) | the shell, Home, everything |
+| `@cockpit/fleet-data/home-details` | Home below the fold as functions over a model: `buildCleanup`, `buildHealth`, `buildThroughput`, `remoteErrorText`, `remoteFix` | Home after its first paint (`import()`), and the list entry (the cleanup sets) |
+| `@cockpit/fleet-data/panel` | the entity panels: `buildWorktreePanel(model, id)`, `buildTaskPanel`, `buildRepositoryPanel`, `buildAgentPanel`, `buildMachinePanel`, `buildPullRequestPanel` and their types | pages that open a panel |
+| `@cockpit/fleet-data/commands` | every Copy-command template (and what the main entry has) | pages and the New task form |
+| `@cockpit/fleet-data/list` | `buildTaskRows(model)` and the other row builders, `applyListQuery`, the matching half of the matcher (`matchesTerms`, `globMatch`, `Subject`, `MatchEnv`, `StepCounter`), the full filter vocabulary (`VOCABULARY`, `chipOf`, `SEL_KEYS`, `defaultDirection`), `parseListQuery`/`emptyListQuery`/`termLink` and the count-cell links, `buildRepositories(model)` and `mergeRepositories`, the page helpers (`worktreeLabel`, `codeIndexText`, `readmeFailureText`, ...) | list pages and the palette |
+| `@cockpit/fleet-data/testing` | fixtures | specs |
+
+The views are free functions over a model, not methods of it (`model.worktreeView(id)` is
+`buildWorktreePanel(model, id)`, `model.taskRows` is `buildTaskRows(model)`, `model.repositories` is
+`buildRepositories(model)`, `model.cleanup`, `model.health` and `model.throughput` are
+`buildCleanup`, `buildHealth` and `buildThroughput`). Each memoises on the model through
+`model.memo`, so they still run once per document.
 
 ## Reading the daemon
 
 | Export | What it is |
 |---|---|
-| `FleetClient` | `readFleet(etag?, expected = SCHEMA_VERSION)` (200 or 304; a body of another schema throws `FleetSchemaError` with the message `update wb on this machine` (daemon older) or `reload` (page older)), `readSession()`, `readReadme(id)`, `readBranches(repositoryId)` (lazy route, `{branches, reason?}`), `readMachineMetrics(machineId)` (`{machine, route, fetched_at?, samples, reason?}`) |
+| `FleetClient` | `readFleet(etag?, expected = SCHEMA_VERSION)` (200 or 304; a body of another schema throws `FleetSchemaError` with the message `update wb on this machine` (daemon older) or `reload` (page older)), `readSession()`, `readReadme(id)`, `readBranches(repositoryId)` (lazy route, `{branches, reason?}`), `readMachineMetrics(machineId, signal?)` (`{machine, route, fetched_at?, samples, reason?}`; `signal` cancels the request, which the metrics poller does when its last page leaves; the request timeout still applies) |
 | `FETCH` | injection token for `fetch`; tests replace it |
 | `FleetStore` | polls, keeps the last document, exposes `document`, `model` (the memoised view model of the current document), `schemaMismatch`, `error`, `session`, `now`, `warmingUp`, `progress` |
 | `EXPECTED_SCHEMA`, `MODEL_OPTIONS`, `POLL_INTERVALS` | injection tokens (expected schema, view model options such as a clock or derivation counter, poll intervals) |
@@ -37,20 +57,20 @@ through `onError`, and is listed in `model.failedDerivations`.
 
 | Getter | Result |
 |---|---|
-| `repositories` | `MergedRepository[]`: one per lower-cased `owner/name` across machines (`id` = entry id of the preferred checkout, `key`, `slug`, `checkouts` with route, age and `stale`, summed counts, worst `codeIndex`, newest activity, `errors`, `webUrl`) |
+| `buildRepositories(model)` (`/list`) | `MergedRepository[]`: one per lower-cased `owner/name` across machines (`id` = entry id of the preferred checkout, `key`, `slug`, `checkouts` with route, age and `stale`, summed counts, worst `codeIndex`, newest activity, `errors`, `webUrl`, which is a checked `webAddress` or absent) |
 | `tasks` | `TaskView[]`: worktrees, pull requests, agents, `state` + `stateInfo`, repositories, machines, `lastActivityAt`, `openPullRequests`, `unobservedPullRequests` |
-| `needsYou` | `NeedsYou`: `items` (one per task, its worst kind, in the order of the kinds then newest activity), `shown` (at most 5), `more`, `moreLink`, `withoutTask` (one row for blocked agents with no task) |
+| `needsYou` | `NeedsYou`: `items` (one per task, its worst kind, in the order of the kinds then newest activity), `shown` (at most 5), `more`, `moreLink`, `withoutTask` (one row for blocked agents with no task). A signal, not a debt counter: a task at risk, and "Agent finished", is listed only when its last activity is within `NEEDS_YOU_WINDOW_DAYS` (14; no recorded activity is not recent; `model.isRecent(task)`); an older at-risk task still gets its failed-checks, blocked or PR-needs-you row, and its worktrees are counted by Cleanup's `lookCount`. Row `url`s are checked `webAddress`es. |
 | `readyToLand` | `{ready, notReady}`: ready tasks with their pull requests (`landCommand`, checks passed/total, oldest `checkedAt`), and the muted tasks that wait on checks only |
 | `inFlight` | running agents on every machine (`remote`, `controllable`, `activity`, `startedAt`) |
 | `resume` | the last 5 tasks by activity |
-| `cleanup` | `{safeCount, lookCount, safeIds, lookIds, reviewLink, bars (age term links), unknownAge}` (indicative) |
+| `buildCleanup(model)` (`/home-details`) | `{safeCount, lookCount, safeIds, lookIds, reviewLink, bars (age term links), unknownAge}` (indicative); `lookIds` includes the at-risk worktrees of tasks older than the Needs you window |
 | `machines` | `MachineView[]`: `live`/`cached`/`stale`, age, `outdated`, running agents, uptime |
-| `health` | `FleetHealth`: `ok`, stale machines, older WB, remote errors (each with its fix command), scan errors |
-| `throughput` | per-day series and the slowest five (non-linking); `undefined` without the block |
-| `taskRows`, `repositoryRows`, `worktreeRows`, `agentRows`, `machineRows` | `ListRow<T>[]` per page (below) |
-| `repositoryName(id)`, `taskOfPullRequest(pr)`, `tasksOfAgent(agent)`, `taskNamed(name)` (from `taskMap`), `worktreeById`, `agentById`, `pullRequestById`, `machineById` | lookups |
-| `homeBadge`, `runningAgentCount` | the Home badge (tasks needing the operator) and the Agents tab badge |
-| `worktreeView(id)`, `taskView(name)`, `repositoryView(key)`, `agentView(id)`, `machineView(id)`, `pullRequestView(id)` | per-entity panels (below); `undefined` for an unknown id |
+| `buildHealth(model)` (`/home-details`) | `FleetHealth`: `ok`, stale machines, older WB, remote errors (each with its fix command), scan errors |
+| `buildThroughput(model)` (`/home-details`) | per-day series and the slowest five (non-linking); `undefined` without the block |
+| `buildTaskRows(model)`, `buildRepositoryRows`, `buildWorktreeRows`, `buildAgentRows`, `buildMachineRows` (`/list`) | `ListRow<T>[]` per page (below) |
+| `worktreePullRequests` | `ReadonlyMap<worktreeId, PullRequest[]>`: the ONE worktree-to-pull-request join. A pull request that names a worktree of the document joins that worktree only; one that names none (or a missing one) joins the worktrees with its repository entry and branch. The `pr` chip, the worktree rows, the worktree, task and agent panels all read it; a page must not re-derive it || `repositoryName(id)`, `taskOfPullRequest(pr)`, `tasksOfAgent(agent)`, `taskNamed(name)` (from `taskMap`), `worktreeById`, `agentById`, `pullRequestById`, `machineById` | lookups |
+| `homeBadge`, `homeBadgeLabel`, `runningAgentCount` | the Home badge (tasks needing the operator; `homeBadgeLabel` is the number, or `99+` above `BADGE_CAP`, also `badgeLabel(n)`) and the Agents tab badge |
+| `buildWorktreePanel(model, id)`, `buildTaskPanel(model, name)`, `buildRepositoryPanel(model, key)`, `buildAgentPanel`, `buildMachinePanel`, `buildPullRequestPanel` (`/panel`) | per-entity panels (below); `undefined` for an unknown id |
 
 Also exported: `machineLoad(metrics)` (`free` below 70 % CPU and 80 % memory, `busy` otherwise,
 `not-reported` without a sample), `agentTitle`, `parseVersion`, `compareVersions`, `versionKey`,
@@ -59,10 +79,10 @@ gives the "not reported" outcome, never a guess.
 
 ## Entity panels
 
-Each `*View` returns `{summary, related, commands, raw}`: the summary facts, the related entities, the
+Each `build*Panel(model, id)` (`@cockpit/fleet-data/panel`) returns `{summary, related, commands, raw}`: the summary facts, the related entities, the
 Copy-command list (`PanelCommand {title, command: CopyCommand}`; already quoted, each with `needsEdit`
 and, for another machine without an SSH route, the label "run on <machine>") and the raw entries
-exactly as the read model sent them. A dispatched run has the agent verbs; any other session has no
+exactly as the read model sent them (the `related` pull requests and `summary.url` carry only a checked `webAddress`, else no `url`). A dispatched run has the agent verbs; any other session has no
 command and `summary.controllable` is false; a machine has no command. Types: `WorktreePanel`,
 `TaskPanel`, `RepositoryPanel`, `AgentPanel`, `MachinePanel`, `PullRequestPanel`. `model.targetOf(entry)`
 gives the `CommandTarget` of any entry (here, through the session's SSH route, or "run on").
@@ -101,7 +121,7 @@ Repositories `sel`.
 
 ## Filter vocabulary (REQ:filter-vocabulary)
 
-`VOCABULARY[page]` holds, per page, the data below; `declaredFields(page)` the `field:` names.
+`VOCABULARY[page]` (`@cockpit/fleet-data/list`) holds, per page, the data below, with `chips` as `{id, label, hint}` so a list renders its chips from the page alone (`chipOf(page, id)` also answers the dynamic `runtime-<name>` chip of agents); `declaredFields(page)` (main entry) the `field:` names. The ids, `state:` values, fields and sorts that link validation needs are `PAGE_RULES` in the main entry, which `VOCABULARY` is built on.
 
 | Page | Bare term searches | Chips | `state:` values | Fields | `sel` | Sort columns |
 |---|---|---|---|---|---|---|
@@ -119,9 +139,9 @@ Repositories `sel`.
 
 A link is built only by these functions, which refuse anything outside the vocabulary; each returns
 an `AppLink {path, query}` and `hrefOf(link)` the percent-encoded string: `listLink`, `chipLink`,
-`stateLink`, `ageLink`, `sortLink`, `machineLink`, `selectionLink`, and the detail addresses `taskDetailLink`,
+`stateLink`, `ageLink`, `machineLink`, `selectionLink` (and `sortLink`, in `/list`), and the detail addresses `taskDetailLink`,
 `repositoryDetailLink`, `agentDetailLink`, `machineDetailLink`, `worktreeDetailLink`.
-`linkProblems(link)` lists what is wrong with an address (none when valid). Count cells that link
+`linkProblems(link)` lists what is wrong with an address (none when valid). Count cells that link (`/list`)
 (REQ:every-number-is-a-link) use these helpers, each returning a `LinkResult`
 (`{ok: true, link}` or `{ok: false, reason}`): `taskWorktreesLink`, `repositoryWorktreesLink`,
 `repositoryAgentsLink`, `repositoryPullRequestsLink`, `machineRepositoriesLink`, `machineWorktreesLink`,
@@ -134,7 +154,7 @@ an id cannot split the list.
 
 ## Copy command (REQ:copy-the-command)
 
-Pure templates returning `CopyCommand` (`{ok: true, text, label?, needsEdit}` or `{ok: false, reason}`).
+Pure templates (`@cockpit/fleet-data/commands`; the ones Home and the shell copy and `PLACEHOLDERS` are also in the main entry) returning `CopyCommand` (`{ok: true, text, label?, needsEdit}` or `{ok: false, reason}`).
 A placeholder (`<<<edit:message>>>`, `<<<edit:model>>>`, `<<<edit:file>>>`, `<<<edit:profile>>>`, `<<<edit:task>>>`,
 `<<<edit:brief>>>`, `<<<edit:hub-url>>>`; exported as `PLACEHOLDERS`, which the UI marks) is written bare, never quoted, and
 `needsEdit` is true. It is a shell syntax error in every position (`<<<` is a here-string, `>>>` a redirection with no
@@ -158,7 +178,9 @@ parses every template against `ai/capabilities.json`.
 
 `fleetDocument`, `machine`, `repository`, `worktree`, `pullRequest`, `agent`, `run`;
 `performanceFixture()` (500 repository entries, 600 worktrees, 4,000 branches served per repository,
-3 machines, code_index with statistics, metrics in each route; seeded, deterministic);
+3 machines, code_index with statistics, metrics in each route; seeded, deterministic; most worktrees are old, so
+~300 tasks are at risk and the Home badge is about 10, and a third of the worktrees have an `agent/`, `codex/` or
+`fix/` branch, the rest the branch of their task);
 `repeatRows` (for the 5,000-row benchmark); `registryAction`, `FakeOperations` and
 `fakeControlFetch({registry?, operations?}, next)` (a fake action registry and operations route
 through the `FETCH` token). The registry and operation types are in `control.types` and are

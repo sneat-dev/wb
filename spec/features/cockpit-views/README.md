@@ -106,7 +106,7 @@ Serves J1 to J7. The application MUST show a top bar with the brand; the tabs
 Home, Tasks, Repositories, Worktrees, Agents and Machines; the palette entry; a
 "New task" button; the snapshot freshness chip; and the session chip (`anonymous` or
 `owner`). A tab badge is shown only for a signal: Home shows the number of tasks in
-"Needs you" (REQ:home-needs-you) and Agents the number of running agents (REQ:field-tables
+"Needs you" (REQ:home-needs-you), written `99+` above 99 with the whole number in its tooltip, and Agents the number of running agents (REQ:field-tables
 defines "running"), highlighted when above zero. No tab shows a badge for a static count.
 The freshness chip reads "updated N s ago" with the age of the snapshot, turns amber when
 the snapshot is older than two refresh intervals (the document's
@@ -203,7 +203,9 @@ quick-filter chips MUST use only that vocabulary. It is this table.
 | Machines | machine name | `stale`, `outdated` | `live`, `cached`, `stale` | `machine` | the machine entry id | `machine`, `state`, `version` |
 
 `needs-you` on Tasks is the tasks that REQ:home-needs-you lists (the same set, not a
-second definition). `age:` terms apply to last activity and are exactly `age:<1d`,
+second definition: an at-risk task older than the Needs you window is not in it). Every chip
+carries, in the vocabulary itself, an id, a label (the words on the chip) and a one-sentence
+hint (its tooltip), so a list renders its chips from the page's vocabulary alone. `age:` terms apply to last activity and are exactly `age:<1d`,
 `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`; there is no `day:` term. The chip
 `idle30` is `age:>30d`. The Worktrees chips `safe` and `look` are the two cleanup counts of
 REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
@@ -357,7 +359,16 @@ agents, ending with the "Raw data" block.
 Serves J1 and J4. Home's first section, "Needs you", MUST show one row per task, at most 5
 rows, each task for its worst kind and with exactly one primary action, then "+n more" that
 opens Tasks with chip `needs-you` (the same set); when there are none it shows one line saying
-nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. Rows
+nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. "Needs
+you" is a signal, not a debt counter: a task whose state is `at-risk`, and a task of the kind
+Agent finished, is listed (and counted) only when its last activity, the newest `last_activity_at`
+of its worktrees, is within the last 14 days; no recorded activity is not recent. An at-risk task
+older than that is not a row and is not in the badge: its worktrees are counted by the Cleanup
+line's "need a look" (REQ:home-cleanup). Such a task that also has failed checks, a blocked agent
+or a pull request that needs the operator still has that row, which is not age-limited, like
+Agent blocked and Run failed. A pull request link of a row is the pull request's `url` only when
+it is an `https` address with a plain host (the check the daemon applies, applied again here);
+otherwise the row names the pull request and has no link. Rows
 are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
 last activity, newest first. Items disappear when their state changes; there is no acknowledge
 or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
@@ -413,7 +424,8 @@ Serves J6. The fifth section, "Cleanup", MUST be one line, "N safe to remove; M 
 with a "Review & clean" action. N counts the worktrees of tasks in state `landed` whose `ahead`
 is present and equal to 0 and whose `owner_state` is not `active` (chip `safe`); M counts the
 other worktrees whose `owner_state` is `orphaned` or `unknown`, or that are idle for more than
-30 days (chip `look`). The counts are indicative: the authoritative safe set is computed by the
+30 days, or that are at risk in a task that "Needs you" no longer lists because its last
+activity is older than 14 days (REQ:home-needs-you) (chip `look`). The counts are indicative: the authoritative safe set is computed by the
 cleanup operation that `cockpit-actions` specifies, and the line says so. "Review & clean"
 opens Worktrees with the chip `safe`. The line expands to the Worktree age chart and the
 summary: bars for today (`age:<1d`), 1 to 7 days, 8 to 30 days, 31 to 90 days and older
@@ -498,7 +510,11 @@ Machine; State (the owner state plus sync badges `â†‘n` for unpushed commits, `â
 for commits behind, and "gone" for a vanished upstream); PR; Code index; Last
 activity. There is no separate Task column. The sync badges and the chips
 `unpushed` and `gone` and their counts concern this machine only and say so. The
-quick filters are those of REQ:filter-vocabulary.
+quick filters are those of REQ:filter-vocabulary. The PR cell, the chip `pr`, the
+worktree's side panel and the pull requests listed on its page all read one worktree-to-pull-request
+join: a pull request that names a worktree of the snapshot belongs to that worktree and to no
+other, and one that names none (or one that is not in the snapshot) belongs to the worktrees
+that have its repository entry and its branch.
 
 ### Agents
 
@@ -1125,7 +1141,10 @@ it is not shown.
 
 These budgets are tested on a fixture of 500 repositories, 600 worktrees,
 4,000 branches and 3 machines, with realistic names and `code_index` entries that
-carry statistics.
+carry statistics, and a realistic activity: most worktrees are old (about 2 in 100 were
+touched in the last two weeks), so about 300 tasks are at risk and only a handful need the
+operator, and most worktrees have the branch of their task while about a third have an
+`agent/`, `codex/` or `fix/` branch.
 
 #### REQ: fleet-document-size
 
@@ -1349,7 +1368,7 @@ Then it returns no match and the steps counted are at most a constant times the 
 Scenario: Every generated link parses
 Given Home, its "Needs you", "Ready to land", "Cleanup" and "Fleet health" rows, the Repositories sort presets and every page's chips and count cells
 When every link target is collected
-Then each is an address on one of the pages whose chips, `state:` values, `age:` terms, sort column ids and `sel` keys are all in the vocabulary table, the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`, and no `day:` term exists
+Then each is an address on one of the pages whose chips, `state:` values, `age:` terms, sort column ids and `sel` keys are all in the vocabulary table, the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`, and no `day:` term exists, and every chip of the vocabulary carries a non-empty label and hint
 
 ### AC: filter-state-lives-in-the-address
 
@@ -1629,6 +1648,60 @@ Scenario: One row per task, order, the cap, blocked agents without a task, then 
 Given 7 tasks in "Needs you" (one with two kinds of need), including a task `old` last active a week ago and a task `new` last active an hour ago in the same kind, and 3 blocked agents with no task
 When Home is opened, "+2 more" is activated, and later every state has changed
 Then 5 task rows are shown, one per task and for its worst kind, ordered by kind rank and then by last activity newest first (`new` before `old`), the Home badge reads 7, after them one row says "3 blocked agents with no task" and opens Agents with chip `blocked`, "+2 more" opens Tasks with chip `needs-you` showing exactly the 7 tasks, and afterwards one line says nothing needs the operator and no row remains, with no acknowledge or snooze control anywhere
+
+### AC: needs-you-lists-recent-work-at-risk-only
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
+
+Scenario: A debt of old work is not a signal
+Given tasks at risk last active 0, 14, 15 and 200 days ago and with no recorded activity, one of them at risk and 90 days old with failed checks, one with a blocked agent, one with a pull request that needs a merge resolution, a task whose agent finished with work not pushed 14 and 15 days ago, and the performance fixture of 600 worktrees of which about 300 tasks are at risk and nearly all of them old
+When Home is opened
+Then only the at-risk tasks last active 0 and 14 days ago have the "Work at risk" row, the old one with failed checks, the one with the blocked agent and the one with the pull request that needs the operator keep their own rows, the task that finished 14 days ago has an "Agent finished" row and the one that finished 15 days ago has none, the badge counts the rows and, on the fixture, reads a handful and not about 300
+
+### AC: cleanup-counts-older-at-risk-work
+
+**Requirements:** cockpit-views#req:home-cleanup, cockpit-views#req:home-needs-you
+
+Scenario: The old at-risk work moves to the Cleanup line
+Given an at-risk task last active 3 days ago, one 20 days ago and one 40 days ago, none idle for 30 days, and an owner that is not orphaned
+When Home is opened and the chip `look` is toggled on Worktrees
+Then the Cleanup line counts the worktrees of the tasks last active 20 and 40 days ago and not the one of the task last active 3 days ago (which has its "Needs you" row), and the chip `look` shows exactly those worktrees
+
+### AC: needs-you-chip-is-the-home-set
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:filter-vocabulary
+
+Scenario: The chip and Home list the same tasks
+Given tasks at risk last active 2 and 30 days ago and a calm task
+When Tasks is opened with the chip `needs-you`
+Then it shows exactly the tasks Home lists under "Needs you" (the one last active 2 days ago), in the same order, and its hint says so
+
+### AC: home-badge-is-capped
+
+**Requirements:** cockpit-views#req:top-bar, cockpit-views#req:home-needs-you
+
+Scenario: 294 tasks need the operator
+Given 99 tasks that need the operator, then 100, then 294
+When the application is opened for each
+Then the Home badge reads `99`, `99+` and `99+`, the model exposes the number and the label, and the last two badges carry the whole number in their tooltip
+
+### AC: worktree-pr-join-is-one
+
+**Requirements:** cockpit-views#req:worktrees-list, cockpit-views#req:side-panel
+
+Scenario: A pull request found by branch
+Given worktrees `w1` (branch `agent/a`) and `w2`, a pull request that names `w2`, and one that names no worktree but has the repository entry and branch of `w1`
+When Worktrees is opened with the chip `pr` and the panel of each worktree is opened
+Then the chip leaves exactly `w1` and `w2`, the PR cell of each row names its pull request, and the panel of each lists the same pull request
+
+### AC: web-addresses-are-checked
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:worktrees-list, cockpit-views#req:side-panel
+
+Scenario: A hostile address from another machine
+Given pull requests whose `url` is `javascript:alert(1)`, `http://plain.example/1`, `https://user@github.com/a`, `https://github.com:8443/a` and `https://github.com/a b`, and a repository whose `remote_url_web` is `javascript:alert(1)`
+When Home, a pull request panel, a worktree panel and a repository page are shown
+Then none of them binds such an address to a link, each names the pull request or repository in plain text, and the Raw data block still shows the entry as received
 
 ### AC: ready-to-land-groups-by-task
 

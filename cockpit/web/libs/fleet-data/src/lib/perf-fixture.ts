@@ -45,6 +45,8 @@ const SUFFIXES = ['go', 'web', 'api', 'core', 'ui', 'libs', 'apps', 'docs', 'too
 const VERBS = ['fix', 'add', 'refactor', 'migrate', 'drop', 'speed-up', 'harden', 'document', 'split', 'rename']
 const THINGS = ['ci', 'lint', 'auth', 'cache', 'routes', 'tests', 'docs', 'build', 'deploy', 'schema', 'search', 'matcher', 'palette', 'metrics', 'hooks']
 const STATES: CodeIndexState[] = ['fresh', 'fresh', 'fresh', 'stale', 'pending', 'diverged', 'failed', 'never']
+// Branch prefixes the agents use besides the plain task name.
+const BRANCH_PREFIXES = ['agent', 'codex', 'fix']
 const KINDS = ['function', 'method', 'type', 'interface', 'const', 'variable', 'package']
 
 function pick<T>(random: () => number, values: readonly T[]): T {
@@ -145,7 +147,7 @@ export function performanceFixture(seed = 20261001): PerformanceFixture {
     }
   })
 
-  // 600 worktrees over 455 tasks: 500 on mac, 70 on vm, 30 on old.
+  // 600 worktrees over 455 tasks: 500 on mac, 70 on vm, 30 on old. Most of them are old, like a real fleet's.
   const taskNames = Array.from({ length: 455 }, (_, index) => `${pick(random, VERBS)}-${pick(random, THINGS)}-${index}`)
   const owners: (OwnerState | undefined)[] = ['active', 'idle', 'idle', 'idle', 'orphaned', 'unknown']
   const held: Record<string, Repository[]> = Object.fromEntries(machines.map((machine) => [machine.machine_id, repositories.filter((candidate) => candidate.machine_id === machine.machine_id)]))
@@ -155,15 +157,19 @@ export function performanceFixture(seed = 20261001): PerformanceFixture {
     repository.worktree_count++
     const task = taskNames[index % taskNames.length]
     const local = machine.route === 'local'
+    // Real `wb` data names a worktree's branch after its task; about a third are named otherwise.
+    const branch = random() < 1 / 3 ? `${pick(random, BRANCH_PREFIXES)}/${pick(random, VERBS)}-${pick(random, THINGS)}-${index}` : task
+    // Most work is old: about 2 in 100 worktrees were touched in the last 13 days, the rest 15 to 119 days ago.
+    const idleDays = random() < 0.02 ? Math.floor(random() * 13) : 15 + Math.floor(random() * 105)
     return {
       ...entry(machine, `wt-${index}`),
       repository: repository.id,
       task,
       name: task,
-      branch: `task/${task}`,
+      branch,
       lifecycle: random() < 0.15 ? 'merged' : 'in_progress',
       owner_state: pick(random, owners),
-      last_activity_at: new Date(PERF_NOW - Math.floor(random() * 120) * DAY - Math.floor(random() * DAY)).toISOString(),
+      last_activity_at: new Date(PERF_NOW - idleDays * DAY - Math.floor(random() * DAY)).toISOString(),
       ahead: local ? Math.floor(random() * 3) : undefined,
       behind: local ? Math.floor(random() * 5) : undefined,
       has_upstream: local ? random() < 0.8 : undefined,
@@ -174,7 +180,7 @@ export function performanceFixture(seed = 20261001): PerformanceFixture {
 
   const pullRequests: PullRequest[] = Array.from({ length: 24 }, (_, index): PullRequest => {
     const worktree = worktrees[index * 7]
-    const failed = index % 4 === 0
+    const failed = index % 8 === 0
     return {
       ...entry(mac, `pr-${index}`),
       repository: worktree.repository,
