@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // fakeProvider is a code-index provider the test controls. It counts what it
@@ -30,7 +34,8 @@ func newFakeProvider(indexer string) *fakeProvider {
 	return &fakeProvider{indexer: indexer, asks: map[string]int{}, answers: map[string]ProviderStatistics{}}
 }
 
-func (p *fakeProvider) Name() string    { return "fake" }
+func (p *fakeProvider) Name() string { return "fake" }
+
 func (p *fakeProvider) Indexer() string { return p.indexer }
 
 func (p *fakeProvider) Statistics(ctx context.Context, checkout string) (ProviderStatistics, error) {
@@ -589,27 +594,43 @@ func TestACheckoutLeavingTheRepositoryDropsItsAnswer(t *testing.T) {
 	}
 }
 
-// fakeCodeGrapher writes a shell script standing in for the codegrapher
-// command, in a temporary directory, and returns its path. The script's body
-// is the test's own.
-func fakeCodeGrapher(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "codegrapher")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+// commandCall is one command a fakeCommandRunner was asked to run.
+type commandCall struct {
+	Binary string
+	Args   []string
+	Opts   runner.RunOptions
 }
 
-const statusJSON = `printf '{"initialized":true,"projectPath":"%s","fileCount":12,"nodeCount":52,"edgeCount":90,"nodesByKind":{"file":12,"function":30,"struct":10}}' "$4"`
+// fakeCommandRunner answers any command with what reply returns for it.
+type fakeCommandRunner struct {
+	fakeGitRunner
+	commands []commandCall
+	reply    func(commandCall) gitReply
+}
 
-// TestCodeGrapherProviderReadsItsStatusCommand runs the provider against a
-// stand-in command and checks what it asked and what it took.
+func newFakeCommand(t *testing.T, reply func(commandCall) gitReply) *fakeCommandRunner {
+	t.Helper()
+	return &fakeCommandRunner{fakeGitRunner: fakeGitRunner{t: t}, reply: reply}
+}
+
+func (f *fakeCommandRunner) RunOpts(_ context.Context, _ string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	call := commandCall{Binary: name, Args: args, Opts: opts}
+	f.commands = append(f.commands, call)
+	return resultOf(f.reply(call), opts)
+}
+
+// statusAnswer is `codegrapher status --json` printing statistics for path.
+func statusAnswer(path string) gitReply {
+	return gitReply{Out: fmt.Sprintf(`{"initialized":true,"projectPath":%q,"fileCount":12,"nodeCount":52,"edgeCount":90,"nodesByKind":{"file":12,"function":30,"struct":10}}`, path)}
+}
+
+// TestCodeGrapherProviderReadsItsStatusCommand checks what the provider asked
+// the runner to run and what it took from the answer.
 func TestCodeGrapherProviderReadsItsStatusCommand(t *testing.T) {
 	t.Parallel()
 	checkout := realTempDir(t)
-	log := filepath.Join(t.TempDir(), "args")
-	provider := CodeGrapherProvider{Binary: fakeCodeGrapher(t, `echo "$@" > `+log+"\n"+statusJSON)}
+	command := newFakeCommand(t, func(commandCall) gitReply { return statusAnswer(checkout) })
+	provider := CodeGrapherProvider{Binary: "/opt/codegrapher", Runner: command}
 	got, err := provider.Statistics(t.Context(), checkout)
 	if err != nil {
 		t.Fatal(err)
@@ -618,8 +639,15 @@ func TestCodeGrapherProviderReadsItsStatusCommand(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("statistics = %+v, want %+v", got, want)
 	}
-	if args, _ := os.ReadFile(log); strings.TrimSpace(string(args)) != "status --json --path "+checkout {
-		t.Fatalf("the command ran with %q", args)
+	call := command.commands[0]
+	if call.Binary != "/opt/codegrapher" || strings.Join(call.Args, " ") != "status --json --path "+checkout {
+		t.Fatalf("the command ran as %q %q", call.Binary, call.Args)
+	}
+	if !slices.Equal(call.Opts.Env, providerEnvironment(os.Environ())) || call.Opts.StdoutLimit != maxProviderOutput || !call.Opts.DiscardStderr {
+		t.Errorf("options = %+v, want the sanitised environment, the output cap and no standard error", call.Opts)
+	}
+	if _, err := (CodeGrapherProvider{Runner: command}).Statistics(t.Context(), checkout); err != nil || command.commands[1].Binary != "codegrapher" {
+		t.Errorf("the default command is codegrapher: %q, %v", command.commands[1].Binary, err)
 	}
 	if provider.Name() != "codegrapher" || provider.Indexer() != "codegrapher" || (CodeGrapherProvider{IndexerName: "x"}).Indexer() != "x" {
 		t.Fatalf("name %q, indexer %q", provider.Name(), provider.Indexer())
@@ -632,12 +660,13 @@ func TestCodeGrapherProviderReadsItsStatusCommand(t *testing.T) {
 func TestCodeGrapherProviderSaysNotIndexedForAnIndexThatIsNotTheCheckouts(t *testing.T) {
 	t.Parallel()
 	checkout := realTempDir(t)
-	for name, script := range map[string]string{
-		"not initialised": `printf '{"initialized":false,"projectPath":"%s"}' "$4"`,
-		"another project": `printf '{"initialized":true,"projectPath":"/somewhere/else","fileCount":9,"nodeCount":9,"edgeCount":9}'`,
-		"no project":      `printf '{"initialized":true,"fileCount":9}'`,
+	for name, out := range map[string]string{
+		"not initialised": fmt.Sprintf(`{"initialized":false,"projectPath":%q}`, checkout),
+		"another project": `{"initialized":true,"projectPath":"/somewhere/else","fileCount":9,"nodeCount":9,"edgeCount":9}`,
+		"no project":      `{"initialized":true,"fileCount":9}`,
 	} {
-		got, err := CodeGrapherProvider{Binary: fakeCodeGrapher(t, script)}.Statistics(t.Context(), checkout)
+		command := newFakeCommand(t, func(commandCall) gitReply { return gitReply{Out: out} })
+		got, err := CodeGrapherProvider{Runner: command}.Statistics(t.Context(), checkout)
 		if err != nil || got.Indexed || got.Files != 0 {
 			t.Errorf("%s: %+v, %v; want not indexed", name, got, err)
 		}
@@ -653,68 +682,36 @@ func TestCodeGrapherProviderFollowsASymbolicLinkedCheckout(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf(`printf '{"initialized":true,"projectPath":"%s","fileCount":1,"nodeCount":1,"edgeCount":1}'`, real)
-	if got, err := (CodeGrapherProvider{Binary: fakeCodeGrapher(t, script)}).Statistics(t.Context(), link); err != nil || !got.Indexed {
+	command := newFakeCommand(t, func(commandCall) gitReply { return statusAnswer(real) })
+	if got, err := (CodeGrapherProvider{Runner: command}).Statistics(t.Context(), link); err != nil || !got.Indexed {
 		t.Fatalf("through a link: %+v, %v", got, err)
 	}
 }
 
 // TestCodeGrapherProviderFailsWithoutLeakingWhatTheCommandPrints covers a
-// missing command, a failing one that prints a secret to both streams, output
-// that is not JSON, and output past the cap.
+// missing command, a failing one, output that is not JSON, and output past the
+// cap. A failure carries no output: the runner is told to discard standard
+// error and the error is a fixed one.
 func TestCodeGrapherProviderFailsWithoutLeakingWhatTheCommandPrints(t *testing.T) {
 	t.Parallel()
 	checkout := realTempDir(t)
 	ctx := t.Context()
-	if _, err := (CodeGrapherProvider{Binary: filepath.Join(t.TempDir(), "absent")}).Statistics(ctx, checkout); !errors.Is(err, errProviderUnavailable) {
+	statistics := func(reply gitReply) error {
+		_, err := CodeGrapherProvider{Runner: newFakeCommand(t, func(commandCall) gitReply { return reply })}.Statistics(ctx, checkout)
+		return err
+	}
+	if err := statistics(gitReply{Err: &exec.Error{Name: "codegrapher", Err: exec.ErrNotFound}}); !errors.Is(err, errProviderUnavailable) {
 		t.Errorf("a missing command: %v, want errProviderUnavailable", err)
 	}
-	_, err := CodeGrapherProvider{Binary: fakeCodeGrapher(t, "echo SECRET-OUT; echo SECRET-ERR /private/path >&2; exit 3")}.Statistics(ctx, checkout)
-	if err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "/private") {
+	if err := statistics(gitReply{Out: "SECRET-OUT /private/path", Exit: 3}); err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "/private") {
 		t.Errorf("a failing command: %v, want an error without its output", err)
 	}
-	if _, err := (CodeGrapherProvider{Binary: fakeCodeGrapher(t, "echo not json")}).Statistics(ctx, checkout); !errors.Is(err, errProviderOutput) {
+	if err := statistics(gitReply{Out: "not json"}); !errors.Is(err, errProviderOutput) {
 		t.Errorf("output that is not JSON: %v, want errProviderOutput", err)
 	}
-	huge := fakeCodeGrapher(t, fmt.Sprintf("head -c %d /dev/zero | tr '\\000' a", maxProviderOutput+4096))
-	_, err = CodeGrapherProvider{Binary: huge}.Statistics(ctx, checkout)
+	err := statistics(gitReply{Out: strings.Repeat("a", maxProviderOutput+4096)})
 	if code := providerFailureCode(ctx, err); code != ErrorProviderOutput {
 		t.Errorf("output past the cap: %v, code %q, want %q", err, code, ErrorProviderOutput)
-	}
-}
-
-// TestCodeGrapherProviderRunsWithASanitisedEnvironmentAndStopsOnItsDeadline
-// proves the daemon's other variables do not reach the command and that a
-// command that hangs is killed with its group when the ask's context ends.
-func TestCodeGrapherProviderRunsWithASanitisedEnvironmentAndStopsOnItsDeadline(t *testing.T) {
-	t.Setenv("WB_PROVIDER_TEST_SECRET", "hunter2")
-	t.Setenv("LC_TEST_LOCALE", "kept")
-	checkout := realTempDir(t)
-	dump := filepath.Join(t.TempDir(), "env")
-	provider := CodeGrapherProvider{Binary: fakeCodeGrapher(t, "env > "+dump+"\n"+statusJSON)}
-	if _, err := provider.Statistics(t.Context(), checkout); err != nil {
-		t.Fatal(err)
-	}
-	environment, _ := os.ReadFile(dump)
-	if strings.Contains(string(environment), "hunter2") || !strings.Contains(string(environment), "LC_TEST_LOCALE=kept") || !strings.Contains(string(environment), "PATH=") {
-		t.Fatalf("the command's environment = %q", environment)
-	}
-
-	marker := filepath.Join(t.TempDir(), "survived")
-	hang := CodeGrapherProvider{Binary: fakeCodeGrapher(t, "(sleep 0.25; touch "+marker+") &\nsleep 30")}
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	_, err := hang.Statistics(ctx, checkout)
-	if err == nil || time.Since(started) > 10*time.Second {
-		t.Fatalf("a hung command: %v after %v", err, time.Since(started))
-	}
-	if code := providerFailureCode(ctx, err); code != ErrorProviderTimeout {
-		t.Fatalf("a hung command is %q, want %q", code, ErrorProviderTimeout)
-	}
-	time.Sleep(350 * time.Millisecond)
-	if _, statErr := os.Stat(marker); statErr == nil {
-		t.Fatal("a descendant of the command outlived its group")
 	}
 }
 

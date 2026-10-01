@@ -1,17 +1,19 @@
 package fleet
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
-// Every Git command the snapshotter runs goes through gitOutput, so one place
+// Every Git command the snapshotter runs goes through readGit, so one place
 // decides what a repository's own configuration and the daemon's environment
 // can make Git do. A repository is untrusted input: its .git/config can name a
 // filesystem monitor, a hooks directory, an ssh command or a promisor remote,
@@ -86,61 +88,58 @@ func gitArguments(dir string, args []string) []string {
 	return append(hardened, args...)
 }
 
-// cappedBuffer collects output up to max bytes and refuses the rest, so an
-// oversized output is never held in full.
-type cappedBuffer struct {
-	data     bytes.Buffer
-	max      int
-	exceeded bool
+// readGit runs the Git binary with args in dir, through run, and returns its
+// standard output, up to maxGitOutput bytes. A nil run is the real runner.
+func readGit(ctx context.Context, run runner.Runner, binary, dir string, args ...string) ([]byte, error) {
+	return gitOutputLimited(ctx, run, binary, dir, maxGitOutput, args...)
 }
 
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if b.data.Len()+len(p) > b.max {
-		b.exceeded = true
-		return 0, errGitOutputTooLarge
-	}
-	return b.data.Write(p)
-}
-
-// gitOutput runs the Git binary with args in dir and returns its standard
-// output, up to maxGitOutput bytes.
-func gitOutput(ctx context.Context, binary, dir string, args ...string) ([]byte, error) {
-	return gitOutputLimited(ctx, binary, dir, maxGitOutput, args...)
-}
-
-// gitOutputLimited is gitOutput with an output cap: past limit bytes the
+// gitOutputLimited is readGit with an output cap: past limit bytes the
 // command is stopped and errGitOutputTooLarge returned, with nothing beyond
 // the cap ever buffered. The command runs in its own process group, which is
 // killed when ctx ends, and its pipes are abandoned after gitWaitDelay, so a
 // descendant that holds stdout open cannot keep the call from returning.
-func gitOutputLimited(ctx context.Context, binary, dir string, limit int, args ...string) ([]byte, error) {
-	return runCapped(ctx, binary, gitEnvironment(os.Environ()), limit, gitArguments(dir, args))
+func gitOutputLimited(ctx context.Context, run runner.Runner, binary, dir string, limit int, args ...string) ([]byte, error) {
+	return runCapped(ctx, run, binary, gitEnvironment(os.Environ()), limit, gitArguments(dir, args))
 }
 
-// runCapped runs binary with args and env, in its own process group, and
-// returns its standard output, up to limit bytes: past it the command is
-// stopped and errGitOutputTooLarge returned. The group is killed when ctx ends,
-// and the pipes are abandoned after gitWaitDelay. Standard input is empty and
-// standard error is discarded, so what a command prints to it, which can carry
-// a path, never comes back. A non-zero exit is an exitError.
-func runCapped(ctx context.Context, binary string, env []string, limit int, args []string) ([]byte, error) {
-	command := exec.CommandContext(ctx, binary, args...)
-	command.Env = env
-	killWithDescendants(command)
-	command.WaitDelay = gitWaitDelay
-	out := &cappedBuffer{max: limit}
-	command.Stdout = out
-	if err := command.Run(); err != nil {
-		if out.exceeded {
-			return nil, errGitOutputTooLarge
-		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return nil, exitError{code: exit.ExitCode()}
-		}
-		return nil, errGit
+// errCommandMissing says the command could not be started because it is not
+// there (or may not be run). It is errGit too, so a Git caller needs no
+// distinction; the code-index provider reads it as "unavailable".
+var errCommandMissing = errors.New("command not found")
+
+type commandMissingError struct{}
+
+func (commandMissingError) Error() string { return errGit.Error() }
+func (commandMissingError) Is(target error) bool {
+	return target == errGit || target == errCommandMissing
+}
+
+// runCapped runs binary with args and env through run (the real runner when
+// nil), and returns its standard output, up to limit bytes: past it the command
+// is stopped and errGitOutputTooLarge returned. The runner puts the command in
+// its own process group, killed when ctx ends, and the pipes are abandoned
+// after gitWaitDelay. Standard input is empty and standard error is discarded,
+// so what a command prints to it, which can carry a path, never comes back. A
+// non-zero exit is an exitError.
+func runCapped(ctx context.Context, run runner.Runner, binary string, env []string, limit int, args []string) ([]byte, error) {
+	if run == nil {
+		run = runner.New()
 	}
-	return out.data.Bytes(), nil
+	result, err := run.RunOpts(ctx, "", runner.RunOptions{
+		Env: env, WaitDelay: gitWaitDelay, StdoutLimit: limit, DiscardStderr: true,
+	}, binary, args...)
+	switch {
+	case err == nil:
+		return []byte(result.Stdout), nil
+	case errors.Is(err, runner.ErrOutputTooLarge):
+		return nil, errGitOutputTooLarge
+	case result.ExitCode != 0:
+		return nil, exitError{code: result.ExitCode}
+	case errors.Is(err, exec.ErrNotFound), errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission):
+		return nil, commandMissingError{}
+	}
+	return nil, errGit
 }
 
 // gitVersionUsable reports whether the output of `git version` names a Git of

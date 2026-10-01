@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // CodeIndexCollector reads the code-index freshness of checkouts from the
@@ -42,6 +43,8 @@ type LocalCodeIndex struct {
 	Reader *lifecyclehooks.FreshnessReader
 	// Git is the Git binary; empty means "git".
 	Git string
+	// Runner runs the Git commands; nil means the real runner.
+	Runner runner.Runner
 }
 
 // Begin reads the receipts and the queue.
@@ -50,12 +53,13 @@ func (c LocalCodeIndex) Begin() (CodeIndexPass, error) {
 	if err != nil {
 		return nil, err
 	}
-	return localCodeIndexPass{view: view, git: firstNonEmpty(c.Git, "git")}, nil
+	return localCodeIndexPass{view: view, git: firstNonEmpty(c.Git, "git"), run: c.Runner}, nil
 }
 
 type localCodeIndexPass struct {
 	view *lifecyclehooks.FreshnessView
 	git  string
+	run  runner.Runner
 }
 
 func (p localCodeIndexPass) Key(identity string, checkouts []string) string {
@@ -157,9 +161,9 @@ func (p localCodeIndexPass) relate(ctx context.Context, checkout string, state C
 	if !isObjectID(receipt) {
 		return diverged()
 	}
-	_, ancestorErr := gitOutput(ctx, p.git, checkout, "merge-base", "--is-ancestor", receipt, head)
+	_, ancestorErr := readGit(ctx, p.run, p.git, checkout, "merge-base", "--is-ancestor", receipt, head)
 	if ancestorErr == nil {
-		count, err := gitOutput(ctx, p.git, checkout, "rev-list", "--count", receipt+".."+head)
+		count, err := readGit(ctx, p.run, p.git, checkout, "rev-list", "--count", receipt+".."+head)
 		behind, parseErr := strconv.Atoi(strings.TrimSpace(string(count)))
 		if err != nil || parseErr != nil || behind < 1 {
 			return CodeIndex{}, verdictUnknown
@@ -167,7 +171,7 @@ func (p localCodeIndexPass) relate(ctx context.Context, checkout string, state C
 		state.State, state.Behind = CodeIndexStale, behind
 		return state, verdictState
 	}
-	_, commitErr := gitOutput(ctx, p.git, checkout, "cat-file", "-e", receipt+"^{commit}")
+	_, commitErr := readGit(ctx, p.run, p.git, checkout, "cat-file", "-e", receipt+"^{commit}")
 	var exit exitError
 	switch {
 	case commitErr == nil && notFound(ancestorErr):
@@ -179,7 +183,7 @@ func (p localCodeIndexPass) relate(ctx context.Context, checkout string, state C
 		// store also gives. Only the plain existence check's own "no" (status
 		// 1) says the object is missing; the object being there, though not a
 		// commit, is an answer too. Anything else may pass.
-		if _, plainErr := gitOutput(ctx, p.git, checkout, "cat-file", "-e", receipt); plainErr == nil || notFound(plainErr) {
+		if _, plainErr := readGit(ctx, p.run, p.git, checkout, "cat-file", "-e", receipt); plainErr == nil || notFound(plainErr) {
 			return p.missing(ctx, checkout, diverged)
 		}
 		return CodeIndex{}, verdictUnknown
@@ -195,7 +199,7 @@ func (p localCodeIndexPass) relate(ctx context.Context, checkout string, state C
 // purpose and gets no state. When Git cannot say whether the clone is shallow
 // the answer is not known.
 func (p localCodeIndexPass) missing(ctx context.Context, checkout string, diverged func() (CodeIndex, verdict)) (CodeIndex, verdict) {
-	out, err := gitOutput(ctx, p.git, checkout, "rev-parse", "--is-shallow-repository")
+	out, err := readGit(ctx, p.run, p.git, checkout, "rev-parse", "--is-shallow-repository")
 	switch {
 	case err != nil:
 		return CodeIndex{}, verdictUnknown
@@ -208,7 +212,7 @@ func (p localCodeIndexPass) missing(ctx context.Context, checkout string, diverg
 // head is the commit a checkout has checked out. A checkout with no commit yet
 // has nothing to compare, which is certain; any other failure may pass.
 func (p localCodeIndexPass) head(ctx context.Context, checkout string) (string, verdict) {
-	out, err := gitOutput(ctx, p.git, checkout, "rev-parse", "--verify", "--quiet", "HEAD")
+	out, err := readGit(ctx, p.run, p.git, checkout, "rev-parse", "--verify", "--quiet", "HEAD")
 	sha := strings.TrimSpace(string(out))
 	switch {
 	case err == nil && isObjectID(sha):

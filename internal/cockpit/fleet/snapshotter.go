@@ -22,11 +22,13 @@ import (
 )
 
 // DefaultInterval is the refresh interval when cockpit.refresh_interval is
-// not set (cockpit#req:snapshot-refresh). It was chosen from
-// TestMeasureFullAndUnchangedRefresh on the founder's projects root on
-// 2026-10-01: for 417 repositories, 490 worktrees and 3824 branches the first
-// partial document took 64 ms, the whole first pass 3.1 s and a pass in which
-// no fingerprint moved 0.45 s. A full pass is about 5% of a minute, inside the
+// not set (cockpit#req:snapshot-refresh). It was chosen from a one-off
+// measurement of the production local collectors on the founder's projects
+// root on 2026-10-01 (the measuring test was removed: it read a real
+// directory named by the environment, which no test may do): for 417
+// repositories, 490 worktrees and 3824 branches the first partial document
+// took 64 ms, the whole first pass 3.1 s and a pass in which no fingerprint
+// moved 0.45 s. A full pass is about 5% of a minute, inside the
 // 10% budget, and the minute is the floor an interval is allowed to have.
 const DefaultInterval = time.Minute
 

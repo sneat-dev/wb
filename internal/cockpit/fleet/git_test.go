@@ -3,25 +3,15 @@ package fleet
 import (
 	"context"
 	"errors"
-	"os"
+	"io/fs"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
 )
-
-// fakeGit writes an executable script standing in for the Git binary.
-func fakeGit(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(realTempDir(t), "fakegit")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
 
 // TestGitEnvironmentIsAnAllowListPlusTheHardeningSettings requires nothing
 // from the daemon's environment but PATH, HOME, TMPDIR, LANG and LC_*, and the
@@ -54,188 +44,6 @@ func TestGitEnvironmentIsAnAllowListPlusTheHardeningSettings(t *testing.T) {
 	}
 }
 
-// TestHostileRepositoryConfigRunsNothingWhenItIsSnapshotted gives a repository
-// a config naming a filesystem monitor, a hooks path, an ssh command and a
-// promisor remote, with the README's blob missing so a read would lazily fetch
-// it; every read the snapshot makes runs none of them.
-func TestHostileRepositoryConfigRunsNothingWhenItIsSnapshotted(t *testing.T) {
-	t.Parallel()
-	marker := filepath.Join(realTempDir(t), "ran")
-	script := filepath.Join(realTempDir(t), "hostile.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f := newRealFleet(t)
-	hostileConfig(t, f.clone, script)
-	blob := strings.TrimSpace(gitIn(t, f.clone, "rev-parse", "HEAD:README.md"))
-	if err := os.Remove(filepath.Join(f.clone, ".git", "objects", blob[:2], blob[2:])); err != nil {
-		t.Fatal(err)
-	}
-	collectors := LocalCollectors{ProjectsRoot: f.root, Home: t.TempDir()}
-	repo := discover.Repo{Org: "acme", Name: "widgets", Path: f.clone}
-	if _, err := collectors.Branches(t.Context(), repo); err != nil {
-		t.Fatal(err)
-	}
-	collectors.DefaultBranch(t.Context(), repo)
-	if _, err := collectors.Readme(t.Context(), repo, "main"); err == nil {
-		t.Error("a README whose blob is missing was read")
-	}
-	if _, err := collectors.Worktrees(t.Context(), repo); err != nil {
-		t.Fatal(err)
-	}
-	snapshotter := New(Options{Machine: testMachine, Collectors: collectors.Collectors(nil)})
-	refreshAndSettle(t, snapshotter)
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the repository's own configuration ran a program")
-	}
-}
-
-// TestInheritedGitEnvironmentDoesNotChangeResults sets GIT_DIR, GIT_WORK_TREE
-// and a GIT_CONFIG_* pair that names a program in this process's environment:
-// the snapshot still reads the repository it was asked about and runs nothing.
-func TestInheritedGitEnvironmentDoesNotChangeResults(t *testing.T) {
-	marker := filepath.Join(realTempDir(t), "ran")
-	script := filepath.Join(realTempDir(t), "inherited.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f := newRealFleet(t)
-	elsewhere := realTempDir(t)
-	gitIn(t, elsewhere, "init", "--initial-branch=other")
-	t.Setenv("GIT_DIR", filepath.Join(elsewhere, ".git"))
-	t.Setenv("GIT_WORK_TREE", elsewhere)
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
-	t.Setenv("GIT_CONFIG_VALUE_0", script)
-	collectors := LocalCollectors{ProjectsRoot: f.root, Home: t.TempDir()}
-	repo := discover.Repo{Org: "acme", Name: "widgets", Path: f.clone}
-	refs, err := collectors.Branches(t.Context(), repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := map[string]bool{}
-	for _, ref := range refs {
-		names[ref.Name] = true
-	}
-	if !names["feature/one"] || names["other"] {
-		t.Errorf("branches = %v, want the repository's own", names)
-	}
-	if branch := collectors.DefaultBranch(t.Context(), repo); branch != "main" {
-		t.Errorf("default branch = %q, want main", branch)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("an inherited GIT_CONFIG_* ran a program")
-	}
-}
-
-// TestGitCommandThatSpawnsAChildHoldingStdoutIsReapedOnTimeout runs a stand-in
-// Git that leaves a child holding its standard output, and requires the call
-// to return soon after its timeout, with the child killed too.
-func TestGitCommandThatSpawnsAChildHoldingStdoutIsReapedOnTimeout(t *testing.T) {
-	t.Parallel()
-	pidFile := filepath.Join(realTempDir(t), "child.pid")
-	binary := fakeGit(t, "sleep 30 &\necho $! > "+pidFile+".tmp\nmv "+pidFile+".tmp "+pidFile+"\nsleep 30")
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	returned := make(chan error, 1)
-	go func() {
-		_, err := gitOutput(ctx, binary, t.TempDir(), "for-each-ref")
-		returned <- err
-	}()
-	// The timeout is a cancellation once the stand-in has started its child.
-	// Fail fast with the real error if the command ends before the child is seen, and allow a loaded machine 30s.
-	childDeadline := time.Now().Add(30 * time.Second)
-	var early error
-	for seen := false; !seen; {
-		select {
-		case early = <-returned:
-			t.Fatalf("the command returned before its child started: %v", early)
-		default:
-		}
-		if _, err := os.Stat(pidFile); err == nil {
-			seen = true
-		} else if time.Now().After(childDeadline) {
-			t.Fatal("timed out waiting for the child to start")
-		} else {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	time.Sleep(50 * time.Millisecond)
-	started := time.Now()
-	cancel()
-	if err := <-returned; !errors.Is(err, errGit) {
-		t.Fatalf("a cancelled command = %v", err)
-	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the call took %v to return after its context ended", elapsed)
-	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := 0
-	for _, digit := range strings.TrimSpace(string(data)) {
-		pid = pid*10 + int(digit-'0')
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for processAlive(pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the child process %d outlived its command", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// TestDefaultBranchComesFromOriginsHEADThenTheCheckedOutBranch covers origin's
-// symbolic HEAD, the checked-out branch and a detached HEAD with neither.
-func TestDefaultBranchComesFromOriginsHEADThenTheCheckedOutBranch(t *testing.T) {
-	t.Parallel()
-	f := newRealFleet(t)
-	collectors := LocalCollectors{}
-	repo := discover.Repo{Path: f.clone}
-	gitIn(t, f.clone, "branch", "-m", "main", "trunk")
-	if got := collectors.DefaultBranch(t.Context(), repo); got != "trunk" {
-		t.Errorf("default branch from the checked-out branch = %q, want trunk", got)
-	}
-	gitIn(t, f.clone, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-	if got := collectors.DefaultBranch(t.Context(), repo); got != "main" {
-		t.Errorf("default branch from origin's HEAD = %q, want main", got)
-	}
-	gitIn(t, f.clone, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
-	gitIn(t, f.clone, "checkout", "--detach")
-	if got := collectors.DefaultBranch(t.Context(), repo); got != "" {
-		t.Errorf("default branch of a detached clone with no origin HEAD = %q, want none", got)
-	}
-}
-
-// TestReadmeRefusesWhatGitReportsOddly drives the README read with a stand-in
-// Git that prints a malformed tree entry, an unparsable size, a size over the
-// cap and a blob longer than its size said.
-func TestReadmeRefusesWhatGitReportsOddly(t *testing.T) {
-	t.Parallel()
-	sha := strings.Repeat("a", 40)
-	entry := "printf '100644 blob " + sha + "\\tREADME.md\\0'"
-	for name, test := range map[string]struct {
-		script string
-		want   error
-	}{
-		"a malformed tree entry": {`case " $* " in *" ls-tree "*) printf 'garbage\0';; esac`, errGit},
-		"an entry with a bad id": {`case " $* " in *" ls-tree "*) printf '100644 blob xyz\tREADME.md\0';; esac`, errGit},
-		"a non-hex object id":    {`case " $* " in *" ls-tree "*) printf '100644 blob ` + strings.Repeat("g", 40) + `\tREADME.md\0';; esac`, errGit},
-		"an unparsable size":     {`case " $* " in *" ls-tree "*) ` + entry + `;; *" -s "*) echo lots;; esac`, errGit},
-		"a size over the cap":    {`case " $* " in *" ls-tree "*) ` + entry + `;; *" -s "*) echo 2000000;; esac`, errReadmeTooLarge},
-		"a blob over its size":   {`case " $* " in *" ls-tree "*) ` + entry + `;; *" -s "*) echo 5;; *) head -c 1100000 /dev/zero;; esac`, errReadmeTooLarge},
-		"a failing command":      {`exit 128`, errGit},
-		"a failing listing":      {`case " $* " in *" show-ref "*) ;; *) exit 128;; esac`, errGit},
-		"a missing branch":       {`exit 1`, errReadmeAbsent},
-	} {
-		collectors := LocalCollectors{Git: fakeGit(t, test.script)}
-		if _, err := collectors.Readme(t.Context(), discover.Repo{Path: t.TempDir()}, "main"); !errors.Is(err, test.want) {
-			t.Errorf("%s: %v, want %v", name, err, test.want)
-		}
-	}
-}
-
 // TestGitVersionFloorIsTwoFortyFive covers the version parser.
 func TestGitVersionFloorIsTwoFortyFive(t *testing.T) {
 	t.Parallel()
@@ -256,55 +64,176 @@ func TestGitVersionFloorIsTwoFortyFive(t *testing.T) {
 	}
 }
 
-// TestGitUsableAsksTheGitBinary covers the real Git, an old stand-in and a
-// failing one.
-func TestGitUsableAsksTheGitBinary(t *testing.T) {
+// TestDefaultBranchComesFromOriginsHEADThenTheCheckedOutBranch covers origin's
+// symbolic HEAD, the checked-out branch and a detached HEAD with neither.
+func TestDefaultBranchComesFromOriginsHEADThenTheCheckedOutBranch(t *testing.T) {
 	t.Parallel()
-	if !(LocalCollectors{}).GitUsable(t.Context()) {
-		t.Skip("the Git on this machine is older than 2.45")
+	git := newFakeGit(t)
+	dir, repo := indexedCheckout(t, git, 1)
+	collectors := LocalCollectors{Runner: git}
+	found := discover.Repo{Path: dir}
+	repo.branch = "trunk"
+	if got := collectors.DefaultBranch(t.Context(), found); got != "trunk" {
+		t.Errorf("default branch from the checked-out branch = %q, want trunk", got)
 	}
-	if (LocalCollectors{Git: fakeGit(t, "echo git version 2.30.0")}).GitUsable(t.Context()) {
-		t.Error("an old Git was usable")
+	repo.originHead = "main"
+	if got := collectors.DefaultBranch(t.Context(), found); got != "main" {
+		t.Errorf("default branch from origin's HEAD = %q, want main", got)
 	}
-	if (LocalCollectors{Git: fakeGit(t, "exit 3")}).GitUsable(t.Context()) {
-		t.Error("a failing Git was usable")
+	repo.originHead = ""
+	repo.branch = ""
+	if got := collectors.DefaultBranch(t.Context(), found); got != "" {
+		t.Errorf("default branch of a detached clone with no origin HEAD = %q, want none", got)
+	}
+	git.reply(gitReply{Out: "elsewhere/main\n"})
+	if got := collectors.DefaultBranch(t.Context(), found); got != "elsewhere/main" {
+		t.Errorf("an origin HEAD that is not origin's is read as the checked-out branch: %q", got)
 	}
 }
 
-// TestCappedBufferNeverHoldsMoreThanItsCap requires a write past the cap to
-// fail without buffering any of it.
-func TestCappedBufferNeverHoldsMoreThanItsCap(t *testing.T) {
+// TestReadmeRefusesWhatGitReportsOddly drives the README read with a scripted
+// Git that prints a malformed tree entry, an unparsable size, a size over the
+// cap and a blob longer than its size said.
+func TestReadmeRefusesWhatGitReportsOddly(t *testing.T) {
 	t.Parallel()
-	buffer := &cappedBuffer{max: 4}
-	if _, err := buffer.Write([]byte("abc")); err != nil {
-		t.Fatal(err)
+	entry := "100644 blob " + readmeObject + "\tREADME.md\x00"
+	for name, test := range map[string]struct {
+		script func(*fakeGitRunner)
+		want   error
+	}{
+		"a malformed tree entry": {func(g *fakeGitRunner) { g.when(commandIs("ls-tree"), gitReply{Out: "garbage\x00"}) }, errGit},
+		"an entry with a bad id": {func(g *fakeGitRunner) { g.when(commandIs("ls-tree"), gitReply{Out: "100644 blob xyz\tREADME.md\x00"}) }, errGit},
+		"a non-hex object id": {func(g *fakeGitRunner) {
+			g.when(commandIs("ls-tree"), gitReply{Out: "100644 blob " + strings.Repeat("g", 40) + "\tREADME.md\x00"})
+		}, errGit},
+		"an unparsable size": {func(g *fakeGitRunner) {
+			g.when(commandIs("ls-tree"), gitReply{Out: entry}).when(commandIs("cat-file", "-s"), gitReply{Out: "lots\n"})
+		}, errGit},
+		"a size over the cap": {func(g *fakeGitRunner) {
+			g.when(commandIs("ls-tree"), gitReply{Out: entry}).when(commandIs("cat-file", "-s"), gitReply{Out: "2000000\n"})
+		}, errReadmeTooLarge},
+		"a blob over its size": {func(g *fakeGitRunner) {
+			g.when(commandIs("ls-tree"), gitReply{Out: entry}).when(commandIs("cat-file", "-s"), gitReply{Out: "5\n"}).
+				when(commandIs("cat-file", "blob"), gitReply{Out: strings.Repeat("a", MaxReadmeBytes+1)})
+		}, errReadmeTooLarge},
+		"a failing show-ref": {func(g *fakeGitRunner) { g.reply(gitReply{Exit: 128}) }, errGit},
+		"a failing listing":  {func(g *fakeGitRunner) { g.when(commandIs("ls-tree"), gitReply{Exit: 128}) }, errGit},
+		"a failing size": {func(g *fakeGitRunner) {
+			g.when(commandIs("ls-tree"), gitReply{Out: entry}).when(commandIs("cat-file", "-s"), gitReply{Exit: 128})
+		}, errGit},
+		"a missing branch": {func(g *fakeGitRunner) { g.reply(gitReply{Exit: 1}) }, errReadmeAbsent},
+		"no entry":         {func(g *fakeGitRunner) { g.when(commandIs("ls-tree"), gitReply{}) }, errReadmeAbsent},
+	} {
+		git := newFakeGit(t)
+		dir, repo := indexedCheckout(t, git, 1)
+		repo.readme["main"] = fakeReadme{Content: "x"}
+		test.script(git)
+		if _, err := (LocalCollectors{Runner: git}).Readme(t.Context(), discover.Repo{Path: dir}, "main"); !errors.Is(err, test.want) {
+			t.Errorf("%s: %v, want %v", name, err, test.want)
+		}
 	}
-	if _, err := buffer.Write([]byte("de")); !errors.Is(err, errGitOutputTooLarge) || buffer.data.Len() != 3 || !buffer.exceeded {
-		t.Errorf("a write past the cap = %v with %d bytes held", err, buffer.data.Len())
+}
+
+// TestReadmeIsReadFromTheObjectStoreByItsObjectID follows the whole read: the
+// branch ref, the tree entry, the size and the blob, each a read-only command
+// naming the object, never a path in the working tree.
+func TestReadmeIsReadFromTheObjectStoreByItsObjectID(t *testing.T) {
+	t.Parallel()
+	git := newFakeGit(t)
+	dir, repo := indexedCheckout(t, git, 1)
+	repo.readme["main"] = fakeReadme{Content: "# hello\n", Mode: "100755"}
+	data, err := (LocalCollectors{Runner: git}).Readme(t.Context(), discover.Repo{Path: dir}, "main")
+	if err != nil || string(data) != "# hello\n" {
+		t.Fatalf("README = %q, %v", data, err)
 	}
-	if _, err := gitOutputLimited(t.Context(), fakeGit(t, "head -c 100000 /dev/zero"), t.TempDir(), 10, "x"); !errors.Is(err, errGitOutputTooLarge) {
-		t.Errorf("a command past its output cap = %v", err)
+	var seen []string
+	for _, call := range git.running() {
+		seen = append(seen, call.String())
 	}
-	if _, err := gitOutput(t.Context(), filepath.Join(t.TempDir(), "no-such-git"), t.TempDir(), "x"); !errors.Is(err, errGit) {
-		t.Errorf("a Git binary that cannot start = %v", err)
+	want := []string{
+		"show-ref --verify --quiet refs/heads/main", "ls-tree -z refs/heads/main -- README.md",
+		"cat-file -s " + readmeObject, "cat-file blob " + readmeObject,
+	}
+	if !slices.Equal(seen, want) {
+		t.Errorf("commands = %q, want %q", seen, want)
+	}
+	if opts := git.running()[3].Opts; opts.StdoutLimit != MaxReadmeBytes {
+		t.Errorf("the blob read is capped at %d, want %d", opts.StdoutLimit, MaxReadmeBytes)
+	}
+	for kind, mode := range map[string][2]string{"a symbolic link": {"120000", "blob"}, "a directory": {"040000", "tree"}, "a submodule": {"160000", "commit"}} {
+		repo.readme["main"] = fakeReadme{Mode: mode[0], Kind: mode[1]}
+		if _, err := (LocalCollectors{Runner: git}).Readme(t.Context(), discover.Repo{Path: dir}, "main"); !errors.Is(err, errReadmeNotRegular) {
+			t.Errorf("%s: %v, want not regular", kind, err)
+		}
+	}
+	if _, err := (LocalCollectors{Runner: git}).Readme(t.Context(), discover.Repo{Path: dir}, "no-such-branch"); !errors.Is(err, errReadmeAbsent) {
+		t.Errorf("README of a missing branch = %v, want absent", err)
+	}
+}
+
+// TestGitUsableAsksTheGitBinary covers a current Git, an old one and a failing
+// one, over a scripted Git.
+func TestGitUsableAsksTheGitBinary(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		reply gitReply
+		want  bool
+	}{
+		"a current Git": {gitReply{Out: "git version 2.54.0\n"}, true},
+		"an old Git":    {gitReply{Out: "git version 2.30.0\n"}, false},
+		"a failing Git": {gitReply{Exit: 3}, false},
+	} {
+		if got := (LocalCollectors{Runner: newFakeGit(t).reply(test.reply)}).GitUsable(t.Context()); got != test.want {
+			t.Errorf("%s: usable = %v, want %v", name, got, test.want)
+		}
+	}
+}
+
+// TestGitOutputNeverHoldsMoreThanItsCap requires output past the cap to fail
+// with nothing returned, and a command that cannot start, or exits non-zero,
+// to fail with a message that carries no text.
+func TestGitOutputNeverHoldsMoreThanItsCap(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	big := newFakeGit(t).reply(gitReply{Out: strings.Repeat("a", 100)})
+	if out, err := gitOutputLimited(ctx, big, "git", "/repo", 10, "x"); !errors.Is(err, errGitOutputTooLarge) || out != nil {
+		t.Errorf("a command past its output cap = %q, %v", out, err)
+	}
+	if out, err := gitOutputLimited(ctx, big, "git", "/repo", 100, "x"); err != nil || len(out) != 100 {
+		t.Errorf("a command at its output cap = %d bytes, %v", len(out), err)
+	}
+	for name, test := range map[string]struct {
+		reply   gitReply
+		missing bool
+		code    int
+	}{
+		"a binary that is not there":  {gitReply{Err: &exec.Error{Name: "git", Err: exec.ErrNotFound}}, true, 0},
+		"a path that does not exist":  {gitReply{Err: fs.ErrNotExist}, true, 0},
+		"a binary that may not run":   {gitReply{Err: fs.ErrPermission}, true, 0},
+		"a failure to start":          {gitReply{Err: errBoom}, false, 0},
+		"a command that exits with 1": {gitReply{Exit: 1}, false, 1},
+	} {
+		_, err := readGit(ctx, newFakeGit(t).reply(test.reply), "git", "/repo", "x")
+		var exit exitError
+		switch {
+		case !errors.Is(err, errGit) || err.Error() != errGit.Error():
+			t.Errorf("%s: %v, want errGit with no text", name, err)
+		case errors.Is(err, errCommandMissing) != test.missing:
+			t.Errorf("%s: missing = %v, want %v", name, errors.Is(err, errCommandMissing), test.missing)
+		case test.code != 0 && (!errors.As(err, &exit) || exit.code != test.code):
+			t.Errorf("%s: %v, want exit status %d", name, err, test.code)
+		}
+	}
+	if _, err := readGit(ctx, nil, filepath.Join(t.TempDir(), "no-such-git"), t.TempDir(), "x"); !errors.Is(err, errGit) {
+		t.Errorf("the real runner on a Git binary that cannot start = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := readGit(cancelled, newFakeGit(t), "git", "/repo", "x"); !errors.Is(err, errGit) {
+		t.Errorf("a cancelled command = %v", err)
 	}
 	var exit error = exitError{code: 1}
 	if !errors.Is(exit, errGit) || exit.Error() != errGit.Error() {
 		t.Error("an exit error is not errGit")
-	}
-}
-
-// TestReadmeOfAMissingBranchIsAbsentAndOtherFailuresAreNot uses a real clone:
-// a branch that does not exist is an absent README; a stand-in Git that fails
-// differently is a failure.
-func TestReadmeOfAMissingBranchIsAbsentAndOtherFailuresAreNot(t *testing.T) {
-	t.Parallel()
-	f := newRealFleet(t)
-	repo := discover.Repo{Path: f.clone}
-	if _, err := (LocalCollectors{}).Readme(t.Context(), repo, "no-such-branch"); !errors.Is(err, errReadmeAbsent) {
-		t.Errorf("README of a missing branch = %v, want absent", err)
-	}
-	if _, err := (LocalCollectors{Git: fakeGit(t, "exit 2")}).Readme(t.Context(), repo, "main"); !errors.Is(err, errGit) || errors.Is(err, errReadmeAbsent) {
-		t.Errorf("README when Git fails = %v, want a failure", err)
 	}
 }

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build e2e && !windows
 
 package fleet
 

@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -169,6 +170,9 @@ type LocalCollectors struct {
 	CodeIndex *LocalCodeIndex
 	// CodeIndexProvider is the configured code-index provider; nil means none.
 	CodeIndexProvider CodeIndexProvider
+	// Runner runs the Git commands; nil means the real runner. A test supplies
+	// a fake, so the unit tier starts no process.
+	Runner runner.Runner
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
@@ -180,7 +184,7 @@ func (c LocalCollectors) GitUsable(ctx context.Context) bool {
 
 // git runs the Git binary through the hardened helper.
 func (c LocalCollectors) git(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	return gitOutput(ctx, firstNonEmpty(c.Git, "git"), dir, args...)
+	return readGit(ctx, c.Runner, firstNonEmpty(c.Git, "git"), dir, args...)
 }
 
 // Collectors is c as the snapshotter's local sources, with remote as the
@@ -379,7 +383,7 @@ func (c LocalCollectors) Readme(ctx context.Context, repository discover.Repo, b
 	}
 	// The read is capped too, so a blob larger than the size just measured is
 	// never buffered whole.
-	data, err := gitOutputLimited(ctx, firstNonEmpty(c.Git, "git"), repository.Path, MaxReadmeBytes, "cat-file", "blob", fields[2])
+	data, err := gitOutputLimited(ctx, c.Runner, firstNonEmpty(c.Git, "git"), repository.Path, MaxReadmeBytes, "cat-file", "blob", fields[2])
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, errReadmeTooLarge
 	}

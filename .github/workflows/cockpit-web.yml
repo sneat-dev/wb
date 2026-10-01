@@ -3,8 +3,15 @@ name: Cockpit web CI
 # No `paths:` filter on the trigger, on purpose. A path-filtered workflow does
 # not run at all when nothing matches, which leaves a required check pending
 # forever. This one always runs and decides inside the job whether anything
-# under cockpit/web (or this workflow, or .goreleaser.yml) changed; when nothing did it succeeds at once, before Node
-# is installed.
+# under cockpit/web (or this workflow, or .goreleaser.yml) changed, and whether
+# anything the whole-journey test exercises did; when nothing did it succeeds at
+# once, before Node is installed.
+#
+# One job, not two: the stubbed browser tests and the whole-journey test need
+# the same Node, pnpm, dependencies and Playwright browser, so they share one
+# setup and the journey runs as the last step. Node, pnpm, dependencies and the
+# browser are set up by the composite action .github/actions/playwright-web-setup,
+# which hub-web.yml uses too.
 on:
   push:
     branches: [main]
@@ -23,8 +30,9 @@ jobs:
   test:
     name: Cockpit web
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Did cockpit/web change?
+      - name: What changed?
         id: changes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,46 +43,55 @@ jobs:
           set -euo pipefail
           # Pushes to main and manual runs always build; only a pull request
           # can be skipped. If the changed-file list cannot be read, build.
+          # web: the stubbed browser tests. journey: the whole-journey test,
+          # which also exercises the daemon and the wb that embeds the web
+          # application, so it has the wider list.
           if [ "$EVENT" != "pull_request" ]; then
             echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "journey=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if ! files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)'); then
             echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "journey=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # A change to this workflow or to the release config can break the
           # Cockpit build too, so it counts. A renamed file counts by both
           # its old and its new path.
-          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|\.github/workflows/cockpit-web\.yml$|\.goreleaser\.yml$)'; then
+          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
             echo "web=true" >> "$GITHUB_OUTPUT"
           else
             echo "web=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing under cockpit/web changed; nothing to check."
+          fi
+          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|cmd/wb/|internal/(cockpit|daemon|dashboard|wbhome|wbconfig|lifecyclehooks)/|go\.mod$|go\.sum$|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
+            echo "journey=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "journey=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing the Cockpit tests exercise changed; nothing to check."
           fi
 
+      # Everything up to the web-only steps is shared by both suites. The
+      # journey's list of changed paths contains the web list, so journey is
+      # true whenever web is.
       - name: Checkout
-        if: steps.changes.outputs.web == 'true'
+        if: steps.changes.outputs.journey == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - name: Setup Node
-        if: steps.changes.outputs.web == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Setup Go
+        if: steps.changes.outputs.journey == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          # Angular 22 needs Node ^22.22.3, ^24.15 or >=26 (cockpit/web
-          # package.json "engines"). hub-web.yml pins 22, which floats to a
-          # satisfying 22.x here too, but this job names the major it was
-          # verified on.
+          go-version-file: go.mod
+
+      # Angular 22 needs Node ^22.22.3, ^24.15 or >=26 (cockpit/web
+      # package.json "engines"); this job names the major it was verified on.
+      - name: Setup Node, dependencies and Playwright browser
+        if: steps.changes.outputs.journey == 'true'
+        uses: ./.github/actions/playwright-web-setup
+        with:
+          working-directory: cockpit/web
           node-version: 24
-
-      - name: Enable Corepack
-        if: steps.changes.outputs.web == 'true'
-        run: corepack enable
-
-      - name: Install dependencies
-        if: steps.changes.outputs.web == 'true'
-        working-directory: cockpit/web
-        run: pnpm install --frozen-lockfile
 
       - name: Lint
         if: steps.changes.outputs.web == 'true'
@@ -93,94 +110,21 @@ jobs:
         working-directory: cockpit/web
         run: pnpm test
 
-      - name: Install Playwright browser
-        if: steps.changes.outputs.web == 'true'
-        working-directory: cockpit/web
-        run: pnpm exec playwright install --with-deps chromium
-
       - name: End-to-end tests
         if: steps.changes.outputs.web == 'true'
         working-directory: cockpit/web
         run: pnpm test:e2e
 
-  journey:
-    name: Cockpit journey
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Did cockpit/web change?
-        id: changes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          # Pushes to main and manual runs always build; only a pull request
-          # can be skipped. If the changed-file list cannot be read, build.
-          if [ "$EVENT" != "pull_request" ]; then
-            echo "web=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)'); then
-            echo "web=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # A change to this workflow or to the release config can break the
-          # Cockpit build too, so it counts. A renamed file counts by both
-          # its old and its new path.
-          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|cmd/wb/|internal/(cockpit|daemon|dashboard|wbhome|wbconfig|lifecyclehooks)/|go\.mod$|go\.sum$|\.github/workflows/cockpit-web\.yml$|\.goreleaser\.yml$)'; then
-            echo "web=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "web=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing under cockpit/web changed; nothing to check."
-          fi
-
-      - name: Checkout
-        if: steps.changes.outputs.web == 'true'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      - name: Setup Node
-        if: steps.changes.outputs.web == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          # Angular 22 needs Node ^22.22.3, ^24.15 or >=26 (cockpit/web
-          # package.json "engines"). hub-web.yml pins 22, which floats to a
-          # satisfying 22.x here too, but this job names the major it was
-          # verified on.
-          node-version: 24
-
-      - name: Setup Go
-        if: steps.changes.outputs.web == 'true'
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-
-      - name: Enable Corepack
-        if: steps.changes.outputs.web == 'true'
-        run: corepack enable
-
-      - name: Install dependencies
-        if: steps.changes.outputs.web == 'true'
-        working-directory: cockpit/web
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright browser
-        if: steps.changes.outputs.web == 'true'
-        working-directory: cockpit/web
-        run: pnpm exec playwright install --with-deps chromium
-
       # Builds the web application and a wb that embeds it, starts that wb's own
       # daemon on a free port under a temporary directory and drives it in a
       # browser. Linux only: the test refuses to run anywhere else.
       - name: Whole-journey end-to-end test
-        if: steps.changes.outputs.web == 'true'
+        if: steps.changes.outputs.journey == 'true'
         working-directory: cockpit/web
         run: pnpm test:journey
 
       - name: Upload the journey report and daemon log
-        if: failure() && steps.changes.outputs.web == 'true'
+        if: failure() && steps.changes.outputs.journey == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cockpit-journey

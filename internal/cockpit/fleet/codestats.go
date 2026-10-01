@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // A code-index provider reports the statistics of one checkout's index
@@ -176,6 +177,8 @@ type CodeGrapherProvider struct {
 	// IndexerName is the hooks executor whose receipts this follows; empty
 	// means "codegrapher".
 	IndexerName string
+	// Runner runs the command; nil means the real runner.
+	Runner runner.Runner
 }
 
 // DefaultCodeGrapherIndexer is the executor name CodeGrapher is followed under
@@ -216,11 +219,10 @@ type codeGrapherStatus struct {
 
 // Statistics runs the command for checkout.
 func (p CodeGrapherProvider) Statistics(ctx context.Context, checkout string) (ProviderStatistics, error) {
-	binary, err := exec.LookPath(firstNonEmpty(p.Binary, "codegrapher"))
-	if err != nil {
+	out, err := runCapped(ctx, p.Runner, firstNonEmpty(p.Binary, "codegrapher"), providerEnvironment(os.Environ()), maxProviderOutput, []string{"status", "--json", "--path", checkout})
+	if errors.Is(err, errCommandMissing) {
 		return ProviderStatistics{}, errProviderUnavailable
 	}
-	out, err := runCapped(ctx, binary, providerEnvironment(os.Environ()), maxProviderOutput, []string{"status", "--json", "--path", checkout})
 	if err != nil {
 		return ProviderStatistics{}, err
 	}
