@@ -1,3 +1,5 @@
+//go:build linux
+
 package daemon
 
 import (
@@ -12,7 +14,8 @@ import (
 // "if err != nil { return "", err }" branch after RuntimeDir (runtime.go):
 // RuntimeDir's own error return comes from wbhome.Root -> Resolve ->
 // projectsRootAbs -> filepath.Abs, which can only fail (for a relative
-// projectsRoot) when os.Getwd itself fails -- reproduced here, without any
+// projectsRoot) when os.Getwd itself fails -- reproduced on Linux here,
+// without any
 // new production seam, by chdir-ing into a scratch directory this test then
 // removes out from under the process before calling each helper with a
 // relative projectsRoot.
