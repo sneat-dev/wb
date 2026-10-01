@@ -230,12 +230,13 @@ func rebaseUnderNewClone(path, legacyClonePath, clonePath string) (string, bool)
 	}
 	legacyClonePath = filepath.Clean(legacyClonePath)
 	path = filepath.Clean(path)
-	if path != legacyClonePath && !strings.HasPrefix(path, legacyClonePath+string(filepath.Separator)) {
-		return "", false
-	}
-	relative, err := filepath.Rel(legacyClonePath, path)
-	if err != nil {
-		return "", false
+	relative := "."
+	if path != legacyClonePath {
+		var ok bool
+		relative, ok = strings.CutPrefix(path, legacyClonePath+string(filepath.Separator))
+		if !ok {
+			return "", false
+		}
 	}
 	rebased := filepath.Join(clonePath, relative)
 	if _, statErr := os.Stat(rebased); statErr != nil {
@@ -337,9 +338,6 @@ func RecordCloneMoveRelocationIntents(projectsRoot string, moves []CloneMoveWork
 		}
 		for _, layout := range resolution.Read {
 			home := filepath.Clean(layout.Home)
-			if home == "" {
-				continue
-			}
 			claim, _, claimErr := claimForRelocation(home, move.Source)
 			if claimErr != nil {
 				continue
