@@ -39,10 +39,7 @@ func TestHkCovConfiguredHooksPathReturnsEmptyForBlankValue(t *testing.T) {
 	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "config", "--local", "core.hooksPath", "")
-	path, err := configuredHooksPath(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
+	path := configuredHooksPath(repo)
 	if path != "" {
 		t.Fatalf("configuredHooksPath(blank) = %q, want empty", path)
 	}
