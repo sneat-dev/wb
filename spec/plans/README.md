@@ -13,7 +13,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | [agent-session-move](agent-session-move.md) | Implemented | agent-session-move | 2026-08-25 | codex |
 | [canonical-claim-landing](canonical-claim-landing/README.md) | Draft | canonical-claim-landing | 2026-10-01 | alex |
 | [canonical-claim-mode](canonical-claim-mode/README.md) | Draft | canonical-claim-admission | 2026-10-01 | alex |
-| [cockpit](cockpit/README.md) | Executing | cockpit | 2026-10-01 | alex |
+| [cockpit](cockpit/README.md) | Implemented | cockpit | 2026-10-01 | alex |
 | [cockpit-actions](cockpit-actions/README.md) | Approved | cockpit-actions | 2026-10-01 | alex |
 | [coverage-to-100](coverage-to-100/README.md) | Executing | idea:quality-diff-and-thresholds | 2026-09-23 | alex |
 | [fleet-metrics-web](fleet-metrics-web.md) | Implemented | fleet-quality | 2026-09-26 | alex |
