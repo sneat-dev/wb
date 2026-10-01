@@ -20,9 +20,11 @@ import "time"
 // document and added the fields below.
 const SchemaVersion = 2
 
-// The two routes an entry can have (cockpit#req:route-and-freshness-are-
+// The routes an entry can have (cockpit#req:route-and-freshness-are-
 // explicit): local for state this daemon observed itself, cached for state
-// read from another machine's published snapshot.
+// read from another machine's published snapshot, and live-remote
+// (RouteLiveRemote) for state read in the background from another machine's own
+// export (cockpit-views#req:remote-entries-replace-cached).
 const (
 	RouteLocal  = "local"
 	RouteCached = "cached"
@@ -187,6 +189,12 @@ const ReasonCachedRepository = "cached_repository"
 // machine and for another whose published snapshot carries them, and omitted
 // otherwise. They are names and numbers: no process list, path or environment.
 // The document carries no resource samples; the metrics route serves them.
+//
+// Transport is the transport (`http` or `ssh`) that produced a machine's
+// live-remote entries, and RemoteError the code of the last failed read of
+// another machine (cockpit-views#req:remote-error-is-visible): one of
+// remoteErrorCodes, never the remote's own text. Neither is ever set on this
+// machine's own entry.
 type Machine struct {
 	Entry
 	WBVersion       string    `json:"wb_version,omitempty"`
@@ -196,6 +204,8 @@ type Machine struct {
 	Arch            string    `json:"arch,omitempty"`
 	CPUCount        int       `json:"cpu_count,omitempty"`
 	BootTime        time.Time `json:"boot_time,omitzero"`
+	Transport       string    `json:"transport,omitempty"`
+	RemoteError     string    `json:"remote_error,omitempty"`
 }
 
 // Repository is one repository with its counts. A count that is nil is not

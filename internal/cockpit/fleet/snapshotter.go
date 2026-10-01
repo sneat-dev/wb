@@ -124,6 +124,16 @@ type Options struct {
 	// Metrics are the sources of the machine-metrics route for other machines,
 	// asked in order (the live remote, then the cached source).
 	Metrics []MetricsSource
+	// Remotes are the other machines the local configuration names, each read
+	// in the background through Transports, in that order
+	// (cockpit-views#req:remote-exporter-transports). With no transport nothing
+	// is read. A target named as this machine is ignored: an export is never
+	// applied to this machine's own entries.
+	Remotes    []RemoteTarget
+	Transports []RemoteTransport
+	// RemoteTick delivers the ticks on which the background loop looks for a due
+	// export, as Tick does for the refresh; nil means a time.Ticker.
+	RemoteTick func(interval time.Duration) (<-chan time.Time, func())
 	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
 	// for each snapshot stored and once for each repository's branch list that
 	// is first asked for after a change, never per request; a test counts it.
@@ -223,6 +233,16 @@ type Snapshotter struct {
 	sampler        *machinemetrics.Sampler
 	metricsSources []MetricsSource
 	metrics        metricsCache
+
+	// live is the configured machines read through transports, by their
+	// configured key, and liveKeys those keys in order. liveIDs says which
+	// machine ids of the published document stand for which key. All three are
+	// guarded by mu; the set of keys never changes.
+	live       map[string]*liveMachine
+	liveKeys   []string
+	liveIDs    map[string]string
+	transports []RemoteTransport
+	remoteTick func(time.Duration) (<-chan time.Time, func())
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -237,6 +257,23 @@ func New(options Options) *Snapshotter {
 		metrics: metricsCache{entries: map[string]cachedMetrics{}},
 	}
 	snapshotter.sampler = options.Sampler
+	snapshotter.live, snapshotter.transports, snapshotter.remoteTick = map[string]*liveMachine{}, slices.Clone(options.Transports), options.RemoteTick
+	if len(snapshotter.transports) > 0 {
+		for _, target := range options.Remotes {
+			if target.Machine == "" || target.Machine == options.Machine || snapshotter.live[target.Machine] != nil {
+				continue
+			}
+			snapshotter.live[target.Machine] = &liveMachine{target: target}
+			snapshotter.liveKeys = append(snapshotter.liveKeys, target.Machine)
+		}
+		sort.Strings(snapshotter.liveKeys)
+	}
+	if len(snapshotter.liveKeys) > 0 {
+		snapshotter.metricsSources = append([]MetricsSource{liveMetrics{snapshotter: snapshotter}}, snapshotter.metricsSources...)
+	}
+	if snapshotter.remoteTick == nil {
+		snapshotter.remoteTick = tickEvery
+	}
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}
@@ -328,7 +365,7 @@ func (s *Snapshotter) Branches(id string) (payload cockpit.Payload, found bool) 
 		s.mu.RUnlock()
 		return payload, true
 	}
-	known := slices.ContainsFunc(s.remote.repositories, func(repository Repository) bool { return repository.ID == id })
+	known := slices.ContainsFunc(s.remote.repositories, func(repository Repository) bool { return repository.ID == id }) || s.liveRepository(id)
 	s.mu.RUnlock()
 	if !known {
 		return cockpit.Payload{}, false
@@ -384,7 +421,8 @@ func (s *Snapshotter) gitTooOld() bool {
 
 // Start refreshes now and then on every interval until the returned function
 // is called or ctx ends, and runs this machine's metrics sampler, when it has
-// one, for the same time. The function stops the loop, waits for it, and then
+// one, and the background reads of the configured machines, when there are any,
+// for the same time. The function stops the loops, waits for them, and then
 // waits a short, bounded time for a read of the other machines still running;
 // no repository read outlives it.
 func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
@@ -398,9 +436,17 @@ func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
 		defer close(done)
 		s.run(ctx)
 	}()
+	remotes := make(chan struct{})
+	go func() {
+		defer close(remotes)
+		if len(s.liveKeys) > 0 {
+			s.runRemotes(ctx)
+		}
+	}()
 	return func() {
 		cancel()
 		<-done
+		<-remotes
 		stopSampler()
 		waited := make(chan struct{})
 		go func() {
@@ -954,7 +1000,9 @@ func (s *Snapshotter) publishMaybeLocked() {
 
 // publishLocked rebuilds the document from what the snapshotter holds: the
 // repositories scanned so far, the agents, the pull-request records and the
-// other machines. The caller holds s.mu.
+// other machines: the configured ones read live, which replace their
+// published-store entries while fresh, and the published store's. The caller
+// holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
 	document := emptyDocument(s.interval)
@@ -1013,10 +1061,8 @@ func (s *Snapshotter) publishLocked() {
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
 	})
-	document.Machines = append(document.Machines, s.remote.machines...)
-	document.Repositories = append(document.Repositories, s.remote.repositories...)
-	document.Worktrees = append(document.Worktrees, s.remote.worktrees...)
-	document.PullRequests = append(document.PullRequests, s.remote.pullRequests...)
+	hidden, failures := s.overlayLive(&document, now)
+	s.appendCached(&document, hidden, failures)
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })

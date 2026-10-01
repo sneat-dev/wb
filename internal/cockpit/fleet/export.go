@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"reflect"
 	"slices"
 	"time"
 
@@ -41,6 +42,11 @@ type Envelope struct {
 	ExportedAt time.Time        `json:"exported_at"`
 	Fleet      *Document        `json:"fleet,omitempty"`
 	Metrics    *EnvelopeMetrics `json:"metrics,omitempty"`
+	// Dropped is the number of this machine's own entries left out because a
+	// value of theirs would not pass the envelope's rules (a name longer than
+	// the cap, a time in the future): one odd entry is dropped, and the export
+	// is still made.
+	Dropped int `json:"dropped,omitempty"`
 }
 
 // EnvelopeMetrics is the exporting machine's own metrics: the route it came
@@ -70,6 +76,12 @@ func NewExportError(code string) ExportError {
 // an entry that is cached from another machine, or live from one, is never
 // re-exported. A metrics-only envelope has no fleet.
 //
+// An entry of this machine that would not pass the strict decoder's rules for
+// its fields (a task or branch name over the cap, a time in the future) is left
+// out and counted in Dropped, so one odd name cannot take a machine's whole
+// export down. The machine entry itself is always kept: an export whose machine
+// entry is not valid is refused as a whole by the decoder.
+//
 // Every scalar the document carries besides its collections is about this
 // machine alone: repositories_total, repositories_scanned and diagnostics count
 // what this daemon scanned and read locally (another machine's entries are
@@ -88,10 +100,10 @@ func NewEnvelope(document Document, metrics MetricsResponse, now time.Time, metr
 	if !metricsOnly {
 		own := document
 		own.Machines = keepLocal(document.Machines, func(machine Machine) Entry { return machine.Entry })
-		own.Repositories = keepLocal(document.Repositories, func(repository Repository) Entry { return repository.Entry })
-		own.Worktrees = keepLocal(document.Worktrees, func(worktree Worktree) Entry { return worktree.Entry })
-		own.PullRequests = keepLocal(document.PullRequests, func(pull PullRequest) Entry { return pull.Entry })
-		own.Agents = keepLocal(document.Agents, func(agent Agent) Entry { return agent.Entry })
+		own.Repositories = keepValid(document.Repositories, func(repository Repository) Entry { return repository.Entry }, now, &envelope.Dropped)
+		own.Worktrees = keepValid(document.Worktrees, func(worktree Worktree) Entry { return worktree.Entry }, now, &envelope.Dropped)
+		own.PullRequests = keepValid(document.PullRequests, func(pull PullRequest) Entry { return pull.Entry }, now, &envelope.Dropped)
+		own.Agents = keepValid(document.Agents, func(agent Agent) Entry { return agent.Entry }, now, &envelope.Dropped)
 		envelope.Fleet = &own
 	}
 	return envelope
@@ -105,6 +117,20 @@ func keepLocal[T any](list []T, entry func(T) Entry) []T {
 		if entry(item).Route == RouteLocal {
 			kept = append(kept, item)
 		}
+	}
+	return kept
+}
+
+// keepValid is keepLocal less the entries that the strict decoder would refuse
+// for a field of theirs, which it counts in dropped.
+func keepValid[T any](list []T, entry func(T) Entry, now time.Time, dropped *int) []T {
+	kept := make([]T, 0, len(list))
+	for _, item := range keepLocal(list, entry) {
+		if checkStruct(reflect.ValueOf(item), "", now) != nil {
+			*dropped++
+			continue
+		}
+		kept = append(kept, item)
 	}
 	return kept
 }
@@ -125,4 +151,16 @@ func exportMetrics(response MetricsResponse) *EnvelopeMetrics {
 		}
 	}
 	return &EnvelopeMetrics{Route: RouteNone, Samples: []machinemetrics.Sample{}, Reason: ReasonUnavailable}
+}
+
+// Export is this machine's export envelope built in process from the last
+// published document and the sampler, without running anything: what the hub
+// route serves (cockpit-views#req:hub-export-route). It reads memory only.
+func (s *Snapshotter) Export(metricsOnly bool) Envelope {
+	s.mu.RLock()
+	document := s.doc
+	s.mu.RUnlock()
+	now := s.now()
+	answer := sanitizeMetrics(s.metricsAnswerFor(localMachineID(s.machine)), now)
+	return NewEnvelope(document, MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}, now, metricsOnly)
 }

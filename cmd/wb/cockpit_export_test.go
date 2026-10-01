@@ -379,8 +379,11 @@ func TestCockpitExportOfADaemonWithNoMachineYetHasNoneMetrics(t *testing.T) {
 // fixed message, never a dependency's error text.
 func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 	t.Parallel()
+	// The machine's own entry breaking a rule fails the export: there is nothing
+	// to drop it in favour of. An odd entry of another kind is dropped instead
+	// (TestCockpitExportDropsAndCountsAnEntryThatBreaksARule).
 	hostile := exportDocument()
-	hostile.Worktrees[0].Task = strings.Repeat("a", 300)
+	hostile.Machines[1].WBVersion = "not a version"
 	cases := map[string]func(*fakeCockpitDaemon){
 		"a 500 from the fleet route":    func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
 		"a 500 from the metrics route":  func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
@@ -395,6 +398,27 @@ func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 		set(fake)
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
 		requireTypedExportFailure(t, stdout, err, "export_failed", name)
+	}
+}
+
+// TestCockpitExportDropsAndCountsAnEntryThatBreaksARule: one worktree with a
+// name over the cap does not take the machine's export down. It is left out and
+// counted, the rest is printed, and the verb succeeds.
+func TestCockpitExportDropsAndCountsAnEntryThatBreaksARule(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	fake.document = exportDocument()
+	fake.document.Worktrees[0].Task = strings.Repeat("a", 300)
+	stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
+	if err != nil {
+		t.Fatalf("err = %v, stdout = %s", err, stdout)
+	}
+	envelope, err := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), false, exportNow)
+	if err != nil || envelope.Dropped != 1 || len(envelope.Fleet.Worktrees) != 0 || len(envelope.Fleet.Repositories) != 1 || len(envelope.Fleet.PullRequests) != 1 {
+		t.Fatalf("err = %v, envelope = %s", err, stdout)
+	}
+	if strings.Contains(stdout, "aaaaaaaa") {
+		t.Errorf("the dropped entry was printed: %s", stdout)
 	}
 }
 
