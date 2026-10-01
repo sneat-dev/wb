@@ -101,7 +101,7 @@ flag-matrix line and the persistent-flag support declaration.
 **Id:** task-4
 **Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add a background snapshotter in the daemon that builds the fleet document
 from `discover.ScanLocalIndexed`, the cheap worktree
