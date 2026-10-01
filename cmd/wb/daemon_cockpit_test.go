@@ -272,6 +272,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if bare.Sampler == nil {
 		t.Error("this machine has no metrics sampler")
 	}
+	if bare.Collectors.Activity == nil {
+		t.Error("this machine does not read herdr for agent activity")
+	}
 	bare.Logf("refresh failed: %v", "boom")
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {
 		t.Errorf("log = %q", got)

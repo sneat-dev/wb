@@ -57,6 +57,10 @@ type WorktreeRecord struct {
 	CreatedAt   time.Time
 	HeartbeatAt time.Time
 	Owner       string
+	// OwnerPID is the process id of the live declared owner, 0 when the owner
+	// is gone or unstated. It stays inside the daemon: it joins a session to
+	// the worktree its owner process holds and is never emitted.
+	OwnerPID int
 }
 
 // GitGate says whether Git is new enough to be run against untrusted
@@ -125,6 +129,14 @@ type RunCollector interface {
 	Runs(ctx context.Context) ([]agents.Result, error)
 }
 
+// ActivityCollector reads the activity herdr reports for the agents it hosts:
+// herdr's status (working, blocked, idle, done or unknown) by harness session
+// id, and nothing else. A machine with no herdr, or one that does not answer
+// in time, returns an error, which leaves every agent with no activity.
+type ActivityCollector interface {
+	Activity(ctx context.Context) (map[string]string, error)
+}
+
 // RemoteCollector reads the snapshots other machines published, from what this
 // machine already holds locally.
 type RemoteCollector interface {
@@ -145,6 +157,9 @@ type Collectors struct {
 	Sessions     SessionCollector
 	Runs         RunCollector
 	Remote       RemoteCollector
+	// Activity reads herdr's agent statuses; nil means no herdr, and no agent
+	// carries an activity.
+	Activity ActivityCollector
 	// CodeIndex reads indexer receipts; nil means no code-index freshness.
 	CodeIndex CodeIndexCollector
 	// CodeIndexProvider reports the statistics of a checkout's index; nil means
@@ -461,21 +476,24 @@ func (c LocalCollectors) Record(worktree string) (WorktreeRecord, bool) {
 	if err != nil {
 		return WorktreeRecord{}, false
 	}
-	owner := declaredOwner
+	owner, ownerPID := declaredOwner(worktree)
 	if c.DeclaredOwner != nil {
-		owner = c.DeclaredOwner
+		owner, ownerPID = c.DeclaredOwner(worktree), 0
 	}
 	return WorktreeRecord{
 		Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt,
-		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner(worktree),
+		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner, OwnerPID: ownerPID,
 	}, true
 }
 
 // declaredOwner is the liveness of the owner process the worktree's journal
 // records, read without writing anything (worktrees.DeclaredOwner opens the
 // journal as a writer does, which may add an exclude rule to the repository, and
-// the snapshotter never writes inside a repository).
-func declaredOwner(worktree string) string { return worktrees.DeclaredOwnerReadOnly(worktree) }
+// the snapshotter never writes inside a repository), with the live owner's
+// process id.
+func declaredOwner(worktree string) (string, int) {
+	return worktrees.DeclaredOwnerPIDReadOnly(worktree)
+}
 
 // PullRequests lists the pull requests `wb pr create` recorded beside active
 // Work Log claims. It reads local files and calls no forge.

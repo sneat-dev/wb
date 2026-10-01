@@ -301,17 +301,40 @@ type PullRequest struct {
 	CheckedAt     time.Time `json:"checked_at,omitzero"`
 }
 
+// The activity values of an agent entry: herdr's five agent statuses, which are
+// the only thing the cockpit reads from herdr (never the screen).
+const (
+	ActivityWorking = "working"
+	ActivityBlocked = "blocked"
+	ActivityIdle    = "idle"
+	ActivityDone    = "done"
+	ActivityUnknown = "unknown"
+)
+
+// maxAgentWorktrees bounds the worktrees one agent entry lists.
+const maxAgentWorktrees = 10
+
 // Agent is a registered session or a dispatched run: identifiers, runtime,
-// model and state, and the repository a run works in.
+// model and state, the repository, task and worktrees it works in, when it
+// started and, for a finished run, when it finished and its exit code.
+// Activity is herdr's status of a session of this machine, absent when herdr
+// does not report it. A session has Repository, Task and Worktrees only when a
+// worktree's declared owner process is the session's; they are never guessed.
 type Agent struct {
 	Entry
-	Kind       string `json:"kind"`
-	SessionID  string `json:"session_id,omitempty"`
-	RunID      string `json:"run_id,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Model      string `json:"model,omitempty"`
-	State      string `json:"state"`
-	Repository string `json:"repository,omitempty"`
+	Kind       string    `json:"kind"`
+	SessionID  string    `json:"session_id,omitempty"`
+	RunID      string    `json:"run_id,omitempty"`
+	Runtime    string    `json:"runtime,omitempty"`
+	Model      string    `json:"model,omitempty"`
+	State      string    `json:"state"`
+	Activity   string    `json:"activity,omitempty"`
+	Repository string    `json:"repository,omitempty"`
+	Task       string    `json:"task,omitempty"`
+	Worktrees  []string  `json:"worktrees,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitzero"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
+	ExitCode   *int      `json:"exit_code,omitempty"`
 }
 
 // emptyDocument is the well-formed document served before the first snapshot:
