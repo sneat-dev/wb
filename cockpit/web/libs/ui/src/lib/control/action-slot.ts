@@ -67,7 +67,10 @@ export class ActionSlot {
   protected readonly overflow = computed(() => this.entries().filter((entry) => entry.action.safety === 'destructive'))
   protected readonly shown = computed(() => this.entries().length > 0)
 
-  private readonly onScroll = (): void => this.close()
+  /** The button the open menu hangs from. */
+  private anchor: HTMLElement | undefined
+  /** The menu is fixed, so a scroll moves it with its button instead of leaving it behind. */
+  private readonly onScroll = (): void => this.place(this.anchor as HTMLElement)
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.document.removeEventListener('scroll', this.onScroll, true))
@@ -79,13 +82,18 @@ export class ActionSlot {
     this.activated.emit({ action: entry.action, target: this.target() })
   }
 
-  protected toggle(trigger: HTMLElement): void {
-    if (this.open()) return this.close()
+  private place(trigger: HTMLElement): void {
     const rect = trigger.getBoundingClientRect()
     const view = this.document.defaultView as Window
     const width = Math.min(MENU_WIDTH, view.innerWidth - 2 * MARGIN)
     const left = Math.max(MARGIN, Math.min(rect.right - width, view.innerWidth - width - MARGIN))
     this.position.set(rect.bottom > view.innerHeight * 0.6 ? { left, bottom: view.innerHeight - rect.top + 4 } : { left, top: rect.bottom + 4 })
+  }
+
+  protected toggle(trigger: HTMLElement): void {
+    if (this.open()) return this.close()
+    this.anchor = trigger
+    this.place(trigger)
     this.open.set(true)
     this.document.addEventListener('scroll', this.onScroll, true)
     // The menu is shown by the next render; focus moves into it then.

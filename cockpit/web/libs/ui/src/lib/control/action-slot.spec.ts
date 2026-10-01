@@ -178,7 +178,7 @@ describe('ActionSlot', () => {
       fixture.nativeElement.remove()
     })
 
-    it('closes on a click outside, a resize and a scroll, and not on a click inside', async () => {
+    it('closes on a click outside and a resize, and not on a click inside', async () => {
       const { fixture, trigger, menu, root } = await render(DESTRUCTIVE)
       const open = async () => {
         trigger()?.click()
@@ -195,13 +195,22 @@ describe('ActionSlot', () => {
       window.dispatchEvent(new Event('resize'))
       await fixture.whenStable()
       expect(menu()?.hidden).toBe(true)
-      await open()
-      document.dispatchEvent(new Event('scroll'))
-      await fixture.whenStable()
-      expect(menu()?.hidden).toBe(true)
       // A click outside while closed does nothing.
       document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(menu()?.hidden).toBe(true)
+    })
+
+    it('follows its button when the page scrolls, instead of closing', async () => {
+      const { fixture, trigger, menu } = await render(DESTRUCTIVE)
+      place(trigger(), { right: 600, bottom: 100, top: 72 })
+      trigger()?.click()
+      await fixture.whenStable()
+      expect(menu()?.style.top).toBe('104px')
+      place(trigger(), { right: 600, bottom: 60, top: 32 })
+      document.dispatchEvent(new Event('scroll'))
+      await fixture.whenStable()
+      expect(menu()?.hidden).toBe(false)
+      expect(menu()?.style.top).toBe('64px')
     })
 
     it('emits and closes when an item is chosen', async () => {

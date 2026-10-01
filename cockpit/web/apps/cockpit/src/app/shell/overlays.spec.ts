@@ -12,6 +12,7 @@ describe('Overlays', () => {
     const root: HTMLElement = fixture.nativeElement
     expect(root.querySelector('app-command-palette')).not.toBeNull()
     expect(root.querySelector('app-shortcut-sheet')).not.toBeNull()
+    expect(root.querySelector('app-owner-popover')).not.toBeNull()
     TestBed.inject(ShellState).openPalette()
     await fixture.whenStable()
     expect(root.querySelector('[role="dialog"][aria-label="Search"]')).not.toBeNull()

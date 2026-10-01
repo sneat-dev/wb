@@ -32,7 +32,7 @@ function stubMedia(reduced: boolean): Record<string, Media> {
 
 function setup() {
   const chart = { update: vi.fn(), destroy: vi.fn() }
-  const create = vi.fn((_canvas: HTMLCanvasElement, _config: ChartConfiguration) => chart)
+  const create = vi.fn<(canvas: HTMLCanvasElement, config: ChartConfiguration) => typeof chart>(() => chart)
   let release: (engine: ChartEngine) => void = () => undefined
   const loading = new Promise<ChartEngine>((resolve) => (release = resolve))
   TestBed.resetTestingModule()

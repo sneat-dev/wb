@@ -223,7 +223,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-13
 **Verifies:** cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it, cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers, cockpit-views#ac:copy-command-templates-match-the-manifest, cockpit-views#ac:copy-command-refuses-hostile-values, cockpit-views#ac:owner-gating-is-one-affordance, cockpit-views#ac:intent-to-done-budgets-hold, cockpit-views#ac:chart-library-is-pinned-and-tree-shaken
 **Depends-On:** 11
-**Status:** planning
+**Status:** complete
 
 The control-surface components as empty-capable pieces driven by task 10's fake registry: the action slot (one per pull request or worktree; its direct-button and overflow choices follow `cockpit-actions`), the "Copy command" component with POSIX single-quoting, `--flag=value` and the refusal of control characters and leading dashes, and a unit test that parses every command template against `ai/capabilities.json`; the owner-gating affordance. Also the design tokens (typography, state colours with icons, light and dark) and the exact-pinned tree-shaken Chart.js wrapper as a lazy chunk. Nothing here executes an action; operation feedback and palette action results are `cockpit-actions` Task 8.
 
