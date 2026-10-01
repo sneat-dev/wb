@@ -165,6 +165,7 @@ internal/checkoutmarker::TestTailCovDescribeReportsAPathItCannotResolve	calls t.
 internal/ciaudit::TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed	kept serial because a nested subtest must stay serial: the root is not a git repository
 internal/ciaudit::TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed/the root is not a git repository	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/ciaudit::TestGpCovGitOutputReportsAFailedExecutableLookup	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/cockpit/fleet::TestDefaultHerdrActivityOpensTheResolvedBinaryWithoutRunningIt	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/console::TestEnvBuildsOnTheProcessEnvironment	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/console::TestInteractiveRefusesWhenForcedOffEvenOnATerminal	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/console::TestTailCovDisabledReadsTheLiveEnvironment	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
