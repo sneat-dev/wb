@@ -1592,12 +1592,12 @@ func listClaimedRegistryWorktrees(
 					continue
 				}
 				if claim != nil {
-					layout, layoutErr := claimedSharedWorktreeLayout(path, *claim)
-					root := ""
-					if layoutErr == nil {
-						root = layout.WorktreesRoot
+					layout, layoutErr := claimedSharedWorktreeLayoutFromClaim(home, path, *claim)
+					if layoutErr != nil {
+						diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, fmt.Sprintf("verify missing registered worktree ownership: %v", layoutErr)))
+						continue
 					}
-					diagnostics = append(diagnostics, listDiagnostic(root, claim.Task, path,
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, path,
 						"Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
 				}
 				continue
@@ -1614,16 +1614,13 @@ func listClaimedRegistryWorktrees(
 				}
 				continue
 			}
-			if !taskSelectionMatches(tasks, claim.Task) {
-				continue
-			}
 			if _, localErr := claimedLocalWorktreeLayout(projectsRoot, path, claim); localErr == nil {
 				// The canonical-local walk already owns this deterministic path.
 				// If its inspection failed (for example a GitHub query did), do not
 				// add a misleading second diagnostic that calls it shared.
 				continue
 			}
-			layout, layoutErr := claimedSharedWorktreeLayout(path, claim)
+			layout, layoutErr := claimedSharedWorktreeLayoutFromClaim(home, path, claim)
 			if layoutErr != nil {
 				diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, layoutErr.Error()))
 				continue
@@ -1654,7 +1651,7 @@ func listClaimedRegistryWorktrees(
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, fmt.Sprintf("re-read managed registry claim: %v", err)))
 			continue
 		}
-		layout, err := claimedSharedWorktreeLayout(pendingEntry.path, claim)
+		layout, err := claimedSharedWorktreeLayoutFromClaim(home, pendingEntry.path, claim)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, err.Error()))
 			continue
@@ -1698,15 +1695,22 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 					continue
 				}
-				raw, err := os.ReadFile(filepath.Join(claimsRoot, entry.Name()))
+				claimID := strings.TrimSuffix(entry.Name(), ".json")
+				if !validClaimID(claimID) {
+					continue
+				}
+				runDirectory, _, err := openWorkLogRun(home, task, run.Name(), false)
 				if err != nil {
 					continue
 				}
-				var claim workLogClaim
-				if json.Unmarshal(raw, &claim) != nil || claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
+				claim, readErr := readWorkLogClaimAt(runDirectory, claimID)
+				_ = runDirectory.Close()
+				if readErr != nil ||
+					claim.EffortID != task || claim.RunID != run.Name() || claim.ClaimID != claimID ||
+					claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
 					continue
 				}
-				layout, err := claimedSharedWorktreeLayout(claim.Worktree, claim)
+				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
 					continue
 				}
@@ -1814,6 +1818,9 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 				if claim.Lifecycle == "active" && claim.Task == effort && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
 					_ = claims.Close()
 					_ = runs.Close()
+					if claim.EffortID != effort || claim.RunID != run || claim.ClaimID != claimID {
+						return nil, fmt.Errorf("immutable Work Log claim entry identity mismatch")
+					}
 					return &claim, nil
 				}
 			}
@@ -1825,9 +1832,8 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 }
 
 // claimedSharedWorktreeLayout proves the sole accepted old-shared-root shape.
-// An adopted checkout has an active claim too, but it is intentionally not
-// accepted here: adoption remains represented by its WB-home pointer and its
-// ListResult.External flag rather than becoming a managed shared worktree.
+// Callers must establish immutable acquisition lineage before using geometry
+// to grant managed placement.
 func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout, error) {
 	owner, repository, err := splitRepository(claim.Repository)
 	if err != nil || !validSafeSegment(claim.Task) {
@@ -1849,6 +1855,86 @@ func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout
 		}
 	}
 	return wbhome.Layout{}, fmt.Errorf("active WB claim does not corroborate shared worktree layout")
+}
+
+// claimedSharedWorktreeLayoutFromClaim follows immutable predecessor claims
+// before giving a registry-only checkout managed placement. A successor's
+// AcquiredVia describes its latest handoff, not the original adoption.
+func claimedSharedWorktreeLayoutFromClaim(home, path string, claim workLogClaim) (wbhome.Layout, error) {
+	adopted, err := claimLineageWasAdopted(home, claim)
+	if err != nil {
+		return wbhome.Layout{}, fmt.Errorf("verify managed registry claim lineage: %w", err)
+	}
+	if adopted {
+		return wbhome.Layout{}, fmt.Errorf("adopted worktree claim requires external registration")
+	}
+	return claimedSharedWorktreeLayout(path, claim)
+}
+
+// claimLineageWasAdopted reads the original acquisition through the same
+// no-follow private run and immutable claim reader used by Work Log history.
+// Missing, invalid, or cyclic predecessors cannot grant managed placement.
+func claimLineageWasAdopted(home string, claim workLogClaim) (bool, error) {
+	if claim.ParentClaimID == "" {
+		if claim.AcquiredVia != "" && claim.AcquiredVia != "adopted" && claim.AcquiredVia != legacyMissingClaimRecoveryType {
+			return false, fmt.Errorf("unsupported root Work Log acquisition cannot establish managed placement")
+		}
+	} else if claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" {
+		return false, fmt.Errorf("cross-custody Work Log claim cannot establish managed placement")
+	}
+	if err := validateStaticWorkLogClaim(claim, claim.EffortID, claim.RunID); err != nil {
+		return false, err
+	}
+	if claim.AcquiredVia == "adopted" {
+		return true, nil
+	}
+	if claim.ParentClaimID == "" {
+		return false, nil
+	}
+	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = run.Close() }()
+	claims, err := openPrivateChild(run, "claims", false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = claims.Close() }()
+	seen := map[string]bool{claim.ClaimID: true}
+	for claim.ParentClaimID != "" {
+		var parent workLogClaim
+		readErr := readJSONAt(claims, claim.ParentClaimID+".json", &parent)
+		if readErr != nil {
+			return false, readErr
+		}
+		if parent.ClaimID != claim.ParentClaimID {
+			return false, fmt.Errorf("immutable Work Log claim predecessor identity mismatch")
+		}
+		if seen[parent.ParentClaimID] {
+			return false, fmt.Errorf("immutable Work Log claim predecessor cycle")
+		}
+		if parent.ParentClaimID == "" {
+			if parent.AcquiredVia != "" && parent.AcquiredVia != "adopted" && parent.AcquiredVia != legacyMissingClaimRecoveryType {
+				return false, fmt.Errorf("unsupported root Work Log predecessor cannot establish managed placement")
+			}
+		} else if parent.AcquiredVia != "handoff" && parent.AcquiredVia != "not_landed" && parent.AcquiredVia != "recycle_failed" {
+			return false, fmt.Errorf("cross-custody Work Log predecessor cannot establish managed placement")
+		}
+		if validateErr := validateStaticWorkLogClaim(parent, claim.EffortID, claim.RunID); validateErr != nil {
+			return false, validateErr
+		}
+		if parent.Task != claim.Task || parent.Repository != claim.Repository || parent.Worktree != claim.Worktree ||
+			parent.Branch != claim.Branch || parent.Base != claim.Base || parent.BaseSHA != claim.BaseSHA {
+			return false, fmt.Errorf("immutable Work Log claim predecessor placement mismatch")
+		}
+		seen[parent.ClaimID] = true
+		if parent.AcquiredVia == "adopted" {
+			return true, nil
+		}
+		claim = parent
+	}
+	return false, nil
 }
 
 // claimedLocalWorktreeLayout recognizes the one deterministic default-local

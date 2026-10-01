@@ -18,6 +18,7 @@ func TestE2EPrivateClaimReadersKeepDistinctCorruptionAndFirstMatchPolicies(t *te
 	claimID := strings.Repeat("a", 64)
 	claims := filepath.Join(home, "worklogs", "task-one", "runs", "run-one", "claims")
 	wtLifeCovWriteJSON(t, filepath.Join(claims, claimID+".json"), workLogClaim{
+		EffortID: "task-one", RunID: "run-one", ClaimID: claimID,
 		Task: "task-one", Worktree: worktree, Lifecycle: "active",
 	})
 	validWorktree := t.TempDir()

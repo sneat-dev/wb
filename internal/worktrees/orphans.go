@@ -452,10 +452,8 @@ func orphanLayoutOf(ctx context.Context, home string, clone canonicalClone, work
 		// Its external path can coincidentally have the shared-root shape, but
 		// that does not relocate it under WB management: the pointer registration
 		// remains its authority for List/Cleanup/Abort and for idempotent adopt.
-		if claim.AcquiredVia != "adopted" {
-			if _, layoutErr := claimedSharedWorktreeLayout(worktree, claim); layoutErr == nil {
-				return LayoutShared
-			}
+		if _, layoutErr := claimedSharedWorktreeLayoutFromClaim(home, worktree, claim); layoutErr == nil {
+			return LayoutShared
 		}
 	}
 	return LayoutExternal
