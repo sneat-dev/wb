@@ -12,7 +12,7 @@ export const MAX_TERMS = 16
 
 /** One term of a filter. `value` and `raw` are lower-cased. */
 export interface Term {
-  /** A `-` prefix: the term excludes the rows that match the rest of it. */
+  /** A leading unquoted `-`: the term excludes the rows that match the rest of it. */
   negate: boolean
   /** The field of a `field:value` term; undefined for a bare term. */
   field?: string
@@ -20,39 +20,64 @@ export interface Term {
   value: string
   /** The term without its `-`, colon and all: what a bare match uses when the field is not declared. */
   raw: string
+  /** A field term whose value was quoted: matched whole and literally (`*` and `?` are ordinary characters). */
+  exact?: boolean
 }
 
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/
 
-/** Splits `input` into raw tokens: on whitespace outside double quotes, with the quotes removed. */
-function tokenize(input: string): string[] {
-  const tokens: string[] = []
-  let current = ''
+/** One character of a token, with whether it was inside double quotes. */
+interface Mark {
+  char: string
+  quoted: boolean
+}
+
+/** Splits `input` into tokens on whitespace outside double quotes; the quotes themselves are dropped. */
+function tokenize(input: string): Mark[][] {
+  const tokens: Mark[][] = []
+  let current: Mark[] = []
+  let started = false
   let quoted = false
   for (const char of input) {
     if (char === '"') {
       quoted = !quoted
+      started = true
     } else if (!quoted && /\s/.test(char)) {
-      if (current) tokens.push(current)
-      current = ''
+      if (current.length > 0) tokens.push(current)
+      current = []
+      started = false
     } else {
-      current += char
+      current.push({ char, quoted })
+      started = true
     }
   }
-  if (current) tokens.push(current)
+  if (started && current.length > 0) tokens.push(current)
   return tokens
 }
 
-/** Reads the filter text into terms, applying the caps. Empty input gives no terms. */
+const text = (marks: readonly Mark[]): string => marks.map((mark) => mark.char).join('').toLowerCase()
+
+/**
+ * Reads the filter text into terms, applying the caps. Quotes protect what they
+ * enclose: a quoted `-` does not exclude and a quoted `:` does not make a field.
+ * Empty input gives no terms.
+ */
 export function parseQuery(input: string): Term[] {
   const terms: Term[] = []
   for (const token of tokenize(input.slice(0, MAX_QUERY_LENGTH))) {
     if (terms.length === MAX_TERMS) break
-    const negate = token.length > 1 && token.startsWith('-')
-    const raw = (negate ? token.slice(1) : token).toLowerCase()
-    const colon = raw.indexOf(':')
-    const isField = colon > 0 && colon < raw.length - 1 && FIELD_NAME.test(raw.slice(0, colon))
-    terms.push(isField ? { negate, field: raw.slice(0, colon), value: raw.slice(colon + 1), raw } : { negate, value: raw, raw })
+    const negate = token.length > 1 && token[0].char === '-' && !token[0].quoted
+    const marks = negate ? token.slice(1) : token
+    const raw = text(marks)
+    const colon = marks.findIndex((mark) => mark.char === ':' && !mark.quoted)
+    const name = text(marks.slice(0, colon))
+    const isField = colon > 0 && colon < marks.length - 1 && marks.slice(0, colon).every((mark) => !mark.quoted) && FIELD_NAME.test(name)
+    if (!isField) {
+      terms.push({ negate, value: raw, raw })
+      continue
+    }
+    const rest = marks.slice(colon + 1)
+    terms.push({ negate, field: name, value: text(rest), raw, exact: rest.some((mark) => mark.quoted) })
   }
   return terms
 }
@@ -67,13 +92,22 @@ export function hasWildcard(text: string): boolean {
   return text.includes('*') || text.includes('?')
 }
 
+const SURROGATE = /[\ud800-\udfff]/
+
+/** The text as something indexable by code point: the string itself unless it holds surrogate pairs, so `?` is one code point. */
+function units(value: string): string | string[] {
+  return SURROGATE.test(value) ? Array.from(value) : value
+}
+
 /**
  * Whether `pattern` (with `*` for any run of characters and `?` for exactly one)
  * matches the whole of `text`. Both are expected lower-cased. Steps are at most
  * about the pattern length times the text length: each step either advances in
  * the text or backs up to the last star, which only moves forward.
  */
-export function globMatch(pattern: string, text: string, counter?: StepCounter): boolean {
+export function globMatch(patternText: string, valueText: string, counter?: StepCounter): boolean {
+  const pattern = units(patternText)
+  const text = units(valueText)
   let p = 0
   let t = 0
   let star = -1
@@ -147,9 +181,9 @@ export interface MatchEnv {
   counter?: StepCounter
 }
 
-function valueMatches(text: string, value: string, exact: boolean, counter: StepCounter | undefined): boolean {
-  if (hasWildcard(text)) return globMatch(text, value, counter)
-  return exact ? value === text : value.includes(text)
+function valueMatches(term: string, value: string, whole: boolean, counter: StepCounter | undefined): boolean {
+  if (hasWildcard(term)) return globMatch(term, value, counter)
+  return whole ? value === term : value.includes(term)
 }
 
 function termMatches(term: Term, subject: Subject, env: MatchEnv): boolean {
@@ -157,8 +191,11 @@ function termMatches(term: Term, subject: Subject, env: MatchEnv): boolean {
     if (term.field === 'age') {
       return subject.activityAt !== undefined && ageTermOf(wholeDays(subject.activityAt, env.now)) === term.value
     }
-    const exact = env.exact.has(term.field)
-    return (subject.fields[term.field] ?? []).some((value) => valueMatches(term.value, value, exact, env.counter))
+    const values = subject.fields[term.field] ?? []
+    // A quoted value is an exact, whole-value match with no wildcards.
+    if (term.exact) return values.some((value) => value === term.value)
+    const whole = env.exact.has(term.field)
+    return values.some((value) => valueMatches(term.value, value, whole, env.counter))
   }
   return subject.bare.some((value) => valueMatches(term.raw, value, false, env.counter))
 }

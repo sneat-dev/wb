@@ -91,7 +91,7 @@ export function interimAtRiskWorktrees(worktrees: readonly Worktree[]): Worktree
       worktree.route === 'local' &&
       worktree.owner_state !== undefined &&
       worktree.owner_state !== 'active' &&
-      ((worktree.ahead ?? 0) > 0 || worktree.has_upstream === false),
+      hasUnpushedWork(worktree),
   )
 }
 
@@ -113,16 +113,18 @@ export function isRun(agent: Agent): boolean {
 /**
  * The dispatched runs that make a task blocked: ended `failed` or `timeout`,
  * with no agent of the task (a run or a session) that started later, and not
- * ended more than 24 hours ago. Without start times the order is not known and
- * is not guessed: no later agent; without any time the run does not expire.
+ * ended 24 hours ago or more (from `finished_at`, else `started_at`). Without
+ * start times the order is not known and is not guessed (no later agent), and a
+ * run with no time at all is not reported as blocking.
  */
 export function blockingRuns(agents: readonly Agent[], now: number): Agent[] {
   return agents.filter((run) => {
     if (!isRun(run) || (run.state !== 'failed' && run.state !== 'timeout')) return false
     const started = startedAt(run)
     if (started !== undefined && agents.some((other) => other !== run && (startedAt(other) ?? -Infinity) > started)) return false
+    // A run with no time at all is not reported as blocking.
     const ended = endedAt(run)
-    return ended === undefined || now - ended <= BLOCKED_RUN_EXPIRY_MS
+    return ended !== undefined && now - ended < BLOCKED_RUN_EXPIRY_MS
   })
 }
 
@@ -131,18 +133,35 @@ export function isBlocked(agents: readonly Agent[], now: number): boolean {
   return agents.some((agent) => agent.activity === 'blocked') || blockingRuns(agents, now).length > 0
 }
 
+/** The reasons a pull request can be not ready, in words (REQ:task-state). */
+export const NOT_READY_REASONS = [
+  'draft',
+  'checks failed',
+  'checks pending',
+  'review',
+  'checks not reported',
+  'not mergeable',
+  'behind',
+  'unstable',
+  'merge state not reported',
+  'pull request not yet checked',
+] as const
+
 /**
- * Why a pull request is not ready to land, in words: draft, checks failed,
- * checks pending, not mergeable, behind, or review (a verdict that is not
- * green with no check failed or pending, or a merge state of `blocked`).
- * Empty when it is ready.
+ * Why a pull request is not ready to land, in words, from the list of
+ * NOT_READY_REASONS; empty exactly when it is ready. A pull request never
+ * observed is "pull request not yet checked". `review` is only said for a
+ * verdict that is reported as not green, or a merge state of `blocked`; an
+ * absent verdict or merge state says so instead of guessing.
  */
 export function notReadyReasons(pullRequest: PullRequest): string[] {
+  if (!isObserved(pullRequest)) return ['pull request not yet checked']
   const reasons = new Set<string>()
   if (pullRequest.state === 'draft') reasons.add('draft')
   if (failedChecks(pullRequest) > 0) reasons.add('checks failed')
   else if (pendingChecks(pullRequest) > 0) reasons.add('checks pending')
-  else if (pullRequest.checks_green !== true) reasons.add('review')
+  else if (pullRequest.checks_green === false) reasons.add('review')
+  else if (pullRequest.checks_green === undefined) reasons.add('checks not reported')
   switch (pullRequest.mergeable) {
     case 'dirty':
       reasons.add('not mergeable')
@@ -156,12 +175,22 @@ export function notReadyReasons(pullRequest: PullRequest): string[] {
     case 'unstable':
       reasons.add('unstable')
       break
+    case 'draft':
+      reasons.add('draft')
+      break
+    case 'clean':
+    case 'has_hooks':
+      break
+    default:
+      reasons.add('merge state not reported')
   }
   return [...reasons]
 }
 
+/** Row 4 for one pull request: observed, not a draft, a green verdict and a merge state of `clean` or `has_hooks`. */
 function isReadyToLand(pullRequest: PullRequest): boolean {
   return (
+    isObserved(pullRequest) &&
     pullRequest.state !== 'draft' &&
     pullRequest.checks_green === true &&
     pullRequest.mergeable !== undefined &&
@@ -176,11 +205,17 @@ function isWorking(inputs: TaskInputs): boolean {
   )
 }
 
+/** A worktree with work that is not pushed: commits ahead, or a branch with no upstream. */
+export function hasUnpushedWork(worktree: Worktree): boolean {
+  return (worktree.ahead ?? 0) > 0 || worktree.has_upstream === false
+}
+
+/** Landed: a merged pull request, or every worktree merged, with no open pull request and no worktree of the task holding unpushed work. */
 function isLanded(inputs: TaskInputs): boolean {
-  return (
+  const merged =
     inputs.pullRequests.some((pullRequest) => isObserved(pullRequest) && pullRequest.state === 'merged') ||
     (inputs.worktrees.length > 0 && inputs.worktrees.every((worktree) => worktree.lifecycle === 'merged'))
-  )
+  return merged && !inputs.worktrees.some(hasUnpushedWork)
 }
 
 function anythingReported(inputs: TaskInputs): boolean {
@@ -194,9 +229,10 @@ function anythingReported(inputs: TaskInputs): boolean {
 /** The state of one task at `now`. */
 export function taskState(inputs: TaskInputs, now: number): TaskStateId {
   if (interimAtRiskWorktrees(inputs.worktrees).length > 0) return 'at-risk'
-  const open = openObserved(inputs.pullRequests)
-  if (open.some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
+  const open = inputs.pullRequests.filter(isOpenPullRequest)
+  if (openObserved(inputs.pullRequests).some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
   if (isBlocked(inputs.agents, now)) return 'blocked'
+  // Ready only when every open pull request, observed or not, is observed and ready.
   if (open.length > 0) return open.every(isReadyToLand) ? 'ready' : 'not-ready'
   if (isWorking(inputs)) return 'working'
   if (isLanded(inputs)) return 'landed'

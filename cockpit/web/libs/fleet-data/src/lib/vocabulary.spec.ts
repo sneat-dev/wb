@@ -2,6 +2,16 @@ import { AGE_TERMS } from './matcher'
 import { TASK_STATE_IDS } from './task-state'
 import {
   AppLink,
+  LinkResult,
+  agentsBadgeLink,
+  encodeListItem,
+  machineAgentsLink,
+  machineRepositoriesLink,
+  machineWorktreesLink,
+  repositoryAgentsLink,
+  repositoryPullRequestsLink,
+  repositoryWorktreesLink,
+  taskWorktreesLink,
   CODE_INDEX_STATES,
   DESC_FIRST,
   HOME_PATH,
@@ -128,12 +138,42 @@ describe('link builders', () => {
     expect(selectionLink('tasks', 'fix ci')).toEqual({ path: '/tasks', query: { sel: 'fix ci' } })
   })
 
-  it('quotes a field value with whitespace and drops quotes inside it', () => {
-    expect(fieldTerm('task', 'fix-ci')).toBe('task:fix-ci')
-    expect(fieldTerm('task', 'fix ci')).toBe('task:"fix ci"')
-    expect(fieldTerm('task', 'a "b" c')).toBe('task:"a b c"')
-    expect(termLink('worktrees', 'task', 'fix ci')).toEqual({ path: '/worktrees', query: { q: 'task:"fix ci"' } })
-    expect(termLink('tasks', 'repo', 'sneat-dev/wb', ['pr'])).toEqual({ path: '/tasks', query: { q: 'repo:sneat-dev/wb', chips: 'pr' } })
+  // cockpit-views#ac:matcher-grammar
+  it('always quotes a field value, and refuses one a filter cannot express', () => {
+    expect(fieldTerm('task', 'fix-ci')).toEqual({ ok: true, text: 'task:"fix-ci"' })
+    expect(fieldTerm('task', 'fix ci')).toEqual({ ok: true, text: 'task:"fix ci"' })
+    expect(fieldTerm('task', 'a "b" c')).toMatchObject({ ok: false, reason: expect.stringContaining('double quote') })
+    expect(fieldTerm('task', 'x'.repeat(260))).toMatchObject({ ok: false, reason: expect.stringContaining('256') })
+    expect(fieldTerm('task', 'x'.repeat(240))).toMatchObject({ ok: true })
+    expect(termLink('worktrees', 'task', 'fix ci')).toEqual({ ok: true, link: { path: '/worktrees', query: { q: 'task:"fix ci"' } } })
+    expect(termLink('tasks', 'repo', 'sneat-dev/wb', ['pr'])).toEqual({ ok: true, link: { path: '/tasks', query: { q: 'repo:"sneat-dev/wb"', chips: 'pr' } } })
+  })
+
+  it('never throws for a name it cannot link: it says why, so the page shows a plain number with a title', () => {
+    expect(termLink('worktrees', 'task', 'a"b')).toMatchObject({ ok: false })
+    expect(termLink('worktrees', 'task', 'y'.repeat(300))).toMatchObject({ ok: false })
+    expect(termLink('agents', 'age', '<1d')).toEqual({ ok: false, reason: 'age: is not a filter field of agents' })
+    expect(termLink('tasks', 'repo', 'x', ['nope'])).toMatchObject({ ok: false, reason: expect.stringContaining('chip nope') })
+  })
+
+  it('links every count cell to exactly the rows it counted, and none for the branch counts or throughput', () => {
+    const link = (result: LinkResult): AppLink => (result.ok ? result.link : { path: '', query: {} })
+    expect(link(taskWorktreesLink('fix ci'))).toEqual({ path: '/worktrees', query: { q: 'task:"fix ci"' } })
+    expect(link(repositoryWorktreesLink('sneat-dev/wb'))).toEqual({ path: '/worktrees', query: { q: 'repo:"sneat-dev/wb"' } })
+    expect(link(repositoryAgentsLink('sneat-dev/wb'))).toEqual({ path: '/agents', query: { q: 'repo:"sneat-dev/wb"' } })
+    expect(link(repositoryPullRequestsLink('sneat-dev/wb'))).toEqual({ path: '/tasks', query: { q: 'repo:"sneat-dev/wb"', chips: 'pr' } })
+    expect(link(machineRepositoriesLink('m1'))).toEqual({ path: '/repositories', query: { machine: 'm1' } })
+    expect(link(machineWorktreesLink('m1'))).toEqual({ path: '/worktrees', query: { machine: 'm1' } })
+    expect(link(machineAgentsLink('m1'))).toEqual({ path: '/agents', query: { machine: 'm1' } })
+    expect(link(agentsBadgeLink())).toEqual({ path: '/agents', query: { chips: 'running' } })
+    expect(taskWorktreesLink('a"b').ok).toBe(false)
+  })
+
+  it('encodes a comma in a machine id so it cannot split machine=', () => {
+    const params = listQueryParams({ machines: ['a,b', '50%', 'c'] })
+    expect(params['machine']).toBe('a%2Cb,50%25,c')
+    expect(parseListQuery('tasks', params).machines).toEqual(['a,b', '50%', 'c'])
+    expect(encodeListItem('x%,')).toBe('x%25%2C')
   })
 
   it('builds the detail addresses, encoding the task name', () => {
@@ -157,8 +197,10 @@ describe('link builders', () => {
       if (vocabulary.hasActivity) for (const age of AGE_TERMS) links.push(ageLink(page, age))
       links.push(selectionLink(page, 'any'))
     }
-    links.push(chipLink('agents', 'runtime-claude'), termLink('worktrees', 'task', 'fix ci'), termLink('worktrees', 'repo', 'sneat-dev/wb'), termLink('agents', 'repo', 'sneat-dev/wb'))
-    links.push(termLink('tasks', 'repo', 'sneat-dev/wb', ['pr']), machineLink('worktrees', 'mach-1'), machineLink('agents', 'mach-1'), machineLink('repositories', 'mach-1'))
+    links.push(chipLink('agents', 'runtime-claude'), machineLink('worktrees', 'mach-1'), machineLink('agents', 'mach-1'), machineLink('repositories', 'mach-1'))
+    for (const result of [taskWorktreesLink('fix ci'), repositoryWorktreesLink('sneat-dev/wb'), repositoryAgentsLink('sneat-dev/wb'), repositoryPullRequestsLink('sneat-dev/wb')]) {
+      if (result.ok) links.push(result.link)
+    }
     for (const link of links) expect(linkProblems(link), hrefOf(link)).toEqual([])
     expect(links.length).toBeGreaterThan(60)
     // The default sort of a page is a sort column of the page, or the internal order of Agents and Machines.
@@ -174,7 +216,6 @@ describe('link builders', () => {
     expect(() => stateLink('machines', 'fresh')).toThrow(/state:fresh/)
     expect(() => ageLink('worktrees', '30d' as never)).toThrow(/age:30d/)
     expect(() => listLink('tasks', { q: 'day:2026-10-01' })).not.toThrow()
-    expect(() => termLink('agents', 'age' as never, '<1d')).toThrow(/age: on agents/)
     expect(() => listLink('worktrees', { sort: 'cpu' })).toThrow(/sort cpu/)
   })
 

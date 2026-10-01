@@ -2,11 +2,14 @@
 // one is an exact `wb` invocation that exists in the command manifest
 // (`ai/capabilities.json`; a unit test parses every template against it, with
 // the flags it needs), built only from identifiers in the read model and
-// angle-bracket placeholders. Every interpolated value is POSIX single-quoted,
+// angle-bracket placeholders, which are left bare and unquoted so that pasting
+// a template unedited fails in the shell instead of running (the entry is flagged
+// `needsEdit`). Every other interpolated value is POSIX single-quoted,
 // flags take the `--flag=value` form, and a value with a control character, or
 // one that starts with `-`, is refused: nothing is ever copied that could be
 // read as an option or break out of its quotes. Nothing here executes anything.
 
+import { MachineRoute } from './fleet.types'
 import { MAX_QUERY_LENGTH, MatchEnv, matchesTerms, parseQuery } from './matcher'
 
 /** What the operator supplies, shown as a placeholder in angle brackets until known. */
@@ -16,16 +19,24 @@ export const PLACEHOLDERS = {
   promptFile: '<file>',
   profile: '<profile>',
   hubUrl: '<hub-url>',
+  brief: '<brief>',
+  task: '<task>',
 } as const
 
-// Control characters, and the bidirectional controls that can reorder text on screen.
-// eslint-disable-next-line no-control-regex
-const FORBIDDEN = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/
+const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set(Object.values(PLACEHOLDERS))
 
-/** Why a value cannot be copied into a command; undefined when it can. */
-export function valueProblem(value: string): string | undefined {
+// Control characters, and the bidirectional and invisible characters that can reorder or hide text.
+const INVISIBLE = '\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff'
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN = new RegExp(`[\\u0000-\\u001f\\u2028\\u2029${INVISIBLE}]`)
+// A multi-line text (a brief) may hold tabs and line breaks, and nothing else of the above.
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_IN_TEXT = new RegExp(`[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029${INVISIBLE}]`)
+
+/** Why a value cannot be copied into a command; undefined when it can. `multiline` allows tabs and line breaks (a brief). */
+export function valueProblem(value: string, multiline = false): string | undefined {
   if (value === '') return 'an empty value cannot be copied into a command'
-  if (FORBIDDEN.test(value)) return 'a value with a control character is not copied into a command'
+  if ((multiline ? FORBIDDEN_IN_TEXT : FORBIDDEN).test(value)) return 'a value with a control character is not copied into a command'
   if (value.startsWith('-')) return 'a value that starts with "-" could be read as an option, so it is not copied into a command'
   return undefined
 }
@@ -36,12 +47,13 @@ export function shellQuote(value: string): string {
 }
 
 /** A word the shell reads literally without quotes. */
-const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/
+const SHELL_SAFE = /^[A-Za-z0-9_@+:,./-]+$/
 
 /** How to reach a machine that has an SSH route (REQ:remote-ssh-fetch); `wbPath` empty means `wb`. */
 export interface SshRoute {
   host: string
-  user: string
+  /** Empty or absent when the configuration has none: the destination is then just the host. */
+  user?: string
   wbPath?: string
 }
 
@@ -52,6 +64,22 @@ export interface CommandTarget {
   ssh?: SshRoute
 }
 
+/** The SSH route of a machine from the session response (owner-only), when it has one. */
+export function sshRouteOf(routes: readonly MachineRoute[] | undefined, machineId: string): SshRoute | undefined {
+  const route = routes?.find((candidate) => candidate.machine_id === machineId)
+  return route && { host: route.ssh.host, user: route.ssh.user, wbPath: route.ssh.wb_path }
+}
+
+/**
+ * Where an entity's command runs: here for this machine's own entries, else
+ * through the machine's SSH route when the session carries one (anonymous readers
+ * get none), else labelled "run on <machine>".
+ */
+export function commandTarget(entry: { route: string; machine: string; machine_id: string }, routes?: readonly MachineRoute[]): CommandTarget {
+  if (entry.route === 'local') return {}
+  return { machine: entry.machine, ssh: sshRouteOf(routes, entry.machine_id) }
+}
+
 export type CopyCommand =
   | {
       ok: true
@@ -59,11 +87,13 @@ export type CopyCommand =
       text: string
       /** "run on <machine>" for another machine without an SSH route; absent otherwise. */
       label?: string
+      /** The text holds a placeholder the operator must replace: pasted unedited it fails in the shell. */
+      needsEdit: boolean
     }
   | { ok: false; reason: string }
 
-/** One piece of a command: a fixed word, an interpolated value, or a `--flag=value`. */
-type Part = { word: string } | { value: string } | { flag: string; value: string }
+/** One piece of a command: a fixed word, an interpolated value, or a `--flag=value`; `multiline` is for a brief. */
+type Part = { word: string } | { value: string; multiline?: boolean } | { flag: string; value: string; multiline?: boolean }
 
 /**
  * One interpolated value as the text to copy. Locally it is single-quoted. For
@@ -75,30 +105,37 @@ function quoted(value: string, remote: boolean): string {
   return remote && !SHELL_SAFE.test(value) ? shellQuote(once) : once
 }
 
-function render(parts: readonly Part[], remote: boolean): { ok: true; words: string[] } | { ok: false; reason: string } {
+function render(parts: readonly Part[], remote: boolean): { ok: true; words: string[]; needsEdit: boolean } | { ok: false; reason: string } {
   const words: string[] = []
+  let needsEdit = false
   for (const part of parts) {
     if ('word' in part) {
       words.push(part.word)
       continue
     }
-    const problem = valueProblem(part.value)
+    // A placeholder is left bare, so an unedited paste fails instead of running.
+    const placeholder = PLACEHOLDER_VALUES.has(part.value)
+    const problem = placeholder ? undefined : valueProblem(part.value, part.multiline)
     if (problem) return { ok: false, reason: problem }
-    words.push('flag' in part ? `${part.flag}=${quoted(part.value, remote)}` : quoted(part.value, remote))
+    needsEdit ||= placeholder
+    const text = placeholder ? part.value : quoted(part.value, remote)
+    words.push('flag' in part ? `${part.flag}=${text}` : text)
   }
-  return { ok: true, words }
+  return { ok: true, words, needsEdit }
 }
 
-/** `ssh <user>@<host> <wb_path> <arguments>`, refusing a route with a hostile part. */
-function sshCommand(route: SshRoute, words: readonly string[]): CopyCommand {
-  for (const value of [route.host, route.user, route.wbPath ?? 'wb']) {
+/** `ssh [<user>@]<host> <wb_path> <arguments>`, refusing a route with a hostile part. */
+function sshCommand(route: SshRoute, words: readonly string[], needsEdit: boolean): CopyCommand {
+  const user = route.user ?? ''
+  for (const value of [route.host, user === '' ? 'x' : user, route.wbPath || 'wb']) {
     const problem = valueProblem(value)
     if (problem) return { ok: false, reason: problem }
   }
-  const destination = `${route.user}@${route.host}`
-  const executable = route.wbPath ?? 'wb'
+  const destination = user === '' ? route.host : `${user}@${route.host}`
+  const executable = route.wbPath || 'wb'
   return {
     ok: true,
+    needsEdit,
     text: [
       'ssh',
       SHELL_SAFE.test(destination) ? destination : shellQuote(destination),
@@ -116,9 +153,10 @@ function sshCommand(route: SshRoute, words: readonly string[]): CopyCommand {
 function command(target: CommandTarget, parts: readonly Part[]): CopyCommand {
   const rendered = render(parts, target.ssh !== undefined)
   if (!rendered.ok) return rendered
-  if (target.ssh !== undefined) return sshCommand(target.ssh, rendered.words)
+  if (target.ssh !== undefined) return sshCommand(target.ssh, rendered.words, rendered.needsEdit)
   const text = rendered.words.join(' ')
-  return target.machine === undefined ? { ok: true, text } : { ok: true, text, label: `run on ${target.machine}` }
+  const { needsEdit } = rendered
+  return target.machine === undefined ? { ok: true, text, needsEdit } : { ok: true, text, needsEdit, label: `run on ${target.machine}` }
 }
 
 const wb = (...words: string[]): Part[] => ['wb', ...words].map((word) => ({ word }))
@@ -214,13 +252,14 @@ export function sessionSend(sessionId: string, message: string = PLACEHOLDERS.me
 export function agentDispatch(
   repository: string,
   task: string,
-  options: { profile?: string; base?: string } = {},
+  options: { profile?: string; base?: string; brief?: string } = {},
   target: CommandTarget = {},
 ): CopyCommand {
   return command(target, [
     ...wb('agent', 'dispatch'),
     { flag: '--repo', value: repository },
-    { flag: '--task', value: task },
+    // `--task` is the text of the task prompt (the brief), not the task name; the name is the worktree.
+    { flag: '--task', value: options.brief || PLACEHOLDERS.brief, multiline: true },
     { flag: '--profile', value: options.profile || PLACEHOLDERS.profile },
     { flag: '--new-worktree', value: task },
     ...(options.base ? [{ flag: '--base', value: options.base }] : []),
@@ -239,7 +278,10 @@ export function pickRepositories(names: readonly string[], query: string, now: n
 
 /** The form's answers. */
 export interface NewTaskForm {
+  /** The task name: the worktree and branch name. */
   task: string
+  /** The text of the task prompt, for `wb agent dispatch --task`; may be several lines. */
+  brief: string
   repositories: readonly string[]
   base?: string
   /** Required: the verb requires `--model`, and `unknown` is its explicit value. */
@@ -270,7 +312,7 @@ export function newTaskCommands(form: NewTaskForm): NewTaskCommands {
   }
   return {
     create: worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }),
-    dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base })),
+    dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief: form.brief })),
   }
 }
 
