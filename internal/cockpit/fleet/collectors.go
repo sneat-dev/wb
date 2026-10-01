@@ -198,7 +198,7 @@ type LocalCollectors struct {
 	Runner runner.Runner
 	// DeclaredOwner reads a worktree's declared owner process liveness
 	// (worktrees.OwnerLive, OwnerGone or OwnerUnstated); nil means the Work Log
-	// journal's, read without writing (worktrees.DeclaredOwnerReadOnly): one
+	// journal's, read without writing (worktrees.DeclaredOwnerLiveReadOnly): one
 	// file read and a signal-zero check of each recorded process id.
 	DeclaredOwner func(worktree string) string
 	// ProcessStart observes when a process started; nil means
