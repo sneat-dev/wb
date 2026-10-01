@@ -107,11 +107,31 @@ func TestE2EDirtyCaptureLeafFaultsRemainPhaseSpecific(t *testing.T) {
 			}
 		}},
 		{"symlink replaced after readlink", "link", "readlink", "dirty symlink changed", func(t *testing.T, path string) {
-			if err := os.Remove(path); err != nil {
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep the original inode alive: unlink-and-create can reuse it on Linux,
+			// making the real SameFile guard see a false identity match.
+			retained := path + "-retained"
+			if err := os.Rename(path, retained); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink("other", path); err != nil {
 				t.Fatal(err)
+			}
+			after, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(before, after) {
+				t.Fatal("replacement reused the original symlink identity")
+			}
+			if oldTarget, err := os.Readlink(retained); err != nil || oldTarget != "target" {
+				t.Fatalf("retained original link = %q, %v", oldTarget, err)
+			}
+			if newTarget, err := os.Readlink(path); err != nil || newTarget != "other" {
+				t.Fatalf("replacement link = %q, %v", newTarget, err)
 			}
 		}},
 	} {
