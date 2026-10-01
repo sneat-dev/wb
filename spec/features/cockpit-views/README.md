@@ -398,7 +398,8 @@ only for dispatched runs on this machine, through the action slot, and otherwise
 "Copy command" entries. Machine chips at the right show live or cached with age and,
 where metrics exist, a load indicator that answers "can this machine take another
 agent": `free` when `cpu_percent` is below 70 and memory used is below 80 percent
-of the total, `busy` otherwise, with the sample's route (`local`, `live-remote` or
+of the total, `busy` otherwise, and `unknown` (never `free`) when the sample has no
+`cpu_percent` or no memory value, with the sample's route (`local`, `live-remote` or
 `cached`) and its age.
 
 #### REQ: home-resume
@@ -748,10 +749,18 @@ agents of one machine are capped at 200 at read and at publish, and every string
 int and `landed_at` time. Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
-string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt.; `samples` list, at
-most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100), `load1` number (0
-or more), `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` ints
-(0 or more) and `sampled_at` time (not in the future).
+string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
+`samples` list, at most 360, oldest first; `reason` string, opt., one of `no_source`, `unsupported`
+or `unavailable`. A sample has `sampled_at` time (not in the future, strictly later than the sample
+before it) and these measurements, each optional (a part that could not be read is absent, never
+zero): `cpu_percent` number (0 to 100), `load1` number (0 or more), `memory_used_bytes` and
+`memory_total_bytes` ints, `disk_free_bytes` and `disk_total_bytes` ints (each pair present
+together, used not above total, free not above total). `cpu_percent` is absent on the first
+sample, when the counters did not advance or went backwards, and where sampling is unsupported.
+Memory used is one rule on every platform: the total less the memory that is available without
+swapping, which is `MemTotal - MemAvailable` on Linux and the total less the free and inactive
+pages on macOS (gopsutil's `Available`), so a healthy machine with a large file cache does not
+read as busy. The route sanitizes every answer, whatever its source, before serving it.
 
 #### REQ: compressed-responses
 
@@ -938,7 +947,11 @@ The daemon MUST sample the local machine's CPU percent, one-minute load, memory
 used and total, and free and total disk of the projects root every 10 seconds
 into an in-memory ring buffer of 360 samples. Sampling is off the request path,
 reads through an injectable source so unit tests need no real machine, and
-compiles on Windows, where it may report that metrics are unsupported. Samples
+compiles on Windows, where it may report that metrics are unsupported. A part of a
+reading that fails is left out of that sample and the rest is kept; after three
+consecutive readings that give nothing the route answers `none` with the reason
+`unavailable` until one succeeds. A panic or a hung read in a source never ends or
+blocks the daemon (stopping waits at most 2 seconds for a read in flight). Samples
 are not persisted across a daemon restart.
 
 #### REQ: machine-metrics-route
@@ -953,7 +966,7 @@ for the single latest sample carried in that machine's published snapshot, with 
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
 `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`,
-`disk_total_bytes` and `sampled_at`, and nothing else. The fallback order for another
+`disk_total_bytes` and `sampled_at`, and nothing else (every measurement may be absent, never guessed or zero-filled). The fallback order for another
 machine is live remote, then cached, then none, and the response says which it is. An
 unknown machine id is answered with status 404. The route runs no request-time fetch.
 
@@ -1627,7 +1640,7 @@ Then each is listed with runtime and model, task, machine and how long it has ru
 Scenario: Free and busy
 Given machine `mac` with `cpu_percent` 40 and 50 percent memory used (route `local`), machine `vm` with `cpu_percent` 85 (route `live-remote`), and machine `old` with a cached sample 30 minutes old
 When Home is opened
-Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label
+Then the chips show `mac` free, `vm` busy and `old` with its sample's age and the route `cached`, each with its route label; and a machine whose latest sample lacks `cpu_percent` (the first after a daemon start) shows load `unknown`, never `free`
 
 ### AC: resume-lists-five-recent-tasks
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
@@ -116,6 +117,13 @@ type Options struct {
 	// Hardware is this machine's hardware facts for its machine entry; the zero
 	// value omits them. The daemon passes LocalHardware().
 	Hardware Hardware
+	// Sampler is this machine's metrics history. It alone answers for this
+	// machine's id on the machine-metrics route (`local`); nil means this machine
+	// has none (`none`). The snapshotter starts and stops it with itself.
+	Sampler *machinemetrics.Sampler
+	// Metrics are the sources of the machine-metrics route for other machines,
+	// asked in order (the live remote, then the cached source).
+	Metrics []MetricsSource
 	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
 	// for each snapshot stored and once for each repository's branch list that
 	// is first asked for after a change, never per request; a test counts it.
@@ -233,6 +241,12 @@ type Snapshotter struct {
 	remoteBranches map[string]cockpit.Payload
 	codePass       CodeIndexPass
 	codeErr        string
+
+	// metricsSources answer the machine-metrics route in order; metrics holds
+	// the bodies prepared from their answers.
+	sampler        *machinemetrics.Sampler
+	metricsSources []MetricsSource
+	metrics        metricsCache
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -243,7 +257,8 @@ func New(options Options) *Snapshotter {
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
 		stopWait: options.StopWait, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
-		repos: map[string]*repoState{}, observed: map[string]pullObservation{},
+		repos: map[string]*repoState{}, observed: map[string]pullObservation{}, metricsSources: slices.Clone(options.Metrics),
+		metrics:      metricsCache{entries: map[string]cachedMetrics{}},
 		pullObserver: options.PullRequests, pullLimit: options.PullRequestLimit, pullBudget: options.PullRequestHourlyBudget, attempts: map[string]pullAttempt{}, pullTimeout: options.PullRequestTimeout,
 	}
 	if snapshotter.pullLimit <= 0 {
@@ -255,6 +270,7 @@ func New(options Options) *Snapshotter {
 	if snapshotter.pullTimeout <= 0 {
 		snapshotter.pullTimeout = defaultPullRequestTimeout
 	}
+	snapshotter.sampler = options.Sampler
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}
@@ -401,12 +417,17 @@ func (s *Snapshotter) gitTooOld() bool {
 }
 
 // Start refreshes now and then on every interval until the returned function
-// is called or ctx ends. The function stops the loop, waits for it, and then
+// is called or ctx ends, and runs this machine's metrics sampler, when it has
+// one, for the same time. The function stops the loop, waits for it, and then
 // waits a short, bounded time for a read of the other machines still running;
 // no repository read outlives it.
 func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	stopSampler := func() {}
+	if s.sampler != nil {
+		stopSampler = s.sampler.Start(ctx)
+	}
 	go func() {
 		defer close(done)
 		s.run(ctx)
@@ -414,6 +435,7 @@ func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
 	return func() {
 		cancel()
 		<-done
+		stopSampler()
 		waited := make(chan struct{})
 		go func() {
 			s.side.Wait()
