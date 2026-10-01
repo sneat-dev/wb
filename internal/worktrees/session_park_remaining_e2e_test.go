@@ -5,6 +5,7 @@ package worktrees
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -385,6 +386,36 @@ func TestE2EParkedRemoteValidationRetainsExactPushedSource(t *testing.T) {
 				}
 				return next()
 			})
+		}},
+		{"uppercase claim reference", "corroborate source Work Log claim", func(t *testing.T, member *parkedSessionCaptureMember) context.Context {
+			path := filepath.Join(worktree, workLogProjectionDirectory, workLogProjectionName)
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection, err := readWorkLogProjection(worktree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalClaimID := projection.ClaimID
+			projection.ClaimID = strings.ToUpper(projection.ClaimID)
+			if projection.ClaimID == originalClaimID {
+				projection.ClaimID = "A" + projection.ClaimID[1:]
+			}
+			data, err := json.Marshal(projection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.WriteFile(path, original, 0o600); err != nil {
+					t.Error(err)
+				}
+			})
+			member.snapshot.WorkLogReference = "worklog:" + projection.EffortID + "/" + projection.RunID + "/" + projection.ClaimID
+			return context.Background()
 		}},
 		{"private claim", "corroborate source Work Log claim", func(t *testing.T, _ *parkedSessionCaptureMember) context.Context {
 			home, err := wbhomeRootForTest(fixture.projectsRoot)
