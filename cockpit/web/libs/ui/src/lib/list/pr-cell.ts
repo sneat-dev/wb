@@ -19,7 +19,9 @@ import { PrChip } from '../control/pr-chip'
       align-items: center;
       overflow: hidden;
     }
+    /* The chip keeps its own width and the cell clips it, so its badges are cut at the edge, never squeezed into each other. */
     app-pr-chip {
+      flex: none;
       flex-wrap: nowrap;
     }
     .more {

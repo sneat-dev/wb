@@ -4,7 +4,8 @@ import { TestBed } from '@angular/core/testing'
 import { By } from '@angular/platform-browser'
 import { Router, provideRouter } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
-import { FleetDocument, FleetStore, ListRow, Worktree } from '@cockpit/fleet-data'
+import { FleetDocument, FleetStore, Worktree } from '@cockpit/fleet-data'
+import { ListRow, buildWorktreeRows } from '@cockpit/fleet-data/list'
 import { fleetDocument, performanceFixture, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from '../control/clipboard'
 import { ListCell, ListPanelTemplate } from './list-cell'
@@ -18,8 +19,8 @@ const ago = (days: number) => new Date(NOW - days * DAY).toISOString()
 
 const COLUMNS: ListColumn<Worktree>[] = [
   { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
-  { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, drop: 'phone', hint: 'The branch' },
-  { id: 'machine', header: 'Machine', sort: 'machine', width: 90, drop: 'narrow', align: 'end', value: (w) => w.machine },
+  { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, priority: 1, hint: 'The branch' },
+  { id: 'machine', header: 'Machine', sort: 'machine', width: 90, priority: 2, align: 'end', value: (w) => w.machine },
   { id: 'activity', header: 'Last activity', sort: 'activity', width: 100 },
 ]
 
@@ -63,7 +64,7 @@ class PrefixHost {
 })
 class NoPanelHost {
   protected readonly store = inject(FleetStore)
-  protected readonly rows = computed(() => this.store.model().worktreeRows)
+  protected readonly rows = computed(() => buildWorktreeRows(this.store.model()))
   protected readonly columns = COLUMNS
   protected readonly resolve = (rows: readonly ListRow<Worktree>[], sel: string) => rows.find((row) => row.item.task === sel)
 }
@@ -206,27 +207,23 @@ describe('ListView', () => {
     expect((root.querySelector('app-list') as HTMLElement).style.getPropertyValue('--row-h')).toBe('32px')
   })
 
-  it('marks which columns drop first, and how a header reads and sorts', async () => {
+  it('marks how a header reads and sorts', async () => {
     const page = await open('/list')
     const columns = headers(page.root)
     expect(columns.map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
     expect(columns[1].getAttribute('title')).toBe('The branch')
-    expect(columns[1].classList.contains('drop-phone')).toBe(true)
-    expect(columns[2].classList.contains('drop-narrow')).toBe(true)
     expect(columns[2].classList.contains('end')).toBe(true)
-    expect(columns[0].style.minWidth).toBe('100px')
-    expect(columns[3].style.minWidth).toBe('')
-    const list = page.list() as unknown as { style: (column: ListColumn<Worktree>) => string }
-    expect(COLUMNS.map((column) => list.style(column))).toEqual(['3 1 0', '1 1 0', '0 1 90px', '0 1 100px'])
+    // The tracks: a fill column is minmax(min, grow fr), a fixed one takes up to its width, and the open-page cell is reserved.
+    const grid = (page.root.querySelector('.viewport') as HTMLElement).style.getPropertyValue('--cols')
+    expect(grid).toBe('minmax(100px, 3fr) minmax(0px, 1fr) minmax(90px, 90px) minmax(100px, 100px) 32px')
   })
 
   it('takes the noun, the chips and their words from the page alone', async () => {
     const { root } = await open('/list')
     expect(root.querySelector('.viewport')?.getAttribute('aria-label')).toBe('worktrees')
     const chips = [...root.querySelectorAll('[aria-label="Quick filters"] button')].map(text)
-    expect(chips).toEqual(['Active', 'Orphaned', 'Unpushed', 'Upstream gone', 'Pull request', 'Idle 30 d+', 'Safe to clean', 'Look first'])
-    expect(button(root, 'Unpushed').getAttribute('title')).toContain('this machine')
-    expect(button(root, 'Active').hasAttribute('title')).toBe(false)
+    expect(chips).toEqual(['Active', 'Orphaned', 'Unpushed', 'Upstream gone', 'Has pull request', 'Idle 30 days', 'Safe to remove', 'Needs a look'])
+    expect(button(root, 'Unpushed').getAttribute('title')).toContain('not pushed')
   })
 
   // cockpit-views#ac:filter-state-lives-in-the-address
@@ -502,6 +499,23 @@ describe('ListView', () => {
     expect(FakeObserver.last.disconnect).toHaveBeenCalled()
   })
 
+  it('hides the lowest-priority columns, not squeezes them all, when the list is narrower than its columns need, and brings them back when it widens', async () => {
+    vi.stubGlobal('ResizeObserver', FakeObserver)
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000)
+    const page = await open('/list')
+    expect(headers(page.root).map(text)).toEqual(['Worktree', 'Branch', 'Machine', 'Last activity'])
+    width.mockReturnValue(300)
+    FakeObserver.last.callback()
+    await page.settle()
+    expect(headers(page.root).map(text)).toEqual(['Worktree', 'Last activity'])
+    expect((page.root.querySelector('.viewport') as HTMLElement).getAttribute('aria-colcount')).toBe('3')
+    expect(rowElements(page.root)[0].querySelectorAll('[role=gridcell]')).toHaveLength(3)
+    width.mockReturnValue(1000)
+    FakeObserver.last.callback()
+    await page.settle()
+    expect(headers(page.root)).toHaveLength(4)
+  })
+
   it('measures its own height, or the window\'s while it has none', async () => {
     const page = await open('/list')
     expect(rowElements(page.root)).toHaveLength(6)
@@ -692,7 +706,7 @@ describe('ListView', () => {
   it('names the filter that matched nothing and clears it with "Clear filters"', async () => {
     const page = await open('/list?q=zzz&chips=pr&machine=mach-beta&sort=machine&sel=w1')
     expect(tasks(page.root)).toEqual([])
-    expect(text(page.root.querySelector('.empty'))).toContain('No worktrees match the filter “zzz” and the Pull request filter and machine beta.')
+    expect(text(page.root.querySelector('.empty'))).toContain('No worktrees match the filter “zzz” and the Has pull request filter and machine beta.')
     expect(text(page.root.querySelector('.count'))).toBe('0 of 6')
     button(page.root, 'Clear filters').click()
     await page.settle()
@@ -813,6 +827,6 @@ describe('ListView', () => {
     fixture.componentRef.setInput('extraChips', [{ id: 'runtime-x', label: 'X' }])
     await fixture.whenStable()
     expect(text(fixture.nativeElement.querySelector('.count'))).toBe('0 of 0')
-    expect(text(fixture.nativeElement.querySelector('[aria-label="Quick filters"]'))).toBe('Stale Outdated X')
+    expect(text(fixture.nativeElement.querySelector('[aria-label="Quick filters"]'))).toBe('Stale Older WB X')
   })
 })

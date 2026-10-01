@@ -18,7 +18,8 @@ import {
 } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
-import { AppLink, FleetStore, ListPageId, ListQuery, ListRow, VOCABULARY, applyListQuery, declaredFields, hrefOf, parseListQuery } from '@cockpit/fleet-data'
+import { AppLink, FleetStore, ListPageId, ListQuery, declaredFields, hrefOf } from '@cockpit/fleet-data'
+import { ListRow, VOCABULARY, applyListQuery, parseListQuery } from '@cockpit/fleet-data/list'
 import { ClipboardWriter } from '../control/clipboard'
 import { Glyph } from '../control/glyph'
 import { GLYPH_ARROW_DOWN, GLYPH_ARROW_UP } from '../control/glyphs'
@@ -39,6 +40,7 @@ import {
   addressKey,
   describeFilters,
   effectiveSort,
+  fitColumns,
   scrollToRow,
   sortedBy,
   toggled,
@@ -144,12 +146,18 @@ export class ListView<T = unknown> {
   private readonly clock = computed(() => (AGE_TERM.test(this.query().q) || this.query().chips.includes('idle30') ? Math.floor(this.store.now() / CLOCK_BUCKET_MS) * CLOCK_BUCKET_MS : 0))
   protected readonly result = computed(() => applyListQuery(this.page(), this.items(), this.query(), this.clock()))
   protected readonly sort = computed(() => effectiveSort(this.page(), this.query()))
-  protected readonly shown = computed(() =>
-    visibleColumns(
-      this.columns(),
-      this.result().rows.map((row) => row.item),
+  protected readonly width = signal(0)
+  private readonly fitted = computed(() =>
+    fitColumns(
+      visibleColumns(
+        this.columns(),
+        this.result().rows.map((row) => row.item),
+      ),
+      this.width(),
     ),
   )
+  protected readonly shown = computed(() => this.fitted().columns)
+  protected readonly tracks = computed(() => this.fitted().tracks)
 
   private readonly cellTemplates = computed(() => new Map(this.cells().map((cell) => [cell.id(), cell.template])))
   protected readonly fields = computed(() => [...declaredFields(this.page())].sort().join(', '))
@@ -248,11 +256,6 @@ export class ListView<T = unknown> {
     return this.cellTemplates().get(id)
   }
 
-  /** The flex of a column: a fill column shares what is left, a fixed one shrinks before it would push a fill column below its minimum. */
-  protected style(column: ListColumn<T>): string {
-    return column.width === 'fill' ? `${column.grow ?? 1} 1 0` : `0 1 ${column.width}px`
-  }
-
   /** The `aria-sort` of a header: which way the list is sorted by that column, or none. */
   protected ariaSort(column: ListColumn<T>): string | null {
     if (column.sort === undefined) return null
@@ -274,6 +277,7 @@ export class ListView<T = unknown> {
 
   protected measure(): void {
     this.height.set(this.viewport().nativeElement.clientHeight || window.innerHeight)
+    this.width.set(this.viewport().nativeElement.clientWidth)
   }
 
   protected scrolled(): void {

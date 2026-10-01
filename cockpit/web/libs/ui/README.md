@@ -16,8 +16,7 @@ None of `list`, `panel` and `control` uses PrimeNG. Tokens come from `apps/cockp
 ## A list page in about 25 lines
 
 `<app-list>` does the filter box (the grammar of REQ:list-filter-and-matcher), the machine chips and the page's
-quick-filter chips (their words are in `page-defaults.ts`, keyed by page and chip id, until the vocabulary carries
-them), sortable headers, the "37 of 438" count, virtual one-line rows under a sticky header, the keys `j` `k`
+quick-filter chips (their labels and hints are the vocabulary's, `VOCABULARY[page].chips`, from `@cockpit/fleet-data/list`), sortable headers, the "37 of 438" count, virtual one-line rows under a sticky header, the keys `j` `k`
 PageUp PageDown Home End Enter `o` (open the entity's page) `c` (copy its name) Esc, the empty and no-match
 states, the placeholder rows, the side panel and the whole address state (`q`, `sort`, `dir`, `machine`, `chips`,
 `sel`; `prefix` renames them for a second list on one page). The page gives its `page` id, the columns, and
@@ -34,10 +33,10 @@ from `@cockpit/fleet-data`. The list is one tab stop: the links and buttons in i
 })
 export class WorktreesPage {
   protected readonly columns: ListColumn<Worktree>[] = [
-    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 132, value: (w) => w.task },
-    { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, drop: 'phone' },
-    { id: 'state', header: 'State', sort: 'state', width: 230, value: (w) => w.owner_state ?? 'unknown' },
-    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96 },
+    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 4, min: 300, priority: ALWAYS, value: (w) => w.task },
+    { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, min: 120, priority: 1 },
+    { id: 'state', header: 'State', sort: 'state', width: 250, min: 230, priority: ALWAYS, value: (w) => w.owner_state ?? 'unknown' },
+    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
   ]
 }
 ```
@@ -54,8 +53,11 @@ export class WorktreesPage {
 * A column's `value(item)` is its text: the default content of a cell with no template, its `title` while it
   truncates, and what makes it empty. `empty(item)` adds a default that counts as empty (a branch equal to its
   task); a column that is empty for every visible row is hidden, and a fleet of one machine hides Machine.
-  At most 7 columns show: past that the lowest `keep` goes first. `drop` removes a column on a narrow list
-  (`narrow`, a panel beside it) or a phone (`phone`).
+  At most 7 columns show: past that the lowest `priority` goes first. `width` is the most a column takes and
+  `min` the least it needs: when the list is narrower than the `min`s of its columns (a panel beside it, a tablet,
+  a phone) the lowest-`priority` column is hidden, the later one first among equals, until the rest fit; `ALWAYS`
+  (10) columns are never hidden and share the width instead. The list measures itself, so a panel opening hides
+  columns at once; what is hidden is still in the panel. The open-page cell is reserved at the row end.
 * Cells: `app-identity-cell` (strong name, muted secondary, copy icon, the name optionally a link),
   `app-owner-state-cell` (owner badge and sync badges), `app-pr-cell` (the control surface's PR chip),
   `app-machine-cell` (its machine chip), `app-code-index-cell`, `app-age` (relative time against the shared

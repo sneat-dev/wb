@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { LinkResult } from '@cockpit/fleet-data'
+import { LinkResult } from '@cockpit/fleet-data/list'
 
 /**
  * A count cell (REQ:every-number-is-a-link). Given the `link` of the fleet-data

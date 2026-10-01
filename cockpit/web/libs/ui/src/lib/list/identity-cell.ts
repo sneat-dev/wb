@@ -36,13 +36,15 @@ import { CopyIcon } from './copy-icon'
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    /* The name keeps about 22 characters before it truncates; the muted secondary text truncates first. */
     .name {
       flex: 0 1 auto;
+      min-width: min(22ch, 100%);
       color: var(--text);
       font-weight: var(--fw-semibold);
     }
     .secondary {
-      flex: 0 1 auto;
+      flex: 0 100 auto;
       color: var(--text-3);
     }
     /* On a phone the name is what fits; the secondary text is in the panel. */

@@ -24,6 +24,7 @@
       [attr.aria-label]="noun()"
       [attr.aria-rowcount]="result().rows.length + 1"
       [attr.aria-colcount]="shown().length + 1"
+      [style.--cols]="tracks()"
       [attr.aria-activedescendant]="activeId()"
       [attr.aria-busy]="skeleton()"
       (scroll)="scrolled()"
@@ -32,7 +33,7 @@
     >
       <div class="head" role="row" aria-rowindex="1">
         @for (column of shown(); track column.id) {
-          <div class="cell" role="columnheader" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
+          <div class="cell" role="columnheader" [class.end]="column.align === 'end'" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
             @if (column.sort; as sortId) {
               <button type="button" class="sort" (click)="sortBy(sortId)">
                 {{ column.header }}
@@ -78,7 +79,7 @@
                 [attr.data-index]="item.index"
               >
                 @for (column of shown(); track column.id) {
-                  <div class="cell" role="gridcell" [class.drop-narrow]="column.drop === 'narrow'" [class.drop-phone]="column.drop === 'phone'" [style.min-width.px]="column.min ?? null" [class.end]="column.align === 'end'" [style.flex]="style(column)" [attr.title]="column.value?.(item.row.item) ?? null">
+                  <div class="cell" role="gridcell" [class.end]="column.align === 'end'" [attr.title]="column.value?.(item.row.item) ?? null">
                     @if (cellOf(column.id); as template) {
                       <ng-container [ngTemplateOutlet]="template" [ngTemplateOutletContext]="{ $implicit: item.row.item, row: item.row }" />
                     } @else {

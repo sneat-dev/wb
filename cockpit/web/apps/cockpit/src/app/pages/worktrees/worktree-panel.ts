@@ -1,14 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { FleetStore, TaskView, Worktree, WorktreePanel, agentDetailLink, agentTitle, repositoryDetailLink, routeLabel, taskDetailLink } from '@cockpit/fleet-data'
+import { FleetStore, TaskView, Worktree, agentDetailLink, agentTitle, repositoryDetailLink, routeLabel, taskDetailLink, webAddress } from '@cockpit/fleet-data'
+import { WorktreePanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { CodeIndexPanel } from '@cockpit/ui/code-index-panel'
-import { webAddress } from '@cockpit/ui/control'
 import { PanelContent, PanelFact, PanelRelated } from '@cockpit/ui/panel'
-import { pullRequestsOf } from './worktree-pull-requests'
 
 /**
  * One worktree's content: the side panel of the Worktrees list and the page of
  * `/worktrees/:id` are both this component (REQ:detail-routes-share-the-panel).
- * It is built from the view model's `worktreeView(id)`; the standard blocks
+ * It is built from `buildWorktreePanel(model, id)`; the standard blocks
  * (facts, related entities, commands, raw data) are the panel component's.
  */
 @Component({
@@ -27,7 +26,7 @@ export class WorktreePanelView {
   protected readonly data = computed(() => {
     const model = this.store.model()
     const entry = model.worktreeById(this.id())
-    return entry === undefined ? undefined : { entry, view: model.worktreeView(entry.id) as WorktreePanel }
+    return entry === undefined ? undefined : { entry, view: buildWorktreePanel(model, entry.id) as WorktreePanel }
   })
 
   protected readonly facts = computed<PanelFact[]>(() => {
@@ -51,10 +50,10 @@ export class WorktreePanelView {
 
   protected readonly related = computed<PanelRelated[]>(() => {
     const { agents, task } = (this.data() as { view: WorktreePanel }).view.related
-    const pullRequests = pullRequestsOf(this.store.document(), this.id())
+    const pullRequests = this.store.model().worktreePullRequests.get(this.id()) ?? []
     return [
       { title: 'Task', items: [{ text: `${(task as TaskView).name} (${(task as TaskView).stateInfo.label})`, link: taskDetailLink((task as TaskView).name) }] },
-      { title: 'Pull requests', items: pullRequests.map((pr) => ({ text: `#${pr.number}${pr.state ? ` ${pr.state}` : ''}`, href: webAddress(pr.url) ?? undefined })) },
+      { title: 'Pull requests', items: pullRequests.map((pr) => ({ text: `#${pr.number}${pr.state ? ` ${pr.state}` : ''}`, href: webAddress(pr.url) })) },
       { title: 'Agents', items: agents.map((agent) => ({ text: agentTitle(agent), link: agentDetailLink(agent.id) })) },
     ]
   })

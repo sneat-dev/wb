@@ -15,7 +15,7 @@
   }
 }
 
-/* The list is the container its columns respond to, so a narrow list (a panel beside it, a phone) drops the low-priority columns. */
+/* The list is the container its identity cell responds to; the columns that fit are chosen by the list from its measured width. */
 .list {
   display: grid;
   gap: var(--space-2);
@@ -40,7 +40,8 @@
 
 .head,
 .row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--cols);
   align-items: center;
   height: var(--row-h);
 }
@@ -162,21 +163,8 @@
   }
 }
 
-@container (max-width: 62rem) {
-  .drop-narrow {
-    display: none;
-  }
-}
-
-@container (max-width: 40rem) {
-  .drop-phone {
-    display: none;
-  }
-}
-
 .open-cell {
   display: flex;
-  flex: 0 0 2rem;
   justify-content: center;
   padding: 0;
 }

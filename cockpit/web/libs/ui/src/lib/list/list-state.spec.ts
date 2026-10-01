@@ -1,6 +1,8 @@
-import { emptyListQuery } from '@cockpit/fleet-data'
+import { emptyListQuery } from '@cockpit/fleet-data/list'
 import {
   ADDRESS_KEYS,
+  ALWAYS,
+  fitColumns,
   ListColumn,
   MAX_RENDERED_ROWS,
   addressKey,
@@ -98,10 +100,10 @@ describe('visibleColumns', () => {
     expect(MAX_COLUMNS).toBe(7)
     const columns = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((id) => column(id))
     expect(visibleColumns(columns, [1]).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
-    const kept = [column('a'), column('b', { keep: 1 }), column('c', { keep: 1 }), column('d'), column('e')]
+    const kept = [column('a'), column('b', { priority: 1 }), column('c', { priority: 1 }), column('d'), column('e')]
     expect(visibleColumns(kept, [1], 3).map((c) => c.id)).toEqual(['a', 'd', 'e'])
     expect(visibleColumns(kept, [1], 4).map((c) => c.id)).toEqual(['a', 'b', 'd', 'e'])
-    expect(visibleColumns([column('a', { keep: 9 }), column('b')], [1], 1).map((c) => c.id)).toEqual(['a'])
+    expect(visibleColumns([column('a', { priority: 9 }), column('b')], [1], 1).map((c) => c.id)).toEqual(['a'])
   })
 })
 
@@ -142,5 +144,46 @@ describe('describeFilters', () => {
     expect(describeFilters({ ...emptyListQuery(), chips: ['pr', 'other'], machines: ['m1', 'm2'] }, chips, machines)).toBe('the Pull request, other filters and machine mac or m2')
     expect(describeFilters({ q: 'a', chips: ['pr'], machines: ['m1'] }, chips, machines)).toBe('the filter “a” and the Pull request filter and machine mac')
     expect(describeFilters(emptyListQuery(), chips, machines)).toBe('')
+  })
+})
+
+describe('fitColumns', () => {
+  const some = (id: string, extra: Partial<ListColumn<number>> = {}): ListColumn<number> => ({ id, header: id, width: 100, ...extra })
+  const worktrees = [
+    some('worktree', { width: 'fill', grow: 3, min: 300, priority: ALWAYS }),
+    some('branch', { width: 'fill', grow: 2, min: 120, priority: 1 }),
+    some('machine', { width: 170, min: 140, priority: 3 }),
+    some('state', { width: 260, min: 230, priority: ALWAYS }),
+    some('pr', { width: 220, min: 140, priority: 2 }),
+    some('index', { width: 160, min: 120, priority: 1 }),
+    some('activity', { width: 104, min: 96, priority: ALWAYS }),
+  ]
+  const ids = (width: number) => fitColumns(worktrees, width).columns.map((c) => c.id)
+
+  it('hides nothing before the width is known, or when everything fits', () => {
+    expect(ids(0)).toHaveLength(7)
+    expect(ids(1200)).toHaveLength(7)
+  })
+
+  it('hides Code index, then Branch, then PR, then Machine as the list narrows; the always columns stay', () => {
+    expect(ids(1100)).toEqual(['worktree', 'branch', 'machine', 'state', 'pr', 'activity'])
+    expect(ids(1058)).toEqual(['worktree', 'branch', 'machine', 'state', 'pr', 'activity'])
+    expect(ids(1050)).toEqual(['worktree', 'machine', 'state', 'pr', 'activity'])
+    expect(ids(940)).toEqual(['worktree', 'machine', 'state', 'pr', 'activity'])
+    expect(ids(930)).toEqual(['worktree', 'machine', 'state', 'activity'])
+    expect(ids(800)).toEqual(['worktree', 'machine', 'state', 'activity'])
+    expect(ids(790)).toEqual(['worktree', 'state', 'activity'])
+    expect(ids(640)).toEqual(['worktree', 'state', 'activity'])
+    expect(ids(300)).toEqual(['worktree', 'state', 'activity'])
+  })
+
+  it('lays out a fill column as minmax(min, grow fr), a fixed one up to its width, and reserves the open-page cell', () => {
+    expect(fitColumns(worktrees, 1200).tracks).toBe('minmax(300px, 3fr) minmax(120px, 2fr) minmax(140px, 170px) minmax(230px, 260px) minmax(140px, 220px) minmax(120px, 160px) minmax(96px, 104px) 32px')
+  })
+
+  it('squeezes the columns that stay toward a floor when they do not fit, and shares the width in proportion below the floors', () => {
+    expect(fitColumns(worktrees, 300).tracks).toBe('minmax(0, 300fr) minmax(0, 230fr) minmax(0, 96fr) 32px')
+    expect(fitColumns(worktrees, 340).tracks).toBe('minmax(120px, 300fr) minmax(92px, 230fr) minmax(80px, 96fr) 32px')
+    expect(fitColumns([some('only', { priority: ALWAYS, min: 0 })], 20).tracks).toBe('minmax(0, 1fr) 32px')
   })
 })

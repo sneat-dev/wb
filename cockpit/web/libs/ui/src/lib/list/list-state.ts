@@ -1,7 +1,8 @@
 // The pure part of the list: the address of a list state, the sort a header
 // click makes, which columns show, and which rows a virtual window renders.
 
-import { ListPageId, ListQuery, VOCABULARY, defaultDirection, listQueryParams } from '@cockpit/fleet-data'
+import { ListPageId, ListQuery, listQueryParams } from '@cockpit/fleet-data'
+import { VOCABULARY, defaultDirection } from '@cockpit/fleet-data/list'
 
 /** The six address parameters of a list (REQ:list-quick-filters-sort-and-url-state). */
 export const ADDRESS_KEYS = ['q', 'sort', 'dir', 'machine', 'chips', 'sel'] as const
@@ -17,6 +18,12 @@ export const OVERSCAN = 12
 export const MAX_RENDERED_ROWS = 80
 /** At most this many columns show by default (REQ:default-columns-are-few). */
 export const MAX_COLUMNS = 7
+/** The `priority` of a column that is never hidden for lack of room. */
+export const ALWAYS = 10
+/** The least width a squeezed column keeps while there is room for it. */
+const SQUEEZED_FLOOR = 80
+/** The width of the row-end "open page" cell, reserved in every row so it never shifts the last column. */
+export const OPEN_CELL_WIDTH = 32
 
 /** One column of a list. */
 export interface ListColumn<T> {
@@ -24,7 +31,7 @@ export interface ListColumn<T> {
   header: string
   /** The sort column id (REQ:filter-vocabulary) the header sorts by; a header with none does not sort. */
   sort?: string
-  /** A fixed width in pixels, or `fill` to share what is left. */
+  /** The most pixels the column takes, or `fill` to share what is left. */
   width: number | 'fill'
   /** For a `fill` column, its share of what is left (default 1). */
   grow?: number
@@ -37,11 +44,13 @@ export interface ListColumn<T> {
   empty?: (item: T) => boolean
   /** What the header's `title` says. */
   hint?: string
-  /** When more than 7 columns would show, the lowest `keep` goes first (default 5). */
-  keep?: number
-  /** Where the column goes first: `narrow` below about 1000 px of list (a panel beside it, a tablet), `phone` below about 640 px. */
-  drop?: 'narrow' | 'phone'
-  /** For a `fill` column, the least width in pixels it keeps. */
+  /**
+   * What the column is worth when room is short (default 5). When more than 7 columns would show, and
+   * when the list is narrower than its columns need (a panel beside it, a narrow window), the lowest
+   * goes first, the later one first among equals. `ALWAYS` (10) is never hidden: it shrinks instead.
+   */
+  priority?: number
+  /** The least pixels the column needs to be worth showing (default: its `width`); below the sum of these the lowest-priority column is hidden. */
   min?: number
   align?: 'end'
 }
@@ -90,7 +99,7 @@ export function toggled(items: readonly string[], item: string): string[] {
 /**
  * The columns to show for `items` (REQ:default-columns-are-few): a column that
  * is empty, or the default, for every row is hidden, and if more than `max`
- * remain the ones with the lowest `keep` go, the later one first among equals.
+ * remain the ones with the lowest `priority` go, the later one first among equals.
  * With no rows nothing is hidden, so the header does not change while it waits.
  */
 export function visibleColumns<T>(columns: readonly ListColumn<T>[], items: readonly T[], max = MAX_COLUMNS): ListColumn<T>[] {
@@ -98,11 +107,45 @@ export function visibleColumns<T>(columns: readonly ListColumn<T>[], items: read
   const dropped = new Set(
     shown
       .map((column, index) => ({ column, index }))
-      .sort((a, b) => (a.column.keep ?? 5) - (b.column.keep ?? 5) || b.index - a.index)
+      .sort((a, b) => (a.column.priority ?? 5) - (b.column.priority ?? 5) || b.index - a.index)
       .slice(0, Math.max(0, shown.length - max))
       .map((entry) => entry.column),
   )
   return shown.filter((column) => !dropped.has(column))
+}
+
+/** The least width a column needs. */
+const needOf = <T>(column: ListColumn<T>): number => column.min ?? (column.width === 'fill' ? 0 : column.width)
+
+/**
+ * The columns that fit a list `width` pixels wide, and the grid tracks that lay them out. Columns
+ * go lowest `priority` first, the later one first among equals, until the least widths of the rest
+ * (and the open-page cell) fit; columns of `ALWAYS` priority are never dropped, and when they alone
+ * do not fit the tracks share the width in proportion. A width of 0 (not measured yet) hides nothing.
+ * A `fill` column's track is `minmax(min, grow fr)`; a fixed one takes up to its width.
+ */
+export function fitColumns<T>(columns: readonly ListColumn<T>[], width: number): { columns: ListColumn<T>[]; tracks: string } {
+  const kept = [...columns]
+  const room = width - OPEN_CELL_WIDTH
+  const total = () => kept.reduce((sum, column) => sum + needOf(column), 0)
+  while (width > 0 && total() > room) {
+    let worst = -1
+    kept.forEach((column, index) => {
+      if ((column.priority ?? 5) < ALWAYS && (worst < 0 || (column.priority ?? 5) <= (kept[worst].priority ?? 5))) worst = index
+    })
+    if (worst < 0) break
+    kept.splice(worst, 1)
+  }
+  const squeezed = width > 0 && total() > room
+  // When even the columns that stay do not fit, each shrinks toward a floor (40% of its need, at least 80 px), and what is left is shared in proportion; below the floors too, all share the width in proportion.
+  const floorOf = (need: number) => Math.min(need, Math.max(SQUEEZED_FLOOR, Math.round(need * 0.4)))
+  const floored = squeezed && kept.reduce((sum, column) => sum + floorOf(needOf(column)), 0) <= room
+  const track = (column: ListColumn<T>): string => {
+    const need = needOf(column)
+    if (squeezed) return `minmax(${floored ? `${floorOf(need)}px` : '0'}, ${Math.max(need, 1)}fr)`
+    return column.width === 'fill' ? `minmax(${need}px, ${column.grow ?? 1}fr)` : `minmax(${need}px, ${column.width}px)`
+  }
+  return { columns: kept, tracks: [...kept.map(track), `${OPEN_CELL_WIDTH}px`].join(' ') }
 }
 
 /** The rows `first` to `last` (exclusive) that a window of `height` pixels scrolled by `scrollTop` renders, with the overscan. */

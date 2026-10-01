@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core'
-import { CodeIndex, codeIndexText } from '@cockpit/fleet-data'
+import { CodeIndex } from '@cockpit/fleet-data'
+import { codeIndexText } from '@cockpit/fleet-data/list'
 import { RelativeTime } from '../control/relative-time'
 import { StateBadge } from '../control/state-badge'
 

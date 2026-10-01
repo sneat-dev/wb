@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing'
 import { Router, provideRouter } from '@angular/router'
 import { ClipboardWriter } from '@cockpit/ui/control'
-import { FleetDocument, VOCABULARY } from '@cockpit/fleet-data'
+import { FleetDocument } from '@cockpit/fleet-data'
+import { VOCABULARY } from '@cockpit/fleet-data/list'
 import { fleetDocument, pullRequest, worktree } from '@cockpit/fleet-data/testing'
 import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { Shortcuts } from '../../shortcuts/shortcuts'
@@ -120,10 +121,11 @@ describe('WorktreesPage', () => {
     expect(text(state(3))).toContain('idle')
     expect(state(3).querySelector('app-sync-badges')).toBeNull()
     expect(text(cell(rowsOf(root)[0], 2))).toContain('alpha')
-    expect(text(cell(rowsOf(root)[0], 2))).toContain('local')
+    expect(cell(rowsOf(root)[0], 2).querySelector('.chip')).toBeNull()
     expect(text(cell(rowsOf(root)[3], 2))).toContain('beta')
-    expect(text(cell(rowsOf(root)[3], 2))).toContain('cached')
-    expect(cell(rowsOf(root)[3], 2).querySelector('app-relative-time')).not.toBeNull()
+    expect(cell(rowsOf(root)[3], 2).querySelector('.chip')?.textContent).toMatch(/\d+ [mhd]/)
+    expect(state(3).querySelector('app-state-badge')).toBeNull()
+    expect(state(3).querySelector('.idle')?.textContent).toContain('idle')
   })
 
   it('shows the pull request as the control surface\'s chip, linked only when the address is a web address, and the panel agrees with the row', async () => {

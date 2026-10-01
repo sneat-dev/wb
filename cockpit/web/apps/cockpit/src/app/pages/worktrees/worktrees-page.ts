@@ -1,9 +1,9 @@
 import { ChangeDetectionStrategy, Component, effect, inject, input } from '@angular/core'
 import { ActivatedRoute, Router } from '@angular/router'
-import { FleetStore, Worktree, fieldTerm, taskDetailLink } from '@cockpit/fleet-data'
-import { AgeText, CodeIndexCell, CopyIcon, IdentityCell, ListCell, ListColumn, ListPanelTemplate, ListView, MachineCell, OwnerStateCell, PrCell, RepositoryNames } from '@cockpit/ui/list'
+import { FleetStore, Worktree, taskDetailLink } from '@cockpit/fleet-data'
+import { fieldTerm } from '@cockpit/fleet-data/list'
+import { ALWAYS, AgeText, CodeIndexCell, CopyIcon, IdentityCell, ListCell, ListColumn, ListPanelTemplate, ListView, MachineCell, OwnerStateCell, PrCell, RepositoryNames } from '@cockpit/ui/list'
 import { WorktreePanelView } from './worktree-panel'
-import { pullRequestsOf } from './worktree-pull-requests'
 
 /** Every WB task worktree on every machine (REQ:worktrees-list): the reference list page. */
 @Component({
@@ -25,16 +25,17 @@ export class WorktreesPage {
   protected readonly repoName = (worktree: Worktree) => this.names.of(worktree.repository).slug
   protected readonly taskLink = (worktree: Worktree) => taskDetailLink(worktree.task)
   protected readonly panelLabel = (worktree: Worktree) => `Worktree ${worktree.task}`
-  protected readonly pullRequests = (worktree: Worktree) => pullRequestsOf(this.store.document(), worktree.id)
+  protected readonly pullRequests = (worktree: Worktree) => this.store.model().worktreePullRequests.get(worktree.id) ?? []
 
+  /** Narrow lists (a panel beside, a tablet) lose Code index and Branch first, then PR, then Machine; Worktree, State and Last activity stay. */
   protected readonly columns: ListColumn<Worktree>[] = [
-    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 132, value: (w) => `${w.task} · ${this.repoName(w)}` },
-    { id: 'branch', header: 'Branch', width: 'fill', grow: 2, value: (w) => w.branch, empty: (w) => w.branch === w.task, drop: 'phone' },
-    { id: 'machine', header: 'Machine', sort: 'machine', width: 190, value: (w) => w.machine, empty: () => this.store.document().machines.length <= 1, drop: 'phone' },
-    { id: 'state', header: 'State', sort: 'state', width: 230, hint: 'Owner state. ↑ unpushed, ↓ behind and gone are known for this machine only', value: (w) => w.owner_state ?? 'unknown' },
-    { id: 'pr', header: 'PR', width: 240, empty: (w) => this.pullRequests(w).length === 0, drop: 'narrow' },
-    { id: 'index', header: 'Code index', width: 180, empty: (w) => !w.code_index?.length, drop: 'narrow' },
-    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96 },
+    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 4, min: 300, priority: ALWAYS, value: (w) => `${w.task} · ${this.repoName(w)}` },
+    { id: 'branch', header: 'Branch', width: 'fill', grow: 1, min: 120, priority: 1, value: (w) => w.branch, empty: (w) => w.branch === w.task },
+    { id: 'machine', header: 'Machine', sort: 'machine', width: 160, min: 140, priority: 3, value: (w) => w.machine, empty: () => this.store.document().machines.length <= 1 },
+    { id: 'state', header: 'State', sort: 'state', width: 250, min: 230, priority: ALWAYS, hint: 'Owner state. ↑ unpushed, ↓ behind and gone are known for this machine only', value: (w) => w.owner_state ?? 'unknown' },
+    { id: 'pr', header: 'PR', width: 200, min: 140, priority: 2, empty: (w) => (this.store.model().worktreePullRequests.get(w.id) ?? []).length === 0 },
+    { id: 'index', header: 'Code index', width: 160, min: 120, priority: 1, empty: (w) => !w.code_index?.length },
+    { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
   ]
 
   constructor() {

@@ -505,15 +505,20 @@ Serves J5 and J6. The Worktrees page MUST show these columns in order: Worktree,
 the identity cell, showing the task in strong type and the repository
 `owner/name` in muted type, with a small link on the task part to the task page;
 Branch (shown when any visible row's branch differs from its task);
-Machine, as the machine chip (name, how it is reached, the age of a cached
-snapshot); State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
+Machine (the name alone for this machine; for a cached or remote machine the name
+and one unbreakable chip with the age, "stale" and the transport, as `vm · 19 m · ssh`,
+the details in its `title`); State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
 for commits behind, and "gone" for a vanished upstream); PR; Code index; Last
 activity. A click on a row selects it and opens its panel; a small button at the
 row end, shown on the hovered or focused row and always on a touch screen, and the
 key `o` open the worktree page that [cockpit](../cockpit/README.md) defines. There
 is no separate Task, Source or Lifecycle column (the route is in the machine chip,
 the lifecycle in the panel), and a column that is empty or uniform for every
-visible row, such as Machine on a fleet of one machine, is hidden. The sync badges and the chips
+visible row, such as Machine on a fleet of one machine, is hidden. When the list is
+narrower than its columns need (a panel open beside it, a narrow window), columns are hidden
+by priority, never squeezed all alike: Code index and Branch first, then PR, then Machine;
+Worktree, State and Last activity always stay, and what is hidden is still in the panel. The
+`idle` owner state is plain muted text, so the states that need a look stand out. The sync badges and the chips
 `unpushed` and `gone` and their counts concern this machine only and say so. The
 quick filters are those of REQ:filter-vocabulary. The PR cell, the chip `pr`, the
 worktree's side panel and the pull requests listed on its page all read one worktree-to-pull-request

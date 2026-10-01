@@ -50,9 +50,10 @@ describe('shotPlan', () => {
 
   it('adds the list and its side panel on Worktrees, each with the steps that reach it', () => {
     const lists = shots.filter((shot) => shot.steps)
-    expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 3)
+    expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
     expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees']))
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')
+    expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-light-1024.png')
     expect(LIST_SHOTS.find((shot) => shot.name === 'worktrees-panel-raw')?.steps).toEqual(['row:2', 'raw'])
   })
 

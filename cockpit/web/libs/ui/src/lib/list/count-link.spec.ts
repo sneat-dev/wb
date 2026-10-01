@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing'
 import { provideRouter } from '@angular/router'
-import { LinkResult, machineWorktreesLink, taskWorktreesLink } from '@cockpit/fleet-data'
+import { LinkResult, machineWorktreesLink, taskWorktreesLink } from '@cockpit/fleet-data/list'
 import { CountLink } from './count-link'
 
 async function render(inputs: { value?: number; link?: LinkResult; why?: string }) {

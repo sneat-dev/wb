@@ -236,3 +236,47 @@ test('the detail route renders the same content as the panel, ending with Raw da
   await expect(content.locator('section').last()).toHaveAttribute('aria-label', 'Raw data')
   await expect(content.locator('details.raw')).not.toHaveAttribute('open', '')
 })
+
+const headerNames = (page: Page) => page.locator('[role=columnheader]').allInnerTexts().then((names) => names.map((name) => name.trim()).filter((name) => name !== ''))
+
+test('a list narrower than its columns hides the lowest-priority ones: Code index and Branch first, then PR, never Worktree, State or Last activity', async ({ page }) => {
+  await stubFixture(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/worktrees')
+  await expect(listRows(page).first()).toBeVisible()
+  const wide = await headerNames(page)
+  expect(wide).toEqual(expect.arrayContaining(['Worktree', 'State', 'Last activity']))
+  // A panel beside the list takes a quarter of the width.
+  await listRows(page).first().click()
+  await expect(page.getByRole('complementary')).toBeVisible()
+  const withPanel = await headerNames(page)
+  expect(withPanel).toEqual(expect.arrayContaining(['Worktree', 'State', 'Last activity']))
+  expect(withPanel).not.toContain('Code index')
+  expect(withPanel.length).toBeLessThan(wide.length)
+  // The identity cell keeps its name whole: it is not squeezed to a stub while other columns keep their width.
+  const name = page.locator('.row a.name').first()
+  expect((await name.boundingBox())!.width).toBeGreaterThan(100)
+  expect(await name.evaluate((link) => link.scrollWidth <= link.clientWidth + 1)).toBe(true)
+
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.goto('/cockpit/worktrees')
+  await expect(listRows(page).first()).toBeVisible()
+  const tablet = await headerNames(page)
+  expect(tablet).toEqual(expect.arrayContaining(['Worktree', 'State', 'Last activity']))
+  expect(tablet).not.toContain('Code index')
+})
+
+test('the open-page button at the row end does not shift the Last activity text, shown or not', async ({ page }) => {
+  await stubFixture(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/worktrees')
+  const row = listRows(page).first()
+  await expect(row).toBeVisible()
+  const age = row.locator('app-age')
+  const before = (await age.boundingBox())!
+  await row.hover()
+  await expect(row.locator('a.open')).toBeVisible()
+  const after = (await age.boundingBox())!
+  expect(after.x).toBe(before.x)
+  expect(after.width).toBe(before.width)
+})
