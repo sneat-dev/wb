@@ -69,6 +69,15 @@ type harness struct {
 	logs      []string
 }
 
+// source is a fake PublishSource.
+type source struct {
+	extras remotestate.Extras
+	token  string
+}
+
+func (s *source) PublishExtras() remotestate.Extras { return s.extras }
+func (s *source) ChangeToken() string               { return s.token }
+
 func newHarness(t *testing.T, change func(*Options)) *harness {
 	t.Helper()
 	h := &harness{clock: &clock{now: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)}, provider: &fakeProvider{}, worktree: "a"}
@@ -261,9 +270,7 @@ func TestAnOlderHubRefusalIsOneRetryAndADiagnostic(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, func(o *Options) { o.Agents, o.Metrics = true, true })
 	h.provider.errs = []error{status(400)}
-	extras := func() remotestate.Extras {
-		return remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}, Metrics: &remotestate.MetricsSample{SampledAt: h.clock.Now()}}
-	}
+	extras := &source{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}, Metrics: &remotestate.MetricsSample{SampledAt: h.clock.Now()}}}
 	h.publisher.Publish(context.Background(), extras)
 	st := h.publisher.Status()
 	if h.provider.count() != 2 || st.Diagnostic != DiagnosticOptionalFields || st.Published != 1 {
@@ -287,9 +294,7 @@ func (s status) HTTPStatus() int { return int(s) }
 
 func TestExtrasAreAddedOnlyUnderTheirFlags(t *testing.T) {
 	t.Parallel()
-	extras := func() remotestate.Extras {
-		return remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "session", State: "live"}}, Metrics: &remotestate.MetricsSample{}}
-	}
+	extras := &source{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "session", State: "live"}}, Metrics: &remotestate.MetricsSample{}}}
 	for _, test := range []struct{ agents, metrics bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		h := newHarness(t, func(o *Options) { o.Agents, o.Metrics = test.agents, test.metrics })
 		h.publisher.Publish(context.Background(), extras)
@@ -360,5 +365,110 @@ func TestDefaultsAndConfiguredBounds(t *testing.T) {
 	bounded.Publish(context.Background(), nil)
 	if !deadline {
 		t.Error("the attempt has no time bound")
+	}
+}
+
+func TestNoScanRunsWhileTheSourceReportsNothingChanged(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	src := &source{token: "t1"}
+	run := func(advance time.Duration) {
+		h.clock.advance(advance)
+		h.publisher.Publish(context.Background(), src)
+	}
+	run(0) // first publish: scans
+	if h.collects != 1 || h.provider.count() != 1 {
+		t.Fatalf("first: collects %d published %d", h.collects, h.provider.count())
+	}
+	for range 5 {
+		run(11 * time.Minute)
+	}
+	if h.collects != 1 || h.publisher.Status().Gated != 5 || h.publisher.Status().Attempts != 1 {
+		t.Fatalf("an unchanged source scanned: collects %d, %+v", h.collects, h.publisher.Status())
+	}
+	// The interval still holds back a gated attempt as it does a scan.
+	run(time.Minute)
+	if h.publisher.Status().Gated != 5 {
+		t.Fatal("the interval did not apply to the gate")
+	}
+	// A moved token opens the gate: the scan runs, finds the same digest and skips the publish.
+	src.token = "t2"
+	run(11 * time.Minute)
+	if h.collects != 2 || h.provider.count() != 1 || h.publisher.Status().Skipped != 1 {
+		t.Fatalf("moved token: collects %d published %d %+v", h.collects, h.provider.count(), h.publisher.Status())
+	}
+	// ... and the new token is the one now remembered.
+	run(11 * time.Minute)
+	if h.collects != 2 {
+		t.Fatalf("scanned again for the same token: %d", h.collects)
+	}
+	// A change that publishes.
+	src.token, h.worktree = "t3", "b"
+	run(11 * time.Minute)
+	if h.provider.count() != 2 {
+		t.Fatalf("a change was not published: %d", h.provider.count())
+	}
+}
+
+func TestTheKeepaliveOpensTheGateAndIsAtLeastTheInterval(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Keepalive = time.Hour })
+	src := &source{token: "t"}
+	h.publisher.Publish(context.Background(), src)
+	h.clock.advance(61 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.collects != 2 || h.publisher.Status().Published != 2 {
+		t.Fatalf("keepalive did not open the gate and publish: %d %+v", h.collects, h.publisher.Status())
+	}
+	if got := New(Options{Every: 12 * time.Hour}).options.Keepalive; got != 12*time.Hour {
+		t.Errorf("keepalive for a 12h interval = %s, want 12h", got)
+	}
+	if got := New(Options{Every: time.Hour}).options.Keepalive; got != DefaultKeepalive {
+		t.Errorf("keepalive for a 1h interval = %s, want %s", got, DefaultKeepalive)
+	}
+	if got := New(Options{Every: time.Hour, Keepalive: time.Minute}).options.Keepalive; got != time.Hour {
+		t.Errorf("a keepalive below the interval = %s", got)
+	}
+}
+
+func TestAChangeOfPublishedAgentsOpensTheGate(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Agents = true })
+	src := &source{token: "t", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}}}
+	h.publisher.Publish(context.Background(), src)
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.collects != 1 {
+		t.Fatal("unchanged agents opened the gate")
+	}
+	src.extras.Agents[0].Activity = "idle"
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src)
+	if h.collects != 2 || h.provider.count() != 2 {
+		t.Fatalf("changed agents: collects %d published %d", h.collects, h.provider.count())
+	}
+}
+
+func TestAFailedAttemptAndATokenlessSourceNeverGate(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	src := &source{token: "t"}
+	h.provider.errs = []error{errors.New("down")}
+	h.publisher.Publish(context.Background(), src)
+	h.clock.advance(11 * time.Minute)
+	h.publisher.Publish(context.Background(), src) // retried, not gated
+	if h.collects != 2 || h.provider.count() != 2 {
+		t.Fatalf("retry after a failure: collects %d published %d", h.collects, h.provider.count())
+	}
+	none := &source{}
+	for range 3 {
+		h.clock.advance(11 * time.Minute)
+		h.publisher.Publish(context.Background(), none)
+	}
+	if h.collects != 5 || h.publisher.Status().Gated != 0 {
+		t.Fatalf("a source with no token was gated: %d %+v", h.collects, h.publisher.Status())
+	}
+	if h.publisher.Diagnostic() != DiagnosticNone {
+		t.Fatalf("diagnostic = %q", h.publisher.Diagnostic())
 	}
 }

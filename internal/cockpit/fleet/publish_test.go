@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/remotestate/periodic"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // fakePublisher counts the hand-offs of the snapshotter and captures what the
@@ -23,9 +26,13 @@ type fakePublisher struct {
 	extras []remotestate.Extras
 	panics bool
 	block  chan struct{}
+	diag   string
+	tokens []string
 }
 
-func (p *fakePublisher) Publish(_ context.Context, extras func() remotestate.Extras) {
+func (p *fakePublisher) Diagnostic() string { p.mu.Lock(); defer p.mu.Unlock(); return p.diag }
+
+func (p *fakePublisher) Publish(_ context.Context, source remotestate.PublishSource) {
 	if p.block != nil {
 		<-p.block
 	}
@@ -35,8 +42,9 @@ func (p *fakePublisher) Publish(_ context.Context, extras func() remotestate.Ext
 	if p.panics {
 		panic("publisher panicked")
 	}
-	got := extras()
+	got := source.PublishExtras()
 	p.mu.Lock()
+	p.tokens = append(p.tokens, source.ChangeToken())
 	p.extras = append(p.extras, got)
 	p.mu.Unlock()
 }
@@ -173,13 +181,13 @@ func TestPublishExtrasAreThisMachinesAgentsAndLatestSample(t *testing.T) {
 	// With no sampler, or no sample yet, there is no metrics.
 	none, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), nil)
 	refreshAndSettle(t, none)
-	if extras := none.publishExtras(); extras.Metrics != nil {
+	if extras := none.PublishExtras(); extras.Metrics != nil {
 		t.Fatalf("no sampler published %+v", extras.Metrics)
 	}
 	empty, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) {
 		o.Sampler = machinemetrics.New(machinemetrics.Options{Source: &countingSource{}})
 	})
-	if empty.publishExtras().Metrics != nil {
+	if empty.PublishExtras().Metrics != nil {
 		t.Fatal("a sampler without a sample published one")
 	}
 }
@@ -406,4 +414,191 @@ func TestADaemonWithoutAPublisherPublishesNothing(t *testing.T) {
 	}
 	// startPublish with none is a no-op.
 	snapshotter.startPublish(t.Context())
+}
+
+func TestChangeTokenMovesWithWhatThePublisherMustSeeAndWithNothingElse(t *testing.T) {
+	t.Parallel()
+	sources := oneRepoSources("/repo/widgets")
+	snapshotter, clock := newSnapshotter(sources.collectors(), func(o *Options) { o.Fingerprint = newConstFingerprint("fp-1").get })
+	if snapshotter.ChangeToken() != "" {
+		t.Fatal("a token before the first pass")
+	}
+	refreshAndSettle(t, snapshotter)
+	first := snapshotter.ChangeToken()
+	if first == "" {
+		t.Fatal("no token after a pass")
+	}
+	clock.advance(time.Hour)
+	refreshAndSettle(t, snapshotter)
+	if again := snapshotter.ChangeToken(); again != first {
+		t.Fatal("the token moved with the clock alone")
+	}
+	// A moved fingerprint, a worktree whose owner went away and a pull request
+	// that went away each move it.
+	snapshotter.fingerprint = newConstFingerprint("fp-2").get
+	refreshAndSettle(t, snapshotter)
+	second := snapshotter.ChangeToken()
+	if second == first {
+		t.Fatal("a moved fingerprint did not move the token")
+	}
+	sources.change(func(f *fakeSources) {
+		record := f.records["/wt/task-a"]
+		record.Owner = worktrees.OwnerGone
+		f.records["/wt/task-a"] = record
+	})
+	refreshAndSettle(t, snapshotter)
+	third := snapshotter.ChangeToken()
+	if third == second {
+		t.Fatal("a worktree whose owner went away did not move the token")
+	}
+	sources.change(func(f *fakeSources) { f.bindings = nil })
+	refreshAndSettle(t, snapshotter)
+	if snapshotter.ChangeToken() == third {
+		t.Fatal("a pull request that went away did not move the token")
+	}
+}
+
+func TestThePublisherIsHandedTheSnapshotterAsItsSource(t *testing.T) {
+	t.Parallel()
+	publisher := &fakePublisher{}
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) { o.Publisher = publisher })
+	refreshAndSettle(t, snapshotter)
+	if len(publisher.tokens) != 1 || publisher.tokens[0] == "" {
+		t.Fatalf("tokens = %v", publisher.tokens)
+	}
+}
+
+func TestPublishErrorIsShownOnThisMachinesEntryOnlyWhileUnhealthy(t *testing.T) {
+	t.Parallel()
+	publisher := &fakePublisher{diag: "publish_failed"}
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) { o.Publisher = publisher })
+	refreshAndSettle(t, snapshotter)
+	local := func() Machine {
+		for _, machine := range snapshotter.Document().Machines {
+			if machine.Route == RouteLocal {
+				return machine
+			}
+		}
+		t.Fatal("no local machine")
+		return Machine{}
+	}
+	if got := local().PublishError; got != "publish_failed" {
+		t.Fatalf("publish_error = %q", got)
+	}
+	for _, machine := range snapshotter.Document().Machines {
+		if machine.Route != RouteLocal && machine.PublishError != "" {
+			t.Fatalf("a cached machine carries publish_error: %+v", machine)
+		}
+	}
+	// Healthy again: absent.
+	publisher.mu.Lock()
+	publisher.diag = ""
+	publisher.mu.Unlock()
+	refreshAndSettle(t, snapshotter)
+	if got := local().PublishError; got != "" {
+		t.Fatalf("a healthy publisher leaves publish_error %q", got)
+	}
+	// Every code of the closed list is shown; anything else is dropped.
+	for _, code := range publishErrorCodes {
+		publisher.mu.Lock()
+		publisher.diag = code
+		publisher.mu.Unlock()
+		refreshAndSettle(t, snapshotter)
+		if got := local().PublishError; got != code {
+			t.Errorf("code %q shown as %q", code, got)
+		}
+	}
+	publisher.mu.Lock()
+	publisher.diag = sentinel + "/Users/alex/secret"
+	publisher.mu.Unlock()
+	refreshAndSettle(t, snapshotter)
+	if got := local().PublishError; got != "" {
+		t.Fatalf("an unknown code reached the document: %q", got)
+	}
+	// With publishing off there is none.
+	off, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), nil)
+	refreshAndSettle(t, off)
+	for _, machine := range off.Document().Machines {
+		if machine.PublishError != "" {
+			t.Fatalf("publishing off shows %q", machine.PublishError)
+		}
+	}
+}
+
+func TestThePublishErrorCodesAreThePublishersDiagnostics(t *testing.T) {
+	t.Parallel()
+	want := []string{periodic.DiagnosticCollectFailed, periodic.DiagnosticOpenFailed, periodic.DiagnosticPublishFailed, periodic.DiagnosticOptionalFields}
+	if !slices.Equal(publishErrorCodes, want) {
+		t.Fatalf("codes %v, want %v", publishErrorCodes, want)
+	}
+}
+
+func TestACachedSampleOlderThanADayIsNotServed(t *testing.T) {
+	t.Parallel()
+	sampled := newClock().Now().Add(-MaxCachedSampleAge - time.Minute)
+	sources := oneRepoSources("/repo/widgets")
+	sources.remote = remoteWith(t, func(s *remotestate.Snapshot) {
+		s.Metrics = &remotestate.MetricsSample{Load1: ptr(2.5), SampledAt: sampled}
+	})
+	snapshotter, clock := newSnapshotter(sources.collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	id := machineIDOf(t, snapshotter, "vm")
+	server := newCockpitServer(t, snapshotter)
+	var body MetricsResponse
+	if err := json.Unmarshal(server.get(metricsURL+id, nil).Body.Bytes(), &body); err != nil || body.Route != RouteNone || body.Reason != ReasonStale || len(body.Samples) != 0 {
+		t.Fatalf("an expired sample = %+v %v", body, err)
+	}
+	// A younger one is served with its own time; time passing expires it.
+	sources.change(func(f *fakeSources) {
+		f.remote[0].Snapshot.Metrics = &remotestate.MetricsSample{Load1: ptr(2.5), SampledAt: clock.Now().Add(-time.Hour)}
+	})
+	refreshAndSettle(t, snapshotter)
+	if err := json.Unmarshal(server.get(metricsURL+id, nil).Body.Bytes(), &body); err != nil || body.Route != RouteCached || len(body.Samples) != 1 {
+		t.Fatalf("a young sample = %+v %v", body, err)
+	}
+	clock.advance(MaxCachedSampleAge)
+	if err := json.Unmarshal(server.get(metricsURL+id, nil).Body.Bytes(), &body); err != nil || body.Route != RouteNone || body.Reason != ReasonStale {
+		t.Fatalf("a sample that aged out = %+v %v", body, err)
+	}
+}
+
+func cachedAgentsOf(document Document, machine string) []Agent {
+	var agents []Agent
+	for _, agent := range document.Agents {
+		if agent.Route == RouteCached && agent.Machine == machine {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+// TestCachedAgentsFollowTheirMachinesLiveReplacement: a machine read live has
+// its cached entries replaced, agents included, and a machine whose live read
+// failed keeps showing its cached agents (with the entry's remote_error).
+func TestCachedAgentsFollowTheirMachinesLiveReplacement(t *testing.T) {
+	t.Parallel()
+	published := cachedVM("alex")
+	published.Snapshot.Agents = []remotestate.AgentState{{Kind: "run", RunID: "agt-vm", State: "running"}}
+	sources := oneRepoSources("/repos/widgets")
+	sources.remote = append(sources.remote, published)
+
+	failed, clock := newLive(t, sources, &fakeExporter{answer: failing(errBoom)}, nil)
+	refreshAndSettle(t, failed)
+	clock.advance(7 * time.Second)
+	pollAndSettle(t, failed)
+	if got := cachedAgentsOf(failed.Document(), vmKey); len(got) != 1 {
+		t.Fatalf("after a failed live read the cached agents = %+v", got)
+	}
+
+	full := exportOf(t, vmOwnName, vmSources(), 4, false)
+	live, clock := newLive(t, sources, &fakeExporter{answer: answering(full, full)}, nil)
+	refreshAndSettle(t, live)
+	if got := cachedAgentsOf(live.Document(), vmKey); len(got) != 1 {
+		t.Fatalf("before the live read the cached agents = %+v", got)
+	}
+	clock.advance(7 * time.Second)
+	pollAndSettle(t, live)
+	if got := cachedAgentsOf(live.Document(), vmKey); len(got) != 0 {
+		t.Fatalf("a machine read live still shows its cached agents: %+v", got)
+	}
 }

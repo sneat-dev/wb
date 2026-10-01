@@ -56,6 +56,17 @@ type Extras struct {
 	Metrics *MetricsSample
 }
 
+// PublishSource is what the daemon's fleet snapshotter tells the periodic
+// publisher about this machine without a scan: the extras the opt-in flags may
+// add, and a token that is the same while nothing the snapshotter observes of
+// this machine's repositories and worktrees has changed.
+type PublishSource interface {
+	PublishExtras() Extras
+	// ChangeToken is "" when the source has seen nothing yet; the publisher
+	// then never skips a scan on its account.
+	ChangeToken() string
+}
+
 // WithExtras returns the snapshot carrying extras under the opt-in flags:
 // agents only when withAgents (at most MaxAgents, every string cleaned and
 // length-capped), the sample only when withMetrics and it is set. With both
@@ -135,12 +146,34 @@ type StatusCoder interface {
 // alongside a successful publish that had to leave the optional fields out.
 var ErrOptionalFieldsDropped = errors.New("the hub refused the optional snapshot fields (HTTP 400); published without them")
 
+// OptionalRefusalMemory is implemented by a provider that remembers, for the
+// life of the provider, that its store refused the optional fields, so the
+// full payload is not sent again and refused on every publish.
+type OptionalRefusalMemory interface {
+	// OptionalFieldsRefused reports whether a refusal is remembered at now.
+	OptionalFieldsRefused(now time.Time) bool
+	// RefuseOptionalFields remembers a refusal until the given time.
+	RefuseOptionalFields(until time.Time)
+}
+
+// OptionalRefusalMemoryFor is how long a refusal is remembered.
+const OptionalRefusalMemoryFor = 24 * time.Hour
+
 // PublishWithFallback publishes snapshot through provider. When the provider
 // refuses it with status 400 and the snapshot carries optional fields, as an
 // older hub does for fields it does not know, it publishes once more without
-// them. The returned diagnostic is ErrOptionalFieldsDropped when that retry
-// succeeded and is nil otherwise; a retry is never repeated.
-func PublishWithFallback(ctx context.Context, provider Provider, snapshot Snapshot) (result PublishResult, diagnostic, err error) {
+// them, and a provider that remembers (OptionalRefusalMemory) is told, so for
+// the next 24 hours the optional fields are left out at once. The returned
+// diagnostic is ErrOptionalFieldsDropped when the optional fields were left
+// out and the publish succeeded, and nil otherwise; a retry is never repeated.
+func PublishWithFallback(ctx context.Context, provider Provider, snapshot Snapshot, now time.Time) (result PublishResult, diagnostic, err error) {
+	memory, remembers := provider.(OptionalRefusalMemory)
+	if remembers && snapshot.HasOptional() && memory.OptionalFieldsRefused(now) {
+		if result, err = provider.Publish(ctx, snapshot.WithoutOptional()); err != nil {
+			return PublishResult{}, nil, err
+		}
+		return result, ErrOptionalFieldsDropped, nil
+	}
 	result, err = provider.Publish(ctx, snapshot)
 	var status StatusCoder
 	if err == nil || !snapshot.HasOptional() || !errors.As(err, &status) || status.HTTPStatus() != 400 {
@@ -149,6 +182,9 @@ func PublishWithFallback(ctx context.Context, provider Provider, snapshot Snapsh
 	result, err = provider.Publish(ctx, snapshot.WithoutOptional())
 	if err != nil {
 		return PublishResult{}, nil, err
+	}
+	if remembers {
+		memory.RefuseOptionalFields(now.Add(OptionalRefusalMemoryFor))
 	}
 	return result, ErrOptionalFieldsDropped, nil
 }

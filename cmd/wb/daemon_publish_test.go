@@ -39,6 +39,15 @@ func (p *capturingProvider) Publish(_ context.Context, snapshot remotestate.Snap
 	return remotestate.PublishResult{Location: "sha"}, nil
 }
 
+// fixedSource is a fake publish source.
+type fixedSource struct {
+	extras remotestate.Extras
+	token  string
+}
+
+func (f fixedSource) PublishExtras() remotestate.Extras { return f.extras }
+func (f fixedSource) ChangeToken() string               { return f.token }
+
 type refusedWith400 struct{}
 
 func (refusedWith400) Error() string   { return "hub returned HTTP 400" }
@@ -102,9 +111,7 @@ func TestPeriodicPublisherUsesTheCLIsIdentityScanAndProvider(t *testing.T) {
 	cfg := publishConfig(remotestate.PublishConfig{Interval: time.Minute, Agents: true, Metrics: true, Unpushed: remotestate.RedactUnpushed})
 	var logs bytes.Buffer
 	publisher := newPeriodicPublisher(deps, cfg, t.TempDir(), func(format string, args ...any) { logs.WriteString(format) })
-	extras := func() remotestate.Extras {
-		return remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}, Metrics: &remotestate.MetricsSample{SampledAt: deps.now()}}
-	}
+	extras := fixedSource{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}, Metrics: &remotestate.MetricsSample{SampledAt: deps.now()}}}
 	publisher.Publish(t.Context(), extras)
 	if len(provider.seen) != 1 || opened != 1 || logins != 1 {
 		t.Fatalf("published %d, opened %d, logins %d (logs %q)", len(provider.seen), opened, logins, logs.String())
@@ -131,9 +138,7 @@ func TestPeriodicPublisherWithoutTheFlagsPublishesNeitherAgentsNorMetrics(t *tes
 	opened := 0
 	cfg := publishConfig(remotestate.PublishConfig{Interval: 10 * time.Minute})
 	publisher := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "alice", nil }, &opened), cfg, t.TempDir(), nil)
-	publisher.Publish(t.Context(), func() remotestate.Extras {
-		return remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}, Metrics: &remotestate.MetricsSample{}}
-	})
+	publisher.Publish(t.Context(), fixedSource{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}, Metrics: &remotestate.MetricsSample{}}})
 	if len(provider.seen) != 1 || provider.seen[0].Agents != nil || provider.seen[0].Metrics != nil {
 		t.Fatalf("seen = %+v", provider.seen)
 	}
@@ -205,5 +210,47 @@ func TestPublishIdentityCarriesTheHardwareFacts(t *testing.T) {
 	identity := publishIdentity(publishConfig(remotestate.PublishConfig{}), "alice", at)
 	if identity.Login != "alice" || identity.Machine != "mac" || !identity.PublishedAt.Equal(at) || identity.OS == "" || identity.CPUCount < 1 || identity.Agents != nil || identity.Metrics != nil {
 		t.Fatalf("identity = %+v", identity)
+	}
+}
+
+func TestRemotePublishByHandSaysOnceThatHardwareIsNowIncluded(t *testing.T) {
+	t.Parallel()
+	provider := &capturingProvider{}
+	opened := 0
+	deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	deps.configPath = cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n  machine: mac\n")()
+	run := func() string {
+		var out, progress bytes.Buffer
+		if err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, &progress, &invocation{}); err != nil {
+			t.Fatal(err)
+		}
+		return progress.String()
+	}
+	first := run()
+	if strings.Count(first, "\n") != 1 || !strings.Contains(first, "os, arch, cpu_count and boot_time") || !strings.Contains(first, "never sent by hand") {
+		t.Fatalf("first publish note = %q", first)
+	}
+	if second := run(); strings.Contains(second, "boot_time") {
+		t.Fatalf("the note was repeated: %q", second)
+	}
+	// A dry run prints the snapshot, says nothing, and does not use up the note.
+	fresh := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	fresh.configPath = cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n  machine: mac\n")()
+	var out, progress bytes.Buffer
+	if err := runRemotePublishWithProgress(fresh, t.TempDir(), "", 1, true, true, &out, &progress, &invocation{}); err != nil || strings.Contains(progress.String(), "boot_time") {
+		t.Fatalf("dry run: %v %q", err, progress.String())
+	}
+	// Without a config path or an unwritable marker nothing breaks.
+	noteHardwareOnce("", &progress)
+	noteHardwareOnce(filepath.Join(t.TempDir(), "absent", "wb.yaml"), &progress)
+}
+
+func TestRemotePublishHelpStatesWhatIsPublished(t *testing.T) {
+	t.Parallel()
+	long := newRemotePublishCmd(&invocation{}).Long
+	for _, want := range []string{"os, arch, cpu_count and boot_time", "never published by hand", "remote.publish.interval"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("help lacks %q", want)
+		}
 	}
 }

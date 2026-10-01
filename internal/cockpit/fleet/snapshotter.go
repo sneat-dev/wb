@@ -2,6 +2,8 @@ package fleet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -179,9 +181,13 @@ type Options struct {
 }
 
 // RemotePublisher is the periodic remote publisher the snapshotter hands the
-// end of each successful pass to. extras is asked only if it publishes.
+// end of each successful pass to. The snapshotter is the source it asks for the
+// extras it publishes and for the change token that lets it skip a scan.
+// Diagnostic is the code of its last attempt ("" when healthy), which the
+// document shows on this machine's entry as publish_error.
 type RemotePublisher interface {
-	Publish(ctx context.Context, extras func() remotestate.Extras)
+	Publish(ctx context.Context, source remotestate.PublishSource)
+	Diagnostic() string
 }
 
 // repoState is what the snapshotter keeps of one local repository between
@@ -324,6 +330,8 @@ type Snapshotter struct {
 	// publishBusy keeps one hand-off running at a time, like remoteBusy.
 	publisher   RemotePublisher
 	publishBusy atomic.Bool
+	// publishDiag is the publisher's diagnostic as of its last attempt.
+	publishDiag string
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -1117,15 +1125,60 @@ func (s *Snapshotter) startPublish(ctx context.Context) {
 	go func() {
 		defer s.side.Done()
 		defer s.publishBusy.Store(false)
-		_ = catch(func() error { s.publisher.Publish(ctx, s.publishExtras); return nil })
+		_ = catch(func() error { s.publisher.Publish(ctx, s); return nil })
+		diagnostic := s.publisher.Diagnostic()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !slices.Contains(publishErrorCodes, diagnostic) {
+			diagnostic = ""
+		}
+		if diagnostic != s.publishDiag {
+			s.publishDiag = diagnostic
+			s.publishMaybeLocked()
+		}
 	}()
 }
 
-// publishExtras is this machine's agents and its latest metrics sample, as
+// ChangeToken is the same string for as long as nothing the snapshotter
+// observes of this machine's repositories and worktrees has changed: the change
+// fingerprint of each clone (which it already computes to skip Git work) and the
+// worktree and pull-request facts it reads on every pass outside Git (owner
+// state, lifecycle, activity, ahead and behind, pull-request state). It is empty
+// until a full pass has completed. It does not see an edit that moves no
+// fingerprint and none of those facts (a new untracked file, say); such a change
+// reaches the store with the next one that does, or with the keepalive.
+func (s *Snapshotter) ChangeToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.complete {
+		return ""
+	}
+	ids := make([]string, 0, len(s.repos))
+	for id := range s.repos {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sum := sha256.New()
+	for _, id := range ids {
+		_, _ = fmt.Fprintf(sum, "repo\x00%s\x00%s\x00%s\n", id, s.repos[id].fingerprint, s.repos[id].entries.repository.Error)
+		for _, worktree := range s.repos[id].entries.worktrees {
+			facts, _ := json.Marshal([]any{worktree.ID, worktree.Branch, worktree.Lifecycle, worktree.OwnerState, worktree.LastActivityAt.UTC(), worktree.Ahead, worktree.Behind, worktree.UpstreamGone, worktree.HasUpstream})
+			_, _ = fmt.Fprintf(sum, "wt\x00%s\n", facts)
+		}
+	}
+	for _, pull := range s.doc.PullRequests {
+		if pull.Route == RouteLocal {
+			_, _ = fmt.Fprintf(sum, "pr\x00%s\x00%d\x00%s\n", pull.ID, pull.Number, pull.State)
+		}
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// PublishExtras is this machine's agents and its latest metrics sample, as
 // the publisher may add them to a snapshot: only the entries and the sample the
 // document already carries, with the repository of an agent named by the
 // repository's name (owner/name), never its id or its path.
-func (s *Snapshotter) publishExtras() remotestate.Extras {
+func (s *Snapshotter) PublishExtras() remotestate.Extras {
 	s.mu.RLock()
 	document := s.doc
 	s.mu.RUnlock()
@@ -1160,7 +1213,12 @@ func (s *Snapshotter) publishExtras() remotestate.Extras {
 // cachedMetricsSource answers the machine-metrics route from the latest
 // sample another machine published (cockpit-views#req:machine-metrics-route's
 // `cached` route): one sample, from memory only, with the sample's own time.
+// A sample older than MaxCachedSampleAge is not served: the answer is `none`
+// with the reason `stale`, so a month-old sample is never drawn as a current one.
 type cachedMetricsSource struct{ snapshotter *Snapshotter }
+
+// MaxCachedSampleAge is the age after which a published sample is expired.
+const MaxCachedSampleAge = 24 * time.Hour
 
 func (c cachedMetricsSource) MachineMetrics(machineID string) (MetricsAnswer, bool) {
 	c.snapshotter.mu.RLock()
@@ -1168,6 +1226,9 @@ func (c cachedMetricsSource) MachineMetrics(machineID string) (MetricsAnswer, bo
 	sample, found := c.snapshotter.remote.samples[machineID]
 	if !found {
 		return MetricsAnswer{}, false
+	}
+	if c.snapshotter.now().Sub(sample.SampledAt) > MaxCachedSampleAge {
+		return MetricsAnswer{Route: RouteNone, Reason: ReasonStale, Version: c.snapshotter.remoteSampleVersion}, true
 	}
 	return MetricsAnswer{Route: RouteCached, Samples: []machinemetrics.Sample{sample}, Version: c.snapshotter.remoteSampleVersion}, true
 }
@@ -1340,6 +1401,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		Entry:     localEntry(localMachineID(s.machine), s.machine, now),
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
+		PublishError: s.publishDiag,
 	})
 	localHosts := map[string]bool{}
 	for _, repository := range document.Repositories {

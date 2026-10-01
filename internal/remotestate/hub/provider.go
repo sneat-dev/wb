@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
@@ -60,6 +61,27 @@ type Provider struct {
 	client      *http.Client
 	sleep       func(context.Context, time.Duration) error
 	retryDelays []time.Duration
+
+	refusalMu    sync.Mutex
+	refusedUntil time.Time
+}
+
+// OptionalFieldsRefused reports whether this hub refused the optional snapshot
+// fields and the refusal is still remembered at now (remotestate.
+// OptionalRefusalMemory). The memory lives and dies with the provider, so a
+// daemon restart forgets it.
+func (provider *Provider) OptionalFieldsRefused(now time.Time) bool {
+	provider.refusalMu.Lock()
+	defer provider.refusalMu.Unlock()
+	return now.Before(provider.refusedUntil)
+}
+
+// RefuseOptionalFields remembers a refusal of the optional fields until the
+// given time.
+func (provider *Provider) RefuseOptionalFields(until time.Time) {
+	provider.refusalMu.Lock()
+	defer provider.refusalMu.Unlock()
+	provider.refusedUntil = until
 }
 
 // newClient is the provider's own client: the default transport with the proxy

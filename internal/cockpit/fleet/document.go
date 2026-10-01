@@ -217,7 +217,12 @@ type Machine struct {
 	Transport       string    `json:"transport,omitempty"`
 	RemoteError     string    `json:"remote_error,omitempty"`
 	ExportDropped   int       `json:"export_dropped,omitempty"`
-	AgentsTruncated bool      `json:"agents_truncated,omitempty"`
+	// PublishError is the code of the last failed or degraded periodic publish
+	// of this machine's snapshot (cockpit-views#req:periodic-remote-publish),
+	// on this machine's own entry only: absent when it is healthy and when
+	// publishing is off.
+	PublishError    string `json:"publish_error,omitempty"`
+	AgentsTruncated bool   `json:"agents_truncated,omitempty"`
 }
 
 // Repository is one repository with its counts. A count that is nil is not
@@ -354,6 +359,18 @@ type Agent struct {
 	FinishedAt time.Time `json:"finished_at,omitzero"`
 	ExitCode   *int      `json:"exit_code,omitempty"`
 }
+
+// The codes of Machine.publish_error: the diagnostics of the periodic remote
+// publisher (internal/remotestate/periodic), a closed list, and never the text of
+// an error. A code outside it is dropped.
+const (
+	PublishErrorCollectFailed = "collect_failed"
+	PublishErrorStore         = "store_unavailable"
+	PublishErrorFailed        = "publish_failed"
+	PublishErrorOptional      = "optional_fields_dropped"
+)
+
+var publishErrorCodes = []string{PublishErrorCollectFailed, PublishErrorStore, PublishErrorFailed, PublishErrorOptional}
 
 // emptyDocument is the well-formed document served before the first snapshot:
 // every collection is an empty list, never null.

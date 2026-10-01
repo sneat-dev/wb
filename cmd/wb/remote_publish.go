@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -22,7 +23,11 @@ func newRemotePublishCmd(inv *invocation) *cobra.Command {
 		Use:   "publish",
 		Short: "Scan this machine's fleet and publish the snapshot to the remote store",
 		Long: `Scans every clone under --projects-root (honouring --filter), lists live
-task worktrees, and publishes one snapshot keyed <login>/<machine>.
+task worktrees, and publishes one snapshot keyed <login>/<machine>, with this
+machine's os, arch, cpu_count and boot_time (the first publish after an upgrade
+says so once). Agents and metrics are never published by hand: only the daemon's
+periodic publish, which remote.publish.interval turns on, carries them, each
+behind remote.publish.agents and remote.publish.metrics.
 --dry-run prints the snapshot and writes nothing, locally or remotely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -72,8 +77,11 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		_, err = out.Write(data)
 		return err
 	}
+	if progressOut != nil {
+		noteHardwareOnce(deps.configPath, progressOut)
+	}
 	progress.phase("publishing snapshot")
-	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot)
+	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, deps.now())
 	if err != nil {
 		progress.fail(err)
 		return &exitError{code: exitFindings, message: "publish: " + err.Error()}
@@ -102,4 +110,23 @@ func publishIdentity(cfg remotestate.Config, login string, now time.Time) remote
 		Login: login, Machine: cfg.Machine, PublishedAt: now, WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID(),
 		OS: hardware.OS, Arch: hardware.Arch, CPUCount: hardware.CPUCount, BootTime: hardware.BootTime,
 	}
+}
+
+// hardwareNote is the one line the first real publish prints after the machine's
+// hardware facts joined the snapshot.
+const hardwareNote = "wb: this publish also includes this machine's os, arch, cpu_count and boot_time (new in this version); agents and metrics are never sent by hand\n"
+
+// noteHardwareOnce prints hardwareNote the first time and records that it did
+// with a marker file beside the configuration, so the line is not repeated. A
+// marker that cannot be written costs only a repeat of the line.
+func noteHardwareOnce(configPath string, out io.Writer) {
+	if configPath == "" {
+		return
+	}
+	marker := filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	_, _ = io.WriteString(out, hardwareNote)
+	_ = os.WriteFile(marker, nil, 0o600)
 }

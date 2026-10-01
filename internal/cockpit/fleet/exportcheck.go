@@ -304,7 +304,7 @@ func required(rule textRule) textRule {
 var stringRules = map[string]textRule{
 	"Envelope.machine":             isText,
 	"EnvelopeMetrics.route":        required(oneOf(RouteLocal, RouteNone)),
-	"EnvelopeMetrics.reason":       oneOf(ReasonNoSource, ReasonUnsupported, ReasonUnavailable),
+	"EnvelopeMetrics.reason":       oneOf(ReasonNoSource, ReasonUnsupported, ReasonUnavailable, ReasonStale),
 	"Document.error":               oneOf(ErrorRepositoriesUnreadable),
 	"Document.code_index_provider": matching(tokenPattern),
 	"Entry.id":                     required(matching(idPattern)),
@@ -316,8 +316,11 @@ var stringRules = map[string]textRule{
 	"Machine.arch":                 matching(shortNamePattern),
 	// An export is a machine's own entry, which never carries the transport or
 	// the error of a read of another machine: both must be absent.
-	"Machine.transport":         oneOf(),
-	"Machine.remote_error":      oneOf(),
+	"Machine.transport":    oneOf(),
+	"Machine.remote_error": oneOf(),
+	// The machine's own entry carries the code of its own last failed publish
+	// (it is local only: another machine never carries it from an export).
+	"Machine.publish_error":     oneOf(publishErrorCodes...),
 	"Repository.host":           isHost,
 	"Repository.name":           isText,
 	"Repository.default_branch": isText,

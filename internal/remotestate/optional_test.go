@@ -188,6 +188,8 @@ func TestWithoutOptionalAndHasOptional(t *testing.T) {
 	}
 }
 
+var testNow = time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+
 type statusErr int
 
 func (e statusErr) Error() string   { return "refused" }
@@ -216,7 +218,7 @@ func TestPublishWithFallbackRetriesOnceWithoutOptionalFieldsOn400(t *testing.T) 
 	full := base.WithExtras(extras, true, true)
 
 	provider := &scriptedProvider{errs: []error{statusErr(400)}}
-	result, diagnostic, err := PublishWithFallback(context.Background(), provider, full)
+	result, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow)
 	if err != nil || !errors.Is(diagnostic, ErrOptionalFieldsDropped) || result.Location != "ok" {
 		t.Fatalf("result=%+v diagnostic=%v err=%v", result, diagnostic, err)
 	}
@@ -226,7 +228,7 @@ func TestPublishWithFallbackRetriesOnceWithoutOptionalFieldsOn400(t *testing.T) 
 
 	// The retry is made once: a second refusal is the error.
 	provider = &scriptedProvider{errs: []error{statusErr(400), statusErr(400)}}
-	if _, diagnostic, err = PublishWithFallback(context.Background(), provider, full); err == nil || diagnostic != nil || len(provider.seen) != 2 {
+	if _, diagnostic, err = PublishWithFallback(context.Background(), provider, full, testNow); err == nil || diagnostic != nil || len(provider.seen) != 2 {
 		t.Fatalf("second refusal: diagnostic=%v err=%v attempts=%d", diagnostic, err, len(provider.seen))
 	}
 }
@@ -237,18 +239,57 @@ func TestPublishWithFallbackDoesNotRetryOtherFailures(t *testing.T) {
 	full := base.WithExtras(extras, true, true)
 	for name, failure := range map[string]error{"500": statusErr(500), "plain": errors.New("boom"), "401": statusErr(401)} {
 		provider := &scriptedProvider{errs: []error{failure}}
-		if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full); err == nil || diagnostic != nil || len(provider.seen) != 1 {
+		if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow); err == nil || diagnostic != nil || len(provider.seen) != 1 {
 			t.Errorf("%s: diagnostic=%v err=%v attempts=%d", name, diagnostic, err, len(provider.seen))
 		}
 	}
 	// A snapshot with nothing optional is refused for another reason: no retry.
 	provider := &scriptedProvider{errs: []error{statusErr(400)}}
-	if _, _, err := PublishWithFallback(context.Background(), provider, Snapshot{Login: "a"}); err == nil || len(provider.seen) != 1 {
+	if _, _, err := PublishWithFallback(context.Background(), provider, Snapshot{Login: "a"}, testNow); err == nil || len(provider.seen) != 1 {
 		t.Errorf("a plain snapshot was retried: %v %d", err, len(provider.seen))
 	}
 	// Success on the first attempt has no diagnostic.
 	provider = &scriptedProvider{}
-	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full); err != nil || diagnostic != nil {
+	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow); err != nil || diagnostic != nil {
 		t.Errorf("success: %v %v", diagnostic, err)
+	}
+}
+
+// memoryProvider is a scripted provider that remembers a refusal, as the hub's does.
+type memoryProvider struct {
+	scriptedProvider
+	until time.Time
+}
+
+func (p *memoryProvider) OptionalFieldsRefused(now time.Time) bool { return now.Before(p.until) }
+func (p *memoryProvider) RefuseOptionalFields(until time.Time)     { p.until = until }
+
+func TestARefusalOfTheOptionalFieldsIsRememberedFor24Hours(t *testing.T) {
+	t.Parallel()
+	base, extras := optionalFixture()
+	full := base.WithExtras(extras, true, true)
+	provider := &memoryProvider{scriptedProvider: scriptedProvider{errs: []error{statusErr(400)}}}
+	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow); err != nil || diagnostic == nil || len(provider.seen) != 2 {
+		t.Fatalf("first publish: %v %v %d", diagnostic, err, len(provider.seen))
+	}
+	if !provider.until.Equal(testNow.Add(24 * time.Hour)) {
+		t.Fatalf("remembered until %s", provider.until)
+	}
+	// Within the day the full payload is not sent again.
+	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow.Add(23*time.Hour)); err != nil || !errors.Is(diagnostic, ErrOptionalFieldsDropped) || len(provider.seen) != 3 || provider.seen[2].HasOptional() {
+		t.Fatalf("remembered publish: %v %v attempts %d", diagnostic, err, len(provider.seen))
+	}
+	// A failure of that stripped publish is the error.
+	provider.errs = []error{errors.New("down")}
+	if _, _, err := PublishWithFallback(context.Background(), provider, full, testNow.Add(23*time.Hour)); err == nil {
+		t.Fatal("a failed stripped publish was not an error")
+	}
+	// After the day the full payload is tried again, and accepted by an upgraded hub.
+	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, full, testNow.Add(25*time.Hour)); err != nil || diagnostic != nil || !provider.seen[len(provider.seen)-1].HasOptional() {
+		t.Fatalf("after a day: %v %v", diagnostic, err)
+	}
+	// A snapshot with nothing optional never consults the memory.
+	if _, diagnostic, err := PublishWithFallback(context.Background(), provider, Snapshot{Login: "a"}, testNow); err != nil || diagnostic != nil {
+		t.Fatalf("plain: %v %v", diagnostic, err)
 	}
 }

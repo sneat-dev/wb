@@ -273,8 +273,51 @@ func TestAnOlderHubRefusingTheOptionalFieldsIsRetriedOnceWithoutThem(t *testing.
 		t.Fatalf("err = %v, want a 400 status error", err)
 	}
 	requests = 0
-	_, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot)
+	_, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, at)
 	if err != nil || !errors.Is(diagnostic, remotestate.ErrOptionalFieldsDropped) || requests != 2 {
 		t.Fatalf("diagnostic=%v err=%v requests=%d", diagnostic, err, requests)
+	}
+}
+
+func TestTheHubProviderRemembersAnOlderHubsRefusalForADay(t *testing.T) {
+	t.Parallel()
+	requests, sawOptional := 0, 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		body, _ := io.ReadAll(request.Body)
+		if strings.Contains(string(body), `"os"`) {
+			sawOptional++
+			return response(http.StatusBadRequest, `{}`), nil
+		}
+		return response(http.StatusOK, `{"login":"alice","machine":"laptop","published_at":"2026-10-01T09:00:00Z","received_at":"2026-10-01T09:00:01Z","updated":true}`), nil
+	})}
+	provider, err := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "t", Client: client, RetryDelays: []time.Duration{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	snapshot := remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: at, OS: "linux"}
+	publish := func(now time.Time) {
+		t.Helper()
+		if _, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, now); err != nil || !errors.Is(diagnostic, remotestate.ErrOptionalFieldsDropped) {
+			t.Fatalf("publish at %s: %v %v", now, diagnostic, err)
+		}
+	}
+	publish(at)
+	if requests != 2 {
+		t.Fatalf("first publish made %d requests", requests)
+	}
+	publish(at.Add(12 * time.Hour))
+	if requests != 3 || sawOptional != 1 {
+		t.Fatalf("a remembered refusal still sent the optional fields: %d requests, %d refused", requests, sawOptional)
+	}
+	publish(at.Add(25 * time.Hour)) // the full payload is tried again after a day
+	if sawOptional != 2 {
+		t.Fatalf("the refusal outlived its day: %d", sawOptional)
+	}
+	// A new provider (a daemon restart) remembers nothing.
+	fresh, _ := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "t", Client: client, RetryDelays: []time.Duration{}})
+	if fresh.OptionalFieldsRefused(at) {
+		t.Fatal("a new provider remembers a refusal")
 	}
 }

@@ -37,7 +37,8 @@ const (
 	// DefaultKeepalive is how long an unchanged machine goes without a publish
 	// before one is sent anyway, so a machine that is only idle is never taken
 	// for a stale one (`wb remote machines` marks a snapshot stale after 24
-	// hours by default).
+	// hours by default). The keepalive in force is the larger of this and the
+	// interval.
 	DefaultKeepalive = 6 * time.Hour
 	// DefaultMaxBackoff is the longest wait after repeated failures.
 	DefaultMaxBackoff = time.Hour
@@ -61,7 +62,7 @@ type Options struct {
 	// Timeout bounds one attempt; zero or less means DefaultTimeout.
 	Timeout time.Duration
 	// Keepalive is the longest an unchanged snapshot goes unpublished; zero or
-	// less means DefaultKeepalive.
+	// less means DefaultKeepalive, and it is never less than Every.
 	Keepalive time.Duration
 	// MaxBackoff caps the wait after failures; zero or less means
 	// DefaultMaxBackoff.
@@ -76,9 +77,10 @@ type Status struct {
 	// published or found nothing to publish.
 	Diagnostic string
 	// Attempts counts the attempts that ran a scan, Published the publishes
-	// that reached the store and Skipped the attempts that found nothing
-	// changed.
-	Attempts, Published, Skipped int
+	// that reached the store, Skipped the attempts that scanned and found
+	// nothing changed, and Gated the attempts that did not scan at all because
+	// the source reported nothing changed (they are not Attempts).
+	Attempts, Published, Skipped, Gated int
 	// LastPublished is when the last publish reached the store.
 	LastPublished time.Time
 }
@@ -94,6 +96,7 @@ type Publisher struct {
 	next         time.Time
 	failures     int
 	lastDigest   string
+	lastToken    string
 	provider     remotestate.Provider
 	status       Status
 	loggedStatus string
@@ -112,6 +115,7 @@ func New(options Options) *Publisher {
 	if options.Keepalive <= 0 {
 		publisher.options.Keepalive = DefaultKeepalive
 	}
+	publisher.options.Keepalive = max(publisher.options.Keepalive, options.Every)
 	if options.MaxBackoff <= 0 {
 		publisher.options.MaxBackoff = DefaultMaxBackoff
 	}
@@ -128,18 +132,43 @@ func (p *Publisher) Status() Status {
 	return p.status
 }
 
+// Diagnostic is the code of the last attempt, "" when it published, found
+// nothing to publish, or none has run.
+func (p *Publisher) Diagnostic() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.status.Diagnostic
+}
+
 // Publish makes one attempt if the interval (or, after a failure, the backoff)
-// has passed and none is running: it scans, adds the extras the flags allow,
-// skips a snapshot that says what the last published one said, and publishes
-// through the provider. extras is asked only when an attempt runs. It returns
-// nothing: every outcome is a Status and a logged code.
-func (p *Publisher) Publish(ctx context.Context, extras func() remotestate.Extras) {
+// has passed and none is running. If source reports the same change token (and
+// the same agents, when they are published) as at the last publish or the last
+// attempt that found nothing changed, and the keepalive has not passed, it
+// does not even scan: the scan reads the git status of every repository, which
+// the snapshotter's fingerprints already tell is unchanged. Otherwise it scans,
+// adds the extras the flags allow, skips a snapshot that says what the last
+// published one said, and publishes through the provider. source may be nil
+// (no gate, no extras). It returns nothing: every outcome is a Status and a
+// logged code.
+func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSource) {
 	if p.options.Every <= 0 || p.options.Collect == nil || p.options.Open == nil {
 		return
 	}
 	now := p.now()
 	p.mu.Lock()
 	if p.running || now.Before(p.next) {
+		p.mu.Unlock()
+		return
+	}
+	var extras func() remotestate.Extras
+	token := ""
+	if source != nil {
+		extras = source.PublishExtras
+		token = p.gateKey(source)
+	}
+	if token != "" && token == p.lastToken && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive {
+		p.status.Gated++
+		p.next = now.Add(p.options.Every)
 		p.mu.Unlock()
 		return
 	}
@@ -159,9 +188,10 @@ func (p *Publisher) Publish(ctx context.Context, extras func() remotestate.Extra
 	case published:
 		p.status.Published++
 		p.status.LastPublished = now
-		p.lastDigest = digest
+		p.lastDigest, p.lastToken = digest, token
 	case skipped:
 		p.status.Skipped++
+		p.lastToken = token
 	}
 	failed := diagnostic != DiagnosticNone && diagnostic != DiagnosticOptionalFields
 	if failed {
@@ -181,6 +211,20 @@ func (p *Publisher) Publish(ctx context.Context, extras func() remotestate.Extra
 			p.options.Logf("remote publish: %s: %s", diagnostic, detail)
 		}
 	}
+}
+
+// gateKey is the source's change token with the digest of the agents it would
+// publish, so that a change of agents opens the gate when agents are published.
+// It is empty when the source has no token yet.
+func (p *Publisher) gateKey(source remotestate.PublishSource) string {
+	token := source.ChangeToken()
+	if token == "" {
+		return ""
+	}
+	if p.options.Agents {
+		token += "|" + remotestate.Snapshot{Agents: source.PublishExtras().Agents}.Digest()
+	}
+	return token
 }
 
 // guarded is attempt with a panic in a collaborator turned into a failed
@@ -221,7 +265,7 @@ func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() re
 		p.provider = provider
 		p.mu.Unlock()
 	}
-	_, dropped, err := remotestate.PublishWithFallback(ctx, provider, snapshot)
+	_, dropped, err := remotestate.PublishWithFallback(ctx, provider, snapshot, now)
 	if err != nil {
 		return DiagnosticPublishFailed, err.Error(), false, false, ""
 	}

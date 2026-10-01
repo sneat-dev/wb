@@ -231,7 +231,7 @@ func exportMetrics(response MetricsResponse) *EnvelopeMetrics {
 		}
 		return &EnvelopeMetrics{Route: RouteLocal, Samples: samples}
 	case RouteNone:
-		if slices.Contains([]string{ReasonNoSource, ReasonUnsupported, ReasonUnavailable}, response.Reason) {
+		if slices.Contains([]string{ReasonNoSource, ReasonUnsupported, ReasonUnavailable, ReasonStale}, response.Reason) {
 			return &EnvelopeMetrics{Route: RouteNone, Samples: []machinemetrics.Sample{}, Reason: response.Reason}
 		}
 	}
