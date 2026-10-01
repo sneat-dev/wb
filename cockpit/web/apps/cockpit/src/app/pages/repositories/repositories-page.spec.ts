@@ -140,10 +140,9 @@ describe('RepositoriesPage', () => {
     const prs = (row: HTMLElement) => cell(row, 'prs')
     expect(agents(a).querySelector('a')?.getAttribute('href')).toBe('/agents?q=repo:%22acme%2Fa%22')
     expect(prs(a).querySelector('a')?.getAttribute('href')).toBe('/tasks?q=repo:%22acme%2Fa%22&chips=pr')
-    expect(text(agents(b))).toBe('0')
-    expect(agents(b).querySelector('.quiet')?.getAttribute('title')).toBe('No running agents')
-    expect(text(prs(b))).toBe('0')
-    expect(prs(b).querySelector('.quiet')?.getAttribute('title')).toBe('No open pull requests')
+    // A zero is an empty cell, not a "0".
+    expect(text(agents(b))).toBe('')
+    expect(text(prs(b))).toBe('')
   })
 
   it('shows a dash for the side of the branch counts that no machine reports, and says so in the hover text', async () => {

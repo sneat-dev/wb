@@ -48,15 +48,16 @@ describe('shotPlan', () => {
     )
   })
 
-  it('adds the list and its side panel on Worktrees and Repositories, each with the steps that reach it', () => {
+  it('adds the list and its side panel on Worktrees, Tasks and Repositories, each with the steps that reach it', () => {
     const lists = shots.filter((shot) => shot.steps)
     expect(lists).toHaveLength(LIST_SHOTS.length * 2 * 4)
-    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/repositories']))
+    expect(new Set(lists.map((shot) => shot.url))).toEqual(new Set(['/worktrees', '/tasks', '/repositories']))
     expect(lists.filter((shot) => shot.name.startsWith('repositories')).every((shot) => shot.url === '/repositories')).toBe(true)
     expect(lists.map((shot) => shot.file)).toContain('repositories-panel-dark-360.png')
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-raw-dark-390.png')
     expect(lists.map((shot) => shot.file)).toContain('worktrees-panel-light-1024.png')
     expect(LIST_SHOTS.find((shot) => shot.name === 'worktrees-panel-raw')?.steps).toEqual(['row:2', 'raw'])
+    expect(lists.filter((shot) => shot.name === 'tasks-panel').map((shot) => shot.url)).toEqual(['/tasks', '/tasks', '/tasks', '/tasks', '/tasks', '/tasks', '/tasks', '/tasks'])
   })
 
   it('gives every shot a distinct file', () => {

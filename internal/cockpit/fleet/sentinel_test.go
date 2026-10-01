@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/herdr"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
@@ -39,10 +41,27 @@ func sentinelSources() *fakeSources {
 
 	view := filled[session.View]()
 	view.WBSessionID, view.Runtime, view.Model, view.State = "wbs-1", "claude", "opus", session.StateLive
+	// The view's process id is the sentinel number, as is the declared owner's of
+	// the worktree record, so the session is linked to the worktree; the harness
+	// session id is the one herdr's fake agent carries.
+	view.NativeHarnessID, view.StartedAt = "hid-1", newClock().Now()
+	record.OwnerPID, record.OwnerAgent = view.PID, "claude/hid-1"
 
 	run := filled[agents.Result]()
 	run.AgentID, run.State, run.Repository = "agt-1", agents.StateRunning, "acme/widgets"
 	run.Resolved.Harness, run.Resolved.Model = "codex", "gpt"
+	run.Worktree, run.Branch, run.StartedAt = "task-a", "feature/a", newClock().Now()
+	finished := newClock().Now()
+	failedRun := run
+	failedRun.AgentID, failedRun.State, failedRun.FinishedAt = "agt-2", agents.StateFailed, &finished
+	two := 2
+	failedRun.ExitCode = &two
+
+	// herdr's fake agent has a sentinel in every field but its status and the
+	// harness session id that joins it to the session.
+	herdrAgent := filled[herdr.Agent]()
+	herdrAgent.Status = herdr.StatusBlocked
+	herdrAgent.Session = &herdr.AgentSession{Agent: sentinel + "agent", Kind: "id", Source: sentinel + "source", Value: "hid-1"}
 
 	// The remote entry is built by the filler like the rest, so every field its
 	// types have, and gain later, carries a sentinel except the few the
@@ -67,8 +86,9 @@ func sentinelSources() *fakeSources {
 		branches:  map[string][]BranchRef{"acme/widgets": {ref}},
 		bindings:  []worktrees.RegisteredPullRequestBinding{binding},
 		sessions:  []session.View{view},
-		runs:      []agents.Result{run},
+		runs:      []agents.Result{run, failedRun},
 		remote:    []remotestate.Entry{entry},
+		activity:  HerdrActivity{Open: func() (HerdrLister, error) { return fakeHerdr{agents: []herdr.Agent{herdrAgent}}, nil }},
 	}
 }
 
@@ -95,12 +115,41 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	t.Parallel()
 	// The projects root is a sentinel path: it is compared and statted, never
 	// emitted, and the metrics route must not carry it either.
+	// Two other machines are read live (cockpit-views#req:remote-entries-replace-
+	// cached). The first exports the same sentinel sources under a machine name
+	// that is itself a sentinel: the name a response gives is never used, so it
+	// must not reach the document. The second fails with a sentinel as its error
+	// text and as its code: only a code of the closed vocabulary may be shown.
+	remote, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
+		options.Machine = sentinel + "remote-machine"
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+	})
+	refreshAndSettle(t, remote)
+	exported := remote.Export(false)
+	if exported.Machine != sentinel+"remote-machine" || len(exported.Fleet.Worktrees) != 1 {
+		t.Fatalf("the remote export = %+v", exported)
+	}
+	exporter := &fakeExporter{answer: func(target RemoteTarget, _ bool) (Envelope, error) {
+		if target.Machine == "broken" {
+			return Envelope{}, errors.Join(errors.New(sentinel+"error-text"), &RemoteError{Code: sentinel + "code"})
+		}
+		return exported, nil
+	}}
 	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
 		options.ProjectsRoot = "/" + sentinel + "projects-root"
 		options.Sampler = filledSampler(t, &countingSource{}, 3)
+		options.Remotes = []RemoteTarget{
+			{Machine: "vm", HTTP: &HTTPRoute{URL: "https://" + sentinel + "host.example", TokenFile: "/" + sentinel + "token-file"}},
+			{Machine: "broken", HTTP: &HTTPRoute{URL: "https://" + sentinel + "broken.example", TokenFile: "/" + sentinel + "token-file"}},
+		}
+		options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: exporter}}
 		options.Terminals = sentinelTerminals()
 	})
 	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	if vm, found := machineNamed(snapshotter.Document(), "vm"); !found || vm.WorktreeCount != 1 {
+		t.Fatalf("the live machine = %+v (the test would be vacuous)", vm)
+	}
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
 	// The metrics of every machine in the document are served by their own
@@ -161,7 +210,8 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
-		`"desktop"`, `"v0.9.0"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
+		`"desktop"`, `"v0.9.0"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
@@ -180,7 +230,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"Throughput":       {"window_days", "per_day", "slowest", "median_seconds", "p90_seconds", "capped"},
 		"ThroughputDay":    {"date", "finished", "dropped", "landed"},
 		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
-		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time"}, entry...),
+		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time", "transport", "remote_error", "export_dropped", "agents_truncated"}, entry...),
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
 		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
 		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
@@ -191,7 +241,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"KindCount":        {"kind", "count"},
 		"MetricsResponse":  {"machine", "route", "fetched_at", "samples", "reason"},
 		"Sample":           {"cpu_percent", "load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"},
-		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
+		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "activity", "repository", "task", "worktrees", "started_at", "finished_at", "exit_code"}, entry...),
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),

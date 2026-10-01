@@ -55,17 +55,13 @@
   </ng-template>
   <ng-template appCell="agents" let-r>
     @let agents = cellsOf(r).agents;
-    @if (agents.zero) {
-      <span class="quiet tnum" title="No running agents">0</span>
-    } @else {
+    @if (!agents.zero) {
       <app-count-link [value]="agents.value" [link]="agents.link" />
     }
   </ng-template>
   <ng-template appCell="prs" let-r>
     @let prs = cellsOf(r).prs;
-    @if (prs.zero) {
-      <span class="quiet tnum" title="No open pull requests">0</span>
-    } @else {
+    @if (!prs.zero) {
       <app-count-link [value]="prs.value" [link]="prs.link" />
     }
   </ng-template>

@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { Router, provideRouter } from '@angular/router'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { FleetDocument } from '@cockpit/fleet-data'
+import { buildCleanup } from '@cockpit/fleet-data/home-details'
 import { VOCABULARY } from '@cockpit/fleet-data/list'
 import { fleetDocument, pullRequest, worktree } from '@cockpit/fleet-data/testing'
 import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
@@ -142,6 +143,21 @@ describe('WorktreesPage', () => {
       const page = await openPage(`/worktrees?chips=${chip}`, WorktreesPage, documentOf())
       expect(page.root.querySelector('[aria-label="Quick filters"] [aria-pressed=true]')).not.toBeNull()
     }
+  })
+
+  // cockpit-views#ac:worktrees-quick-filters, cockpit-views#ac:cleanup-line-counts-and-chart
+  it('leaves exactly the worktrees Home counts as safe to remove (a landed task, nothing unpushed) and as needing a look (orphaned, or idle over 30 days)', async () => {
+    const doc = documentOf()
+    doc.worktrees = [...doc.worktrees, { ...worktree('w5', 'r1', 'alpha'), task: 'done', branch: 'done', owner_state: 'idle', ahead: 0, has_upstream: true, last_activity_at: ago(3) }]
+    doc.pull_requests = [...doc.pull_requests, pullRequest('p9', 'r1', 'w5', { number: 9, state: 'merged' })]
+    const safe = await openPage('/worktrees?chips=safe', WorktreesPage, doc)
+    expect(tasksOf(safe.root)).toEqual(['done'])
+    const look = await openPage('/worktrees?chips=look', WorktreesPage, doc)
+    expect(tasksOf(look.root).sort()).toEqual(['far', 'zeta'])
+    // The chips are Home's own counts: the same sets, not another definition.
+    const cleanup = buildCleanup(safe.store.model())
+    expect([...cleanup.safeIds]).toEqual(['w5'])
+    expect([...cleanup.lookIds].sort()).toEqual(['w3', 'w4'])
   })
 
   // cockpit-views#ac:copy-buttons-copy-the-full-value

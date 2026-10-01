@@ -43,8 +43,7 @@ export function routePlan(document) {
 // (`steps`, run by tools/shots.mjs) before the picture is taken. `filter:<text>` types
 // in the filter, `chip:<label>` toggles a quick filter, `row:<n>` selects the nth row
 // and `raw` opens the "Raw data" block; `select:<n>` selects the nth row with the keyboard (for a list whose
-// last cell holds controls) and `radio:<label>` chooses a radio button. A list shot's `url` is `/worktrees`
-// unless it names another.
+// last cell holds controls) and `radio:<label>` chooses a radio button. A shot's `url` is its page; Worktrees by default.
 export const LIST_SHOTS = [
   { name: 'worktrees-list', steps: [] },
   { name: 'worktrees-filter', steps: ['filter:fix'] },
@@ -58,6 +57,11 @@ export const LIST_SHOTS = [
   { name: 'repositories-no-match', url: '/repositories', steps: ['filter:zzzzqq'] },
   { name: 'repositories-panel', url: '/repositories', steps: ['select:1'] },
   { name: 'repositories-panel-raw', url: '/repositories', steps: ['select:1', 'raw'] },
+  { name: 'tasks-list', url: '/tasks', steps: [] },
+  { name: 'tasks-chip', url: '/tasks', steps: ['chip:Needs you'] },
+  { name: 'tasks-no-match', url: '/tasks', steps: ['filter:zzzzqq'] },
+  { name: 'tasks-panel', url: '/tasks', steps: ['row:1'] },
+  { name: 'tasks-panel-raw', url: '/tasks', steps: ['row:1', 'raw'] },
 ]
 
 // Every shot: the route plan in each scheme and size, then the overlays on Home,

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/hubaddress"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -51,6 +52,27 @@ type Provider struct {
 	retryDelays []time.Duration
 }
 
+// newClient is the provider's own client: the default transport with the proxy
+// policy of a client that sends a machine credential (hubaddress.Proxy), so the
+// bearer is never handed to an HTTP proxy in a plain request; an https request
+// still tunnels through the proxy the environment names.
+func newClient(proxy func(*http.Request) (*url.URL, error)) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: credentialTransport(http.DefaultTransport, proxy)}
+}
+
+// credentialTransport is base with the proxy policy when base is the standard
+// transport type (the default transport's settings are kept), and a fresh
+// transport with the policy otherwise: a program that replaced
+// http.DefaultTransport with another type must not make this panic.
+func credentialTransport(base http.RoundTripper, proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	transport := &http.Transport{ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second}
+	if standard, isStandard := base.(*http.Transport); isStandard {
+		transport = standard.Clone()
+	}
+	transport.Proxy = proxy
+	return transport
+}
+
 // New validates the endpoint and credential source without making a request.
 func New(options Options) (*Provider, error) {
 	if err := remotestate.ValidateHubURL(options.BaseURL); err != nil {
@@ -64,7 +86,7 @@ func New(options Options) (*Provider, error) {
 	}
 	client := options.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = newClient(hubaddress.Proxy)
 	}
 	sleep := options.Sleep
 	if sleep == nil {
@@ -84,7 +106,7 @@ func New(options Options) (*Provider, error) {
 		return nil, errors.New("injected hub credential must contain one non-empty token")
 	}
 	return &Provider{
-		baseURL: strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"), machine: options.Machine,
+		baseURL: hubaddress.Origin(options.BaseURL), machine: options.Machine,
 		token: token, tokenFile: strings.TrimSpace(options.TokenFile),
 		client: client, sleep: sleep, retryDelays: append([]time.Duration(nil), retryDelays...),
 	}, nil

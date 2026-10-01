@@ -44,6 +44,7 @@ type fakeSources struct {
 	sessions     []session.View
 	runs         []agents.Result
 	remote       []remotestate.Entry
+	activity     ActivityCollector
 	branch       string
 	readme       []byte
 	readmeErr    error
@@ -59,7 +60,7 @@ type fakeSources struct {
 }
 
 func (f *fakeSources) collectors() Collectors {
-	return Collectors{Repositories: f, Worktrees: f, Branches: f, Readme: f, Records: f, PullRequests: f, Sessions: f, Runs: f, Remote: f}
+	return Collectors{Repositories: f, Worktrees: f, Branches: f, Readme: f, Records: f, PullRequests: f, Sessions: f, Runs: f, Remote: f, Activity: f.activity}
 }
 
 func (f *fakeSources) Repositories(context.Context) ([]discover.Repo, error) {

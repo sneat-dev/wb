@@ -63,10 +63,10 @@ func treeOf(t *testing.T, dir string) map[string]string {
 	return tree
 }
 
-// TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing proves the read-only
+// TestDeclaredOwnerLiveReadOnlyTellsLivenessAndWritesNothing proves the read-only
 // reader gives DeclaredOwner's answer for a live, a gone and an unstated owner,
 // from a journal of files alone, and that it creates and changes nothing.
-func TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
+func TestDeclaredOwnerLiveReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
 	t.Parallel()
 	live, dead := os.Getpid(), 424242
 	for name, test := range map[string]struct {
@@ -82,7 +82,7 @@ func TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
 	} {
 		dir := journalWith(t, test.pids...)
 		before := treeOf(t, dir)
-		if got := DeclaredOwnerReadOnly(dir); got != test.want {
+		if got, _ := DeclaredOwnerLiveReadOnly(dir); got != test.want {
 			t.Errorf("%s: owner = %q, want %q", name, got, test.want)
 		}
 		after := treeOf(t, dir)
@@ -95,7 +95,28 @@ func TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
 			}
 		}
 	}
-	if got := DeclaredOwnerReadOnly(filepath.Join(t.TempDir(), "absent")); got != OwnerUnstated {
+	if got, _ := DeclaredOwnerLiveReadOnly(filepath.Join(t.TempDir(), "absent")); got != OwnerUnstated {
 		t.Errorf("a directory that is not there = %q", got)
+	}
+}
+
+// TestDeclaredOwnerLiveReadOnlyGivesTheLiveOwnersProcessOnly proves the process
+// id is the live owner's and is 0 for a gone or an unstated owner.
+func TestDeclaredOwnerLiveReadOnlyGivesTheLiveOwnersProcessOnly(t *testing.T) {
+	t.Parallel()
+	live, dead := os.Getpid(), 424242
+	for name, test := range map[string]struct {
+		pids []int
+		want int
+	}{
+		"no journal":     {nil, 0},
+		"a dead owner":   {[]int{dead}, 0},
+		"a live owner":   {[]int{live}, live},
+		"dead then live": {[]int{dead, live}, live},
+	} {
+		_, owner := DeclaredOwnerLiveReadOnly(journalWith(t, test.pids...))
+		if owner.PID != test.want || (test.want != 0 && (owner.Agent != "claude" || owner.At.IsZero())) {
+			t.Errorf("%s: owner = %+v, want process %d", name, owner, test.want)
+		}
 	}
 }

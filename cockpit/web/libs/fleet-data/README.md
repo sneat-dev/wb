@@ -40,7 +40,7 @@ The views are free functions over a model, not methods of it (`model.worktreeVie
 A poll that returns 304, or a 200 whose body is byte-identical, keeps the same document object, so
 nothing derived from it is recomputed. The client is strict per entry: an entry missing a required
 field or of the wrong type is dropped (not thrown), `FleetRead.dropped` and
-`store.droppedEntries()` count them for a diagnostic line, and unknown enum values are tolerated.
+`store.droppedEntries()` count them for a diagnostic line, and unknown enum values are tolerated. An optional field of the wrong type, or an `activity` or `mergeable` outside its set, is removed (it reads as "not reported"; the entry stays), and a malformed `throughput` block is dropped (`cleanOptionalFields`, `cleanThroughput`).
 A document missing its document-level facts, or a body that is not JSON, is a `FleetFormatError`.
 `Session.machine_routes` (OWNER-ONLY: `[{machine_id, ssh: {host, user?, wb_path?}}]`; anonymous
 readers get none) is threaded by the store into the model and the copy commands.
@@ -58,15 +58,15 @@ through `onError`, and is listed in `model.failedDerivations`.
 | Getter | Result |
 |---|---|
 | `buildRepositories(model)` (`/list`) | `MergedRepository[]`: one per lower-cased `owner/name` across machines (`id` = entry id of the preferred checkout, `key`, `slug`, `checkouts` with route, age and `stale`, summed counts, worst `codeIndex`, newest activity, `errors`, `webUrl`, which is a checked `webAddress` or absent) |
-| `tasks` | `TaskView[]`: worktrees, pull requests, agents, `state` + `stateInfo`, repositories, machines, `lastActivityAt`, `openPullRequests`, `unobservedPullRequests` |
+| `tasks` | `TaskView[]`: worktrees, pull requests, agents, `state` + `stateInfo`, `stateSource` (`local`, or `remote` when no entry of the task is on this machine: the state is then that machine's report, `reportedBy`, and Home offers no action for it), repositories, machines, `lastActivityAt`, `openPullRequests`, `unobservedPullRequests` |
 | `needsYou` | `NeedsYou`: `items` (one per task, its worst kind, in the order of the kinds then newest activity), `shown` (at most 5), `more`, `moreLink`, `withoutTask` (one row for blocked agents with no task). A signal, not a debt counter: a task at risk, and "Agent finished", is listed only when its last activity is within `NEEDS_YOU_WINDOW_DAYS` (14; no recorded activity is not recent; `model.isRecent(task)`); an older at-risk task still gets its failed-checks, blocked or PR-needs-you row, and its worktrees are counted by Cleanup's `lookCount`. Row `url`s are checked `webAddress`es. |
-| `readyToLand` | `{ready, notReady}`: ready tasks with their pull requests (`landCommand`, checks passed/total, oldest `checkedAt`), and the muted tasks that wait on checks only |
+| `readyToLand` | `{ready, notReady}`: ready tasks with `stateSource`/`reportedBy` and their pull requests (`machine`, `remote`, and for a `local` task `landCommand`, checks passed/total, oldest `checkedAt`; a `remote` task has no land command), and the muted tasks that wait on checks only |
 | `inFlight` | running agents on every machine (`remote`, `controllable`, `activity`, `startedAt`) |
 | `resume` | the last 5 tasks by activity |
 | `buildCleanup(model)` (`/home-details`) | `{safeCount, lookCount, safeIds, lookIds, reviewLink, bars (age term links), unknownAge}` (indicative); `lookIds` includes the at-risk worktrees of tasks older than the Needs you window |
 | `machines` | `MachineView[]`: `live`/`cached`/`stale`, age, `outdated`, running agents, uptime |
-| `buildHealth(model)` (`/home-details`) | `FleetHealth`: `ok`, stale machines, older WB, remote errors (each with its fix command), scan errors |
-| `buildThroughput(model)` (`/home-details`) | per-day series and the slowest five (non-linking); `undefined` without the block |
+| `buildHealth(model)` (`/home-details`) | `FleetHealth`: `ok`, stale machines, older WB, remote errors (each with its fix command, or a reason when there is nothing to run), `exportDropped` ("N entries left out of <machine>'s export"), scan errors |
+| `buildThroughput(model)` (`/home-details`) | `ThroughputSeries`: `perDay` (every day of the window, zero-filled: `finished`, `dropped`, `landed`), `totalFinished`, `totalDropped`, `maxPerDay`, `hasLanded` (draw the landed series only then), `slowest` (five, slowest first), `medianSeconds`, `p90Seconds`, `capped`; non-linking; `undefined` without the block |
 | `buildTaskRows(model)`, `buildRepositoryRows`, `buildWorktreeRows`, `buildAgentRows`, `buildMachineRows` (`/list`) | `ListRow<T>[]` per page (below) |
 | `worktreePullRequests` | `ReadonlyMap<worktreeId, PullRequest[]>`: the ONE worktree-to-pull-request join. A pull request that names a worktree of the document joins that worktree only; one that names none (or a missing one) joins the worktrees with its repository entry and branch. The `pr` chip, the worktree rows, the worktree, task and agent panels all read it; a page must not re-derive it || `repositoryName(id)`, `taskOfPullRequest(pr)`, `tasksOfAgent(agent)`, `taskNamed(name)` (from `taskMap`), `worktreeById`, `agentById`, `pullRequestById`, `machineById` | lookups |
 | `homeBadge`, `homeBadgeLabel`, `runningAgentCount` | the Home badge (tasks needing the operator; `homeBadgeLabel` is the number, or `99+` above `BADGE_CAP`, also `badgeLabel(n)`) and the Agents tab badge |
@@ -95,7 +95,7 @@ ids, labels and ranks, worst first). Only observed pull requests (with `checked_
 row 2. A task is `ready` only when every open pull request is observed and ready; an unobserved one
 makes it `not-ready` ("pull request not yet checked"; `TaskView.unobservedPullRequests` and
 `ReadyToLandRow.unobservedPullRequests` count them). `landed` needs no open pull request and no worktree
-with unpushed work. A failed run blocks for strictly under 24 h from `finished_at`, else `started_at`;
+with unpushed work. Trust rule: a task that has any entry of this machine reads only its local pull requests and worktrees for `landed`, needs a local open pull request among the ready ones for `ready` (a remote one that is not ready still blocks), and takes remote entries only to worsen it or add `working` (`hasLocalEntry`, `stateSourceOf`). A failed run blocks for strictly under 24 h from `finished_at`, else `started_at`;
 with neither it does not block. `notReadyReasons(pr)` returns only reasons of `NOT_READY_REASONS`
 (draft, checks failed, checks pending, review, checks not reported, not mergeable, behind, unstable, merge
 state not reported, pull request not yet checked) and is empty exactly when the pull request is ready.
