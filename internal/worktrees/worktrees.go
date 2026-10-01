@@ -2500,30 +2500,16 @@ func prepareOperationRoot(home, operation string, beforeHomeOpen func()) (prepar
 		_ = homeDirectory.Close()
 		return preparedOperationRoot{}, err
 	}
-	homeFD := int(homeDirectory.Fd())
-	worktreesFD, err := openOrCreateNoFollowDirectory(homeFD, "worktrees")
+	worktreesDirectory, err := worktreesecure.OpenOrCreateNoFollowDirectoryFile(int(homeDirectory.Fd()), "worktrees", "wb-worktrees-root")
 	if err != nil {
 		_ = homeDirectory.Close()
 		return preparedOperationRoot{}, err
 	}
-	worktreesDirectory := os.NewFile(uintptr(worktreesFD), "wb-worktrees-root")
-	if worktreesDirectory == nil {
-		_ = unix.Close(worktreesFD)
-		_ = homeDirectory.Close()
-		return preparedOperationRoot{}, fmt.Errorf("wrap secure worktrees root")
-	}
-	operationFD, err := openOrCreateNoFollowDirectory(worktreesFD, operation)
+	operationDirectory, err := worktreesecure.OpenOrCreateNoFollowDirectoryFile(int(worktreesDirectory.Fd()), operation, "wb-worktree-operation")
 	if err != nil {
 		_ = worktreesDirectory.Close()
 		_ = homeDirectory.Close()
 		return preparedOperationRoot{}, err
-	}
-	operationDirectory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
-	if operationDirectory == nil {
-		_ = unix.Close(operationFD)
-		_ = worktreesDirectory.Close()
-		_ = homeDirectory.Close()
-		return preparedOperationRoot{}, fmt.Errorf("wrap secure worktree operation directory")
 	}
 	return preparedOperationRoot{
 		Path:      filepath.Join(home, "worktrees", operation),
@@ -2542,12 +2528,11 @@ func prepareOperationRootAt(worktreesRoot, operation string) (preparedOperationR
 	if err != nil {
 		return preparedOperationRoot{}, err
 	}
-	operationFD, err := openOrCreateNoFollowDirectory(int(root.Fd()), operation)
+	directory, err := worktreesecure.OpenOrCreateNoFollowDirectoryFile(int(root.Fd()), operation, "wb-worktree-operation")
 	if err != nil {
 		_ = root.Close()
 		return preparedOperationRoot{}, err
 	}
-	directory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
 	return preparedOperationRoot{Path: filepath.Join(worktreesRoot, operation), Worktrees: root, Directory: directory}, nil
 }
 
@@ -2567,11 +2552,10 @@ func prepareCanonicalWorktreesRoot(ctx context.Context, canonical *canonicalRepo
 	if _, err := checkoutmarker.EnsureExcludeForGitDir(canonical.common); err != nil {
 		return "", nil, fmt.Errorf("exclude canonical .worktrees root from Git status: %w", err)
 	}
-	fd, err := openOrCreateNoFollowDirectory(int(canonical.root.Fd()), ".worktrees")
+	directory, err := worktreesecure.OpenOrCreateNoFollowDirectoryFile(int(canonical.root.Fd()), ".worktrees", "wb-canonical-worktrees-root")
 	if err != nil {
 		return "", nil, fmt.Errorf("create canonical .worktrees root: %w", err)
 	}
-	directory := os.NewFile(uintptr(fd), "wb-canonical-worktrees-root")
 	path := filepath.Join(canonical.path, ".worktrees")
 	if !directoryStillMatches(path, directory) {
 		_ = directory.Close()
@@ -2661,7 +2645,7 @@ func openRelativeParentDirectory(base *os.File, basePath, parent string) (*os.Fi
 			}
 			return nil, "", fmt.Errorf("invalid secure worktree parent segment %q", segment)
 		}
-		fd, err := openOrCreateNoFollowDirectory(int(current.Fd()), segment)
+		directory, err := worktreesecure.OpenOrCreateNoFollowDirectoryFile(int(current.Fd()), segment, "wb-worktree-parent")
 		if err != nil {
 			if owned {
 				_ = current.Close()
@@ -2671,7 +2655,6 @@ func openRelativeParentDirectory(base *os.File, basePath, parent string) (*os.Fi
 		if owned {
 			_ = current.Close()
 		}
-		directory := os.NewFile(uintptr(fd), "wb-worktree-parent")
 		current, currentPath, owned = directory, filepath.Join(currentPath, segment), true
 	}
 	return current, currentPath, nil

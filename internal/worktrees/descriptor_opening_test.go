@@ -124,6 +124,27 @@ func TestOpenRelativeParentDirectoryReturnsOwnedNestedParent(t *testing.T) {
 	}
 }
 
+func TestPrepareOperationRootRefusesOccupiedOperation(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	worktrees := filepath.Join(home, "worktrees")
+	if err := os.Mkdir(worktrees, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	occupied := filepath.Join(worktrees, "occupied")
+	if err := os.WriteFile(occupied, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := prepareOperationRoot(home, "occupied", nil)
+	if err == nil || !strings.Contains(err.Error(), "open secure worktree directory occupied") {
+		root.close()
+		t.Fatalf("occupied operation accepted: root=%#v err=%v", root, err)
+	}
+	if data, readErr := os.ReadFile(occupied); readErr != nil || string(data) != "keep" {
+		t.Fatalf("occupied operation changed: data=%q err=%v", data, readErr)
+	}
+}
+
 func TestOpenDirectDirectoryNoFollowOwnsOnlyRealDirectory(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

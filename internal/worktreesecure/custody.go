@@ -136,6 +136,15 @@ func OpenOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
 	return OpenOrCreateNoFollowDirectoryWith(secureopen.Real{}, parentFD, name)
 }
 
+// OpenOrCreateNoFollowDirectoryFile opens one child with a held, owned descriptor.
+func OpenOrCreateNoFollowDirectoryFile(parentFD int, name, descriptorName string) (*os.File, error) {
+	fd, err := OpenOrCreateNoFollowDirectory(parentFD, name)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), descriptorName), nil
+}
+
 // OpenOrCreateNoFollowDirectoryWith opens or creates one child directory through opener.
 func OpenOrCreateNoFollowDirectoryWith(opener secureopen.Opener, parentFD int, name string) (int, error) {
 	if err := opener.Mkdir(parentFD, name); err != nil && !errors.Is(err, unix.EEXIST) {
