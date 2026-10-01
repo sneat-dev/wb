@@ -75,27 +75,28 @@ Principle 12 is narrower than the prompt's "hosted by default"; see the
 ## Decisions
 
 Each row is a founder answer from the 2026-10-01 discussion unless marked
-*proposed*, which means the agent proposed it and the founder replied "Looks
+*proposed*. A row that restates the description of an option the founder
+selected from a multiple-choice question is unmarked. *Proposed* which means the agent proposed it and the founder replied "Looks
 good" to the whole set without discussing that row on its own.
 
 | Topic | Decision |
 |---|---|
 | Local auth | Listing repositories, agents, worktrees and machines needs no login for a genuinely local request. File content and every mutation need the owner-credential session. |
-| Local request check | *Proposed.* "Genuinely local" means the daemon verifies a loopback `Host` header and sends no permissive CORS headers. |
+| Local request check | *Proposed.* "Genuinely local" means a loopback `Host` header, no proxy or forwarding header, and no permissive CORS headers. |
 | Hosted reach | The hosted page may read metadata only from a local daemon, from exactly the configured Cockpit origin. File content and actions happen in the daemon-served Cockpit. |
 | Existing UIs | Cockpit replaces both `hub/web` and `internal/dashboard`. |
 | Bench scope | Every existing page and every spec'd view is ported before the old UI is removed. |
 | Hosted home | `https://sneat.dev/wb/cockpit/`, configurable in one place; `sneat.work/bench/*` redirects. The founder leaned this way and the agent agreed. |
 | Topology | The peer link and hub snapshots are the primary path for remote state and typed actions. SSH from the local daemon is a fallback adapter for a machine with WB installed and no peer link. Cached snapshots cover offline machines. |
 | Cloud data | No cloud transit by default. Publishing allowlisted snapshots to the hosted hub is an explicit opt-in; the snapshot privacy allowlist is unchanged. |
-| Frontend | Angular with Material/CDK. No React. An open-source chart library is still to be chosen. |
+| Frontend | Angular 22 with PrimeNG 22 and the CDK, the stack of the CodeGrapher web UI, so components can be shared. Open-source PrimeNG components only. No React. This replaces an earlier answer of Material/CDK, given before CodeGrapher's stack was checked. |
 | Permissions | Every action declares a required capability from the first slice, and Cockpit discovers effective permissions. The MVP has three fixed principals: anonymous-local (metadata read), owner session (everything), peer (typed remote operations). Per-user grants and non-loopback binding wait for the OAuth2/OIDC feature in decision 0002. |
-| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URI that points at a task in an external plan. Its scheme selects the plans provider, for example `specscore://github.com/sneat-dev/wb/spec/plans/cockpit`; a plain `https://` URI is a link-only reference with no provider behind it. A task can be a directory or a document, and a task can itself be a plan: the top-level task is the plan, and its worktree links to the plan. A fragment is optional and names a task embedded in a document. The hierarchy and any not-yet-started tasks live in the plan, not in WB. The reference is recorded in the Work Log creation manifest. WB accepts any valid URI and does not care about its scheme. It groups worktrees by the URI's own structure: a reference is an ancestor of another when its path is a path-prefix of it, and a fragment makes a child of its document. A provider adds what the URI alone cannot show, such as titles, status and tasks nobody has started. Without a reference a task is the worktree's name, as today. Plans are read through a plans-provider adapter; SpecScore is the first provider and ships out of the box. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
+| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URI that points at a task in an external plan. Its scheme selects the plans provider, for example `specscore://github.com/sneat-dev/wb/spec/plans/cockpit`; a plain `https://` URI is a link-only reference with no provider behind it. A task can be a directory or a document, and a task can itself be a plan: the top-level task is the plan, and its worktree links to the plan. A fragment is optional and names a task embedded in a document. The hierarchy and any not-yet-started tasks live in the plan, not in WB. The reference is recorded in the Work Log creation manifest. WB accepts any valid URI and does not care about its scheme. It groups worktrees by URI. *Proposed:* a reference is an ancestor of another when its path is a path-prefix of it, and a fragment makes a child of its document. A provider adds what the URI alone cannot show, such as titles, status and tasks nobody has started. Without a reference a task is the worktree's name, as today. Plans are read through a plans-provider adapter; SpecScore is the first provider and ships out of the box. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
 | Dispatch | Every dispatched agent runs in a herdr pane. The detached headless mode is removed from `agent-dispatch`. |
-| Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
+| Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form. *Proposed:* that form is queue only, delivered when herdr reports the agent idle, blocked or done, falling back to record-only through the existing read verb if that status is not reliable enough to gate delivery. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
 | Test coverage | All new code targets 100% test coverage. |
-| CodeGrapher | Cockpit integrates with CodeGrapher. The first slice may be minimal; deeper integration comes later, for example code navigation from source and diff viewers. *Proposed* minimal form: show each checkout's code-index freshness, which `code-index-freshness` already defines from receipts. |
+| CodeGrapher | Cockpit integrates with CodeGrapher. First slice: code-index freshness and statistics on repository and worktree pages, a link from every repository to the CodeGrapher browser (`https://codegrapher.dev/<host>/<owner>/<repo>`), and an action that refreshes the index. Later: directory pages, and code navigation from source and diff viewers. |
 | Command | `wb cockpit` starts or reuses the daemon and opens its own Cockpit with an owner session. `wb cockpit --hosted` opens the hosted page. `wb dashboard` becomes an alias. |
 
 ## Recommended Direction
@@ -180,9 +181,9 @@ last slice, not the first.
 | Must-be-true | Herdr's agent status (idle / working / blocked / done) is reliable enough to gate queued steer delivery. | Drive a scripted agent through each state and compare `agent get` with the pane; any delivery into a working pane fails the test. |
 | Must-be-true | Herdr can be installed and checked by `wb setup` on every machine that receives dispatched work, including SSH-only VMs. | Run `wb setup --check` on the laptop and the Hetzner VM and dispatch one task to each. |
 | Must-be-true | A loopback `Host` check with no CORS allowance, plus one exact allowed origin, keeps unauthenticated metadata unreadable by other websites. | Browser tests from a foreign origin, a DNS-rebinding fixture and a forwarded-header proxy fixture, all expecting refusal. |
-| Should-be-true | Angular Material/CDK tables and overlays are dense enough for the repository and worktree grids without a commercial grid. | Build the repository table with hover cards against a 200-repository fixture. |
+| Should-be-true | PrimeNG's open-source table and overlays are dense enough for the repository and worktree grids. | Build the repository table with hover cards against a 200-repository fixture. |
 | Should-be-true | Durability for a whole fleet can be kept current by a background snapshot in the daemon, so no page load waits on a Git scan. The existing fingerprinted index cannot serve this: it lists repositories only. | Measure a full snapshot on the founder's projects root and choose the refresh trigger from the result. |
-| Might-be-true | Peer snapshots carry enough to show work at risk on an unreachable machine without widening the privacy allowlist. | Compare the hosted snapshot schema with the fields the risk view needs. |
+| Might-be-true | Snapshots carry enough to show work at risk on an unreachable machine. Discovery says they do not for worktrees, which therefore read `unknown`. | Decide whether a snapshot may carry per-worktree Git state, and whether that may enter an opt-in cloud snapshot. |
 
 ## SpecScore Integration
 
@@ -235,7 +236,7 @@ last slice, not the first.
 - How do Stop, Cancel and Kill map onto herdr's actual pane controls? No
   existing semantics were found in `agent-dispatch` or
   `herdr-session-transport`, by keyword search rather than a full read.
-- Which chart library? It must be open source and contributor-friendly.
+- Which chart library? It must be open source and contributor-friendly. The CodeGrapher web UI uses Cytoscape for graphs.
 - What replaces the public repository, organisation and leaderboard pages'
   dependence on Firebase sign-in once they are served from the hosted Cockpit?
 - Does the free-relay README attribution link in `agent-sdlc-throughput` move

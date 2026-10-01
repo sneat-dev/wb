@@ -186,9 +186,12 @@ proof, because tunnels and proxies deliver there.
   self-hosted hub; the hosted instance keeps it with its OAuth viewer.
 - **The dashboard** gets an admin session through
   `wb dashboard --admin`. (Amended 2026-10-01: this session is provided by
-  [cockpit](../cockpit/README.md)#req:owner-session, where the command is
-  `wb cockpit` and the login path is `/cockpit/session/login`; the rules in
-  this list are otherwise unchanged.) That command obtains a single-use code over the
+  [cockpit](../cockpit/README.md)#req:owner-session. Wherever this Feature
+  says `wb dashboard --admin` or `/workbench/admin/login`, read `wb cockpit`
+  and `/cockpit/session/login`. The peers admin routes below accept that
+  session cookie. Cockpit issues the login on the loopback address only; a
+  login URL for the hub's public URL is not provided until the identity
+  provider decision 0002 requires exists.) That command obtains a single-use code over the
   owner RPC, valid for 60 seconds. It prints the login URL for the loopback
   address and, when configured, for the hub's public URL, and opens a browser
   only on a desktop session.

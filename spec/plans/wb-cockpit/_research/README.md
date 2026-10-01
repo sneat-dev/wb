@@ -21,8 +21,9 @@ root. Line numbers drift; the function and type names are the stable anchor.
   cancelled and recovery_required.
 - **Embedding pattern.** `hub/web/embed.go` embeds a build output, serves a
   one-line page when it is absent, and is built by the goreleaser before-hook.
-- **Git and worktree state.** `gitops.RepoStatus`, `gitops.TrackingState` and
-  `gitops.UnpushedWork` give dirty, untracked, stash, ahead, behind, diverged
+- **Git and worktree state.** `gitops.Status`, `gitops.Tracking` and
+  `gitops.UnpushedWork` (returning `RepoStatus`, `TrackingState` and
+  `UnpushedBranch`) give dirty, untracked, stash, ahead, behind, diverged
   and upstream-gone. `worktrees.ListResult` gives clean, head and remote head,
   integration at origin, open and merged pull request, and owner state.
   `worktrees.BranchEntry` covers branches without a worktree.
