@@ -234,10 +234,16 @@ scrolling.
 
 #### REQ: default-columns-are-few
 
-Every list shows at most 7 columns by default. A column whose value is empty,
-or the same default, for every visible row MUST be hidden automatically, for
-example Lifecycle when it is empty for all rows and Source when every row is
-`local`.
+Every list shows at most 7 columns by default. That is a default and not a limit: a
+page may declare more than seven columns, each with a `priority`, and the columns past
+the seventh are shown while the list is wide enough for the minimum width of every one
+of them, and are hidden lowest priority first as the list narrows (a panel beside it, a
+tablet, a phone); a column that declares no priority is held to seven. A trailing
+actions or chrome cell is not a column: it is not counted, its header is not drawn (it
+stays as the name assistive technology reads), and it hides by priority like the rest.
+A column whose value is empty, or the same default, for every visible row MUST be hidden
+automatically, for example Lifecycle when it is empty for all rows and Source when every
+row is `local`.
 
 #### REQ: names-and-times-rendering
 
@@ -501,9 +507,10 @@ external-link icon, to `remote_url_web`, shown only when that field is present),
 with `rel="noopener noreferrer"` on every external link. There is no text "Code"
 link. The chip `index` means the code index is `stale`, `diverged` or `failed`; the
 chip `errors` leaves repositories with a scan error. The other quick filters are
-those of REQ:filter-vocabulary. That is eight columns and an actions cell, and
-REQ:default-columns-are-few allows seven: the list drops the quietest first, Agents
-then PRs, whose counts and links are then the panel's, and a narrow list drops more.
+those of REQ:filter-vocabulary. That is eight columns and an actions cell, which the page
+declares with a priority each (REQ:default-columns-are-few): a list wide enough for all of
+them shows all of them, and a narrower one (a panel beside it, a tablet) drops the quietest
+first, Agents then PRs, whose counts and links are then the panel's, and then more.
 
 #### REQ: repository-detail
 
@@ -1631,7 +1638,12 @@ Then each row is one line with an ellipsis and the full value in its `title`, th
 Scenario: At most seven, Branch uniform, PR empty, one machine
 Given 529 worktrees on one machine whose branch equals its task and which have no pull request, and a second fleet on two machines in which one worktree has a different branch and one has a pull request
 When every list page is opened, and the Worktrees page for each fleet
-Then no list shows more than 7 columns, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
+Then no list shows more than 7 columns unless its page declares a priority for each beyond the seventh, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
+
+Scenario: More than seven by priority, and the actions cell
+Given the Repositories page, which declares eight columns and an actions cell, each with a priority, and a fleet with more than one machine
+When it is opened in a window wide enough for the minimum width of every column, and again with a panel beside the list and in a tablet-width window
+Then the wide list shows all eight columns and the actions cell, whose header is read by assistive technology and not drawn, and each narrower list shows fewer columns, the lowest priority (Agents, then PRs) first, and never more than the width fits
 
 ### AC: repository-and-time-rendering
 
