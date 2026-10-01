@@ -48,7 +48,7 @@ func WriteBytesImmutableAtInjected(directory *os.File, name string, content []by
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, false, func(temporary string) (bool, error) {
 		if beforeRename != nil {
 			beforeRename(directory, name)
 		}
@@ -110,13 +110,33 @@ func WriteBytesAtomicAt(directory *os.File, name string, content []byte, mode os
 	return WriteBytesAtomicAtInjected(directory, name, content, mode, nil)
 }
 
+// WriteBytesAtomicAtExactMode reasserts mode on the held temporary file before
+// publication, so an existing target's mode survives replacement under umask.
+func WriteBytesAtomicAtExactMode(directory *os.File, name string, content []byte, mode os.FileMode) error {
+	return WriteBytesAtomicAtExactModeInjected(directory, name, content, mode, nil)
+}
+
+// WriteBytesAtomicAtExactModeInjected permits a failure at the held-temp
+// chmod or another atomic-write step without changing the production path.
+func WriteBytesAtomicAtExactModeInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *Injector) error {
+	if directory == nil || unsafeFileName(name) {
+		return fmt.Errorf("unsafe atomic filename %q", name)
+	}
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, true, func(temporary string) (bool, error) {
+		if err := RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+}
+
 // WriteBytesAtomicAtInjected is WriteBytesAtomicAt with one explicit
 // filewrite failure injector for tests.
 func WriteBytesAtomicAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *Injector) error {
 	if directory == nil || unsafeFileName(name) {
 		return fmt.Errorf("unsafe atomic filename %q", name)
 	}
-	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, func(temporary string) (bool, error) {
+	return writeBytesWithTemporaryAtInjected(directory, name, content, mode, inj, false, func(temporary string) (bool, error) {
 		if err := RenameAt(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
 			return false, err
 		}
@@ -171,7 +191,7 @@ func WriteBytesAtomicInjected(directory, name string, content []byte, mode os.Fi
 	return SyncDir(dir, inj)
 }
 
-func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *Injector, publish func(string) (bool, error)) error {
+func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content []byte, mode os.FileMode, inj *Injector, exactMode bool, publish func(string) (bool, error)) error {
 	temporary := "." + name + ".tmp-" + randomHexToken(12)
 	fd, err := CreateExclusive(int(directory.Fd()), temporary, uint32(mode.Perm()), inj)
 	if err != nil {
@@ -185,6 +205,11 @@ func writeBytesWithTemporaryAtInjected(directory *os.File, name string, content 
 			_ = unix.Unlinkat(int(directory.Fd()), temporary, 0)
 		}
 	}()
+	if exactMode {
+		if err := Chmod(int(file.Fd()), uint32(mode.Perm()), temporary, inj); err != nil {
+			return err
+		}
+	}
 	if err := Write(file, content, temporary, inj); err != nil {
 		return err
 	}
