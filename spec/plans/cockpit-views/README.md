@@ -177,7 +177,7 @@ Verification (allmust pass before the task is complete): targeted `wb run -- go 
 ### Task 9: Backend: SSH fallback, cool-down, typed errors and copy commands
 
 **Id:** task-9
-**Verifies:** cockpit-views#ac:http-failure-falls-back-to-ssh, cockpit-views#ac:fallback-cool-down-is-honoured, cockpit-views#ac:failed-export-shows-a-typed-error, cockpit-views#ac:ssh-argument-vector-contains-only-configured-values, cockpit-views#ac:copy-command-for-an-ssh-machine
+**Verifies:** cockpit-views#ac:http-failure-falls-back-to-ssh, cockpit-views#ac:fallback-cool-down-is-honoured, cockpit-views#ac:failed-export-shows-a-typed-error, cockpit-views#ac:ssh-argument-vector-contains-only-configured-values, cockpit-views#ac:copy-command-for-an-ssh-machine, cockpit-views#ac:remote-reads-follow-demand
 **Depends-On:** 8
 **Status:** complete
 
