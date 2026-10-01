@@ -53,9 +53,10 @@ jobs:
       - name: Test with merged coverage threshold
         run: >-
           go run ./cmd/wb coverage .
+          --include-e2e
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=87
+          --minimum=94
           --format json
           --non-interactive
           --timeout 35m

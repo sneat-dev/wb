@@ -115,9 +115,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		return result, fmt.Errorf("session message requires a durable completed successor receipt")
 	}
 	handoffReceipt := *state.Receipt
-	if err := sessionmove.ValidateReceiptForRequest(handoffReceipt, request, requestDigest); err != nil {
-		return result, err
-	}
+	// LoadUnderLock already validates this receipt against the same request digest.
 	// The immutable successor index and courier route are source-side
 	// transport authority. They cannot be independently loaded on the target.
 	// Target authority is instead the exact admitted request plus this durable

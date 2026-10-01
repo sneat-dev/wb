@@ -42,6 +42,7 @@ type qualityOptions struct {
 	packagePatterns        []string
 	explicitGoTestPackages bool
 	coverageProfile        string
+	includeE2E             bool
 	minimumCoverage        float64
 	// changed selects the per-change coverage ratchet
 	// (spec/plans/coverage-to-100/README.md task-3): a package fails when its
@@ -142,6 +143,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringArrayVar(&options.packagePatterns, "package", nil, "restrict coverage to explicit Go package patterns; packages outside this scope are not tested (repeatable)")
 	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package within the --package scope safe to shard by top-level test name; selected packages not named here run once (repeatable)")
 	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
+	command.Flags().BoolVar(&options.includeE2E, "include-e2e", false, "merge native E2E and contract coverage with the default test tier")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
 	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
 	command.Flags().StringVar(&options.target, "target", "", "merge-base branch or ref for --changed (required with --changed)")
@@ -154,6 +156,9 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 }
 
 func validateCoverageExecutionOptions(options qualityOptions) error {
+	if options.includeE2E && (options.ci || options.resume) {
+		return fmt.Errorf("--include-e2e requires a fresh coverage run; it cannot be combined with --ci or --resume")
+	}
 	if options.ci {
 		if options.changed {
 			return &exitError{code: exitUsage, message: "--ci cannot be combined with --changed"}
@@ -804,7 +809,7 @@ func checkNames(checks []quality.Check) []string {
 }
 
 func runOptions(options qualityOptions) quality.RunOptions {
-	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry, CoverageDiagnosticsDir: options.reportDir}
+	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry, IncludeE2E: options.includeE2E, CoverageDiagnosticsDir: options.reportDir}
 }
 
 func coverageShardingExplicit(command *cobra.Command) bool {

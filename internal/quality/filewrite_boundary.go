@@ -217,7 +217,7 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// create/write/publish sequence here for internal/filewrite to replace.
 	"internal/agentguard/gh.go:recordGhPrMergeOverride": "O_APPEND log write, not a create/publish sequence",
 	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
-	"internal/runlog/runlog.go:Append":                  "O_APPEND log write (flock-guarded), not a create/publish sequence",
+	"internal/runlog/runlog.go:appendInjected":          "O_APPEND log write (flock-guarded), not a create/publish sequence",
 	"internal/streams/events.go:FileEventLog.Append":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
 	"internal/lifecyclehooks/queue.go:appendReceipt":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
 }

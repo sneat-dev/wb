@@ -67,6 +67,10 @@ type RunOptions struct {
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
+	// IncludeE2E merges a separately measured native tier into default coverage.
+	IncludeE2E bool
+	// coverPackages is internal instrumentation scope for a combined run.
+	coverPackages []string
 	// CoverageDiagnosticsDir retains raw output from failed process-isolated
 	// coverage jobs beside the durable coverage report. The human-facing error
 	// remains bounded; this private artifact is the lossless recovery path.

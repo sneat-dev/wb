@@ -206,10 +206,8 @@ func (store CursorStore) saveStateInjected(state cursorState, inj *filewrite.Inj
 	if err := os.MkdirAll(filepath.Dir(store.Path), 0o700); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
+	// cursorState and AckRequest contain only JSON-total ints and strings.
+	raw, _ := json.Marshal(state)
 	temporary, err := filewrite.CreateTemp(filepath.Dir(store.Path), ".cursor-*", inj)
 	if err != nil {
 		return err

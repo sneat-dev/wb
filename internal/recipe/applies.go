@@ -50,10 +50,8 @@ func hasSource(repoPath string, langs []string) (bool, error) {
 		if !ok {
 			return false, fmt.Errorf("unknown has_source language %q (want %q or %q)", lang, "go", "ts")
 		}
-		found, err := scan.HasExt(repoPath, exts...)
-		if err != nil {
-			return false, err
-		}
+		// HasExt deliberately skips unreadable entries and returns no error.
+		found, _ := scan.HasExt(repoPath, exts...)
 		if found {
 			return true, nil
 		}

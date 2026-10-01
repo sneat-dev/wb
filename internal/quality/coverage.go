@@ -181,6 +181,9 @@ func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path s
 
 func coverageCommandDescription(options RunOptions) string {
 	packages := strings.Join(goCoveragePackagePatterns(options), ",")
+	if options.IncludeE2E {
+		return "default and native E2E/contract coverage for " + packages
+	}
 	if options.GoTestShards > 1 {
 		return fmt.Sprintf("go test -coverprofile … %s (%d process-isolated shards for %s)", packages, options.GoTestShards, strings.Join(options.GoShardPackages, ","))
 	}

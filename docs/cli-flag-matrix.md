@@ -15,6 +15,11 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
 `json`.
 
+`coverage --include-e2e` measures the default tier and native E2E/contract tests
+separately, then merges their actual coverage profiles. It is disabled by default
+and rejected with `--ci` or `--resume`. `coverage baseline --include-e2e` records
+the same tier identity; a mismatched baseline triggers a fresh merge-base run.
+
 `coverage baseline <coverage-profile>` (the per-change coverage ratchet's
 baseline publisher) is also command-specific: `--module` (the Go module
 root, default `.`), `--sha` (the commit the profile was measured at, for
