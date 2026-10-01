@@ -78,8 +78,11 @@ func TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t *testing.T) 
 	if strings.Contains(secondOut.String(), "added:") || strings.Contains(secondOut.String(), "updated:") {
 		t.Errorf("second identical sync reported a change: %q", secondOut.String())
 	}
-	if !strings.Contains(secondOut.String(), "nothing to do") {
-		t.Errorf("second sync output = %q, want it to say there was nothing to do", secondOut.String())
+	if !strings.Contains(secondOut.String(), "unchanged; already up to date") {
+		t.Errorf("second sync output = %q, want an unchanged count", secondOut.String())
+	}
+	if strings.Contains(secondOut.String(), "wb-worktrees") {
+		t.Errorf("second sync output listed unchanged skill names: %q", secondOut.String())
 	}
 }
 
@@ -374,8 +377,10 @@ func TestWriteSkillsSyncTextDoesNotDescribeAFailedTargetAsCurrent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "nothing to do") {
-		t.Errorf("failed target output = %q, must not claim it is current", out.String())
+	for _, unwanted := range []string{"nothing to do", "already up to date", "unchanged"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("failed target output = %q, must not claim it is current", out.String())
+		}
 	}
 	for _, want := range []string{"wb skills sync failed", "invalid legacy wb_version"} {
 		if !strings.Contains(out.String(), want) {
@@ -450,5 +455,175 @@ func TestNewSkillsSyncCmdRejectsDirAndHarnessTogether(t *testing.T) {
 	var coded *exitError
 	if !errors.As(err, &coded) || coded.code != exitUsage {
 		t.Fatalf("err = %v, want exitUsage", err)
+	}
+}
+
+func quietSkillsTarget(harness, dir string, dryRun bool, names ...string) skillscmd.TargetResult {
+	changes := make([]skillsync.Change, len(names))
+	for i, name := range names {
+		changes[i] = skillsync.Change{Name: name, Action: skillsync.Unchanged}
+	}
+	return skillscmd.TargetResult{
+		Harness: harness,
+		Dir:     dir,
+		Report: skillsync.Report{
+			Dir:     dir,
+			DryRun:  dryRun,
+			Changes: changes,
+		},
+	}
+}
+
+func TestWriteSkillsSyncReportsSummarizesUnchangedHarnesses(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncReports(&out, []skillscmd.TargetResult{
+		quietSkillsTarget("claude", "/home/user/.claude/skills", false, "move", "wb"),
+		quietSkillsTarget("cursor", "/home/user/.cursor/skills", false, "move", "wb"),
+		quietSkillsTarget("copilot", "/home/user/.copilot/skills", false, "move", "wb"),
+	}, "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wb skills synced for 3 harnesses: claude, cursor, copilot\n  2 skills unchanged; already up to date\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestWriteSkillsSyncReportsKeepsChangedTargetsAndSplitsUnequalQuietGroups(t *testing.T) {
+	var out bytes.Buffer
+	changed := skillscmd.TargetResult{
+		Harness: "codex",
+		Dir:     "/home/user/.codex/skills",
+		Report: skillsync.Report{
+			Dir: "/home/user/.codex/skills",
+			Changes: []skillsync.Change{
+				{Name: "wb", Action: skillsync.Updated},
+				{Name: "move", Action: skillsync.Unchanged},
+				{Name: "park", Action: skillsync.Unchanged},
+			},
+		},
+	}
+	err := writeSkillsSyncReports(&out, []skillscmd.TargetResult{
+		quietSkillsTarget("claude", "/home/user/.claude/skills", false, "move", "wb"),
+		changed,
+		quietSkillsTarget("cursor", "/home/user/.cursor/skills", false, "move"),
+		quietSkillsTarget("copilot", "/home/user/.copilot/skills", false, "park"),
+	}, "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// claude is alone in its count group, so it keeps the directory line.
+	// cursor and copilot share a count and collapse after the changed target.
+	want := strings.Join([]string{
+		"wb skills synced: /home/user/.claude/skills",
+		"  2 skills unchanged; already up to date",
+		"wb skills synced: /home/user/.codex/skills",
+		"  updated: wb",
+		"  2 skills unchanged",
+		"wb skills synced for 2 harnesses: cursor, copilot",
+		"  1 skill unchanged; already up to date",
+		"",
+	}, "\n")
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+	if strings.Contains(out.String(), "move") || strings.Contains(out.String(), "park") {
+		t.Fatalf("output listed unchanged skill names: %q", out.String())
+	}
+}
+
+func TestWriteSkillsSyncReportsDryRunUsesWouldSync(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncReports(&out, []skillscmd.TargetResult{
+		quietSkillsTarget("claude", "/home/user/.claude/skills", true, "wb"),
+		quietSkillsTarget("cursor", "/home/user/.cursor/skills", true, "wb"),
+	}, "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wb skills would sync for 2 harnesses: claude, cursor\n  1 skill unchanged; already up to date\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestWriteSkillsSyncTextCountsUnchangedBesideNamedChanges(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncText(&out, skillscmd.TargetResult{
+		Dir: "/tmp/claude/skills",
+		Report: skillsync.Report{
+			Dir: "/tmp/claude/skills",
+			Changes: []skillsync.Change{
+				{Name: "wb-hooks", Action: skillsync.Conflict},
+				{Name: "move", Action: skillsync.Unchanged},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wb skills synced: /tmp/claude/skills\n  conflicts (left untouched): wb-hooks\n  1 skill unchanged\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestWriteSkillsSyncTextKeepsTheEmptyCurrentMessage(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncText(&out, skillscmd.TargetResult{
+		Dir:    "/tmp/claude/skills",
+		Report: skillsync.Report{Dir: "/tmp/claude/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wb skills synced: /tmp/claude/skills\n  nothing to do; skills already match this wb build\n"
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestSkillsSyncQuietGroupingRejectsFailuresAndMismatches(t *testing.T) {
+	if skillsSyncQuiet(skillscmd.TargetResult{Err: errors.New("legacy marker")}) {
+		t.Fatal("a failed target is not a quiet unchanged sync")
+	}
+	conflict := skillscmd.TargetResult{Report: skillsync.Report{Changes: []skillsync.Change{
+		{Name: "wb", Action: skillsync.Conflict},
+	}}}
+	if skillsSyncQuiet(conflict) {
+		t.Fatal("a conflict is not a quiet unchanged sync")
+	}
+	group := []skillscmd.TargetResult{quietSkillsTarget("claude", "/claude", false, "a", "b")}
+	if skillsSyncQuietCompatible(group, quietSkillsTarget("cursor", "/cursor", false, "a")) {
+		t.Fatal("different unchanged counts must not share a summary")
+	}
+	if skillsSyncQuietCompatible(group, quietSkillsTarget("cursor", "/cursor", true, "a", "b")) {
+		t.Fatal("a dry-run must not share a summary with an applied sync")
+	}
+	if !skillsSyncQuietCompatible(nil, quietSkillsTarget("cursor", "/cursor", false, "a")) {
+		t.Fatal("an empty group accepts the first quiet target")
+	}
+}
+
+func TestSkillsSyncTargetLabelFallsBackToTheDirectory(t *testing.T) {
+	if got := skillsSyncTargetLabel(skillscmd.TargetResult{Dir: "/tmp/skills"}); got != "/tmp/skills" {
+		t.Fatalf("label = %q, want the directory", got)
+	}
+	if got := skillsSyncTargetLabel(skillscmd.TargetResult{Harness: "claude", Dir: "/tmp/skills"}); got != "claude" {
+		t.Fatalf("label = %q, want the harness id", got)
+	}
+}
+
+func TestWriteSkillsSyncJSONKeepsUnchangedNames(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncReports(&out, []skillscmd.TargetResult{
+		quietSkillsTarget("claude", "/home/user/.claude/skills", false, "move", "wb"),
+	}, "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"unchanged": [`) || !strings.Contains(out.String(), `"move"`) || !strings.Contains(out.String(), `"wb"`) {
+		t.Fatalf("json output dropped unchanged names: %s", out.String())
 	}
 }

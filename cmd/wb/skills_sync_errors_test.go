@@ -106,6 +106,86 @@ func TestWriteSkillsSyncTextPropagatesAnActionLineWriteFailure(t *testing.T) {
 	}
 }
 
+func TestWriteSkillsSyncTextPropagatesTheUnchangedLineWriteFailure(t *testing.T) {
+	t.Parallel()
+	w := &failAfterWriter{allowedWrites: 1}
+	err := writeSkillsSyncText(w, skillscmd.TargetResult{
+		Dir: "/tmp/claude/skills",
+		Report: skillsync.Report{
+			Dir: "/tmp/claude/skills",
+			Changes: []skillsync.Change{
+				{Name: "wb", Action: skillsync.Unchanged},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected the unchanged-count Fprintln failure to propagate")
+	}
+}
+
+func TestWriteSkillsSyncQuietSummaryPropagatesWriteFailures(t *testing.T) {
+	t.Parallel()
+	results := []skillscmd.TargetResult{
+		{
+			Harness: "claude",
+			Dir:     "/tmp/claude/skills",
+			Report: skillsync.Report{
+				Dir:     "/tmp/claude/skills",
+				Changes: []skillsync.Change{{Name: "wb", Action: skillsync.Unchanged}},
+			},
+		},
+		{
+			Harness: "cursor",
+			Dir:     "/tmp/cursor/skills",
+			Report: skillsync.Report{
+				Dir:     "/tmp/cursor/skills",
+				Changes: []skillsync.Change{{Name: "wb", Action: skillsync.Unchanged}},
+			},
+		},
+	}
+	if err := writeSkillsSyncQuietTargets(&failAfterWriter{allowedWrites: 0}, results); err == nil {
+		t.Fatal("expected the harness-summary header failure to propagate")
+	}
+	if err := writeSkillsSyncQuietTargets(&failAfterWriter{allowedWrites: 1}, results); err == nil {
+		t.Fatal("expected the harness-summary count failure to propagate")
+	}
+}
+
+func TestWriteSkillsSyncReportsPropagatesQuietFlushFailures(t *testing.T) {
+	t.Parallel()
+	quiet := skillscmd.TargetResult{
+		Harness: "claude",
+		Dir:     "/tmp/claude/skills",
+		Report: skillsync.Report{
+			Changes: []skillsync.Change{{Name: "wb", Action: skillsync.Unchanged}},
+		},
+	}
+	other := skillscmd.TargetResult{
+		Harness: "cursor",
+		Dir:     "/tmp/cursor/skills",
+		Report: skillsync.Report{
+			Changes: []skillsync.Change{{Name: "wb", Action: skillsync.Unchanged}},
+		},
+	}
+	changed := skillscmd.TargetResult{
+		Harness: "codex",
+		Dir:     "/tmp/codex/skills",
+		Report: skillsync.Report{
+			Changes: []skillsync.Change{{Name: "wb", Action: skillsync.Updated}},
+		},
+	}
+	if err := writeSkillsSyncReports(&failAfterWriter{allowedWrites: 0}, []skillscmd.TargetResult{quiet, other}, "text"); err == nil {
+		t.Fatal("expected the final quiet-summary write failure to propagate")
+	}
+	if err := writeSkillsSyncReports(&failAfterWriter{allowedWrites: 0}, []skillscmd.TargetResult{quiet, changed}, "text"); err == nil {
+		t.Fatal("expected the mid-report quiet flush failure to propagate")
+	}
+	// Header plus unchanged count succeed; the following changed target's header fails.
+	if err := writeSkillsSyncReports(&failAfterWriter{allowedWrites: 2}, []skillscmd.TargetResult{quiet, changed}, "text"); err == nil {
+		t.Fatal("expected the changed-target write failure to propagate")
+	}
+}
+
 func TestWriteSkillsSyncTextPropagatesTheFailedTargetHeaderWriteFailure(t *testing.T) {
 	t.Parallel()
 	// A failed target prints "wb skills sync failed: <dir>" before its error
