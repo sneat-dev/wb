@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 //nolint:paralleltest // newGitFixture changes process-wide WB and Git environment for native repositories.
@@ -52,7 +53,7 @@ func TestE2ERetirementTransactionReplaysAtomicDeletionProof(t *testing.T) {
 	if err != nil || report.DeleteIntentSHA != partial.OriginalRemoteSHA {
 		t.Fatalf("stored deletion intent = (%+v, %v)", report, err)
 	}
-	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); !strings.HasPrefix(proof, partial.SourceSHA+"\t") {
+	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial)); !strings.HasPrefix(proof, partial.SourceSHA+"\t") {
 		t.Fatalf("atomic proof = %q", proof)
 	}
 	if original := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/"+partial.Branch); original != "" {

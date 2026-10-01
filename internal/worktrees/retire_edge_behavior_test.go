@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func expectRetireRemoteRef(fake *runnertest.Fake, directory, remote, ref, response string) {
@@ -61,9 +62,9 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 	t.Run("source conflict", func(t *testing.T) {
 		t.Parallel()
 		fake := runnertest.New(t)
-		expectRetireRemoteRef(fake, canonical, "origin", retireSourceRef(result), other+"\t"+retireSourceRef(result)+"\n")
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.SourceRef(result), other+"\t"+worktreeretire.SourceRef(result)+"\n")
 		attempt := result
-		if err := retirePublishSource(withGitRunner(context.Background(), fake), &attempt); err == nil || !strings.Contains(err.Error(), "conflicting commit") {
+		if err := worktreeretire.PublishSource(withGitRunner(context.Background(), fake), &attempt, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "conflicting commit") {
 			t.Fatalf("conflicting source receipt error = %v", err)
 		}
 		if attempt.Phase != "" || fake.CallCount() != 1 {
@@ -73,19 +74,19 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 	t.Run("source observation fails", func(t *testing.T) {
 		t.Parallel()
 		fake := runnertest.New(t)
-		expectRetireRemoteRef(fake, canonical, "origin", retireSourceRef(result), "")
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.SourceRef(result), "")
 		fake.FailCall(1, errors.New("source remote unavailable"))
 		attempt := result
-		if err := retirePublishSource(withGitRunner(context.Background(), fake), &attempt); err == nil || !strings.Contains(err.Error(), "source remote unavailable") {
+		if err := worktreeretire.PublishSource(withGitRunner(context.Background(), fake), &attempt, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "source remote unavailable") {
 			t.Fatalf("source observation error = %v", err)
 		}
 	})
 	t.Run("missing canonical cannot publish", func(t *testing.T) {
 		t.Parallel()
 		fake := runnertest.New(t)
-		expectRetireRemoteRef(fake, canonical, "origin", retireSourceRef(result), "")
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.SourceRef(result), "")
 		attempt := result
-		if err := retirePublishSource(withGitRunner(context.Background(), fake), &attempt); err == nil {
+		if err := worktreeretire.PublishSource(withGitRunner(context.Background(), fake), &attempt, retireTransactionPorts()); err == nil {
 			t.Fatal("retired source published without a canonical repository")
 		}
 		if fake.CallCount() != 1 {
@@ -95,18 +96,18 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 	t.Run("retired source changed", func(t *testing.T) {
 		t.Parallel()
 		fake := runnertest.New(t)
-		expectRetireRemoteRef(fake, canonical, "origin", retireSourceRef(result), other+"\t"+retireSourceRef(result)+"\n")
-		if err := retireVerifyReceipts(withGitRunner(context.Background(), fake), canonical, "archive", result); err == nil || !strings.Contains(err.Error(), "retired source receipt changed") {
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.SourceRef(result), other+"\t"+worktreeretire.SourceRef(result)+"\n")
+		if err := worktreeretire.VerifyReceipts(withGitRunner(context.Background(), fake), canonical, "archive", result, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "retired source receipt changed") {
 			t.Fatalf("changed retired source error = %v", err)
 		}
 	})
 	t.Run("private archive changed", func(t *testing.T) {
 		t.Parallel()
 		fake := runnertest.New(t)
-		expectRetireRemoteRef(fake, canonical, "origin", retireSourceRef(result), sha+"\t"+retireSourceRef(result)+"\n")
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.SourceRef(result), sha+"\t"+worktreeretire.SourceRef(result)+"\n")
 		archiveRef := "refs/heads/" + result.ArchiveRef
 		expectRetireRemoteRef(fake, canonical, "archive", archiveRef, sha+"\t"+archiveRef+"\n")
-		if err := retireVerifyReceipts(withGitRunner(context.Background(), fake), canonical, "archive", result); err == nil || !strings.Contains(err.Error(), "private archive receipt changed") {
+		if err := worktreeretire.VerifyReceipts(withGitRunner(context.Background(), fake), canonical, "archive", result, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "private archive receipt changed") {
 			t.Fatalf("changed archive receipt error = %v", err)
 		}
 	})
@@ -118,7 +119,7 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt.OriginalRemoteSHA = sha
 		branchRef := "refs/heads/" + attempt.Branch
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, sha+"\t"+branchRef+"\n")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err == nil || !strings.Contains(err.Error(), "no durable exact-SHA intent") {
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "no durable exact-SHA intent") {
 			t.Fatalf("missing deletion intent error = %v", err)
 		}
 		if fake.CallCount() != 1 {
@@ -132,10 +133,10 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt.Branch = "task"
 		attempt.OriginalRemoteSHA, attempt.DeleteIntentSHA = sha, sha
 		branchRef := "refs/heads/" + attempt.Branch
-		proofRef := retireDeletionProofRef(attempt)
+		proofRef := worktreeretire.DeletionProofRef(attempt)
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, sha+"\t"+branchRef+"\n")
 		expectRetireRemoteRef(fake, canonical, "origin", proofRef, other+"\t"+proofRef+"\n")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err == nil || !strings.Contains(err.Error(), "changed before exact-lease deletion") {
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "changed before exact-lease deletion") {
 			t.Fatalf("changed deletion proof error = %v", err)
 		}
 		if fake.CallCount() != 2 {
@@ -150,8 +151,8 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt.OriginalRemoteSHA, attempt.DeleteIntentSHA = sha, sha
 		branchRef := "refs/heads/" + attempt.Branch
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, sha+"\t"+branchRef+"\n")
-		expectRetireRemoteRef(fake, canonical, "origin", retireDeletionProofRef(attempt), "")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err == nil {
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.DeletionProofRef(attempt), "")
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err == nil {
 			t.Fatal("atomic deletion accepted a missing canonical repository")
 		}
 		if fake.CallCount() != 2 {
@@ -164,11 +165,11 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt := result
 		attempt.Branch = "task"
 		branchRef := "refs/heads/" + attempt.Branch
-		proofRef := retireDeletionProofRef(attempt)
+		proofRef := worktreeretire.DeletionProofRef(attempt)
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, "")
 		expectRetireRemoteRef(fake, canonical, "origin", proofRef, "")
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, "")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err != nil || attempt.Phase != "original_deleted" {
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err != nil || attempt.Phase != "original_deleted" {
 			t.Fatalf("never-published original deletion = (%+v, %v)", attempt, err)
 		}
 	})
@@ -179,9 +180,9 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt.Branch = "task"
 		branchRef := "refs/heads/" + attempt.Branch
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, "")
-		expectRetireRemoteRef(fake, canonical, "origin", retireDeletionProofRef(attempt), "")
+		expectRetireRemoteRef(fake, canonical, "origin", worktreeretire.DeletionProofRef(attempt), "")
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, sha+"\t"+branchRef+"\n")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err == nil || !strings.Contains(err.Error(), "deletion verification failed") {
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "deletion verification failed") {
 			t.Fatalf("reappeared original ref error = %v", err)
 		}
 	})
@@ -192,12 +193,12 @@ func TestRetirePublicationRejectsConflictingReceiptsWithoutPushing(t *testing.T)
 		attempt.Branch = "task"
 		attempt.OriginalRemoteSHA, attempt.DeleteIntentSHA = sha, sha
 		branchRef := "refs/heads/" + attempt.Branch
-		proofRef := retireDeletionProofRef(attempt)
+		proofRef := worktreeretire.DeletionProofRef(attempt)
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, "")
 		expectRetireRemoteRef(fake, canonical, "origin", proofRef, sha+"\t"+proofRef+"\n")
 		expectRetireRemoteRef(fake, canonical, "origin", branchRef, "")
 		expectRetireRemoteRef(fake, canonical, "origin", proofRef, other+"\t"+proofRef+"\n")
-		if err := retireDeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil); err == nil || !strings.Contains(err.Error(), "proof verification failed") {
+		if err := worktreeretire.DeleteOriginal(withGitRunner(context.Background(), fake), &attempt, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "proof verification failed") {
 			t.Fatalf("changed atomic proof error = %v", err)
 		}
 	})
@@ -224,7 +225,7 @@ func TestRetireCaptureRefusesUnsafeSourcesAndDestinations(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if digest, err := retireCaptureFileInjected(tc.source, tc.destination, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.want) || digest != "" {
+			if digest, err := worktreeretire.CaptureFileInjected(tc.source, tc.destination, nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.want) || digest != "" {
 				t.Fatalf("capture = (%q, %v), want %q", digest, err, tc.want)
 			}
 		})
@@ -239,7 +240,7 @@ func TestRetireCaptureRefusesUnsafeSourcesAndDestinations(t *testing.T) {
 			t.Fatal(err)
 		}
 		hashes := map[string]string{}
-		if err := retireCaptureTree(tree, filepath.Join(root, "archive"), func(string) bool { return true }, hashes, "tree"); err == nil || !strings.Contains(err.Error(), "refuses symlink") {
+		if err := worktreeretire.CaptureTree(tree, filepath.Join(root, "archive"), func(string) bool { return true }, hashes, "tree"); err == nil || !strings.Contains(err.Error(), "refuses symlink") {
 			t.Fatalf("symlink tree capture error = %v", err)
 		}
 		if len(hashes) != 0 {
@@ -248,7 +249,7 @@ func TestRetireCaptureRefusesUnsafeSourcesAndDestinations(t *testing.T) {
 	})
 	t.Run("missing tree", func(t *testing.T) {
 		t.Parallel()
-		if err := retireCaptureTree(filepath.Join(root, "missing-tree"), filepath.Join(root, "archive"), func(string) bool { return true }, map[string]string{}, "tree"); err == nil {
+		if err := worktreeretire.CaptureTree(filepath.Join(root, "missing-tree"), filepath.Join(root, "archive"), func(string) bool { return true }, map[string]string{}, "tree"); err == nil {
 			t.Fatal("missing tree accepted")
 		}
 	})
@@ -261,7 +262,7 @@ func TestRetireCaptureRefusesUnsafeSourcesAndDestinations(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(tree, "entry"), []byte("private"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := retireCaptureTree(tree, blocked, func(string) bool { return true }, map[string]string{}, "tree"); err == nil {
+		if err := worktreeretire.CaptureTree(tree, blocked, func(string) bool { return true }, map[string]string{}, "tree"); err == nil {
 			t.Fatal("obstructed archive destination was accepted")
 		}
 	})
@@ -276,7 +277,7 @@ func TestRetireCaptureRefusesUnsafeSourcesAndDestinations(t *testing.T) {
 			t.Fatal(err)
 		}
 		var removalErr error
-		err := retireCaptureTree(tree, filepath.Join(root, "changing-archive"), func(path string) bool {
+		err := worktreeretire.CaptureTree(tree, filepath.Join(root, "changing-archive"), func(path string) bool {
 			if path == "a-first" {
 				removalErr = os.Remove(later)
 			}
@@ -296,10 +297,10 @@ func TestRetireSmallPolicyAndFilesystemErrors(t *testing.T) {
 	if got := retirePreserveMode(RetireResult{Preserve: "tag"}); got != "tag" {
 		t.Fatalf("preserve mode = %q", got)
 	}
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
 		t.Fatalf("manifest preserve mode = %q", got)
 	}
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
 		t.Fatalf("default manifest preserve mode = %q", got)
 	}
 	inspect := func(context.Context, string) (RetiredArchiveInspection, error) {
@@ -327,25 +328,25 @@ func TestRetireSmallPolicyAndFilesystemErrors(t *testing.T) {
 	if err := retireCheckUntrackedPath(root, "directory"); err == nil || !strings.Contains(err.Error(), "nonregular") {
 		t.Fatalf("untracked directory error = %v", err)
 	}
-	if _, err := retireGitBytes(context.Background(), root, "show", "missing"); err == nil || !strings.Contains(err.Error(), "read archive Git object") {
+	if _, err := worktreeretire.GitBytes(context.Background(), root, "show", "missing"); err == nil || !strings.Contains(err.Error(), "read archive Git object") {
 		t.Fatalf("missing Git object bytes error = %v", err)
 	}
-	if _, err := retireGitObjectSHA(context.Background(), root, "missing"); err == nil {
+	if _, err := worktreeretire.GitObjectSHA(context.Background(), root, "missing"); err == nil {
 		t.Fatal("missing Git object hash succeeded")
 	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := retireGitObjectSHA(cancelled, root, "missing"); err == nil {
+	if _, err := worktreeretire.GitObjectSHA(cancelled, root, "missing"); err == nil {
 		t.Fatal("cancelled Git object hash started")
 	}
-	if err := writeRetireReportInjected(RetireResult{ReportPath: filepath.Join(root, "directory", "report.json"), IntentAt: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}, nil); err == nil {
+	if err := worktreeretire.WriteReportInjected(RetireResult{ReportPath: filepath.Join(root, "directory", "report.json"), IntentAt: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}, nil); err == nil {
 		t.Fatal("out-of-range receipt time was encoded")
 	}
 	blocked := filepath.Join(root, "blocked")
 	if err := os.WriteFile(blocked, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRetireReportInjected(RetireResult{ReportPath: filepath.Join(blocked, "report.json")}, nil); err == nil {
+	if err := worktreeretire.WriteReportInjected(RetireResult{ReportPath: filepath.Join(blocked, "report.json")}, nil); err == nil {
 		t.Fatal("report path beneath file was accepted")
 	}
 	if _, err := readRetireReport(filepath.Join(root, "missing-reports", "report.json")); err == nil {
@@ -422,7 +423,7 @@ func TestRetireArchiveVerificationRefusesUnfetchedOrChangedCommit(t *testing.T) 
 			} else {
 				fake.ExpectArgv([]string{"git", "-C", working, "rev-parse", "FETCH_HEAD"}, runner.Result{CombinedOutput: tc.observed + "\n"}, nil)
 			}
-			err := retireVerifyArchive(withGitRunner(context.Background(), fake), working, "private", ref, sha, retireArchiveManifest{})
+			err := worktreeretire.VerifyArchive(withGitRunner(context.Background(), fake), working, "private", ref, sha, retireArchiveManifest{}, retireArchivePorts())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("archive verification error = %v, want %q", err, tc.want)
 			}

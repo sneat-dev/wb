@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func TestRetirementOptionAndArchivePathBoundaries(t *testing.T) {
@@ -61,7 +63,7 @@ func TestRetirementOptionAndArchivePathBoundaries(t *testing.T) {
 		{path: "reports/other.md", want: false},
 		{path: "unrelated/file.json", want: false},
 	} {
-		if got := retireArchiveIncludesRunPath("claim", "report.md", tc.path); got != tc.want {
+		if got := worktreeretire.ArchiveIncludesRunPath("claim", "report.md", tc.path); got != tc.want {
 			t.Errorf("include %q = %t, want %t", tc.path, got, tc.want)
 		}
 	}
@@ -182,7 +184,7 @@ func TestRetirementReceiptAndCaptureFailureBoundaries(t *testing.T) {
 	if _, err := readRetireReport(receipt); err == nil {
 		t.Fatal("malformed retirement receipt was accepted")
 	}
-	if _, err := retireCaptureFileInjected(filepath.Join(home, "missing", "source"), filepath.Join(home, "capture"), nil); err == nil {
+	if _, err := worktreeretire.CaptureFileInjected(filepath.Join(home, "missing", "source"), filepath.Join(home, "capture"), nil); err == nil {
 		t.Fatal("missing capture source was accepted")
 	}
 }
@@ -231,40 +233,40 @@ func TestRetirementGitFailureBoundaries(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	other := strings.Repeat("b", 40)
 	result := RetireResult{Canonical: canonical, Branch: "source", RetiredRef: "retired/source", SourceSHA: sha, OriginalRemoteSHA: sha}
-	ref := retireSourceRef(result)
+	ref := worktreeretire.SourceRef(result)
 	ctx := lifecycleGitContext(t, canonical, lifecycleGitReply{operation: "ls-remote", output: other + "\t" + ref + "\n"})
-	if err := retirePublishSource(ctx, &result); err == nil || !strings.Contains(err.Error(), "conflicting commit") {
+	if err := worktreeretire.PublishSource(ctx, &result, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "conflicting commit") {
 		t.Fatalf("conflicting source publication error = %v", err)
 	}
 	ctx = lifecycleGitContext(t, canonical,
 		lifecycleGitReply{operation: "ls-remote", output: sha + "\t" + ref + "\n"},
 		lifecycleGitReply{operation: "ls-remote", output: other + "\t" + ref + "\n"},
 	)
-	if err := retirePublishSource(ctx, &result); err == nil || !strings.Contains(err.Error(), "verification failed") {
+	if err := worktreeretire.PublishSource(ctx, &result, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "verification failed") {
 		t.Fatalf("changed source verification error = %v", err)
 	}
 
 	branchRef := "refs/heads/" + result.Branch
 	ctx = lifecycleGitContext(t, canonical, lifecycleGitReply{operation: "ls-remote", output: sha + "\t" + branchRef + "\n"})
-	if err := retireDeleteOriginal(ctx, &result, nil); err == nil || !strings.Contains(err.Error(), "no durable exact-SHA intent") {
+	if err := worktreeretire.DeleteOriginal(ctx, &result, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "no durable exact-SHA intent") {
 		t.Fatalf("deletion without durable intent error = %v", err)
 	}
 	withIntent := result
 	withIntent.DeleteIntentSHA = sha
 	ctx = lifecycleGitContext(t, canonical, lifecycleGitReply{operation: "ls-remote", err: errors.New("branch unavailable")})
-	if err := retireDeleteOriginal(ctx, &withIntent, nil); err == nil || !strings.Contains(err.Error(), "branch unavailable") {
+	if err := worktreeretire.DeleteOriginal(ctx, &withIntent, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "branch unavailable") {
 		t.Fatalf("failed source observation error = %v", err)
 	}
 	ctx = lifecycleGitContext(t, canonical,
 		lifecycleGitReply{operation: "ls-remote", output: sha + "\t" + branchRef + "\n"},
 		lifecycleGitReply{operation: "ls-remote", err: errors.New("proof unavailable")},
 	)
-	if err := retireDeleteOriginal(ctx, &withIntent, nil); err == nil || !strings.Contains(err.Error(), "proof unavailable") {
+	if err := worktreeretire.DeleteOriginal(ctx, &withIntent, nil, retireTransactionPorts()); err == nil || !strings.Contains(err.Error(), "proof unavailable") {
 		t.Fatalf("failed proof observation error = %v", err)
 	}
 
 	ctx = lifecycleGitContext(t, "/fixture/archive", lifecycleGitReply{operation: "fetch", err: errors.New("archive unavailable")})
-	if err := retireVerifyArchive(ctx, "/fixture/archive", "remote", "refs/heads/archive", sha, retireArchiveManifest{}); err == nil || !strings.Contains(err.Error(), "archive unavailable") {
+	if err := worktreeretire.VerifyArchive(ctx, "/fixture/archive", "remote", "refs/heads/archive", sha, retireArchiveManifest{}, retireArchivePorts()); err == nil || !strings.Contains(err.Error(), "archive unavailable") {
 		t.Fatalf("archive verification error = %v", err)
 	}
 	ctx = lifecycleGitContext(t, "/fixture/archive",
@@ -272,7 +274,7 @@ func TestRetirementGitFailureBoundaries(t *testing.T) {
 		lifecycleGitReply{operation: "rev-parse", output: sha + "\n"},
 		lifecycleGitReply{operation: "cat-file", output: "not-a-size\n"},
 	)
-	if err := retireVerifyArchive(ctx, "/fixture/archive", "remote", "refs/heads/archive", sha, retireArchiveManifest{}); err == nil || !strings.Contains(err.Error(), "verification limit") {
+	if err := worktreeretire.VerifyArchive(ctx, "/fixture/archive", "remote", "refs/heads/archive", sha, retireArchiveManifest{}, retireArchivePorts()); err == nil || !strings.Contains(err.Error(), "verification limit") {
 		t.Fatalf("invalid archive manifest size error = %v", err)
 	}
 
@@ -294,28 +296,28 @@ func TestRetirementArchiveManifestBoundaries(t *testing.T) {
 	}
 	actual := expected
 	actual.Files = map[string]string{"a.txt": "digest-a", "b.txt": "digest-b"}
-	paths, err := validateRetireArchiveManifest(expected, actual)
+	paths, err := worktreeretire.ValidateArchiveManifest(expected, actual)
 	if err != nil || strings.Join(paths, ",") != "a.txt,b.txt" {
 		t.Fatalf("validated manifest paths = %v, %v", paths, err)
 	}
-	if err := validateRetireArchiveTree(expected.Files, paths, []string{"a.txt", "b.txt", "retirement.json"}); err != nil {
+	if err := worktreeretire.ValidateArchiveTree(expected.Files, paths, []string{"a.txt", "b.txt", "retirement.json"}); err != nil {
 		t.Fatalf("valid archive tree rejected: %v", err)
 	}
 
 	changedIdentity := actual
 	changedIdentity.Repository = "acme/other"
-	if _, err := validateRetireArchiveManifest(expected, changedIdentity); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+	if _, err := worktreeretire.ValidateArchiveManifest(expected, changedIdentity); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
 		t.Fatalf("changed manifest identity error = %v", err)
 	}
 	changedDigest := actual
 	changedDigest.Files = map[string]string{"a.txt": "changed", "b.txt": "digest-b"}
-	if _, err := validateRetireArchiveManifest(expected, changedDigest); err == nil || !strings.Contains(err.Error(), "file mismatch") {
+	if _, err := worktreeretire.ValidateArchiveManifest(expected, changedDigest); err == nil || !strings.Contains(err.Error(), "file mismatch") {
 		t.Fatalf("changed manifest digest error = %v", err)
 	}
-	if err := validateRetireArchiveTree(expected.Files, paths, []string{"a.txt", "retirement.json"}); err == nil || !strings.Contains(err.Error(), "unlisted files") {
+	if err := worktreeretire.ValidateArchiveTree(expected.Files, paths, []string{"a.txt", "retirement.json"}); err == nil || !strings.Contains(err.Error(), "unlisted files") {
 		t.Fatalf("short archive tree error = %v", err)
 	}
-	if err := validateRetireArchiveTree(expected.Files, paths, []string{"a.txt", "extra.txt", "retirement.json"}); err == nil || !strings.Contains(err.Error(), "unlisted file extra.txt") {
+	if err := worktreeretire.ValidateArchiveTree(expected.Files, paths, []string{"a.txt", "extra.txt", "retirement.json"}); err == nil || !strings.Contains(err.Error(), "unlisted file extra.txt") {
 		t.Fatalf("extra archive tree error = %v", err)
 	}
 }

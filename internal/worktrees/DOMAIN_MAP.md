@@ -150,6 +150,8 @@ Read-only analysis at `3c7bfa8c` selects the durable retirement transaction afte
 
 The cutover should share the report, phase progression, and receipt/deletion proof handling in `Retire` and `retireResumeRemoved`. Candidate bodies are `readRetireReport`, `writeRetireReport`/`writeRetireReportInjected`, `retirePublishSource`, `retireVerifyReceipts`, and `retireDeleteOriginal`, with their report/ref helpers. Retarget the source-commit, intent-validation, archive-publication, and local-removal calls through operation-local ports. Inventory the final moved, retained, and deleted bodies before implementation; avoid copying transaction logic into a leaf while leaving a second implementation in the facade.
 
+This historical candidate list predates the retirement cutover. The transaction and archive behavior now lives in `internal/worktreeretire`; the test-only `writeRetireReportInjected`, `retirePublishSource`, `retireVerifyReceipts`, `retireDeleteOriginal`, and selected source/deletion/archive proof forwarders have since been removed. The live facade retains its report helpers, operation-local ports, and public retirement API.
+
 Keep inventory, task locking, held checkout/canonical identity, PR and remote-owner checks, ignored-file checks, live Git corroboration, and secure local removal in `worktrees`. The CLI continues to call `worktrees.Retire`; preserve the public `worktrees.RetireOptions` and `worktrees.RetireResult` Go API and JSON shape if DTO ownership changes. Preserve these phase constraints:
 
 - Persist commit intent before committing; accept replay only for the recorded parent, tree, and message.

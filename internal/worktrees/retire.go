@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -686,8 +685,6 @@ func retireArchiveRef(result RetireResult) string { return worktreeretire.Archiv
 
 func retirePreserveMode(result RetireResult) string { return worktreeretire.PreserveMode(result) }
 
-func retireSourceRef(result RetireResult) string { return worktreeretire.SourceRef(result) }
-
 func retireReportPath(home string, result RetireResult) string {
 	return worktreeretire.ReportPath(home, result)
 }
@@ -695,28 +692,6 @@ func retireReportPath(home string, result RetireResult) string {
 func readRetireReport(path string) (RetireResult, error) { return worktreeretire.ReadReport(path) }
 
 func writeRetireReport(result RetireResult) error { return worktreeretire.WriteReport(result) }
-
-// writeRetireReportInjected keeps the existing filewrite failure seam at the
-// facade boundary while the leaf owns durable report persistence.
-func writeRetireReportInjected(result RetireResult, inj *filewrite.Injector) error {
-	return worktreeretire.WriteReportInjected(result, inj)
-}
-
-func retirePublishSource(ctx context.Context, result *RetireResult) error {
-	return worktreeretire.PublishSource(ctx, result, retireTransactionPorts())
-}
-
-func retireVerifyReceipts(ctx context.Context, canonical, archiveRemote string, result RetireResult) error {
-	return worktreeretire.VerifyReceipts(ctx, canonical, archiveRemote, result, retireTransactionPorts())
-}
-
-func retireDeletionProofRef(result RetireResult) string {
-	return worktreeretire.DeletionProofRef(result)
-}
-
-func retireDeleteOriginal(ctx context.Context, result *RetireResult, afterPhase func(string) error) error {
-	return worktreeretire.DeleteOriginal(ctx, result, afterPhase, retireTransactionPorts())
-}
 
 // The three remote ports bind proof decisions to the facade's exact canonical
 // repository handle and existing secure Git mutation helper.
@@ -852,20 +827,6 @@ func retireRemoveLocalWithPorts(ctx context.Context, task *cleanupTaskHandle, en
 	return nil
 }
 
-// These facade adapters retain the retirement transaction and its public
-// receipt while worktreeretire owns archive capture, publication, and proof.
-func retireCaptureFile(source, destination string) (string, error) {
-	return worktreeretire.CaptureFile(source, destination)
-}
-
-func retireCaptureFileInjected(source, destination string, inj *filewrite.Injector) (string, error) {
-	return worktreeretire.CaptureFileInjected(source, destination, inj)
-}
-
-func retireCaptureTree(source, destination string, include func(string) bool, hashes map[string]string, prefix string) error {
-	return worktreeretire.CaptureTree(source, destination, include, hashes, prefix)
-}
-
 type retireArchiveManifest = worktreeretire.Manifest
 
 func retireArchivePorts() worktreeretire.Ports {
@@ -908,32 +869,4 @@ func retirePublishArchive(ctx context.Context, home, remote string, result *Reti
 	}
 	result.ArchiveSHA, result.Phase = receipt.ArchiveSHA, receipt.Phase
 	return nil
-}
-
-func retireArchiveIncludesRunPath(claimID, reportName, path string) bool {
-	return worktreeretire.ArchiveIncludesRunPath(claimID, reportName, path)
-}
-
-func retireVerifyArchive(ctx context.Context, working, remote, ref, expectedSHA string, expected retireArchiveManifest) error {
-	return worktreeretire.VerifyArchive(ctx, working, remote, ref, expectedSHA, expected, retireArchivePorts())
-}
-
-func validateRetireArchiveManifest(expected, actual retireArchiveManifest) ([]string, error) {
-	return worktreeretire.ValidateArchiveManifest(expected, actual)
-}
-
-func validateRetireArchiveTree(files map[string]string, paths, listed []string) error {
-	return worktreeretire.ValidateArchiveTree(files, paths, listed)
-}
-
-func retireArchiveManifestPreserve(manifest retireArchiveManifest) string {
-	return worktreeretire.ArchiveManifestPreserve(manifest)
-}
-
-func retireGitObjectSHA(ctx context.Context, directory, object string) (string, error) {
-	return worktreeretire.GitObjectSHA(ctx, directory, object)
-}
-
-func retireGitBytes(ctx context.Context, directory string, args ...string) ([]byte, error) {
-	return worktreeretire.GitBytes(ctx, directory, args...)
 }

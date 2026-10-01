@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
@@ -181,7 +182,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	}
 	changedManifest := manifest
 	changedManifest.ClaimID = strings.Repeat("f", len(manifest.ClaimID))
-	if err := retireVerifyArchive(context.Background(), fixture.canonical, archive, "refs/heads/"+applied.ArchiveRef, applied.ArchiveSHA, changedManifest); err == nil || !strings.Contains(err.Error(), "manifest identity mismatch") {
+	if err := worktreeretire.VerifyArchive(context.Background(), fixture.canonical, archive, "refs/heads/"+applied.ArchiveRef, applied.ArchiveSHA, changedManifest, retireArchivePorts()); err == nil || !strings.Contains(err.Error(), "manifest identity mismatch") {
 		t.Fatalf("changed archive manifest expectation = %v", err)
 	}
 	changedClaim := applied
@@ -195,7 +196,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 		t.Fatalf("removed checkout without renewed authority = %v", err)
 	}
 	idempotentSource := applied
-	if err := retirePublishSource(context.Background(), &idempotentSource); err != nil || idempotentSource.Phase != "source_published" {
+	if err := worktreeretire.PublishSource(context.Background(), &idempotentSource, retireTransactionPorts()); err != nil || idempotentSource.Phase != "source_published" {
 		t.Fatalf("idempotent retired source publication = (%+v, %v)", idempotentSource, err)
 	}
 }
@@ -314,7 +315,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 				t.Fatalf("partial phase=%s err=%v", partial.Phase, err)
 			}
 			if phase == "original_delete_pushed" {
-				proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial))
+				proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial))
 				if !strings.HasPrefix(proof, partial.SourceSHA+"\t") {
 					t.Fatalf("atomic deletion proof missing after push: %s", proof)
 				}
@@ -410,7 +411,7 @@ func TestRetireRefusesExternallyDeletedOriginalWithoutAtomicProof(t *testing.T) 
 			if err == nil {
 				t.Fatal("external deletion without atomic WB proof was accepted")
 			}
-			if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+			if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial)); proof != "" {
 				t.Fatalf("external deletion produced WB proof: %s", proof)
 			}
 			if _, err := os.Stat(worktree); err != nil {
@@ -446,7 +447,7 @@ func TestRetireRefusesRemoteWithoutAtomicPush(t *testing.T) {
 	if original := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retire-atomic"); !strings.HasPrefix(original, originalSHA+"\t") {
 		t.Fatalf("non-atomic remote lost original: %s", original)
 	}
-	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial)); proof != "" {
 		t.Fatalf("non-atomic remote created proof: %s", proof)
 	}
 	if _, err := os.Stat(worktree); err != nil {

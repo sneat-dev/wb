@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 	"github.com/sneat-dev/wb/internal/worktreeproof"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func TestZeroCoverageBatchValueHelpers(t *testing.T) {
@@ -55,10 +56,10 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 		t.Fatal("an unencodable local event was equal")
 	}
 
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{}); got != "branch" {
 		t.Fatalf("default archive preservation = %q", got)
 	}
-	if got := retireArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
+	if got := worktreeretire.ArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
 		t.Fatalf("explicit archive preservation = %q", got)
 	}
 	if worktreebranches.MustAtoi("") != 0 || worktreebranches.MustAtoi("2048") != 2048 {
