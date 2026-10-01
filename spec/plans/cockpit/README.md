@@ -54,8 +54,8 @@ Add `cockpit.hosted_url`, `cockpit.code_browser_url`,
 behind a build that tolerates an absent output by serving the one-line "not
 built" page, as `hub/web/embed.go` does. Mount `/cockpit/` and
 `/api/v1/cockpit/` on the loopback listener in `serveDashboard` regardless of
-`hub:`, wrapped in a guard that refuses a non-loopback `Host` with status 421
-and redirects page requests on a loopback alias to the canonical origin.
+`hub:`, wrapped in a guard that refuses a non-loopback host name with status 421,
+whatever the port, and redirects page requests on a loopback alias to the canonical origin.
 Tests: the guard table, the unbuilt page, and a regression test that `/`,
 `/metrics`, `/api/v1/overview` and `wb dashboard --local` answer as before.
 
@@ -108,13 +108,18 @@ from `discover.ScanLocalIndexed`, `worktrees.ListWithDiagnostics`,
 `worktrees.BranchList`, pull request evidence, the session and agent run
 records, and `remotestate.ReadStatus` for other machines, giving every entry
 a stable `id`, its `machine`, `route` and `observed_at`. It refreshes on
-`cockpit.refresh_interval` and can refresh one repository on request from
-inside the daemon. Map every source into the closed metadata field set, so
+`cockpit.refresh_interval`, skipping repositories whose fingerprint is
+unchanged, and can refresh one repository on request from inside the daemon;
+the default interval is set here from a measurement on the founder's
+projects root. Map every source into the closed metadata field set, so
 paths, file names, commit subjects and task summaries in a remote snapshot
-are dropped. Add `code_index` freshness from WB's receipts, `not_reported`
-where there are none. Serve `GET /api/v1/cockpit/fleet`; a request reads the
+are dropped. Add `code_index` freshness in the six states
+`code-index-freshness` defines, read from receipts, building that report if
+it is still missing. Serve `GET /api/v1/cockpit/fleet`; a request reads the
 last snapshot and never runs Git, and before the first snapshot it returns
-the empty warming-up document.
+the empty warming-up document. Add the owner-only README route, which
+resolves the file inside the checkout without following a link out of it and
+answers 401 without a session.
 
 ### Task 5: Angular project, embedding and gates
 
@@ -125,7 +130,8 @@ the empty warming-up document.
 
 Create the Angular 22 project at `cockpit/web` with PrimeNG 22, the CDK,
 Vitest and Playwright: an empty shell that builds, is embedded, and is served
-under `/cockpit/` with the strict content security policy. Configure coverage
+under `/cockpit/` with the strict content security policy and its
+per-response style nonce. Configure coverage
 thresholds of 100 for statements, branches, functions and lines over
 `cockpit/web/src`, and a check that every component has a rendering test.
 Add the CI job, which runs on every pull request and passes at once when
@@ -153,12 +159,12 @@ and dark themes. Controls are driven by `GET /api/v1/cockpit/session`.
 **Depends-On:** 4, 6
 **Status:** planning
 
-Add the owner-only README route, which resolves the file inside the checkout
-without following a link out of it, and render it as sanitized Markdown on
-the repository page, with the owner-session notice for other callers. Add the
-code-index provider interface with CodeGrapher as the first provider, reading
-its status once per checkout per `HEAD`, and the code-index panel on the
-repository and worktree pages.
+Render the README as sanitized Markdown on the repository page, with the
+owner-session notice for other callers. Add the code-index provider
+interface with CodeGrapher as the first provider; the snapshotter asks it
+once per checkout per indexer receipt and puts the statistics in the read
+model, and no request starts a provider process. Add the code-index panel on
+the repository and worktree pages.
 
 ### Task 8: Whole-journey end-to-end test
 

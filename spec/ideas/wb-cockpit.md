@@ -76,8 +76,8 @@ Principle 12 is narrower than the prompt's "hosted by default"; see the
 
 Each row is a founder answer from the 2026-10-01 discussion unless marked
 *proposed*. A row that restates the description of an option the founder
-selected from a multiple-choice question is unmarked. *Proposed* which means the agent proposed it and the founder replied "Looks
-good" to the whole set without discussing that row on its own.
+selected from a multiple-choice question is unmarked. *Proposed* means the
+agent proposed it and the founder did not discuss that point on its own.
 
 | Topic | Decision |
 |---|---|
@@ -147,9 +147,10 @@ lost first.
   every machine. It lost to having one dispatch path and one run lifecycle.
 - **Porting only the operational pages.** A smaller MVP. It lost because the
   founder wants a full cutover with no page left behind on the old UI.
-- **PrimeNG, or Vue.** PrimeNG is liked but raises a contributor-licence
-  question for an open-source repository; Vue shares nothing with the rest of
-  the Sneat code. Both lost to Angular with Material/CDK.
+- **Angular Material, or Vue.** Material was the founder's first answer and
+  raises no licence question; Vue shares nothing with the rest of the Sneat
+  code. Both lost to PrimeNG once the CodeGrapher web UI turned out to be
+  built on it, because sharing its viewer components matters more.
 
 ## MVP Scope
 

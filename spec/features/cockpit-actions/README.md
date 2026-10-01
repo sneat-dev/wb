@@ -72,9 +72,12 @@ Every action is registered with:
 `GET /api/v1/cockpit/actions?target=<type>:<id>` returns every action
 registered for that target type, each with its applicability, reason,
 parameters, required capability, safety class and whether the caller holds
-the capability. It is a metadata route. The application MUST build its action
-controls from this response and MUST NOT hardcode which actions exist. An
-action the caller cannot run is shown disabled with the reason.
+the capability. It is a metadata route, so it MUST be answered from the fleet
+snapshot alone: it runs no Git command and makes no network call.
+Applicability in the list is therefore provisional, as of the snapshot; the
+preview decides. The application MUST build its action controls from this
+response and MUST NOT hardcode which actions exist. An action the caller
+cannot run is shown disabled with the reason.
 
 #### REQ: targets-are-resolved-by-the-daemon
 
@@ -212,11 +215,17 @@ requires `pr.land`.
 `discarded` disposition, which removes the checkout, retires its branch, and
 first archives any uncommitted content in the private Work Log.
 
-It is not applicable while a live owner holds the worktree, and not
-applicable while the fresh assessment shows commits that are on no remote:
-the reason tells the operator to push or land them first. Discarding
-unpushed commits is not offered in this Feature. It is `destructive` and
-requires `worktree.discard`.
+In the action list it is not applicable while a live owner holds the
+worktree, or while the snapshot assessment is `local_commits` or `unknown`:
+the reason tells the operator to push or land the commits first.
+
+The preview is stricter and decides. It proceeds only when the fresh
+assessment proves every commit is safe: `remote_verified` is true, or the
+work is `merged` with evidence. A remote that cannot be reached, a
+repository with no remote, or any `unknown` refuses the preview, so no token
+is issued and nothing can be discarded. Discarding commits that are not
+proven to be on the remote is not offered in this Feature. The action is
+`destructive` and requires `worktree.discard`.
 
 #### REQ: delete-branch-action
 
@@ -228,9 +237,10 @@ and requires `branch.delete`.
 
 `index.refresh` applies to a repository or a worktree. It runs the indexer
 the operator has configured, through the lifecycle runner that already runs
-it after a checkout moves, in the background and under the same CPU
-admission. It touches only the index, never the working tree, so it is `safe`
-and needs no preview. It requires `index.refresh`. When no indexer is
+it after a checkout moves, under the same CPU admission. The operation
+reaches a terminal state when the indexer's receipt is written. It touches
+only the index, never the working tree, so it is `safe` and needs no
+preview. It requires `index.refresh`. When no indexer is
 configured it is not applicable and says so.
 
 ### Presentation
@@ -280,10 +290,10 @@ All code this Feature adds MUST reach 100% test coverage, in Go and in
 
 **Requirements:** cockpit-actions#req:action-declaration, cockpit-actions#req:actions-are-discovered
 
-Scenario: A clean, pushed worktree
-Given a clean worktree whose branch is on the remote with no pull request
+Scenario: A clean, pushed worktree with no live owner
+Given a clean worktree with no live owner whose branch is on the remote with no pull request, and a configured indexer
 When the actions for that worktree are requested with an owner session
-Then the response lists `worktree.commit` and `branch.push` as not applicable, each with a reason, lists `pr.create` and `worktree.discard` as applicable, and gives every action its parameters, capability and safety class
+Then the response lists `worktree.commit` and `branch.push` as not applicable, each with a reason, lists `pr.create`, `worktree.discard` and `index.refresh` as applicable, gives every action its parameters, capability and safety class, and answering it ran no Git command and made no network call
 
 ### AC: application-renders-what-the-registry-returns
 
@@ -347,6 +357,15 @@ Scenario: Two commits exist only here
 Given a worktree with two commits on a branch that was never pushed, and another held by a live owner
 When the actions for each are requested
 Then `worktree.discard` is not applicable for the first with a reason naming two commits that are on no remote, and not applicable for the second with a reason naming the owner
+
+### AC: unproven-remote-blocks-discard-at-preview
+
+**Requirements:** cockpit-actions#req:discard-worktree-action, cockpit-actions#req:preview-before-run
+
+Scenario: The snapshot says pushed, the remote cannot confirm it
+Given three clean worktrees the snapshot records as `remote_branch` — one whose remote is unreachable, one in a repository whose remote was removed, and one whose remote branch was deleted since the last fetch
+When the action list is requested and `worktree.discard` is previewed for each
+Then the list shows discard as applicable for all three, every preview is refused with a reason naming what could not be proven, no token is issued, and all three worktrees still exist
 
 ### AC: at-risk-discard-demands-the-name
 

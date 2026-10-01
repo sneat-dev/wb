@@ -116,15 +116,15 @@ The application MUST follow the browser's light or dark preference.
 #### REQ: host-header-check
 
 Every request to `/cockpit/` and `/api/v1/cockpit/` MUST carry a `Host`
-header naming a loopback host — `localhost`, `127.0.0.1` or `[::1]` — with
-the daemon's listen port. Any other `Host` is refused with status 421 before
-any handler runs. This is what stops a page that rebinds DNS to the loopback
-address.
+header naming a loopback host — `localhost`, `127.0.0.1` or `[::1]` — on any
+port. Any other host name is refused with status 421 before any handler runs.
+This is what stops a page that rebinds DNS to the loopback address. The port
+is not checked, so an SSH forward to a different local port works.
 
-The canonical origin is `http://127.0.0.1:<port>`. A request for a page under
-`/cockpit/` on another loopback name is redirected to the same path on the
-canonical origin, so the session cookie, which browsers scope by host, is
-always set and read on one host.
+The canonical origin is `http://127.0.0.1:<port>`, with the port the request
+arrived on. A request for a page under `/cockpit/` on another loopback name
+is redirected to the same path on the canonical origin, so the session
+cookie, which browsers scope by host, is always set and read on one host.
 
 #### REQ: forwarded-requests-are-never-anonymous
 
@@ -146,7 +146,7 @@ principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
 - machine name, WB version, route and observation time;
-- repository `owner/name` and default branch name;
+- repository forge host, `owner/name` and default branch name;
 - task name, stream name, branch name, lifecycle and owner state, last
   activity time;
 - pull request number, state and URL;
@@ -169,8 +169,9 @@ and with `Access-Control-Allow-Private-Network: true`. A request carrying any
 other foreign `Origin`, including `null`, is refused with status 403.
 
 A hosted page therefore reads metadata and nothing else, even in a browser
-that holds an owner session cookie for the daemon. The founder accepted that
-a compromise of the hosted origin would leak those names (2026-10-01).
+that holds an owner session cookie for the daemon. The option the founder
+selected for the hosted page on 2026-10-01 stated this consequence: a
+compromise of the hosted origin leaks names only.
 
 ### Owner session
 
@@ -261,20 +262,23 @@ document marked as warming up.
 
 #### REQ: snapshot-refresh
 
-The daemon refreshes the snapshot on an interval, `cockpit.refresh_interval`,
-60 seconds by default. It MUST also be able to refresh one repository on
-request from inside the daemon, so that a completed operation is reflected
-without waiting for the interval.
+The daemon refreshes the snapshot on an interval, `cockpit.refresh_interval`.
+A refresh MUST skip the Git work for a repository whose refs, index and
+working-tree fingerprint are unchanged since the last one, so a quiet fleet
+costs little. The default interval is set when the snapshotter is built, from
+a measurement on a fleet of several hundred repositories. The daemon MUST
+also be able to refresh one repository on request from inside the daemon, so
+that a completed operation is reflected without waiting for the interval.
 
 #### REQ: code-index-freshness-is-shown
 
 Each repository and worktree entry carries `code_index`: for every configured
-indexer, the state WB reports under
-[code-index-freshness](../code-index-freshness/README.md) — `fresh`, `stale`
-with the number of commits behind, or `diverged` — or `not_reported` where WB
-has no receipt. The application shows it on the Repositories and Worktrees
-tables. WB stays indexer-agnostic; CodeGrapher is the indexer the founder
-uses.
+indexer, the state defined by
+[code-index-freshness](../code-index-freshness/README.md)#req:freshness-in-fleet-status
+— `fresh`, `stale` with the number of commits behind, `diverged`, `pending`,
+`failed` or `never` — read from receipts as that Feature requires. The
+application shows it on the Repositories and Worktrees tables. WB stays
+indexer-agnostic; CodeGrapher is the indexer the founder uses.
 
 #### REQ: code-index-summary
 
@@ -284,9 +288,13 @@ symbols and edges, with symbols broken down by kind — as the configured
 code-index provider reports them. CodeGrapher is the first provider. The
 panel shows counts only, so it is metadata.
 
-The daemon asks the provider at most once per checkout per `HEAD` and serves
-the cached answer afterwards. When no provider is configured or the checkout
-has no index, the panel says so.
+The statistics are part of the fleet read model, under each entry's
+`code_index`. The background snapshotter asks the provider, through the
+provider's own command, once per checkout per indexer receipt; no request
+starts a provider process, and WB does not open the provider's artifacts. A
+new receipt, such as the one a refresh writes, makes the snapshotter ask
+again. When no provider is configured or the checkout has no index, the panel
+says so.
 
 #### REQ: code-browser-link
 
@@ -295,7 +303,8 @@ CodeGrapher browser, at `<base>/<host>/<owner>/<repository>` — for example
 `https://codegrapher.dev/github.com/specscore/specscore-cli`. The base is the
 single configuration value `cockpit.code_browser_url`, whose default is
 `https://codegrapher.dev/`. The link opens in a new tab and is built from
-metadata only, so it needs no owner session.
+metadata only, so it needs no owner session. A repository whose origin names
+no forge host has no link. Cockpit does not check that the page exists.
 
 ### Pages and interaction
 
@@ -327,9 +336,11 @@ followed.
 #### REQ: strict-content-security-policy
 
 Every response under `/cockpit/` MUST carry a content security policy that
-allows scripts and styles only from the daemon's own origin, with no
-`unsafe-inline` and no `unsafe-eval` for scripts, and forbids framing by
-another origin.
+allows scripts only from the daemon's own origin, with no `unsafe-inline` and
+no `unsafe-eval`, and forbids framing by another origin. Styles are allowed
+from the daemon's own origin and, for the style elements Angular and PrimeNG
+inject at run time, through a nonce issued per response; `unsafe-inline` is
+not used for styles either.
 
 ### Test coverage
 
@@ -365,7 +376,8 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   until that Feature. They share an origin with Cockpit and their pages allow
   inline scripts; they render no repository content.
 - Reaching Cockpit through a host name other than loopback. Remote access is
-  an SSH port forward, which keeps the `Host` on loopback. Exposure through a
+  an SSH port forward, to any local port, which keeps the `Host` on
+  loopback. Exposure through a
   proxy or tunnel waits for the OAuth2 or OIDC provider decision 0002
   requires.
 - Publishing the application at the hosted URL — this Feature makes the
@@ -374,7 +386,11 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   loopback address.
 - A live event stream — the application re-reads the read model.
 - Per-user grants, roles, and a `peer` principal.
-- Source and diff viewers, directory pages, and code navigation inside them.
+- Directory pages. The founder asked for code-index information on
+  repository, directory and worktree pages (2026-10-01); this Feature covers
+  repository and worktree pages only, because the first slice has no file or
+  directory browser. *Proposed* deferral, to the slice that adds one.
+- Source and diff viewers, and code navigation inside them.
 
 ## Acceptance Criteria
 
@@ -527,18 +543,18 @@ Then the first response is well-formed, empty and marked as warming up, the seco
 **Requirements:** cockpit#req:code-index-freshness-is-shown
 
 Scenario: Three checkouts
-Given one checkout whose latest indexer receipt is at `HEAD`, one whose receipt is three commits behind, and one with no receipt
+Given a configured indexer, one checkout whose latest receipt is at `HEAD`, one whose receipt is three commits behind, and one with no receipt
 When the fleet read model is requested and the Worktrees page is opened
-Then they report `fresh`, `stale` with a count of three, and `not_reported`, and the table shows the same three states
+Then they report `fresh`, `stale` with a count of three, and `never`, and the table shows the same three states
 
 ### AC: code-index-panel
 
 **Requirements:** cockpit#req:code-index-summary
 
-Scenario: Indexed, not indexed, and no provider
+Scenario: Indexed, re-indexed, not indexed, and no provider
 Given a fake code-index provider that reports 12 files, 40 symbols of two kinds and 90 edges for one checkout and no index for another, and a second daemon with no provider configured
-When the indexed checkout's worktree page is opened twice with no owner session, then the other checkout's page, then a page on the second daemon
-Then the first page shows the three totals and the per-kind breakdown and the provider was asked once across both openings, the second says the checkout is not indexed, and the third says no provider is configured
+When the indexed checkout's worktree page is opened twice with no owner session, a new indexer receipt is then written with the provider reporting 13 files and a snapshot refresh passes, the other checkout's page is opened, and a page on the second daemon is opened
+Then the first page shows the three totals and the per-kind breakdown, the provider was asked once by the snapshotter and never by a request, after the new receipt the page shows 13 files, the other checkout's page says it is not indexed, and the second daemon's page says no provider is configured
 
 ### AC: repository-links-to-code-browser
 
@@ -609,8 +625,8 @@ Then the Dashboard appears signed in as owner, the filtered Worktrees table show
   Sharing components with it needs it upgraded to 22, which is tracked
   outside this Feature.
 - `code-index-freshness` is a Draft Feature and its freshness report was not
-  found in code on 2026-10-01. Until it exists every checkout reads
-  `not_reported`.
+  found in code on 2026-10-01. Building the part Cockpit reads is in this
+  Feature's plan if it is still missing.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
