@@ -20,6 +20,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | [projects-root-layout](projects-root-layout/README.md) | Blocked | projects-root-layout | 2026-09-16 | trakhimenok |
 | [remote-ci-coverage](remote-ci-coverage.md) | Approved | fleet-quality | 2026-09-26 | alex |
 | [self-hosted-bench](self-hosted-bench.md) | Implemented | self-hosted-bench | 2026-09-11 | alex |
+| [shared-worktree-coordination](shared-worktree-coordination/README.md) | Draft | shared-worktree-coordination | 2026-10-01 | alex |
 | [wb-home-worktree-guard](wb-home-worktree-guard.md) | Approved | worktree-lifecycle | 2026-07-28 | codex |
 | [work-log-recovery](work-log-recovery.md) | Draft | work-log | 2026-08-10 | codex |
 
