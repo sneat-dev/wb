@@ -268,10 +268,14 @@ func (provider *Provider) doJSON(ctx context.Context, method, path string, input
 }
 
 func (provider *Provider) credential() (string, error) {
+	return provider.credentialOpened(func(path string) (io.ReadCloser, error) { return os.Open(path) })
+}
+
+func (provider *Provider) credentialOpened(open func(string) (io.ReadCloser, error)) (string, error) {
 	if provider.token != "" {
 		return provider.token, nil
 	}
-	file, err := os.Open(provider.tokenFile)
+	file, err := open(provider.tokenFile)
 	if err != nil {
 		switch {
 		case errors.Is(err, os.ErrNotExist):

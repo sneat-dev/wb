@@ -34,7 +34,10 @@ type Options struct {
 
 // Provider implements remotestate.Provider over a git clone.
 type Provider struct {
-	opts Options
+	opts           Options
+	encodeSnapshot func(remotestate.Snapshot) ([]byte, error)
+	encodeClaim    func(remotestate.Claim) ([]byte, error)
+	removeClaim    func(string) error
 }
 
 // New returns a provider; nothing touches disk until Publish/Fetch/List.
@@ -45,7 +48,7 @@ func New(opts Options) *Provider {
 	if opts.Sleep == nil {
 		opts.Sleep = time.Sleep
 	}
-	return &Provider{opts: opts}
+	return &Provider{opts: opts, encodeSnapshot: remotestate.Encode, encodeClaim: remotestate.EncodeClaim, removeClaim: os.Remove}
 }
 
 // SnapshotPath is the store-relative path of one machine's snapshot.
@@ -268,7 +271,7 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 	if err := p.Fetch(ctx); err != nil {
 		return remotestate.PublishResult{}, err
 	}
-	data, err := remotestate.Encode(snapshot)
+	data, err := p.encodeSnapshot(snapshot)
 	if err != nil {
 		return remotestate.PublishResult{}, err
 	}

@@ -60,7 +60,7 @@ func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) string 
 		return "" // corrupt: skip silently, leave the bytes exactly as they are
 	}
 	snap.LastSeenAt = at
-	encoded, err := remotestate.Encode(snap)
+	encoded, err := p.encodeSnapshot(snap)
 	if err != nil {
 		return ""
 	}
@@ -241,7 +241,7 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 
 	rel := ClaimPath(claim.Task)
 	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
-	data, err := remotestate.EncodeClaim(claim)
+	data, err := p.encodeClaim(claim)
 	if err != nil {
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -347,7 +347,7 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 	message := fmt.Sprintf("wb: release %s by %s/%s", task, login, machine)
 
 	mutate := func() (string, bool, []string, error) {
-		if err := os.Remove(abs); err != nil {
+		if err := p.removeClaim(abs); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return message, false, nil, nil
 			}

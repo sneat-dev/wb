@@ -221,6 +221,13 @@ func readDirtyCaptureEntry(root *os.Root, path string, total int64, boundary dir
 		if err != nil || current.Mode()&os.ModeSymlink == 0 || !os.SameFile(info, current) {
 			return dirtyCaptureEntry{}, nil, fmt.Errorf("dirty symlink changed while being captured: %s: %v", path, err)
 		}
+		observeDirtyCaptureBoundary(boundary, "symlink-stat-after", root, nil)
+		// Device/inode identity can be reused after an unlink. Check the actual
+		// link bytes too, so a replacement cannot validate an earlier target.
+		verifiedTarget, err := root.Readlink(filepath.FromSlash(path))
+		if err != nil || verifiedTarget != target {
+			return dirtyCaptureEntry{}, nil, fmt.Errorf("dirty symlink changed while being captured: %s: %v", path, err)
+		}
 		content := []byte(target)
 		if int64(len(content)) > maxDirtyCaptureFileBytes || total > maxDirtyCaptureTotalBytes-int64(len(content)) {
 			return dirtyCaptureEntry{}, nil, fmt.Errorf("refusing dirty capture for %s: size exceeds bounded %d-byte retention", path, maxDirtyCaptureTotalBytes)
@@ -304,10 +311,9 @@ func materializeDirtyCapture(runDir *os.File, claimID string, material dirtyCapt
 			return DirtyWorktreeEvidence{}, fmt.Errorf("write dirty capture blob: %w", err)
 		}
 	}
-	encoded, err := json.MarshalIndent(material.Manifest, "", "  ")
-	if err != nil {
-		return DirtyWorktreeEvidence{}, err
-	}
+	// This private manifest contains only strings, integers, and slices of
+	// those fixed structs, with no custom marshalers or fallible JSON values.
+	encoded, _ := json.MarshalIndent(material.Manifest, "", "  ")
 	encoded = append(encoded, '\n')
 	if err := writeBytesImmutableAt(directory, "manifest.json", encoded, 0o600, true); err != nil {
 		return DirtyWorktreeEvidence{}, fmt.Errorf("write dirty capture manifest: %w", err)
