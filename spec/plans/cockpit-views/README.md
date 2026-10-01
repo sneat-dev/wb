@@ -212,7 +212,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-12
 **Verifies:** cockpit-views#ac:filter-state-lives-in-the-address, cockpit-views#ac:rows-are-one-line-and-virtual, cockpit-views#ac:columns-are-few-and-uniform-ones-hidden, cockpit-views#ac:repository-and-time-rendering, cockpit-views#ac:empty-states-offer-clear, cockpit-views#ac:side-panel-opens-and-closes, cockpit-views#ac:side-panel-shows-summary-actions-commands-and-raw-data, cockpit-views#ac:detail-routes-render-the-same-panel, cockpit-views#ac:copy-buttons-copy-the-full-value, cockpit-views#ac:list-never-exceeds-60-row-elements, cockpit-views#ac:shortcuts-navigate-and-respect-typing
 **Depends-On:** 11
-**Status:** planning
+**Status:** complete
 
 The shared virtual list (sticky header, sort, chips, machine chips, name and time rendering, auto-hidden columns, empty states, `j`/`k`/Enter/Esc), the page-address state (`q`, `sort`, `dir`, `machine`, `chips`, `sel`) with bad values ignored, the side panel and the one component that renders both the panel and the detail page, with its collapsed "Raw data" block, and the copy buttons. The panel hosts the action slot and "Copy command" components of task 13 through their interfaces and renders nothing for them until they exist. It wires `Shortcuts.registerFilter` and `Shortcuts.registerPanel` (Task 11) on the lists, and so proves the clauses of `cockpit-views#ac:shortcuts-navigate-and-respect-typing` that Task 11 leaves to it: `/` on a list focuses the filter box, a typed `g w` stays text in it and no tab switches, and Esc with the side panel open closes it (an empty focused filter lets Esc through to the panel).
 

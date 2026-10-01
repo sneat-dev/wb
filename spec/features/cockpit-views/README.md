@@ -492,7 +492,7 @@ Serves J5 and J6. The Worktrees page MUST show these columns in order: Worktree,
 the identity cell, showing the task in strong type and the repository
 `owner/name` in muted type, linking to the worktree page that
 [cockpit](../cockpit/README.md) defines, with a small link on the task part to the
-task page; Branch (shown when any visible row's branch differs from its task);
+task page; Branch (shown when any visible row's branch differs from its task, where the branch `task/<task>` that `wb` names a task's branch after is not different);
 Machine; State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
 for commits behind, and "gone" for a vanished upstream); PR; Code index; Last
 activity. There is no separate Task column. The sync badges and the chips
