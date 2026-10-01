@@ -46,6 +46,8 @@ type cockpitCommandDependencies struct {
 	// local starts or reuses the daemon and, only when mint is true, requests
 	// a login code over the owner channel. JSON output never mints one.
 	local func(ctx context.Context, deps daemonDependencies, root, listen string, mint bool) (cockpitLocalSession, error)
+	// export is what `wb cockpit export` uses; it has no way to start anything.
+	export cockpitExportDependencies
 }
 
 func defaultCockpitCommandDependencies() cockpitCommandDependencies {
@@ -55,6 +57,7 @@ func defaultCockpitCommandDependencies() cockpitCommandDependencies {
 		isTerminal: console.IsTerminal,
 		configPath: wbconfig.DefaultPath,
 		local:      cockpitLocalFromDaemon,
+		export:     defaultCockpitExportDependencies(),
 	}
 }
 
@@ -222,5 +225,6 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 	command.Flags().BoolVar(&hosted, "hosted", false, "open the hosted Cockpit at cockpit.hosted_url and start no daemon")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
+	command.AddCommand(newCockpitExportCmd(inv, deps.export))
 	return command
 }

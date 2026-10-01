@@ -1375,6 +1375,84 @@
       "notes": "Cockpit is opened with a single-use login code the daemon mints for the owner; machine callers receive a code-free URL receipt."
     },
     {
+      "id": "wb.cockpit.export",
+      "feature_refs": [
+        "spec/features/cockpit-views/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb cockpit export",
+              "flags": [
+                "--format",
+                "--metrics-only"
+              ],
+              "modes": [
+                "Prints one JSON envelope {schema_version, machine, exported_at, fleet, metrics} of this machine's own entries and its machine-metrics history, read from the running daemon over its loopback listener as the anonymous-local principal, within 8 MiB.",
+                "--metrics-only omits the fleet.",
+                "With no running daemon, one that refuses anonymous reads, or any other failure, prints {schema_version, error} with daemon_not_running, export_refused or export_failed and exits 1; the text is fixed.",
+                "Never starts a daemon, opens a browser or mints a login code, and writes nothing (no heartbeat). On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb cockpit export --help",
+              "contains": [
+                "daemon_not_running",
+                "--format",
+                "--metrics-only"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb cockpit export --format json",
+                "wb cockpit export --format json --metrics-only"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/cockpit_export_test.go",
+              "name": "TestCockpitExportWithNoRunningDaemonFailsAndStartsNothing",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/cockpit_export_test.go",
+              "name": "TestCockpitExportCarriesOnlyTheMetadataSet",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/cockpit_export_test.go",
+              "name": "TestCockpitExportHasNoWayToStartAnything",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Read-only export of this machine's Cockpit metadata for another machine's daemon to read over SSH; it reads the daemon record and makes anonymous loopback reads and never starts a daemon."
+    },
+    {
       "id": "wb.commands",
       "feature_refs": [
         "spec/features/modern-cli-help-discovery/README.md"

@@ -22,6 +22,8 @@ the same tier identity; a mismatched baseline triggers a fresh merge-base run.
 
 `cockpit` also has the command-specific `--listen <host:port>` (loopback only; names the
 address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format` and `--json`.
+`cockpit export` has the command-specific `--format json` and `--metrics-only` (omit the fleet); it reads the
+running daemon's record under `--projects-root` and never starts a daemon.
 
 `coverage baseline <coverage-profile>` (the per-change coverage ratchet's
 baseline publisher) is also command-specific: `--module` (the Go module
@@ -63,6 +65,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `run` | yes | yes | yes | yes |
 | `worker connect` | yes | rejected | rejected | yes |
 | `cockpit` | yes | rejected | rejected | yes |
+| `cockpit export` | yes | rejected | rejected | yes |
 | `daemon serve`, `start`, `status`, `stop`, `restart`, `recover`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |

@@ -170,11 +170,17 @@ func plainText(text string) string {
 		if len(kept) == maxRemoteText {
 			break
 		}
-		if !unicode.IsControl(character) && !unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
+		if !unsafeRune(character) {
 			kept = append(kept, character)
 		}
 	}
 	return string(kept)
+}
+
+// unsafeRune reports whether character is one plainText removes: a control or
+// format character, or a line or paragraph separator.
+func unsafeRune(character rune) bool {
+	return unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // remoteLifecycles are the lifecycle values a published snapshot is built with.

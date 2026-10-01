@@ -157,7 +157,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-7
 **Verifies:** cockpit-views#ac:export-without-a-daemon-fails-and-starts-nothing, cockpit-views#ac:export-carries-only-the-metadata-set
 **Depends-On:** 1, 2
-**Status:** planning
+**Status:** complete
 
 Add the read-only verb `wb cockpit export --format json` (with `--metrics-only`) to the `wb cockpit` command tree in `cmd/wb/cockpit.go`. It finds the running daemon from the daemon record without starting it (it must not use `cockpitLocalFromDaemon`, which starts a daemon and can mint a login code), reads the fleet document and machine-metrics over the daemon's loopback transport as `anonymous-local`, and prints one envelope `{schema_version, machine, exported_at, fleet, metrics}` bounded at 8 MiB and limited to the anonymous-readable metadata set. With no daemon, or a daemon refusing anonymous reads, it prints `{schema_version, error}` with `daemon_not_running` or `export_refused` and exits 1. Add its `ai/capabilities.json` row, command-coverage entry, Agent Skill coverage in `wb-daemon`, the `docs/cli-flag-matrix.md` line and the persistent-flag support declaration, because a CLI verb is added. Unit tier only: a fake daemon transport; no real daemon and no ssh. It may run in parallel with tasks 3 to 6; all touch the read model, so the later to land rebases and extends the sentinel test.
 

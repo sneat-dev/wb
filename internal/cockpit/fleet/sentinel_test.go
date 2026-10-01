@@ -126,6 +126,15 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 		}
 		body += recorder.Body.String()
 	}
+	// The export envelope (cockpit-views#req:cockpit-export-verb) is built from the
+	// same document and sampler, so the same checks cover both of its shapes.
+	for _, metricsOnly := range []bool{false, true} {
+		exported, err := json.Marshal(snapshotter.Export(metricsOnly))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body += string(exported)
+	}
 	if strings.Contains(body, strconv.Itoa(sentinelNumber)) {
 		t.Fatalf("the document carries a sentinel number from a source field: %s", body)
 	}
