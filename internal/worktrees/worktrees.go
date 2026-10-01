@@ -3398,7 +3398,19 @@ func retireEmptyLocalStageAt(rootDirectory *os.File, name string) {
 	}
 }
 
+type retiredStageClaimOps struct {
+	empty func(*os.File) (bool, error)
+	claim func(*os.File, string, *os.File, string) (*os.File, string, error)
+}
+
 func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix string) (name string, claimed bool, err error) {
+	return claimRetiredStageDirectoryWith(parent, activePrefix, retiredPrefix, retiredStageClaimOps{
+		empty: directoryEmpty,
+		claim: quarantineDirectoryEntryNamed,
+	})
+}
+
+func claimRetiredStageDirectoryWith(parent *os.File, activePrefix, retiredPrefix string, ops retiredStageClaimOps) (name string, claimed bool, err error) {
 	if _, err := parent.Seek(0, 0); err != nil {
 		return "", false, fmt.Errorf("rewind secure staging parent for retirement reap: %w", err)
 	}
@@ -3410,16 +3422,11 @@ func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix str
 		if !isMatchingRetiredStageDirectory(entry.Name(), retiredPrefix) {
 			continue
 		}
-		fd, openErr := unix.Openat(int(parent.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		retired, openErr := worktreesecure.OpenDirectoryAtNoFollow(int(parent.Fd()), entry.Name(), "wb-retired-stage-claim", "open retired staging directory "+entry.Name())
 		if openErr != nil {
 			continue
 		}
-		retired := os.NewFile(uintptr(fd), "wb-retired-stage-claim")
-		if retired == nil {
-			_ = unix.Close(fd)
-			continue
-		}
-		empty, emptyErr := directoryEmpty(retired)
+		empty, emptyErr := ops.empty(retired)
 		if emptyErr != nil {
 			_ = retired.Close()
 			return "", false, fmt.Errorf("inspect retired staging directory %s: %w", entry.Name(), emptyErr)
@@ -3428,25 +3435,19 @@ func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix str
 			_ = retired.Close()
 			continue
 		}
-		for attempt := 0; attempt < 16; attempt++ {
-			name = activePrefix + randomHexToken(16)
-			moved, moveErr := moveExpectedDirectoryNoReplace(parent, entry.Name(), parent, name, retired, nil)
-			if errors.Is(moveErr, unix.EEXIST) {
-				continue
+		moved, name, moveErr := ops.claim(parent, entry.Name(), retired, activePrefix)
+		_ = retired.Close()
+		if moveErr != nil {
+			if moved != nil {
+				_ = moved.Close()
 			}
-			_ = retired.Close()
-			if moveErr != nil {
-				if moved != nil {
-					_ = moved.Close()
-				}
-				if errors.Is(moveErr, errDirectoryMoveIdentityChanged) {
-					return "", false, fmt.Errorf("reclaim retired staging directory %s: %w", entry.Name(), moveErr)
-				}
-				break // A stale/replaced candidate is left untouched; inspect siblings.
+			if errors.Is(moveErr, errDirectoryMoveIdentityChanged) {
+				return "", false, fmt.Errorf("reclaim retired staging directory %s: %w", entry.Name(), moveErr)
 			}
-			_ = moved.Close()
-			return name, true, nil
+			continue // A stale or collision-exhausted candidate stays untouched; inspect siblings.
 		}
+		_ = moved.Close()
+		return name, true, nil
 	}
 	return "", false, nil
 }
