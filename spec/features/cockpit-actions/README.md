@@ -278,7 +278,9 @@ All code this Feature adds MUST reach 100% test coverage, in Go and in
 - Agent actions — dispatch, steer, stop, cancel, kill and resume wait for the
   herdr dispatch Feature.
 - Instructing an agent with selected context — the same Feature.
-- A command palette — the registry makes one possible; it is not built here.
+- A command palette — the registry makes one possible; this Feature builds none,
+  and the application's palette lists the registry's actions as
+  [cockpit-views](../cockpit-views/README.md)#req:command-palette specifies.
 - Multi-selection and bulk actions.
 - Actions on another machine.
 - Committing only staged changes, and pushing a branch that is not checked
@@ -492,6 +494,13 @@ Then the worktree was first under Work at Risk with `branch_never_pushed`, Disca
   Cockpit; the first decides the preview's wording.
 - Whether `pr.land` needs an approval parameter in the first cut, since the
   landing operation can require a named review.
+- Planned actions that [cockpit-views](../cockpit-views/README.md) shows as
+  copyable commands until they exist, and that this Feature is to specify
+  (execution is not specified here): starting new work from the Cockpit (`wb
+  create` and `wb agent dispatch`), Stop, Log and Reply on a run, and the cleanup
+  flow, whose preview is the `wb worktree gc` dry-run and whose run is
+  `--apply` as a daemon operation with progress. Stop and Log apply to dispatched
+  runs only, and Reply to recorded successor sessions only.
 - Whether the lifecycle runner can already run the indexer on demand for one
   checkout. The `checkout-updated` event and the runner exist; an on-demand
   trigger was not confirmed, and adding one is part of this Feature if it is

@@ -148,22 +148,41 @@ A request that passes the two checks above and has no owner session is the
 principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
-- machine name, the machine's unique id, WB version, route and observation time,
-  operating system and architecture names and CPU count;
-- the local machine's latest resource sample and its history, which are numbers
-  and times only: CPU percent, one-minute load, memory used and total bytes,
-  free and total bytes of the projects-root disk, and the sample time
-  ([cockpit-views](../cockpit-views/README.md)#req:machine-fields);
-- repository forge host, `owner/name`, default branch name, the time of its
-  newest branch activity, and `remote_url_web`, the `https://<host>/<owner>/<name>`
-  address built from the host and `owner/name` alone;
+- machine name, the machine's unique id, WB version, route and observation time;
+  and, for the local machine and for another machine whose snapshot carries them,
+  operating system and architecture names, CPU count and boot time (`boot_time`);
+- the snapshot refresh interval in seconds (`refresh_interval_seconds`);
+- a machine's resource samples, served only by the `machine-metrics` route and
+  never in the fleet document, which are numbers and times only: CPU percent,
+  one-minute load, memory used and total bytes, free and total bytes of the
+  projects-root disk, and the sample time, with the source of the answer
+  (`route`: `local`, `live-remote`, `cached` or `none`) and, for `live-remote`,
+  its fetch time (`fetched_at`)
+  ([cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route);
+- repository forge host (also on an entry mapped from another machine's snapshot
+  whose name starts with a hostname), `owner/name`, default branch name, for a
+  local repository the time of its newest local-branch activity, and
+  `remote_url_web`, the `https://<host>/<owner>/<name>` address built from the
+  host and `owner/name` alone and emitted only when the host matches a hostname
+  pattern and every path segment matches `[A-Za-z0-9._-]+` and is not `.` or
+  `..`;
 - task name, stream name, branch name, lifecycle and owner state (`active`,
-  `idle`, `orphaned` or `unknown`), last activity time, the worktree name (never
-  a path), and a worktree's `ahead` and `behind` commit counts and its
-  `upstream_gone` flag;
-- pull request number, state and URL;
-- agent run and session identifiers, runtime, model and state, the ids of the
-  worktrees an agent works on, its task name and its start time;
+  `idle`, `orphaned` or `unknown`), last activity time, the worktree name (its
+  task, never a path), and, for a worktree on the local machine only, its
+  `ahead` and `behind` commit counts and its `upstream_gone` flag;
+- pull request number, URL and state (`open`, `merged`, `closed` or `draft`),
+  the merge state GitHub reports (`mergeable`), the counts of checks total,
+  passed, failed and pending, the checks verdict (`checks_green`), the name of the
+  first failing check (`failed_check`) and the time it was read (`checked_at`)
+  ([cockpit-views](../cockpit-views/README.md)#req:pull-request-fields);
+- agent run and session identifiers, runtime, model and state, the agent's
+  `activity` (`working`, `blocked`, `idle`, `done` or `unknown`) when it is
+  reported, the ids of the worktrees an agent works on, its task name, repository
+  and its start time, the exit code of a finished run, and the same agent fields
+  read from another machine's snapshot;
+- the landed-task throughput block (`throughput`): the window in days, the
+  number of tasks landed per day, and at most five of the slowest landed tasks
+  with their task name, duration in seconds and landing time;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;
@@ -178,7 +197,9 @@ is this closed set of fields:
 The metadata routes are `session`, `fleet`, `attention`, the action list, and
 two added by [cockpit-views](../cockpit-views/README.md): `GET /api/v1/cockpit/branches?repository=<id>`
 and `GET /api/v1/cockpit/machine-metrics?machine=<id>`, each of the same access
-class as `fleet`.
+class as `fleet`. A machine's metrics are also served to another daemon on the
+hub route `GET /v0/workbench/machines/metrics`, which is not a Cockpit route and
+admits only a machine credential, never an anonymous principal.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
@@ -192,7 +213,11 @@ foreign origin, the origin of `cockpit.hosted_url`, only on the metadata
 `GET` routes — `session`, `fleet`, `branches`, `machine-metrics`, `attention` and the action list — and
 never with `Access-Control-Allow-Credentials`. Those responses carry
 `Vary: Origin`. A preflight from that origin is answered with the allowance
-and with `Access-Control-Allow-Private-Network: true`. A request carrying any
+and with `Access-Control-Allow-Private-Network: true`, and allows the request
+header `If-None-Match`; the responses expose `ETag`, so that conditional
+requests and `304` work from the hosted page
+([cockpit-views](../cockpit-views/README.md)#req:hosted-origin-conditional-requests).
+A request carrying any
 other foreign `Origin`, including `null`, is refused with status 403.
 
 A hosted page therefore reads metadata and nothing else, even in a browser
@@ -372,21 +397,24 @@ no forge host has no link. Cockpit does not check that the page exists.
 
 #### REQ: navigation
 
-The application MUST provide Dashboard, Tasks, Repositories, Worktrees, Agents
-and Machines pages, and shows no visible page heading that repeats the tab.
-Each list page is a table that can be filtered by machine and by repository.
-The behaviour of the pages — filtering, sorting, tabs, search, keyboard and
-detail pages — is defined by [cockpit-views](../cockpit-views/README.md), which
-takes precedence where it differs.
+The application MUST provide Home (the former Dashboard, which `/dashboard`
+still shows), Tasks, Repositories, Worktrees, Agents and Machines pages, and shows no visible page heading that repeats the tab.
+Each list page is a table that can be filtered by machine and by a text filter
+with wildcards (not by a repository dropdown). Merged repository rows and task
+rows show a chip per machine that carries the age of cached data and a stale
+mark, which satisfies REQ:route-and-freshness-are-explicit. The behaviour of
+the pages — filtering, sorting, tabs, search, keyboard and detail pages — is
+defined by [cockpit-views](../cockpit-views/README.md), which takes precedence
+where it differs. The worktree page this Feature defines stays.
 
 #### REQ: summary-hover-drill-down
 
-Every count the application shows MUST have a hover card that names the
-entities it counts, or the first of them with the total when there are many,
-and a click that opens the list filtered to exactly those entities. A hover
-card contains no control that changes state. Where
-[cockpit-views](../cockpit-views/README.md) defines a page's counts, such as the
-Dashboard's attention items and the tab badges, its definition takes
+Every count the application shows MUST be a link whose click opens the list
+filtered to exactly those entities. A hover card that names the entities it
+counts is no longer required
+([cockpit-views](../cockpit-views/README.md)#req:every-number-is-a-link); one that
+is shown contains no control that changes state. Where cockpit-views defines a
+page's counts, such as the Home items and the tab badges, its definition takes
 precedence.
 
 #### REQ: repository-readme
@@ -642,7 +670,7 @@ Then the row links to `https://codegrapher.dev/github.com/specscore/specscore-cl
 Scenario: Six pages
 Given a read model with entries in every collection, some of them cached
 When each of the Dashboard, Tasks, Repositories, Worktrees, Agents and Machines pages is opened and the machine filter is applied on a list page
-Then each page shows its entries, every cached row shows its route and age, and the filter leaves only that machine's rows
+Then each page shows its entries, every cached row shows its route and age (a merged row through its per-machine chip), and the filter leaves only that machine's rows
 
 ### AC: counts-drill-down
 
@@ -651,7 +679,7 @@ Then each page shows its entries, every cached row shows its route and age, and 
 Scenario: From a count to its rows
 Given the Repositories page showing a repository with a worktree count of two
 When the operator hovers the count and then clicks it, in a browser set to dark mode
-Then the hover card names both worktrees and has no button, the click opens the Worktrees page filtered to that repository showing exactly those two rows, and the page uses the dark theme
+Then any hover card shown names both worktrees and has no button, the click opens the Worktrees page filtered to that repository showing exactly those two rows, and the page uses the dark theme
 
 ### AC: readme-needs-owner
 

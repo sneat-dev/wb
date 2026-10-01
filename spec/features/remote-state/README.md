@@ -121,6 +121,26 @@ only the hub-owned fields in the `remote` configuration while preserving other
 settings, and restart a running daemon by default so event polling adopts the
 new credential without operator guesswork.
 
+#### REQ: remote-publish-periodic
+
+The daemon MUST publish the machine's snapshot after a successful local scan by
+the same publish path as `wb remote publish`, at the interval
+`remote.publish.interval` (minimum 5 minutes), enabled by default when a remote
+store is configured and off otherwise. A failed publish is retried at the next
+interval and never delays the local fleet snapshot.
+
+#### REQ: remote-snapshot-optional-fields
+
+A published snapshot MAY carry `agents` (per entry: runtime, model, task,
+repository, `activity` when known, start time and the run or session identifier)
+and `metrics` (the latest machine sample, as
+[cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route defines),
+and its machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Every
+such field is optional and `schema_version` does not change, so an older reader
+that decodes without strict field checking ignores them. The hub provider's own
+snapshot model refuses unknown fields and MUST be extended to accept them before a
+publisher emits them.
+
 ## Acceptance Criteria
 
 ### AC: pluggable-store-with-git-provider
@@ -147,6 +167,17 @@ Every publish advances `published_at` (except a byte-identical repeat),
 feeding the effective heartbeat that staleness detection relies on, and two
 machines publishing at the same time both succeed via a rebase-and-retry on
 push rejection.
+
+### AC: periodic-publish-and-optional-fields
+
+**Requirements:** remote-state#req:remote-publish-periodic, remote-state#req:remote-snapshot-optional-fields
+
+A daemon with a remote store publishes after each successful local scan no more
+often than every 5 minutes, retries a failed publish at the next interval without
+delaying its local snapshot, and a daemon with no store publishes nothing. A
+snapshot carrying the optional `agents`, `metrics` and machine hardware fields is
+decoded by the previous decoder without error, and the hub provider accepts and
+stores them.
 
 ### AC: cross-machine-visibility
 

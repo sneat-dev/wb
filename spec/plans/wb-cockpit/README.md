@@ -125,7 +125,7 @@ The action registry, the preview-then-run protocol with a fresh risk assessment,
 **Depends-On:** 1
 **Status:** planning
 
-The Cockpit UX redesign: fleet read model schema version 2, machine metrics, the shell with global search, a shared matcher and virtual tables, Tasks, Repositories, Worktrees, Agents and Machines pages with detail pages, and the attention-first Dashboard.
+The Cockpit UX redesign for a dispatcher: fleet read model schema version 2 with pull request state, agent activity, periodic remote publish, machine metrics and throughput; a shell with palette and side panel; the task lifecycle; and Home, Tasks, Repositories, Worktrees, Agents and Machines pages.
 
 ## Open Questions
 
