@@ -68,6 +68,8 @@
   --chart-fill: light-dark(rgb(63 81 214 / 0.12), rgb(143 157 255 / 0.16));
   --chart-bar: var(--accent);
   --chart-bar-hover: var(--accent-hover);
+  --chart-bar-muted: var(--idle);
+  --chart-bar-soft: color-mix(in srgb, var(--accent) 42%, var(--surface));
   --chart-grid: var(--border);
   --chart-tick: var(--text-3);
   --chart-tooltip-bg: light-dark(#14171c, #e8ebf0);

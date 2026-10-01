@@ -62,6 +62,18 @@ const SESSIONS = {
   owner: { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: 'https://codegrapher.dev/' },
 }
 
+// What the preview's action registry offers (REQ:actions-are-discovered): the push of a worktree and the
+// landing of a pull request, the two actions Home puts in a row's slot.
+export function registryActions(target) {
+  const [type] = target.split(':')
+  if (type === 'worktree') return [{ id: 'branch.push', title: 'Push', target_types: ['worktree'], applicable: true, parameters: [], capability: 'branch.push', safety: 'guarded', permitted: true }]
+  if (type === 'pull_request') return [{ id: 'pr.land', title: 'Land', target_types: ['pull_request'], applicable: true, parameters: [], capability: 'pr.land', safety: 'guarded', permitted: true }]
+  return []
+}
+
+// The capabilities an owner session carries once the daemon has an action registry.
+const REGISTRY_CAPABILITIES = ['branch.push', 'pr.land']
+
 function sendJson(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' }).end(JSON.stringify(body))
 }
@@ -70,7 +82,7 @@ function sendJson(response, status, body) {
 // application under /cockpit/. `data` is {document, metrics: Map, branches: Map}
 // as performanceFixture() returns it. Times move with the clock: every answer
 // is shifted so the snapshot is `snapshotAgeMs` old when it is read.
-export function createPreviewHandler({ distRoot, data, state = 'ok', session = 'anonymous', snapshotAgeMs = 8000, clock = Date.now }) {
+export function createPreviewHandler({ distRoot, data, state = 'ok', session = 'anonymous', registry, snapshotAgeMs = 8000, clock = Date.now }) {
   const statics = createHandler(distRoot)
   const snapshotAt = Date.parse(data.document.snapshot_at)
   const delta = () => clock() - snapshotAgeMs - snapshotAt
@@ -86,11 +98,16 @@ export function createPreviewHandler({ distRoot, data, state = 'ok', session = '
     }
     const route = pathname.slice(API.length)
     if (route === 'fleet') return sendJson(response, 200, shiftTimes(documentFor(data.document, state), delta()))
-    if (route === 'session') return sendJson(response, 200, SESSIONS[session] ?? SESSIONS.anonymous)
+    if (route === 'session') {
+      const known = SESSIONS[session] ?? SESSIONS.anonymous
+      return sendJson(response, 200, registry && session === 'owner' ? { ...known, capabilities: [...known.capabilities, ...REGISTRY_CAPABILITIES] } : known)
+    }
     if (route === 'machine-metrics') {
       const metrics = data.metrics.get(searchParams.get('machine') ?? '')
       return metrics ? sendJson(response, 200, shiftTimes(metrics, delta())) : sendJson(response, 200, { machine: searchParams.get('machine'), route: 'none', samples: [], reason: 'not_reported' })
     }
+    // With `registry` the daemon has an action registry: the owner session carries its capabilities and the route answers. Without, the route is absent (404).
+    if (route === 'actions' && registry) return sendJson(response, 200, { actions: registryActions(searchParams.get('target') ?? '') })
     if (route === 'branches') return sendJson(response, 200, shiftTimes({ branches: data.branches.get(searchParams.get('repository') ?? '') ?? [] }, delta()))
     return sendJson(response, 404, { error: 'not served by the preview' })
   }

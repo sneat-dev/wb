@@ -1,3 +1,6 @@
+@import './styles/home.css';
+@import '../../../libs/ui/src/lib/control/task-state-badge.css';
+
 /* Shared by every page. A page has no visible heading of its own: the active
    tab names it (cockpit-views REQ:no-visible-page-heading). */
 .page-title {

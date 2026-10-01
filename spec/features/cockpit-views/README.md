@@ -672,10 +672,14 @@ only identifiers already in the read model and never a filesystem path.
 
 #### REQ: owner-gating-is-visible
 
-Serves J1 and J2. For an `anonymous-local` reader the application MUST show actions
-disabled with one consistent explanation, and one affordance in the session chip
-reading "Sign in as owner: run `wb cockpit`"; it MUST NOT add a separate
-message to each button.
+Serves J1 and J2. For a session with no action capability (an `anonymous-local` reader) the
+application MUST NOT show an action it cannot run, not even disabled, and MUST NOT ask the daemon's
+action registry for actions; wherever an action would be it MUST show the "Copy command" that the read
+model can write for it (REQ:copy-the-command), so the reader still sees what could be done and
+nothing is a dead button. It MUST offer one affordance in the session chip reading "Sign in as
+owner: run `wb cockpit`" and MUST NOT add a separate message to each button. For a session that has
+an action capability, the registry's actions MUST show in action slots, a refused one disabled
+with the registry's own reason.
 
 #### REQ: new-task-form
 
@@ -2214,9 +2218,9 @@ Then the value with a quote is copied single-quoted with the embedded quote esca
 **Requirements:** cockpit-views#req:owner-gating-is-visible
 
 Scenario: Anonymous reader
-Given no owner session and a registry that returns actions the caller cannot run
-When a list row's action area and a detail page are shown
-Then the actions are disabled with one consistent explanation, the session chip offers "Sign in as owner: run `wb cockpit`", and no button carries its own sign-in message
+Given no owner session, so no action capability
+When Home is shown
+Then no registry request is made, no disabled action is shown, each place where an action would be shows its "Copy command", the session chip offers "Sign in as owner: run `wb cockpit`", and no button carries its own sign-in message
 
 ### AC: new-task-form-produces-commands
 

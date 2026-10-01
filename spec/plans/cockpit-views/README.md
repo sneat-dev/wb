@@ -234,7 +234,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-14
 **Verifies:** cockpit-views#ac:needs-you-pr-checks-failed, cockpit-views#ac:needs-you-agent-blocked, cockpit-views#ac:needs-you-run-failed, cockpit-views#ac:needs-you-work-at-risk, cockpit-views#ac:needs-you-pr-needs-you, cockpit-views#ac:needs-you-agent-finished, cockpit-views#ac:needs-you-is-capped-and-empty-line, cockpit-views#ac:ready-to-land-groups-by-task, cockpit-views#ac:in-flight-lists-agents-on-every-machine, cockpit-views#ac:in-flight-machine-load-indicator, cockpit-views#ac:resume-lists-five-recent-tasks, cockpit-views#ac:cleanup-line-counts-and-chart, cockpit-views#ac:fleet-health-only-when-not-ok, cockpit-views#ac:home-charts-from-throughput, cockpit-views#ac:home-phone-layout, cockpit-views#ac:csp-and-canvas-only
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build Home: "Needs you" (one row per task, at most five, one primary action each, "+n more", blocked agents without a task, the empty line), "Ready to land" with its per-pull-request slots or copy commands and the age of the observation, "In flight" with machine chips and the load indicator, "Resume", the "Cleanup" line with the worktree-age chart, the "Fleet health" line, the two non-linking throughput charts hidden on a phone, and the phone layout. It uses only task 10's view model and tasks 12 and 13's components, against stubs; it does not edit the routes, tabs or shared fixtures.
 

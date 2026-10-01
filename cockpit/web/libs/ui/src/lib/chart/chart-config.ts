@@ -1,5 +1,5 @@
 import type { ChartConfiguration, ChartOptions } from 'chart.js'
-import { BarsSpec, ChartSpec, HorizontalBarsSpec, TimeSeriesSpec, clockTime, formatValue } from './chart-spec'
+import { BarsSpec, ChartSpec, HorizontalBarsSpec, StackedBarsSpec, TimeSeriesSpec, clockTime, formatValue } from './chart-spec'
 import type { ChartTheme } from './chart-theme'
 
 /** What the config builders need besides the data. */
@@ -136,8 +136,37 @@ function bars(spec: BarsSpec | HorizontalBarsSpec, context: ChartContext, horizo
   }
 }
 
+function stacked(spec: StackedBarsSpec, context: ChartContext): ChartConfiguration {
+  const { theme } = context
+  const options = common(context)
+  return {
+    type: 'bar',
+    data: {
+      labels: spec.bars.map((bar) => bar.label),
+      datasets: spec.series.map((series, index) => ({
+        label: series.name,
+        data: spec.bars.map((bar) => bar.values[index] ?? 0),
+        backgroundColor: { primary: theme.bar, soft: theme.barSoft, muted: theme.barMuted }[series.tone],
+        borderRadius: 2,
+        borderSkipped: false,
+        maxBarThickness: 18,
+      })),
+    },
+    options: {
+      ...options,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { ...options.plugins, tooltip: { ...options.plugins?.tooltip, displayColors: true } },
+      scales: {
+        x: { stacked: true, grid: { display: false }, border: { color: theme.grid }, ticks: { ...tick(theme), autoSkip: true, maxTicksLimit: 8, maxRotation: 0 } },
+        y: { stacked: true, beginAtZero: true, grid: { color: theme.grid }, border: { display: false }, ticks: { ...tick(theme), precision: 0, maxTicksLimit: 5 } },
+      },
+    },
+  }
+}
+
 /** The Chart.js configuration of a spec: one preset per kind, themed from `context`. */
 export function chartConfiguration(spec: ChartSpec, context: ChartContext): ChartConfiguration {
   if (spec.kind === 'time-series') return timeSeries(spec, context)
+  if (spec.kind === 'stacked-bars') return stacked(spec, context)
   return bars(spec, context, spec.kind === 'horizontal-bars')
 }

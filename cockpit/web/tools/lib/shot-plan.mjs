@@ -89,6 +89,45 @@ export function shotPlan(document) {
   return shots
 }
 
+// Home is photographed against hand-made fleets (apps/cockpit/src/app/pages/home/home-fixtures.ts): each case is a fleet and what the
+// preview serves around it (the session and the action registry), at the sizes Home is designed for.
+export const HOME_VIEWPORTS = [
+  { name: '1440', width: 1440, height: 900 },
+  { name: '1024', width: 1024, height: 768 },
+  { name: '390', width: 390, height: 844 },
+  { name: '360', width: 360, height: 800 },
+]
+
+export const HOME_CASES = [
+  // The fleet, then who is looking: an anonymous reader with no registry (copy commands) and an owner with one (action slots).
+  { name: 'busy', home: 'busy' },
+  { name: 'busy-owner', home: 'busy', session: 'owner', registry: true },
+  { name: 'healthy', home: 'healthy' },
+  { name: 'warming', home: 'warming', state: 'warming' },
+  { name: 'throttled', home: 'throttled' },
+  { name: 'remote-error', home: 'remote-error' },
+  { name: 'no-throughput', home: 'no-throughput' },
+  { name: 'only-dropped', home: 'only-dropped' },
+]
+
+// Every case in light and dark at every Home size, whole page and scrolled to the end so the charts have drawn; the
+// phone also gets the "More" disclosure opened.
+export function homeShotPlan() {
+  const shots = []
+  for (const home of HOME_CASES) {
+    for (const scheme of SCHEMES) {
+      for (const viewport of HOME_VIEWPORTS) {
+        const base = { url: '/', state: home.state ?? 'ok', session: home.session, registry: home.registry, home: home.home, scheme, viewport, fullPage: true, ready: 'app-home-rest', scrollEnd: true }
+        shots.push({ ...base, name: `home-${home.name}`, file: `home-${home.name}-${scheme}-${viewport.name}.png` })
+        if (viewport.width <= 480 && home.home === 'busy' && home.name === 'busy') {
+          shots.push({ ...base, name: `home-${home.name}-more`, file: `home-${home.name}-more-${scheme}-${viewport.name}.png`, click: 'button.home-more-toggle' })
+        }
+      }
+    }
+  }
+  return shots
+}
+
 // The gallery of the control surface: a route of the preview build only
 // (`pnpm build:preview`, served from dist-preview), photographed whole, once the
 // charts have drawn, in each scheme and size.
