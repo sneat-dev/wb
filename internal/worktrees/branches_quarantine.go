@@ -48,6 +48,13 @@ type BranchQuarantineOutcome struct {
 }
 
 func BranchQuarantine(ctx context.Context, options BranchQuarantineOptions) (BranchQuarantineOutcome, error) {
+	return branchQuarantineWithOps(ctx, options, realBranchQuarantineOps(), nil)
+}
+
+// branchQuarantineWithOps shares one operation set across planning and the
+// immediate apply recheck. Production supplies real operations; a caller-local
+// report injector can exercise the same durable checkpoints without global hooks.
+func branchQuarantineWithOps(ctx context.Context, options BranchQuarantineOptions, ops branchQuarantinePlanOps, reportInjector *filewrite.Injector) (BranchQuarantineOutcome, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -67,7 +74,7 @@ func BranchQuarantine(ctx context.Context, options BranchQuarantineOptions) (Bra
 	now := options.Now().UTC()
 	results := make([]BranchQuarantineResult, 0, len(requests))
 	for _, request := range requests {
-		results = append(results, planBranchQuarantine(ctx, options.ProjectsRoot, paths[request.Repository], request, now))
+		results = append(results, planBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[request.Repository], request, now, ops))
 	}
 	// Flat names can collide (a/b and a-b). Refuse every colliding plan before
 	// creating the report or mutating the first row, so a manifest is atomic in
@@ -105,7 +112,7 @@ func BranchQuarantine(ctx context.Context, options BranchQuarantineOptions) (Bra
 		return outcome, err
 	}
 	outcome.ReportPath = filepath.Join(reportDir, "quarantine.json")
-	if err := writeQuarantineReport(outcome.ReportPath, outcome); err != nil {
+	if err := writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector); err != nil {
 		return outcome, err
 	}
 	for i := range outcome.Results {
@@ -114,11 +121,11 @@ func BranchQuarantine(ctx context.Context, options BranchQuarantineOptions) (Bra
 		}
 		// This is the pre-CAS checkpoint. A crash after it leaves an exact
 		// source/destination/reason record for recovery before any ref moves.
-		if err := writeQuarantineReport(outcome.ReportPath, outcome); err != nil {
+		if err := writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector); err != nil {
 			return outcome, err
 		}
-		applyBranchQuarantine(ctx, options.ProjectsRoot, paths[outcome.Results[i].Repository], &outcome.Results[i])
-		if err := writeQuarantineReport(outcome.ReportPath, outcome); err != nil {
+		applyBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[outcome.Results[i].Repository], &outcome.Results[i], ops)
+		if err := writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector); err != nil {
 			return outcome, err
 		}
 	}
@@ -246,10 +253,6 @@ func realBranchQuarantineOps() branchQuarantinePlanOps {
 	}
 }
 
-func planBranchQuarantine(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time) BranchQuarantineResult {
-	return planBranchQuarantineWithOps(ctx, projectsRoot, path, request, now, realBranchQuarantineOps())
-}
-
 func branchQuarantineService(ops branchQuarantinePlanOps) worktreebranches.InventoryService {
 	return worktreebranches.InventoryService{Ports: worktreebranches.InventoryPorts{
 		Git: ops.git, CheckedOut: ops.checkedOut, InUse: ops.inUse,
@@ -269,12 +272,8 @@ func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string,
 	return branchQuarantineService(ops).PlanBranchQuarantine(ctx, projectsRoot, path, request, now)
 }
 
-func applyBranchQuarantine(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult) {
-	applyBranchQuarantineWithOps(ctx, projectsRoot, path, result, realBranchQuarantineOps())
-}
-
 func applyBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult, ops branchQuarantinePlanOps) {
-	request := BranchQuarantineRequest{Repository: result.Repository, Ref: result.Ref, SHA: result.SHA, Reason: result.Reason}
+	request := result.BranchQuarantineRequest
 	current, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, result.Destination, true, ops)
 	if refusal != "" {
 		result.Outcome, result.Error = "failed", refusal
@@ -326,18 +325,11 @@ func atomicLocalBranchRename(ctx context.Context, path, source, destination, sha
 	return nil
 }
 
-func writeQuarantineReport(path string, outcome BranchQuarantineOutcome) error {
-	return writeQuarantineReportInjected(path, outcome, nil)
-}
-
-// writeQuarantineReportInjected is writeQuarantineReport's test seam
-// (task-9 PR-3): every production call site reaches it only through
-// writeQuarantineReport, which always passes a nil *filewrite.Injector, so
-// production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create/write/sync/close/rename failure branch
-// deterministically. Unlike a CreateTemp-based publish, temporary is a
-// fixed name (path+".tmp") that is always fully overwritten, so this uses
-// CreateOrTruncatePath rather than CreateTemp or CreateExclusivePath.
+// writeQuarantineReportInjected publishes every durable checkpoint through the
+// same filewrite primitives. Production uses a nil injector; a caller-local
+// injector reaches publication failures without replacing the checkpoint logic.
+// The fixed temporary name (path+".tmp") is always fully overwritten, so this
+// deliberately uses CreateOrTruncatePath rather than an exclusive create.
 func writeQuarantineReportInjected(path string, outcome BranchQuarantineOutcome, inj *filewrite.Injector) error {
 	data, err := json.MarshalIndent(outcome, "", "  ")
 	if err != nil {

@@ -69,7 +69,7 @@ func TestWriteQuarantineReportInjectedHonoursAnInjectedRenameFailure(t *testing.
 func TestWriteQuarantineReportPublishesReadableJSON(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "quarantine.json")
-	if err := writeQuarantineReport(path, BranchQuarantineOutcome{Apply: true}); err != nil {
+	if err := writeQuarantineReportInjected(path, BranchQuarantineOutcome{Apply: true}, nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
