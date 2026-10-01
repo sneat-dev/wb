@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,112 @@ func deadcodeFailureReport(command, detail string, identities ...string) quality
 		Status: quality.StatusFailed, Detail: detail,
 		Deadcode: &quality.DeadcodeFailureEvidence{Count: len(identities), Identities: identities, Complete: true},
 	}}}
+}
+
+func TestWorktreeMergeDeadcodeRegressionDisplaysOnlyExactTargetDelta(t *testing.T) {
+	t.Parallel()
+	const command = worktreeMergeDeadcodeCommand
+	inherited := make([]string, 228)
+	for index := range inherited {
+		inherited[index] = fmt.Sprintf("example.test/pkg.Target%03d", index+1)
+	}
+	baseline := deadcodeFailureReport(command, "bounded target diagnostic", inherited...)
+	identities := append(append([]string(nil), inherited...), "example.test/pkg.NewFinding")
+	candidate := deadcodeFailureReport(command, "bounded candidate diagnostic", identities...)
+	err := worktreeMergeValidationRegression(baseline, candidate)
+	if err == nil || !strings.Contains(err.Error(), "1 deadcode finding(s) absent from exact target: example.test/pkg.NewFinding") {
+		t.Fatalf("229-candidate/228-target regression = %v, want the single new identity", err)
+	}
+	for _, identity := range inherited {
+		if strings.Contains(err.Error(), identity) {
+			t.Fatalf("regression diagnostic leaked inherited target identity %s: %v", identity, err)
+		}
+	}
+	if err := worktreeMergeValidationRegression(baseline, deadcodeFailureReport(command, "different bounded detail", inherited[1:]...)); err != nil {
+		t.Fatalf("target subset rejected: %v", err)
+	}
+
+	cleanTarget := quality.VerificationReport{Status: quality.StatusPassed, Results: []quality.VerificationEntry{{
+		Language: "go", Module: ".", Check: quality.CheckLint, Command: command, Status: quality.StatusPassed,
+	}}}
+	err = worktreeMergeValidationRegression(cleanTarget, deadcodeFailureReport(command, "candidate", "example.test/pkg.NewFinding"))
+	if err == nil || !strings.Contains(err.Error(), "1 deadcode finding(s) absent from exact target: example.test/pkg.NewFinding") {
+		t.Fatalf("clean-target regression = %v, want the candidate-only identity", err)
+	}
+}
+
+func TestWorktreeMergeDeadcodeTargetDeltaRequiresCompleteUniqueEvidence(t *testing.T) {
+	t.Parallel()
+	const command = worktreeMergeDeadcodeCommand
+	target := deadcodeFailureReport(command, "target", "example.test/pkg.Known")
+	candidate := deadcodeFailureReport(command, "candidate", "example.test/pkg.Known", "example.test/pkg.New")
+	if delta, ok := worktreeMergeDeadcodeTargetDelta(target.Results, candidate.Results[0]); !ok || len(delta) != 1 || delta[0] != "example.test/pkg.New" {
+		t.Fatalf("complete target delta = (%v, %t), want only New", delta, ok)
+	}
+
+	for _, test := range []struct {
+		name      string
+		target    quality.VerificationReport
+		candidate quality.VerificationReport
+	}{
+		{"empty delta", target, deadcodeFailureReport(command, "candidate", "example.test/pkg.Known")},
+		{"incomplete candidate", target, deadcodeFailureReport(command, "candidate", "example.test/pkg.New")},
+		{"ambiguous target", quality.VerificationReport{Results: append(append([]quality.VerificationEntry(nil), target.Results...), target.Results[0])}, candidate},
+		{"legacy target", quality.VerificationReport{Results: []quality.VerificationEntry{{Language: "go", Module: ".", Check: quality.CheckLint, Command: command, Status: quality.StatusFailed}}}, candidate},
+		{"different command", target, deadcodeFailureReport(command+" --other", "candidate", "example.test/pkg.New")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if test.name == "incomplete candidate" {
+				test.candidate.Results[0].Deadcode.Complete = false
+			}
+			if delta, ok := worktreeMergeDeadcodeTargetDelta(test.target.Results, test.candidate.Results[0]); ok || len(delta) != 0 {
+				t.Fatalf("untrusted target delta = (%v, %t), want no diagnostic delta", delta, ok)
+			}
+			err := worktreeMergeValidationRegression(test.target, test.candidate)
+			if test.name != "empty delta" && (err == nil || !strings.Contains(err.Error(), "introduced or changed deadcode failure")) {
+				t.Fatalf("untrusted evidence regression = %v, want generic refusal", err)
+			}
+		})
+	}
+}
+
+func TestWorktreeMergeDeadcodeImportedProofRejectionKeepsGenericDiagnostic(t *testing.T) {
+	t.Parallel()
+	const command = worktreeMergeDeadcodeCommand
+	target := deadcodeFailureReport(command, "exact target", "target.A")
+	for _, test := range []struct {
+		name      string
+		candidate quality.VerificationReport
+		malformed bool
+	}{
+		{"attested identity plus new finding", deadcodeFailureReport(command, "candidate", "target.A", "main.B", "candidate.C"), false},
+		{"incomplete imported proof", deadcodeFailureReport(command, "candidate", "target.A", "main.B"), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			imported := &WorktreeMergeImportedMainDeadcode{Validation: deadcodeFailureReport(command, "imported main", "main.B")}
+			if test.malformed {
+				imported.Validation.Results[0].Deadcode.Complete = false
+			}
+			err := worktreeMergeValidationRegressionWithImportedMain(target, test.candidate, imported)
+			if err == nil || err.Error() != "candidate validation introduced or changed deadcode failure: "+command {
+				t.Fatalf("imported proof rejection = %v, want generic refusal without a misleading target-only delta", err)
+			}
+		})
+	}
+}
+
+func TestWorktreeMergeDeadcodeRegressionRefusesFailedReportWithoutFailedCheck(t *testing.T) {
+	t.Parallel()
+	baseline := quality.VerificationReport{Status: quality.StatusPassed}
+	candidate := quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+		Language: "go", Module: ".", Check: quality.CheckLint, Command: worktreeMergeDeadcodeCommand, Status: quality.StatusPassed,
+	}}}
+	err := worktreeMergeValidationRegression(baseline, candidate)
+	if err == nil || err.Error() != "candidate validation reported failure without failed check evidence" {
+		t.Fatalf("failed report without a failed check = %v, want explicit evidence refusal", err)
+	}
 }
 
 func TestWorktreeMergeDeadcodeNonRegressionUsesCompleteIdentities(t *testing.T) {
