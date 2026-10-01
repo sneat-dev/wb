@@ -34,6 +34,10 @@ type CockpitConfig struct {
 	// RefreshInterval is how often the daemon refreshes the fleet snapshot.
 	// Zero means unset: the consumer chooses its default.
 	RefreshInterval time.Duration
+	// PullRequestLimit is the most pull requests the daemon observes on GitHub
+	// in one pass (cockpit-views#req:pull-request-fields). Zero means unset:
+	// the consumer chooses its default.
+	PullRequestLimit int
 	// CodeIndexProvider names the code-index provider whose statistics the
 	// panels show; empty means none is configured, which is a normal state.
 	CodeIndexProvider string
@@ -41,6 +45,10 @@ type CockpitConfig struct {
 	// follows; empty means the provider's own default.
 	CodeIndexIndexer string
 }
+
+// MaxCockpitPullRequestLimit bounds cockpit.pull_request_limit, so one pass
+// cannot be configured into an unbounded number of GitHub reads.
+const MaxCockpitPullRequestLimit = 200
 
 // CodeIndexProviderCodeGrapher is the one code-index provider there is.
 const CodeIndexProviderCodeGrapher = "codegrapher"
@@ -55,6 +63,7 @@ type cockpitSection struct {
 	CodeBrowserURL    *string `yaml:"code_browser_url"`
 	AnonymousMetadata *bool   `yaml:"anonymous_metadata"`
 	RefreshInterval   *string `yaml:"refresh_interval"`
+	PullRequestLimit  *int    `yaml:"pull_request_limit"`
 	CodeIndexProvider *string `yaml:"code_index_provider"`
 	CodeIndexIndexer  *string `yaml:"code_index_indexer"`
 }
@@ -126,6 +135,12 @@ func parseCockpit(raw []byte) (CockpitConfig, error) {
 			return CockpitConfig{}, fmt.Errorf("cockpit.refresh_interval must be a positive duration such as 30s, got %q", *section.RefreshInterval)
 		}
 		config.RefreshInterval = interval
+	}
+	if section.PullRequestLimit != nil {
+		if *section.PullRequestLimit < 1 || *section.PullRequestLimit > MaxCockpitPullRequestLimit {
+			return CockpitConfig{}, fmt.Errorf("cockpit.pull_request_limit must be between 1 and %d, got %d", MaxCockpitPullRequestLimit, *section.PullRequestLimit)
+		}
+		config.PullRequestLimit = *section.PullRequestLimit
 	}
 	if err := parseCockpitCodeIndex(section, &config); err != nil {
 		return CockpitConfig{}, err
