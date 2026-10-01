@@ -3294,16 +3294,22 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	} else if claimed {
 		return name, nil
 	}
-	parentFD := int(parent.Fd())
+	return makeUniqueStageDirectoryAt(int(parent.Fd()), ".wb-stage-", "create collision-free secure staging directory", randomHexToken)
+}
+
+// makeUniqueStageDirectoryAt reserves a fresh private stage after the caller
+// has tried its own retired-stage policy. The token source is invocation-local
+// so collision exhaustion can be exercised without changing global randomness.
+func makeUniqueStageDirectoryAt(parentFD int, prefix, exhaustedMessage string, token func(int) string) (string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		name := ".wb-stage-" + randomHexToken(16)
+		name := prefix + token(16)
 		if err := unix.Mkdirat(parentFD, name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
 			return "", err
 		}
 	}
-	return "", fmt.Errorf("create collision-free secure staging directory")
+	return "", fmt.Errorf("%s", exhaustedMessage)
 }
 
 func taskBoundLocalStagePrefix(task string) string {
@@ -3330,15 +3336,7 @@ func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, err
 	} else if claimed {
 		return name, nil
 	}
-	for attempt := 0; attempt < 16; attempt++ {
-		name := activePrefix + randomHexToken(16)
-		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
-			return name, nil
-		} else if !errors.Is(err, unix.EEXIST) {
-			return "", err
-		}
-	}
-	return "", fmt.Errorf("create collision-free task-bound local stage")
+	return makeUniqueStageDirectoryAt(int(parent.Fd()), activePrefix, "create collision-free task-bound local stage", randomHexToken)
 }
 
 // recoverTaskBoundLocalStage publishes only the exact stage left by this task.
@@ -3364,17 +3362,7 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 		if regErr != nil || registered != branch {
 			// A crash before Git add leaves an empty task-bound stage. Retire it
 			// descriptor-relatively so the next create does not inherit a blocker.
-			fd, openErr := unix.Openat(int(rootDirectory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-			if openErr == nil {
-				stage := os.NewFile(uintptr(fd), "wb-empty-local-stage")
-				if stage != nil {
-					empty, emptyErr := directoryEmpty(stage)
-					if emptyErr == nil && empty {
-						_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
-					}
-					_ = stage.Close()
-				}
-			}
+			retireEmptyLocalStageAt(rootDirectory, entry.Name())
 			continue
 		}
 		if checkout != "" {
@@ -3396,18 +3384,22 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 		return false, fmt.Errorf("recover task-bound local stage: %w", err)
 	}
 	stageName := filepath.Base(filepath.Dir(checkout))
-	fd, openErr := unix.Openat(int(rootDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if openErr == nil {
-		stage := os.NewFile(uintptr(fd), "wb-recovered-local-stage")
-		if stage != nil {
-			empty, emptyErr := directoryEmpty(stage)
-			if emptyErr == nil && empty {
-				_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
-			}
-			_ = stage.Close()
-		}
-	}
+	retireEmptyLocalStageAt(rootDirectory, stageName)
 	return true, nil
+}
+
+// retireEmptyLocalStageAt best-effort retires an empty stage through the held
+// parent without following a symlink at the current entry name.
+func retireEmptyLocalStageAt(rootDirectory *os.File, name string) {
+	stage, err := worktreesecure.OpenDirectoryAtNoFollow(int(rootDirectory.Fd()), name, "wb-local-stage-retirement", "open local stage for retirement")
+	if err != nil {
+		return
+	}
+	defer func() { _ = stage.Close() }()
+	empty, err := directoryEmpty(stage)
+	if err == nil && empty {
+		_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
+	}
 }
 
 func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix string) (name string, claimed bool, err error) {
