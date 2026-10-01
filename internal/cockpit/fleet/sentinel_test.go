@@ -116,13 +116,11 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	}
 	// The branches are served by their own route, so the same checks cover it.
 	for _, repository := range snapshotter.Document().Repositories {
-		if repository.Route == RouteLocal {
-			recorder := server.get("/api/v1/cockpit/branches?repository="+repository.ID, nil)
-			if recorder.Code != 200 {
-				t.Fatalf("branches route = %d %s", recorder.Code, recorder.Body.String())
-			}
-			body += recorder.Body.String()
+		recorder := server.get("/api/v1/cockpit/branches?repository="+repository.ID, nil)
+		if recorder.Code != 200 {
+			t.Fatalf("branches route for a %s repository = %d %s", repository.Route, recorder.Code, recorder.Body.String())
 		}
+		body += recorder.Body.String()
 	}
 	if strings.Contains(body, strconv.Itoa(sentinelNumber)) {
 		t.Fatalf("the document carries a sentinel number from a source field: %s", body)

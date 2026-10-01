@@ -534,3 +534,8 @@ func (s *Snapshotter) allBranches() []Branch {
 	}
 	return branches
 }
+
+// mapRemoteForTest is mapRemote for this machine and the fixtures' clock.
+func mapRemoteForTest(login, projectsRoot string, entries []remotestate.Entry) remoteView {
+	return mapRemote(testMachine, login, projectsRoot, entries, newClock().Now())
+}

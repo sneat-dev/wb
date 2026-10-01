@@ -6,8 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/cockpit/web"
 )
 
 // varyHeader is the Vary value of every Cockpit response whose bytes depend on
@@ -59,7 +60,7 @@ func ServePayload(writer http.ResponseWriter, request *http.Request, payload Pay
 	header := writer.Header()
 	header.Set("Vary", varyHeader)
 	header.Set("Cache-Control", "no-cache")
-	zipped := acceptsGzip(request.Header.Values("Accept-Encoding"))
+	zipped := web.AcceptsGzip(request.Header.Values("Accept-Encoding"))
 	body, etag := payload.identity, payload.tag
 	if zipped {
 		body, etag = payload.gzipped, payload.gzipTag()
@@ -76,23 +77,4 @@ func ServePayload(writer http.ResponseWriter, request *http.Request, payload Pay
 		header.Set("Content-Encoding", "gzip")
 	}
 	_, _ = writer.Write(body)
-}
-
-// acceptsGzip reports whether an Accept-Encoding header lists gzip (or `*`)
-// with a quality other than zero.
-func acceptsGzip(values []string) bool {
-	for _, value := range values {
-		for _, item := range strings.Split(value, ",") {
-			name, parameters, _ := strings.Cut(item, ";")
-			if name = strings.ToLower(strings.TrimSpace(name)); name != "gzip" && name != "*" {
-				continue
-			}
-			quality := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(parameters), "q="))
-			if parsed, err := strconv.ParseFloat(quality, 64); strings.Contains(parameters, "q=") && err == nil && parsed == 0 {
-				continue
-			}
-			return true
-		}
-	}
-	return false
 }

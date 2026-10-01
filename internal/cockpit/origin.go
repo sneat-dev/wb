@@ -86,7 +86,7 @@ const preflightMaxAge = "600"
 // public page asking a loopback address needs the private-network allowance
 // as well. Only GET is allowed, with no header beyond preflightHeaders.
 func (server *Server) preflight(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+	writer.Header().Set("Vary", writer.Header().Get("Vary")+", Access-Control-Request-Method, Access-Control-Request-Headers")
 	if request.Header.Get("Access-Control-Request-Method") != http.MethodGet {
 		writeAPIError(writer, http.StatusForbidden, "only GET is allowed from the hosted origin")
 		return

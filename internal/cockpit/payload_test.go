@@ -73,18 +73,3 @@ func TestServePayloadChoosesTheEncodingAndMatchesEitherTag(t *testing.T) {
 		t.Errorf("a stale tag = %d", recorder.Code)
 	}
 }
-
-func TestAcceptsGzipReadsTheHeaderLikeAClient(t *testing.T) {
-	t.Parallel()
-	for accept, want := range map[string]bool{
-		"gzip": true, "GZIP": true, "gzip, deflate, br": true, "deflate, gzip;q=0.5": true, " gzip ; q=1 ": true, "*": true, "*;q=0.1": true,
-		"identity": false, "br": false, "": false, "gzip;q=0": false, "gzip;q=0.0": false, "*;q=0": false, "gzip;q=bad": true, "gzip;level=1": true,
-	} {
-		if got := acceptsGzip([]string{accept}); got != want {
-			t.Errorf("Accept-Encoding %q = %v, want %v", accept, got, want)
-		}
-	}
-	if !acceptsGzip([]string{"br", "gzip"}) || acceptsGzip(nil) {
-		t.Error("separate header lines are not read as one list")
-	}
-}

@@ -121,10 +121,6 @@ type KindCount struct {
 	Count int    `json:"count"`
 }
 
-// PullRequestUnknown is the state of a locally recorded pull request: the
-// record names it but not whether it is still open.
-const PullRequestUnknown = "unknown"
-
 // Entry is what every collection's entry carries: a stable identifier unique
 // within its collection, the machine it belongs to, its route and when it was
 // observed. Machine is the machine's name, which two logins can share;

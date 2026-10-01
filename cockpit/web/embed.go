@@ -16,7 +16,9 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Dist holds every file the Cockpit build emitted, or only .gitkeep in a
@@ -62,18 +64,24 @@ func FreshPolicy() string { return PolicyFor(rand.Text()) }
 const gzipExtension = ".gz"
 
 // hashedAsset matches the name of a content-hashed build output: a base name,
-// a hyphen, the build's eight-character hash (letters, digits and underscore,
-// as in `main-SS4IWIAX.js` and `chunk-BzbuF09_.js`) and an extension.
+// a hyphen, the build's eight-character hash and an extension, as in
+// `main-SS4IWIAX.js`, `styles-J6F5IS5P.css` and `chunk-BzbuF09_.js` (the
+// hash alphabet is letters, digits and underscore).
 var hashedAsset = regexp.MustCompile(`-([A-Za-z0-9_]{8})\.[A-Za-z0-9]+$`)
 
 // isHashedAsset reports whether name is a content-hashed build output, whose
-// content never changes under that name, so it may be cached for a year. The
-// hash must hold a digit or an upper-case letter, so an ordinary lower-case
-// word of eight letters after a hyphen is not taken for one: caching a file
-// that can change as immutable would be the costly mistake.
+// content never changes under that name, so it may be cached for a year.
+// Caching a file that can change as immutable is the costly mistake, so the
+// hash must look like one: it holds a letter, and a digit or an upper-case
+// letter. An ordinary word (`theme-standard.css`) and a date (`logo-20240101.svg`)
+// are not hashes.
 func isHashedAsset(name string) bool {
 	match := hashedAsset.FindStringSubmatch(name)
-	return match != nil && strings.ContainsFunc(match[1], func(character rune) bool { return character < 'a' || character > 'z' })
+	if match == nil {
+		return false
+	}
+	hash := match[1]
+	return strings.ContainsFunc(hash, unicode.IsLetter) && strings.ContainsFunc(hash, func(character rune) bool { return !unicode.IsLower(character) && character != '_' })
 }
 
 // immutableCache is the Cache-Control of a content-hashed asset.
@@ -83,22 +91,37 @@ const immutableCache = "public, max-age=31536000, immutable"
 // request; the cockpit page route has already set Origin.
 const gzipVary = "Origin, Accept-Encoding"
 
-// acceptsGzip reports whether the request lists gzip, or `*`, with a quality
-// other than zero.
-func acceptsGzip(request *http.Request) bool {
-	for _, value := range request.Header.Values("Accept-Encoding") {
+// AcceptsGzip reports whether the Accept-Encoding header values allow gzip: an
+// explicit gzip entry decides (a quality of zero refuses it), and only without
+// one does `*` (again unless its quality is zero). Parameters are read
+// case-insensitively and only `q` counts; an unreadable quality is ignored.
+func AcceptsGzip(values []string) bool {
+	explicit, wildcard := -1, -1 // -1: not listed, 0: refused, 1: allowed
+	for _, value := range values {
 		for _, item := range strings.Split(value, ",") {
 			name, parameters, _ := strings.Cut(item, ";")
-			if name = strings.ToLower(strings.TrimSpace(name)); name != "gzip" && name != "*" {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "gzip" && name != "*" {
 				continue
 			}
-			if strings.ReplaceAll(strings.TrimSpace(parameters), " ", "") == "q=0" {
-				continue
+			allowed := 1
+			for _, parameter := range strings.Split(parameters, ";") {
+				key, quality, _ := strings.Cut(strings.ToLower(strings.TrimSpace(parameter)), "=")
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(quality), 64); strings.TrimSpace(key) == "q" && err == nil && parsed == 0 {
+					allowed = 0
+				}
 			}
-			return true
+			if name == "gzip" {
+				explicit = allowed
+			} else {
+				wildcard = allowed
+			}
 		}
 	}
-	return false
+	if explicit >= 0 {
+		return explicit == 1
+	}
+	return wildcard == 1
 }
 
 // gzipBytes compresses a document that was changed for this response.
@@ -185,7 +208,7 @@ func HandlerFor(files fs.FS) http.Handler {
 			return
 		}
 		header := writer.Header()
-		zipped := acceptsGzip(request)
+		zipped := AcceptsGzip(request.Header.Values("Accept-Encoding"))
 		header.Set("Vary", gzipVary)
 		switch {
 		case !isFile || name == indexPage:

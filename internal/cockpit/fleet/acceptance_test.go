@@ -102,7 +102,7 @@ func TestFleetReadModelListsLocalStateAndCachedMachines(t *testing.T) {
 	for _, pull := range document.PullRequests {
 		prs[pull.Number] = pull
 	}
-	if prs[7].Worktree != worktreeID || prs[7].State != PullRequestUnknown || prs[7].Repository != local.ID || prs[7].Route != RouteLocal || prs[3].Route != RouteCached {
+	if prs[7].Worktree != worktreeID || prs[7].State != "" || prs[7].Repository != local.ID || prs[7].Route != RouteLocal || prs[3].Route != RouteCached {
 		t.Errorf("pull requests = %+v, want #7 tied to its worktree and #3 cached", document.PullRequests)
 	}
 	if len(document.Agents) != 1 || document.Agents[0].SessionID != "wbs-1" || document.Agents[0].Kind != AgentSession {

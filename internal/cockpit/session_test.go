@@ -440,7 +440,7 @@ func TestHostedOriginPreflightGetsThePrivateNetworkAllowance(t *testing.T) {
 		if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 || header.Get("Access-Control-Allow-Origin") != hostedOrigin ||
 			header.Get("Access-Control-Allow-Private-Network") != "true" || header.Get("Access-Control-Allow-Methods") != "GET" ||
 			len(header.Values("Access-Control-Allow-Credentials")) != 0 || len(header.Values("Access-Control-Allow-Headers")) != 0 ||
-			header.Get("Access-Control-Max-Age") != "600" || header.Get("Vary") != "Origin, Access-Control-Request-Method, Access-Control-Request-Headers" {
+			header.Get("Access-Control-Max-Age") != "600" || header.Get("Vary") != "Origin, Accept-Encoding, Access-Control-Request-Method, Access-Control-Request-Headers" {
 			t.Errorf("preflight for %s = %d %v", target, recorder.Code, header)
 		}
 	}
