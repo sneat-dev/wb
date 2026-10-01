@@ -966,9 +966,18 @@ tab makes. It prints the export envelope `{schema_version, machine, exported_at,
 metrics}` to stdout, bounded at 8 MiB, containing only the anonymous-readable metadata
 set of [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only. The flag
 `--metrics-only` omits `fleet`. When no daemon is running, or the daemon refuses an
-anonymous read (`cockpit.anonymous_metadata: false`), it prints
-`{schema_version, error}` with `error` `daemon_not_running` or `export_refused` and exits
-with the findings code 1, and starts nothing. The envelope is built by one function that the
+anonymous read (`cockpit.anonymous_metadata: false`), or the export fails for any other
+reason (an unreadable or unsupported daemon record, a daemon that answers an error or a body
+this binary does not understand, an envelope that fails its own validation), it prints
+`{schema_version, error}` with `error` `daemon_not_running`, `export_refused` or
+`export_failed` and exits with the findings code 1, and starts nothing; the text is fixed and
+carries no path, no error text of a dependency and no response body. The recorded address is
+dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted. The verb writes
+nothing, and records no heartbeat or invoked-command marker. A daemon is "running" when its
+recorded process is alive and, where the platform can observe it, started when the record says
+(a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
+`launchctl print` (read-only), so a daemon started by hand in the foreground, outside launchd, is
+reported as `daemon_not_running` there: a stated limitation. The envelope is built by one function that the
 hub route of REQ:hub-export-route also calls. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
@@ -1065,7 +1074,17 @@ refused. Every entry in it is placed on the machine named by the configured targ
 machine the response names, and no machine name in the response is used for placement; it is never
 applied to the local machine. A refused payload renders nothing and sets `remote_error`
 `bad_payload`. The remote's own cached entries for third machines are dropped, so only that
-machine's own entries are merged. The same validation applies to the SSH transport.
+machine's own entries are merged. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
+shape of the bytes before it decodes them (arrays over their caps, nesting beyond 10 levels and
+more than a million tokens are refused without allocating for them), refuses every string field
+that has no declared rule (each closed vocabulary and each identifier pattern is checked, and a
+field added later is refused until it has one), and refuses an export that is not a single machine's
+own: any route but `local`, an id that is empty, malformed or repeated, an entry whose `machine_id`
+is not the one machine entry's, a null collection, a repository's web address that is not built from
+its host and name, and a pull request address off its repository's host. The ids in an envelope are
+the exporter's own, so a merger (REQ:remote-entries-replace-cached) re-derives every id under the
+configured machine key and never uses one as received. Its refusal names the rule and the field's
+path and never a value, a time or an error text of the remote.
 
 #### REQ: remote-entries-replace-cached
 
@@ -1086,7 +1105,8 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 (401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
 `daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads) or
-`bad_payload`; it is cleared by the next success on the preferred transport. The `http_*`
+`bad_payload`; it is cleared by the next success on the preferred transport. A remote export that prints
+`export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url

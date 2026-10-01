@@ -5,8 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -89,25 +96,34 @@ func (f *fakeCockpitDaemon) paths() []string {
 	return paths
 }
 
+// fixtureID is an entry id of the shape the daemon derives: a prefix and 20 hex digits.
+func fixtureID(prefix string, n int) string { return fmt.Sprintf("%s-%020x", prefix, n) }
+
+var (
+	exportLocalMachine = fixtureID("mach", 1)
+	exportVMMachine    = fixtureID("mach", 2)
+)
+
 func exportDocument() cockpitfleet.Document {
 	local := func(id string) cockpitfleet.Entry {
-		return cockpitfleet.Entry{ID: id, Machine: "laptop", MachineID: "mach-local", Route: cockpitfleet.RouteLocal, ObservedAt: exportNow}
+		return cockpitfleet.Entry{ID: id, Machine: "laptop", MachineID: exportLocalMachine, Route: cockpitfleet.RouteLocal, ObservedAt: exportNow}
 	}
 	cached := func(id string) cockpitfleet.Entry {
-		return cockpitfleet.Entry{ID: id, Machine: "vm", MachineID: "mach-vm", Route: cockpitfleet.RouteCached, ObservedAt: exportNow.Add(-time.Hour)}
+		return cockpitfleet.Entry{ID: id, Machine: "vm", MachineID: exportVMMachine, Route: cockpitfleet.RouteCached, ObservedAt: exportNow.Add(-time.Hour)}
 	}
+	repo1, repo2, wt1, wt2, pr1, ag1 := fixtureID("repo", 1), fixtureID("repo", 2), fixtureID("wt", 1), fixtureID("wt", 2), fixtureID("pr", 1), fixtureID("ag", 1)
 	return cockpitfleet.Document{
 		SchemaVersion: cockpitfleet.SchemaVersion, SnapshotAt: exportNow, RefreshIntervalSeconds: 60,
-		Machines: []cockpitfleet.Machine{{Entry: cached("mach-vm"), WBVersion: "v0.1.0"}, {Entry: local("mach-local"), WBVersion: "v0.2.0", WorktreeCount: 1}},
+		Machines: []cockpitfleet.Machine{{Entry: cached(exportVMMachine), WBVersion: "v0.1.0"}, {Entry: local(exportLocalMachine), WBVersion: "v0.2.0", WorktreeCount: 1}},
 		Repositories: []cockpitfleet.Repository{
-			{Entry: local("repo-1"), Name: "acme/widgets", WorktreeCount: 1}, {Entry: cached("repo-2"), Name: "acme/other"},
+			{Entry: local(repo1), Name: "acme/widgets", WorktreeCount: 1}, {Entry: cached(repo2), Name: "acme/other"},
 		},
 		Worktrees: []cockpitfleet.Worktree{
-			{Entry: local("wt-1"), Repository: "repo-1", Name: "task-a", Task: "task-a", Branch: "feature/a"},
-			{Entry: cached("wt-2"), Repository: "repo-2", Name: "task-b", Task: "task-b", Branch: "feature/b"},
+			{Entry: local(wt1), Repository: repo1, Name: "task-a", Task: "task-a", Branch: "feature/a"},
+			{Entry: cached(wt2), Repository: repo2, Name: "task-b", Task: "task-b", Branch: "feature/b"},
 		},
-		PullRequests: []cockpitfleet.PullRequest{{Entry: local("pr-1"), Repository: "repo-1", Worktree: "wt-1", Number: 7, State: "open"}},
-		Agents:       []cockpitfleet.Agent{{Entry: local("ag-1"), Kind: cockpitfleet.AgentRun, State: "running"}},
+		PullRequests: []cockpitfleet.PullRequest{{Entry: local(pr1), Repository: repo1, Worktree: wt1, Number: 7, State: "open"}},
+		Agents:       []cockpitfleet.Agent{{Entry: local(ag1), Kind: cockpitfleet.AgentRun, State: "running"}},
 	}
 }
 
@@ -117,7 +133,7 @@ func exportMetrics() cockpitfleet.MetricsResponse {
 		load, total, used := float64(index)/10, uint64(1000), uint64(index)
 		samples = append(samples, machinemetrics.Sample{Load1: &load, MemoryTotalBytes: &total, MemoryUsedBytes: &used, SampledAt: exportNow.Add(-time.Duration(360-index) * time.Second)})
 	}
-	return cockpitfleet.MetricsResponse{Machine: "mach-local", Route: cockpitfleet.RouteLocal, Samples: samples}
+	return cockpitfleet.MetricsResponse{Machine: exportLocalMachine, Route: cockpitfleet.RouteLocal, Samples: samples}
 }
 
 // failingStartSeams is every seam of `wb cockpit` that could start a daemon,
@@ -158,10 +174,11 @@ func failingStartSeams(t *testing.T, export cockpitExportDependencies) cockpitCo
 
 func exportDependencies(record daemon.State, found bool, alive bool) cockpitExportDependencies {
 	return cockpitExportDependencies{
-		loadRecord: func(string) (daemon.State, bool, error) { return record, found, nil },
-		alive:      func(int) bool { return alive },
-		client:     cockpitExportClient,
-		now:        func() time.Time { return exportNow },
+		loadRecord:   func(string) (daemon.State, bool, error) { return record, found, nil },
+		alive:        func(int) bool { return alive },
+		processStart: func(int) (time.Time, bool) { return time.Time{}, false },
+		client:       cockpitExportClient,
+		now:          func() time.Time { return exportNow },
 	}
 }
 
@@ -202,16 +219,69 @@ func TestCockpitExportWithNoRunningDaemonFailsAndStartsNothing(t *testing.T) {
 	closedListen := strings.TrimPrefix(closed.URL, "http://")
 	closed.Close()
 	for name, deps := range map[string]cockpitExportDependencies{
-		"no record":                  exportDependencies(daemon.State{}, false, false),
-		"a stopped record":           exportDependencies(daemon.State{Status: daemon.StatusStopped, PID: 4242, Listen: "127.0.0.1:1"}, true, true),
-		"a record with no process":   exportDependencies(daemon.State{Status: daemon.StatusReady, Listen: "127.0.0.1:1"}, true, true),
-		"a recorded process gone":    exportDependencies(readyRecord("127.0.0.1:1"), true, false),
-		"a listener that is closed":  exportDependencies(readyRecord(closedListen), true, true),
-		"a non-loopback record":      exportDependencies(readyRecord("203.0.113.9:8766"), true, true),
-		"an unparseable record host": exportDependencies(readyRecord("not-an-address"), true, true),
+		"no record":                               exportDependencies(daemon.State{}, false, false),
+		"a stopped record":                        exportDependencies(daemon.State{Status: daemon.StatusStopped, PID: 4242, Listen: "127.0.0.1:1"}, true, true),
+		"a record with no process":                exportDependencies(daemon.State{Status: daemon.StatusReady, Listen: "127.0.0.1:1"}, true, true),
+		"a recorded process gone":                 exportDependencies(readyRecord("127.0.0.1:1"), true, false),
+		"a listener that is closed":               exportDependencies(readyRecord(closedListen), true, true),
+		"a stale record of a recycled process id": staleGeneration(),
 	} {
 		stdout, err := runExport(t, failingStartSeams(t, deps), "--format", "json")
 		requireTypedExportFailure(t, stdout, err, "daemon_not_running", name)
+	}
+}
+
+// staleGeneration is a record whose process id now belongs to a process that
+// started at another time.
+func staleGeneration() cockpitExportDependencies {
+	deps := exportDependencies(daemon.State{Status: daemon.StatusReady, PID: 4242, Listen: "127.0.0.1:1", ProcessStartedAt: exportNow.Add(-time.Hour)}, true, true)
+	deps.processStart = func(int) (time.Time, bool) { return exportNow.Add(-time.Minute), true }
+	return deps
+}
+
+// TestCockpitExportAcceptsAProcessOfTheRecordedGeneration: a matching start, an
+// unobservable one and a record with no start time all go on to read the daemon.
+func TestCockpitExportAcceptsAProcessOfTheRecordedGeneration(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]func(*daemon.State, *cockpitExportDependencies){
+		"a matching start": func(r *daemon.State, d *cockpitExportDependencies) {
+			r.ProcessStartedAt = exportNow
+			d.processStart = func(int) (time.Time, bool) { return exportNow, true }
+		},
+		"an unobservable start": func(r *daemon.State, d *cockpitExportDependencies) { r.ProcessStartedAt = exportNow },
+		"no recorded start": func(_ *daemon.State, d *cockpitExportDependencies) {
+			d.processStart = func(int) (time.Time, bool) { return exportNow, true }
+		},
+	} {
+		fake := newFakeCockpitDaemon(t)
+		record := readyRecord(fake.listen())
+		deps := exportDependencies(record, true, true)
+		change(&record, &deps)
+		deps.loadRecord = func(string) (daemon.State, bool, error) { return record, true, nil }
+		if _, err := runExport(t, failingStartSeams(t, deps)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// TestCockpitExportDialsOnlyTheRecordedLoopbackAddress: a record naming any
+// other address, 127.0.0.2 included, is a failed export and no request is made.
+func TestCockpitExportDialsOnlyTheRecordedLoopbackAddress(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	_, port, _ := net.SplitHostPort(fake.listen())
+	for _, listen := range []string{"127.0.0.2:" + port, "203.0.113.9:8766", "0.0.0.0:" + port, "not-an-address", "[::ffff:127.0.0.1]:" + port, "localhost2:" + port} {
+		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(listen), true, true)))
+		requireTypedExportFailure(t, stdout, err, "export_failed", listen)
+	}
+	if got := fake.paths(); len(got) != 0 {
+		t.Errorf("requests = %v, want none", got)
+	}
+	for listen, want := range map[string]string{"127.0.0.1:8766": "127.0.0.1:8766", "[::1]:8766": "[::1]:8766", "localhost:8766": "localhost:8766"} {
+		base, ok := cockpitLoopbackBase(listen)
+		if !ok || base.Host != want || base.Scheme != "http" {
+			t.Errorf("base for %s = %v %v", listen, base, ok)
+		}
 	}
 }
 
@@ -261,7 +331,7 @@ func TestCockpitExportCarriesOnlyTheMetadataSet(t *testing.T) {
 	if len(fleetPart.Machines) != 1 || len(fleetPart.Repositories) != 1 || len(fleetPart.Worktrees) != 1 || len(fleetPart.PullRequests) != 1 || len(fleetPart.Agents) != 1 {
 		t.Errorf("the envelope holds entries of another machine: %+v", fleetPart)
 	}
-	for _, other := range []string{"vm", "task-b", "acme/other", "mach-vm"} {
+	for _, other := range []string{"vm", "task-b", "acme/other", exportVMMachine} {
 		if strings.Contains(stdout, `"`+other+`"`) {
 			t.Errorf("the envelope carries %q of another machine", other)
 		}
@@ -276,7 +346,7 @@ func TestCockpitExportCarriesOnlyTheMetadataSet(t *testing.T) {
 		t.Errorf("metrics-only: err = %v, envelope = %s", err, stdout)
 	}
 
-	wantPaths := []string{"GET /api/v1/cockpit/fleet", "GET /api/v1/cockpit/machine-metrics?machine=mach-local"}
+	wantPaths := []string{"GET /api/v1/cockpit/fleet", "GET /api/v1/cockpit/machine-metrics?machine=" + exportLocalMachine}
 	if got := fake.paths(); !reflect.DeepEqual(got, append(append([]string(nil), wantPaths...), wantPaths...)) {
 		t.Errorf("requests = %v, want the fleet and the machine's own metrics twice", got)
 	}
@@ -304,9 +374,10 @@ func TestCockpitExportOfADaemonWithNoMachineYetHasNoneMetrics(t *testing.T) {
 	}
 }
 
-// TestCockpitExportFailuresThatAreNotTyped: a daemon that answers badly is an
-// error of its own, never one of the two typed reasons, and prints no envelope.
-func TestCockpitExportFailuresThatAreNotTyped(t *testing.T) {
+// TestCockpitExportFailuresArePrintedAsExportFailed: a daemon that answers badly,
+// or that this binary does not understand, is the third typed reason, with a
+// fixed message, never a dependency's error text.
+func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 	t.Parallel()
 	hostile := exportDocument()
 	hostile.Worktrees[0].Task = strings.Repeat("a", 300)
@@ -323,21 +394,21 @@ func TestCockpitExportFailuresThatAreNotTyped(t *testing.T) {
 		fake := newFakeCockpitDaemon(t)
 		set(fake)
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
-		var coded *exitError
-		if err == nil || errors.As(err, &coded) || stdout != "" {
-			t.Errorf("%s: err = %v, stdout = %q, want a plain error and no output", name, err, stdout)
-		}
+		requireTypedExportFailure(t, stdout, err, "export_failed", name)
 	}
 }
 
-func TestCockpitExportReportsAnUnreadableDaemonRecord(t *testing.T) {
+func TestCockpitExportReportsAnUnreadableDaemonRecordWithoutItsPath(t *testing.T) {
 	t.Parallel()
 	deps := failingStartSeams(t, cockpitExportDependencies{
-		loadRecord: func(string) (daemon.State, bool, error) { return daemon.State{}, false, errors.New("unreadable") },
+		loadRecord: func(string) (daemon.State, bool, error) {
+			return daemon.State{}, false, &os.PathError{Op: "open", Path: "/home/secret/.wb/daemon.json", Err: errors.New("denied")}
+		},
 	})
 	stdout, err := runExport(t, deps)
-	if err == nil || !strings.Contains(err.Error(), "daemon record") || stdout != "" {
-		t.Fatalf("err = %v, stdout = %q", err, stdout)
+	requireTypedExportFailure(t, stdout, err, "export_failed", "unreadable record")
+	if strings.Contains(err.Error(), "secret") || strings.Contains(stdout, "secret") {
+		t.Fatalf("the path leaked: %v %s", err, stdout)
 	}
 }
 
@@ -367,7 +438,7 @@ func TestCockpitExportHasNoWayToStartAnything(t *testing.T) {
 	for field := range reflect.TypeFor[cockpitExportDependencies]().Fields() {
 		names = append(names, field.Name)
 	}
-	if want := []string{"loadRecord", "alive", "client", "now"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"loadRecord", "alive", "processStart", "client", "now"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("cockpitExportDependencies fields = %v, want exactly %v", names, want)
 	}
 }
@@ -375,7 +446,7 @@ func TestCockpitExportHasNoWayToStartAnything(t *testing.T) {
 func TestCockpitExportDefaultsReadTheRecordWithoutStarting(t *testing.T) {
 	t.Parallel()
 	deps := defaultCockpitExportDependencies()
-	if deps.loadRecord == nil || deps.alive == nil || deps.client == nil || deps.now == nil {
+	if deps.loadRecord == nil || deps.alive == nil || deps.processStart == nil || deps.client == nil || deps.now == nil {
 		t.Fatalf("defaults = %+v", deps)
 	}
 	client := deps.client()
@@ -402,10 +473,7 @@ func TestCockpitExportDoesNotFollowRedirects(t *testing.T) {
 	t.Cleanup(redirector.Close)
 	deps := failingStartSeams(t, exportDependencies(readyRecord(strings.TrimPrefix(redirector.URL, "http://")), true, true))
 	stdout, err := runExport(t, deps)
-	var coded *exitError
-	if err == nil || errors.As(err, &coded) || stdout != "" {
-		t.Fatalf("err = %v, stdout = %q", err, stdout)
-	}
+	requireTypedExportFailure(t, stdout, err, "export_failed", "a redirect")
 	if hits.Load() != 0 {
 		t.Fatalf("the redirect was followed %d times", hits.Load())
 	}
@@ -449,5 +517,119 @@ func TestCockpitExportDefaultsReadARealRecordFile(t *testing.T) {
 	record, found, err := deps.loadRecord(root)
 	if err != nil || !found || record.PID != 99 || record.Listen != "127.0.0.1:1" {
 		t.Fatalf("record = %+v, found %v, err %v", record, found, err)
+	}
+}
+
+// TestCockpitExportReachesNoStartPath is the no-start proof that can fail. It
+// parses the package's own sources and walks the functions reachable from the
+// verb's constructor and its default dependencies; none may reference anything
+// that starts, stops or replaces a daemon, mints a login code, opens a browser or
+// builds the default daemon dependencies (whose start seam is the real one). The
+// one place that runs launchctl for the liveness check, launchdPID, is held
+// separately to the read-only `print` argument.
+func TestCockpitExportReachesNoStartPath(t *testing.T) {
+	t.Parallel()
+	forbidden := map[string]bool{
+		"cockpitLocalFromDaemon": true, "cockpitOwnerClient": true, "startDaemonProcess": true, "stopDaemonProcess": true,
+		"runLaunchctl": true, "openBrowser": true, "defaultDaemonDependencies": true, "daemonLocalHTTPClient": true,
+		"peerAdminClient": true, "LoginCodeRPCPath": true, "LoginPath": true, "launchdBootstrap": true,
+		"Start": true, "Restart": true, "Stop": true, "Replace": true,
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSet := token.NewFileSet()
+	bodies := map[string][]*ast.FuncDecl{}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fileSet, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, declaration := range parsed.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Body != nil {
+				bodies[function.Name.Name] = append(bodies[function.Name.Name], function)
+			}
+		}
+	}
+	reached := map[string]bool{}
+	queue := []string{"newCockpitExportCmd", "defaultCockpitExportDependencies"}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if reached[name] {
+			continue
+		}
+		reached[name] = true
+		if name == "launchdPID" {
+			continue // read-only, checked below
+		}
+		for _, function := range bodies[name] {
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				identifier, ok := node.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if forbidden[identifier.Name] {
+					t.Errorf("%s reaches %s, which can start, stop or sign in to a daemon or open a browser", name, identifier.Name)
+				}
+				if _, declared := bodies[identifier.Name]; declared {
+					queue = append(queue, identifier.Name)
+				}
+				return true
+			})
+		}
+	}
+	for _, must := range []string{"cockpitExportEnvelope", "cockpitExportGet", "daemonProcessAlive", "launchdPID", "requireOutputFormat"} {
+		if !reached[must] {
+			t.Errorf("the walk never reached %s: it is not walking the real call graph", must)
+		}
+	}
+	for _, function := range bodies["launchdPID"] {
+		calls := 0
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if callee, ok := call.Fun.(*ast.Ident); ok && callee.Name == "runLaunchctl" {
+				calls++
+				if literal, ok := call.Args[0].(*ast.BasicLit); !ok || literal.Value != `"print"` {
+					t.Errorf("launchdPID runs launchctl with something other than the read-only print")
+				}
+			}
+			return true
+		})
+		if calls != 1 {
+			t.Errorf("launchdPID calls runLaunchctl %d times, want exactly one", calls)
+		}
+	}
+}
+
+// TestCockpitExportThroughTheRootCommand runs the real command tree against a
+// projects root with no daemon (so it needs neither launchd nor a socket): the
+// verb is wired, prints the typed failure, exits with the findings code and
+// writes only fixed text to stderr.
+func TestCockpitExportThroughTheRootCommand(t *testing.T) {
+	root := daemonTestRoot(t)
+	var stdout, stderr bytes.Buffer
+	code := runWithStdin([]string{"--projects-root", root, "cockpit", "export", "--format", "json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != exitFindings || stdout.String() != `{"schema_version":1,"error":"daemon_not_running"}`+"\n" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), root) {
+		t.Errorf("stderr names the projects root: %q", stderr.String())
+	}
+}
+
+func TestSideEffectFreeCommandsRecordNoHeartbeat(t *testing.T) {
+	t.Parallel()
+	for id, want := range map[string]bool{"version": true, "cockpit export": true, "cockpit": false, "daemon status": false, "": false} {
+		if got := sideEffectFreeCommand(id); got != want {
+			t.Errorf("sideEffectFreeCommand(%q) = %v, want %v", id, got, want)
+		}
 	}
 }

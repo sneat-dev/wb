@@ -48,9 +48,11 @@ It prints `{schema_version, machine, exported_at, fleet, metrics}` (without `fle
 for `--metrics-only`) read from this machine's running daemon over its loopback
 listener as the anonymous-local reader, so it carries only the metadata set. It never
 starts a daemon, opens a browser or mints a login code: with no daemon running it prints
-`{schema_version, error}` with `daemon_not_running`, and with a daemon that refuses
-anonymous reads (`cockpit.anonymous_metadata: false`) `export_refused`, both with exit
-code 1. Run `wb daemon start` first if the daemon is not running.
+`{schema_version, error}` with `daemon_not_running`, with a daemon that refuses
+anonymous reads (`cockpit.anonymous_metadata: false`) `export_refused`, and for any
+other failure `export_failed`, all with exit code 1 and fixed text. On macOS a daemon is
+found through launchd, so one started by hand in the foreground reads as not running.
+Run `wb daemon start` first if the daemon is not running.
 
 Start and inspect the local read-only API and embedded dashboard:
 

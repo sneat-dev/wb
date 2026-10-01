@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -22,13 +21,20 @@ import (
 // cockpitExportDependencies is everything `wb cockpit export` touches. It
 // deliberately has no seam that starts a daemon, mints a login code or opens a
 // browser (cockpit-views#req:cockpit-export-verb): the verb reads the daemon
-// record and makes anonymous loopback reads, and a test proves that no start
-// path is reachable from it.
+// record and makes anonymous loopback reads, and tests prove that no start path
+// is reachable from it (a structural test of this struct and a call-graph test
+// of this file).
 type cockpitExportDependencies struct {
 	// loadRecord reads this machine's daemon record for a projects root.
 	loadRecord func(root string) (daemon.State, bool, error)
-	// alive reports whether a process id is a running process.
+	// alive reports whether a process id is a running process. On macOS it asks
+	// launchd (`launchctl print`, which changes nothing), so a daemon started in
+	// the foreground by hand is reported as not running there.
 	alive func(int) bool
+	// processStart observes when a process started, to tell the daemon the record
+	// was written for from a process that now holds its recycled id. It reads
+	// /proc on Linux and reports false elsewhere.
+	processStart func(int) (time.Time, bool)
 	// client is the HTTP client for the daemon's loopback listener.
 	client func() *http.Client
 	now    func() time.Time
@@ -39,9 +45,10 @@ func defaultCockpitExportDependencies() cockpitExportDependencies {
 		loadRecord: func(root string) (daemon.State, bool, error) {
 			return newDaemonController(daemonDependencies{}, root).store.Load()
 		},
-		alive:  defaultDaemonDependencies().alive,
-		client: cockpitExportClient,
-		now:    time.Now,
+		alive:        daemonProcessAlive,
+		processStart: daemon.ProcessStartTime,
+		client:       cockpitExportClient,
+		now:          time.Now,
 	}
 }
 
@@ -62,34 +69,47 @@ const (
 	cockpitDocumentLimit = cockpitfleet.MaxEnvelopeBytes - cockpitMetricsLimit - 4096
 )
 
-// errExportRefused and errDaemonNotRunning are the two typed reasons the verb
-// reports with exit code 1.
-var (
-	errExportRefused    = errors.New(cockpitfleet.ErrorExportRefused)
-	errDaemonNotRunning = errors.New(cockpitfleet.ErrorDaemonNotRunning)
+// exportFailure is one of the three typed reasons the verb reports on stdout
+// with exit code 1, or empty for none. It is its code and nothing else: no error
+// text of a dependency, no path and no response body reaches an operator or a
+// pipe.
+type exportFailure string
+
+const (
+	errDaemonNotRunning = exportFailure(cockpitfleet.ErrorDaemonNotRunning)
+	errExportRefused    = exportFailure(cockpitfleet.ErrorExportRefused)
+	errExportFailed     = exportFailure(cockpitfleet.ErrorExportFailed)
 )
 
 // cockpitExportEnvelope builds this machine's export envelope from the running
 // daemon's own fleet and machine-metrics routes, read as anonymous-local, and
-// returns it encoded with its trailing newline. It never starts anything.
-func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, root string, metricsOnly bool) ([]byte, error) {
+// returns it encoded with its trailing newline. It never starts anything and
+// every failure is one of the three exportFailure values.
+func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, root string, metricsOnly bool) ([]byte, exportFailure) {
 	record, found, err := deps.loadRecord(root)
-	if err != nil {
-		return nil, fmt.Errorf("read the local daemon record: %w", err)
-	}
-	if !found || record.Status == daemon.StatusStopped || record.PID <= 0 || !deps.alive(record.PID) {
+	switch {
+	case err != nil:
+		return nil, errExportFailed
+	case !found || record.Status == daemon.StatusStopped || record.PID <= 0 || !deps.alive(record.PID):
 		return nil, errDaemonNotRunning
 	}
-	if err := requireLoopbackAddress(record.Listen); err != nil {
-		return nil, fmt.Errorf("the daemon record names %q: %w", record.Listen, errDaemonNotRunning)
+	// A record whose recorded process start differs from the process that now holds
+	// its id is a stale record of a daemon that is gone; a record that cannot say
+	// is trusted as far as the process being alive.
+	if started, observed := deps.processStart(record.PID); observed {
+		if match, known := record.ProcessGenerationMatches(started, observed); known && !match {
+			return nil, errDaemonNotRunning
+		}
 	}
-	_, port, _ := net.SplitHostPort(record.Listen)
-	base := url.URL{Scheme: "http", Host: net.JoinHostPort(cockpit.CanonicalHost(record.Listen), port), Path: cockpit.APIPrefix}
+	base, ok := cockpitLoopbackBase(record.Listen)
+	if !ok {
+		return nil, errExportFailed
+	}
 	client := deps.client()
 
 	var document cockpitfleet.Document
-	if err := cockpitExportGet(ctx, client, base, cockpitfleet.FleetRoute, nil, cockpitDocumentLimit, &document); err != nil {
-		return nil, err
+	if failure := cockpitExportGet(ctx, client, base, cockpitfleet.FleetRoute, nil, cockpitDocumentLimit, &document); failure != "" {
+		return nil, failure
 	}
 	metrics := cockpitfleet.MetricsResponse{Route: cockpitfleet.RouteNone, Reason: cockpitfleet.ReasonNoSource}
 	for _, machine := range document.Machines {
@@ -97,8 +117,8 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 			continue
 		}
 		query := url.Values{"machine": {machine.ID}}
-		if err := cockpitExportGet(ctx, client, base, cockpitfleet.MetricsRoute, query, cockpitMetricsLimit, &metrics); err != nil {
-			return nil, err
+		if failure := cockpitExportGet(ctx, client, base, cockpitfleet.MetricsRoute, query, cockpitMetricsLimit, &metrics); failure != "" {
+			return nil, failure
 		}
 		break
 	}
@@ -108,16 +128,29 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 	// The envelope types cannot fail to marshal.
 	body, _ := json.Marshal(cockpitfleet.NewEnvelope(document, metrics, deps.now(), metricsOnly))
 	if _, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(body), metricsOnly, deps.now()); err != nil {
-		return nil, err
+		return nil, errExportFailed
 	}
-	return append(body, '\n'), nil
+	return append(body, '\n'), ""
+}
+
+// cockpitLoopbackBase is the Cockpit API address of a daemon recorded as
+// listening on host:port, dialled exactly as recorded: only `127.0.0.1`, `::1`
+// and `localhost` are accepted (the three names the Cockpit Host guard serves),
+// so a record naming any other address, 127.0.0.2 included, is refused rather
+// than rewritten to the canonical one.
+func cockpitLoopbackBase(listen string) (url.URL, bool) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil || (host != "127.0.0.1" && host != "::1" && host != "localhost") {
+		return url.URL{}, false
+	}
+	return url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: cockpit.APIPrefix}, true
 }
 
 // cockpitExportGet makes one anonymous GET of a Cockpit route and decodes its
-// JSON body into target, strictly and within the envelope's size bound. A
-// connection that fails means the recorded daemon is not serving; 401 or 403
-// means it refuses anonymous reads.
-func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, route string, query url.Values, limit int, target any) error {
+// JSON body into target, strictly and within limit bytes. A connection that
+// fails means the recorded daemon is not serving; 401 or 403 means it refuses
+// anonymous reads; anything else is a failed export.
+func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, route string, query url.Values, limit int, target any) exportFailure {
 	address := base
 	address.Path += route
 	address.RawQuery = query.Encode()
@@ -126,28 +159,25 @@ func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, ro
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, address.String(), nil)
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("read the daemon's %s route: %w", route, errDaemonNotRunning)
+		return errDaemonNotRunning
 	}
 	defer func() { _ = response.Body.Close() }()
 	switch {
 	case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
 		return errExportRefused
 	case response.StatusCode != http.StatusOK:
-		return fmt.Errorf("the daemon's %s route answered status %d", route, response.StatusCode)
+		return errExportFailed
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
-	if err != nil {
-		return fmt.Errorf("read the daemon's %s route: %w", route, err)
-	}
-	if len(body) > limit {
-		return fmt.Errorf("the daemon's %s route answered more than %d bytes", route, limit)
+	if err != nil || len(body) > limit {
+		return errExportFailed
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode the daemon's %s route: %w", route, err)
+	if decoder.Decode(target) != nil {
+		return errExportFailed
 	}
-	return nil
+	return ""
 }
 
 func newCockpitExportCmd(inv *invocation, deps cockpitExportDependencies) *cobra.Command {
@@ -160,32 +190,37 @@ func newCockpitExportCmd(inv *invocation, deps cockpitExportDependencies) *cobra
 			"read from this machine's running daemon over its loopback listener as the anonymous-local principal, " +
 			"within 8 MiB and limited to the metadata an anonymous local reader may see. " +
 			"Another machine's daemon runs this over SSH to read this one. " +
-			"It never starts a daemon, opens a browser or mints a login code. " +
-			"--metrics-only omits the cockpitfleet. With no running daemon, or one that refuses anonymous reads " +
-			"(cockpit.anonymous_metadata: false), it prints {schema_version, error} with error daemon_not_running " +
-			"or export_refused and exits 1.",
+			"It never starts a daemon, opens a browser or mints a login code, and writes nothing. " +
+			"--metrics-only omits the fleet. When no daemon is running, or one refuses anonymous reads " +
+			"(cockpit.anonymous_metadata: false), or the export fails otherwise, it prints {schema_version, error} " +
+			"with error daemon_not_running, export_refused or export_failed and exits 1. " +
+			"On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireOutputFormat(format, "json"); err != nil {
 				return usageError(err.Error())
 			}
-			body, err := cockpitExportEnvelope(command.Context(), deps, inv.projectsRoot, metricsOnly)
-			if err != nil {
-				for _, typed := range []error{errDaemonNotRunning, errExportRefused} {
-					if errors.Is(err, typed) {
-						if encodeErr := json.NewEncoder(command.OutOrStdout()).Encode(cockpitfleet.NewExportError(typed.Error())); encodeErr != nil {
-							return encodeErr
-						}
-						return &exitError{code: exitFindings, message: "wb cockpit export: " + typed.Error()}
-					}
+			body, failure := cockpitExportEnvelope(command.Context(), deps, inv.projectsRoot, metricsOnly)
+			if failure != "" {
+				if _, writeErr := command.OutOrStdout().Write(append(mustMarshalExportError(failure), '\n')); writeErr != nil {
+					return errors.New("wb cockpit export: could not write to stdout")
 				}
-				return err
+				return &exitError{code: exitFindings, message: "wb cockpit export: " + string(failure)}
 			}
-			_, err = command.OutOrStdout().Write(body)
-			return err
+			if _, err := command.OutOrStdout().Write(body); err != nil {
+				return errors.New("wb cockpit export: could not write to stdout")
+			}
+			return nil
 		},
 	}
 	command.Flags().StringVar(&format, "format", "json", "stdout format: json")
 	command.Flags().BoolVar(&metricsOnly, "metrics-only", false, "omit the fleet and print only the machine's metrics")
 	return command
+}
+
+// mustMarshalExportError is the stdout form of a failure; the type cannot fail
+// to marshal.
+func mustMarshalExportError(failure exportFailure) []byte {
+	body, _ := json.Marshal(cockpitfleet.NewExportError(string(failure)))
+	return body
 }

@@ -163,9 +163,12 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			// cwd, which may itself be a WB worktree. Recording a heartbeat or
 			// invoked-command there on every probe would make a lane a prober
 			// merely glanced at look busy, and would misattribute whatever that
-			// worktree's write path records next. Skip both for "version" alone
-			// — every other command still gets them.
-			if id == "version" {
+			// worktree's write path records next. `wb cockpit export` is the same
+			// kind of probe, run by another machine's daemon over SSH from a
+			// login directory, and is a read-only export that must write
+			// nothing. Skip both for these alone — every other command still
+			// gets them.
+			if sideEffectFreeCommand(id) {
 				return nil
 			}
 			// Publish which command is running so anything it writes into a
@@ -236,6 +239,14 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	)
 
 	return root
+}
+
+// sideEffectFreeCommand reports whether the command with this id must record no
+// heartbeat and no invoked-command marker: `version` (a status probe, see
+// cli-install#req:version-json-side-effect-free) and `cockpit export` (a
+// read-only export, cockpit-views#req:cockpit-export-verb).
+func sideEffectFreeCommand(id string) bool {
+	return id == "version" || id == "cockpit export"
 }
 
 // persistentFlagSupport is an executable counterpart to
