@@ -1,5 +1,7 @@
 import { TestBed } from '@angular/core/testing'
-import { CopyCommand, FleetModel, PanelCommand, branchCleanup, pickRepositories, pullRequestCreate, worktreeList } from '@cockpit/fleet-data'
+import { CopyCommand, FleetModel } from '@cockpit/fleet-data'
+import { branchCleanup, pickRepositories, pullRequestCreate, worktreeList } from '@cockpit/fleet-data/commands'
+import { PanelCommand, buildAgentPanel, buildPullRequestPanel, buildRepositoryPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { agent, machine, pullRequest, repository, run, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from './clipboard'
 import { CopyCommandList, commandSegments, copyLabel, runLocation } from './copy-command-list'
@@ -45,11 +47,11 @@ describe('CopyCommandList', () => {
   it('copies exactly the library commands of each entity, anonymous, with the run location of each', async () => {
     const model = modelOf()
     const panels: [string, PanelCommand[]][] = [
-      ['worktree', model.worktreeView('w1')?.commands ?? []],
-      ['pull request', model.pullRequestView('p1')?.commands ?? []],
-      ['repository', model.repositoryView('sneat-dev/wb')?.commands ?? []],
-      ['dispatched run', model.agentView('run-1')?.commands ?? []],
-      ['worktree on vm', model.worktreeView('w3')?.commands ?? []],
+      ['worktree', buildWorktreePanel(model, 'w1')?.commands ?? []],
+      ['pull request', buildPullRequestPanel(model, 'p1')?.commands ?? []],
+      ['repository', buildRepositoryPanel(model, 'sneat-dev/wb')?.commands ?? []],
+      ['dispatched run', buildAgentPanel(model, 'run-1')?.commands ?? []],
+      ['worktree on vm', buildWorktreePanel(model, 'w3')?.commands ?? []],
     ]
     for (const [name, commands] of panels) {
       expect(commands.length, name).toBeGreaterThan(0)
@@ -67,15 +69,15 @@ describe('CopyCommandList', () => {
       expect(copied.length, name).toBe(commands.length)
     }
     // The worktree on vm is labelled, a local one says "run here".
-    const onVm = await render(model.worktreeView('w3')?.commands ?? [])
+    const onVm = await render(buildWorktreePanel(model, 'w3')?.commands ?? [])
     expect(text(onVm.items[0].querySelector('.where'))).toBe('run on vm')
     expect(onVm.items[0].querySelector('.where')?.classList.contains('elsewhere')).toBe(true)
-    const here = await render(model.worktreeView('w1')?.commands ?? [])
+    const here = await render(buildWorktreePanel(model, 'w1')?.commands ?? [])
     expect(text(here.items[0].querySelector('.where'))).toBe('run here')
   })
 
   it('renders nothing for an entity with no command (an unrecorded session), leaving no box', async () => {
-    const { root, items } = await render(modelOf().agentView('s1')?.commands ?? [])
+    const { root, items } = await render(buildAgentPanel(modelOf(), 's1')?.commands ?? [])
     expect(items).toEqual([])
     expect(root.querySelector('section, h3')).toBeNull()
   })
@@ -88,8 +90,8 @@ describe('CopyCommandList', () => {
       { title: 'List worktrees', command: plain },
     ])
     expect(text(items[0].querySelector('.edit'))).toBe('edit before running')
-    expect(items[0].querySelector('mark')?.textContent).toBe('<message>')
-    expect(text(items[0].querySelector('code'))).toBe("wb pr create 'fix-ci' --commit-all --message=<message>")
+    expect(items[0].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
+    expect(text(items[0].querySelector('code'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(items[0].querySelector('app-copy-button button'))).toBe('Copy template')
     expect(items[0].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy command template: Commit and open pull request')
     expect(items[0].querySelector('[role="status"]')?.textContent).toBe('')
@@ -109,13 +111,13 @@ describe('CopyCommandList', () => {
   })
 
   it('marks only the placeholder values the library writes, not any <word> that is part of a quoted value', async () => {
-    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<message>') }])
+    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<<<edit:message>>>') }])
     expect(text(items[0].querySelector('code'))).toBe("wb worktree list '<script>'")
     expect(items[0].querySelector('mark')).toBeNull()
     expect(items[0].querySelector('.edit')).toBeNull()
     // A value that spells a placeholder is the library's placeholder: it is bare, and flagged.
-    expect(items[1].querySelector('mark')?.textContent).toBe('<message>')
-    expect(commandSegments("wb x '<model>'")).toEqual([{ text: "wb x '", placeholder: false }, { text: '<model>', placeholder: true }, { text: "'", placeholder: false }])
+    expect(items[1].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
+    expect(commandSegments("wb x '<<<edit:model>>>'")).toEqual([{ text: "wb x '", placeholder: false }, { text: '<<<edit:model>>>', placeholder: true }, { text: "'", placeholder: false }])
     expect(copyLabel('T', true)).toBe('Copy command template: T')
   })
 
@@ -146,8 +148,8 @@ describe('CopyCommandList', () => {
   })
 
   it('names each copy button after its entry, and each command line is focusable for keyboard selection', async () => {
-    const { items } = await render(modelOf().pullRequestView('p1')?.commands ?? [])
-    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy command: ${modelOf().pullRequestView('p1')?.commands[0].title}`)
+    const { items } = await render(buildPullRequestPanel(modelOf(), 'p1')?.commands ?? [])
+    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy command: ${buildPullRequestPanel(modelOf(), 'p1')?.commands[0].title}`)
     expect(items[0].querySelector('code')?.getAttribute('tabindex')).toBe('0')
   })
 
@@ -156,12 +158,12 @@ describe('CopyCommandList', () => {
   })
 
   it('cuts a command at its placeholders and joins back to the same text', () => {
-    const original = "wb worktree create <task> 'a/b' --model=<model> --original-prompt-file=<file>"
+    const original = "wb worktree create <<<edit:task>>> 'a/b' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>"
     const segments = commandSegments(original)
     expect(segments.map((segment) => segment.text).join('')).toBe(original)
-    expect(segments.filter((segment) => segment.placeholder).map((segment) => segment.text)).toEqual(['<task>', '<model>', '<file>'])
+    expect(segments.filter((segment) => segment.placeholder).map((segment) => segment.text)).toEqual(['<<<edit:task>>>', '<<<edit:model>>>', '<<<edit:file>>>'])
     expect(commandSegments('wb fleet status')).toEqual([{ text: 'wb fleet status', placeholder: false }])
-    expect(commandSegments('<message>')).toEqual([{ text: '<message>', placeholder: true }])
+    expect(commandSegments('<<<edit:message>>>')).toEqual([{ text: '<<<edit:message>>>', placeholder: true }])
   })
 
   it('says where a command runs', () => {

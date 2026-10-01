@@ -1,10 +1,11 @@
+import { findMergedRepository } from './repository-merge'
+import { emptyListQuery } from './list-query'
+import { StepCounter } from './match'
 import { Agent, FleetDocument, Repository, Worktree } from './fleet.types'
 import { FleetModel } from './fleet-model'
-import { ListRow, applyListQuery } from './list-rows'
-import { StepCounter } from './matcher'
-import { findMergedRepository } from './repository-identity'
+import { buildRepositories } from './model-repositories'
+import { ListRow, applyListQuery, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { OBSERVED, agent, fleetDocument, machine, pullRequest, repository, run, worktree } from './test-data'
-import { emptyListQuery } from './vocabulary'
 
 const NOW = Date.parse(OBSERVED)
 const DAY = 86_400_000
@@ -35,7 +36,7 @@ describe('task rows', () => {
     pull_requests: [pullRequest('p1', 'r1', 'w5', { number: 3 })],
     agents: [agent('a1', 'r1', 'live', { task: 'fix-ci', activity: 'working' })],
   })
-  const rows = model.taskRows
+  const rows = buildTaskRows(model)
 
   // cockpit-views#ac:tasks-list-aggregates-worktrees (the rows the library derives)
   it('has one row per task with its chips: needs-you is the tasks Home lists', () => {
@@ -86,9 +87,9 @@ describe('task rows', () => {
       pull_requests: [pullRequest('p2', 'r1', 'w2', { checks_failed: 1 }), pullRequest('p4', 'r1', 'w4'), pullRequest('p5', 'r1', 'w5', { state: 'draft' })],
       agents: [agent('a3', 'r1', 'live', { task: 'blocked', activity: 'blocked' })],
     })
-    const sorted = applyListQuery('tasks', states.taskRows, query({ sort: 'state' }), NOW).rows.map((row) => row.item.state)
+    const sorted = applyListQuery('tasks', buildTaskRows(states), query({ sort: 'state' }), NOW).rows.map((row) => row.item.state)
     expect(sorted).toEqual(['at-risk', 'checks-failed', 'blocked', 'ready', 'not-ready', 'working', 'landed', 'idle', 'not-reported'])
-    const reversed = applyListQuery('tasks', states.taskRows, query({ sort: 'state', dir: 'desc' }), NOW).rows.map((row) => row.item.state)
+    const reversed = applyListQuery('tasks', buildTaskRows(states), query({ sort: 'state', dir: 'desc' }), NOW).rows.map((row) => row.item.state)
     expect(reversed).toEqual([...sorted].reverse())
   })
 
@@ -101,7 +102,7 @@ describe('task rows', () => {
 
   it('ignores a sort column the page does not list, and keeps a missing value last in both directions', () => {
     expect(ids(applyListQuery('tasks', rows, query({ sort: 'cpu' }), NOW).rows)).toEqual(ids(applyListQuery('tasks', rows, emptyListQuery(), NOW).rows))
-    const blank = modelOf({ worktrees: [wt('w1', 'a', { last_activity_at: undefined }), wt('w2', 'b', { last_activity_at: ago(1) }), wt('w3', 'c', { last_activity_at: undefined })] }).taskRows
+    const blank = buildTaskRows(modelOf({ worktrees: [wt('w1', 'a', { last_activity_at: undefined }), wt('w2', 'b', { last_activity_at: ago(1) }), wt('w3', 'c', { last_activity_at: undefined })] }))
     expect(ids(applyListQuery('tasks', blank, query({ sort: 'activity', dir: 'asc' }), NOW).rows)).toEqual(['b', 'a', 'c'])
     expect(ids(applyListQuery('tasks', blank, query({ sort: 'activity', dir: 'desc' }), NOW).rows)).toEqual(['b', 'a', 'c'])
   })
@@ -117,16 +118,16 @@ describe('repository rows', () => {
     repository('l5', 'alpha', { name: 'a/remote-only', last_activity_at: ago(50), worktree_count: 0, active_agent_count: undefined, remote_branch_count: 9 }),
   ]
   const model = modelOf({ repositories: repos, machines: [machine('alpha'), machine('beta', 'cached')] })
-  const rows = model.repositoryRows
+  const rows = buildRepositoryRows(model)
 
   it('has one row per identity, selected by the entry id of its preferred checkout, with its chips', () => {
     expect(ids(rows)).toEqual(['l1', 'l2', 'l3', 'l4', 'l5'])
     expect(rows[0].machineIds).toEqual(['mach-alpha', 'mach-beta'])
     expect([...rows[0].chips].sort()).toEqual(['agents', 'index', 'prs', 'worktrees'])
     expect([...rows[1].chips].sort()).toEqual(['errors'])
-    expect(findMergedRepository(model.repositories, 'c1')?.key).toBe('sneat-co/sneat-go')
-    expect(findMergedRepository(model.repositories, 'l1')?.key).toBe('sneat-co/sneat-go')
-    expect(findMergedRepository(model.repositories, 'nope')).toBeUndefined()
+    expect(findMergedRepository(buildRepositories(model), 'c1')?.key).toBe('sneat-co/sneat-go')
+    expect(findMergedRepository(buildRepositories(model), 'l1')?.key).toBe('sneat-co/sneat-go')
+    expect(findMergedRepository(buildRepositories(model), 'nope')).toBeUndefined()
   })
 
   // cockpit-views#ac:repositories-quick-filters (the filters the library derives)
@@ -166,7 +167,7 @@ describe('worktree rows', () => {
     pull_requests: [pullRequest('p1', 'r1', 'w1'), pullRequest('p2', 'r-missing', undefined, { branch: 'task/by-branch', worktree: undefined })],
   }
   const model = modelOf(doc)
-  const rows = model.worktreeRows
+  const rows = buildWorktreeRows(model)
 
   // cockpit-views#ac:worktrees-quick-filters (the chips the library derives)
   it('has the chips active, orphaned, unpushed, gone, pr, safe and look, and idle30 by the clock', () => {
@@ -214,7 +215,7 @@ describe('agent rows', () => {
     run('r2', 'failed', { runtime: 'claude', task: 'x', started_at: ago(3) }),
   ]
   const model = modelOf({ repositories: [repository('r1', 'alpha', { name: 'sneat-dev/wb' })], agents, worktrees: [wt('w1', 'fix-ci')], machines: [machine('alpha'), machine('vm', 'cached')] })
-  const rows = model.agentRows
+  const rows = buildAgentRows(model)
 
   it('has the chips running, blocked and runtime-<name>', () => {
     const chips = (id: string): string[] => [...(rows.find((row) => row.id === id)?.chips ?? [])].sort()
@@ -261,7 +262,7 @@ describe('machine rows', () => {
       { ...machine('old', 'cached'), wb_version: '0.176.0' },
     ],
   })
-  const rows = model.machineRows
+  const rows = buildMachineRows(model)
 
   // cockpit-views#ac:machines-filter-and-stale-chip (the rows the library derives)
   it('has the chips stale and outdated, and the states live, cached and stale', () => {
@@ -288,7 +289,7 @@ describe('the step counter', () => {
   it('counts the glob steps of a whole filter', () => {
     const model = modelOf({ repositories: [repository('r1', 'alpha', { name: 'sneat-dev/wb' })], worktrees: [wt('w1', 'a')] })
     const counter: StepCounter = { steps: 0 }
-    applyListQuery('worktrees', model.worktreeRows, query({ q: 'sneat-*/w?' }), NOW, counter)
+    applyListQuery('worktrees', buildWorktreeRows(model), query({ q: 'sneat-*/w?' }), NOW, counter)
     expect(counter.steps).toBeGreaterThan(0)
   })
 })

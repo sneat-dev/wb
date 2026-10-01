@@ -8,7 +8,7 @@ function metrics(machine: string): MachineMetrics {
 }
 
 describe('MetricsPoller', () => {
-  const read = vi.fn<(machine: string) => Promise<MachineMetrics>>()
+  const read = vi.fn<(machine: string, signal?: AbortSignal) => Promise<MachineMetrics>>()
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -57,6 +57,29 @@ describe('MetricsPoller', () => {
     second()
     await advance(METRICS_INTERVAL_MS)
     expect(read).toHaveBeenCalledTimes(4)
+  })
+
+  // cockpit-views#ac:metrics-poll-only-while-visible
+  it('gives every read the round\'s signal and aborts it when the last page leaves, dropping the answer without an error', async () => {
+    const poller = TestBed.inject(MetricsPoller)
+    let signal: AbortSignal | undefined
+    read.mockImplementationOnce(
+      (_machine, given) =>
+        new Promise((_resolve, reject) => {
+          signal = given
+          given?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }),
+    )
+    const stop = poller.watch(() => ['m1'])
+    await advance(0)
+    expect(signal?.aborted).toBe(false)
+    stop()
+    await advance(0)
+    expect(signal?.aborted).toBe(true)
+    // The cancelled read is not shown as a failure, and nothing is polled any more.
+    expect(poller.entries().get('m1')).toBeUndefined()
+    await advance(5 * METRICS_INTERVAL_MS)
+    expect(read).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the last good answer when a read fails and says why, and recovers', async () => {

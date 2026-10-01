@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, effect, inject, input, signal } from '@angular/core'
-import { FleetClient, OWNER_SESSION_COMMAND, ReadmeRequestError, SessionStatus, readmeFailureText } from '@cockpit/fleet-data'
+import { FleetClient, OWNER_SESSION_COMMAND, ReadmeRequestError, SessionStatus } from '@cockpit/fleet-data'
+import { readmeFailureText } from '@cockpit/fleet-data/list'
 import { ReadmeContent } from './readme-content'
 
 type ReadmeState = { kind: 'idle' } | { kind: 'loading' } | { kind: 'failed'; text: string } | { kind: 'ready'; source: string }

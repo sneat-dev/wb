@@ -1,13 +1,6 @@
+import { CODE_INDEX_SEVERITY, mergeRepositories, worstCodeIndex } from './repository-merge'
 import { CodeIndex, Repository } from './fleet.types'
-import {
-  CODE_INDEX_SEVERITY,
-  STALE_AFTER_MS,
-  isStale,
-  mergeRepositories,
-  repositorySlug,
-  splitRepositoryName,
-  worstCodeIndex,
-} from './repository-identity'
+import { STALE_AFTER_MS, isStale, repositorySlug, splitRepositoryName } from './repository-identity'
 import { OBSERVED, agent, pullRequest, repository } from './test-data'
 
 const NOW = Date.parse('2026-10-01T10:00:00Z')

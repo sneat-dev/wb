@@ -160,6 +160,31 @@ describe('FleetClient', () => {
     })
   })
 
+  // cockpit-views#ac:metrics-poll-only-while-visible
+  it('cancels a metrics read when the caller\'s signal aborts, and still times out without one', async () => {
+    const seen: AbortSignal[] = []
+    const fetcher = vi.fn((_url: unknown, init?: RequestInit) => {
+      seen.push(init?.signal as AbortSignal)
+      return new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) reject(init.signal.reason)
+        else init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    })
+    const controller = new AbortController()
+    const read = clientWith(fetcher as unknown as typeof fetch).readMachineMetrics('m1', controller.signal)
+    expect(seen[0].aborted).toBe(false)
+    controller.abort(new DOMException('stopped', 'AbortError'))
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' })
+    expect(seen[0].aborted).toBe(true)
+    // Already aborted before the call: nothing is sent to a live connection.
+    const already = AbortSignal.abort()
+    await expect(clientWith(fetcher as unknown as typeof fetch).readMachineMetrics('m1', already)).rejects.toBeDefined()
+    // Without a signal the request still carries its own timeout signal.
+    void clientWith(fetcher as unknown as typeof fetch).readMachineMetrics('m1')
+    expect(seen[2]).toBeInstanceOf(AbortSignal)
+    expect(seen[2].aborted).toBe(false)
+  })
+
   it('fails a metrics read on an error status or a body with no samples', async () => {
     await expect(clientWith(async () => respond(404, {})).readMachineMetrics('x')).rejects.toBeInstanceOf(FleetRequestError)
     await expect(clientWith(async () => respond(200, { machine: 'x' })).readMachineMetrics('x')).rejects.toBeInstanceOf(FleetFormatError)

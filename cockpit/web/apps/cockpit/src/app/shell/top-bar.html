@@ -13,7 +13,7 @@
       <a class="tab" [routerLink]="link.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: link.path === '/' }" ariaCurrentWhenActive="page">
         <span>{{ link.label }}</span>
         @if (badge(link); as badge) {
-          <span class="badge tnum" [class.hot]="badge.hot" [attr.data-badge]="link.signal">{{ badge.count }}</span>
+          <span class="badge tnum" [class.hot]="badge.hot" [attr.data-badge]="link.signal" [attr.title]="badge.count > badgeCap ? badge.count : null">{{ badge.label }}</span>
           <span class="visually-hidden">{{ badge.hint }}</span>
         } @else if (link.signal) {
           <!-- Holds the badge's place until there is data to count, so the tabs do not move when it arrives. -->

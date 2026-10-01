@@ -1,11 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { Params } from '@angular/router'
-import {
-  FleetStore,
-  RUNNING_STATE,
-  filterAgents,
-  mostRecentWorktrees,
-} from '@cockpit/fleet-data'
+import { FleetStore, RUNNING_STATE, filterAgents, mostRecentWorktrees } from '@cockpit/fleet-data'
 import { RouterLink } from '@angular/router'
 import { RouteLabel } from '@cockpit/ui/route-label'
 import { watchMetrics } from '../../metrics/metrics-poller'
