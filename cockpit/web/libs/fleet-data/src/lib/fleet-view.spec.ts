@@ -1,5 +1,6 @@
 import {
   codeBrowserLink,
+  codeIndexText,
   agentLabel,
   emptyDocument,
   filterAgents,
@@ -141,6 +142,15 @@ describe('ages and route labels', () => {
   it('labels local and cached entries', () => {
     expect(routeLabel(machine('alpha'), NOW)).toBe('local')
     expect(routeLabel(machine('beta', 'cached'), NOW + 7 * 60_000)).toBe('cached, 7 min ago')
+  })
+})
+
+describe('codeIndexText', () => {
+  it('words every state, and gives a stale index its count of commits behind', () => {
+    expect(codeIndexText({ indexer: 'x', state: 'fresh' })).toBe('fresh')
+    expect(codeIndexText({ indexer: 'x', state: 'stale', behind: 3 })).toBe('stale, 3 behind')
+    expect(codeIndexText({ indexer: 'x', state: 'stale' })).toBe('stale, 0 behind')
+    expect(codeIndexText({ indexer: 'x', state: 'never' })).toBe('never')
   })
 })
 

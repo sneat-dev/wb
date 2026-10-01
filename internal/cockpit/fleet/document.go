@@ -56,6 +56,28 @@ const (
 // repositories could not be listed.
 const ErrorRepositoriesUnreadable = "repositories_unreadable"
 
+// The six states a code index can be in, as code-index-freshness defines them.
+const (
+	CodeIndexFresh    = "fresh"
+	CodeIndexStale    = "stale"
+	CodeIndexDiverged = "diverged"
+	CodeIndexPending  = "pending"
+	CodeIndexFailed   = "failed"
+	CodeIndexNever    = "never"
+)
+
+// CodeIndex is the freshness of one indexer's index of a checkout
+// (cockpit#req:code-index-freshness-is-shown): the indexer's configured name,
+// its state, for a stale index the number of commits HEAD is ahead of the
+// receipt (Behind), and the time of the receipt the state was read from, when
+// there is one. Nothing else of a receipt, and no path, reaches the document.
+type CodeIndex struct {
+	Indexer   string    `json:"indexer"`
+	State     string    `json:"state"`
+	Behind    int       `json:"behind,omitempty"`
+	ReceiptAt time.Time `json:"receipt_at,omitzero"`
+}
+
 // PullRequestUnknown is the state of a locally recorded pull request: the
 // record names it but not whether it is still open.
 const PullRequestUnknown = "unknown"
@@ -124,6 +146,10 @@ type Repository struct {
 	OpenPullRequestCount *int   `json:"open_pull_request_count,omitempty"`
 	ActiveAgentCount     *int   `json:"active_agent_count,omitempty"`
 	Error                string `json:"error,omitempty"`
+	// CodeIndex is one state per indexer configured for the repository. It is
+	// absent for a cached repository, whose published snapshot does not carry
+	// it, and for a local one with no indexer or whose state could not be told.
+	CodeIndex []CodeIndex `json:"code_index,omitempty"`
 }
 
 // Worktree is one WB task worktree. Repository is the id of its repository.
@@ -136,6 +162,8 @@ type Worktree struct {
 	Lifecycle      string    `json:"lifecycle,omitempty"`
 	OwnerState     string    `json:"owner_state,omitempty"`
 	LastActivityAt time.Time `json:"last_activity_at,omitzero"`
+	// CodeIndex is as on Repository.
+	CodeIndex []CodeIndex `json:"code_index,omitempty"`
 }
 
 // Branch is one local or remote branch. Worktree is the id of the worktree

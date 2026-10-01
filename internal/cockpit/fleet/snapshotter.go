@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,6 +132,10 @@ type repoState struct {
 	refs          []BranchRef
 	defaultBranch string
 	scanned       bool
+	identity      string
+	indexKey      string
+	indexed       bool
+	codeIndex     localCodeIndex
 	ticket        int
 	applied       int
 	passPrint     string
@@ -180,6 +185,8 @@ type Snapshotter struct {
 	bindings    []worktrees.RegisteredPullRequestBinding
 	boundAt     time.Time
 	remote      remoteView
+	codePass    CodeIndexPass
+	codeErr     string
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -334,6 +341,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.Join(append(failures, fmt.Errorf("list repositories: %w", listErr))...)
 	}
+	s.beginCodeIndex()
 	ids := s.track(discovered)
 	var machineFailures []error
 	var beside sync.WaitGroup
@@ -372,6 +380,82 @@ func (s *Snapshotter) checkGit(ctx context.Context) {
 		s.mu.Unlock()
 	}
 	s.gitChecked = true
+}
+
+// beginCodeIndex reads the indexer receipts for a pass and keeps the result
+// for the repositories it reads. With no collector, or with Git too old to
+// compare a receipt with HEAD, or when the receipts cannot be read, the pass
+// is nil and no entry carries a code index; a failure is logged when it
+// changes, not on every pass. It returns the pass.
+func (s *Snapshotter) beginCodeIndex() CodeIndexPass {
+	var pass CodeIndexPass
+	failure := ""
+	if s.collectors.CodeIndex != nil && !s.gitTooOld() {
+		if err := catch(func() (err error) {
+			pass, err = s.collectors.CodeIndex.Begin()
+			return err
+		}); err != nil {
+			pass, failure = nil, err.Error()
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if failure != s.codeErr && failure != "" {
+		s.logf("cockpit fleet: code-index freshness is off: %s", failure)
+	}
+	s.codePass, s.codeErr = pass, failure
+	return pass
+}
+
+// codeIndexPassForRead is the pass a repository read uses: the one the
+// running pass began, or a fresh one for a read outside a pass.
+func (s *Snapshotter) codeIndexPassForRead() CodeIndexPass {
+	s.mu.RLock()
+	pass, passing := s.codePass, s.passing
+	s.mu.RUnlock()
+	if passing {
+		return pass
+	}
+	return s.beginCodeIndex()
+}
+
+// hostOfIdentity is the forge host of a host/owner/name identity, empty for
+// none.
+func hostOfIdentity(identity string) string {
+	host, _, _ := strings.Cut(identity, "/")
+	return host
+}
+
+// codeIndexOf is the code-index state of a repository's checkouts. Its Git
+// state is read again only when Git state was just read or the receipts, the
+// queue or the checkouts for it are not what the held state was computed
+// from; otherwise the held state is reused and no Git command runs.
+func (s *Snapshotter) codeIndexOf(ctx context.Context, held repoState, recorded []recordedWorktree, gitRead bool) (key string, indexed bool, index localCodeIndex) {
+	pass := s.codeIndexPassForRead()
+	if pass == nil {
+		return "", false, localCodeIndex{}
+	}
+	identity := held.repo.Identity()
+	if s.collectors.Identity != nil {
+		// The worker names a repository by its origin, whatever the layout, so
+		// a clone whose origin names no forge has no indexer.
+		if identity = held.identity; identity == "" {
+			return "", false, localCodeIndex{}
+		}
+	}
+	paths := []string{held.repo.Path}
+	for _, item := range recorded {
+		paths = append(paths, item.linked.Path)
+	}
+	key = pass.Key(identity, paths)
+	if !gitRead && held.indexed && key == held.indexKey {
+		return key, true, held.codeIndex
+	}
+	var states map[string][]CodeIndex
+	if err := catch(func() error { states, indexed = pass.States(ctx, identity, paths); return nil }); err != nil {
+		return "", false, localCodeIndex{}
+	}
+	return key, indexed, localCodeIndex{repository: states[held.repo.Path], byPath: states}
 }
 
 // track makes the repositories discovered the ones the snapshotter holds,
@@ -446,7 +530,7 @@ func (s *Snapshotter) markFailed(id string) {
 		if state.scanned {
 			state.entries.repository.Error = ErrorReadFailed
 		} else {
-			state.entries = mapLocalRepository(s.machine, state.repo, "", nil, nil, ErrorReadFailed, s.now())
+			state.entries = mapLocalRepository(s.machine, state.repo, "", nil, nil, ErrorReadFailed, localCodeIndex{}, "", s.now())
 		}
 		state.scanned = true
 	}
@@ -527,10 +611,11 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 		current = s.fingerprintOf(held.repo.Path)
 	}
 	var readErr error
+	gitRead := false
 	if force || !held.gitRead || current == "" || current != held.fingerprint {
 		var linked []LinkedWorktree
 		var refs []BranchRef
-		var defaultBranch string
+		var defaultBranch, identity string
 		readErr = catch(func() (err error) {
 			if linked, err = s.collectors.Worktrees.Worktrees(ctx, held.repo); err != nil {
 				return err
@@ -542,10 +627,14 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 				return err
 			}
 			defaultBranch = s.collectors.Branches.DefaultBranch(ctx, held.repo)
-			return nil
+			if s.collectors.Identity != nil {
+				identity, err = s.collectors.Identity.Identity(ctx, held.repo)
+			}
+			return err
 		})
 		if readErr == nil {
-			held.linked, held.refs, held.defaultBranch, held.fingerprint, held.gitRead = linked, refs, defaultBranch, current, true
+			held.linked, held.refs, held.defaultBranch, held.identity, held.fingerprint, held.gitRead = linked, refs, defaultBranch, identity, current, true
+			gitRead = true
 		}
 	}
 	if err := parent.Err(); err != nil {
@@ -562,6 +651,7 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 	}); readErr == nil {
 		readErr = recordErr
 	}
+	indexKey, indexed, codeIndex := s.codeIndexOf(ctx, held, recorded, gitRead)
 	errCode := ""
 	if readErr != nil {
 		errCode = ErrorReadFailed
@@ -569,13 +659,14 @@ func (s *Snapshotter) scanRepository(parent context.Context, id string, force bo
 			errCode = ErrorTimeout
 		}
 	}
-	entries := mapLocalRepository(s.machine, held.repo, defaultBranchOf(held.repo, held.defaultBranch), recorded, held.refs, errCode, s.now())
+	entries := mapLocalRepository(s.machine, held.repo, defaultBranchOf(held.repo, held.defaultBranch), recorded, held.refs, errCode, codeIndex, hostOfIdentity(held.identity), s.now())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if state, found := s.repos[id]; found && ticket > state.applied {
 		state.applied = ticket
-		state.fingerprint, state.gitRead, state.linked, state.refs, state.defaultBranch = held.fingerprint, held.gitRead, held.linked, held.refs, held.defaultBranch
+		state.fingerprint, state.gitRead, state.linked, state.refs, state.defaultBranch, state.identity = held.fingerprint, held.gitRead, held.linked, held.refs, held.defaultBranch, held.identity
 		state.scanned, state.entries = true, entries
+		state.indexKey, state.indexed, state.codeIndex = indexKey, indexed, codeIndex
 	}
 	if errCode != "" {
 		return fmt.Errorf("%s: %s", held.repo.Slug(), errCode)

@@ -103,15 +103,17 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	want := map[string][]string{
 		"Document":    {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "machines", "repositories", "worktrees", "branches", "pull_requests", "agents", "agents_truncated"},
 		"Machine":     append([]string{"wb_version", "repository_count", "worktree_count"}, entry...),
-		"Repository":  append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error"}, entry...),
-		"Worktree":    append([]string{"repository", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at"}, entry...),
+		"Repository":  append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "code_index"}, entry...),
+		"Worktree":    append([]string{"repository", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "code_index"}, entry...),
 		"Branch":      append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
 		"PullRequest": append([]string{"repository", "worktree", "branch", "number", "state", "url"}, entry...),
+		"CodeIndex":   {"indexer", "state", "behind", "receipt_at"},
 		"Agent":       append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
+		"CodeIndex": jsonFields(CodeIndex{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])

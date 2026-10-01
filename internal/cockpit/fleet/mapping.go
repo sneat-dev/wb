@@ -45,17 +45,28 @@ func localRepositoryID(machine string, repository discover.Repo) string {
 	return entryID(kindRepository, machine, repository.Identity())
 }
 
+// localCodeIndex is the code-index state of a local repository's checkouts:
+// its own, and each recorded worktree's by the worktree's path, which stays
+// inside the daemon.
+type localCodeIndex struct {
+	repository []CodeIndex
+	byPath     map[string][]CodeIndex
+}
+
 // mapLocalRepository maps one local repository: its worktrees from their own
 // records, and its branches. Its entries all have route local and are
 // observed at at; owner state is judged against now. errCode, when set, marks
-// the repository as unreadable this pass.
-func mapLocalRepository(machine string, repository discover.Repo, defaultBranch string, recorded []recordedWorktree, refs []BranchRef, errCode string, at time.Time) repoEntries {
+// the repository as unreadable this pass. codeIndex is the freshness of its
+// checkouts; the zero value means none is known. originHost is the forge host
+// the origin names, which fills the host of a flat-layout clone (its placement
+// has none); the entry id still comes from the placement.
+func mapLocalRepository(machine string, repository discover.Repo, defaultBranch string, recorded []recordedWorktree, refs []BranchRef, errCode string, codeIndex localCodeIndex, originHost string, at time.Time) repoEntries {
 	identity := repository.Identity()
 	entry := func(id string) Entry { return localEntry(id, machine, at) }
 	repositoryID := localRepositoryID(machine, repository)
 	mapped := repoEntries{repository: Repository{
-		Entry: entry(repositoryID), Host: repository.Host, Name: repository.Slug(),
-		DefaultBranch: firstNonEmpty(repository.DefaultBranch, defaultBranch), Error: errCode,
+		Entry: entry(repositoryID), Host: firstNonEmpty(repository.Host, originHost), Name: repository.Slug(),
+		DefaultBranch: firstNonEmpty(repository.DefaultBranch, defaultBranch), Error: errCode, CodeIndex: codeIndex.repository,
 	}}
 	type linkedWorktree struct{ id, task string }
 	byBranch := map[string]linkedWorktree{}
@@ -73,7 +84,7 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 		byBranch[branch] = linkedWorktree{id: id, task: item.record.Task}
 		mapped.worktrees = append(mapped.worktrees, Worktree{
 			Entry: entry(id), Repository: repositoryID, Task: item.record.Task, Branch: branch,
-			OwnerState: ownerState, LastActivityAt: activity,
+			OwnerState: ownerState, LastActivityAt: activity, CodeIndex: codeIndex.byPath[item.linked.Path],
 		})
 	}
 	for _, ref := range refs {

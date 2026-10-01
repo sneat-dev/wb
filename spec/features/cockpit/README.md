@@ -152,7 +152,9 @@ is this closed set of fields:
   activity time;
 - pull request number, state and URL;
 - agent run and session identifiers, runtime, model and state;
-- counts, durability levels, risk reason codes and code-index freshness;
+- counts, durability levels, risk reason codes, and code-index freshness: per
+  configured indexer its configured name, its state, for a stale index the
+  number of commits behind, and the time of the receipt it was read from;
 - the read model's own `error` code and `agents_truncated` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
 
@@ -290,6 +292,20 @@ indexer, the state defined by
 `failed` or `never` — read from receipts as that Feature requires. The
 application shows it on the Repositories and Worktrees tables. WB stays
 indexer-agnostic; CodeGrapher is the indexer the founder uses.
+
+A clone is matched to its indexer by the repository its `origin` names, derived
+as the lifecycle-hook worker derives it (lower-case host/owner/name), whatever
+its layout, so a flat clone with no host directory is matched like any other;
+a clone with no origin, or an origin that names no forge, has no indexer. The
+same origin supplies the `host` of a flat clone, which its placement lacks, so
+its code-browser link works. The origin URL is never in the read model.
+
+A shallow clone lacks history on purpose, so it gets only what it can prove: a
+receipt at `HEAD` is `fresh`, a receipt commit that is present and is an
+ancestor of `HEAD` is `stale` with its count, and one that is present and is not
+an ancestor is `diverged`. A receipt commit the clone does not have gets no
+state at all (the entry is left out and the page shows a dash), never a count it
+cannot trust.
 
 #### REQ: code-index-summary
 

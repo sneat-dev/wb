@@ -589,7 +589,7 @@ func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
 		{Name: "a", Scope: BranchLocal, Upstream: "origin/a", Ahead: 1, Behind: 2, UpstreamGone: true, CommittedAt: at},
 		{Name: "a", Scope: BranchLocal},
 		{Name: "origin/a", Scope: BranchRemote},
-	}, "", at)
+	}, "", localCodeIndex{}, "", at)
 	want := map[string]struct {
 		branch, owner string
 		activity      time.Time

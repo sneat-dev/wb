@@ -439,6 +439,10 @@ func readJob(path string) (queuedJob, error) {
 	if err != nil {
 		return queuedJob{}, err
 	}
+	return decodeJob(raw, path)
+}
+
+func decodeJob(raw []byte, path string) (queuedJob, error) {
 	var job queuedJob
 	if err := json.Unmarshal(raw, &job); err != nil {
 		return queuedJob{}, fmt.Errorf("decode lifecycle hook queue item %s: %w", path, err)

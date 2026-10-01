@@ -1,13 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed } from '@angular/core'
 import { filterWorktrees, formatAge } from '@cockpit/fleet-data'
-import { FilterBar, RouteLabel } from '@cockpit/ui'
+import { CodeIndexLabel, FilterBar, RouteLabel } from '@cockpit/ui'
 import { TableModule } from 'primeng/table'
 import { ListPage } from './list-page'
 
 /** Every WB task worktree on every machine. */
 @Component({
   selector: 'app-worktrees-page',
-  imports: [TableModule, FilterBar, RouteLabel],
+  imports: [TableModule, FilterBar, RouteLabel, CodeIndexLabel],
   templateUrl: './worktrees-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

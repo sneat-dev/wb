@@ -24,12 +24,12 @@ const fleet = {
     { id: 'mach-beta', ...beta, repository_count: 1, worktree_count: 1 },
   ],
   repositories: [
-    { id: 'repo-cli', ...alpha, host: 'github.com', name: 'specscore/specscore-cli', default_branch: 'main', worktree_count: 2, active_agent_count: 1 },
+    { id: 'repo-cli', ...alpha, host: 'github.com', name: 'specscore/specscore-cli', default_branch: 'main', worktree_count: 2, active_agent_count: 1, code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3 }] },
     { id: 'repo-web', ...alpha, host: 'github.com', name: 'acme/web', default_branch: 'main', worktree_count: 0, active_agent_count: 0 },
     { id: 'repo-far', ...beta, name: 'acme/far', worktree_count: 1 },
   ],
   worktrees: [
-    { id: 'wt-1', ...alpha, repository: 'repo-cli', task: 'add-search', branch: 'task/add-search', owner_state: 'active', last_activity_at: now },
+    { id: 'wt-1', ...alpha, repository: 'repo-cli', task: 'add-search', branch: 'task/add-search', owner_state: 'active', last_activity_at: now, code_index: [{ indexer: 'codegrapher', state: 'fresh' }] },
     { id: 'wt-2', ...alpha, repository: 'repo-cli', task: 'fix-index', branch: 'task/fix-index', owner_state: 'idle', last_activity_at: observed },
     { id: 'wt-3', ...beta, repository: 'repo-far', task: 'far-task', branch: 'task/far-task' },
   ],
@@ -168,6 +168,45 @@ test('each repository links to the code browser, from the default base and from 
     await expectClean()
     await page.unrouteAll()
   }
+})
+
+// cockpit#ac:code-index-freshness-appears, the table half: three checkouts, one
+// whose latest receipt is at HEAD, one three commits behind and one with none.
+test('the Worktrees page shows fresh, stale with its count, and never', async ({ page }) => {
+  const indexed = {
+    ...fleet,
+    worktrees: [
+      { ...fleet.worktrees[0], id: 'wt-a', task: 'at-head', code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: now }] },
+      { ...fleet.worktrees[0], id: 'wt-b', task: 'behind', code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3, receipt_at: now }] },
+      { ...fleet.worktrees[0], id: 'wt-c', task: 'unindexed', code_index: [{ indexer: 'codegrapher', state: 'never' }] },
+      { ...fleet.worktrees[2], id: 'wt-d', task: 'elsewhere' },
+    ],
+  }
+  await stub(page)
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: indexed, headers: { ETag: '"indexed"', 'Cache-Control': 'no-cache' } }))
+  const expectClean = await watch(page)
+  await page.goto('/cockpit/worktrees')
+  await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()
+  const indexCell = (task: string) => rows(page).filter({ hasText: task }).locator('app-code-index-label')
+  await expect(indexCell('at-head')).toContainText('fresh')
+  await expect(indexCell('behind')).toContainText('stale, 3 behind')
+  await expect(indexCell('unindexed')).toHaveText('never')
+  // A checkout whose freshness is not known shows a dash, not a guess.
+  await expect(indexCell('elsewhere')).toHaveText('—')
+  // The receipt's age is visible text, not only a tooltip.
+  await expect(indexCell('at-head')).toContainText('just now')
+  await expectClean()
+})
+
+test('the Repositories page shows the code-index freshness of each repository', async ({ page }) => {
+  await stub(page)
+  const expectClean = await watch(page)
+  await page.goto('/cockpit/repositories')
+  await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()
+  await expect(rows(page).filter({ hasText: 'specscore-cli' }).locator('app-code-index-label')).toHaveText('stale, 3 behind')
+  // A repository on another machine carries no freshness: a dash.
+  await expect(rows(page).filter({ hasText: 'acme/far' }).locator('app-code-index-label')).toHaveText('—')
+  await expectClean()
 })
 
 test('no page scrolls sideways at phone width, and the hover card stays on screen', async ({ page }) => {

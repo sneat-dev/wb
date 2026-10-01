@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -81,6 +82,15 @@ type BranchCollector interface {
 	DefaultBranch(ctx context.Context, repository discover.Repo) string
 }
 
+// IdentityCollector names the repository a clone's origin points at, as the
+// lower-case host/owner/name identity the lifecycle-hook worker puts in its
+// receipts. The origin URL stays inside the collector: only the identity comes
+// back, and it is empty for a clone with no origin or one that names no forge.
+// Like the other Git readers it is asked only when the fingerprint moved.
+type IdentityCollector interface {
+	Identity(ctx context.Context, repository discover.Repo) (string, error)
+}
+
 // ReadmeCollector reads the README.md committed at the tip of a branch from
 // Git's object store, never from the working tree. It fails with
 // errReadmeAbsent, errReadmeNotRegular or errReadmeTooLarge.
@@ -125,11 +135,14 @@ type Collectors struct {
 	Worktrees    WorktreeCollector
 	Branches     BranchCollector
 	Readme       ReadmeCollector
+	Identity     IdentityCollector
 	Records      RecordCollector
 	PullRequests PullRequestCollector
 	Sessions     SessionCollector
 	Runs         RunCollector
 	Remote       RemoteCollector
+	// CodeIndex reads indexer receipts; nil means no code-index freshness.
+	CodeIndex CodeIndexCollector
 }
 
 // localIndexMaxAge bounds how long the persisted clone inventory is reused
@@ -148,6 +161,9 @@ type LocalCollectors struct {
 	IndexCachePath string
 	// Git is the Git binary; empty means "git". A test supplies its own.
 	Git string
+	// CodeIndex reads the indexer receipts; nil means entries carry no code
+	// index.
+	CodeIndex *LocalCodeIndex
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
@@ -165,7 +181,11 @@ func (c LocalCollectors) git(ctx context.Context, dir string, args ...string) ([
 // Collectors is c as the snapshotter's local sources, with remote as the
 // other machines' source (nil for none).
 func (c LocalCollectors) Collectors(remote RemoteCollector) Collectors {
-	return Collectors{Git: c, Repositories: c, Worktrees: c, Branches: c, Readme: c, Records: c, PullRequests: c, Sessions: c, Runs: c, Remote: remote}
+	collectors := Collectors{Git: c, Repositories: c, Worktrees: c, Branches: c, Readme: c, Identity: c, Records: c, PullRequests: c, Sessions: c, Runs: c, Remote: remote}
+	if c.CodeIndex != nil {
+		collectors.CodeIndex = *c.CodeIndex
+	}
+	return collectors
 }
 
 // Repositories scans the projects root, reusing the cached inventory while its
@@ -277,6 +297,25 @@ func (c LocalCollectors) DefaultBranch(ctx context.Context, repository discover.
 		return strings.TrimSpace(string(out))
 	}
 	return ""
+}
+
+// Identity reads `remote.origin.url` from the repository's own configuration
+// through the hardened helper (a local, read-only read; Git exits 1 when the key
+// is absent) and turns it into the worker's identity with the worker's own
+// function. A URL that names no forge gives an empty identity, not an error.
+func (c LocalCollectors) Identity(ctx context.Context, repository discover.Repo) (string, error) {
+	out, err := c.git(ctx, repository.Path, "config", "--get", "remote.origin.url")
+	if notFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	identity, parseErr := lifecyclehooks.IdentityFromOrigin(strings.TrimSpace(string(out)))
+	if parseErr != nil {
+		return "", nil
+	}
+	return identity, nil
 }
 
 // The README failures.

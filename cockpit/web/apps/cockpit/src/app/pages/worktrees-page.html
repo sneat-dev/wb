@@ -15,6 +15,7 @@
         <th scope="col">Repository</th>
         <th scope="col" class="wide">Machine</th>
         <th scope="col">Source</th>
+        <th scope="col">Code index</th>
         <th scope="col" class="wide">Lifecycle</th>
         <th scope="col" class="wide">Owner</th>
         <th scope="col" class="wide">Last activity</th>
@@ -30,6 +31,7 @@
         <td>{{ store.repositoryName(worktree.repository) }}</td>
         <td class="wide">{{ worktree.machine }}</td>
         <td><app-route-label [entry]="worktree" [now]="store.now()" /></td>
+        <td><app-code-index-label [states]="worktree.code_index" [now]="store.now()" /></td>
         <td class="wide">{{ worktree.lifecycle ?? '—' }}</td>
         <td class="wide">{{ worktree.owner_state ?? '—' }}</td>
         <td class="wide">{{ worktree.last_activity_at ? age(worktree.last_activity_at, store.now()) : '—' }}</td>
@@ -37,7 +39,7 @@
     </ng-template>
     <ng-template #emptymessage>
       <tr>
-        <td colspan="8">No worktrees{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
+        <td colspan="9">No worktrees{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
       </tr>
     </ng-template>
   </p-table>

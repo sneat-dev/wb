@@ -22,6 +22,21 @@ export interface Machine extends Entry {
   worktree_count: number
 }
 
+/** The six states a code index can be in (internal/cockpit/fleet/document.go). */
+export type CodeIndexState = 'fresh' | 'stale' | 'diverged' | 'pending' | 'failed' | 'never'
+
+/**
+ * One indexer's index of a checkout: its configured name, its state, for a
+ * stale index the number of commits behind, and the time of the receipt the
+ * state was read from.
+ */
+export interface CodeIndex {
+  indexer: string
+  state: CodeIndexState
+  behind?: number
+  receipt_at?: string
+}
+
 export interface Repository extends Entry {
   host?: string
   name: string
@@ -32,6 +47,8 @@ export interface Repository extends Entry {
   open_pull_request_count?: number
   active_agent_count?: number
   error?: string
+  /** One state per configured indexer; absent when not known for this entry. */
+  code_index?: CodeIndex[]
 }
 
 export interface Worktree extends Entry {
@@ -42,6 +59,7 @@ export interface Worktree extends Entry {
   lifecycle?: string
   owner_state?: 'active' | 'idle'
   last_activity_at?: string
+  code_index?: CodeIndex[]
 }
 
 export interface Branch extends Entry {

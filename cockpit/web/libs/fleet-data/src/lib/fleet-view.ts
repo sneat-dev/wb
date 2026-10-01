@@ -1,5 +1,6 @@
 import {
   Agent,
+  CodeIndex,
   Entry,
   FleetDocument,
   Machine,
@@ -159,4 +160,13 @@ export function formatAge(observedAt: string | undefined, now: number): string {
 /** The route label every row carries; a cached row adds how old it is. */
 export function routeLabel(entry: Entry, now: number): string {
   return entry.route === 'cached' ? `cached, ${formatAge(entry.observed_at, now)}` : 'local'
+}
+
+/**
+ * The text of one code-index state: the state itself, and for a stale index
+ * the number of commits it is behind. The state is always text, never colour
+ * alone.
+ */
+export function codeIndexText(index: CodeIndex): string {
+  return index.state === 'stale' ? `stale, ${index.behind ?? 0} behind` : index.state
 }

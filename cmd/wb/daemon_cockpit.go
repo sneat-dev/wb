@@ -7,6 +7,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -33,7 +34,13 @@ func registerCockpitFleet(server *cockpit.Server, options cockpitfleet.Options) 
 // from the local copy of the git remote-state store wb.yaml configures, when it
 // does and the copy exists. The snapshot never fetches that copy, so a machine
 // with no remote section, an unlocatable store or a hub provider knows no other
-// machines; the last two are logged once, here. The machine is named after the
+// machines; the last two are logged once, here. Code-index freshness is read
+// from the lifecycle-hook receipts that wb.yaml's hooks section configures. The
+// receipt stream and queue are located by lifecyclehooks.NewFreshnessReader,
+// which resolves them with the same defaulting function the lifecycle-hook
+// worker and every `wb hooks lifecycle` command use (Dispatcher.defaults, as in
+// DefaultDispatcher), so this daemon's own XDG_STATE_HOME and home are honoured
+// exactly as the worker's are. The machine is named after the
 // remote section's machine, else after hostname's answer ("local" when it has
 // none). cockpit.refresh_interval, when set, is the refresh interval.
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {
@@ -53,7 +60,10 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 			remote = cockpitfleet.LocalStateCollector{Reader: gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: remoteStateCloneURL(remoteConfig)})}
 		}
 	}
-	local := cockpitfleet.LocalCollectors{ProjectsRoot: projectsRoot, Home: home, IndexCachePath: filepath.Join(home, "cockpit-fleet-index.json")}
+	local := cockpitfleet.LocalCollectors{
+		ProjectsRoot: projectsRoot, Home: home, IndexCachePath: filepath.Join(home, "cockpit-fleet-index.json"),
+		CodeIndex: &cockpitfleet.LocalCodeIndex{Reader: lifecyclehooks.NewFreshnessReader(lifecyclehooks.Dispatcher{ConfigPath: configPath})},
+	}
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
 		Logf: logf,

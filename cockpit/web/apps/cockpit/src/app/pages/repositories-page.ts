@@ -10,14 +10,14 @@ import {
   repositoryLabel,
   worktreeLabel,
 } from '@cockpit/fleet-data'
-import { Count, FilterBar, RouteLabel } from '@cockpit/ui'
+import { CodeIndexLabel, Count, FilterBar, RouteLabel } from '@cockpit/ui'
 import { TableModule } from 'primeng/table'
 import { ListPage } from './list-page'
 
 /** Every repository on every machine, with counts that open their entities. */
 @Component({
   selector: 'app-repositories-page',
-  imports: [TableModule, Count, FilterBar, RouteLabel],
+  imports: [TableModule, Count, FilterBar, RouteLabel, CodeIndexLabel],
   templateUrl: './repositories-page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

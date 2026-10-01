@@ -1,6 +1,7 @@
 import { By } from '@angular/platform-browser'
 import { Router, provideRouter } from '@angular/router'
 import { TestBed } from '@angular/core/testing'
+import { CodeIndex } from '@cockpit/fleet-data'
 import { fleetDocument, worktree } from '@cockpit/fleet-data/testing'
 import { FilterBar } from '@cockpit/ui'
 import { WorktreesPage } from './worktrees-page'
@@ -9,17 +10,32 @@ import { bodyRows, openPage } from './test-harness'
 describe('WorktreesPage', () => {
   it('lists every worktree with its repository, machine and route', async () => {
     const { root } = await openPage('/worktrees', WorktreesPage)
-    expect(bodyRows(root).map((row) => row.slice(0, 5))).toEqual([
-      ['task-w1', 'branch-w1', 'github.com/acme/r1', 'alpha', 'local'],
-      ['task-w2', 'branch-w2', 'github.com/acme/r1', 'alpha', 'local'],
-      ['task-w3', 'branch-w3', 'acme/r2', 'beta', 'local'],
+    expect(bodyRows(root).map((row) => row.slice(0, 6))).toEqual([
+      ['task-w1', 'branch-w1', 'github.com/acme/r1', 'alpha', 'local', '—'],
+      ['task-w2', 'branch-w2', 'github.com/acme/r1', 'alpha', 'local', '—'],
+      ['task-w3', 'branch-w3', 'acme/r2', 'beta', 'local', '—'],
     ])
+  })
+
+  // cockpit#ac:code-index-freshness-appears
+  it('shows fresh, stale with its count, and never, and a dash when not known', async () => {
+    const withIndex = (id: string, code_index?: CodeIndex[]) => ({ ...worktree(id, 'r1', 'alpha'), code_index })
+    const doc = fleetDocument({
+      worktrees: [
+        withIndex('w1', [{ indexer: 'codegrapher', state: 'fresh' }]),
+        withIndex('w2', [{ indexer: 'codegrapher', state: 'stale', behind: 3 }]),
+        withIndex('w3', [{ indexer: 'codegrapher', state: 'never' }]),
+        withIndex('w4'),
+      ],
+    })
+    const { root } = await openPage('/worktrees', WorktreesPage, doc)
+    expect(bodyRows(root).map((row) => row[5])).toEqual(['fresh', 'stale, 3 behind', 'never', '—'])
   })
 
   it('shows lifecycle, owner and the age of the last activity, or a dash', async () => {
     const full = { ...worktree('w1', 'r1', 'alpha'), lifecycle: 'in_progress', owner_state: 'active' as const, last_activity_at: '2026-10-01T10:00:00Z' }
     const { root } = await openPage('/worktrees', WorktreesPage, fleetDocument({ worktrees: [full, worktree('w2', 'r1', 'alpha')] }))
-    expect(bodyRows(root).map((row) => row.slice(5))).toEqual([
+    expect(bodyRows(root).map((row) => row.slice(6))).toEqual([
       ['in_progress', 'active', '5 min ago'],
       ['—', '—', '—'],
     ])

@@ -16,6 +16,7 @@
         <th scope="col">Worktrees</th>
         <th scope="col" class="wide">Running agents</th>
         <th scope="col" class="wide">Default branch</th>
+        <th scope="col">Code index</th>
         <th scope="col">Code</th>
       </tr>
     </ng-template>
@@ -51,6 +52,7 @@
           }
         </td>
         <td class="wide">{{ repository.default_branch ?? '—' }}</td>
+        <td><app-code-index-label [states]="repository.code_index" [now]="store.now()" /></td>
         <td>
           @if (link(repository); as href) {
             <a [href]="href" target="_blank" rel="noopener noreferrer" class="code-link">Code</a>
@@ -62,7 +64,7 @@
     </ng-template>
     <ng-template #emptymessage>
       <tr>
-        <td colspan="7">No repositories{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
+        <td colspan="8">No repositories{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
       </tr>
     </ng-template>
   </p-table>

@@ -12,9 +12,23 @@ describe('RepositoriesPage', () => {
   it('lists every repository with its machine, route and age, and counts', async () => {
     const { root } = await openPage('/repositories', RepositoriesPage)
     expect(bodyRows(root)).toEqual([
-      ['github.com/acme/r1', 'alpha', 'local', '2', '1', '—', 'Code'],
-      ['acme/r2', 'beta', 'cached, 5 min ago', '1', '—', '—', '—'],
+      ['github.com/acme/r1', 'alpha', 'local', '2', '1', '—', '—', 'Code'],
+      ['acme/r2', 'beta', 'cached, 5 min ago', '1', '—', '—', '—', '—'],
     ])
+  })
+
+  // cockpit#ac:code-index-freshness-appears
+  it('shows the code-index freshness of a repository, or a dash when it is not known', async () => {
+    const doc = fleetDocument({
+      repositories: [
+        repository('r1', 'alpha', { code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3 }] }),
+        repository('r2', 'alpha', { code_index: [{ indexer: 'codegrapher', state: 'never' }] }),
+        repository('r3', 'alpha'),
+        repository('r4', 'alpha', { code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: '2026-10-01T10:00:00Z' }] }),
+      ],
+    })
+    const { root } = await openPage('/repositories', RepositoriesPage, doc)
+    expect(bodyRows(root).map((row) => row[6])).toEqual(['stale, 3 behind', 'never', '—', 'fresh 5 min ago'])
   })
 
   it('keeps only the machine named in the URL query', async () => {

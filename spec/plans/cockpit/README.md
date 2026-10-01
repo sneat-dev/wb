@@ -158,7 +158,7 @@ Branch and pull-request counts are not shown until they have list pages.
 **Id:** task-7
 **Verifies:** cockpit#ac:code-index-freshness-appears
 **Depends-On:** 4, 6
-**Status:** planning
+**Status:** complete
 
 Add `code_index` freshness to each repository and worktree in the read model,
 in the six states `code-index-freshness` defines, read from indexer receipts.
