@@ -1,0 +1,14 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.shell-header {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--p-content-border-color, #ddd);
+}
+
+.shell-title {
+  margin: 0;
+  font-size: 1.25rem;
+}

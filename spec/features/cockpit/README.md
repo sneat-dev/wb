@@ -358,7 +358,7 @@ All code this Feature adds MUST reach 100% test coverage (founder,
   statement in an existing one, measured by `wb coverage --changed`, the
   repository's existing gate.
 - **`cockpit/web`:** the test run enforces thresholds of 100 for statements,
-  branches, functions and lines over the files under `cockpit/web/src`,
+  branches, functions and lines over the application and library sources (`cockpit/web/apps/*/src`, `cockpit/web/libs/**/src`) and the build tools (`cockpit/web/tools`),
   excluding test files and the one bootstrap file. Coverage tooling does not
   measure Angular templates, so every component MUST also have a test that
   renders it.
@@ -628,9 +628,6 @@ Then the Dashboard appears signed in as owner, the filtered Worktrees table show
 
 ## Open Questions
 
-- The CodeGrapher web UI was on Angular 21 and PrimeNG 21 on 2026-10-01.
-  Sharing components with it needs it upgraded to 22, which is tracked
-  outside this Feature.
 - `code-index-freshness` is a Draft Feature and its freshness report was not
   found in code on 2026-10-01. Building the part Cockpit reads is in this
   Feature's plan if it is still missing.

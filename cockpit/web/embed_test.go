@@ -5,9 +5,13 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sneat-dev/wb/internal/dashboard"
 )
 
 func get(t *testing.T, handler http.Handler, target string) (*http.Response, string) {
@@ -24,7 +28,7 @@ func get(t *testing.T, handler http.Handler, target string) (*http.Response, str
 
 func builtTree() fs.FS {
 	return fstest.MapFS{
-		"index.html":   {Data: []byte("<app-root></app-root>")},
+		"index.html":   {Data: []byte(`<app-root ngCspNonce="__CSP_NONCE__"></app-root>`)},
 		"main.js":      {Data: []byte("export {}")},
 		"styles.css":   {Data: []byte(":root{}")},
 		"data.json":    {Data: []byte("{}")},
@@ -40,12 +44,21 @@ func builtTree() fs.FS {
 	}
 }
 
-func TestEmbeddedPlaceholderIsNotBuiltAndServesTheOneLinePage(t *testing.T) {
+func TestEmbeddedDistThroughHandlerServesTheBuildOrTheOneLinePage(t *testing.T) {
 	t.Parallel()
-	if builtIn(distFS) {
-		t.Skip("a real Cockpit build is embedded in this checkout")
-	}
 	response, body := get(t, Handler(), "/cockpit/")
+	if builtIn(distFS) {
+		// This branch runs only in a checkout holding a real build (after
+		// `pnpm build` in cockpit/web): Handler serves it, with the
+		// placeholder replaced by the nonce of this response. The other
+		// branch below runs only in a clean clone, where dist is a
+		// placeholder.
+		nonce := nonceInPolicy.FindStringSubmatch(response.Header.Get("Content-Security-Policy"))
+		if response.StatusCode != http.StatusOK || nonce == nil || strings.Contains(body, noncePlaceholder) || !strings.Contains(body, nonce[1]) {
+			t.Fatalf("status = %d, policy = %q", response.StatusCode, response.Header.Get("Content-Security-Policy"))
+		}
+		return
+	}
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/plain") {
 		t.Fatalf("status = %d, type = %q", response.StatusCode, response.Header.Get("Content-Type"))
 	}
@@ -119,6 +132,8 @@ func TestMissingAssetIs404ButClientRoutesFallBack(t *testing.T) {
 		"/cockpit/.gitkeep":      404,
 		"/cockpit/sub/.gitkeep":  404,
 		"/cockpit/fleet/alpha":   200,
+		"/cockpit/repo/v1.2":     200,
+		"/cockpit/a.b/c":         200,
 		"/cockpit/index.html":    200,
 		"/cockpit/main.js":       200,
 	} {
@@ -162,5 +177,72 @@ func TestEntryFallbackAndNotBuiltPageAreNoCacheButAssetsAreNot(t *testing.T) {
 	}
 	if response, _ := get(t, HandlerFor(fstest.MapFS{}), "/cockpit/"); response.Header.Get("Cache-Control") != "no-cache" {
 		t.Errorf("not-built Cache-Control = %q", response.Header.Get("Cache-Control"))
+	}
+}
+
+var nonceInPolicy = regexp.MustCompile(`style-src 'self' 'nonce-([A-Za-z0-9+/=_-]{16,})'`)
+
+func TestEveryResponseCarriesTheStrictPolicy(t *testing.T) {
+	t.Parallel()
+	for name, handler := range map[string]http.Handler{"built": HandlerFor(builtTree()), "not built": HandlerFor(fstest.MapFS{})} {
+		for _, target := range []string{"/cockpit/", "/cockpit/fleet", "/cockpit/main.js", "/cockpit/missing.js"} {
+			response, _ := get(t, handler, target)
+			header := response.Header.Get("Content-Security-Policy")
+			if !strings.Contains(header, "script-src 'self';") || !strings.Contains(header, "frame-ancestors 'self'") || !nonceInPolicy.MatchString(header) {
+				t.Errorf("%s %s policy = %q", name, target, header)
+			}
+			if strings.Contains(header, "unsafe-") {
+				t.Errorf("%s %s policy allows unsafe sources: %q", name, target, header)
+			}
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/cockpit/", nil))
+		if recorder.Header().Get("Content-Security-Policy") == "" {
+			t.Errorf("%s: a refused method carries no policy", name)
+		}
+	}
+}
+
+func TestEntryDocumentNonceIsFreshPerResponseAndMatchesThePolicy(t *testing.T) {
+	t.Parallel()
+	handler := HandlerFor(builtTree())
+	seen := map[string]bool{}
+	for range 5 {
+		response, body := get(t, handler, "/cockpit/fleet/alpha")
+		match := nonceInPolicy.FindStringSubmatch(response.Header.Get("Content-Security-Policy"))
+		if match == nil {
+			t.Fatalf("no nonce in policy %q", response.Header.Get("Content-Security-Policy"))
+		}
+		nonce := match[1]
+		if want := `<app-root ngCspNonce="` + nonce + `"></app-root>`; body != want {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+		if strings.Contains(body, noncePlaceholder) || seen[nonce] {
+			t.Fatalf("nonce %q is reused or the placeholder survived", nonce)
+		}
+		seen[nonce] = true
+	}
+}
+
+func TestPolicyIsWhatTheBrowserReceivesThroughTheDashboardMount(t *testing.T) {
+	t.Parallel()
+	handler := dashboard.NewHandler(dashboard.Options{Mounts: map[string]http.Handler{MountPath: HandlerFor(builtTree())}})
+	response, _ := get(t, handler, "/cockpit/")
+	values := response.Header.Values("Content-Security-Policy")
+	if len(values) != 1 || strings.Contains(values[0], "unsafe-") || !nonceInPolicy.MatchString(values[0]) {
+		t.Fatalf("Content-Security-Policy = %q, want exactly the strict policy", values)
+	}
+}
+
+// The end-to-end test serves the build with tools/lib/serve-dist.mjs, which must
+// send the policy the daemon sends or the test proves nothing about it.
+func TestEndToEndServerSendsTheDaemonsPolicy(t *testing.T) {
+	t.Parallel()
+	source, err := os.ReadFile("tools/lib/serve-dist.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := PolicyFor("${nonce}"); !strings.Contains(string(source), want) {
+		t.Fatalf("tools/lib/serve-dist.mjs does not contain the policy %q", want)
 	}
 }
