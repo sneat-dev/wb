@@ -66,14 +66,14 @@ Several helper families are similar but have different trust guarantees; consoli
 
 ## Coverage-refactor execution queue
 
-This is the execution plan for the coverage-refactor branch. Domain ownership is the primary boundary. Twenty existing production bodies is the minimum economical batch size, not an extraction target: never add an unrelated function to reach it, and do not split a coherent domain merely to stop at twenty. Each completed extraction must leave every moved body and compatibility adapter at 100% focused statement coverage before the package gate runs.
+This is the execution plan for the coverage-refactor branch. Domain ownership is the primary boundary. Twenty target functions is the strict maximum per batch. Use a smaller coherent batch when appropriate; never add unrelated functions to reach twenty. Split larger domains at explicit state or contract boundaries, and accumulate the tests before focused validation. Each completed extraction must leave every moved body and compatibility adapter at 100% focused statement coverage before the package gate runs.
 
 The exact package-only gate at `324b0f86061d2537ade34da9f93a0c64ab5c6688` covered **17,126 of 19,777 statements (86.5955%)**, leaving **2,651** uncovered. The current profile was joined to the symbol inventory by file, function, and receiver; unlike the historical per-row coverage columns in `domain_map.tsv`, these domain totals are current for that commit.
 
 | Execution domain | Profiled callables | Covered / total | Missed | Plan |
 | --- | ---: | ---: | ---: | --- |
 | Local journal storage and repair | 21 selected bodies | 250 / 284 | 34 | First remaining extraction; exact membership below. |
-| Claims, locks, worklogs (including the first batch) | 285 | 3,425 / 3,944 | 519 | Build `internal/worktreeclaims` in coherent 25–50-body lifecycle slices after the journal contract exists. |
+| Claims, locks, worklogs (including the first batch) | 285 | 3,425 / 3,944 | 519 | Build `internal/worktreeclaims` in coherent lifecycle slices of at most twenty target functions after the journal contract exists. |
 | Landing and neutral proof | 60 | 529 / 569 | 40 | Establish proof DTOs and pure validation below branch and retirement; retain Git-backed verification behind a query port. |
 | Branch reconciliation and cleanup | 194 | 2,227 / 2,489 | 262 | Extend `internal/worktreebranches` by state machine: supersession, claim reconciliation, then reviewed deletion application. |
 | Sessions, custody, transport | 151 | 2,075 / 2,482 | 407 | Extend the existing receive, custody, park, and checkpoint packages after journal and claim contracts are stable. |
@@ -84,7 +84,7 @@ The exact package-only gate at `324b0f86061d2537ade34da9f93a0c64ab5c6688` covere
 | Process and lock probes | 3 profiled | 3 / 3 | 0 | Move only as supporting claim primitives. Platform-unprofiled functions are not assumed covered. |
 | Cross-domain orchestration retained in facade | 145 | 3,076 / 3,690 | 614 | Refactor in place around the extracted ports and cover transactions with injected failure seams. Do this last, when the domain leaves are independently testable. |
 
-The first row is the selected subset of the broader claims/storage inventories, so table rows are not additive. The remaining domain rows partition the 19,777 profiled statements. The queue is dependency-ordered rather than sorted by raw missed statements. Finish a row's coherent slices before selecting work from a later row. Within a large row, take the next complete state transition or storage contract, normally 25–50 existing bodies, and accumulate its tests before one focused leaf test and one reviewed package-only gate. Update the measurements after each row, not after each helper.
+The first row is the selected subset of the broader claims/storage inventories, so table rows are not additive. The remaining domain rows partition the 19,777 profiled statements. The queue is dependency-ordered rather than sorted by raw missed statements. Finish a row's coherent slices before selecting work from a later row. Within a large row, take the next complete state transition or storage contract, with at most twenty target functions per batch, and accumulate its tests before one focused leaf test and one reviewed package-only gate. Update the measurements after each row, not after each helper.
 
 Completed foundations on this branch are the atomic/immutable codec in `internal/filewrite`, descriptor custody in `internal/worktreesecure`, package-filtered coverage execution, and the 21-body pure branch policy seam in `internal/worktreebranches`. The branch policy extraction was architecturally useful but removed only one uncovered facade statement; later extractions must report missed-statement reduction as well as moved-code coverage.
 
@@ -274,6 +274,25 @@ Against `c300aa0a`, the stable group has **124 fewer uncovered statements and 32
 
 The fresh worklist identifies **310 named facade functions with missed blocks**, totalling 1,201 statements; The same profile measures 1,326 named facade functions: 1,016 fully covered, 310 partially covered, and none completely uncovered. These are compiled functions on this runtime, not every platform-specific function in the repository. Canonical local evidence is `/private/tmp/wb-2f5b3435-summary.json`, `/private/tmp/wb-2f5b3435-checkpoint-receipt.json` and `/private/tmp/wb-2f5b3435-worklist.json`. Repository-pinned tagged lint and all six quality guards pass on the combined source. The dead-code gate remains red with the same 321 findings, with no added or removed symbols and no baseline increase. Normal commit hooks were used; publication remains deferred. The next isolated domains are session-message evidence and external-worktree adoption, with shared validation/claim classification and complete changed-body coverage required.
 
+
+### Verified local checkpoint after recovery validation and native inventory coverage
+
+At clean source `f9c012b81e2b73b7f96982790f6dc265d7b985ff`, the same e2e-enabled 13-package, two-shard shared checkpoint passed. The output log's creation-to-final-write interval was approximately **9 minutes 53 seconds**. This is an observed run duration, not an isolated benchmark. The profile SHA-256 is `b75d376f8e618398f9f20b33870aa441d21976844805afe20a30bd5e4069959a`.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| Original 11-package worktree group | 20,387 / 21,439 | 95.0931% | 1,052 |
+| `internal/worktrees` facade | 15,466 / 16,518 | 93.6312% | 1,052 |
+| Stable 12-package group, including `internal/gitcli` | 20,474 / 21,526 | 95.1129% | 1,052 |
+| Expanded 13-package group | 20,702 / 21,757 | 95.1510% | 1,055 |
+
+Against the intervening measured checkpoint `9d5c1c7522b2ebb2c3d34347bd9bb56a75ca64b0`, this group has **86 fewer missed statements and 20 fewer total statements**. That predecessor measured 20,636/21,777 across the expanded scope and 15,401/16,539 in the facade. The new profile covers all **three changed or added bodies since 9d, 122/122 statements**, and all **204 changed or added compiled Darwin bodies since d4aba76d, 4,303/4,303 statements**. Eleven supporting packages remain fully covered; checkout-marker remains 228/231. The facade has **1,319 named compiled functions: 1,018 fully covered, 301 partially covered, and none completely uncovered**. This remains worktree-group coverage, not a fresh whole-CLI measurement.
+
+The accumulated improvements include shared session-message validation, adoption claim classification, native claim-reader and layout-boundary tests, and recovery fault tests. The recovery tests exposed a mutation-before-validation bug: a missing takeover actor could overwrite the projection before returning an error. The fix validates the actor before opening or writing the projection; the regression requires `Applied=false` and byte-identical projection, private claim and event journal. `ProjectionFromEvents` now exposes the existing non-fallible event fold, while the store method retains its existing error-returning adapter signature. The fold still reads the clock when constructing an empty projection. A private per-invocation append callback tests a genuinely reachable post-publication storage failure and subsequent repair; it defaults to the existing authorized append path.
+
+Ten unused private branch forwarders were deleted after cross-build caller checks, removing 53 production lines and 19 historical statements (18 covered, one missed). The last exact dead-code check, at `5c72757d7238c67b56b332bb9fc124f22455d8cd`, remains red with **311 findings**, ten fewer than the preceding 321 and no additions; its baseline was not increased. This is a separate gate, not a coverage failure or a fresh whole-repository CI verdict. Repository-pinned tagged lint and all six explicitly named quality guards pass on f9. Canonical local evidence is `/private/tmp/wb-f9c012b8-summary.json`, `/private/tmp/wb-f9c012b8-checkpoint-receipt.json` and `/private/tmp/wb-f9c012b8-worklist.json`.
+
+The next isolated batches are lifecycle registry test assertions, GC accounting and empty-shell retirement, and deletion of private journal/storage test forwarders. They are not included in this measured checkpoint. Require adversarial review, source-bound complete coverage for every changed/new body, and normal hooks before local integration. Keep genuine claim, filesystem and Git authority boundaries distinct; do not introduce a larger policy framework just to share traversal. Publication remains deferred, with commits accumulated locally. The weekly usage stop is 90%, checked no more than hourly.
 
 ## Evidence and limits
 
