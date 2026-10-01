@@ -2257,15 +2257,27 @@ func runCanonicalGitBytes(
 	environment func() []string,
 	args ...string,
 ) ([]byte, error) {
+	return runCanonicalGitBytesWithExecutable(ctx, canonical, helperArgument, errorPrefix, environment, os.Executable, trustedGitExecutable, args...)
+}
+
+func runCanonicalGitBytesWithExecutable(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	helperArgument, errorPrefix string,
+	environment func() []string,
+	resolveExecutable func() (string, error),
+	resolveGitExecutable func() (string, error),
+	args ...string,
+) ([]byte, error) {
 	if err := canonical.authorizeForGit(); err != nil {
 		return nil, err
 	}
 	runSecure := func() ([]byte, error) {
-		executable, err := os.Executable()
+		executable, err := secureHelperExecutable(resolveExecutable, "canonical Git")
 		if err != nil {
-			return nil, fmt.Errorf("locate WB canonical Git helper: %w", err)
+			return nil, err
 		}
-		gitExecutable, err := trustedGitExecutable()
+		gitExecutable, err := resolveGitExecutable()
 		if err != nil {
 			return nil, err
 		}
@@ -2566,6 +2578,10 @@ func directoryExistsNoFollow(path string) (bool, error) {
 // is empty for repository-local mode, whose checkout is a direct child of the
 // operation root.
 func prepareWorktreeDestination(operationRoot string, operationDirectory *os.File, parent, repository string) (string, bool, error) {
+	return prepareWorktreeDestinationWithRead(operationRoot, operationDirectory, parent, repository, (*os.File).Stat)
+}
+
+func prepareWorktreeDestinationWithRead(operationRoot string, operationDirectory *os.File, parent, repository string, readHeldDirectory func(*os.File) (os.FileInfo, error)) (string, bool, error) {
 	if !directoryStillMatches(operationRoot, operationDirectory) {
 		return "", false, fmt.Errorf("secure worktree operation path changed before planning; refusing redirected checkout")
 	}
@@ -2590,12 +2606,8 @@ func prepareWorktreeDestination(operationRoot string, operationDirectory *os.Fil
 		return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
 	}
 	destination := os.NewFile(uintptr(fd), "wb-worktree-destination-plan")
-	if destination == nil {
-		_ = unix.Close(fd)
-		return "", false, fmt.Errorf("wrap secure worktree destination %s", worktree)
-	}
 	defer func() { _ = destination.Close() }()
-	info, err := destination.Stat()
+	info, err := readHeldDirectory(destination)
 	if err != nil {
 		return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
 	}
@@ -2930,7 +2942,19 @@ func gitWorktreeAddFromStageDirectory(
 	branch, baseRevision string,
 	branchExists bool,
 ) error {
-	gitExecutable, err := trustedGitExecutable()
+	return gitWorktreeAddFromStageDirectoryWithExecutable(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists, trustedGitExecutable)
+}
+
+func gitWorktreeAddFromStageDirectoryWithExecutable(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	trustedOperationRoot string,
+	stageDirectory *os.File,
+	branch, baseRevision string,
+	branchExists bool,
+	resolveGitExecutable func() (string, error),
+) error {
+	gitExecutable, err := resolveGitExecutable()
 	if err != nil {
 		return err
 	}
@@ -2993,10 +3017,24 @@ const (
 	secureStagePathArgument  = "--path"
 )
 
-func runSecureStageHelper(ctx context.Context, stageDirectory *os.File, args ...string) ([]byte, error) {
-	executable, err := os.Executable()
+// secureHelperExecutable preserves the lookup diagnostics shared by the
+// retained-descriptor child protocols. Resolution precedes any child launch.
+func secureHelperExecutable(resolve func() (string, error), role string) (string, error) {
+	executable, err := resolve()
 	if err != nil {
-		return nil, fmt.Errorf("locate WB secure staging helper: %w", err)
+		return "", fmt.Errorf("locate WB %s helper: %w", role, err)
+	}
+	return executable, nil
+}
+
+func runSecureStageHelper(ctx context.Context, stageDirectory *os.File, args ...string) ([]byte, error) {
+	return runSecureStageHelperWithExecutable(ctx, stageDirectory, os.Executable, args...)
+}
+
+func runSecureStageHelperWithExecutable(ctx context.Context, stageDirectory *os.File, resolveExecutable func() (string, error), args ...string) ([]byte, error) {
+	executable, err := secureHelperExecutable(resolveExecutable, "secure staging")
+	if err != nil {
+		return nil, err
 	}
 	command := exec.CommandContext(ctx, executable, append([]string{SecureStageGitHelperArgument}, args...)...)
 	command.Env = console.Env()
@@ -3011,9 +3049,20 @@ func runSecureStageCanonicalGitHelper(
 	trustedOperationRoot, gitExecutable, branch, baseRevision string,
 	branchExists bool,
 ) ([]byte, error) {
-	executable, err := os.Executable()
+	return runSecureStageCanonicalGitHelperWithExecutable(ctx, stageDirectory, canonical, trustedOperationRoot, gitExecutable, branch, baseRevision, branchExists, os.Executable)
+}
+
+func runSecureStageCanonicalGitHelperWithExecutable(
+	ctx context.Context,
+	stageDirectory *os.File,
+	canonical *canonicalRepository,
+	trustedOperationRoot, gitExecutable, branch, baseRevision string,
+	branchExists bool,
+	resolveExecutable func() (string, error),
+) ([]byte, error) {
+	executable, err := secureHelperExecutable(resolveExecutable, "secure staged canonical Git")
 	if err != nil {
-		return nil, fmt.Errorf("locate WB secure staged canonical Git helper: %w", err)
+		return nil, err
 	}
 	exists := "0"
 	if branchExists {
@@ -3039,6 +3088,10 @@ func verifySecureStageDirectory(ctx context.Context, stageDirectory *os.File, tr
 
 func secureDirectoryPath(ctx context.Context, directory *os.File) (string, error) {
 	output, err := runSecureStageHelper(ctx, directory, secureStagePathArgument)
+	return admitSecureDirectoryPath(output, err)
+}
+
+func admitSecureDirectoryPath(output []byte, err error) (string, error) {
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -3567,7 +3620,11 @@ func quarantineStageDirectoryByIdentityAt(operationDirectory *os.File, wanted se
 }
 
 func quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.File) error {
-	held, err := stageDirectory.Stat()
+	return quarantineMatchingStageDirectoryAtWithRead(operationDirectory, stageDirectory, (*os.File).Stat)
+}
+
+func quarantineMatchingStageDirectoryAtWithRead(operationDirectory, stageDirectory *os.File, readHeldDirectory func(*os.File) (os.FileInfo, error)) error {
+	held, err := readHeldDirectory(stageDirectory)
 	if err != nil {
 		return fmt.Errorf("inspect held staging directory: %w", err)
 	}
@@ -3589,10 +3646,6 @@ func quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.F
 			continue
 		}
 		candidate := os.NewFile(uintptr(fd), "wb-worktree-stage-cleanup")
-		if candidate == nil {
-			_ = unix.Close(fd)
-			continue
-		}
 		info, statErr := candidate.Stat()
 		_ = candidate.Close()
 		if statErr == nil && os.SameFile(held, info) {
