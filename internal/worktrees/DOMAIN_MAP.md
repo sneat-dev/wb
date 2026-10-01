@@ -296,6 +296,27 @@ Ten unused private branch forwarders were deleted after cross-build caller check
 
 The next isolated batches are lifecycle registry test assertions, GC accounting and empty-shell retirement, and deletion of private journal/storage test forwarders. They are not included in this measured checkpoint. Require adversarial review, source-bound complete coverage for every changed/new body, and normal hooks before local integration. Keep genuine claim, filesystem and Git authority boundaries distinct; do not introduce a larger policy framework just to share traversal. Publication remains deferred, with commits accumulated locally. The weekly usage stop is 90%, checked no more than hourly.
 
+### Verified local checkpoint after lifecycle, GC and cleanup evidence batches
+
+At clean source `36061d895615abf07710cb6351f102b0acf3b8df`, the same e2e-enabled 13-package shared coverage run passed with two worktrees shards. The observed log creation-to-final-write interval was approximately **10 minutes 13 seconds**, not an isolated benchmark. Profile SHA-256: `b075d8132e86876d1a8d44be3ccecadec01c8782475959d2ec214974b9d164ce`.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| Original 11-package worktree group | 20,479 / 21,424 | 95.5891% | 945 |
+| `internal/worktrees` facade | 15,558 / 16,503 | 94.2738% | 945 |
+| Stable 12-package group, including `internal/gitcli` | 20,566 / 21,511 | 95.6069% | 945 |
+| Expanded 13-package group | 20,794 / 21,742 | 95.6398% | 948 |
+
+Relative to f9 above, the expanded group has **107 fewer missed statements and 15 fewer total statements**. The facade has **1,305 named compiled functions: 1,021 fully covered, 284 partially covered, and none completely uncovered**. Eleven supporting packages remain at 100%; checkout-marker remains 228/231. This is still worktree-group coverage, not a fresh whole-CLI measurement.
+
+The sole changed production body since f9, `applyGC`, is **30/30 covered**. It centralizes successful-retirement accounting while preserving held candidates, cleanup errors and exact remote deletion authority, with one fewer production line. All **205 changed or added compiled Darwin bodies since d4aba76d are 4,333/4,333 covered**. Native tests extend lifecycle claim/layout boundaries, pre-apply reservation refusal and cleanup proof selection. Review strengthened assertions to prove the intended refusal boundary and preserve existing evidence, rather than accepting any error. The broader run closes 107 misses; the focused batch unions accounted for 105, so two additional observed hits are not attributed to a particular new test.
+
+Fourteen unused private journal/storage forwarders were removed after cross-build caller checks, removing 94 production lines and 14 previously covered statements. Together with the earlier ten branch forwarders, that is **24 private functions and 147 production lines removed**. The exact dead-code check at 360 remains red with **297 findings**, down from 311 with no additions; its baseline was not increased. Pinned tagged lint and all six explicitly named quality guards pass. These results do not establish a green whole-repository CI verdict.
+
+An extra unsharded default-package run at `69d49f7a` exhausted its aggregate 10-minute deadline. The active test had run for only one second when the package timed out; this is not evidence that that individual case hung. The successful shared checkpoint above uses the existing two-shard path; avoid repeating the too-short unsharded run. Local receipts: `/private/tmp/wb-36061d89-summary.json`, `/private/tmp/wb-36061d89-checkpoint-receipt.json` and `/private/tmp/wb-36061d89-worklist.json`.
+
+After this measurement, reviewed test-only fixture reuse was integrated at `624cebf3`: seven fewer test lines and two fewer native fixture setups, with focused race tests and quality checks passing. It does not change production source or establish a new measured coverage percentage. The next session-receive test batch is outside the 360 checkpoint. A proposed two-reader fault seam was held: duplicating eight-argument wrappers to cover two OS-error statements would add code without sufficient reuse benefit. Keep strict and tolerant evidence policies separate. Publication remains deferred; accumulate reviewed local commits, retain the strict maximum of 20 target functions per batch, and stop at 90% weekly usage with no more than hourly usage checks.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
