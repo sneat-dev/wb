@@ -73,7 +73,7 @@ func NewHandler(options HandlerOptions) http.Handler {
 	} else {
 		options.WebhookSecret = append([]byte(nil), options.WebhookSecret...)
 	}
-	handler := apiHandler{options: options}
+	handler := apiHandler{options: options, exports: &exportLimiter{}}
 	mux := http.NewServeMux()
 	if !options.DisableSelfHostedEnrollment {
 		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
@@ -163,7 +163,11 @@ func (h apiHandler) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-type apiHandler struct{ options HandlerOptions }
+type apiHandler struct {
+	options HandlerOptions
+	// exports limits the rate of the machine export route, per credential.
+	exports *exportLimiter
+}
 
 func (h apiHandler) viewer(r *http.Request) (Viewer, bool) {
 	if h.options.ViewerResolver == nil {

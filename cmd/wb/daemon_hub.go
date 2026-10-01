@@ -99,12 +99,16 @@ func (mount *hubMount) Close() error {
 }
 
 // serveExportOf makes the hub's export route serve snapshotter's envelope
-// (cockpit-views#req:hub-export-route). A nil receiver is the no-hub case: a
-// daemon with no hub mounted has no such route.
-func (mount *hubMount) serveExportOf(snapshotter *cockpitfleet.Snapshotter) {
+// (cockpit-views#req:hub-export-route), unless config refuses anonymous
+// metadata reads. A nil receiver is the no-hub case: a daemon with no hub
+// mounted has no such route.
+func (mount *hubMount) serveExportOf(snapshotter *cockpitfleet.Snapshotter, config wbconfig.CockpitConfig) {
 	if mount == nil {
 		return
 	}
+	// A machine that refuses anonymous metadata reads exports its metadata over
+	// no transport: the route says export_refused, as the CLI verb does.
+	mount.export.refused.Store(!config.AnonymousMetadata)
 	mount.export.snapshotter.Store(snapshotter)
 }
 
@@ -370,7 +374,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		// identity this hub knows, under which the daemon enrols itself and the
 		// owner RPC enrols every other machine. Only a machine credential of that
 		// identity with machine_snapshot:read may read this machine's export.
-		MachineExport: &hub.MachineExport{OwnerIdentityID: localIdentityID, Export: export.envelope},
+		MachineExport: &hub.MachineExport{OwnerIdentityID: localIdentityID, Serve: export.serve, Now: tuningNow(tuning)},
 	})
 
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
@@ -587,6 +591,14 @@ func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots
 		Interval:     pollInterval(cfg, tuning),
 		Narrate:      writer.Write,
 	})
+}
+
+// tuningNow is the clock a test injects, or nil for the real one.
+func tuningNow(tuning *hubTuning) func() time.Time {
+	if tuning == nil {
+		return nil
+	}
+	return tuning.Now
 }
 
 // pollInterval is the configured interval, or the test override when one is

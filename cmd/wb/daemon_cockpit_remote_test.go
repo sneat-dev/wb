@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -236,26 +237,22 @@ func TestADaemonWithNoHTTPRouteSendsNothingAndOneWithARouteReadsIt(t *testing.T)
 	stop()
 }
 
-// TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly proves
-// cockpit-views#ac:hub-export-route-requires-a-machine-bearer on a real
-// daemon-hosted hub mount with real credentials: the machine credential the
-// hub enrolled for its owner receives this machine's envelope (and the
-// metrics-only one without a fleet), which the strict decoder accepts; a
-// credential of another identity is refused with 403; an unknown bearer, a
-// session cookie and no credential with 401; the route is outside the Cockpit
-// API, whose Host guard still answers 421; and the HTTP client of the fleet
-// reads the route end to end.
-func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing.T) {
-	ctx := context.Background()
+// exportTestMount is a real daemon-hosted hub mount on a memory store, the
+// handler of its API, the owner's machine credential as an Authorization value
+// and the path of its token file. The rate limit's clock moves a second with
+// every request, so the limit never interferes with a test that is not about it.
+func exportTestMount(t *testing.T, address string) (mount *hubMount, get func(target string, headers ...string) *httptest.ResponseRecorder, owner, tokenFile string) {
+	t.Helper()
 	configPath := memoryHubConfig(t)
-	const address = "127.0.0.1:8798"
-	mount, err := mountHub(ctx, configPath, address, narrate.Writer{}, nil)
+	var ticks atomic.Int64
+	tuning := &hubTuning{Now: func() time.Time { return exportTestNow.Add(time.Duration(ticks.Add(1)) * time.Second) }}
+	mount, err := mountHub(context.Background(), configPath, address, narrate.Writer{}, tuning)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 	api := mount.handlers()[hub.APIPrefix+"/"]
-	get := func(target string, headers ...string) *httptest.ResponseRecorder {
+	get = func(target string, headers ...string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
 		for index := 0; index < len(headers); index += 2 {
 			request.Header.Set(headers[index], headers[index+1])
@@ -272,17 +269,28 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := "Bearer " + strings.TrimSpace(string(raw))
+	return mount, get, "Bearer " + strings.TrimSpace(string(raw)), remote.TokenFile
+}
 
-	// Until the daemon has bound its snapshotter there is no envelope.
-	if early := get(hub.MachineExportPath, "Authorization", owner); early.Code != http.StatusServiceUnavailable {
-		t.Fatalf("before the snapshotter is bound = %d %s", early.Code, early.Body.String())
-	}
-	mount.serveExportOf(refreshedSnapshotter(t, "hub-host"))
+// TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly proves
+// cockpit-views#ac:hub-export-route-requires-a-machine-bearer on a real
+// daemon-hosted hub mount with real credentials: the machine credential the
+// hub enrolled for its owner receives this machine's envelope (and the
+// metrics-only one without a fleet), which the strict decoder accepts; a
+// credential of another identity is refused with 403; an unknown bearer, a
+// session cookie and no credential with 401; the route is outside the Cockpit
+// API, whose Host guard still answers 421; and the HTTP client of the fleet
+// reads the route end to end.
+func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing.T) {
+	ctx := context.Background()
+	const address = "127.0.0.1:8798"
+	mount, get, owner, tokenFile := exportTestMount(t, address)
+	api := mount.handlers()[hub.APIPrefix+"/"]
+	mount.serveExportOf(refreshedSnapshotter(t, "hub-host"), wbconfig.DefaultCockpitConfig())
 
 	full := get(hub.MachineExportPath, "Authorization", owner)
-	if full.Code != http.StatusOK {
-		t.Fatalf("the owner's export = %d %s", full.Code, full.Body.String())
+	if full.Code != http.StatusOK || full.Header().Get("ETag") == "" || full.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("the owner's export = %d %v %s", full.Code, full.Header(), full.Body.String())
 	}
 	envelope, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(full.Body.Bytes()), false, exportTestNow)
 	if err != nil || envelope.Machine != "hub-host" || len(envelope.Fleet.Machines) != 1 || envelope.Fleet.Machines[0].Route != cockpitfleet.RouteLocal || !envelope.ExportedAt.Equal(exportTestNow) {
@@ -291,6 +299,15 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 	only := get(hub.MachineExportPath+"?metrics_only=1", "Authorization", owner)
 	if metrics, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(only.Body.Bytes()), true, exportTestNow); only.Code != http.StatusOK || err != nil || metrics.Fleet != nil || metrics.Metrics == nil || strings.Contains(only.Body.String(), `"fleet"`) {
 		t.Fatalf("the metrics-only export = %d %s, %v", only.Code, only.Body.String(), err)
+	}
+	// The body is prepared once and served by the shared writer: gzip with its
+	// own ETag when asked for, and 304 to a reader that already holds it.
+	zipped := get(hub.MachineExportPath, "Authorization", owner, "Accept-Encoding", "gzip")
+	if zipped.Code != http.StatusOK || zipped.Header().Get("Content-Encoding") != "gzip" || !strings.HasSuffix(zipped.Header().Get("ETag"), `-gzip"`) {
+		t.Errorf("the gzip export = %d %v", zipped.Code, zipped.Header())
+	}
+	if same := get(hub.MachineExportPath, "Authorization", owner, "If-None-Match", full.Header().Get("ETag")); same.Code != http.StatusNotModified || same.Body.Len() != 0 {
+		t.Errorf("a revalidation = %d with %d bytes, want 304", same.Code, same.Body.Len())
 	}
 
 	stranger, err := mount.Enrollment.Enroll(ctx, hub.Viewer{Authenticated: true, IdentityID: "someone-else"}, hub.MachineEnrollmentRequest{Name: "their-laptop"})
@@ -348,17 +365,116 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 	listener := httptest.NewServer(api)
 	defer listener.Close()
 	exporter := cockpitfleet.NewHTTPExporter(func() time.Time { return exportTestNow })
-	read, err := exporter.Export(ctx, cockpitfleet.RemoteTarget{Machine: "vm", HTTP: &cockpitfleet.HTTPRoute{URL: listener.URL, TokenFile: remote.TokenFile}}, false)
+	read, err := exporter.Export(ctx, cockpitfleet.RemoteTarget{Machine: "vm", HTTP: &cockpitfleet.HTTPRoute{URL: listener.URL, TokenFile: tokenFile}}, false)
 	if err != nil || read.Machine != "hub-host" || read.Fleet == nil {
 		t.Fatalf("the client's read of the route = %+v, %v", read, err)
 	}
-
-	// A machine whose own entry would not pass the envelope's rules has no export.
-	mount.serveExportOf(refreshedSnapshotter(t, strings.Repeat("m", 300)))
-	if invalid := get(hub.MachineExportPath, "Authorization", owner); invalid.Code != http.StatusServiceUnavailable || strings.Contains(invalid.Body.String(), "mmmm") {
-		t.Errorf("an export that fails its own rules = %d %s, want 503", invalid.Code, invalid.Body.String())
-	}
 	// A daemon with no hub has nothing to bind and no such route.
 	var none *hubMount
-	none.serveExportOf(refreshedSnapshotter(t, "hub-host"))
+	none.serveExportOf(refreshedSnapshotter(t, "hub-host"), wbconfig.DefaultCockpitConfig())
+}
+
+// TestMachineExportRouteSaysWhyThereIsNoEnvelope proves the typed reasons of
+// cockpit-views#req:hub-export-route on the real mount, and what the fleet's
+// HTTP client makes of each: a daemon that has not bound its snapshotter, or
+// whose first pass has not ended, answers 503 warming_up, which the client
+// takes as no failure at all; a machine with cockpit.anonymous_metadata false
+// answers 403 export_refused to its own owner's credential, for both shapes,
+// which the client shows as export_refused without trying another transport;
+// and an envelope that fails its own rules answers 503 export_failed, which
+// the client shows as bad_payload, never as the transport being unavailable.
+// No reason carries anything of the machine.
+func TestMachineExportRouteSaysWhyThereIsNoEnvelope(t *testing.T) {
+	const address = "127.0.0.1:8797"
+	mount, get, owner, tokenFile := exportTestMount(t, address)
+	listener := httptest.NewServer(mount.handlers()[hub.APIPrefix+"/"])
+	defer listener.Close()
+	exporter := cockpitfleet.NewHTTPExporter(func() time.Time { return exportTestNow })
+	read := func(metricsOnly bool) error {
+		_, err := exporter.Export(context.Background(), cockpitfleet.RemoteTarget{Machine: "vm", HTTP: &cockpitfleet.HTTPRoute{URL: listener.URL, TokenFile: tokenFile}}, metricsOnly)
+		return err
+	}
+	requireReason := func(name, target string, status int, code string) {
+		t.Helper()
+		response := get(target, "Authorization", owner)
+		if response.Code != status || strings.TrimSpace(response.Body.String()) != `{"error":"`+code+`"}` || response.Header().Get("ETag") != "" {
+			t.Fatalf("%s: %s = %d %s, want %d %s", name, target, response.Code, response.Body.String(), status, code)
+		}
+	}
+
+	requireReason("no snapshotter bound", hub.MachineExportPath, http.StatusServiceUnavailable, "warming_up")
+	if err := read(false); !errors.Is(err, cockpitfleet.ErrRemoteWarmingUp) {
+		t.Errorf("the client's read of an unbound daemon = %v, want warming up", err)
+	}
+
+	// A snapshotter that has taken no snapshot is warming up: no partial fleet is
+	// served, and its metrics-only export is.
+	warming := cockpitfleet.New(cockpitfleet.Options{Machine: "hub-host", Version: "v1.2.3", Collectors: emptyMachineCollectors(), Now: func() time.Time { return exportTestNow }})
+	mount.serveExportOf(warming, wbconfig.DefaultCockpitConfig())
+	requireReason("a warming daemon", hub.MachineExportPath, http.StatusServiceUnavailable, "warming_up")
+	if err := read(false); !errors.Is(err, cockpitfleet.ErrRemoteWarmingUp) {
+		t.Errorf("the client's read of a warming daemon = %v, want warming up", err)
+	}
+	if only := get(hub.MachineExportPath+"?metrics_only=1", "Authorization", owner); only.Code != http.StatusOK {
+		t.Errorf("the metrics-only export of a warming daemon = %d %s", only.Code, only.Body.String())
+	}
+
+	// The machine does not export its metadata: no transport overrides that.
+	private := wbconfig.DefaultCockpitConfig()
+	private.AnonymousMetadata = false
+	mount.serveExportOf(refreshedSnapshotter(t, "hub-host"), private)
+	for _, target := range []string{hub.MachineExportPath, hub.MachineExportPath + "?metrics_only=1"} {
+		requireReason("anonymous_metadata false", target, http.StatusForbidden, "export_refused")
+	}
+	for _, metricsOnly := range []bool{false, true} {
+		var failure *cockpitfleet.RemoteError
+		if err := read(metricsOnly); !errors.As(err, &failure) || failure.Code != cockpitfleet.RemoteErrorExportRefused || failure.Fallback {
+			t.Errorf("the client's read of a machine that refuses = %v, want export_refused and no fallback", err)
+		}
+	}
+
+	// A machine whose own entry would not pass the envelope's rules has no export.
+	mount.serveExportOf(refreshedSnapshotter(t, strings.Repeat("m", 300)), wbconfig.DefaultCockpitConfig())
+	requireReason("an invalid envelope", hub.MachineExportPath, http.StatusServiceUnavailable, "export_failed")
+	var failure *cockpitfleet.RemoteError
+	if err := read(false); !errors.As(err, &failure) || failure.Code != cockpitfleet.RemoteErrorBadPayload || failure.Fallback {
+		t.Errorf("the client's read of an envelope that fails its rules = %v, want bad_payload and no fallback", err)
+	}
+}
+
+// TestATargetThatIsThisDaemonsOwnAddressIsNotRead proves the self-fetch guard:
+// a target whose http url is this daemon's own listener, by its address or by
+// any loopback name on its port, is dropped with a diagnostic that names the
+// configured key and not the url; other targets are kept.
+func TestATargetThatIsThisDaemonsOwnAddressIsNotRead(t *testing.T) {
+	t.Parallel()
+	target := func(machine, address string) cockpitfleet.RemoteTarget {
+		return cockpitfleet.RemoteTarget{Machine: machine, HTTP: &cockpitfleet.HTTPRoute{URL: address, TokenFile: "/etc/wb/" + machine + ".token"}}
+	}
+	targets := []cockpitfleet.RemoteTarget{
+		target("same", "http://127.0.0.1:8766"), target("by-name", "http://localhost:8766/"), target("by-v6", "http://[::1]:8766"),
+		target("other-port", "http://127.0.0.1:8767"), target("vm", "https://vm.example"), target("vm-port", "https://vm.example:8766"),
+		{Machine: "ssh-only"},
+	}
+	var logs bytes.Buffer
+	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(&logs, format+"\n", args...) }
+	kept := withoutOwnAddress(targets, "127.0.0.1:8766", logf)
+	var names []string
+	for _, item := range kept {
+		names = append(names, item.Machine)
+	}
+	if strings.Join(names, ",") != "other-port,vm,vm-port,ssh-only" {
+		t.Errorf("kept %v", names)
+	}
+	for _, dropped := range []string{"same", "by-name", "by-v6"} {
+		if !strings.Contains(logs.String(), "cockpit fleet: "+dropped+" is not read over http: its http url is this daemon's own address") {
+			t.Errorf("no diagnostic for %s: %q", dropped, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "8766") || strings.Contains(logs.String(), "token") {
+		t.Errorf("the diagnostic carries an address or a path: %q", logs.String())
+	}
+	if all := withoutOwnAddress(targets, "not-an-address", logf); len(all) != len(targets) {
+		t.Errorf("with no usable address %d of %d targets are kept", len(all), len(targets))
+	}
 }

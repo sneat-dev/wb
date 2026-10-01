@@ -193,8 +193,10 @@ const ReasonCachedRepository = "cached_repository"
 // Transport is the transport (`http` or `ssh`) that produced a machine's
 // live-remote entries, and RemoteError the code of the last failed read of
 // another machine (cockpit-views#req:remote-error-is-visible): one of
-// remoteErrorCodes, never the remote's own text. Neither is ever set on this
-// machine's own entry.
+// remoteErrorCodes, never the remote's own text. ExportDropped is the number of
+// that machine's entries its export left out, or this daemon cut at its caps,
+// and AgentsTruncated says its agents were cut. None of the four is ever set
+// on this machine's own entry.
 type Machine struct {
 	Entry
 	WBVersion       string    `json:"wb_version,omitempty"`
@@ -206,6 +208,8 @@ type Machine struct {
 	BootTime        time.Time `json:"boot_time,omitzero"`
 	Transport       string    `json:"transport,omitempty"`
 	RemoteError     string    `json:"remote_error,omitempty"`
+	ExportDropped   int       `json:"export_dropped,omitempty"`
+	AgentsTruncated bool      `json:"agents_truncated,omitempty"`
 }
 
 // Repository is one repository with its counts. A count that is nil is not

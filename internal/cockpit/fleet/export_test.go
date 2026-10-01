@@ -139,7 +139,7 @@ func TestExportMetricsOfEachAnswer(t *testing.T) {
 func TestEnvelopeWithNoLocalMachineHasNoName(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	envelope := NewEnvelope(emptyDocument(time.Minute), MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, now, false)
+	envelope, _ := NewEnvelope(emptyDocument(time.Minute), MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, now, false)
 	if envelope.Machine != "" || envelope.Fleet == nil || len(envelope.Fleet.Worktrees) != 0 {
 		t.Fatalf("envelope = %+v", envelope)
 	}

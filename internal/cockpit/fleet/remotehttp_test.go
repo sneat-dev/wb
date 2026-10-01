@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
+	"github.com/sneat-dev/wb/internal/hubaddress"
 )
 
 const vmBearer = "vm-machine-credential"
@@ -376,7 +378,7 @@ func TestHTTPExportFailuresAreCodesAndNeverTheResponsesText(t *testing.T) {
 	})
 	t.Cleanup(func() { close(release) })
 	started := time.Now()
-	if _, err := newHTTPExporter(time.Second, 50*time.Millisecond, now).Export(t.Context(), httpTarget(slow, token), false); !errors.As(err, &failure) || *failure != unavailable {
+	if _, err := newHTTPExporter(time.Second, 50*time.Millisecond, now, nil).Export(t.Context(), httpTarget(slow, token), false); !errors.As(err, &failure) || *failure != unavailable {
 		t.Errorf("a response over the total timeout = %v", err)
 	}
 	if waited := time.Since(started); waited > 5*time.Second {
@@ -421,8 +423,11 @@ func TestHTTPExporterHasTheTransportsTimeoutsAndFollowsNothing(t *testing.T) {
 	if err := client.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
 		t.Errorf("a redirect = %v, want it not followed", err)
 	}
-	if reflect.ValueOf(transport.Proxy).Pointer() != reflect.ValueOf(http.ProxyFromEnvironment).Pointer() {
-		t.Error("the proxy policy is not the environment's, which the hub client follows")
+	if reflect.ValueOf(transport.Proxy).Pointer() != reflect.ValueOf(hubaddress.Proxy).Pointer() {
+		t.Error("the proxy policy is not the one of a client that sends a machine credential")
+	}
+	if tlsConfig := transport.TLSClientConfig; tlsConfig == nil || tlsConfig.InsecureSkipVerify || tlsConfig.MinVersion != tls.VersionTLS12 || tlsConfig.RootCAs != nil {
+		t.Errorf("TLS: %+v, want verification on, the system roots and TLS 1.2 at least", transport.TLSClientConfig)
 	}
 }
 

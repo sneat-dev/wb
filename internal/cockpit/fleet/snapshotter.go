@@ -233,6 +233,8 @@ type Snapshotter struct {
 	sampler        *machinemetrics.Sampler
 	metricsSources []MetricsSource
 	metrics        metricsCache
+	// exports holds this machine's export prepared for the hub route.
+	exports exportCache
 
 	// live is the configured machines read through transports, by their
 	// configured key, and liveKeys those keys in order. liveIDs says which
@@ -243,6 +245,15 @@ type Snapshotter struct {
 	liveIDs    map[string]string
 	transports []RemoteTransport
 	remoteTick func(time.Duration) (<-chan time.Time, func())
+	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
+	// replaces it). generation counts the documents assembled, so that one
+	// prepared outside the lock is stored only if none was assembled after it.
+	// maxDocument is the size over which the live machines are left out, and
+	// leftOut whether they are.
+	mapper      func(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView
+	generation  uint64
+	maxDocument int
+	leftOut     bool
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -274,6 +285,7 @@ func New(options Options) *Snapshotter {
 	if snapshotter.remoteTick == nil {
 		snapshotter.remoteTick = tickEvery
 	}
+	snapshotter.mapper, snapshotter.maxDocument = mapLive, defaultMaxDocumentBytes
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}
@@ -322,8 +334,13 @@ func tickEvery(interval time.Duration) (<-chan time.Time, func()) {
 // neither an encoder nor a compressor (cockpit-views#req:compressed-responses).
 // The document types cannot fail to marshal.
 func (s *Snapshotter) store(document Document) {
+	s.doc, s.payload = document, s.prepare(document)
+}
+
+// prepare is document's body prepared for serving. It needs no lock.
+func (s *Snapshotter) prepare(document Document) cockpit.Payload {
 	body, _ := json.Marshal(document)
-	s.doc, s.payload = document, cockpit.NewPayload(append(body, '\n'), s.compress)
+	return cockpit.NewPayload(append(body, '\n'), s.compress)
 }
 
 // Payload returns the last published document prepared for serving.
@@ -998,13 +1015,75 @@ func (s *Snapshotter) publishMaybeLocked() {
 	s.publishLocked()
 }
 
-// publishLocked rebuilds the document from what the snapshotter holds: the
-// repositories scanned so far, the agents, the pull-request records and the
-// other machines: the configured ones read live, which replace their
-// published-store entries while fresh, and the published store's. The caller
-// holds s.mu.
+// publishLocked assembles the document, prepares its body and makes it the
+// published one. The caller holds s.mu. A document that is over its size bound
+// with the live machines' entries is published without them (their published
+// entries are shown instead), which is logged once and counted as a diagnostic.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
+	document := s.assemble(now, true)
+	payload := s.prepare(document)
+	if s.oversized(payload) {
+		document = s.assemble(now, false)
+		payload = s.prepare(document)
+	}
+	s.doc, s.payload = document, payload
+	s.lastPublish, s.publishes = now, s.publishes+1
+}
+
+// oversized reports whether a prepared document is over the size bound while it
+// carries live machines, and logs the change. The caller holds s.mu.
+func (s *Snapshotter) oversized(payload cockpit.Payload) bool {
+	over := len(s.liveKeys) > 0 && payload.Size() > s.maxDocument
+	if over != s.leftOut {
+		s.leftOut = over
+		if over {
+			s.logf("cockpit fleet: the fleet document is over %d bytes with the live machines' entries; they are left out and their published entries shown", s.maxDocument)
+		}
+	}
+	return over
+}
+
+// publishUnlocked publishes as publishLocked does for a caller that does not
+// hold s.mu, without encoding or compressing under it: the document is
+// assembled under the lock, its body prepared outside it, and stored only if no
+// later document was assembled meanwhile (the later one wins). During a pass it
+// keeps to the pass's publication rate; the pass publishes when it ends.
+func (s *Snapshotter) publishUnlocked() {
+	now := s.now()
+	s.mu.Lock()
+	if s.passing && s.publishes > 0 && now.Sub(s.lastPublish) < publishInterval {
+		s.mu.Unlock()
+		return
+	}
+	document := s.assemble(now, true)
+	generation := s.generation
+	s.mu.Unlock()
+	payload := s.prepare(document)
+	s.mu.Lock()
+	over := s.oversized(payload)
+	if over && generation == s.generation {
+		document = s.assemble(now, false)
+		generation = s.generation
+	}
+	s.mu.Unlock()
+	if over {
+		payload = s.prepare(document)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation == s.generation {
+		s.doc, s.payload = document, payload
+		s.lastPublish, s.publishes = now, s.publishes+1
+	}
+}
+
+// assemble builds the document from what the snapshotter holds: the
+// repositories scanned so far, the agents, the pull-request records and the
+// other machines: the configured ones read live (when withLive), which replace
+// their published-store entries while fresh, and the published store's. The
+// caller holds s.mu.
+func (s *Snapshotter) assemble(now time.Time, withLive bool) Document {
 	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
@@ -1061,13 +1140,23 @@ func (s *Snapshotter) publishLocked() {
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
 	})
-	hidden, failures := s.overlayLive(&document, now)
-	s.appendCached(&document, hidden, failures)
+	localHosts := map[string]bool{}
+	for _, repository := range document.Repositories {
+		if repository.Host != "" {
+			localHosts[strings.ToLower(repository.Host)] = true
+		}
+	}
+	hidden, failures := s.overlayLive(&document, now, withLive, localHosts)
+	s.appendCached(&document, hidden, failures, localHosts)
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })
 	sortByName(document.PullRequests, func(item PullRequest) string { return fmt.Sprintf("%09d", item.Number) }, func(item PullRequest) string { return item.ID })
 	sortByName(document.Agents, func(item Agent) string { return item.Kind }, func(item Agent) string { return item.ID })
-	s.store(document)
-	s.lastPublish, s.publishes = now, s.publishes+1
+	if !withLive {
+		// The live machines were left out for the document's size: one diagnostic.
+		document.Diagnostics++
+	}
+	s.generation++
+	return document
 }

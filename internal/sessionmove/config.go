@@ -95,7 +95,8 @@ type HTTPConfig struct {
 // query, fragment or path. A token file, when named, is an absolute path.
 func (c HTTPConfig) Validate() error {
 	if !hubaddress.Valid(c.URL) {
-		return fmt.Errorf("http.url %q must be an https origin, or an http origin on a loopback host, with no user information, path, query or fragment", c.URL)
+		// The value is not echoed: an address with user information holds a password.
+		return errors.New("http.url must be an https origin, or an http origin on a loopback host (localhost, 127.0.0.1 or ::1), with no user information, path, query or fragment")
 	}
 	if c.TokenFile != "" && !filepath.IsAbs(c.TokenFile) {
 		return fmt.Errorf("http.token_file %q must be an absolute path", c.TokenFile)

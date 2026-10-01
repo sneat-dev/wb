@@ -494,6 +494,11 @@ func validateDocument(document *Document) error {
 		if machine.ID != machine.MachineID {
 			return refuse("fleet.machines[0].machine_id is not its id")
 		}
+		// What a reader records about its read of another machine is never part of
+		// a machine's own export.
+		if machine.ExportDropped != 0 || machine.AgentsTruncated {
+			return refuse("fleet.machines[0] carries a field only a reader sets")
+		}
 		machineID = machine.ID
 	}
 	type located struct {

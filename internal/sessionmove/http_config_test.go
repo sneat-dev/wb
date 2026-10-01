@@ -66,12 +66,14 @@ func TestLoadConfigRefusesAnHTTPAddressACredentialMustNotBeSentTo(t *testing.T) 
 		"a path":                  "        url: https://vm.example/v0/workbench\n",
 		"a query":                 "        url: https://vm.example?machine=mac\n",
 		"a fragment":              "        url: https://vm.example#x\n",
+		"an empty query":          "        url: \"https://vm.example?\"\n",
+		"a capitalised localhost": "        url: http://LOCALHOST:8766\n",
 		"no url":                  "        token_file: /etc/wb/vm.token\n",
 		"relative token file":     "        url: https://vm.example\n        token_file: vm.token\n",
 	} {
 		_, err := LoadConfig(writeConfig(t, httpTargetPrefix+section))
-		if err == nil || !strings.Contains(err.Error(), "session_move.targets.vm: http.") {
-			t.Errorf("%s: LoadConfig = %v, want the http section refused", name, err)
+		if err == nil || !strings.Contains(err.Error(), "session_move.targets.vm: http.") || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: LoadConfig = %v, want the http section refused without echoing a password", name, err)
 		}
 	}
 	_, err := LoadConfig(writeConfig(t, `session_move:

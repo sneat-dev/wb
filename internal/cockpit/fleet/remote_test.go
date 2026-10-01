@@ -276,6 +276,8 @@ func TestExportFromTriesTransportsInOrderAndFallsBackOnlyOnFallbackClassFailures
 	valid := exportOf(t, vmOwnName, vmSources(), 2, false)
 	invalid := copyEnvelope(t, valid)
 	invalid.Fleet.Worktrees[0].Task = strings.Repeat("x", 10_000)
+	warm := copyEnvelope(t, valid)
+	warm.Fleet.WarmingUp = true
 	now := newClock().Now
 	good := func() *fakeExporter { return &fakeExporter{answer: answering(valid, valid)} }
 	bad := func(err error) *fakeExporter { return &fakeExporter{answer: failing(err)} }
@@ -285,6 +287,7 @@ func TestExportFromTriesTransportsInOrderAndFallsBackOnlyOnFallbackClassFailures
 		ok                      bool
 		firstCalls, secondCalls int
 		metricsOnlyAsFull       bool
+		warming                 bool
 	}{
 		"the preferred transport works":       {first: good(), second: good(), transport: TransportHTTP, ok: true, firstCalls: 1},
 		"a fallback-class failure falls back": {first: bad(&RemoteError{Code: RemoteErrorHTTPAuthFailed, Fallback: true}), second: good(), transport: TransportSSH, failure: RemoteErrorHTTPAuthFailed, ok: true, firstCalls: 1, secondCalls: 1},
@@ -295,15 +298,18 @@ func TestExportFromTriesTransportsInOrderAndFallsBackOnlyOnFallbackClassFailures
 		"no route anywhere":                   {first: bad(ErrNoRoute), second: bad(ErrNoRoute), firstCalls: 1, secondCalls: 1},
 		"both fail":                           {first: bad(&RemoteError{Code: RemoteErrorHTTPUnavailable, Fallback: true}), second: bad(&RemoteError{Code: RemoteErrorWBMissing}), failure: RemoteErrorWBMissing, firstCalls: 1, secondCalls: 1},
 		"a panic is the transport failing":    {first: &fakeExporter{answer: func(RemoteTarget, bool) (Envelope, error) { panic("an exporter panicked") }}, second: good(), transport: TransportSSH, failure: RemoteErrorHTTPUnavailable, ok: true, firstCalls: 1, secondCalls: 1},
+		"a warming remote is not a failure":   {first: bad(ErrRemoteWarmingUp), second: good(), warming: true, firstCalls: 1},
+		"a warming fleet is never taken":      {first: &fakeExporter{answer: answering(warm, warm)}, second: good(), warming: true, firstCalls: 1},
+		"warming after a fallback":            {first: bad(&RemoteError{Code: RemoteErrorHTTPUnavailable, Fallback: true}), second: bad(fmt.Errorf("ssh: %w", ErrRemoteWarmingUp)), warming: true, firstCalls: 1, secondCalls: 1},
 		"the wrong shape is refused":          {first: good(), second: good(), failure: RemoteErrorBadPayload, firstCalls: 1, metricsOnlyAsFull: true},
 	} {
 		transports := []RemoteTransport{{Name: TransportHTTP, Exporter: test.first}, {Name: TransportSSH, Exporter: test.second}}
-		envelope, transport, failure, ok := exportFrom(t.Context(), transports, RemoteTarget{Machine: vmKey}, test.metricsOnlyAsFull, now)
-		if ok != test.ok || transport != test.transport || failure != test.failure || test.first.count() != test.firstCalls || test.second.count() != test.secondCalls {
-			t.Errorf("%s: ok %v transport %q failure %q calls %d and %d", name, ok, transport, failure, test.first.count(), test.second.count())
+		result := exportFrom(t.Context(), transports, RemoteTarget{Machine: vmKey}, test.metricsOnlyAsFull, now)
+		if result.ok != test.ok || result.transport != test.transport || result.failure != test.failure || result.warming != test.warming || test.first.count() != test.firstCalls || test.second.count() != test.secondCalls {
+			t.Errorf("%s: %+v, calls %d and %d", name, result, test.first.count(), test.second.count())
 		}
-		if ok != (envelope.Fleet != nil) {
-			t.Errorf("%s: an envelope came back with ok %v", name, ok)
+		if result.ok != (result.envelope.Fleet != nil) {
+			t.Errorf("%s: an envelope came back with ok %v", name, result.ok)
 		}
 	}
 }
@@ -967,7 +973,7 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 	cachedEntry := third.Fleet.Worktrees[0]
 	cachedEntry.ID, cachedEntry.Route, cachedEntry.Task = entryID(kindWorktree, "cached", "y"), RouteCached, "cached-task"
 	third.Fleet.Worktrees = append(third.Fleet.Worktrees, cachedEntry)
-	view := mapLive(vmKey, entryID(kindMachine, "/"+vmKey), third.Fleet, newClock().Now())
+	view := mapLive(vmKey, entryID(kindMachine, "/"+vmKey), third.Fleet, newClock().Now(), 0)
 	if len(view.worktrees) != 3 {
 		t.Fatalf("the mapping kept %d worktrees, want the machine's own 3", len(view.worktrees))
 	}
@@ -1074,13 +1080,13 @@ func TestMapLiveKeepsOnlyWhatBelongsAndDropsDanglingReferences(t *testing.T) {
 	observed := newClock().Now()
 	machineID := entryID(kindMachine, "/vm")
 	empty := emptyDocument(time.Minute)
-	bare := mapLive(vmKey, machineID, &empty, observed)
+	bare := mapLive(vmKey, machineID, &empty, observed, 0)
 	if bare.machine.ID != machineID || bare.machine.Machine != vmKey || bare.machine.Route != RouteLiveRemote || len(bare.repositories)+len(bare.worktrees)+len(bare.pullRequests)+len(bare.agents) != 0 {
 		t.Fatalf("an empty document maps to %+v", bare)
 	}
 	orphans := emptyDocument(time.Minute)
 	orphans.Worktrees = []Worktree{{Entry: Entry{ID: "wt-1", MachineID: "mach-x", Route: RouteLocal}, Task: "orphan"}}
-	if view := mapLive(vmKey, machineID, &orphans, observed); len(view.worktrees) != 0 {
+	if view := mapLive(vmKey, machineID, &orphans, observed, 0); len(view.worktrees) != 0 {
 		t.Errorf("entries with no machine entry were kept: %+v", view.worktrees)
 	}
 
@@ -1112,13 +1118,14 @@ func TestMapLiveKeepsOnlyWhatBelongsAndDropsDanglingReferences(t *testing.T) {
 	for index := range agentCap + 5 {
 		document.Agents = append(document.Agents, Agent{Entry: own(fmt.Sprintf("ag-%d", index)), Kind: AgentRun, State: "running", Repository: "repo-missing"})
 	}
-	view := mapLive(vmKey, machineID, &document, observed)
+	view := mapLive(vmKey, machineID, &document, observed, 3)
 	huge := document
 	huge.Machines = []Machine{{Entry: own("mach-own"), CPUCount: maxCPUCount + 1}}
-	if got := mapLive(vmKey, machineID, &huge, observed).machine.CPUCount; got != 0 {
+	if got := mapLive(vmKey, machineID, &huge, observed, 0).machine.CPUCount; got != 0 {
 		t.Errorf("an implausible CPU count is kept: %d", got)
 	}
-	if view.machine.WBVersion != "v9" || view.machine.OS != "linux" || view.machine.CPUCount != 4 || view.machine.Transport != "" || view.machine.RemoteError != "" || view.machine.RepositoryCount != 1 || view.machine.WorktreeCount != 1 {
+	if view.machine.WBVersion != "v9" || view.machine.OS != "linux" || view.machine.CPUCount != 4 || view.machine.Transport != "" || view.machine.RemoteError != "" || view.machine.RepositoryCount != 1 || view.machine.WorktreeCount != 1 ||
+		view.machine.ExportDropped != 3+5 || !view.machine.AgentsTruncated {
 		t.Errorf("the machine = %+v", view.machine)
 	}
 	if len(view.repositories) != 1 || view.repositories[0].Name != "acme/engine" || view.repositories[0].RemoteURLWeb != "https://github.com/acme/engine" || view.repositories[0].WorktreeCount != 1 {
@@ -1189,15 +1196,19 @@ func TestNewEnvelopeDropsAndCountsAnEntryItsOwnDecoderWouldRefuse(t *testing.T) 
 	if _, err := DecodeEnvelope(strings.NewReader(string(body)), false, clock.Now()); err != nil {
 		t.Fatalf("the envelope is refused by its own decoder: %v", err)
 	}
-	// A repository active in the future is dropped; its worktrees then name a
-	// repository that is not exported, which a reader drops in turn.
+	// A repository active in the future is dropped, and with it everything of it:
+	// its three worktrees, its pull request and its agent, each counted. The pull
+	// request of no repository stays.
 	document := snapshotter.Document()
 	document.Repositories[0].LastActivityAt = clock.Now().Add(time.Hour)
-	future := NewEnvelope(document, MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, clock.Now(), false)
-	if future.Dropped != 2 || len(future.Fleet.Repositories) != 0 || future.Validate(false, clock.Now()) != nil {
+	future, drops := NewEnvelope(document, MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, clock.Now(), false)
+	if drops != (ExportDrops{Repositories: 1, Worktrees: 3, PullRequests: 1, Agents: 1}) || drops.Total() != 6 {
+		t.Errorf("drops by kind = %+v", drops)
+	}
+	if future.Dropped != 6 || len(future.Fleet.Repositories) != 0 || future.Validate(false, clock.Now()) != nil {
 		t.Errorf("a repository in the future: dropped %d, %d repositories, valid %v", future.Dropped, len(future.Fleet.Repositories), future.Validate(false, clock.Now()))
 	}
-	if view := mapLive(vmKey, "mach-x", future.Fleet, clock.Now()); len(view.worktrees) != 0 || len(view.pullRequests) != 2 {
+	if view := mapLive(vmKey, "mach-x", future.Fleet, clock.Now(), 0); len(view.worktrees) != 0 || len(view.pullRequests) != 1 || len(view.agents) != 0 {
 		t.Errorf("a reader of it keeps %d worktrees and %d pull requests", len(view.worktrees), len(view.pullRequests))
 	}
 	// A clean export counts nothing and says nothing.

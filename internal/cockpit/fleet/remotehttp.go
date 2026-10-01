@@ -2,6 +2,9 @@ package fleet
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/hubaddress"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -30,12 +34,20 @@ import (
 //   - A failure is a code. The response body of a failure is never read into an
 //     error, a log or the document.
 //
-// Proxies: the client honours the proxy the environment names
-// (http.ProxyFromEnvironment), which is the policy of the hub client this
-// machine already sends the same credential through
-// (internal/remotestate/hub uses the default transport). An https request goes
-// through such a proxy as a CONNECT tunnel, so the proxy does not see the
-// bearer, and a loopback address is never proxied.
+// Proxies: the client follows hubaddress.Proxy, the policy the hub client that
+// sends the same credential follows too. A plain http request (which the
+// address rule allows on a loopback host only) and any request to a loopback
+// host is never proxied, whatever the environment says and however the host is
+// spelled: a proxy would receive it whole, bearer included. An https request
+// follows the environment's proxy, through which it passes as a CONNECT tunnel
+// that does not see the bearer.
+//
+// TLS: certificates are verified against the system roots, never skipped, and
+// TLS 1.2 is the oldest version spoken.
+//
+// A loopback http address (the local end of an SSH tunnel, say) sends the
+// bearer to whatever process listens on that local port; https, or the SSH
+// transport, is the better choice for a machine reached that way.
 
 // MachineExportPath is the path of the hub route that serves a machine's own
 // export (cockpit-views#req:hub-export-route); hub.MachineExportPath is the same
@@ -73,17 +85,20 @@ type HTTPExporter struct {
 // NewHTTPExporter is the HTTP exporter with the transport's timeouts, on the
 // clock now (nil means time.Now).
 func NewHTTPExporter(now func() time.Time) *HTTPExporter {
-	return newHTTPExporter(remoteConnectTimeout, remoteTotalTimeout, now)
+	return newHTTPExporter(remoteConnectTimeout, remoteTotalTimeout, now, nil)
 }
 
-func newHTTPExporter(connect, total time.Duration, now func() time.Time) *HTTPExporter {
+// newHTTPExporter is the exporter with the given timeouts; roots replaces the
+// system's certificate roots for a test's own server (nil means the system's).
+func newHTTPExporter(connect, total time.Duration, now func() time.Time, roots *x509.CertPool) *HTTPExporter {
 	if now == nil {
 		now = time.Now
 	}
 	return &HTTPExporter{now: now, client: &http.Client{
 		Timeout: total,
 		Transport: &http.Transport{
-			Proxy:                  http.ProxyFromEnvironment,
+			Proxy:                  hubaddress.Proxy,
+			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
 			DialContext:            (&net.Dialer{Timeout: connect}).DialContext,
 			TLSHandshakeTimeout:    connect,
 			ResponseHeaderTimeout:  total,
@@ -111,7 +126,7 @@ func (e *HTTPExporter) Export(ctx context.Context, target RemoteTarget, metricsO
 	if err != nil {
 		return Envelope{}, &RemoteError{Code: RemoteErrorHTTPAuthFailed, Fallback: true}
 	}
-	address := strings.TrimRight(strings.TrimSpace(route.URL), "/") + MachineExportPath
+	address := hubaddress.Origin(route.URL) + MachineExportPath
 	if metricsOnly {
 		address += metricsOnlyQuery
 	}
@@ -126,7 +141,7 @@ func (e *HTTPExporter) Export(ctx context.Context, target RemoteTarget, metricsO
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return Envelope{}, httpFailure(response.StatusCode)
+		return Envelope{}, typedFailure(response)
 	}
 	envelope, err := DecodeEnvelope(response.Body, metricsOnly, e.now())
 	var unread *ReadError
@@ -134,6 +149,40 @@ func (e *HTTPExporter) Export(ctx context.Context, target RemoteTarget, metricsO
 		return Envelope{}, httpFailure(0)
 	}
 	return envelope, err
+}
+
+// maxFailureBytes bounds what is read of a response that is not an envelope.
+const maxFailureBytes = 256
+
+// typedFailure is the failure of an export answered with a status other than
+// 200. A hub says three things with a typed body, {"error": code}, and each is
+// recognised only as its exact status and code; the body is compared with
+// those constants and never kept, shown or logged:
+//
+//   - 503 warming_up: the remote daemon's first pass has not ended. It is not
+//     a failure (ErrRemoteWarmingUp).
+//   - 403 export_refused: the machine does not export its metadata
+//     (cockpit.anonymous_metadata: false there). No other transport would be
+//     answered differently, so it does not fall back.
+//   - 503 export_failed: the remote could not make a valid envelope. It is
+//     bad_payload, as the same failure is over SSH, and does not fall back.
+//
+// Anything else is httpFailure of the status.
+func typedFailure(response *http.Response) error {
+	var typed struct {
+		Error string `json:"error"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(response.Body, maxFailureBytes))
+	_ = json.Unmarshal(raw, &typed)
+	switch {
+	case response.StatusCode == http.StatusServiceUnavailable && typed.Error == ErrorWarmingUp:
+		return ErrRemoteWarmingUp
+	case response.StatusCode == http.StatusForbidden && typed.Error == ErrorExportRefused:
+		return &RemoteError{Code: RemoteErrorExportRefused}
+	case response.StatusCode == http.StatusServiceUnavailable && typed.Error == ErrorExportFailed:
+		return &RemoteError{Code: RemoteErrorBadPayload}
+	}
+	return httpFailure(response.StatusCode)
 }
 
 // httpFailure is the failure of an HTTP export by the status it was answered
@@ -166,13 +215,20 @@ func privateFile(mode os.FileMode) bool {
 
 // readBearer reads the machine bearer credential from path: an absolute path to
 // a regular, private file holding one token of at most maxBearerBytes of
-// printable ASCII with no space in it. It is read on every export, so a rotated credential is picked up
-// without a restart.
+// printable ASCII with no space in it. It is read on every export, so a rotated
+// credential is picked up without a restart. A path that names anything but a
+// regular file (or a symbolic link, which is followed) is refused before it is
+// opened, and the file is opened without blocking and checked again once open,
+// so a FIFO, or a link to one, can neither hang the read nor be read.
 func readBearer(path string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", errBearer
 	}
-	file, err := os.Open(path) //nolint:gosec // the path comes from the operator's own configuration.
+	named, err := os.Lstat(path)
+	if err != nil || (!named.Mode().IsRegular() && named.Mode()&os.ModeSymlink == 0) {
+		return "", errBearer
+	}
+	file, err := openNonBlocking(path)
 	if err != nil {
 		return "", errBearer
 	}

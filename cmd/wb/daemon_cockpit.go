@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"sync/atomic"
@@ -13,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
+	"github.com/sneat-dev/wb/internal/hubaddress"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -142,27 +146,64 @@ func cockpitRemotes(configPath string, config wbconfig.CockpitConfig, logf func(
 	return targets, []cockpitfleet.RemoteTransport{{Name: cockpitfleet.TransportHTTP, Exporter: cockpitfleet.NewHTTPExporter(nil)}}
 }
 
-// machineExportSource is where the hub's export route gets this machine's
-// envelope: the fleet snapshotter, which is built after the hub is mounted and
-// bound here once it exists. Until then, and whenever what the snapshotter
-// yields would not pass the envelope's own rules or its size bound, there is no
-// envelope and the route answers 503.
-type machineExportSource struct {
-	snapshotter atomic.Pointer[cockpitfleet.Snapshotter]
+// withoutOwnAddress is targets less any whose http url is this daemon's own
+// listener: reading it would show this machine a second time under another
+// machine's name. The listener is address, or any loopback name on its port. A
+// dropped target is logged by its configured key, never by its url.
+func withoutOwnAddress(targets []cockpitfleet.RemoteTarget, address string, logf func(string, ...any)) []cockpitfleet.RemoteTarget {
+	_, ownPort, err := net.SplitHostPort(address)
+	if err != nil {
+		return targets
+	}
+	kept := make([]cockpitfleet.RemoteTarget, 0, len(targets))
+	for _, target := range targets {
+		if target.HTTP != nil {
+			if parsed, parseErr := url.Parse(hubaddress.Origin(target.HTTP.URL)); parseErr == nil && (parsed.Host == address || (hubaddress.IsLoopbackHost(parsed.Hostname()) && parsed.Port() == ownPort)) {
+				logf("cockpit fleet: %s is not read over http: its http url is this daemon's own address", target.Machine)
+				continue
+			}
+		}
+		kept = append(kept, target)
+	}
+	return kept
 }
 
-// envelope is this machine's export as the route serves it: the same envelope
-// the CLI verb prints, built in process, encoded with its trailing newline.
-func (source *machineExportSource) envelope(metricsOnly bool) ([]byte, bool) {
+// machineExportSource is where the hub's export route gets this machine's
+// envelope: the fleet snapshotter, which is built after the hub is mounted and
+// bound here once it exists. It answers with the envelope, prepared once per
+// version of the daemon's state and served with gzip and an ETag by the shared
+// writer, or with a typed reason: 403 export_refused when this machine does not
+// export its metadata (cockpit.anonymous_metadata: false, which no transport
+// overrides), 503 warming_up until the snapshotter is bound and its first pass
+// has ended, and 503 export_failed when the envelope would not pass its own
+// rules.
+type machineExportSource struct {
+	snapshotter atomic.Pointer[cockpitfleet.Snapshotter]
+	refused     atomic.Bool
+}
+
+func (source *machineExportSource) serve(writer http.ResponseWriter, request *http.Request, metricsOnly bool) {
+	reason := func(status int, code string) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(status)
+		// The error type cannot fail to marshal.
+		body, _ := json.Marshal(map[string]string{"error": code})
+		_, _ = writer.Write(append(body, '\n'))
+	}
+	if source.refused.Load() {
+		reason(http.StatusForbidden, cockpitfleet.ErrorExportRefused)
+		return
+	}
 	snapshotter := source.snapshotter.Load()
 	if snapshotter == nil {
-		return nil, false
+		reason(http.StatusServiceUnavailable, cockpitfleet.ErrorWarmingUp)
+		return
 	}
-	exported := snapshotter.Export(metricsOnly)
-	// The envelope types cannot fail to marshal.
-	body, _ := json.Marshal(exported)
-	if len(body) >= cockpitfleet.MaxEnvelopeBytes || exported.Validate(metricsOnly, exported.ExportedAt) != nil {
-		return nil, false
+	payload, failure := snapshotter.ExportPayload(metricsOnly)
+	if failure != "" {
+		reason(http.StatusServiceUnavailable, failure)
+		return
 	}
-	return append(body, '\n'), true
+	writer.Header().Set("Content-Type", "application/json")
+	cockpit.ServePayload(writer, request, payload)
 }

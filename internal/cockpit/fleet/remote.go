@@ -2,8 +2,13 @@ package fleet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
@@ -68,6 +73,15 @@ const (
 	remoteExportTimeout = 30 * time.Second
 	// liveIntervals is how many refresh intervals an export stays fresh for.
 	liveIntervals = 2
+	// The most entries of one remote machine that are kept; what is over is cut
+	// and counted in the machine's export_dropped. The agents are capped at
+	// agentCap, as this machine's own are.
+	maxLiveRepositories = 2000
+	maxLiveWorktrees    = 2000
+	maxLivePullRequests = 500
+	// defaultMaxDocumentBytes is the size of the published document over which
+	// the live machines are left out of it.
+	defaultMaxDocumentBytes = 32 << 20
 )
 
 // RemoteTarget is one other machine the local configuration names. Machine is
@@ -96,6 +110,12 @@ type RemoteTransport struct {
 // ErrNoRoute is what an exporter returns for a target the local configuration
 // gives it no route to. It is not a failure: the next transport is asked.
 var ErrNoRoute = errors.New("the machine has no route for this transport")
+
+// ErrRemoteWarmingUp is what an exporter returns when the remote daemon says
+// its first pass has not ended. It is not a failure and not a reason to try
+// another transport: the remote is healthy and has nothing complete to give
+// yet, so what is held of it is kept.
+var ErrRemoteWarmingUp = errors.New("the remote daemon is warming up")
 
 // RemoteError is a failed export as a code of remoteErrorCodes. Fallback says
 // whether the next transport may be tried after it
@@ -127,41 +147,57 @@ func remoteFailure(transport string, err error) RemoteError {
 	return RemoteError{Code: RemoteErrorHTTPUnavailable, Fallback: true}
 }
 
+// exportResult is the outcome of one machine's export over its transports.
+type exportResult struct {
+	envelope  Envelope
+	transport string
+	// failure is, with ok, the code of the preferred transport that failed
+	// before the one that worked; without ok, the code of the last one tried
+	// (empty when no transport has a route).
+	failure string
+	ok      bool
+	// warming says the remote answered that it is warming up: nothing new is
+	// held, and nothing failed.
+	warming bool
+}
+
 // exportFrom reads target's envelope from the first transport that yields a
-// valid one, in order. It returns the envelope and the name of the transport
-// that produced it, and failure, the code of the first transport that failed
-// before it (the preferred transport's failure, shown while a fallback supplies
-// the data). When none succeeds, failure is the code of the last one tried, and
-// it is empty when no transport has a route. A failure that is not
-// fallback-class ends the attempt. Each envelope is validated here, so the
-// boundary does not depend on a transport having done it.
-func exportFrom(ctx context.Context, transports []RemoteTransport, target RemoteTarget, metricsOnly bool, now func() time.Time) (envelope Envelope, transport, failure string, ok bool) {
+// valid one, in order. A failure that is not fallback-class ends the attempt,
+// and so does a remote that is warming up. Each envelope is validated here, so
+// the boundary does not depend on a transport having done it, and a panic in an
+// exporter or in the validation is that transport's failure, never the
+// daemon's.
+func exportFrom(ctx context.Context, transports []RemoteTransport, target RemoteTarget, metricsOnly bool, now func() time.Time) exportResult {
+	result := exportResult{}
 	last := ""
 	for _, candidate := range transports {
 		var exported Envelope
 		err := catch(func() (err error) {
-			exported, err = candidate.Exporter.Export(ctx, target, metricsOnly)
-			return err
+			if exported, err = candidate.Exporter.Export(ctx, target, metricsOnly); err != nil {
+				return err
+			}
+			return exported.Validate(metricsOnly, now())
 		})
-		if errors.Is(err, ErrNoRoute) {
+		switch {
+		case errors.Is(err, ErrNoRoute):
 			continue
-		}
-		if err == nil {
-			err = exported.Validate(metricsOnly, now())
-		}
-		if err == nil {
-			return exported, candidate.Name, failure, true
+		case errors.Is(err, ErrRemoteWarmingUp), err == nil && exported.Fleet != nil && exported.Fleet.WarmingUp:
+			// A partial fleet from a warming daemon is never taken, whatever sent it.
+			return exportResult{warming: true}
+		case err == nil:
+			result.envelope, result.transport, result.ok = exported, candidate.Name, true
+			return result
 		}
 		failed := remoteFailure(candidate.Name, err)
 		last = failed.Code
-		if failure == "" {
-			failure = failed.Code
+		if result.failure == "" {
+			result.failure = failed.Code
 		}
 		if !failed.Fallback {
 			break
 		}
 	}
-	return Envelope{}, "", last, false
+	return exportResult{failure: last}
 }
 
 // remoteSchedule is when one machine is next read. It is a value so that the
@@ -247,17 +283,25 @@ type liveMachine struct {
 	target   RemoteTarget
 	schedule remoteSchedule
 	busy     bool
+	// asked is when a client last asked for this machine's metrics, in
+	// nanoseconds since the epoch, and zero for never. It is set on a request
+	// path, so it is atomic and needs no exclusive lock.
+	asked atomic.Int64
 
 	// fleet is the last accepted fleet, observedAt the remote snapshot's time,
 	// receivedAt when this daemon received it (which freshness is measured from,
 	// so a remote's clock cannot keep stale data live) and transport what
 	// produced it. view is fleet mapped under the machine id mappedFor.
 	fleet      *Document
+	dropped    int
 	observedAt time.Time
 	receivedAt time.Time
 	transport  string
 	mappedFor  string
 	view       liveView
+	// digest is the digest of view, by which an export that changed nothing is
+	// recognised and not published again.
+	digest [sha256.Size]byte
 
 	// remoteError is the code of the last failure, empty after a success on the
 	// preferred transport.
@@ -301,7 +345,11 @@ func observedTime(envelope Envelope, received time.Time) time.Time {
 //     as received: an id a remote chose can therefore never equal an id of this
 //     machine or of another one, and a reference to an entry that is not in the
 //     document is cleared (a worktree whose repository is not is dropped).
-func mapLive(key, machineID string, fleet *Document, observed time.Time) liveView {
+//
+// At most maxLiveRepositories, maxLiveWorktrees, maxLivePullRequests and
+// agentCap entries are kept; what is cut is added to dropped, the number the
+// export itself left out, and shown as the machine's export_dropped.
+func mapLive(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView {
 	entry := func(kind, received string) Entry {
 		return Entry{ID: entryID(kind, RouteLiveRemote, key, received), Machine: key, MachineID: machineID, Route: RouteLiveRemote, ObservedAt: observed}
 	}
@@ -318,8 +366,13 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time) liveVie
 	}
 	var view liveView
 	repositoryIDs, worktreeIDs := map[string]string{}, map[string]string{}
+	cut := 0
 	for _, repository := range fleet.Repositories {
 		if !own(repository.Entry) {
+			continue
+		}
+		if len(view.repositories) == maxLiveRepositories {
+			cut++
 			continue
 		}
 		mapped := entry(kindRepository, repository.ID)
@@ -337,6 +390,10 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time) liveVie
 		if !own(worktree.Entry) || repository == "" {
 			continue
 		}
+		if len(view.worktrees) == maxLiveWorktrees {
+			cut++
+			continue
+		}
 		mapped := entry(kindWorktree, worktree.ID)
 		worktreeIDs[worktree.ID] = mapped.ID
 		view.worktrees = append(view.worktrees, Worktree{
@@ -350,13 +407,23 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time) liveVie
 		if !own(pull.Entry) {
 			continue
 		}
+		if len(view.pullRequests) == maxLivePullRequests {
+			cut++
+			continue
+		}
 		view.pullRequests = append(view.pullRequests, PullRequest{
 			Entry: entry(kindPR, pull.ID), Repository: repositoryIDs[pull.Repository], Worktree: worktreeIDs[pull.Worktree],
 			Branch: pull.Branch, Number: pull.Number, State: pull.State, URL: safeHTTPSURL(pull.URL),
 		})
 	}
+	truncated := fleet.AgentsTruncated
 	for _, agent := range fleet.Agents {
-		if !own(agent.Entry) || len(view.agents) == agentCap {
+		if !own(agent.Entry) {
+			continue
+		}
+		if len(view.agents) == agentCap {
+			cut++
+			truncated = true
 			continue
 		}
 		view.agents = append(view.agents, Agent{
@@ -376,6 +443,7 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time) liveVie
 		Entry:     Entry{ID: machineID, Machine: key, MachineID: machineID, Route: RouteLiveRemote, ObservedAt: observed},
 		WBVersion: source.WBVersion, RepositoryCount: len(view.repositories), WorktreeCount: len(view.worktrees),
 		OS: source.OS, Arch: source.Arch, CPUCount: cpuCount(source.CPUCount), BootTime: source.BootTime,
+		ExportDropped: min(max(dropped, 0)+cut, maxCount), AgentsTruncated: truncated,
 	}
 	return view
 }
@@ -400,6 +468,48 @@ func liveCodeIndex(indexes []CodeIndex) []CodeIndex {
 		mapped = append(mapped, item)
 	}
 	return mapped
+}
+
+// digestOf is a digest of everything a view contributes to the document.
+func digestOf(view liveView) [sha256.Size]byte {
+	// The document types cannot fail to marshal.
+	body, _ := json.Marshal([]any{view.machine, view.repositories, view.worktrees, view.pullRequests, view.agents})
+	return sha256.Sum256(body)
+}
+
+// pullRequestPath is the path of a pull request under a repository's web
+// address, as GitHub has it.
+const pullRequestPath = "/pull/"
+
+// relink gives the pull requests of another machine the only links they may
+// have (cockpit-views#req:pull-request-fields): an address a remote sent is
+// never rendered. The link is built here from the host of the pull request's
+// repository (or, for a repository published with no host, the host of the
+// address that was sent), the repository's owner/name and the number, and only
+// when that host is the host of a repository of THIS machine; otherwise the
+// pull request has no link. It returns new entries and leaves pulls untouched.
+func relink(pulls []PullRequest, repositories []Repository, localHosts map[string]bool) []PullRequest {
+	if len(pulls) == 0 {
+		return nil
+	}
+	byID := make(map[string]Repository, len(repositories))
+	for _, repository := range repositories {
+		byID[repository.ID] = repository
+	}
+	linked := make([]PullRequest, len(pulls))
+	for index, pull := range pulls {
+		repository := byID[pull.Repository]
+		host := repository.Host
+		if host == "" && pull.URL != "" {
+			host = urlHost(pull.URL)
+		}
+		pull.URL = ""
+		if base := webURL(host, repository.Name); base != "" && localHosts[strings.ToLower(host)] && pull.Number > 0 {
+			pull.URL = base + pullRequestPath + strconv.Itoa(pull.Number)
+		}
+		linked[index] = pull
+	}
+	return linked
 }
 
 // cachedMachinesOf is the ids of the published-store machine entries that are
@@ -433,9 +543,12 @@ func (s *Snapshotter) liveMachineID(key string, cached []string) string {
 // failure of the preferred transport, and hides its published-store entries.
 // One whose export is stale or missing keeps its published-store entries, which
 // then carry the failure code; with no such entry and a failure, a bare machine
-// entry says so. It also records which machine ids stand for which configured
-// key, for the metrics source. The caller holds s.mu.
-func (s *Snapshotter) overlayLive(document *Document, now time.Time) (hidden map[string]bool, failures map[string]string) {
+// entry says so. With withLive false no live entry is added (the document was
+// over its size bound with them). It also records which machine ids stand for
+// which configured key, for the metrics source. A panic while a machine's
+// entries are mapped drops that machine's export as bad_payload and never
+// reaches the daemon. The caller holds s.mu.
+func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bool, localHosts map[string]bool) (hidden map[string]bool, failures map[string]string) {
 	s.liveIDs = map[string]string{}
 	for _, key := range s.liveKeys {
 		machine := s.live[key]
@@ -445,17 +558,25 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time) (hidden map
 		for _, published := range cached {
 			s.liveIDs[published] = key
 		}
-		switch {
-		case machine.fresh(now, s.interval):
-			if machine.mappedFor != id {
-				machine.view, machine.mappedFor = mapLive(key, id, machine.fleet, machine.observedAt), id
+		fresh := withLive && machine.fresh(now, s.interval)
+		if fresh && machine.mappedFor != id {
+			if err := catch(func() error {
+				machine.view, machine.mappedFor = s.mapper(key, id, machine.fleet, machine.observedAt, machine.dropped), id
+				machine.digest = digestOf(machine.view)
+				return nil
+			}); err != nil {
+				s.logf("cockpit fleet: the export of %s could not be mapped (%s)", key, RemoteErrorBadPayload)
+				machine.fleet, machine.view, machine.mappedFor, machine.remoteError, fresh = nil, liveView{}, "", RemoteErrorBadPayload, false
 			}
+		}
+		switch {
+		case fresh:
 			entry := machine.view.machine
 			entry.Transport, entry.RemoteError = machine.transport, machine.remoteError
 			document.Machines = append(document.Machines, entry)
 			document.Repositories = append(document.Repositories, machine.view.repositories...)
 			document.Worktrees = append(document.Worktrees, machine.view.worktrees...)
-			document.PullRequests = append(document.PullRequests, machine.view.pullRequests...)
+			document.PullRequests = append(document.PullRequests, relink(machine.view.pullRequests, machine.view.repositories, localHosts)...)
 			document.Agents = append(document.Agents, machine.view.agents...)
 			for _, published := range cached {
 				if hidden == nil {
@@ -482,14 +603,15 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time) (hidden map
 }
 
 // appendCached adds the published-store entries to document, less the machines
-// in hidden, and with the failure code of failures on a machine entry it names.
-// The caller holds s.mu.
-func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, failures map[string]string) {
+// in hidden, with the failure code of failures on a machine entry it names, and
+// with the pull requests' links rebuilt (relink). The caller holds s.mu.
+func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, failures map[string]string, localHosts map[string]bool) {
+	pulls := relink(s.remote.pullRequests, s.remote.repositories, localHosts)
 	if len(hidden) == 0 && len(failures) == 0 {
 		document.Machines = append(document.Machines, s.remote.machines...)
 		document.Repositories = append(document.Repositories, s.remote.repositories...)
 		document.Worktrees = append(document.Worktrees, s.remote.worktrees...)
-		document.PullRequests = append(document.PullRequests, s.remote.pullRequests...)
+		document.PullRequests = append(document.PullRequests, pulls...)
 		return
 	}
 	for _, machine := range s.remote.machines {
@@ -509,7 +631,7 @@ func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, f
 			document.Worktrees = append(document.Worktrees, worktree)
 		}
 	}
-	for _, pull := range s.remote.pullRequests {
+	for _, pull := range pulls {
 		if !hidden[pull.MachineID] {
 			document.PullRequests = append(document.PullRequests, pull)
 		}
@@ -558,7 +680,11 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 		if machine.busy {
 			continue
 		}
-		fetch, metricsOnly := machine.schedule.due(now)
+		schedule := machine.schedule
+		if asked := machine.asked.Load(); asked != 0 {
+			schedule.asked = time.Unix(0, asked)
+		}
+		fetch, metricsOnly := schedule.due(now)
 		if !fetch {
 			continue
 		}
@@ -573,72 +699,97 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 
 // exportRemote reads one machine's export and merges it. A full export replaces
 // the machine's fleet, its metrics and its failure; a metrics-only one its
-// metrics. A failure keeps what the machine last gave and records the code. An
-// export that was cut short by the daemon stopping records nothing.
+// metrics. A failure keeps what the machine last gave and records the code. A
+// remote that is warming up changes nothing and is asked again at the usual
+// time. An export that was cut short by the daemon stopping records nothing.
+//
+// The entries are mapped and digested before the lock is taken, the lock is
+// held only to record the outcome, and the document is published after it is
+// released (publishUnlocked), and only when something a reader sees changed.
 func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine, metricsOnly bool, started time.Time) {
 	ctx, cancel := context.WithTimeout(parent, remoteExportTimeout)
 	defer cancel()
 	key := machine.target.Machine
-	envelope, transport, failure, ok := exportFrom(ctx, s.transports, machine.target, metricsOnly, s.now)
+	result := exportFrom(ctx, s.transports, machine.target, metricsOnly, s.now)
 	received := s.now()
 	var view liveView
+	var digest [sha256.Size]byte
 	id := ""
-	if ok && !metricsOnly {
-		// The entries are mapped outside the lock, under the id the machine has now;
-		// a publication that finds the id changed maps them again.
+	if result.ok && !metricsOnly {
+		// A publication that finds the machine's id changed maps the entries again.
 		s.mu.RLock()
 		id = s.liveMachineID(key, s.cachedMachinesOf(key))
 		s.mu.RUnlock()
-		view = mapLive(key, id, envelope.Fleet, observedTime(envelope, received))
+		if err := catch(func() error {
+			view = s.mapper(key, id, result.envelope.Fleet, observedTime(result.envelope, received), result.envelope.Dropped)
+			digest = digestOf(view)
+			return nil
+		}); err != nil {
+			result = exportResult{failure: RemoteErrorBadPayload}
+		}
 	}
+	if s.recordExport(parent, machine, result, metricsOnly, started, received, view, digest, id) {
+		s.publishUnlocked()
+	}
+}
+
+// recordExport records the outcome of an export under the lock and reports
+// whether the document must be published again.
+func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine, result exportResult, metricsOnly bool, started, received time.Time, view liveView, digest [sha256.Size]byte, id string) (publish bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	machine.busy = false
 	if parent.Err() != nil {
-		return
+		return false
 	}
-	machine.schedule = machine.schedule.after(started, metricsOnly, ok, s.interval)
-	changed := machine.remoteError != failure
-	machine.remoteError = failure
-	if !ok {
-		if changed {
-			s.logf("cockpit fleet: the export of %s failed (%s)", key, failure)
-			s.publishMaybeLocked()
+	machine.schedule = machine.schedule.after(started, metricsOnly, result.ok || result.warming, s.interval)
+	if result.warming {
+		return false
+	}
+	publish = machine.remoteError != result.failure
+	machine.remoteError = result.failure
+	if !result.ok {
+		if publish {
+			s.logf("cockpit fleet: the export of %s failed (%s)", machine.target.Machine, result.failure)
 		}
-		return
+		return publish
 	}
 	machine.samples, machine.metricsAt = nil, received
-	if envelope.Metrics.Route == RouteLocal {
-		machine.samples = envelope.Metrics.Samples
+	if result.envelope.Metrics.Route == RouteLocal {
+		machine.samples = result.envelope.Metrics.Samples
 	}
 	machine.metricsVersion++
-	if !metricsOnly {
-		machine.fleet, machine.observedAt, machine.receivedAt, machine.transport = envelope.Fleet, observedTime(envelope, received), received, transport
-		machine.view, machine.mappedFor = view, id
+	if metricsOnly {
+		return publish
+	}
+	// An export whose entries are the ones already shown, by the same transport,
+	// publishes nothing: only the time it was received at moves on.
+	unchanged := machine.fresh(received, s.interval) && machine.mappedFor == id && machine.digest == digest && machine.transport == result.transport
+	machine.fleet, machine.dropped, machine.observedAt, machine.receivedAt, machine.transport = result.envelope.Fleet, result.envelope.Dropped, observedTime(result.envelope, received), received, result.transport
+	machine.view, machine.mappedFor, machine.digest = view, id, digest
+	if !unchanged {
 		s.remoteBranches = nil
-		changed = true
 	}
-	if changed {
-		s.publishMaybeLocked()
-	}
+	return publish || !unchanged
 }
 
 // liveMetrics is the live-remote source of the machine-metrics route: the last
 // history a configured machine's export carried. Asking it records that the
 // machine's metrics are wanted, which is what makes the background loop read
-// them every metricsOnlyInterval; it never reads anything itself.
+// them every metricsOnlyInterval; it never reads anything itself, and it takes
+// no exclusive lock.
 type liveMetrics struct{ snapshotter *Snapshotter }
 
 func (l liveMetrics) MachineMetrics(id string) (MetricsAnswer, bool) {
 	s := l.snapshotter
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	machine, configured := s.live[s.liveIDs[id]]
 	if !configured {
 		return MetricsAnswer{}, false
 	}
-	machine.schedule.asked = now
+	machine.asked.Store(now.UnixNano())
 	if machine.samples == nil || now.Sub(machine.metricsAt) >= liveIntervals*s.interval {
 		return MetricsAnswer{}, false
 	}

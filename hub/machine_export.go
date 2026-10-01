@@ -3,6 +3,8 @@ package hub
 import (
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 // MachineExportPath serves the host machine's own Cockpit export envelope to
@@ -11,6 +13,14 @@ const MachineExportPath = APIPrefix + "/machines/export"
 
 // metricsOnlyParameter selects the metrics-only envelope when it is "1".
 const metricsOnlyParameter = "metrics_only"
+
+// The rate one credential may read the export at: a burst of exportBurst
+// requests, refilled at one a second. A reader asks once per refresh interval
+// and, for metrics, every 30 seconds.
+const (
+	exportBurst    = 5
+	exportInterval = time.Second
+)
 
 // MachineExport is what a daemon-hosted hub needs to serve MachineExportPath.
 // The hosted multi-identity service never sets it, and then the route does not
@@ -22,14 +32,53 @@ type MachineExport struct {
 	// operator the daemon runs for. Only a machine credential of this identity
 	// may read the export.
 	OwnerIdentityID string
-	// Export returns the host machine's own envelope as JSON, built in process
-	// from the daemon's state, or false when it cannot be built yet. It must
-	// run nothing and return only that machine's own entries.
-	Export func(metricsOnly bool) (body []byte, ok bool)
+	// Serve answers an authenticated request with the host machine's own
+	// envelope, built in process from the daemon's state, or with the typed
+	// reason there is none. It must run nothing and expose only that machine's
+	// own entries. metricsOnly is the one thing a request chooses.
+	Serve func(writer http.ResponseWriter, request *http.Request, metricsOnly bool)
+	// Now is the clock of the rate limit; nil means time.Now.
+	Now func() time.Time
 }
 
 func (export *MachineExport) usable() bool {
-	return export != nil && export.Export != nil && strings.TrimSpace(export.OwnerIdentityID) != ""
+	return export != nil && export.Serve != nil && strings.TrimSpace(export.OwnerIdentityID) != ""
+}
+
+// exportLimiter is a token bucket for each credential that reads the export.
+// Only a credential that passed the checks reaches it, so its size is bounded
+// by the machines the owner enrolled.
+type exportLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]exportBucket
+}
+
+type exportBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+// allow takes one token of machineID's bucket and reports whether it had one.
+func (limiter *exportLimiter) allow(machineID string, now time.Time) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.buckets == nil {
+		limiter.buckets = map[string]exportBucket{}
+	}
+	bucket, known := limiter.buckets[machineID]
+	if !known {
+		bucket = exportBucket{tokens: exportBurst, at: now}
+	}
+	if elapsed := now.Sub(bucket.at); elapsed > 0 {
+		bucket.tokens = min(exportBurst, bucket.tokens+float64(elapsed)/float64(exportInterval))
+		bucket.at = now
+	}
+	allowed := bucket.tokens >= 1
+	if allowed {
+		bucket.tokens--
+	}
+	limiter.buckets[machineID] = bucket
+	return allowed
 }
 
 // exportMachine answers MachineExportPath. It is authenticated only by a
@@ -37,8 +86,9 @@ func (export *MachineExport) usable() bool {
 // consulted. The credential must carry ScopeSnapshotRead (a peer credential,
 // which holds peer:session alone, does not) and be of the host owner's
 // identity; another identity is refused with 403 and everything else with 401.
-// No part of the request chooses what is exported: the only input is whether
-// the fleet is left out.
+// A credential that asks more often than the rate allows is answered 429. No
+// part of the request chooses what is exported: the only input is whether the
+// fleet is left out.
 func (h apiHandler) exportMachine(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	machine, ok := h.machine(r)
@@ -46,7 +96,8 @@ func (h apiHandler) exportMachine(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "machine_bearer_unavailable")
 		return
 	}
-	if machine.IdentityID != h.options.MachineExport.OwnerIdentityID {
+	export := h.options.MachineExport
+	if machine.IdentityID != export.OwnerIdentityID {
 		writeError(w, http.StatusForbidden, "not_the_host_owner")
 		return
 	}
@@ -58,13 +109,15 @@ func (h apiHandler) exportMachine(w http.ResponseWriter, r *http.Request) {
 		}
 		metricsOnly = true
 	}
-	body, ok := h.options.MachineExport.Export(metricsOnly)
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "machine_export_unavailable")
+	now := time.Now()
+	if export.Now != nil {
+		now = export.Now()
+	}
+	if !h.exports.allow(machine.ID, now) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	export.Serve(w, r, metricsOnly)
 }

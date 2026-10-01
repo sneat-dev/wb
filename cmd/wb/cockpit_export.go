@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -79,37 +80,47 @@ const (
 	errDaemonNotRunning = exportFailure(cockpitfleet.ErrorDaemonNotRunning)
 	errExportRefused    = exportFailure(cockpitfleet.ErrorExportRefused)
 	errExportFailed     = exportFailure(cockpitfleet.ErrorExportFailed)
+	errWarmingUp        = exportFailure(cockpitfleet.ErrorWarmingUp)
 )
 
 // cockpitExportEnvelope builds this machine's export envelope from the running
 // daemon's own fleet and machine-metrics routes, read as anonymous-local, and
-// returns it encoded with its trailing newline. It never starts anything and
-// every failure is one of the three exportFailure values.
-func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, root string, metricsOnly bool) ([]byte, exportFailure) {
+// returns it encoded with its trailing newline, and what it left out. It never
+// starts anything and every failure is one of the exportFailure values. A
+// daemon whose first pass has not ended has a partial fleet, which is not
+// exported: the full export is warming_up until it has (the metrics-only one
+// needs no fleet).
+func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, root string, metricsOnly bool) ([]byte, cockpitfleet.ExportDrops, exportFailure) {
+	fail := func(reason exportFailure) ([]byte, cockpitfleet.ExportDrops, exportFailure) {
+		return nil, cockpitfleet.ExportDrops{}, reason
+	}
 	record, found, err := deps.loadRecord(root)
 	switch {
 	case err != nil:
-		return nil, errExportFailed
+		return fail(errExportFailed)
 	case !found || record.Status == daemon.StatusStopped || record.PID <= 0 || !deps.alive(record.PID):
-		return nil, errDaemonNotRunning
+		return fail(errDaemonNotRunning)
 	}
 	// A record whose recorded process start differs from the process that now holds
 	// its id is a stale record of a daemon that is gone; a record that cannot say
 	// is trusted as far as the process being alive.
 	if started, observed := deps.processStart(record.PID); observed {
 		if match, known := record.ProcessGenerationMatches(started, observed); known && !match {
-			return nil, errDaemonNotRunning
+			return fail(errDaemonNotRunning)
 		}
 	}
 	base, ok := cockpitLoopbackBase(record.Listen)
 	if !ok {
-		return nil, errExportFailed
+		return fail(errExportFailed)
 	}
 	client := deps.client()
 
 	var document cockpitfleet.Document
 	if failure := cockpitExportGet(ctx, client, base, cockpitfleet.FleetRoute, nil, cockpitDocumentLimit, &document); failure != "" {
-		return nil, failure
+		return fail(failure)
+	}
+	if document.WarmingUp && !metricsOnly {
+		return fail(errWarmingUp)
 	}
 	metrics := cockpitfleet.MetricsResponse{Route: cockpitfleet.RouteNone, Reason: cockpitfleet.ReasonNoSource}
 	for _, machine := range document.Machines {
@@ -118,7 +129,7 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 		}
 		query := url.Values{"machine": {machine.ID}}
 		if failure := cockpitExportGet(ctx, client, base, cockpitfleet.MetricsRoute, query, cockpitMetricsLimit, &metrics); failure != "" {
-			return nil, failure
+			return fail(failure)
 		}
 		break
 	}
@@ -126,11 +137,12 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 	// this binary never emits an envelope that its own readers would refuse, and
 	// the 8 MiB bound is enforced on the bytes themselves.
 	// The envelope types cannot fail to marshal.
-	body, _ := json.Marshal(cockpitfleet.NewEnvelope(document, metrics, deps.now(), metricsOnly))
+	envelope, drops := cockpitfleet.NewEnvelope(document, metrics, deps.now(), metricsOnly)
+	body, _ := json.Marshal(envelope)
 	if _, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(body), metricsOnly, deps.now()); err != nil {
-		return nil, errExportFailed
+		return fail(errExportFailed)
 	}
-	return append(body, '\n'), ""
+	return append(body, '\n'), drops, ""
 }
 
 // cockpitLoopbackBase is the Cockpit API address of a daemon recorded as
@@ -192,15 +204,17 @@ func newCockpitExportCmd(inv *invocation, deps cockpitExportDependencies) *cobra
 			"Another machine's daemon runs this over SSH to read this one. " +
 			"It never starts a daemon, opens a browser or mints a login code, and writes nothing. " +
 			"--metrics-only omits the fleet. When no daemon is running, or one refuses anonymous reads " +
-			"(cockpit.anonymous_metadata: false), or the export fails otherwise, it prints {schema_version, error} " +
-			"with error daemon_not_running, export_refused or export_failed and exits 1. " +
+			"(cockpit.anonymous_metadata: false), or its first scan has not finished (the fleet is still partial; " +
+			"--metrics-only is not affected), or the export fails otherwise, it prints {schema_version, error} " +
+			"with error daemon_not_running, export_refused, warming_up or export_failed and exits 1. " +
+			"An entry of this machine that the envelope's rules refuse is left out and counted in the envelope's dropped field. " +
 			"On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireOutputFormat(format, "json"); err != nil {
 				return usageError(err.Error())
 			}
-			body, failure := cockpitExportEnvelope(command.Context(), deps, inv.projectsRoot, metricsOnly)
+			body, drops, failure := cockpitExportEnvelope(command.Context(), deps, inv.projectsRoot, metricsOnly)
 			if failure != "" {
 				if _, writeErr := command.OutOrStdout().Write(append(mustMarshalExportError(failure), '\n')); writeErr != nil {
 					return errors.New("wb cockpit export: could not write to stdout")
@@ -209,6 +223,11 @@ func newCockpitExportCmd(inv *invocation, deps cockpitExportDependencies) *cobra
 			}
 			if _, err := command.OutOrStdout().Write(body); err != nil {
 				return errors.New("wb cockpit export: could not write to stdout")
+			}
+			if drops.Total() > 0 {
+				// Numbers only: what was left out is never named, here or anywhere.
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb cockpit export: left out %d entries the envelope's rules refuse (repositories %d, worktrees %d, pull requests %d, agents %d)\n",
+					drops.Total(), drops.Repositories, drops.Worktrees, drops.PullRequests, drops.Agents)
 			}
 			return nil
 		},

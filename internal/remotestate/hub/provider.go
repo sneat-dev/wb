@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/hubaddress"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -51,6 +52,16 @@ type Provider struct {
 	retryDelays []time.Duration
 }
 
+// newClient is the provider's own client: the default transport with the proxy
+// policy of a client that sends a machine credential (hubaddress.Proxy), so the
+// bearer is never handed to an HTTP proxy in a plain request; an https request
+// still tunnels through the proxy the environment names.
+func newClient(proxy func(*http.Request) (*url.URL, error)) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = proxy
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
+}
+
 // New validates the endpoint and credential source without making a request.
 func New(options Options) (*Provider, error) {
 	if err := remotestate.ValidateHubURL(options.BaseURL); err != nil {
@@ -64,7 +75,7 @@ func New(options Options) (*Provider, error) {
 	}
 	client := options.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = newClient(hubaddress.Proxy)
 	}
 	sleep := options.Sleep
 	if sleep == nil {
@@ -84,7 +95,7 @@ func New(options Options) (*Provider, error) {
 		return nil, errors.New("injected hub credential must contain one non-empty token")
 	}
 	return &Provider{
-		baseURL: strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"), machine: options.Machine,
+		baseURL: hubaddress.Origin(options.BaseURL), machine: options.Machine,
 		token: token, tokenFile: strings.TrimSpace(options.TokenFile),
 		client: client, sleep: sleep, retryDelays: append([]time.Duration(nil), retryDelays...),
 	}, nil
