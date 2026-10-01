@@ -82,16 +82,17 @@ export class RepositoriesPage {
   /** A `sel` names the entry id of any checkout, not only the one the row is keyed by. */
   protected readonly resolve = (rows: readonly ListRow<MergedRepository>[], sel: string) => rows.find((row) => row.item.checkouts.some((checkout) => checkout.repository.id === sel))
 
+  /** Narrow lists lose Agents and PRs first, then Code index, Worktrees and Branches, Machines and Links; Repository and Last activity stay (the panel has the rest). */
   protected readonly columns: ListColumn<MergedRepository>[] = [
-    { id: 'repository', header: 'Repository', sort: 'repository', width: 'fill', grow: 4, min: 240, priority: ALWAYS, value: (r) => r.slug },
+    { id: 'repository', header: 'Repository', sort: 'repository', width: 'fill', grow: 4, min: 260, priority: ALWAYS, value: (r) => r.slug },
     { id: 'machines', header: 'Machines', width: 'fill', grow: 3, min: 200, priority: 5, value: (r) => r.checkouts.map((checkout) => checkout.machine).join(', '), empty: () => this.store.document().machines.length <= 1 },
     { id: 'worktrees', header: 'Worktrees', sort: 'worktrees', width: 96, min: 88, priority: 4, align: 'end', value: (r) => String(r.worktreeCount) },
     { id: 'branches', header: 'Branches', sort: 'branches', width: 110, min: 100, priority: 4, align: 'end', hint: 'Local / remote. These counts do not link: there is no branches list page', value: (r) => this.cellsOf(r).branches },
     { id: 'agents', header: 'Agents', width: 80, min: 72, priority: 2, align: 'end', hint: 'Running agents', value: (r) => (r.activeAgentCount ? String(r.activeAgentCount) : '') },
     { id: 'prs', header: 'PRs', width: 64, min: 56, priority: 2, align: 'end', hint: 'Open pull requests', value: (r) => (r.openPullRequestCount ? String(r.openPullRequestCount) : '') },
-    { id: 'index', header: 'Code index', width: 120, min: 110, priority: 3, hint: 'The worst code-index state across machines', value: (r) => r.codeIndex },
+    { id: 'index', header: 'Code index', width: 140, min: 124, priority: 3, hint: 'The worst code-index state across machines', value: (r) => r.codeIndex },
     { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
-    { id: 'links', header: 'Links', width: 72, min: 72, priority: ALWAYS, hint: 'Browse the code, open on the host' },
+    { id: 'links', header: 'Links', width: 84, min: 84, priority: 6, hint: 'Browse the code, open on the host' },
   ]
 
   private rowsOf() {

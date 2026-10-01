@@ -42,7 +42,9 @@ export function routePlan(document) {
 // The shared list and its side panel, on the Worktrees page: what the operator does
 // (`steps`, run by tools/shots.mjs) before the picture is taken. `filter:<text>` types
 // in the filter, `chip:<label>` toggles a quick filter, `row:<n>` selects the nth row
-// and `raw` opens the "Raw data" block.
+// and `raw` opens the "Raw data" block; `select:<n>` selects the nth row with the keyboard (for a list whose
+// last cell holds controls) and `radio:<label>` chooses a radio button. A list shot's `url` is `/worktrees`
+// unless it names another.
 export const LIST_SHOTS = [
   { name: 'worktrees-list', steps: [] },
   { name: 'worktrees-filter', steps: ['filter:fix'] },
@@ -50,6 +52,12 @@ export const LIST_SHOTS = [
   { name: 'worktrees-no-match', steps: ['filter:zzzzqq'] },
   { name: 'worktrees-panel', steps: ['row:2'] },
   { name: 'worktrees-panel-raw', steps: ['row:2', 'raw'] },
+  { name: 'repositories-list', url: '/repositories', steps: [] },
+  { name: 'repositories-sort', url: '/repositories', steps: ['radio:Most worktrees'] },
+  { name: 'repositories-chip', url: '/repositories', steps: ['chip:Index needs a look'] },
+  { name: 'repositories-no-match', url: '/repositories', steps: ['filter:zzzzqq'] },
+  { name: 'repositories-panel', url: '/repositories', steps: ['select:1'] },
+  { name: 'repositories-panel-raw', url: '/repositories', steps: ['select:1', 'raw'] },
 ]
 
 // Every shot: the route plan in each scheme and size, then the overlays on Home,
@@ -71,7 +79,7 @@ export function shotPlan(document) {
   }
   for (const list of LIST_SHOTS) {
     for (const scheme of SCHEMES) {
-      for (const viewport of LIST_VIEWPORTS) shots.push({ ...list, url: '/worktrees', state: 'ok', scheme, viewport, file: `${list.name}-${scheme}-${viewport.name}.png` })
+      for (const viewport of LIST_VIEWPORTS) shots.push({ ...list, url: list.url ?? '/worktrees', state: 'ok', scheme, viewport, file: `${list.name}-${scheme}-${viewport.name}.png` })
     }
   }
   return shots

@@ -24,8 +24,10 @@ h3 {
   min-width: 0;
 }
 
-.readme-block .section-title {
+/* The README section is another component's: its heading takes the panel's heading style. */
+.readme-block ::ng-deep .section-title {
   margin: 0 0 var(--space-1);
   color: var(--text-2);
   font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
