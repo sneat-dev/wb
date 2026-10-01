@@ -3,8 +3,6 @@ package remotestate
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/hubaddress"
 )
 
 // ConfigSnippet is printed whenever the remote section is absent or
@@ -206,27 +206,11 @@ var ErrHubURL = errors.New("remote.url must be an HTTPS origin without credentia
 // spec/features/self-hosted-bench runs the hub inside the same daemon the
 // provider talks to, reachable only from this machine, and demanding a
 // certificate for 127.0.0.1 would mean "deploy a service" rather than
-// "run wb".
+// "run wb". The rule itself is hubaddress.Valid, shared with the per-machine
+// http section of session_move.targets.
 func ValidateHubURL(raw string) error {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if !hubaddress.Valid(raw) {
 		return ErrHubURL
 	}
-	switch parsed.Scheme {
-	case "https":
-		return nil
-	case "http":
-		if isLoopbackHost(parsed.Hostname()) {
-			return nil
-		}
-	}
-	return ErrHubURL
-}
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return nil
 }

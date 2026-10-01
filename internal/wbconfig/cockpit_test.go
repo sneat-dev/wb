@@ -10,7 +10,7 @@ import (
 
 func TestCockpitDefaultsApplyWhenNothingIsConfigured(t *testing.T) {
 	t.Parallel()
-	want := CockpitConfig{HostedURL: "https://sneat.dev/wb/cockpit/", CodeBrowserURL: "https://codegrapher.dev/", AnonymousMetadata: true}
+	want := CockpitConfig{HostedURL: "https://sneat.dev/wb/cockpit/", CodeBrowserURL: "https://codegrapher.dev/", AnonymousMetadata: true, RemoteHTTP: true, RemoteSSH: true}
 	for name, raw := range map[string]string{"empty": "", "other sections only": "hub:\n  engine: x\n", "empty section": "cockpit: {}\n", "null section": "cockpit:\n"} {
 		got, err := parseCockpit([]byte(raw))
 		if err != nil || got != want {
@@ -21,7 +21,7 @@ func TestCockpitDefaultsApplyWhenNothingIsConfigured(t *testing.T) {
 
 func TestCockpitSectionOverridesEachKey(t *testing.T) {
 	t.Parallel()
-	got, err := parseCockpit([]byte("cockpit:\n  hosted_url: https://hosted.example.test/c/\n  code_browser_url: https://code.example.test/\n  anonymous_metadata: false\n  refresh_interval: 45s\n"))
+	got, err := parseCockpit([]byte("cockpit:\n  hosted_url: https://hosted.example.test/c/\n  code_browser_url: https://code.example.test/\n  anonymous_metadata: false\n  refresh_interval: 45s\n  remote_http: false\n  remote_ssh: false\n"))
 	want := CockpitConfig{HostedURL: "https://hosted.example.test/c/", CodeBrowserURL: "https://code.example.test/", RefreshInterval: 45 * time.Second}
 	if err != nil || got != want {
 		t.Fatalf("got %+v, %v; want %+v", got, err, want)

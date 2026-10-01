@@ -88,7 +88,7 @@ func TestEnvelopeFieldsAreExactlyTheNamedSet(t *testing.T) {
 	for name, test := range map[string]struct {
 		got, want []string
 	}{
-		"Envelope":        {jsonFields(Envelope{}), []string{"schema_version", "machine", "exported_at", "fleet", "metrics"}},
+		"Envelope":        {jsonFields(Envelope{}), []string{"schema_version", "machine", "exported_at", "fleet", "metrics", "dropped"}},
 		"EnvelopeMetrics": {jsonFields(EnvelopeMetrics{}), []string{"route", "samples", "reason"}},
 		"ExportError":     {jsonFields(ExportError{}), []string{"schema_version", "error"}},
 	} {
@@ -139,26 +139,13 @@ func TestExportMetricsOfEachAnswer(t *testing.T) {
 func TestEnvelopeWithNoLocalMachineHasNoName(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	envelope := NewEnvelope(emptyDocument(time.Minute), MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, now, false)
+	envelope, _ := NewEnvelope(emptyDocument(time.Minute), MetricsResponse{Route: RouteNone, Reason: ReasonNoSource}, now, false)
 	if envelope.Machine != "" || envelope.Fleet == nil || len(envelope.Fleet.Worktrees) != 0 {
 		t.Fatalf("envelope = %+v", envelope)
 	}
 	if err := envelope.Validate(false, now); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Export is this machine's export envelope built in process from the last
-// published document and the sampler, without running anything: what the hub
-// route will serve. It lives with the tests until that route exists, because
-// nothing outside a test calls it yet.
-func (s *Snapshotter) Export(metricsOnly bool) Envelope {
-	s.mu.RLock()
-	document := s.doc
-	s.mu.RUnlock()
-	now := s.now()
-	answer := sanitizeMetrics(s.metricsAnswerFor(localMachineID(s.machine)), now)
-	return NewEnvelope(document, MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}, now, metricsOnly)
 }
 
 // TestExportCarriesTheAgentActivityAndRunLinkFields proves the envelope of this

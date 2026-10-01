@@ -172,6 +172,7 @@ func TestValidateHubURLAcceptsLoopbackHTTP(t *testing.T) {
 		"http://example.com",
 		"http://10.0.0.1:8766",
 		"http://bench.internal:8766",
+		"https://wb-github-app.sneat.dev?",
 		"ftp://127.0.0.1",
 		"https://user:pass@wb-github-app.sneat.dev",
 		"https://wb-github-app.sneat.dev?x=1",

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +50,24 @@ func memoryHubConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return hubTestConfig(t, fmt.Sprintf(memoryHubSection, state, token))
+}
+
+// lockedBuffer is a buffer several goroutines may write to.
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 func freeLoopbackAddress(t *testing.T) string {
@@ -89,9 +108,11 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
-	var stdout, stderr bytes.Buffer
+	// The daemon writes its log from several goroutines; the buffer is locked.
+	var stdout bytes.Buffer
+	stderr := &lockedBuffer{}
 	command.SetOut(&stdout)
-	command.SetErr(&stderr)
+	command.SetErr(stderr)
 
 	served := make(chan error, 1)
 	go func() {

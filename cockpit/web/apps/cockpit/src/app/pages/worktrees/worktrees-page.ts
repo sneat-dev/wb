@@ -1,7 +1,5 @@
-import { ChangeDetectionStrategy, Component, effect, inject, input } from '@angular/core'
-import { ActivatedRoute, Router } from '@angular/router'
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core'
 import { FleetStore, Worktree, taskDetailLink } from '@cockpit/fleet-data'
-import { fieldTerm } from '@cockpit/fleet-data/list'
 import { ALWAYS, AgeText, CodeIndexCell, CopyIcon, IdentityCell, ListCell, ListColumn, ListPanelTemplate, ListView, MachineCell, OwnerStateCell, PrCell, RepositoryNames } from '@cockpit/ui/list'
 import { WorktreePanelView } from './worktree-panel'
 
@@ -16,11 +14,6 @@ import { WorktreePanelView } from './worktree-panel'
 export class WorktreesPage {
   protected readonly store = inject(FleetStore)
   private readonly names = inject(RepositoryNames)
-  private readonly router = inject(Router)
-  private readonly route = inject(ActivatedRoute)
-
-  /** The legacy `?repository=<entry id>` that the Repositories page's counts still link with, until task 16 links with `repo:"…"`: it is turned into that filter, visibly. */
-  readonly repository = input<string>()
 
   protected readonly repoName = (worktree: Worktree) => this.names.of(worktree.repository).slug
   protected readonly taskLink = (worktree: Worktree) => taskDetailLink(worktree.task)
@@ -37,14 +30,4 @@ export class WorktreesPage {
     { id: 'index', header: 'Code index', width: 160, min: 120, priority: 1, empty: (w) => !w.code_index?.length },
     { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
   ]
-
-  constructor() {
-    effect(() => {
-      const id = this.repository()
-      if (id === undefined || !this.store.loaded()) return
-      const term = fieldTerm('repo', this.names.of(id).slug)
-      const q = [this.route.snapshot.queryParamMap.get('q'), term.ok ? term.text : undefined].filter((part) => part)
-      void this.router.navigate([], { relativeTo: this.route, queryParams: { repository: null, q: q.length > 0 ? q.join(' ') : null }, queryParamsHandling: 'merge', replaceUrl: true })
-    })
-  }
 }

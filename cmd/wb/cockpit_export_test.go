@@ -357,10 +357,43 @@ func TestCockpitExportCarriesOnlyTheMetadataSet(t *testing.T) {
 	}
 }
 
+// TestCockpitExportOfAWarmingDaemonIsWarmingUp: a daemon whose first pass has
+// not ended holds a partial fleet, which must never replace what a reader has.
+// The full export is the typed reason warming_up; the metrics-only export, which
+// needs no fleet, is made, and with no machine entry yet it has no metrics.
+func TestCockpitExportOfAWarmingDaemonIsWarmingUp(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	fake.document = exportDocument()
+	fake.document.WarmingUp = true
+	stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
+	requireTypedExportFailure(t, stdout, err, "warming_up", "a warming daemon")
+	if strings.Contains(stdout, "task-a") {
+		t.Errorf("a partial fleet was printed: %s", stdout)
+	}
+
+	bare := newFakeCockpitDaemon(t)
+	bare.document = cockpitfleet.Document{SchemaVersion: cockpitfleet.SchemaVersion, RefreshIntervalSeconds: 60, WarmingUp: true}
+	stdout, err = runExport(t, failingStartSeams(t, exportDependencies(readyRecord(bare.listen()), true, true)), "--metrics-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), true, exportNow)
+	if err != nil || envelope.Metrics.Route != "none" || envelope.Metrics.Reason != "no_source" || envelope.Machine != "" || envelope.Fleet != nil {
+		t.Fatalf("err = %v, envelope = %s", err, stdout)
+	}
+	if got := bare.paths(); len(got) != 1 {
+		t.Errorf("requests = %v, want only the fleet read", got)
+	}
+}
+
+// TestCockpitExportOfADaemonWithNoMachineYetHasNoneMetrics: a document with no
+// machine entry (a first pass that found nothing to name) still yields a
+// well-formed envelope.
 func TestCockpitExportOfADaemonWithNoMachineYetHasNoneMetrics(t *testing.T) {
 	t.Parallel()
 	fake := newFakeCockpitDaemon(t)
-	fake.document = cockpitfleet.Document{SchemaVersion: cockpitfleet.SchemaVersion, RefreshIntervalSeconds: 60, WarmingUp: true}
+	fake.document = cockpitfleet.Document{SchemaVersion: cockpitfleet.SchemaVersion, RefreshIntervalSeconds: 60}
 	stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
 	if err != nil {
 		t.Fatal(err)
@@ -379,8 +412,11 @@ func TestCockpitExportOfADaemonWithNoMachineYetHasNoneMetrics(t *testing.T) {
 // fixed message, never a dependency's error text.
 func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 	t.Parallel()
+	// The machine's own entry breaking a rule fails the export: there is nothing
+	// to drop it in favour of. An odd entry of another kind is dropped instead
+	// (TestCockpitExportDropsAndCountsAnEntryThatBreaksARule).
 	hostile := exportDocument()
-	hostile.Worktrees[0].Task = strings.Repeat("a", 300)
+	hostile.Machines[1].WBVersion = "not a version"
 	cases := map[string]func(*fakeCockpitDaemon){
 		"a 500 from the fleet route":    func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
 		"a 500 from the metrics route":  func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
@@ -395,6 +431,50 @@ func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 		set(fake)
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
 		requireTypedExportFailure(t, stdout, err, "export_failed", name)
+	}
+}
+
+// TestCockpitExportDropsAndCountsAnEntryThatBreaksARule: one worktree with a
+// name over the cap does not take the machine's export down. It is left out and
+// counted, the rest is printed, the verb succeeds, and stderr says how many
+// entries of which kind were left out and never which.
+func TestCockpitExportDropsAndCountsAnEntryThatBreaksARule(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	fake.document = exportDocument()
+	fake.document.Worktrees[0].Task = strings.Repeat("a", 300)
+	command := newCockpitCmdWithDependencies(&invocation{projectsRoot: "/root"}, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
+	command.SetArgs([]string{"export"})
+	command.SilenceUsage, command.SilenceErrors = true, true
+	var out, errOut bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("err = %v, stdout = %s", err, out.String())
+	}
+	stdout := out.String()
+	envelope, err := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), false, exportNow)
+	if err != nil || envelope.Dropped != 1 || len(envelope.Fleet.Worktrees) != 0 || len(envelope.Fleet.Repositories) != 1 || len(envelope.Fleet.PullRequests) != 1 {
+		t.Fatalf("err = %v, envelope = %s", err, stdout)
+	}
+	if envelope.Fleet.PullRequests[0].Worktree != "" {
+		t.Errorf("the pull request still names the worktree that was left out: %+v", envelope.Fleet.PullRequests[0])
+	}
+	if strings.Contains(stdout, "aaaaaaaa") || strings.Contains(errOut.String(), "aaaaaaaa") {
+		t.Errorf("the dropped entry was printed: %s %s", stdout, errOut.String())
+	}
+	if want := "wb cockpit export: left out 1 entries the envelope's rules refuse (repositories 0, worktrees 1, pull requests 0, agents 0)\n"; errOut.String() != want {
+		t.Errorf("stderr = %q, want %q", errOut.String(), want)
+	}
+	// A clean export says nothing on stderr.
+	clean := newFakeCockpitDaemon(t)
+	command = newCockpitCmdWithDependencies(&invocation{projectsRoot: "/root"}, failingStartSeams(t, exportDependencies(readyRecord(clean.listen()), true, true)))
+	command.SetArgs([]string{"export"})
+	errOut.Reset()
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&errOut)
+	if err := command.Execute(); err != nil || errOut.Len() != 0 {
+		t.Errorf("a clean export: %v, stderr %q", err, errOut.String())
 	}
 }
 

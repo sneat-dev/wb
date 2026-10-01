@@ -518,7 +518,10 @@ func boundedIDs(ids []string) []string {
 	return ids
 }
 
-// remoteView is what the other machines' snapshots contribute, mapped.
+// remoteView is what the other machines' snapshots contribute, mapped. named
+// lists the machine entries by the machine name their snapshot was published
+// under, with the login, so that a configured machine's published entries can be
+// found by its configured key.
 type remoteView struct {
 	machines     []Machine
 	repositories []Repository
@@ -530,6 +533,14 @@ type remoteView struct {
 	// samples is the latest published metrics sample of each machine that
 	// published one, by machine id.
 	samples map[string]machinemetrics.Sample
+	named   map[string][]publishedMachine
+}
+
+// publishedMachine is a published-store machine entry's id and the login it was
+// published under.
+type publishedMachine struct {
+	id    string
+	login string
 }
 
 // mapRemote maps every machine entry but this machine's own last publication
@@ -607,6 +618,12 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 				view.samples = map[string]machinemetrics.Sample{}
 			}
 			view.samples[machineID] = sample
+		}
+		if view.named == nil {
+			view.named = map[string][]publishedMachine{}
+		}
+		if !slices.ContainsFunc(view.named[snapshot.Machine], func(published publishedMachine) bool { return published.id == machineID }) {
+			view.named[snapshot.Machine] = append(view.named[snapshot.Machine], publishedMachine{id: machineID, login: snapshot.Login})
 		}
 		view.machines = append(view.machines, Machine{
 			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),

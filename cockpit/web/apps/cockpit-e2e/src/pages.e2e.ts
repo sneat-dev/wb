@@ -22,8 +22,19 @@ test('every page lists its collection, cached rows show route and age, and the m
   await expect(rows(page).filter({ hasText: 'beta' }).first()).toContainText(/cached, 1\d min ago/)
   await expect(page.locator('tbody').nth(1).locator('tr')).toHaveCount(3)
 
+  // Repositories is the shared list: one row per repository identity, each machine a chip with its age.
+  await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Repositories' }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Repositories')
+  await expect(listRows(page)).toHaveCount(3)
+  await expect(listRows(page).first()).toContainText('specscore/specscore-cli')
+  await expect(listRows(page).filter({ hasText: 'acme/far' }).locator('a.machine')).toHaveText([/beta\s*1\d m/])
+  await expect(listRows(page).filter({ hasText: 'acme/web' }).locator('a.machine')).toHaveText(['alpha'])
+  await page.getByRole('button', { name: 'beta', exact: true }).click()
+  await expect(page).toHaveURL(/[?&]machine=mach-beta/)
+  await expect(listRows(page)).toHaveCount(1)
+  await expect(listRows(page).first()).toContainText('acme/far')
+
   const lists = [
-    { link: 'Repositories', rows: 3, first: 'github.com/specscore/specscore-cli' },
     { link: 'Agents', rows: 2, first: 'claude session sess-1' },
     { link: 'Machines', rows: 2, first: 'alpha' },
   ]
@@ -49,30 +60,14 @@ test('every page lists its collection, cached rows show route and age, and the m
   await expectClean()
 })
 
-test('a count shows its entities on hover or focus and opens exactly them, in dark mode', async ({ page }) => {
+test('a repository\'s worktree count opens exactly the worktrees it counted, in dark mode', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' })
   await stub(page)
   const expectClean = await watch(page)
   await page.goto('/cockpit/repositories')
 
-  const row = rows(page).filter({ hasText: 'specscore-cli' })
-  const count = row.locator('app-count').first()
-  await count.locator('a').hover()
-  const card = count.locator('.count-card')
-  await expect(card).toBeVisible()
-  await expect(card.locator('li')).toHaveText(['add-search (task/add-search)', 'fix-index (task/fix-index)'])
-  await expect(card.locator('button, a, input, select')).toHaveCount(0)
-
-  // The keyboard reaches the same card, and Escape dismisses it.
-  await page.mouse.move(0, 0)
-  await expect(card).toBeHidden()
-  await count.locator('a').focus()
-  await expect(card).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(card).toBeHidden()
-
-  await count.locator('a').click()
-  // The legacy `repository` link becomes a visible filter.
+  const row = listRows(page).filter({ hasText: 'specscore-cli' })
+  await row.getByRole('link', { name: '2', exact: true }).first().click()
   await expect(page).toHaveURL(/\/cockpit\/worktrees\?q=repo:%22specscore%2Fspecscore-cli%22$/)
   await expect(listRows(page)).toHaveCount(2)
   await expect(listRows(page).nth(0)).toContainText('add-search')
@@ -88,7 +83,7 @@ test('a count shows its entities on hover or focus and opens exactly them, in da
   await expectClean()
 })
 
-test('each repository links to the code browser, from the default base and from a configured one', async ({ page }) => {
+test('each repository has icon buttons for the code browser, from the default base and from a configured one, and for its host', async ({ page }) => {
   for (const [base, expected] of [
     ['https://codegrapher.dev/', 'https://codegrapher.dev/github.com/specscore/specscore-cli'],
     ['https://code.example.test/', 'https://code.example.test/github.com/specscore/specscore-cli'],
@@ -96,11 +91,16 @@ test('each repository links to the code browser, from the default base and from 
     await stub(page, base)
     const expectClean = await watch(page)
     await page.goto('/cockpit/repositories')
-    const link = rows(page).filter({ hasText: 'specscore-cli' }).getByRole('link', { name: 'Code' })
+    const row = listRows(page).filter({ hasText: 'specscore-cli' })
+    const link = row.getByRole('link', { name: 'Browse the code of specscore/specscore-cli' })
     await expect(link).toHaveAttribute('href', expected)
     await expect(link).toHaveAttribute('target', '_blank')
+    await expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    await expect(link).toHaveAttribute('title', 'Browse the code')
+    // There is no text "Code" link any more.
+    await expect(page.getByRole('link', { name: 'Code', exact: true })).toHaveCount(0)
     // A repository whose origin names no forge host has no link.
-    await expect(rows(page).filter({ hasText: 'acme/far' }).getByRole('link', { name: 'Code' })).toHaveCount(0)
+    await expect(listRows(page).filter({ hasText: 'acme/far' }).locator('a.icon')).toHaveCount(0)
     await expectClean()
     await page.unrouteAll()
   }
@@ -139,9 +139,9 @@ test('the Repositories page shows the code-index freshness of each repository', 
   const expectClean = await watch(page)
   await page.goto('/cockpit/repositories')
   await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()
-  await expect(rows(page).filter({ hasText: 'specscore-cli' }).locator('app-code-index-label')).toHaveText('stale, 3 behind')
+  await expect(listRows(page).filter({ hasText: 'specscore-cli' }).locator('app-state-badge')).toContainText('stale')
   // A repository on another machine carries no freshness: a dash.
-  await expect(rows(page).filter({ hasText: 'acme/far' }).locator('app-code-index-label')).toHaveText('—')
+  await expect(listRows(page).filter({ hasText: 'acme/far' }).getByText('—', { exact: true })).not.toHaveCount(0)
   await expectClean()
 })
 
@@ -151,7 +151,7 @@ test('no page scrolls sideways at 360 px, and the hover card stays on screen', a
   const expectClean = await watch(page)
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
-    await expect((path === 'worktrees' ? listRows(page) : rows(page)).first()).toBeVisible()
+    await expect((path === 'worktrees' || path === 'repositories' ? listRows(page) : rows(page)).first()).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)
   }
@@ -171,6 +171,6 @@ test('the fleet shows while the first scan is still running', async ({ page }) =
   await page.goto('/cockpit/repositories')
   await expect(page.getByTestId('freshness-chip').filter({ hasText: 'scanned 3 of 40' })).toBeVisible()
   await expect(page.getByText('2 pull requests could not be matched')).toBeVisible()
-  await expect(rows(page)).toHaveCount(3)
+  await expect(listRows(page)).toHaveCount(3)
   await expect(page.getByRole('link', { name: 'Code' })).toHaveCount(0)
 })

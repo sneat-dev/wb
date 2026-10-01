@@ -133,6 +133,16 @@ type Options struct {
 	// default, publishes nothing. It is called off the pass, in a goroutine of
 	// its own, and decides for itself whether the time has come.
 	Publisher RemotePublisher
+	// Remotes are the other machines the local configuration names, each read
+	// in the background through Transports, in that order
+	// (cockpit-views#req:remote-exporter-transports). With no transport nothing
+	// is read. A target named as this machine is ignored: an export is never
+	// applied to this machine's own entries.
+	Remotes    []RemoteTarget
+	Transports []RemoteTransport
+	// RemoteTick delivers the ticks on which the background loop looks for a due
+	// export, as Tick does for the refresh; nil means a time.Ticker.
+	RemoteTick func(interval time.Duration) (<-chan time.Time, func())
 	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
 	// for each snapshot stored and once for each repository's branch list that
 	// is first asked for after a change, never per request; a test counts it.
@@ -280,6 +290,29 @@ type Snapshotter struct {
 	sampler        *machinemetrics.Sampler
 	metricsSources []MetricsSource
 	metrics        metricsCache
+	// exports holds this machine's export prepared for the hub route.
+	exports exportCache
+
+	// live is the configured machines read through transports, by their
+	// configured key, and liveKeys those keys in order. liveIDs says which
+	// machine ids of the published document stand for which key. All three are
+	// guarded by mu; the set of keys never changes.
+	live       map[string]*liveMachine
+	liveKeys   []string
+	liveIDs    map[string]string
+	transports []RemoteTransport
+	remoteTick func(time.Duration) (<-chan time.Time, func())
+	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
+	// replaces it). generation counts the documents assembled, so that one
+	// prepared outside the lock is stored only if none was assembled after it.
+	// maxDocument is the size over which the live machines are left out,
+	// leftOut whether they are in the published document, and baseBytes the
+	// size of that document less its live machines' entries.
+	baseBytes   int
+	mapper      func(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView
+	generation  uint64
+	maxDocument int
+	leftOut     bool
 
 	// throughputs scans the terminal records on its own cadence (nil without a
 	// source); throughput is its last block, guarded by mu.
@@ -316,8 +349,27 @@ func New(options Options) *Snapshotter {
 	}
 	snapshotter.sampler = options.Sampler
 	snapshotter.publisher = options.Publisher
-	// The cached source answers last, after any live remote source in Metrics.
+	snapshotter.live, snapshotter.transports, snapshotter.remoteTick = map[string]*liveMachine{}, slices.Clone(options.Transports), options.RemoteTick
+	if len(snapshotter.transports) > 0 {
+		for _, target := range options.Remotes {
+			if target.Machine == "" || target.Machine == options.Machine || snapshotter.live[target.Machine] != nil {
+				continue
+			}
+			snapshotter.live[target.Machine] = &liveMachine{target: target}
+			snapshotter.liveKeys = append(snapshotter.liveKeys, target.Machine)
+		}
+		sort.Strings(snapshotter.liveKeys)
+	}
+	if len(snapshotter.liveKeys) > 0 {
+		snapshotter.metricsSources = append([]MetricsSource{liveMetrics{snapshotter: snapshotter}}, snapshotter.metricsSources...)
+	}
+	// The cached source answers last, after the live remote one (in front of
+	// Metrics) and any other source in Metrics.
 	snapshotter.metricsSources = append(snapshotter.metricsSources, cachedMetricsSource{snapshotter})
+	if snapshotter.remoteTick == nil {
+		snapshotter.remoteTick = tickEvery
+	}
+	snapshotter.mapper, snapshotter.maxDocument = mapLive, defaultMaxDocumentBytes
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}
@@ -372,8 +424,13 @@ func tickEvery(interval time.Duration) (<-chan time.Time, func()) {
 // neither an encoder nor a compressor (cockpit-views#req:compressed-responses).
 // The document types cannot fail to marshal.
 func (s *Snapshotter) store(document Document) {
+	s.doc, s.payload = document, s.prepare(document)
+}
+
+// prepare is document's body prepared for serving. It needs no lock.
+func (s *Snapshotter) prepare(document Document) cockpit.Payload {
 	body, _ := json.Marshal(document)
-	s.doc, s.payload = document, cockpit.NewPayload(append(body, '\n'), s.compress)
+	return cockpit.NewPayload(append(body, '\n'), s.compress)
 }
 
 // Payload returns the last published document prepared for serving.
@@ -415,7 +472,7 @@ func (s *Snapshotter) Branches(id string) (payload cockpit.Payload, found bool) 
 		s.mu.RUnlock()
 		return payload, true
 	}
-	known := slices.ContainsFunc(s.remote.repositories, func(repository Repository) bool { return repository.ID == id })
+	known := slices.ContainsFunc(s.remote.repositories, func(repository Repository) bool { return repository.ID == id }) || s.liveRepository(id)
 	s.mu.RUnlock()
 	if !known {
 		return cockpit.Payload{}, false
@@ -471,7 +528,8 @@ func (s *Snapshotter) gitTooOld() bool {
 
 // Start refreshes now and then on every interval until the returned function
 // is called or ctx ends, and runs this machine's metrics sampler, when it has
-// one, for the same time. The function stops the loop, waits for it, and then
+// one, and the background reads of the configured machines, when there are any,
+// for the same time. The function stops the loops, waits for them, and then
 // waits a short, bounded time for a read of the other machines still running;
 // no repository read outlives it.
 func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
@@ -485,9 +543,17 @@ func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
 		defer close(done)
 		s.run(ctx)
 	}()
+	remotes := make(chan struct{})
+	go func() {
+		defer close(remotes)
+		if len(s.liveKeys) > 0 {
+			s.runRemotes(ctx)
+		}
+	}()
 	return func() {
 		cancel()
 		<-done
+		<-remotes
 		stopSampler()
 		waited := make(chan struct{})
 		go func() {
@@ -1145,11 +1211,72 @@ func (s *Snapshotter) publishMaybeLocked() {
 	s.publishLocked()
 }
 
-// publishLocked rebuilds the document from what the snapshotter holds: the
-// repositories scanned so far, the agents, the pull-request records and the
-// other machines. The caller holds s.mu.
+// publishLocked assembles the document, prepares its body and makes it the
+// published one. The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
+	document, liveBytes, leftOut := s.assemble(now)
+	s.commit(document, s.prepare(document), now, liveBytes, leftOut)
+}
+
+// commit makes a prepared document the published one and records what the size
+// guard needs for the next: the size of everything but the live machines'
+// entries, and whether they were left out (logged when that changes). The
+// caller holds s.mu, and calls it only for the newest document assembled.
+func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, liveBytes int, leftOut bool) {
+	s.doc, s.payload = document, payload
+	s.lastPublish, s.publishes = now, s.publishes+1
+	s.baseBytes = max(payload.Size()-liveBytes, 0)
+	if leftOut && !s.leftOut {
+		s.logf("cockpit fleet: the fleet document would be over %d bytes with the live machines' entries; they are left out (%s) and their published entries shown", s.maxDocument, RemoteErrorExportTooLarge)
+	}
+	s.leftOut = leftOut
+}
+
+// publishUnlocked publishes as publishLocked does for a caller that does not
+// hold s.mu, without encoding or compressing under it: the document is
+// assembled under the lock, its body prepared outside it, and stored only if no
+// later document was assembled meanwhile (the later one wins, and a discarded
+// one changes nothing). During a pass it keeps to the pass's publication rate;
+// the pass publishes when it ends.
+func (s *Snapshotter) publishUnlocked() {
+	now := s.now()
+	s.mu.Lock()
+	if s.passing && s.publishes > 0 && now.Sub(s.lastPublish) < publishInterval {
+		s.mu.Unlock()
+		return
+	}
+	document, liveBytes, leftOut := s.assemble(now)
+	generation := s.generation
+	s.mu.Unlock()
+	payload := s.prepare(document)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation == s.generation {
+		s.commit(document, payload, now, liveBytes, leftOut)
+	}
+}
+
+// assemble builds the document from what the snapshotter holds: the
+// repositories scanned so far, the agents, the pull-request records and the
+// other machines: the configured ones read live, which replace their
+// published-store entries while fresh, and the published store's. The caller
+// holds s.mu.
+//
+// The size guard is decided here, before anything is encoded, so the document
+// is encoded once: when the size of everything else in the last published
+// document plus the encoded size of the fresh live views is over the bound, the
+// live machines' entries are left out, each such machine is shown by its
+// published entries or a bare entry carrying remote_error export_too_large,
+// and the document counts one more diagnostic. It returns the bytes of the live
+// views it included and whether it left them out.
+func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int, leftOut bool) {
+	for _, key := range s.liveKeys {
+		if machine := s.live[key]; machine.fresh(now, s.interval) {
+			liveBytes += machine.viewBytes
+		}
+	}
+	withLive := liveBytes == 0 || s.baseBytes+liveBytes <= s.maxDocument
 	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
@@ -1214,16 +1341,26 @@ func (s *Snapshotter) publishLocked() {
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
 	})
-	document.Machines = append(document.Machines, s.remote.machines...)
-	document.Agents = append(document.Agents, s.remote.agents...)
-	document.Repositories = append(document.Repositories, s.remote.repositories...)
-	document.Worktrees = append(document.Worktrees, s.remote.worktrees...)
-	document.PullRequests = append(document.PullRequests, s.remote.pullRequests...)
+	localHosts := map[string]bool{}
+	for _, repository := range document.Repositories {
+		if repository.Host != "" {
+			localHosts[strings.ToLower(repository.Host)] = true
+		}
+	}
+	hidden, failures := s.overlayLive(&document, now, withLive, localHosts)
+	s.appendCached(&document, hidden, failures, localHosts)
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })
 	sortByName(document.PullRequests, func(item PullRequest) string { return fmt.Sprintf("%09d", item.Number) }, func(item PullRequest) string { return item.ID })
 	sortByName(document.Agents, func(item Agent) string { return item.Kind }, func(item Agent) string { return item.ID })
-	s.store(document)
-	s.lastPublish, s.publishes = now, s.publishes+1
+	if !withLive {
+		// The live machines were left out for the document's size: one diagnostic.
+		document.Diagnostics++
+	}
+	s.generation++
+	if !withLive {
+		return document, 0, true
+	}
+	return document, liveBytes, false
 }

@@ -376,9 +376,11 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	// Several of the daemon's goroutines write to stderr while the test reads it.
+	stderr := &lockedBuffer{}
 	command.SetOut(&stdout)
-	command.SetErr(&stderr)
+	command.SetErr(stderr)
 	served := make(chan error, 1)
 	go func() {
 		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
