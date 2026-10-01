@@ -15,12 +15,11 @@ test('every page lists its collection, cached rows show route and age, and the m
   const expectClean = await watch(page)
 
   await page.goto('/cockpit/dashboard')
-  // /dashboard is an alias for Home, which has no visible heading of its own.
+  // /dashboard is an alias for Home, which has no visible page heading of its own: its sections have theirs.
   await expect(page).toHaveURL(/\/cockpit\/$/)
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
-  await expect(page.locator('.tile')).toHaveCount(5)
-  await expect(rows(page).filter({ hasText: 'beta' }).first()).toContainText(/cached, 1\d min ago/)
-  await expect(page.locator('tbody').nth(1).locator('tr')).toHaveCount(3)
+  await expect(page.getByRole('heading', { level: 2, name: 'Needs you' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'In flight' })).toBeVisible()
 
   // Repositories is the shared list: one row per repository identity, each machine a chip with its age.
   await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Repositories' }).click()
@@ -35,7 +34,6 @@ test('every page lists its collection, cached rows show route and age, and the m
   await expect(listRows(page).first()).toContainText('acme/far')
 
   const lists = [
-    { link: 'Agents', rows: 2, first: 'claude session sess-1' },
     { link: 'Machines', rows: 2, first: 'alpha' },
   ]
   for (const list of lists) {
@@ -151,7 +149,9 @@ test('no page scrolls sideways at 360 px, and the hover card stays on screen', a
   const expectClean = await watch(page)
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
-    await expect((path === 'worktrees' || path === 'repositories' ? listRows(page) : rows(page)).first()).toBeVisible()
+    // Home has no table: its first section is its landmark.
+    const first = path === '' ? page.getByRole('heading', { level: 2, name: 'Needs you' }) : (path === 'worktrees' || path === 'agents' || path === 'repositories' ? listRows(page) : rows(page)).first()
+    await expect(first).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)
   }

@@ -4,6 +4,10 @@ export interface ChartTheme {
   fill: string
   bar: string
   barHover: string
+  /** The second series of a stacked chart: neutral, so it never reads as a state. */
+  barMuted: string
+  /** A lighter tint of the accent, for the part of a stacked bar that is not the highlighted series. */
+  barSoft: string
   grid: string
   tick: string
   tooltipBackground: string
@@ -17,6 +21,8 @@ const COLOUR_TOKENS: Record<Exclude<keyof ChartTheme, 'font'>, [token: string, f
   fill: ['--chart-fill', 'rgba(63, 81, 214, 0.12)'],
   bar: ['--chart-bar', '#3f51d6'],
   barHover: ['--chart-bar-hover', '#3544b8'],
+  barMuted: ['--chart-bar-muted', '#5b6472'],
+  barSoft: ['--chart-bar-soft', '#9aa6ee'],
   grid: ['--chart-grid', '#e2e5ea'],
   tick: ['--chart-tick', '#5e6978'],
   tooltipBackground: ['--chart-tooltip-bg', '#14171c'],

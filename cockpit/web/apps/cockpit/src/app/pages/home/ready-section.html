@@ -1,0 +1,74 @@
+<section class="home-section" aria-labelledby="home-ready-h">
+  <h2 id="home-ready-h" class="home-h">
+    Ready to land
+    @if (rows().ready.length > 0) {
+      <a class="home-count" [routerLink]="readyLink.path" [queryParams]="readyLink.query" title="The tasks that are ready to land, on Tasks">{{ rows().ready.length }}</a>
+    }
+  </h2>
+  @if (empty()) {
+    @if (warming()) {
+      <app-skeleton-rows [count]="1" />
+    } @else {
+      <p class="home-calm"><app-glyph class="home-calm-idle" [paths]="ok" />Nothing is ready to land.</p>
+    }
+  } @else {
+    <ul class="home-card">
+      @for (row of rows().ready; track row.task) {
+        <li class="home-row ready-row">
+          <app-state-badge kind="task" size="small" value="ready" />
+          <div class="home-main">
+            <strong class="home-task">{{ row.task }}</strong>
+            <span class="home-reason">
+              @if (row.stateSource === 'remote') {
+                as reported by {{ reportedBy(row) }} ·
+              }
+              {{ counted(row.repositories.length, 'repository', 'repositories') }}
+              ·
+              @if (row.checksPassed !== undefined && row.checksTotal !== undefined) {
+                {{ row.checksPassed }}/{{ row.checksTotal }} checks
+              } @else {
+                checks not reported
+              }
+              · checked <app-relative-time [at]="iso(row.checkedAt)" />
+            </span>
+          </div>
+          <ul class="home-prs">
+            @for (pullRequest of row.pullRequests; track pullRequest.id) {
+              <li class="home-pr">
+                @if (pullRequest.url; as url) {
+                  <a class="home-pr-number" [href]="url" target="_blank" rel="noopener noreferrer" [attr.aria-label]="'Pull request ' + pullRequest.number + ', opens in a new tab'">#{{ pullRequest.number }}</a>
+                } @else {
+                  <span class="home-pr-number">#{{ pullRequest.number }}</span>
+                }
+                <span class="home-place">{{ pullRequest.repository }}</span>
+                @if (pullRequest.remote) {
+                  <span class="home-place" title="Reported by another machine: nothing to land from here">{{ pullRequest.machine }}</span>
+                }
+                @if (!pullRequest.remote && offered(pullRequest.id); as actions) {
+                  <app-action-slot [actions]="actions" [target]="'pull_request:' + pullRequest.id" />
+                } @else if (pullRequest.landCommand; as command) {
+                  @if (pullRequest.landLabel; as where) {
+                    <span class="home-where-run">{{ where }}</span>
+                  }
+                  <app-copy-button [text]="command" label="Copy command: wb pr land {{ pullRequest.repository }}#{{ pullRequest.number }}" idleWord="Copy command" />
+                }
+              </li>
+            }
+          </ul>
+        </li>
+      }
+      @for (row of rows().notReady; track row.task) {
+        <li class="home-row ready-row muted-row">
+          <app-state-badge kind="task" size="small" value="not-ready" />
+          <div class="home-main">
+            <span class="home-task">{{ row.task }}</span>
+            <span class="home-reason">waiting on checks · checked <app-relative-time [at]="iso(row.checkedAt)" /></span>
+          </div>
+        </li>
+      }
+    </ul>
+    @if (note(); as text) {
+      <p class="home-note">{{ text }}</p>
+    }
+  }
+</section>

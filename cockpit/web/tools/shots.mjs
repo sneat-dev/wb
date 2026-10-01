@@ -9,27 +9,29 @@ import { join, resolve } from 'node:path'
 import { chromium } from '@playwright/test'
 import { loadFixture } from './fixtures.mjs'
 import { previewPort, startPreview } from './lib/preview-fixture.mjs'
-import { GALLERY_DIST, galleryPlan, shotPlan } from './lib/shot-plan.mjs'
+import { GALLERY_DIST, galleryPlan, homeShotPlan, shotPlan } from './lib/shot-plan.mjs'
 
 const directory = process.env.COCKPIT_SHOTS_DIR
 if (!directory) throw new Error('shots: set COCKPIT_SHOTS_DIR to the directory the screenshots go to')
 mkdirSync(directory, { recursive: true })
 
-const data = await loadFixture()
+const data = await loadFixture({ home: true })
 // The gallery is a route of the preview build only; without that build it is skipped.
 const galleryBuilt = existsSync(join(process.cwd(), GALLERY_DIST, 'index.html'))
 if (!galleryBuilt) console.log(`shots: no ${GALLERY_DIST}/ (run pnpm build:preview), so the gallery is not photographed`)
 // COCKPIT_SHOTS_FILTER=<text> keeps only the shots whose file name contains the text.
-const plan = [...shotPlan(data.document), ...(galleryBuilt ? galleryPlan() : [])].filter((shot) => shot.file.includes(process.env.COCKPIT_SHOTS_FILTER ?? ''))
+const plan = [...shotPlan(data.document), ...homeShotPlan(), ...(galleryBuilt ? galleryPlan() : [])].filter((shot) => shot.file.includes(process.env.COCKPIT_SHOTS_FILTER ?? ''))
 const port = process.env.COCKPIT_PREVIEW_PORT ? previewPort(process.env) : 0
 const browser = await chromium.launch()
 const servers = new Map()
 
-async function baseOf(state, dist = 'dist') {
-  const key = `${dist}/${state}`
+// A server per (build, daemon state, session, registry, fleet): what a shot needs around it.
+async function baseOf({ state, dist = 'dist', session, registry, home }) {
+  const key = [dist, state, session, registry, home].join('/')
   if (!servers.has(key)) {
     // The port from the environment serves the first server; the others take a free one.
-    servers.set(key, await startPreview({ distRoot: join(process.cwd(), dist), data, state }, servers.size === 0 ? port : 0))
+    const served = home === undefined ? data : { ...data, document: data.home[home].document, metrics: data.home[home].metrics, branches: data.home[home].branches }
+    servers.set(key, await startPreview({ distRoot: join(process.cwd(), dist), data: served, state, session, registry }, servers.size === 0 ? port : 0))
   }
   return `http://127.0.0.1:${servers.get(key).address().port}/cockpit`
 }
@@ -55,7 +57,7 @@ async function runStep(page, step) {
 for (const shot of plan) {
   const context = await browser.newContext({ viewport: { width: shot.viewport.width, height: shot.viewport.height }, colorScheme: shot.scheme, reducedMotion: 'reduce' })
   const page = await context.newPage()
-  await page.goto(`${await baseOf(shot.state, shot.dist)}${shot.url}`)
+  await page.goto(`${await baseOf(shot)}${shot.url}`)
   await page.locator('app-overlays').waitFor({ state: 'attached' })
   await page.locator('h1').waitFor({ state: 'attached' })
   if (shot.ready) await page.locator(shot.ready).first().waitFor({ state: 'attached' })
@@ -65,8 +67,18 @@ for (const shot of plan) {
     if (key.startsWith('type:')) await page.getByRole('combobox').fill(key.slice('type:'.length))
     else await page.keyboard.press(key)
   }
+  if (shot.click) await page.locator(shot.click).click()
+  // The charts draw when their section nears the viewport, and a canvas is cleared when the page is resized for a
+  // full-page photograph: so the viewport is made as tall as the page, the charts are waited for there, and the photograph is plain.
+  if (shot.scrollEnd) {
+    const height = await page.evaluate(() => document.documentElement.scrollHeight)
+    await page.setViewportSize({ width: shot.viewport.width, height })
+    // Until the charts have been drawn, or four seconds: a fleet without throughput never has any.
+    await page.waitForFunction(() => document.querySelector('.home-lazy-slot') === null, undefined, { timeout: 4000 }).catch(() => undefined)
+    await page.waitForTimeout(800)
+  }
   await page.waitForTimeout(150)
-  await page.screenshot({ path: resolve(directory, shot.file), fullPage: shot.fullPage === true })
+  await page.screenshot({ path: resolve(directory, shot.file), fullPage: shot.fullPage === true && !shot.scrollEnd })
   await context.close()
   console.log(shot.file)
 }
