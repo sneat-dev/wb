@@ -53,10 +53,12 @@ type CockpitConfig struct {
 // cannot be configured into an unbounded number of GitHub reads.
 const MaxCockpitPullRequestLimit = 200
 
-// The bounds of cockpit.pull_request_hourly_budget.
+// The bounds of cockpit.pull_request_hourly_budget. An observation of an open
+// pull request is 6 GitHub reads, so the ceiling is at most 2,400 reads an hour
+// (half of an authenticated token's 5,000), the default of 120 at most 720.
 const (
 	MinCockpitPullRequestHourlyBudget = 10
-	MaxCockpitPullRequestHourlyBudget = 2000
+	MaxCockpitPullRequestHourlyBudget = 400
 )
 
 // CodeIndexProviderCodeGrapher is the one code-index provider there is.

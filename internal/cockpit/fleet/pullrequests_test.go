@@ -101,7 +101,7 @@ func pullObserved(observer PullRequestObserver, bindings ...worktrees.Registered
 	sources := oneRepoSources("/repo/widgets")
 	sources.bindings, sources.remote = bindings, nil
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
-		options.PullRequests, options.PullRequestLimit = observer, 3
+		options.PullRequests, options.PullRequestLimit, options.PullRequestHourlyBudget = observer, 3, 400
 	})
 	return snapshotter, clock, sources
 }
@@ -122,7 +122,7 @@ func pullEntry(t *testing.T, snapshotter *Snapshotter, number int) PullRequest {
 func TestPullRequestEntriesCarryStateAndChecks(t *testing.T) {
 	t.Parallel()
 	observer := &fakeObserver{script: map[int][]observeStep{
-		12: {openChecks(map[string]int{"pass": 3, "skipping": 1, "fail": 1, "pending": 1}, "go-ci / test")},
+		12: {openChecks(map[string]int{"pass": 3, "skipping": 1, "fail": 1, "pending": 1}, "check-run:go-ci / test")},
 		13: {openChecks(map[string]int{"pass": 2, "pending": 1}), {err: errors.New("github is down")}},
 		14: {{outcome: snapshotOutcome(prsnapshot.Snapshot{State: "closed", Merged: true}, prwatch.KindMerged)}},
 		15: {openChecks(nil)},
@@ -219,7 +219,7 @@ func TestPullRequestStateIsAbsentUntilObserved(t *testing.T) {
 func TestPullRequestStringsAreHostileSafe(t *testing.T) {
 	t.Parallel()
 	hostile := strings.Repeat("a", 90) + "\x00\x1b[31m\u202e" + strings.Repeat("b", 300)
-	step := openChecks(map[string]int{"fail": 1}, hostile)
+	step := openChecks(map[string]int{"fail": 1}, "check-run:"+hostile)
 	step.outcome.Snapshot.Mergeable = "<img onerror=1>"
 	observer := &fakeObserver{script: map[int][]observeStep{5: {step}}}
 	urls := []string{"javascript:alert(1)", "http://example.com/x", "https://user@example.com/x", "https://example.com:8443/x", "https://github.com/o/r/pull/1"}
@@ -323,10 +323,10 @@ func TestPullRequestObservationNeverDelaysThePublishedSnapshot(t *testing.T) {
 	}
 }
 
-// TestPullRequestsAreObservedWhenDueAndNeverOnceDone follows one settled pull
+// TestPullRequestsAreObservedWhenDueAndAMergedOneNeverAgain follows one settled pull
 // request, one merged and one closed through the cadence: a settled head waits
 // ten minutes, merged and closed are observed once.
-func TestPullRequestsAreObservedWhenDueAndNeverOnceDone(t *testing.T) {
+func TestPullRequestsAreObservedWhenDueAndAMergedOneNeverAgain(t *testing.T) {
 	t.Parallel()
 	observer := &fakeObserver{script: map[int][]observeStep{
 		1: {{outcome: snapshotOutcome(prsnapshot.Snapshot{State: "closed", Merged: true}, prwatch.KindMerged)}},
@@ -351,11 +351,24 @@ func TestPullRequestsAreObservedWhenDueAndNeverOnceDone(t *testing.T) {
 	if pullEntry(t, snapshotter, 2).State != "closed" || pullEntry(t, snapshotter, 1).State != "merged" {
 		t.Errorf("a done pull request lost its state: %+v", snapshotter.Document().PullRequests)
 	}
+	// A closed pull request is looked at again after an hour, in case it was
+	// reopened, and its state follows.
+	observer.mu.Lock()
+	observer.script[2] = []observeStep{openChecks(map[string]int{"pass": 1})}
+	observer.mu.Unlock()
+	clock.advance(50 * time.Minute)
+	refreshAndSettle(t, snapshotter)
+	if got := observer.take(); !slices.Contains(got, 2) || slices.Contains(got, 1) {
+		t.Fatalf("after an hour observed %v, want the closed 2 and never the merged 1", got)
+	}
+	if pullEntry(t, snapshotter, 2).State != "open" {
+		t.Errorf("a reopened pull request kept state %q", pullEntry(t, snapshotter, 2).State)
+	}
 	observer.mu.Lock()
 	forgotten := slices.Clone(observer.forgotten)
 	observer.mu.Unlock()
 	slices.Sort(forgotten)
-	if !slices.Equal(forgotten, []int{1, 2}) || len(observer.retained) != 3 {
+	if !slices.Equal(forgotten, []int{1}) || len(observer.retained) != 4 {
 		t.Errorf("forgotten %v, retained %d times", forgotten, len(observer.retained))
 	}
 }
@@ -388,15 +401,10 @@ func TestObservationIsThrottledByTheHourlyBudget(t *testing.T) {
 	}
 	clock.advance(31 * time.Minute)
 	refreshAndSettle(t, snapshotter)
-	if got := observer.take(); len(got) != 2 {
-		t.Fatalf("after the window observed %v", got)
-	}
-	clock.advance(2 * time.Minute)
-	snapshotter.pullBudget = 10
-	refreshAndSettle(t, snapshotter)
-	observer.take()
-	if snapshotter.Document().PullRequestsThrottled {
-		t.Error("throttled stayed set once the budget allowed every due pull request")
+	// With the window freed only the pull request never asked about is due: the
+	// two still pending wait their stretched interval, so nothing is cut short.
+	if got := observer.take(); !slices.Equal(got, []int{3}) || snapshotter.Document().PullRequestsThrottled {
+		t.Fatalf("after the window observed %v throttled %v, want only 3 and not throttled", got, snapshotter.Document().PullRequestsThrottled)
 	}
 }
 
@@ -415,13 +423,16 @@ func TestPullDueFollowsTheObservationHistory(t *testing.T) {
 		"first failure":       {attempt: pullAttempt{at: at, failures: 1}, due: at.Add(2 * time.Minute), watched: true},
 		"third failure":       {attempt: pullAttempt{at: at, failures: 3}, due: at.Add(8 * time.Minute), watched: true},
 		"failures are capped": {attempt: pullAttempt{at: at, failures: 40}, due: at.Add(30 * time.Minute), watched: true},
-		"waiting":             {observation: pullObservation{waiting: true}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(90 * time.Second), watched: true},
+		"waiting":             {observation: pullObservation{checksAwaited: true}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(90 * time.Second), watched: true},
 		"settled":             {observation: pullObservation{green: true}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(10 * time.Minute), watched: true},
 		"asked, never seen":   {attempt: pullAttempt{at: at}, due: at.Add(90 * time.Second), watched: true},
 		"done":                {observation: pullObservation{done: true}, observed: true, attempt: pullAttempt{at: at}, watched: false},
+		"closed":              {observation: pullObservation{state: "closed"}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(time.Hour), watched: true},
+		"unknown, fresh":      {observation: pullObservation{mergeUnknown: true, unknowns: 4}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(90 * time.Second), watched: true},
+		"unknown, given up":   {observation: pullObservation{mergeUnknown: true, unknowns: 5}, observed: true, attempt: pullAttempt{at: at}, due: at.Add(10 * time.Minute), watched: true},
 		"failed after done":   {observation: pullObservation{done: true}, observed: true, attempt: pullAttempt{at: at, failures: 2}, watched: false},
 	} {
-		due, watched := pullDue(test.observation, test.observed, test.attempt)
+		due, watched := pullDue(test.observation, test.observed, test.attempt, pullPendingEvery)
 		if !due.Equal(test.due) || watched != test.watched {
 			t.Errorf("%s: due %v watched %v, want %v %v", name, due, watched, test.due, test.watched)
 		}
@@ -446,8 +457,8 @@ func TestObservationOfWaitsOnlyForChecksThatCanStillArrive(t *testing.T) {
 		"draft":              {prsnapshot.Snapshot{State: "open", Draft: true, Checks: map[string]int{"pass": 1}}, false},
 		"closed":             {prsnapshot.Snapshot{State: "closed"}, false},
 	} {
-		if got, _ := observationOf(snapshotOutcome(test.snapshot, prwatch.KindChecksPending), at); got.waiting != test.waiting {
-			t.Errorf("%s: waiting = %v", name, got.waiting)
+		if got, _ := observationOf(snapshotOutcome(test.snapshot, prwatch.KindChecksPending), at); got.waiting() != test.waiting {
+			t.Errorf("%s: waiting = %v", name, got.waiting())
 		}
 	}
 }
@@ -469,7 +480,7 @@ func TestBudgetLeftCountsTheRollingHour(t *testing.T) {
 func TestPullBatchIsBoundedAndOldestDueFirst(t *testing.T) {
 	t.Parallel()
 	now := newClock().Now()
-	waiting := pullObservation{waiting: true}
+	waiting := pullObservation{checksAwaited: true}
 	observed := map[string]pullObservation{
 		pullKey("acme/widgets", 1): waiting, pullKey("acme/widgets", 2): waiting, pullKey("acme/widgets", 3): {done: true}, pullKey("acme/widgets", 5): {green: true},
 	}
@@ -485,18 +496,18 @@ func TestPullBatchIsBoundedAndOldestDueFirst(t *testing.T) {
 		}
 		return got
 	}
-	batch, throttled := pullBatch(bindings, observed, attempts, now, 2, 10)
+	batch, throttled := pullBatch(bindings, observed, attempts, planAt(now, 2, 10))
 	if !slices.Equal(numbers(batch), []int{4, 2}) || throttled {
 		t.Errorf("batch = %v throttled %v, want the never asked 4 then the oldest due 2", numbers(batch), throttled)
 	}
-	batch, throttled = pullBatch(bindings, observed, attempts, now, 10, 1)
+	batch, throttled = pullBatch(bindings, observed, attempts, planAt(now, 10, 1))
 	if !slices.Equal(numbers(batch), []int{4}) || !throttled {
 		t.Errorf("with a budget of 1: %v throttled %v", numbers(batch), throttled)
 	}
-	if batch, throttled = pullBatch(bindings, observed, attempts, now, 10, 0); len(batch) != 0 || !throttled {
+	if batch, throttled = pullBatch(bindings, observed, attempts, planAt(now, 10, 0)); len(batch) != 0 || !throttled {
 		t.Errorf("with no budget: %v throttled %v", batch, throttled)
 	}
-	if batch, throttled = pullBatch(bindings, observed, attempts, now, 10, -4); len(batch) != 0 || !throttled {
+	if batch, throttled = pullBatch(bindings, observed, attempts, planAt(now, 10, -4)); len(batch) != 0 || !throttled {
 		t.Errorf("with an overspent budget: %v throttled %v", batch, throttled)
 	}
 }
@@ -520,7 +531,7 @@ func TestObservedPullRequestLeaksNothingButTheAllowedFields(t *testing.T) {
 	t.Parallel()
 	snapshot := filled[prsnapshot.Snapshot]()
 	snapshot.State, snapshot.Merged, snapshot.Draft, snapshot.Mergeable, snapshot.Err = "open", false, false, "clean", nil
-	snapshot.Checks, snapshot.Failed = map[string]int{"fail": 1}, []string{"go-ci / test"}
+	snapshot.Checks, snapshot.Failed = map[string]int{"fail": 1}, []string{"status:go-ci / test"}
 	outcome := filled[prwatch.Outcome]()
 	outcome.Kind, outcome.Snapshot = prwatch.KindChecksFailed, snapshot
 	observer := &fakeObserver{script: map[int][]observeStep{7: {{outcome: outcome}}}}
@@ -556,5 +567,187 @@ func TestAPullRequestNoLongerRecordedIsForgotten(t *testing.T) {
 	refreshAndSettle(t, snapshotter)
 	if len(snapshotter.observed) != 0 {
 		t.Errorf("observed = %v, want it empty", snapshotter.observed)
+	}
+}
+
+func planAt(now time.Time, limit, allowed int) pullPlan {
+	return pullPlan{now: now, limit: limit, allowed: allowed, budget: DefaultPullRequestHourlyBudget, active: func(worktrees.RegisteredPullRequestBinding) bool { return false }}
+}
+
+// TestFailedCheckNameIsWhatAPersonCallsTheCheck feeds real-shaped failure
+// names: the snapshot prefixes them with their source and sorts by that name.
+func TestFailedCheckNameIsWhatAPersonCallsTheCheck(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		failed []string
+		want   string
+	}{
+		"check run":              {[]string{"check-run:go-ci / test"}, "go-ci / test"},
+		"status":                 {[]string{"status:ci/lint"}, "ci/lint"},
+		"a real check wins":      {[]string{"workflow-run:123:push", "check-run:build"}, "build"},
+		"in the sorted order":    {[]string{"check-run:build", "status:ci", "workflow-run:1:push"}, "build"},
+		"only a workflow run":    {[]string{"workflow-run:123:pull_request"}, "pull_request workflow run"},
+		"a malformed workflow":   {[]string{"workflow-run:"}, "workflow run"},
+		"a name with its colons": {[]string{"check-run:a: b"}, "a: b"},
+	} {
+		if got := failedCheckName(test.failed); got != test.want {
+			t.Errorf("%s: %q, want %q", name, got, test.want)
+		}
+	}
+	step := openChecks(map[string]int{"fail": 2}, "check-run:build", "workflow-run:9:push")
+	if got, _ := observationOf(step.outcome, newClock().Now()); got.failedCheck != "build" {
+		t.Errorf("failed_check = %q", got.failedCheck)
+	}
+}
+
+// TestPendingCadenceStretchesUnderBudgetPressure pins the effective pending
+// interval: 90 seconds, longer once the pending ones alone would use more than
+// 70% of the hourly budget.
+func TestPendingCadenceStretchesUnderBudgetPressure(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		waiting, budget int
+		want            time.Duration
+	}{
+		"none":            {0, 120, 90 * time.Second},
+		"a few":           {4, 400, 90 * time.Second},
+		"ten on defaults": {10, 120, 10 * time.Hour / 84},
+		"fifty on 400":    {50, 400, 50 * time.Hour / 280},
+	} {
+		got := pendingInterval(test.waiting, test.budget)
+		if diff := got - test.want; diff < -time.Second || diff > time.Second {
+			t.Errorf("%s: %v, want %v", name, got, test.want)
+		}
+	}
+	at := newClock().Now()
+	observed, attempts := map[string]pullObservation{}, map[string]pullAttempt{}
+	var bindings []worktrees.RegisteredPullRequestBinding
+	for number := 1; number <= 10; number++ {
+		bindings = append(bindings, binding(number))
+		key := pullKey("acme/widgets", number)
+		observed[key], attempts[key] = pullObservation{checksAwaited: true}, pullAttempt{at: at}
+	}
+	if batch, _ := pullBatch(bindings, observed, attempts, planAt(at.Add(2*time.Minute), 10, 100)); len(batch) != 0 {
+		t.Errorf("ten pending pull requests on the default budget were all due after 2 minutes: %d", len(batch))
+	}
+	if batch, _ := pullBatch(bindings, observed, attempts, planAt(at.Add(8*time.Minute), 10, 100)); len(batch) != 10 {
+		t.Errorf("after the stretched interval %d were due, want 10", len(batch))
+	}
+}
+
+// TestAnUnknownMergeStateSettlesAfterFiveObservations covers GitHub that never
+// computes it.
+func TestAnUnknownMergeStateSettlesAfterFiveObservations(t *testing.T) {
+	t.Parallel()
+	unknown := openChecks(map[string]int{"pass": 1})
+	unknown.outcome.Snapshot.Mergeable = "unknown"
+	observer := &fakeObserver{script: map[int][]observeStep{1: {unknown}}}
+	snapshotter, clock, _ := pullObserved(observer, binding(1))
+	for range 5 {
+		refreshAndSettle(t, snapshotter)
+		clock.advance(2 * time.Minute)
+	}
+	if got := observer.take(); len(got) != 5 {
+		t.Fatalf("observed %d times, want 5", len(got))
+	}
+	refreshAndSettle(t, snapshotter)
+	if got := observer.take(); len(got) != 0 {
+		t.Errorf("a pull request with an unknown merge state for the fifth time stayed pending: %v", got)
+	}
+	if observation := snapshotter.observed[pullKey("acme/widgets", 1)]; observation.waiting() || observation.unknowns != 5 {
+		t.Errorf("observation = %+v", observation)
+	}
+}
+
+// TestACancelledPassRecordsNothingAndRefundsItsBudget stops the pass while its
+// observations are held: no failure or backoff is recorded and the budget is
+// whole again.
+func TestACancelledPassRecordsNothingAndRefundsItsBudget(t *testing.T) {
+	t.Parallel()
+	observer := &fakeObserver{script: map[int][]observeStep{}, gate: make(chan struct{}), entered: make(chan int, 10)}
+	snapshotter, _, _ := pullObserved(observer, binding(1), binding(2), binding(3))
+	ctx, cancel := context.WithCancel(t.Context())
+	_ = snapshotter.Refresh(ctx)
+	<-observer.entered
+	cancel()
+	close(observer.gate)
+	snapshotter.side.Wait()
+	snapshotter.mu.Lock()
+	attempts, spent, observed := len(snapshotter.attempts), len(snapshotter.spent), len(snapshotter.observed)
+	snapshotter.mu.Unlock()
+	if attempts != 0 || spent != 0 || observed != 0 {
+		t.Errorf("a cancelled pass left %d attempts, %d spent units and %d observations", attempts, spent, observed)
+	}
+}
+
+// TestAPullRequestOfTwoTasksIsObservedOnce covers a fan-in.
+func TestAPullRequestOfTwoTasksIsObservedOnce(t *testing.T) {
+	t.Parallel()
+	other := binding(4)
+	other.Task = "task-b"
+	observer := &fakeObserver{script: map[int][]observeStep{4: {openChecks(map[string]int{"pass": 1})}}}
+	snapshotter, _, _ := pullObserved(observer, binding(4), other)
+	refreshAndSettle(t, snapshotter)
+	if got := observer.take(); !slices.Equal(got, []int{4}) {
+		t.Errorf("observed %v, want once", got)
+	}
+}
+
+// TestRecordsOfWorktreesThisMachineHasAreObservedFirst is the restart case:
+// many records of pull requests that are long merged, listed before the one
+// that is open, must not starve it.
+func TestRecordsOfWorktreesThisMachineHasAreObservedFirst(t *testing.T) {
+	t.Parallel()
+	var bindings []worktrees.RegisteredPullRequestBinding
+	for number := 20; number < 28; number++ {
+		gone := binding(number)
+		gone.Task = "task-long-gone"
+		bindings = append(bindings, gone)
+	}
+	bindings = append(bindings, binding(9))
+	observer := &fakeObserver{script: map[int][]observeStep{}}
+	snapshotter, _, _ := pullObserved(observer, bindings...)
+	refreshAndSettle(t, snapshotter)
+	if got := observer.take(); len(got) != 3 || !slices.Contains(got, 9) {
+		t.Errorf("first pass observed %v, want the open pull request 9 among 3", got)
+	}
+}
+
+// TestALimitLargerThanTheBudgetIsNotThrottling observes what is due when the
+// budget covers it, however large the per-pass limit is.
+func TestALimitLargerThanTheBudgetIsNotThrottling(t *testing.T) {
+	t.Parallel()
+	observer := &fakeObserver{script: map[int][]observeStep{}}
+	snapshotter, _, _ := pullObserved(observer, binding(1), binding(2))
+	snapshotter.pullLimit, snapshotter.pullBudget = 50, 5
+	refreshAndSettle(t, snapshotter)
+	if got := observer.take(); len(got) != 2 || snapshotter.Document().PullRequestsThrottled {
+		t.Errorf("observed %v throttled %v", got, snapshotter.Document().PullRequestsThrottled)
+	}
+	if batch, throttled := pullBatch([]worktrees.RegisteredPullRequestBinding{binding(1), binding(2)}, nil, nil, planAt(newClock().Now(), 50, 5)); len(batch) != 2 || throttled {
+		t.Errorf("batch %d throttled %v", len(batch), throttled)
+	}
+}
+
+// TestAStateIsComparedWithoutCase covers GitHub's own spelling.
+func TestAStateIsComparedWithoutCase(t *testing.T) {
+	t.Parallel()
+	got, _ := observationOf(snapshotOutcome(prsnapshot.Snapshot{State: "CLOSED"}, prwatch.KindClosed), newClock().Now())
+	open, _ := observationOf(snapshotOutcome(prsnapshot.Snapshot{State: "OPEN", Draft: true}, prwatch.KindChecksPending), newClock().Now())
+	if got.state != "closed" || open.state != "draft" {
+		t.Errorf("states %q %q", got.state, open.state)
+	}
+}
+
+// TestAnObservationAfterTheContextEndedIsNotMade pins that a worker that finds
+// the pass cancelled asks nothing.
+func TestAnObservationAfterTheContextEndedIsNotMade(t *testing.T) {
+	t.Parallel()
+	observer := &fakeObserver{}
+	snapshotter, _, _ := pullObserved(observer, binding(1))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if result := snapshotter.observeOne(ctx, binding(1)); !result.cancelled || len(observer.take()) != 0 {
+		t.Errorf("result = %+v", result)
 	}
 }

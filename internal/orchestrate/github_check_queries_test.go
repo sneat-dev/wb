@@ -51,9 +51,6 @@ func TestPublicCheckQueriesRejectMissingPullRequestIdentity(t *testing.T) {
 	if _, err := PullRequestFailureDetails(context.Background(), "acme/app", ""); err == nil {
 		t.Fatal("failure details accepted an empty PR selector")
 	}
-	if _, err := UnsatisfiedRequiredChecks(context.Background(), "acme/app", ""); err == nil {
-		t.Fatal("required check query accepted an empty PR selector")
-	}
 }
 
 func TestPullRequestFailureDetailsRefusesIncompleteReads(t *testing.T) {
@@ -96,37 +93,47 @@ func TestPullRequestFailureDetailsRefusesIncompleteReads(t *testing.T) {
 	}
 }
 
-func TestUnsatisfiedRequiredChecksNamesOnlyMissingOrFailedProducers(t *testing.T) {
+func TestObservePullRequestHeadNamesOnlyMissingOrFailedProducersFromTheSameReads(t *testing.T) {
 	t.Parallel()
 	ops := fakePullRequestCheckOps(t)
-	ops.required = func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string) {
+	reads := map[string]int{}
+	countRuns, countStatuses := ops.runs, ops.statuses
+	ops.runs = func(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		reads["runs"]++
+		return countRuns(ctx, options)
+	}
+	ops.statuses = func(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		reads["statuses"]++
+		return countStatuses(ctx, options)
+	}
+	ops.required = func(ctx context.Context, repository, target string, fresh bool) ([]RequiredRemoteCheck, string, string) {
+		reads["required"]++
 		return []RequiredRemoteCheck{{Name: "missing"}, {Name: "lint"}, {Name: "build"}}, "", ""
 	}
-	gaps, err := unsatisfiedRequiredChecksWith(context.Background(), "acme/app", "7", ops)
-	if err != nil || !reflect.DeepEqual(gaps, []string{"build", "missing"}) {
-		t.Fatalf("gaps=%v error=%v", gaps, err)
+	view := prUpdateView(t, "head")
+	observation, err := observePullRequestHeadWith(context.Background(), "acme/app", view, ops)
+	if err != nil || observation.Green || !reflect.DeepEqual(observation.Blocked, []string{"build", "missing"}) || len(observation.Checks) != 2 {
+		t.Fatalf("observation=%+v error=%v", observation, err)
+	}
+	if !reflect.DeepEqual(reads, map[string]int{"runs": 1, "statuses": 1, "required": 1}) {
+		t.Fatalf("naming the gap re-read: %v", reads)
 	}
 	ops.required = func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string) {
 		return nil, "", ""
 	}
-	gaps, err = unsatisfiedRequiredChecksWith(context.Background(), "acme/app", "7", ops)
-	if err != nil || len(gaps) != 0 {
-		t.Fatalf("unruled branch gaps=%v error=%v", gaps, err)
+	observation, err = observePullRequestHeadWith(context.Background(), "acme/app", view, ops)
+	if err != nil || len(observation.Blocked) != 0 || observation.Green {
+		t.Fatalf("unruled branch with a failed check: %+v error=%v", observation, err)
 	}
 }
 
-func TestUnsatisfiedRequiredChecksRefusesIncompleteReads(t *testing.T) {
+func TestObservePullRequestHeadRefusesIncompleteReads(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(*pullRequestCheckOps)
 		want   string
 	}{
-		{"PR read", func(ops *pullRequestCheckOps) {
-			ops.read = func(context.Context, string, string) (PullRequestView, error) {
-				return PullRequestView{}, errors.New("PR unavailable")
-			}
-		}, "PR unavailable"},
 		{"required checks", func(ops *pullRequestCheckOps) {
 			ops.required = func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string) {
 				return nil, "", "policy unavailable"
@@ -148,7 +155,7 @@ func TestUnsatisfiedRequiredChecksRefusesIncompleteReads(t *testing.T) {
 			t.Parallel()
 			ops := fakePullRequestCheckOps(t)
 			tc.change(&ops)
-			_, err := unsatisfiedRequiredChecksWith(context.Background(), "acme/app", "7", ops)
+			_, err := observePullRequestHeadWith(context.Background(), "acme/app", prUpdateView(t, "head"), ops)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error=%v, want %q", err, tc.want)
 			}

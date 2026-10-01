@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -139,6 +140,10 @@ type Watcher struct {
 	// Observe takes one observation; nil means prsnapshot.Observe. A test
 	// injects a fake so no unit test reaches GitHub.
 	Observe func(ctx context.Context, repository, selector string) prsnapshot.Snapshot
+	// Reader, when set, answers every GitHub read of an evaluation instead of
+	// the real observer: a test counts and answers them without a process or the
+	// network.
+	Reader *githubobserver.Reader
 }
 
 // NewWatcher returns a Watcher with no remembered ticks.
@@ -170,6 +175,9 @@ func (w *Watcher) Evaluate(ctx context.Context, binding worktrees.RegisteredPull
 		return Outcome{}, fmt.Errorf("registered pull-request binding for task %q claim %q is missing a repository or pull-request number", binding.Task, binding.ClaimID)
 	}
 	number := strconv.Itoa(binding.PullRequest)
+	if w.Reader != nil {
+		ctx = githubobserver.WithReader(ctx, *w.Reader)
+	}
 	observe := w.Observe
 	if observe == nil {
 		observe = prsnapshot.Observe

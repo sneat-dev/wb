@@ -488,6 +488,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	s.startRemote(ctx)
 	if listErr != nil {
 		failures := s.refreshMachineState(ctx)
+		s.startPullRequests(ctx)
 		s.mu.Lock()
 		s.listError = ErrorRepositoriesUnreadable
 		s.publishLocked()
@@ -505,6 +506,9 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	}()
 	failures := s.forEach(ctx, ids, s.scanOne)
 	beside.Wait()
+	// Pull requests are observed once the worktrees are known, so the records of
+	// a worktree this machine has are asked about before the others.
+	s.startPullRequests(ctx)
 	s.mu.Lock()
 	s.passing = false
 	defer s.mu.Unlock()
@@ -940,7 +944,6 @@ func (s *Snapshotter) refreshMachineState(parent context.Context) []error {
 		failures = append(failures, fmt.Errorf("read pull request records: %w", err))
 	} else {
 		s.bindingsRead(bindings, at)
-		s.startPullRequests(parent)
 	}
 	return failures
 }

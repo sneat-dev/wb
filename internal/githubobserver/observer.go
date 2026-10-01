@@ -190,7 +190,31 @@ func Default() *Observer {
 	return defaultObserver
 }
 
+// Reader replaces the GitHub reads made below one context: Get answers Get and
+// GetPages, Execute answers Execute; a nil function leaves that call to the
+// real observer. It is the seam a unit test uses to count and answer every read
+// of a caller without a `gh` binary, a process or the network.
+type Reader struct {
+	Get     func(ctx context.Context, request GetRequest) (Response, error)
+	Execute func(ctx context.Context, dir string, args ...string) CommandResponse
+}
+
+type readerContextKey struct{}
+
+// WithReader makes every Get, GetPages and Execute below ctx go to reader.
+func WithReader(ctx context.Context, reader Reader) context.Context {
+	return context.WithValue(ctx, readerContextKey{}, reader)
+}
+
+func readerOf(ctx context.Context) Reader {
+	reader, _ := ctx.Value(readerContextKey{}).(Reader)
+	return reader
+}
+
 func Get(ctx context.Context, request GetRequest) (Response, error) {
+	if reader := readerOf(ctx); reader.Get != nil {
+		return reader.Get(ctx, request)
+	}
 	return Default().Get(ctx, request)
 }
 
@@ -199,6 +223,9 @@ func Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
 }
 
 func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
+	if reader := readerOf(ctx); reader.Execute != nil {
+		return reader.Execute(ctx, dir, args...)
+	}
 	return Default().Execute(ctx, dir, args...)
 }
 

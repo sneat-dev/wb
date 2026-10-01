@@ -5,7 +5,7 @@
 // and the herdr-session-transport daemon watcher (internal/prwatch) share
 // exactly one implementation of "what does this pull request look like right
 // now" — both already needed the identical renamed-required-check-aware logic
-// (orchestrate.PullRequestHeadChecks / orchestrate.UnsatisfiedRequiredChecks),
+// (orchestrate.ObservePullRequestHead),
 // and a caller keying a decision on that verdict must see the same one
 // whichever command took the observation.
 //
@@ -52,12 +52,12 @@ type Snapshot struct {
 	Failed   []string
 	Failures []orchestrate.CIFailureDetail
 	// Blocked names a required check with no passing observation on this
-	// head (orchestrate.UnsatisfiedRequiredChecks) — the renamed-workflow
+	// head (orchestrate.HeadObservation.Blocked) — the renamed-workflow
 	// trap. It is fetched only when nothing is pending or failed and Green
 	// is still false, matching the same reserved-reads discipline the rest
 	// of this observation follows.
 	Blocked []string
-	// Green is orchestrate.PullRequestHeadChecks' own verdict: every
+	// Green is orchestrate.ObservePullRequestHead's own verdict: every
 	// observed check passed or was skipped, AND the target's required-check
 	// policy is fully satisfied. It is the one fact that decides pass vs.
 	// fail; nothing in this package re-derives it from the check counts.
@@ -65,15 +65,21 @@ type Snapshot struct {
 	Err   error
 }
 
-// ReadsPerSettledObservation is how many GitHub reads Observe makes for an open
-// pull request that is green, or red with nothing to explain: the pull request,
-// its check runs, its commit statuses, the target's branch
-// policy and its active rules. A pull request that is not green with nothing
-// pending or failed adds the two policy reads again (to name the missing
-// required check) and a red head adds the annotation reads of its failure
-// details. A test pins this number; the reads are conditional (ETag), and a
-// 304 answer is not charged to the rate limit.
-const ReadsPerSettledObservation = 5
+// Reads of one observation, each a conditional (ETag) read of which a 304
+// answer is not charged to the rate limit. A test counts every one:
+//
+//   - ReadsPerObservation: an open pull request, green, red or blocked: the pull
+//     request, its check runs, its Actions workflow runs, its commit statuses, the
+//     target's branch policy and its active rules. Naming a blocked required check
+//     reuses these reads.
+//   - ReadsPerInactiveObservation: a merged or closed pull request: the pull
+//     request alone, since the checks of a head that is no longer open are not read.
+//
+// Observe adds to the first the reads that explain a red head (see ObserveLean).
+const (
+	ReadsPerObservation         = 6
+	ReadsPerInactiveObservation = 1
+)
 
 // Observe takes exactly one observation of repository's pull request
 // selector (a number or URL, as orchestrate.ReadPullRequest accepts it) — an
@@ -109,20 +115,20 @@ func observe(ctx context.Context, repository, selector string, lean bool) Snapsh
 	snapshot.URL = view.HTMLURL
 	snapshot.Mergeable = view.MergeableState
 
-	checks, green, err := orchestrate.PullRequestHeadChecksOf(ctx, repository, view)
+	// The checks of a head that is no longer open are not read: reporting the
+	// merge or the closure costs the one read already made.
+	if snapshot.State != "" && !strings.EqualFold(snapshot.State, "open") {
+		snapshot.Checks = map[string]int{}
+		return snapshot
+	}
+	observation, err := orchestrate.ObservePullRequestHead(ctx, repository, view)
 	if err != nil {
-		// A closed pull request no longer needs its checks read; reporting
-		// the closure is more useful than failing on a head that may be gone.
-		if snapshot.State != "" && !strings.EqualFold(snapshot.State, "open") {
-			snapshot.Checks = map[string]int{}
-			return snapshot
-		}
 		snapshot.Err = err
 		return snapshot
 	}
-	snapshot.Green = green
+	snapshot.Green = observation.Green
 	snapshot.Checks = map[string]int{}
-	for _, check := range checks {
+	for _, check := range observation.Checks {
 		snapshot.Checks[check.Bucket]++
 		if check.Bucket == "fail" || check.Bucket == "cancel" {
 			snapshot.Failed = append(snapshot.Failed, check.Name)
@@ -133,11 +139,9 @@ func observe(ctx context.Context, repository, selector string, lean bool) Snapsh
 	// not pending in it — the renamed-workflow trap. Counting pending checks
 	// alone would call that head settled and green when it can never merge,
 	// so Green is what decides, and the gap is named here only for a caller
-	// that wants to explain why.
-	if !green && snapshot.Checks["pending"] == 0 && len(snapshot.Failed) == 0 {
-		if gaps, gapErr := orchestrate.UnsatisfiedRequiredChecks(ctx, repository, selector); gapErr == nil {
-			snapshot.Blocked = gaps
-		}
+	// that wants to explain why. It comes from the reads already made.
+	if !observation.Green && snapshot.Checks["pending"] == 0 && len(snapshot.Failed) == 0 {
+		snapshot.Blocked = observation.Blocked
 	}
 	// Why it is red is only fetched once the head is terminal, and only when
 	// something actually failed. Annotations cost extra reads, and a check

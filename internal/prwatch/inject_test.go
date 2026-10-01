@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -26,21 +27,54 @@ func TestEvaluateUsesTheInjectedObserverAndKeepsItsSnapshot(t *testing.T) {
 	}
 }
 
-func TestForgetAndRetainDropRememberedBindings(t *testing.T) {
+// TestForgetAndRetainRestartTheTwoObservationConfirmation shows through
+// behaviour what the watcher remembers: a green verdict is Terminal on its
+// second identical observation, and forgetting the binding (or retaining only
+// others) makes the next one a first observation again.
+func TestForgetAndRetainRestartTheTwoObservationConfirmation(t *testing.T) {
 	t.Parallel()
 	watcher := NewWatcher()
-	first := worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 1}
-	second := worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 2}
-	third := worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 3}
-	for _, binding := range []worktrees.RegisteredPullRequestBinding{first, second, third} {
-		watcher.remember(binding, KindChecksPassed, "h")
+	watcher.Observe = func(context.Context, string, string) prsnapshot.Snapshot {
+		return prsnapshot.Snapshot{State: "open", Head: "h", Green: true, Checks: map[string]int{"pass": 1}}
 	}
-	watcher.Forget(first)
-	watcher.Retain([]worktrees.RegisteredPullRequestBinding{second})
-	if len(watcher.seen) != 1 {
-		t.Fatalf("remembered %v, want only the second binding", watcher.seen)
+	binding := worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 1}
+	other := worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 2}
+	terminal := func() bool {
+		outcome, err := watcher.Evaluate(context.Background(), binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return outcome.Terminal
 	}
-	if _, ok := watcher.seen[bindingKey(second)]; !ok {
-		t.Fatalf("the retained binding was dropped: %v", watcher.seen)
+	if terminal() || !terminal() {
+		t.Fatal("two identical observations did not confirm")
+	}
+	watcher.Forget(binding)
+	if terminal() || !terminal() {
+		t.Fatal("a forgotten binding kept its confirmation")
+	}
+	watcher.Retain([]worktrees.RegisteredPullRequestBinding{binding})
+	if !terminal() {
+		t.Fatal("a retained binding lost its confirmation")
+	}
+	watcher.Retain([]worktrees.RegisteredPullRequestBinding{other})
+	if terminal() {
+		t.Fatal("a binding no longer listed kept its confirmation")
+	}
+}
+
+// TestEvaluateRoutesItsGitHubReadsThroughTheReader shows the watcher's reads can
+// be answered from memory: nothing runs `gh`.
+func TestEvaluateRoutesItsGitHubReadsThroughTheReader(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	watcher := NewWatcher()
+	watcher.Reader = &githubobserver.Reader{Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+		asked = append(asked, request.Endpoint)
+		return githubobserver.Response{Body: []byte(`{"number":3,"state":"closed","merged":true,"head":{"sha":"h"},"base":{"ref":"main"}}`), StatusCode: 200}, nil
+	}}
+	outcome, err := watcher.Evaluate(context.Background(), worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/w", PullRequest: 3})
+	if err != nil || outcome.Kind != KindMerged || len(asked) != 1 {
+		t.Fatalf("outcome=%+v err=%v asked=%v", outcome, err, asked)
 	}
 }
