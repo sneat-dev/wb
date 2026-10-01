@@ -171,7 +171,8 @@ internal/orchestrate/ciwait_reread_test.go	2	task-17
 internal/orchestrate/ciwait_test.go	14	task-17
 internal/orchestrate/ciwait_transient_read_test.go	2	task-17
 internal/orchestrate/engine_coverage_test.go	5	task-17
-internal/orchestrate/engine_integration_test.go	26	task-17
+internal/orchestrate/engine_git_seed_test.go	1	task-17
+internal/orchestrate/engine_integration_test.go	21	task-17
 internal/orchestrate/engine_more_coverage_test.go	24	task-17
 internal/orchestrate/fetch_memo_test.go	1	task-17
 internal/orchestrate/github_vendored_coverage_test.go	4	task-17

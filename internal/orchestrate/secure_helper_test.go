@@ -25,5 +25,16 @@ func TestMain(m *testing.M) {
 	// remotes pushed to over a local transport are also configured
 	// directly with testenv.ConfigureGitAutoMaintenanceOff.
 	testenv.GitAutoMaintenanceOffProcess()
-	os.Exit(m.Run())
+	seedRoot, err := os.MkdirTemp("", "wb-orchestrate-git-seeds-")
+	if err != nil {
+		_, _ = os.Stderr.WriteString("create engine Git seed root: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	engineGitSeeds.root = seedRoot
+	code := m.Run()
+	if err := os.RemoveAll(seedRoot); err != nil {
+		_, _ = os.Stderr.WriteString("remove engine Git seed root: " + err.Error() + "\n")
+		code = 1
+	}
+	os.Exit(code)
 }
