@@ -1,25 +1,5 @@
-import {
-  OWNER_SESSION_COMMAND,
-  canReadContent,
-  codeBrowserLink,
-  codeIndexView,
-  readmeFailureText,
-  codeIndexText,
-  agentLabel,
-  emptyDocument,
-  filterAgents,
-  filterMachines,
-  filterRepositories,
-  filterWorktrees,
-  formatAge,
-  groupBy,
-  machineOptions,
-  repositoryOptions,
-  mostRecentWorktrees,
-  repositoryLabel,
-  routeLabel,
-  worktreeLabel,
-} from './fleet-view'
+import { codeBrowserLink, codeIndexView, readmeFailureText, codeIndexText, agentLabel, filterMachines, filterRepositories, repositoryOptions, worktreeLabel } from './page-helpers'
+import { OWNER_SESSION_COMMAND, canReadContent, emptyDocument, filterAgents, filterWorktrees, formatAge, groupBy, machineOptions, mostRecentWorktrees, repositoryLabel, routeLabel } from './fleet-view'
 import { agent, fleetDocument, machine, repository, worktree } from './test-data'
 
 const doc = fleetDocument()

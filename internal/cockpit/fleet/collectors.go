@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -61,6 +62,10 @@ type WorktreeRecord struct {
 	// is gone or unstated. It stays inside the daemon: it joins a session to
 	// the worktree its owner process holds and is never emitted.
 	OwnerPID int
+	// OwnerAgent is the agent the live owner declared (runtime, or runtime/id) and
+	// OwnerStarted when its process started, zero when the platform cannot say.
+	OwnerAgent   string
+	OwnerStarted time.Time
 }
 
 // GitGate says whether Git is new enough to be run against untrusted
@@ -196,6 +201,9 @@ type LocalCollectors struct {
 	// journal's, read without writing (worktrees.DeclaredOwnerReadOnly): one
 	// file read and a signal-zero check of each recorded process id.
 	DeclaredOwner func(worktree string) string
+	// ProcessStart observes when a process started; nil means
+	// daemon.ProcessStartTime (Linux only: elsewhere it reports false).
+	ProcessStart func(pid int) (time.Time, bool)
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
@@ -476,14 +484,31 @@ func (c LocalCollectors) Record(worktree string) (WorktreeRecord, bool) {
 	if err != nil {
 		return WorktreeRecord{}, false
 	}
-	owner, ownerPID := declaredOwner(worktree)
+	owner, live := declaredOwner(worktree)
 	if c.DeclaredOwner != nil {
-		owner, ownerPID = c.DeclaredOwner(worktree), 0
+		owner, live = c.DeclaredOwner(worktree), worktrees.LiveOwner{}
 	}
-	return WorktreeRecord{
+	record := WorktreeRecord{
 		Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt,
-		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner, OwnerPID: ownerPID,
-	}, true
+		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner,
+	}
+	if live.PID > 0 {
+		observe := c.ProcessStart
+		if observe == nil {
+			observe = daemon.ProcessStartTime
+		}
+		started, known := observe(live.PID)
+		// A process that started after the owner registered is not the process that
+		// registered: the id was reused. When the start is unknown (not Linux) the
+		// live check alone stands, which is a limitation.
+		if !known || !started.After(live.At.Add(processStartSkew)) {
+			record.OwnerPID, record.OwnerAgent = live.PID, live.Agent
+			if known {
+				record.OwnerStarted = started
+			}
+		}
+	}
+	return record, true
 }
 
 // declaredOwner is the liveness of the owner process the worktree's journal
@@ -491,9 +516,14 @@ func (c LocalCollectors) Record(worktree string) (WorktreeRecord, bool) {
 // journal as a writer does, which may add an exclude rule to the repository, and
 // the snapshotter never writes inside a repository), with the live owner's
 // process id.
-func declaredOwner(worktree string) (string, int) {
-	return worktrees.DeclaredOwnerPIDReadOnly(worktree)
+func declaredOwner(worktree string) (string, worktrees.LiveOwner) {
+	return worktrees.DeclaredOwnerLiveReadOnly(worktree)
 }
+
+// processStartSkew is how much later than a record's time a process may be seen
+// to have started (the clock the records use and the one the start time derives
+// from are not the same).
+const processStartSkew = 5 * time.Second
 
 // PullRequests lists the pull requests `wb pr create` recorded beside active
 // Work Log claims. It reads local files and calls no forge.

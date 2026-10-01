@@ -2,12 +2,22 @@
 // lower-cased searchable values, chips and sort keys, so that typing in a
 // filter only walks precomputed strings. `applyListQuery` filters and sorts.
 
+import { type FleetModel, parseVersion } from './fleet-model'
 import { Agent, Machine, Worktree } from './fleet.types'
-import { MatchEnv, StepCounter, Subject, idleOver30Days, parseQuery, matchesTerms } from './matcher'
+import { MatchEnv, StepCounter, Subject, idleOver30Days, matchesTerms } from './match'
+import { parseQuery } from './matcher'
 import { MergedRepository } from './repository-identity'
 import { TaskView, MachineView } from './view-types'
-import { ListPageId, ListQuery, VOCABULARY, declaredFields, defaultDirection } from './vocabulary'
+import { VOCABULARY, defaultDirection } from './filter-vocabulary'
+import { buildCleanup } from './home-details'
+import { buildRepositories } from './model-repositories'
+import { ListPageId, ListQuery, declaredFields } from './vocabulary'
 import { isRunning } from './fleet.types'
+
+/** A version as a string that sorts like the version: each number padded, so 0.9.0 sorts before 0.10.0. */
+export function versionKey(version: string | undefined): string | undefined {
+  return parseVersion(version)?.map((part) => String(part).padStart(8, '0')).join('.')
+}
 
 export type SortKey = string | number | undefined
 
@@ -242,4 +252,35 @@ export function applyListQuery<T>(page: ListPageId, rows: readonly ListRow<T>[],
     })
     .map((entry) => entry.row)
   return { rows: sorted, total: rows.length }
+}
+
+// ---- the row sets of a model, memoised per document (REQ:derived-collections-memoised) ----
+
+/** The Tasks rows of the model; the `needs-you` chip holds for exactly the tasks Home lists. */
+export function buildTaskRows(model: FleetModel): ListRow<TaskView>[] {
+  return model.memo('rows:tasks', [], () => taskRows(model.tasks, new Set(model.needsYou.items.map((item) => item.task))))
+}
+
+export function buildRepositoryRows(model: FleetModel): ListRow<MergedRepository>[] {
+  return model.memo('rows:repositories', [], () => repositoryRows(buildRepositories(model)))
+}
+
+/** The Worktrees rows; the `pr` chip reads `model.worktreePullRequests`, the join the worktree panel reads too. */
+export function buildWorktreeRows(model: FleetModel): ListRow<Worktree>[] {
+  return model.memo('rows:worktrees', [], () =>
+    worktreeRows(model.document.worktrees, {
+      repositoryName: (id) => model.repositoryName(id),
+      withPullRequest: new Set(model.worktreePullRequests.keys()),
+      safeIds: buildCleanup(model).safeIds,
+      lookIds: buildCleanup(model).lookIds,
+    }),
+  )
+}
+
+export function buildAgentRows(model: FleetModel): ListRow<Agent>[] {
+  return model.memo('rows:agents', [], () => agentRows(model.document.agents, { taskOf: (agent) => model.tasksOfAgent(agent)[0], repositoryName: (id) => model.repositoryName(id) }))
+}
+
+export function buildMachineRows(model: FleetModel): ListRow<MachineView>[] {
+  return model.memo('rows:machines', [], () => machineRows(model.machines, (machine) => versionKey(machine.wb_version)))
 }

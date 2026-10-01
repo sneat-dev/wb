@@ -169,6 +169,10 @@ type Document struct {
 	// observations ran out with pull requests due, so their state is older than
 	// the cadence promises; each entry's checked_at says how old.
 	PullRequestsThrottled bool `json:"pull_requests_throttled,omitempty"`
+	// Throughput is this machine's landed-task throughput
+	// (cockpit-views#req:throughput-block), absent while no landed terminal
+	// record has both timestamps. It is local only and never exported.
+	Throughput *Throughput `json:"throughput,omitempty"`
 }
 
 // BranchesResponse is what the branches route answers for one repository: its

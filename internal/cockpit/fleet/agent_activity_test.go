@@ -13,6 +13,8 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/herdr"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // fakeHerdr is herdr's agent list: the agents it answers, the error it fails
@@ -323,5 +325,102 @@ func TestSessionWithSeveralWorktreesNamesNoTaskOrRepositoryItCannotAgreeOn(t *te
 	record.pid = 8
 	if agent := completeAgent(record, "", nil, map[int][]ownerLink{8: many}, nil); len(agent.Worktrees) != maxAgentWorktrees || agent.Task != "t" || agent.Repository != "r" {
 		t.Errorf("agent = %+v", agent)
+	}
+}
+
+// TestRecordLinksALiveOwnerAndRefusesAReusedProcessId covers the owner link of a
+// worktree record: the live owner's process id, declared agent and observed
+// start are kept, a process observed to have started after the owner registered
+// is a reused id and is dropped, and a platform that cannot observe a start
+// keeps the live check alone.
+func TestRecordLinksALiveOwnerAndRefusesAReusedProcessId(t *testing.T) {
+	t.Parallel()
+	dir := realTempDir(t)
+	writeManifestFile(t, dir, worktrees.Manifest{
+		Version: 1, EffortID: "task-q", EffortKind: worktrees.EffortKindTask, Provenance: worktrees.ProvenanceCreated,
+		Repository: "acme/widgets", Branch: "task-q", CreatedAt: time.Now().UTC(),
+	})
+	registered := time.Now().UTC()
+	content, err := worktreejournal.Store{}.EncodeLocalEvents([]worktrees.LocalWorkLogEvent{{
+		Version: 1, Seq: 0, ID: "evt-a", Type: worktrees.LocalEventOwner, At: registered,
+		Owner: &worktrees.OwnerRegistration{Agent: "claude/hid-1", PID: os.Getpid(), At: registered},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worklog := filepath.Join(dir, ".wb", "local", "worklog")
+	if err := os.MkdirAll(worklog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worklog, "events.jsonl"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := func(offset time.Duration) func(int) (time.Time, bool) {
+		return func(pid int) (time.Time, bool) { return registered.Add(offset), pid == os.Getpid() }
+	}
+	for name, test := range map[string]struct {
+		observe   func(int) (time.Time, bool)
+		wantPID   int
+		wantStart bool
+	}{
+		"started before the owner registered": {at(-time.Hour), os.Getpid(), true},
+		"started after the owner registered":  {at(time.Hour), 0, false},
+		"start not observable":                {func(int) (time.Time, bool) { return time.Time{}, false }, os.Getpid(), false},
+	} {
+		record, ok := LocalCollectors{ProcessStart: test.observe}.Record(dir)
+		if !ok || record.Owner != worktrees.OwnerLive || record.OwnerPID != test.wantPID || record.OwnerStarted.IsZero() == test.wantStart {
+			t.Errorf("%s: record = %+v", name, record)
+		}
+		if test.wantPID != 0 && record.OwnerAgent != "claude/hid-1" {
+			t.Errorf("%s: owner agent = %q", name, record.OwnerAgent)
+		}
+	}
+	// With no seam the real observation answers, and never fails the record.
+	if record, ok := (LocalCollectors{}).Record(dir); !ok || record.Owner != worktrees.OwnerLive {
+		t.Errorf("record with the real process observation = %+v", record)
+	}
+}
+
+// TestSessionAndOwnerMustAgreeBesideTheProcessId covers the reuse guard of the
+// session link: a reused process id is refused when the declared runtime or
+// harness id disagrees or the owner's process started after the session
+// registered, and the link stands when the records agree or carry nothing
+// to compare.
+func TestSessionAndOwnerMustAgreeBesideTheProcessId(t *testing.T) {
+	t.Parallel()
+	registered := newClock().Now()
+	live := func(runtime string) Agent {
+		return Agent{Kind: AgentSession, State: session.StateLive, Runtime: runtime, StartedAt: registered}
+	}
+	for name, test := range map[string]struct {
+		agent   Agent
+		harness string
+		link    ownerLink
+		want    bool
+	}{
+		"same runtime and id":              {live("claude"), "h", ownerLink{agent: "claude/h"}, true},
+		"another runtime":                  {live("codex"), "h", ownerLink{agent: "claude/h"}, false},
+		"another harness id":               {live("claude"), "h2", ownerLink{agent: "claude/h"}, false},
+		"a record with no runtime":         {live(""), "h", ownerLink{agent: "claude/h"}, true},
+		"an owner with a bare runtime":     {live("claude"), "", ownerLink{agent: "claude"}, true},
+		"an owner with a bare harness id":  {live(""), "h", ownerLink{agent: "h"}, true},
+		"an owner with another bare token": {live("claude"), "h", ownerLink{agent: "codex"}, false},
+		"an owner that declared no agent":  {live("claude"), "h", ownerLink{}, true},
+		"a session that declared nothing":  {live(""), "", ownerLink{agent: "codex"}, true},
+		"owner process older than session": {live("claude"), "", ownerLink{started: registered.Add(-time.Hour)}, true},
+		"owner process newer than session": {live("claude"), "", ownerLink{started: registered.Add(time.Hour)}, false},
+		"start unknown":                    {live("claude"), "", ownerLink{}, true},
+		"session with no start time":       {Agent{Kind: AgentSession}, "", ownerLink{started: registered}, true},
+	} {
+		if got := sameProcess(test.agent, test.harness, test.link); got != test.want {
+			t.Errorf("%s: sameProcess = %v, want %v", name, got, test.want)
+		}
+	}
+	// And through the document: a session whose process id the owner shares but
+	// whose runtime differs carries no worktree.
+	record := agentRecord{agent: live("codex"), pid: 7, harness: "h"}
+	owners := map[int][]ownerLink{7: {{pid: 7, agent: "claude/h", worktree: "wt-a", task: "t", project: "r"}}}
+	if agent := completeAgent(record, "", nil, owners, nil); len(agent.Worktrees) != 0 || agent.Task != "" {
+		t.Errorf("a reused process id linked a worktree: %+v", agent)
 	}
 }

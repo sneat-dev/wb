@@ -190,12 +190,17 @@ export class FleetClient {
     return body as BranchesResponse
   }
 
-  /** The samples of one machine: local history, live remote, one cached sample, or none. */
-  async readMachineMetrics(machine: string): Promise<MachineMetrics> {
+  /**
+   * The samples of one machine: local history, live remote, one cached sample, or none.
+   * `signal` cancels the read (the poller does when it stops): the request is aborted and the
+   * returned promise rejects with the signal's abort error; the request timeout still applies.
+   */
+  async readMachineMetrics(machine: string, signal?: AbortSignal): Promise<MachineMetrics> {
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const response = await this.fetcher(`${MACHINE_METRICS_PATH}?machine=${encodeURIComponent(machine)}`, {
       headers: { Accept: 'application/json' },
       credentials: 'same-origin',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     })
     if (!response.ok) throw new FleetRequestError(response.status)
     const body: unknown = await response.json().catch(() => null)

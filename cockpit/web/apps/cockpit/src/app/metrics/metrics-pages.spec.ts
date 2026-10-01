@@ -1,3 +1,5 @@
+import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
+import { Shortcuts } from '../shortcuts/shortcuts'
 import { TestBed } from '@angular/core/testing'
 import { provideRouter, withComponentInputBinding } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
@@ -17,7 +19,7 @@ describe('machine metrics polling on the pages', () => {
       requests.push(String(input))
       return new Response(JSON.stringify({ machine: 'x', route: 'local', samples: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
-    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes, withComponentInputBinding()), { provide: FETCH, useValue: fetcher }] })
+    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes, withComponentInputBinding()), { provide: FETCH, useValue: fetcher }, { provide: LIST_SHORTCUTS, useExisting: Shortcuts }] })
     const store = TestBed.inject(FleetStore)
     store.loaded.set(true)
     store.document.set(fleetDocument())

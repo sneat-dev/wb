@@ -129,10 +129,11 @@ export class MetricsPoller {
     return Promise.all(
       [...ids].map(async (id): Promise<[string, MachineMetrics | Error]> => {
         try {
-          // The client cannot be cancelled, so a read of a stopped generation is let finish and dropped.
-          const metrics = await this.client.readMachineMetrics(id)
+          // A stop aborts the request itself; whatever still comes back for a stopped round is dropped.
+          const metrics = await this.client.readMachineMetrics(id, signal)
           return signal.aborted ? [id, new Error('stopped')] : [id, metrics]
         } catch (error) {
+          if (signal.aborted) return [id, new Error('stopped')]
           return [id, error instanceof Error ? error : new Error(String(error))]
         }
       }),

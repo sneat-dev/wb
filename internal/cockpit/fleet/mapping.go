@@ -35,6 +35,8 @@ type repoEntries struct {
 // ownerLink is a worktree held by a live owner process.
 type ownerLink struct {
 	pid                     int
+	agent                   string
+	started                 time.Time
 	worktree, task, project string
 }
 
@@ -120,7 +122,7 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 		}
 		byBranch[branch] = linkedWorktree{id: id, task: item.record.Task}
 		if item.record.OwnerPID > 0 {
-			mapped.owners = append(mapped.owners, ownerLink{pid: item.record.OwnerPID, worktree: id, task: item.record.Task, project: repositoryID})
+			mapped.owners = append(mapped.owners, ownerLink{pid: item.record.OwnerPID, worktree: id, task: item.record.Task, project: repositoryID, agent: item.record.OwnerAgent, started: item.record.OwnerStarted})
 		}
 		worktree := Worktree{
 			Entry: entry(id), Repository: repositoryID, Name: item.record.Task, Task: item.record.Task, Branch: branch,
@@ -456,7 +458,13 @@ func completeAgent(record agentRecord, repositoryID string, worktreesOf map[stri
 	if agent.State != session.StateLive {
 		return agent
 	}
-	if links := ownersByPID[record.pid]; record.pid > 0 && len(links) > 0 {
+	var links []ownerLink
+	for _, link := range ownersByPID[record.pid] {
+		if record.pid > 0 && sameProcess(agent, record.harness, link) {
+			links = append(links, link)
+		}
+	}
+	if len(links) > 0 {
 		task, project := links[0].task, links[0].project
 		for _, link := range links {
 			agent.Worktrees = append(agent.Worktrees, link.worktree)
@@ -473,6 +481,27 @@ func completeAgent(record agentRecord, repositoryID string, worktreesOf map[stri
 		agent.Activity = status
 	}
 	return agent
+}
+
+// sameProcess reports whether the session and a worktree's owner, which share a
+// process id, are the same process rather than a reuse of the id: the declared
+// runtime and harness session id must agree wherever both records carry one, and
+// the owner's process cannot have started after the session registered. When
+// neither record carries anything but the id, the id and the owner's liveness
+// are all there is.
+func sameProcess(session Agent, harness string, link ownerLink) bool {
+	runtime, id, split := strings.Cut(link.agent, "/")
+	switch {
+	case !split && link.agent != "" && (session.Runtime != "" || harness != ""):
+		if link.agent != session.Runtime && link.agent != harness {
+			return false
+		}
+	case split:
+		if (runtime != "" && session.Runtime != "" && runtime != session.Runtime) || (id != "" && harness != "" && id != harness) {
+			return false
+		}
+	}
+	return link.started.IsZero() || session.StartedAt.IsZero() || !link.started.After(session.StartedAt.Add(processStartSkew))
 }
 
 // boundedIDs is ids sorted, with no duplicate, at most maxAgentWorktrees.

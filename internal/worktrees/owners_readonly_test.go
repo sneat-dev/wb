@@ -100,9 +100,9 @@ func TestDeclaredOwnerReadOnlyTellsLivenessAndWritesNothing(t *testing.T) {
 	}
 }
 
-// TestDeclaredOwnerPIDReadOnlyGivesTheLiveOwnersProcessOnly proves the process
+// TestDeclaredOwnerLiveReadOnlyGivesTheLiveOwnersProcessOnly proves the process
 // id is the live owner's and is 0 for a gone or an unstated owner.
-func TestDeclaredOwnerPIDReadOnlyGivesTheLiveOwnersProcessOnly(t *testing.T) {
+func TestDeclaredOwnerLiveReadOnlyGivesTheLiveOwnersProcessOnly(t *testing.T) {
 	t.Parallel()
 	live, dead := os.Getpid(), 424242
 	for name, test := range map[string]struct {
@@ -114,8 +114,9 @@ func TestDeclaredOwnerPIDReadOnlyGivesTheLiveOwnersProcessOnly(t *testing.T) {
 		"a live owner":   {[]int{live}, live},
 		"dead then live": {[]int{dead, live}, live},
 	} {
-		if _, pid := DeclaredOwnerPIDReadOnly(journalWith(t, test.pids...)); pid != test.want {
-			t.Errorf("%s: pid = %d, want %d", name, pid, test.want)
+		_, owner := DeclaredOwnerLiveReadOnly(journalWith(t, test.pids...))
+		if owner.PID != test.want || (test.want != 0 && (owner.Agent != "claude" || owner.At.IsZero())) {
+			t.Errorf("%s: owner = %+v, want process %d", name, owner, test.want)
 		}
 	}
 }

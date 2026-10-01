@@ -6,35 +6,50 @@
 .panel-note,
 .panel-freshness {
   margin: 0.25rem 0;
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
+}
+
+/* One line: the freshness and "111 files · 1443 symbols · 4329 edges". */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  align-items: baseline;
 }
 
 .totals {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 2rem;
-  margin: 0.5rem 0;
+  gap: 0 var(--space-3);
+  margin: 0.25rem 0;
 }
 
 .totals div {
   display: flex;
-  flex-direction: column;
+  flex-direction: row-reverse;
+  gap: var(--space-1);
+  justify-content: flex-end;
 }
 
 .totals dt {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  text-transform: lowercase;
 }
 
 .totals dd {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 
 .kinds-title {
-  margin: 0.75rem 0 0.25rem;
-  font-size: 0.875rem;
+  margin: 0.25rem 0;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .kinds {

@@ -4,40 +4,17 @@
 // identical document recomputes nothing and a render reads the same arrays.
 
 import { Agent, FleetDocument, Machine, MachineMetrics, MachineRoute, PullRequest, Repository, Worktree, isRunning } from './fleet.types'
-import { CommandTarget, CopyCommand, SshRoute, cockpitExport, commandTarget, sshRouteOf, daemonStart, fleetStatus, pullRequestLand, remoteEnroll, remotePublish, selfUpdate } from './commands'
-import {
-  AgentPanel,
-  MachinePanel,
-  PullRequestPanel,
-  RepositoryPanel,
-  TaskPanel,
-  WorktreePanel,
-  buildAgentPanel,
-  buildMachinePanel,
-  buildPullRequestPanel,
-  buildRepositoryPanel,
-  buildTaskPanel,
-  buildWorktreePanel,
-} from './entity-views'
+import { CommandTarget, CopyCommand, SshRoute, commandTarget, pullRequestLand, sshRouteOf } from './command-core'
 import { agentTitle } from './fleet-view'
-import { AGE_TERMS, ageTermOf, idleOver30Days, wholeDays } from './matcher'
-import {
-  AgentRowContext,
-  ListRow,
-  WorktreeRowContext,
-  agentRows,
-  machineRows,
-  repositoryRows,
-  taskRows,
-  worktreeRows,
-} from './list-rows'
-import { MergedRepository, isStale, mergeRepositories, repositorySlug } from './repository-identity'
+import { isStale, repositorySlug } from './repository-identity'
 import {
   TaskInputs,
+  TaskStateId,
   blockingRuns,
   failedChecks,
   hasUnpushedWork,
   interimAtRiskWorktrees,
+  isBlocked,
   isOpenPullRequest,
   isObserved,
   notReadyReasons,
@@ -47,9 +24,6 @@ import {
   taskStateInfo,
 } from './task-state'
 import {
-  Cleanup,
-  FleetHealth,
-  HealthItem,
   InFlightAgent,
   MachineLoad,
   MachineStateId,
@@ -61,11 +35,10 @@ import {
   ReadyPullRequest,
   ReadyToLand,
   ReadyToLandRow,
-  ScanErrorItem,
   TaskView,
-  ThroughputSeries,
 } from './view-types'
-import { ageLink, agentDetailLink, chipLink, listLink, machineLink, selectionLink } from './vocabulary'
+import { agentDetailLink, chipLink, selectionLink } from './vocabulary'
+import { webAddress } from './web-address'
 
 /** The derivations that are counted, so a test can prove each ran once per document. */
 export type Derivation =
@@ -102,8 +75,6 @@ export interface ModelOptions {
 
 const EMPTY_LINK = { path: '/', query: {} }
 const EMPTY_NEEDS_YOU: NeedsYou = { items: [], shown: [], more: 0, moreLink: EMPTY_LINK }
-const EMPTY_CLEANUP: Cleanup = { safeCount: 0, lookCount: 0, safeIds: new Set(), lookIds: new Set(), indicative: true, reviewLink: EMPTY_LINK, bars: [], unknownAge: 0 }
-const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] }
 
 /** The clock bucket of derivations that depend on time: ages, expiries and staleness are re-derived once a minute. */
 export const CLOCK_BUCKET_MS = 60_000
@@ -113,12 +84,20 @@ export { agentTitle }
 /** How many tasks Resume lists. */
 export const RESUME_COUNT = 5
 
-const AGE_LABELS: Record<(typeof AGE_TERMS)[number], string> = {
-  '<1d': 'today',
-  '1-7d': '1 to 7 days',
-  '8-30d': '8 to 30 days',
-  '31-90d': '31 to 90 days',
-  '>90d': 'over 90 days',
+/**
+ * "Needs you" is a signal, not a debt counter: a task at risk, or whose agent
+ * finished with work not pushed, is listed only when its last activity is this
+ * recent. Older ones are counted by the Cleanup line's "need a look".
+ */
+export const NEEDS_YOU_WINDOW_DAYS = 14
+export const NEEDS_YOU_WINDOW_MS = NEEDS_YOU_WINDOW_DAYS * 86_400_000
+
+/** The largest number a tab badge shows as it is; above it the badge reads "99+". */
+export const BADGE_CAP = 99
+
+/** A badge count as shown: the number, or "99+" above `BADGE_CAP`. */
+export function badgeLabel(count: number): string {
+  return count > BADGE_CAP ? `${BADGE_CAP}+` : String(count)
 }
 
 const MERGE_ATTENTION = new Set(['dirty', 'behind', 'blocked'])
@@ -164,11 +143,6 @@ export function parseVersion(version: string | undefined): number[] | undefined 
   return match ? match[1].split('.').map(Number) : undefined
 }
 
-/** A version as a string that sorts like the version: each number padded, so 0.9.0 sorts before 0.10.0. */
-export function versionKey(version: string | undefined): string | undefined {
-  return parseVersion(version)?.map((part) => String(part).padStart(8, '0')).join('.')
-}
-
 export function compareVersions(a: number[], b: number[]): number {
   for (let index = 0; index < Math.max(a.length, b.length); index++) {
     const difference = (a[index] ?? 0) - (b[index] ?? 0)
@@ -209,7 +183,12 @@ export class FleetModel {
     return this.failed
   }
 
-  private memo<T>(name: Derivation, fallback: T, derive: () => T): T {
+  /**
+   * Computes a derivation once for this model (counted by `onDerive`, contained by
+   * `onError`). Public for the lazy entry points, which memoise their own views
+   * here: `/list` the row sets, `/panel` nothing (its views are cheap).
+   */
+  memo<T>(name: Derivation, fallback: T, derive: () => T): T {
     if (!this.cache.has(name)) {
       this.options.onDerive?.(name)
       try {
@@ -229,6 +208,11 @@ export class FleetModel {
     return this.options.machineRoutes
   }
 
+  /** The SSH route of a machine, when it has one: the options' own, else the session's (owner-only). */
+  sshRouteFor(machine: Machine): SshRoute | undefined {
+    return this.options.sshRoute?.(machine) ?? sshRouteOf(this.options.machineRoutes, machine.id)
+  }
+
   /** Where a command for an entry runs: here, through the machine's SSH route, or labelled "run on <machine>". */
   targetOf(entry: { route: string; machine: string; machine_id: string }): CommandTarget {
     return commandTarget(entry, this.options.machineRoutes)
@@ -243,6 +227,7 @@ export class FleetModel {
     agentById: Map<string, Agent>
     machineById: Map<string, Machine>
     taskOfPullRequest: Map<string, string>
+    worktreePullRequests: Map<string, PullRequest[]>
   } {
     return this.memo(
       'index',
@@ -253,24 +238,42 @@ export class FleetModel {
         agentById: new Map<string, Agent>(),
         machineById: new Map<string, Machine>(),
         taskOfPullRequest: new Map<string, string>(),
+        worktreePullRequests: new Map<string, PullRequest[]>(),
       },
       () => {
-      const repositoryById = new Map(this.document.repositories.map((repository) => [repository.id, repository]))
-      const worktreeById = new Map(this.document.worktrees.map((worktree) => [worktree.id, worktree]))
-      const byBranch = new Map(this.document.worktrees.map((worktree) => [`${worktree.repository}\u0000${worktree.branch}`, worktree.task]))
-      const taskOfPullRequest = new Map<string, string>()
-      for (const pullRequest of this.document.pull_requests) {
-        const task =
-          (pullRequest.worktree === undefined ? undefined : worktreeById.get(pullRequest.worktree)?.task) ??
-          (pullRequest.repository !== undefined && pullRequest.branch !== undefined ? byBranch.get(`${pullRequest.repository}\u0000${pullRequest.branch}`) : undefined)
-        if (task !== undefined) taskOfPullRequest.set(pullRequest.id, task)
-      }
-      const pullRequestById = new Map(this.document.pull_requests.map((pullRequest) => [pullRequest.id, pullRequest]))
-      const agentById = new Map(this.document.agents.map((agent) => [agent.id, agent]))
-      const machineById = new Map(this.document.machines.map((machine) => [machine.id, machine]))
-      return { repositoryById, worktreeById, pullRequestById, agentById, machineById, taskOfPullRequest }
-    },
+        const repositoryById = new Map(this.document.repositories.map((repository) => [repository.id, repository]))
+        const worktreeById = new Map(this.document.worktrees.map((worktree) => [worktree.id, worktree]))
+        const byBranch = new Map<string, Worktree[]>()
+        for (const worktree of this.document.worktrees) {
+          const key = `${worktree.repository}\u0000${worktree.branch}`
+          byBranch.set(key, [...(byBranch.get(key) ?? []), worktree])
+        }
+        // The one worktree-to-pull-request join: a pull request that names a worktree of the document belongs to
+        // that worktree; one that does not belongs to the worktrees of its repository entry and branch.
+        const taskOfPullRequest = new Map<string, string>()
+        const worktreePullRequests = new Map<string, PullRequest[]>()
+        for (const pullRequest of this.document.pull_requests) {
+          const named = pullRequest.worktree === undefined ? undefined : worktreeById.get(pullRequest.worktree)
+          const joined = named !== undefined ? [named] : pullRequest.repository !== undefined && pullRequest.branch !== undefined ? (byBranch.get(`${pullRequest.repository}\u0000${pullRequest.branch}`) ?? []) : []
+          if (joined.length > 0) taskOfPullRequest.set(pullRequest.id, joined[0].task)
+          for (const worktree of joined) worktreePullRequests.set(worktree.id, [...(worktreePullRequests.get(worktree.id) ?? []), pullRequest])
+        }
+        const pullRequestById = new Map(this.document.pull_requests.map((pullRequest) => [pullRequest.id, pullRequest]))
+        const agentById = new Map(this.document.agents.map((agent) => [agent.id, agent]))
+        const machineById = new Map(this.document.machines.map((machine) => [machine.id, machine]))
+        return { repositoryById, worktreeById, pullRequestById, agentById, machineById, taskOfPullRequest, worktreePullRequests }
+      },
     )
+  }
+
+  /**
+   * The pull requests of each worktree, by worktree id (a worktree with none has no entry): the one join the
+   * `pr` chip of Worktrees, the list rows and the worktree panel all read. A pull request that names a worktree
+   * of the document joins that worktree only; one that does not joins the worktrees of its repository entry and
+   * branch. In document order.
+   */
+  get worktreePullRequests(): ReadonlyMap<string, readonly PullRequest[]> {
+    return this.index.worktreePullRequests
   }
 
   worktreeById(id: string): Worktree | undefined {
@@ -287,33 +290,6 @@ export class FleetModel {
 
   machineById(id: string): Machine | undefined {
     return this.index.machineById.get(id)
-  }
-
-  // ---- per-entity panels ----
-
-  worktreeView(id: string): WorktreePanel | undefined {
-    return buildWorktreePanel(this, id)
-  }
-
-  taskView(name: string): TaskPanel | undefined {
-    return buildTaskPanel(this, name)
-  }
-
-  /** `key` is the merged repository's key (its lower-cased `owner/name`). */
-  repositoryView(key: string): RepositoryPanel | undefined {
-    return buildRepositoryPanel(this, key)
-  }
-
-  agentView(id: string): AgentPanel | undefined {
-    return buildAgentPanel(this, id)
-  }
-
-  machineView(id: string): MachinePanel | undefined {
-    return buildMachinePanel(this, id)
-  }
-
-  pullRequestView(id: string): PullRequestPanel | undefined {
-    return buildPullRequestPanel(this, id)
   }
 
   /** A repository's `owner/name` for its id, or the id when the document does not list it. */
@@ -335,11 +311,6 @@ export class FleetModel {
   }
 
   // ---- derived collections ----
-
-  /** Repositories merged by identity across machines. */
-  get repositories(): MergedRepository[] {
-    return this.memo('repositories', [], () => mergeRepositories(this.document.repositories, this.now, { pullRequests: this.document.pull_requests, agents: this.document.agents }))
-  }
 
   /** One task per name, with its state. */
   get tasks(): TaskView[] {
@@ -391,9 +362,19 @@ export class FleetModel {
     return this.taskMap.get(name)
   }
 
-  /** The Home badge: the number of tasks that need the operator. */
+  /** The Home badge: the number of tasks that need the operator (the whole number; `homeBadgeLabel` is what is shown). */
   get homeBadge(): number {
     return this.needsYou.items.length
+  }
+
+  /** The Home badge as shown: the number, or "99+" above 99. */
+  get homeBadgeLabel(): string {
+    return badgeLabel(this.homeBadge)
+  }
+
+  /** The task's last activity is within `NEEDS_YOU_WINDOW_DAYS`; no recorded activity is not recent. */
+  isRecent(task: TaskView): boolean {
+    return task.lastActivityAt !== undefined && this.now - task.lastActivityAt <= NEEDS_YOU_WINDOW_MS
   }
 
   /** The Agents tab badge: the running agents on every machine. */
@@ -423,7 +404,9 @@ export class FleetModel {
 
   private needsYouItem(task: TaskView): NeedsYouItem | undefined {
     const base = { task: task.name, lastActivityAt: task.lastActivityAt, link: selectionLink('tasks', task.name) }
-    switch (task.state) {
+    // Older at-risk work is a cleanup matter, counted by Cleanup's "need a look"; what else the task needs still counts.
+    const state = task.state === 'at-risk' && !this.isRecent(task) ? this.stateBelowAtRisk(task) : task.state
+    switch (state) {
       case 'at-risk': {
         const risky = interimAtRiskWorktrees(task.worktrees)
         const ahead = risky.reduce((total, worktree) => total + (worktree.ahead ?? 0), 0)
@@ -451,7 +434,7 @@ export class FleetModel {
           repository: this.pullRequestRepository(pullRequest),
           number: pullRequest.number,
           failedCheck: pullRequest.failed_check,
-          url: pullRequest.url,
+          url: webAddress(pullRequest.url),
         }
       }
       case 'blocked': {
@@ -476,7 +459,13 @@ export class FleetModel {
     }
   }
 
-  /** The two kinds beyond the failures: a green pull request that cannot merge, and an agent that finished with work not pushed. */
+  /** The state an at-risk task would have without the at-risk row: `checks-failed`, `blocked`, or `idle` for the kinds beyond the failures. */
+  private stateBelowAtRisk(task: TaskView): TaskStateId {
+    if (task.openPullRequests.some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
+    return isBlocked(task.agents, this.now) ? 'blocked' : 'idle'
+  }
+
+  /** The two kinds beyond the failures: a green pull request that cannot merge, and an agent that finished (within the window) with work not pushed. */
   private softNeedsYouItem(task: TaskView, base: { task: string; lastActivityAt?: number; link: NeedsYouItem['link'] }): NeedsYouItem | undefined {
     const stuck = task.openPullRequests.find((pullRequest) => pullRequest.checks_green === true && pullRequest.mergeable !== undefined && MERGE_ATTENTION.has(pullRequest.mergeable))
     if (stuck) {
@@ -489,12 +478,12 @@ export class FleetModel {
         repository: this.pullRequestRepository(stuck),
         number: stuck.number,
         reason: notReadyReasons(stuck).join(', '),
-        url: stuck.url,
+        url: webAddress(stuck.url),
       }
     }
     const finished = task.agents.find((agent) => agent.activity === 'done' || agent.activity === 'idle')
     const unpushed = task.worktrees.some(hasUnpushedWork)
-    if (finished && task.openPullRequests.length === 0 && task.state !== 'landed' && unpushed) {
+    if (finished && task.openPullRequests.length === 0 && task.state !== 'landed' && unpushed && this.isRecent(task)) {
       return { ...base, id: `agent-finished:${task.name}`, kind: 'agent-finished', rank: 4, agentId: finished.id, machine: finished.machine }
     }
     return undefined
@@ -537,7 +526,7 @@ export class FleetModel {
         id: pullRequest.id,
         repository,
         number: pullRequest.number,
-        url: pullRequest.url,
+        url: webAddress(pullRequest.url),
         // A count the daemon did not report stays absent: never 0 of 0.
         checksPassed: pullRequest.checks_passed,
         checksTotal: pullRequest.checks_total,
@@ -589,36 +578,6 @@ export class FleetModel {
     )
   }
 
-  /** Home "Cleanup": the indicative safe and look counts, the sets behind them, and the age bars. */
-  get cleanup(): Cleanup {
-    return this.memo('cleanup', EMPTY_CLEANUP, () => {
-      const landed = new Set(this.tasks.filter((task) => task.state === 'landed').map((task) => task.name))
-      const safeIds = new Set<string>()
-      const lookIds = new Set<string>()
-      const counts = AGE_TERMS.map(() => 0)
-      let unknownAge = 0
-      for (const worktree of this.document.worktrees) {
-        const activity = toTime(worktree.last_activity_at)
-        if (landed.has(worktree.task) && worktree.ahead === 0 && worktree.owner_state !== 'active') safeIds.add(worktree.id)
-        else if (worktree.owner_state === 'orphaned' || worktree.owner_state === 'unknown' || idleOver30Days(activity, this.now)) lookIds.add(worktree.id)
-        if (activity === undefined) unknownAge++
-        else {
-          counts[AGE_TERMS.indexOf(ageTermOf(wholeDays(activity, this.now)))]++
-        }
-      }
-      return {
-        safeCount: safeIds.size,
-        lookCount: lookIds.size,
-        safeIds,
-        lookIds,
-        indicative: true,
-        reviewLink: chipLink('worktrees', 'safe'),
-        bars: AGE_TERMS.map((term, index) => ({ term, label: AGE_LABELS[term], count: counts[index], link: ageLink('worktrees', term) })),
-        unknownAge,
-      }
-    })
-  }
-
   /** The machines with their state, and the newest WB version in the fleet. */
   get machines(): MachineView[] {
     return this.memo('machines', [], () => {
@@ -652,157 +611,6 @@ export class FleetModel {
     return newest
   }
 
-  /** Home "Fleet health": shown only when `ok` is false. */
-  get health(): FleetHealth {
-    return this.memo('health', EMPTY_HEALTH, () => {
-      const staleMachines: HealthItem[] = []
-      const olderWb: HealthItem[] = []
-      const remoteErrors: HealthItem[] = []
-      for (const view of this.machines) {
-        const machine = view.machine
-        const base = { machine: machine.machine, machineId: machine.id, link: machineLink('machines', machine.id) }
-        // With an SSH route the command is the ssh form, run from here; without one it runs on the machine.
-        const ssh = this.options.sshRoute?.(machine) ?? sshRouteOf(this.options.machineRoutes, machine.id)
-        const target: CommandTarget = ssh === undefined ? {} : { ssh }
-        if (view.state === 'stale') {
-          staleMachines.push({ ...base, text: `${machine.machine} has not published for over 24 hours`, command: healthCommand(remotePublish(target), machine.machine, ssh !== undefined), link: chipLink('machines', 'stale') })
-        }
-        if (view.outdated) {
-          olderWb.push({ ...base, text: `${machine.machine} runs an older WB (${machine.wb_version})`, command: healthCommand(selfUpdate(target), machine.machine, ssh !== undefined), link: chipLink('machines', 'outdated') })
-        }
-        if (machine.remote_error !== undefined) {
-          // Enrolling configures this machine, so it runs here whatever the route.
-          const here = ssh !== undefined || machine.remote_error === 'http_auth_failed'
-          remoteErrors.push({ ...base, text: `${machine.machine}: ${remoteErrorText(machine.remote_error)}`, command: healthCommand(remoteFix(machine.remote_error, ssh), machine.machine, here) })
-        }
-      }
-      const scanErrors: ScanErrorItem[] = this.repositories
-        .filter((repository) => repository.errors.length > 0)
-        .map((repository) => {
-          const command = fleetStatus(repository.slug)
-          return { repository: repository.slug, command: command.ok ? { text: command.text } : { reason: command.reason }, link: chipLink('repositories', 'errors') }
-        })
-      return { ok: staleMachines.length + olderWb.length + remoteErrors.length + scanErrors.length === 0, staleMachines, olderWb, remoteErrors, scanErrors }
-    })
-  }
-
-  /** The two Home charts' numbers; undefined when the document has no throughput block. */
-  get throughput(): ThroughputSeries | undefined {
-    return this.memo('throughput', undefined, () => {
-      const block = this.document.throughput
-      if (block === undefined) return undefined
-      const landed = new Map(block.per_day.map((day) => [day.date, day.landed]))
-      const perDay: { date: string; landed: number }[] = []
-      for (let offset = block.window_days - 1; offset >= 0; offset--) {
-        const date = isoDay(new Date(this.now - offset * 86_400_000))
-        perDay.push({ date, landed: landed.get(date) ?? 0 })
-      }
-      return {
-        windowDays: block.window_days,
-        perDay,
-        totalLanded: perDay.reduce((total, day) => total + day.landed, 0),
-        maxLanded: Math.max(0, ...perDay.map((day) => day.landed)),
-        slowest: [...block.slowest].sort((a, b) => b.duration_seconds - a.duration_seconds).slice(0, 5).map((entry) => ({ task: entry.task, durationSeconds: entry.duration_seconds, landedAt: entry.landed_at })),
-      }
-    })
-  }
-
-  // ---- list rows, one set per page ----
-
-  /** The tasks that have a "Needs you" row: the same set as the chip `needs-you`. */
-  private get needsYouTasks(): ReadonlySet<string> {
-    return new Set(this.needsYou.items.map((item) => item.task))
-  }
-
-  get taskRows(): ListRow<TaskView>[] {
-    return this.memo('rows:tasks', [], () => taskRows(this.tasks, this.needsYouTasks))
-  }
-
-  get repositoryRows(): ListRow<MergedRepository>[] {
-    return this.memo('rows:repositories', [], () => repositoryRows(this.repositories))
-  }
-
-  get worktreeRows(): ListRow<Worktree>[] {
-    return this.memo('rows:worktrees', [], () => {
-      const withPullRequest = new Set<string>()
-      for (const pullRequest of this.document.pull_requests) {
-        if (pullRequest.worktree !== undefined) withPullRequest.add(pullRequest.worktree)
-        else {
-          const task = this.taskOfPullRequest(pullRequest)
-          for (const worktree of this.document.worktrees) {
-            if (worktree.task === task && worktree.repository === pullRequest.repository && worktree.branch === pullRequest.branch) withPullRequest.add(worktree.id)
-          }
-        }
-      }
-      const context: WorktreeRowContext = {
-        repositoryName: (id) => this.repositoryName(id),
-        withPullRequest,
-        safeIds: this.cleanup.safeIds,
-        lookIds: this.cleanup.lookIds,
-      }
-      return worktreeRows(this.document.worktrees, context)
-    })
-  }
-
-  get agentRows(): ListRow<Agent>[] {
-    return this.memo('rows:agents', [], () => {
-      const context: AgentRowContext = { taskOf: (agent) => this.tasksOfAgent(agent)[0], repositoryName: (id) => this.repositoryName(id) }
-      return agentRows(this.document.agents, context)
-    })
-  }
-
-  get machineRows(): ListRow<MachineView>[] {
-    return this.memo('rows:machines', [], () => machineRows(this.machines, (machine) => versionKey(machine.wb_version)))
-  }
-}
-
-function isoDay(date: Date): string {
-  return date.toISOString().slice(0, 10)
-}
-
-/** The command of a health line, labelled where it runs: "run here" for the ssh form and enrolling, "run on <machine>" otherwise. */
-function healthCommand(command: CopyCommand, machine: string, here: boolean): HealthItem['command'] {
-  return command.ok ? { text: command.text, label: here ? 'run here' : `run on ${machine}`, needsEdit: command.needsEdit } : { reason: command.reason }
-}
-
-/** A `remote_error` in words; a code this page does not know is an unknown error. */
-export function remoteErrorText(code: string): string {
-  switch (code) {
-    case 'http_unavailable':
-      return 'cannot be read over HTTP (connection error, timeout, 404, 429, 5xx or a redirect)'
-    case 'http_auth_failed':
-      return 'the HTTP read was refused (401 or 403) or has no credential'
-    case 'ssh_unavailable':
-      return 'cannot reach it over ssh (no ssh here, or the host is unreachable)'
-    case 'auth_failed':
-      return 'ssh login was refused'
-    case 'timeout':
-      return 'its export timed out'
-    case 'wb_missing':
-      return 'wb is not found on it'
-    case 'wb_too_old':
-      return 'its wb is too old to export'
-    case 'daemon_not_running':
-      return 'its daemon is not running'
-    case 'export_refused':
-      return 'its daemon refuses anonymous reads'
-    case 'bad_payload':
-      return 'its export was refused as invalid'
-  }
-  return 'unknown error'
-}
-
-/**
- * The command that fixes (or lets the operator investigate) a `remote_error`:
- * enrolling for a refused HTTP read, starting the daemon, updating wb, and for
- * the others the export to try, through ssh when the machine has an SSH route.
- */
-export function remoteFix(code: string, ssh: SshRoute | undefined): CopyCommand {
-  if (code === 'http_auth_failed') return remoteEnroll()
-  const target: CommandTarget = ssh === undefined ? {} : { ssh }
-  if (code === 'daemon_not_running') return daemonStart(target)
-  if (code === 'wb_too_old') return selfUpdate(target)
-  return cockpitExport(target)
 }
 
 /**

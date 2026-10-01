@@ -275,6 +275,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if bare.Collectors.Activity == nil {
 		t.Error("this machine does not read herdr for agent activity")
 	}
+	if terminals, ok := bare.Terminals.(*cockpitfleet.LocalTerminals); !ok || terminals.ProjectsRoot != root || terminals.Home != home {
+		t.Errorf("the throughput source = %+v, want this machine's terminal records", bare.Terminals)
+	}
 	bare.Logf("refresh failed: %v", "boom")
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {
 		t.Errorf("log = %q", got)

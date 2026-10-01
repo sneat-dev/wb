@@ -18,6 +18,6 @@ describe('readCspNonce', () => {
 
 describe('createAppConfig', () => {
   it('provides the error listeners, the zoneless runtime and the router; PrimeNG comes with the lazy pages', () => {
-    expect(createAppConfig().providers).toHaveLength(4)
+    expect(createAppConfig().providers).toHaveLength(5)
   })
 })

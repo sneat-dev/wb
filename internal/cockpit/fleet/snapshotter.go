@@ -149,6 +149,15 @@ type Options struct {
 	PullRequestLimit        int
 	PullRequestHourlyBudget int
 	PullRequestTimeout      time.Duration
+	// Terminals is this machine's sealed terminal records, the source of the
+	// throughput block; nil means the document has none. ThroughputInterval is
+	// the time between scans (zero or less means DefaultThroughputInterval),
+	// TerminalReadLimit the most records read in one scan and TerminalTotalLimit
+	// the most known at once (zero or less means the defaults).
+	Terminals          TerminalRecords
+	ThroughputInterval time.Duration
+	TerminalReadLimit  int
+	TerminalTotalLimit int
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
 }
@@ -256,6 +265,12 @@ type Snapshotter struct {
 	sampler        *machinemetrics.Sampler
 	metricsSources []MetricsSource
 	metrics        metricsCache
+
+	// throughputs scans the terminal records on its own cadence (nil without a
+	// source); throughput is its last block, guarded by mu.
+	throughputs    *throughputCollector
+	throughputBusy atomic.Bool
+	throughput     *Throughput
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -315,6 +330,9 @@ func New(options Options) *Snapshotter {
 	}
 	if snapshotter.logf == nil {
 		snapshotter.logf = func(string, ...any) {}
+	}
+	if options.Terminals != nil {
+		snapshotter.throughputs = newThroughputCollector(options.Terminals, options.ThroughputInterval, options.TerminalReadLimit, options.TerminalTotalLimit, snapshotter.logf)
 	}
 	snapshotter.store(emptyDocument(snapshotter.interval))
 	return snapshotter
@@ -502,6 +520,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	if listErr != nil {
 		failures := s.refreshMachineState(ctx)
 		s.startPullRequests(ctx)
+		s.startThroughput(ctx)
 		s.mu.Lock()
 		s.listError = ErrorRepositoriesUnreadable
 		s.publishLocked()
@@ -522,6 +541,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	// Pull requests are observed once the worktrees are known, so the records of
 	// a worktree this machine has are asked about before the others.
 	s.startPullRequests(ctx)
+	s.startThroughput(ctx)
 	s.mu.Lock()
 	s.passing = false
 	defer s.mu.Unlock()
@@ -1046,6 +1066,7 @@ func (s *Snapshotter) publishLocked() {
 	}
 	document.AgentsTruncated = s.truncated
 	document.PullRequestsThrottled = s.throttled
+	document.Throughput = s.throughput
 	ids := make([]string, 0, len(s.repos))
 	idsBySlug := map[string][]string{}
 	for id, state := range s.repos {

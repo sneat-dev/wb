@@ -3,6 +3,7 @@
 export * from './lib/control/glyph'
 export * from './lib/control/state-vocabulary'
 export * from './lib/control/state-badge'
+export * from './lib/control/ui-clock'
 export * from './lib/control/relative-time'
 export * from './lib/control/sync-badges'
 export * from './lib/control/pr-chip'
