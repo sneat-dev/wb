@@ -418,6 +418,21 @@ The private merge-receipt proof helper never returned an error. Its return is no
 
 Focused tests, race, vet, default compilation, pinned lint and seven explicit quality guards passed. Evidence is `/private/tmp/wb-lifecycle-next-refactor-receipt.md` and `/private/tmp/wb-lifecycle-next-refactor-complete.coverage.out` (SHA-256 `74bd130497753e8b0c4893bdf9aac403d8793caa99e599b38fdf9296238d14c9`). The historical 19-hit observation preceded the void cutover and was checked against unchanged source and identical coverage blocks; it is not a raw cross-source profile union.
 
+### Coalesced native checkpoint — 94c344b2
+
+Clean committed Go source `94c344b2c529735d8ec4b3044a1fa3228a6d6ff1` passed the same e2e-enabled 14-package shared-profile run with two worktrees shards. Source and index remained frozen until completion. The fixture CLI binary reports that exact revision with `vcs.modified=false`.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| `internal/worktrees` facade | 15,947 / 16,551 | 96.3507% | 604 |
+| Comparable 14-package group | 21,449 / 22,054 | 97.2567% | 605 |
+
+Against the previous fresh 7f checkpoint, the group has **49 fewer missed statements, 34 more total statements and 83 more covered statements**. The denominator increase includes the actual dirty-capture security checks; it is not a claim of code-size reduction. Twelve supporting packages remain at 100%; checkout-marker has the remaining one miss. The facade contains **1,284 named compiled functions: 1,048 fully covered, 236 partial and none entirely uncovered**. All **14 changed production bodies since 7f are 235/235 covered**; the retained cumulative set since `d4aba76d` is **250 bodies, 5,279/5,279 covered**. Two Windows-only changes, non-Darwin checkout-marker normalization and the out-of-scope quality profile reader are explicitly excluded from the native compiled inventory.
+
+Independent review verified profile arithmetic, all unique spans, compiled-package/file scope, source inventory, function totals and exact fixture binary provenance. Profile SHA-256: `4bf9d4441ff7ecce47d75b3330253dcb9a57fec57251bf627c9a0c88a304dbad`. Evidence is `/private/tmp/wb-94c344b2-{summary,checkpoint-receipt}.json`, the shared profile and `{new,cumulative,facade}-audit.log` files. Whole-CLI coverage and dead-code findings were not refreshed. Publication remains deferred; later coordination implementation and claim/orphan test work are outside this checkpoint. The human removed the percentage usage ceiling; continue toward 100% while keeping batches efficient.
+
+The subsequent claim/orphan test-only batch observes **129/137** across three unchanged targets, up from 113/137: active-claim walking 69/79 to 71/79, orphan lookup 23/31 to 31/31, and absence inspection 21/27 to 27/27. The two strict readers are fully covered; eight post-open lexical directory-read race statements remain in the walker. Five tagged native tests pin distinct resolution, corruption, observation and filesystem refusal phases while preserving claims, Git state, occupants and absence of terminal publication. Independent review, focused tests, race, vet, default compilation and package-scoped pinned lint passed. Evidence is `/private/tmp/wb-claims-next-audit.json` and `/private/tmp/wb-claims-next-final.coverage.out` (SHA-256 `8f8e893b07661cd8584e556cfc741e4a64ec6880c46b1e05093e3e6ef0427fa6`). These 16 later hits are outside the fresh 94 aggregate; no new percentage is claimed. Whole-repository lint and broad coverage are coalesced with the separate coordination implementation.
+
 ## Evidence and limits
 
 CodeGrapher was used first for symbol lookup and call/reference discovery. This map does not claim current CodeGrapher IDs, reverse calls, or exact whole-package line coverage: its historical graph columns require a full regeneration. The compatibility-adapter notes identify the custody extraction and its current wrapper ranges; the baseline coverage columns remain historical. Other static risk, side-effect, and reverse-reference columns require a fresh graph pass before another extraction. Static calls are incomplete for interface dispatch and injected function values, and per-domain buckets are proposed ownership rather than a mechanically valid package split.
