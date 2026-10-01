@@ -113,7 +113,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-3
 **Verifies:** cockpit-views#ac:pull-request-entries-carry-state-and-checks, cockpit-views#ac:pull-request-state-absent-until-observed, cockpit-views#ac:pull-request-strings-are-hostile-safe
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Run the existing watcher (`internal/prwatch` over `internal/prsnapshot.Observe`) from the snapshotter's ticker for the pull requests `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials WB already uses. Map the observation to the pull request entry: `state` (open, merged, closed, draft from `State`, `Merged` and `Draft`), `mergeable`, `checks_total`, `checks_passed`, `checks_failed` (fail plus cancel), `checks_skipped` (counted separately from passed), `checks_pending`, `checks_green` (the observation's `Green`, never re-derived), `failed_check` (first of `Failed`) and `checked_at`, with `mergeable` and `state` as closed enums, `url` only when `https` with a plain hostname, and `failed_check` capped at 100 characters with control and bidirectional characters removed. A merged pull request leaves the watch set after one confirmed observation. Add the config value `cockpit.pull_request_limit`, observe at most that many per tick oldest `checked_at` first, keep the previous values and `checked_at` when an observation fails, and omit the fields until one has succeeded. No request reads GitHub. Add the new fields to the sentinel test and to the `cockpit` closed field list check.
 

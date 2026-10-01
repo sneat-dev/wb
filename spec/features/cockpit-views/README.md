@@ -679,7 +679,7 @@ live-remote entry). Both.
 **Document**: `schema_version` int (2); `snapshot_at` time; `warming_up` bool;
 `repositories_total` int; `repositories_scanned` int; `diagnostics` int; `error` string opt.
 (a code); `code_index_provider` string opt.; `refresh_interval_seconds` int; `throughput`
-object opt. (below); `agents_truncated` bool opt.; the collections `machines`, `repositories`,
+object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` bool opt.; the collections `machines`, `repositories`,
 `worktrees`, `pull_requests` and `agents`. There is no `branches` collection and no `metrics`.
 
 | Machine field | Type | Opt. | Source | Local/cached |
@@ -841,9 +841,30 @@ characters, with control and bidirectional characters removed, and rendered only
 and hyphens, no port and no user information. They come from the daemon's snapshotter, which runs
 the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
 the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
-WB already uses. At most `cockpit.pull_request_limit` pull requests are observed per tick, the
-oldest `checked_at` first; a merged pull request leaves the watch set after one confirmed
-observation; an observation that fails leaves the previous values and `checked_at` in place, so the
+WB already uses. Each pull request has its own cadence: one never observed is observed on the next pass (those of a
+worktree this machine has before the others); one whose checks are pending, or which has no check
+yet, after 90 seconds, stretched to `waiting x 3600 / (budget x 0.7)` seconds when that is longer, so
+that the pending ones use at most 70% of the budget and the settled ones keep their share; one whose
+mergeability is `unknown` likewise, until it has been unknown 5 observations in a row, after which it
+is settled; one whose verdict is known (green, failed, blocked on a missing required check, draft)
+after 10 minutes; one whose read failed after a backoff doubling from 2 to 30 minutes; one closed
+without merging after 60 minutes, in case it is reopened. A pass starts on a refresh, once the
+worktrees are known, and observes the pull requests that are due, at most `cockpit.pull_request_limit`
+of them (default 10, 1 to 200), the longest due first; each observation is bounded to 30 seconds, at
+most 4 run at once, a pass whose context ends records nothing for what it did not observe and gives
+its budget back, and a pass never delays the publication of the local snapshot. The observation is the
+lean one (`prsnapshot.ObserveLean`: it does not read the annotations that explain a red head). It
+reads the pull request once and, only if it is open, its check runs, its Actions workflow runs, its
+commit statuses and the target's branch policy and active rules: 6 GitHub reads for an open pull
+request (also when a required check is missing, which reuses those reads) and 1 for a merged or
+closed one; both numbers are tested. The reads are conditional (ETag), and a 304 answer is not charged
+to the rate limit. At most `cockpit.pull_request_hourly_budget` observations are made in any rolling
+hour (default 120, 10 to 400): with the defaults that is at most 120 x 6 = 720 reads an hour in the
+worst case (a seventh of the 5,000 an authenticated token has), the ceiling of 400 at most 2,400, and
+about 360 for 10 settled pull requests (6 observations an hour each). When the budget cuts a pass
+short, passes stop until the window frees, the document keeps the last values with their `checked_at`
+and carries `pull_requests_throttled` so the application says how old the state is. A merged pull
+request leaves the watch set after one confirmed observation; an observation that fails leaves the previous values and `checked_at` in place, so the
 age shows. No request reads GitHub. When no observation has ever succeeded for a pull request, the
 fields other than `number`, `repository` and `url` are omitted and the application says the state
 is not reported. A pull request of another machine carries only what its snapshot published
@@ -2012,7 +2033,7 @@ Then the first has `ahead` 2, `behind` 1 and `has_upstream` true, the second `up
 Scenario: Observed, failed read, merged, and over the bound
 Given a fake observer returning for pull request 12 state open with 3 passed, 1 skipped, 1 failed named `go-ci / test` and 1 pending check and `mergeable` `blocked`, for pull request 13 a successful then a failing read, for pull request 14 state merged, and 5 bound pull requests with `cockpit.pull_request_limit` 3
 When the snapshotter ticks three times with the second tick failing for 13, and the fleet document is requested with a counter on GitHub reads
-Then entry 12 carries `state` `open`, `checks_total` 6, `checks_passed` 3, `checks_skipped` 1, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, entry 14 is not observed again after one confirmed merged observation, no more than 3 pull requests are observed per tick, the oldest `checked_at` first, and no request caused a GitHub read
+Then entry 12 carries `state` `open`, `checks_total` 6, `checks_passed` 3, `checks_skipped` 1, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, entry 14 is not observed again after one confirmed merged observation, no more than 3 pull requests are observed per tick, the longest due first, and no request caused a GitHub read
 
 ### AC: pull-request-state-absent-until-observed
 

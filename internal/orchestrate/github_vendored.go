@@ -169,14 +169,43 @@ func PullRequestHeadChecks(ctx context.Context, repository, selector string) ([]
 	if err != nil {
 		return nil, false, err
 	}
+	return PullRequestHeadChecksOf(ctx, repository, view)
+}
+
+// PullRequestHeadChecksOf is PullRequestHeadChecks for a caller that has just
+// read the pull request itself: it does not read it a second time.
+func PullRequestHeadChecksOf(ctx context.Context, repository string, view PullRequestView) ([]HeadCheck, bool, error) {
+	observation, err := ObservePullRequestHead(ctx, repository, view)
+	return observation.Checks, observation.Green, err
+}
+
+// HeadObservation is what one read of a pull request's head says: every check,
+// whether they all passed under the target's required-check policy, and the
+// required checks that no producer has passed on this head (the renamed-workflow
+// trap: such a check is absent from the observed set, not pending in it).
+type HeadObservation struct {
+	Checks  []HeadCheck
+	Green   bool
+	Blocked []string
+}
+
+// ObservePullRequestHead reads a head's check runs, its workflow runs, its
+// commit statuses and the target's branch policy and active rules, once each,
+// and derives both the verdict and the missing required checks from those same
+// reads: naming the gap costs no further read.
+func ObservePullRequestHead(ctx context.Context, repository string, view PullRequestView) (HeadObservation, error) {
+	return observePullRequestHeadWith(ctx, repository, view, productionPullRequestCheckOps())
+}
+
+func observePullRequestHeadWith(ctx context.Context, repository string, view PullRequestView, ops pullRequestCheckOps) (HeadObservation, error) {
 	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
-	runs, runsPending, reason := commitCheckRuns(ctx, options)
+	runs, runsPending, reason := ops.runs(ctx, options)
 	if reason != "" {
-		return nil, false, fmt.Errorf("%s", reason)
+		return HeadObservation{}, fmt.Errorf("%s", reason)
 	}
-	statuses, statusesPending, reason := commitStatuses(ctx, options)
+	statuses, statusesPending, reason := ops.statuses(ctx, options)
 	if reason != "" {
-		return nil, false, fmt.Errorf("%s", reason)
+		return HeadObservation{}, fmt.Errorf("%s", reason)
 	}
 	observed := append(append([]RemoteCheck{}, runs...), statuses...)
 	sortRemoteChecks(observed)
@@ -192,19 +221,24 @@ func PullRequestHeadChecks(ctx context.Context, repository, selector string) ([]
 	// asked GitHub which checks the target requires, and a head with none of
 	// them reported is a head CI has not run on yet — reading that as green
 	// would merge on the strength of nothing having happened.
-	required, _, reason := targetBranchRequiredChecks(ctx, repository, view.Base.Ref, false)
+	required, _, reason := ops.required(ctx, repository, view.Base.Ref, false)
 	if reason != "" {
-		return checks, false, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
+		return HeadObservation{Checks: checks}, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
 	}
+	var gaps []string
 	for _, expectation := range required {
 		if !observedSatisfies(observed, expectation) {
-			return checks, false, nil
+			gaps = append(gaps, expectation.Name)
 		}
+	}
+	if len(gaps) > 0 {
+		sort.Strings(gaps)
+		return HeadObservation{Checks: checks, Blocked: gaps}, nil
 	}
 	if len(observed) == 0 {
 		green = len(required) == 0
 	}
-	return checks, green, nil
+	return HeadObservation{Checks: checks, Green: green}, nil
 }
 
 // observedSatisfies reports whether one required expectation has a passing
@@ -281,53 +315,4 @@ func pullRequestFailureDetailsWith(ctx context.Context, repository, selector str
 	observed := append(append([]RemoteCheck{}, runs...), statuses...)
 	sortRemoteChecks(observed)
 	return ops.details(ctx, repository, observed), nil
-}
-
-// UnsatisfiedRequiredChecks names the checks a pull request's target branch
-// requires that have no passing observation on its exact head.
-//
-// It exists for the renamed-workflow trap. When branch protection requires
-// "build" and the workflow that produced it is renamed to "build-and-test",
-// nothing ever reports "build": the required check is absent from the observed
-// set rather than pending in it. A caller that only counts pending checks sees
-// none, concludes the head is settled, and reports a green pull request that
-// can never merge. Naming the gap is the difference between "ready" and
-// "permanently blocked, and here is the check nobody is producing".
-//
-// A name is reported when no observation matches it, and also when a ruleset
-// pins it to one GitHub App and the matching producer did not report it.
-func UnsatisfiedRequiredChecks(ctx context.Context, repository, selector string) ([]string, error) {
-	return unsatisfiedRequiredChecksWith(ctx, repository, selector, productionPullRequestCheckOps())
-}
-
-func unsatisfiedRequiredChecksWith(ctx context.Context, repository, selector string, ops pullRequestCheckOps) ([]string, error) {
-	view, err := ops.read(ctx, repository, selector)
-	if err != nil {
-		return nil, err
-	}
-	required, _, reason := ops.required(ctx, repository, view.Base.Ref, false)
-	if reason != "" {
-		return nil, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
-	}
-	if len(required) == 0 {
-		return nil, nil
-	}
-	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
-	runs, _, reason := ops.runs(ctx, options)
-	if reason != "" {
-		return nil, fmt.Errorf("%s", reason)
-	}
-	statuses, _, reason := ops.statuses(ctx, options)
-	if reason != "" {
-		return nil, fmt.Errorf("%s", reason)
-	}
-	observed := append(append([]RemoteCheck{}, runs...), statuses...)
-	gaps := make([]string, 0)
-	for _, expectation := range required {
-		if !observedSatisfies(observed, expectation) {
-			gaps = append(gaps, expectation.Name)
-		}
-	}
-	sort.Strings(gaps)
-	return gaps, nil
 }
