@@ -22,6 +22,11 @@
       "@cockpit/fleet-data/testing": ["./libs/fleet-data/src/testing.ts"],
       "@cockpit/ui/count": ["./libs/ui/src/lib/count/count.ts"],
       "@cockpit/ui/route-label": ["./libs/ui/src/lib/route-label/route-label.ts"],
+      "@cockpit/ui/code-index-label": ["./libs/ui/src/lib/code-index-label/code-index-label.ts"],
+      "@cockpit/ui/code-index-panel": ["./libs/ui/src/lib/code-index-panel/code-index-panel.ts"],
+      "@cockpit/ui/list": ["./libs/ui/src/lib/list/index.ts"],
+      "@cockpit/ui/list-host": ["./libs/ui/src/lib/list/list-host.ts"],
+      "@cockpit/ui/panel": ["./libs/ui/src/lib/panel/index.ts"],
       "@cockpit/ui": ["./libs/ui/src/index.ts"],
       "@cockpit/ui/control": ["./libs/ui/src/control.ts"],
       "@cockpit/ui/chart": ["./libs/ui/src/chart.ts"]

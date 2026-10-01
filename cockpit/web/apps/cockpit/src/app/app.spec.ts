@@ -1,3 +1,5 @@
+import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
+import { Shortcuts } from './shortcuts/shortcuts'
 import { Router, provideRouter } from '@angular/router'
 import { TestBed } from '@angular/core/testing'
 import { FleetStore } from '@cockpit/fleet-data'
@@ -14,7 +16,7 @@ describe('App', () => {
   let stop: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
-    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes), providePageTitle()] })
+    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes), providePageTitle(), { provide: LIST_SHORTCUTS, useExisting: Shortcuts }] })
     store = TestBed.inject(FleetStore)
     start = vi.spyOn(store, 'start').mockImplementation(() => undefined)
     stop = vi.spyOn(store, 'stop').mockImplementation(() => undefined)
@@ -68,7 +70,7 @@ describe('App', () => {
   it('shows Home at the root and at /dashboard, titled Home, with the Home tab current and no tab named Dashboard', async () => {
     for (const url of ['/', '/dashboard']) {
       TestBed.resetTestingModule()
-      TestBed.configureTestingModule({ providers: [provideRouter(appRoutes), providePageTitle()] })
+      TestBed.configureTestingModule({ providers: [provideRouter(appRoutes), providePageTitle(), { provide: LIST_SHORTCUTS, useExisting: Shortcuts }] })
       const again = TestBed.inject(FleetStore)
       vi.spyOn(again, 'start').mockImplementation(() => undefined)
       again.loaded.set(true)

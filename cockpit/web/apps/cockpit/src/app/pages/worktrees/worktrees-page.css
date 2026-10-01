@@ -1,0 +1,11 @@
+.with-copy {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

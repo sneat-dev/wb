@@ -1,11 +1,14 @@
-import { Type } from '@angular/core'
+import { Type, signal } from '@angular/core'
 import { ComponentFixture, TestBed } from '@angular/core/testing'
 import { provideRouter, withComponentInputBinding } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
 import { vi } from 'vitest'
 import { FETCH, FleetDocument, FleetStore, Session } from '@cockpit/fleet-data'
 import { fleetDocument } from '@cockpit/fleet-data/testing'
+import { UiClock } from '@cockpit/ui/control'
+import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { appRoutes } from '../app.routes'
+import { Shortcuts } from '../shortcuts/shortcuts'
 
 /** Epoch milliseconds five minutes after the fixtures were observed. */
 export const NOW = Date.parse('2026-10-01T10:05:00Z')
@@ -25,7 +28,12 @@ export async function openPage<T>(url: string, page: Type<T>, document: FleetDoc
   // A spec may open several pages; each gets its own injector.
   TestBed.resetTestingModule()
   TestBed.configureTestingModule({
-    providers: [provideRouter(appRoutes, withComponentInputBinding()), ...(fetcher ? [{ provide: FETCH, useValue: fetcher }] : [])],
+    providers: [
+      provideRouter(appRoutes, withComponentInputBinding()),
+      { provide: LIST_SHORTCUTS, useExisting: Shortcuts },
+      { provide: UiClock, useValue: { now: signal(NOW) } },
+      ...(fetcher ? [{ provide: FETCH, useValue: fetcher }] : []),
+    ],
   })
   const store = TestBed.inject(FleetStore)
   store.document.set(document)

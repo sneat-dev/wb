@@ -78,7 +78,7 @@ The journey of one working morning:
    side panel without leaving the list, and open "New task" to get the exact
    command that starts it. **Observable good result:** the selection is in the
    address (`?sel=`), the back button and a pasted link return exactly that view,
-   and the list never holds more than 60 row elements however long it is.
+   and the list never holds more than 80 row elements however long it is.
 3. **Land (J2, J4).** I choose "Land task" on a ready task. **Observable good
    result:** a preview opens without a page navigation, nothing runs until I
    confirm it, and the task's row reflects the result within one refetch; a
@@ -504,12 +504,22 @@ the section shows skeleton rows.
 
 Serves J5 and J6. The Worktrees page MUST show these columns in order: Worktree,
 the identity cell, showing the task in strong type and the repository
-`owner/name` in muted type, linking to the worktree page that
-[cockpit](../cockpit/README.md) defines, with a small link on the task part to the
-task page; Branch (shown when any visible row's branch differs from its task);
-Machine; State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
+`owner/name` in muted type, with a small link on the task part to the task page;
+Branch (shown when any visible row's branch differs from its task);
+Machine (the name alone for this machine; for a cached or remote machine the name
+and one unbreakable chip with the age, "stale" and the transport, as `vm · 19 m · ssh`,
+the details in its `title`); State (the owner state plus sync badges `↑n` for unpushed commits, `↓n`
 for commits behind, and "gone" for a vanished upstream); PR; Code index; Last
-activity. There is no separate Task column. The sync badges and the chips
+activity. A click on a row selects it and opens its panel; a small button at the
+row end, shown on the hovered or focused row and always on a touch screen, and the
+key `o` open the worktree page that [cockpit](../cockpit/README.md) defines. There
+is no separate Task, Source or Lifecycle column (the route is in the machine chip,
+the lifecycle in the panel), and a column that is empty or uniform for every
+visible row, such as Machine on a fleet of one machine, is hidden. When the list is
+narrower than its columns need (a panel open beside it, a narrow window), columns are hidden
+by priority, never squeezed all alike: Code index and Branch first, then PR, then Machine;
+Worktree, State and Last activity always stay, and what is hidden is still in the panel. The
+`idle` owner state is plain muted text, so the states that need a look stand out. The sync badges and the chips
 `unpushed` and `gone` and their counts concern this machine only and say so. The
 quick filters are those of REQ:filter-vocabulary. The PR cell, the chip `pr`, the
 worktree's side panel and the pull requests listed on its page all read one worktree-to-pull-request
@@ -1246,7 +1256,8 @@ loads only with that page's route, never for the shell or for a page that uses n
 #### REQ: bounded-row-elements
 
 At a test viewport 1080 px high a list MUST NOT have more than 60 row elements
-in the DOM, the visible rows plus a fixed overscan, whatever the number of rows.
+in the DOM, the visible rows plus a fixed overscan, whatever the number of rows,
+and on any viewport not more than 80.
 
 #### REQ: fast-filtering
 
@@ -1483,10 +1494,10 @@ Then each row is one line with an ellipsis and the full value in its `title`, th
 
 **Requirements:** cockpit-views#req:default-columns-are-few
 
-Scenario: At most seven, Lifecycle empty, Source all local
-Given 529 worktrees with an empty lifecycle and route `local`, and a second fleet in which one worktree has a lifecycle and one is `cached`
+Scenario: At most seven, Branch uniform, PR empty, one machine
+Given 529 worktrees on one machine whose branch equals its task and which have no pull request, and a second fleet on two machines in which one worktree has a different branch and one has a pull request
 When every list page is opened, and the Worktrees page for each fleet
-Then no list shows more than 7 columns, the first fleet shows neither the Lifecycle nor the Source column and the second shows both
+Then no list shows more than 7 columns, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
 
 ### AC: repository-and-time-rendering
 
@@ -1927,7 +1938,7 @@ Then the page shows a merged header and one section per machine, requests `/api/
 Scenario: Task and repository in one cell
 Given a worktree of task `fix-ci` in `sneat-dev/wb`
 When the Worktrees page is opened
-Then the first column holds `fix-ci` in strong type with `sneat-dev/wb` muted, a click on the cell opens that worktree's page, a click on the task part opens the task page, and there is no Task column
+Then the first column holds `fix-ci` in strong type with `sneat-dev/wb` muted, a click on the task part opens the task page, the open button at the row end opens that worktree's page, a click elsewhere in the row selects it, and there is no Task column
 
 ### AC: worktrees-columns-and-badges
 
@@ -2476,7 +2487,7 @@ Then the JavaScript needed to render Home, counted over JavaScript files only, i
 Scenario: Largest lists at 1080 px
 Given the fixture and a viewport 1080 px high
 When the Repositories and Worktrees pages are rendered and scrolled to the end
-Then at no moment are there more than 60 row elements in the DOM
+Then at no moment are there more than 60 row elements in the DOM at 1080 px, and none above 80 at any height
 
 ### AC: filtering-5000-rows-is-fast
 

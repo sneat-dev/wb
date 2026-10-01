@@ -1,0 +1,66 @@
+<article class="content" [class.page]="page()">
+  <header class="head">
+    <p class="kind">{{ kind() }}</p>
+    <div class="title">
+      <h2 tabindex="-1">{{ heading() }}</h2>
+      @if (copyHeading()) {
+        <app-copy-icon [value]="heading()" [label]="'Copy ' + kind().toLowerCase() + ' name'" />
+      }
+    </div>
+  </header>
+
+  <dl class="facts">
+    @for (fact of facts(); track fact.label) {
+      <dt>{{ fact.label }}</dt>
+      <dd [class.muted]="fact.muted" [attr.title]="fact.title ?? null">
+        @if (fact.time !== undefined) {
+          <app-age [at]="fact.time" />
+        } @else if (fact.link) {
+          <a [routerLink]="fact.link.path" [queryParams]="fact.link.query">{{ fact.text }}</a>
+        } @else {
+          {{ fact.text }}
+        }
+        @if (fact.copy && fact.text) {
+          <app-copy-icon [value]="fact.text" [label]="'Copy ' + fact.label.toLowerCase()" />
+        }
+      </dd>
+    }
+  </dl>
+
+  @for (group of related(); track group.title) {
+    <section class="block" [attr.aria-label]="group.title">
+      <h3>{{ group.title }}</h3>
+      <ul class="related">
+        @for (item of group.items; track $index) {
+          <li [attr.title]="item.title ?? null">
+            @if (item.link) {
+              <a [routerLink]="item.link.path" [queryParams]="item.link.query">{{ item.text }}</a>
+            } @else if (item.href) {
+              <a [href]="item.href" target="_blank" rel="noopener noreferrer">{{ item.text }} <app-glyph [paths]="open" /></a>
+            } @else {
+              {{ item.text }}
+            }
+          </li>
+        } @empty {
+          <li class="muted">None</li>
+        }
+      </ul>
+    </section>
+  }
+
+  <ng-content />
+
+  <section class="block actions" aria-label="Actions"><ng-content select="[panelActions]" /></section>
+
+  <app-copy-command-list [entries]="commands()" />
+
+  <section class="block" aria-label="Raw data">
+    <details class="raw" (toggle)="rawOpen.set(details.open)" #details>
+      <summary>Raw data</summary>
+      @if (rawOpen()) {
+        <pre>{{ json() }}</pre>
+      }
+    </details>
+  </section>
+  <span class="visually-hidden" role="status">{{ announcer.message() }}</span>
+</article>
