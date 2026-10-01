@@ -66,14 +66,15 @@ func TestE2EDiscardedProofCountsEveryExactRecordAndRechecksGit(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Each real Git fixture configures process-wide test environment.
+//nolint:paralleltest // The shared real Git fixture configures process-wide test environment.
 func TestE2EVacantBacklogRequiresLiveCanonicalAndClaimAuthority(t *testing.T) {
+	fixture := newGitFixture(t)
+	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	for _, scenario := range []string{"invalid canonical", "cancelled registration", "missing failed-create claim"} {
-		//nolint:paralleltest // newGitFixture configures process-wide test environment.
+		//nolint:paralleltest // The parent fixture configures process-wide test environment.
 		t.Run(scenario, func(t *testing.T) {
-			fixture := newGitFixture(t)
-			head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
-			root := filepath.Join(t.TempDir(), "worktrees")
+			home := t.TempDir()
+			root := filepath.Join(home, "worktrees")
 			worktree := filepath.Join(root, "vacant-task", "acme", "app")
 			entry := ListResult{Task: "vacant-task", Repository: "acme/app", CanonicalDir: fixture.canonical,
 				WorktreesRoot: root, WorktreeDir: worktree, Branch: "wb/vacant", Base: "main", HeadSHA: head}
@@ -96,13 +97,16 @@ func TestE2EVacantBacklogRequiresLiveCanonicalAndClaimAuthority(t *testing.T) {
 				record.WorkLogRun = "run"
 				record.WorkLogClaim = strings.Repeat("a", 64)
 			}
-			err := completeVacantLifecycleBacklog(ctx, fixture.home, &record, lockErr)
+			err := completeVacantLifecycleBacklog(ctx, home, &record, lockErr)
 			if scenario == "missing failed-create claim" {
 				if err == nil || errors.Is(err, lockErr) || !strings.Contains(err.Error(), "Work Log") {
 					t.Fatalf("missing immutable claim was hidden by lock error: %v", err)
 				}
 			} else if !errors.Is(err, lockErr) {
 				t.Fatalf("%s returned %v, want original lock refusal", scenario, err)
+			}
+			if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("%s changed shared canonical HEAD from %s to %s", scenario, head, got)
 			}
 		})
 	}
