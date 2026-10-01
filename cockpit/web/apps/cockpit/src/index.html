@@ -11,8 +11,8 @@
   <body>
     <!-- The wb daemon replaces the nonce placeholder below on every
          response (cockpit/web/embed.go); Angular reads ngCspNonce for the
-         style elements it injects, and app.config.ts hands the same value to
-         PrimeNG. -->
+         style elements it injects, and the routes of the pages that still use
+         PrimeNG (pages/prime-theme.ts) read the same value for it. -->
     <app-root ngCspNonce="__CSP_NONCE__"></app-root>
   </body>
 </html>

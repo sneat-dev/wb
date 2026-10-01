@@ -1,13 +1,17 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { ERROR_GIT_TOO_OLD, ERROR_REPOSITORIES_UNREADABLE, FleetStore } from '@cockpit/fleet-data'
+import { Icon } from '../ui/icon'
 
 /**
- * What the fleet document says about itself: that it is still being read, how
- * far the first scan is, and anything it could not tell. It never hides the
+ * What the fleet document says about itself that the rest of the shell does
+ * not: a failed read, an error code, pull requests it could not place and a
+ * capped agent list. The progress of the first scan is the freshness chip and
+ * the skeleton rows; a schema mismatch has its own state. It never hides the
  * pages, because the document is published incrementally.
  */
 @Component({
   selector: 'app-fleet-banner',
+  imports: [Icon],
   templateUrl: './fleet-banner.html',
   styleUrl: './fleet-banner.css',
   changeDetection: ChangeDetectionStrategy.OnPush,

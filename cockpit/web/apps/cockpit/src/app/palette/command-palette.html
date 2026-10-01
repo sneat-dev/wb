@@ -1,0 +1,78 @@
+@if (shell.paletteOpen()) {
+  <button type="button" class="overlay-backdrop" tabindex="-1" aria-hidden="true" (click)="shell.closePalette()"></button>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Search" appOverlayFocus>
+    <div class="search">
+      <app-icon name="search" />
+      <input
+        type="text"
+        role="combobox"
+        aria-label="Search"
+        aria-autocomplete="list"
+        [attr.aria-expanded]="count() > 0"
+        aria-controls="palette-results"
+        [attr.aria-activedescendant]="count() > 0 ? 'palette-option-' + active() : null"
+        placeholder="Search tasks, repositories, worktrees, branches, agents, machines"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        data-autofocus
+        [value]="query()"
+        (input)="type($event)"
+        (keydown)="key($event)"
+      />
+      <kbd>esc</kbd>
+    </div>
+    <div class="results" #list>
+      <div id="palette-results" role="listbox" aria-label="Results">
+        @for (group of groups(); track group.title) {
+          <div class="group" role="group" [attr.aria-labelledby]="'palette-group-' + group.title">
+            <div class="group-title" [id]="'palette-group-' + group.title">{{ group.title }}</div>
+            @for (result of group.results; track result.id) {
+              <div
+                class="option"
+                role="option"
+                [id]="'palette-option-' + result.index"
+                [attr.aria-selected]="result.index === active()"
+                [class.active]="result.index === active()"
+                tabindex="-1"
+                (mousemove)="hover(result.id)"
+                (click)="open(result)"
+                (keydown.enter)="open(result)"
+              >
+                <app-icon [name]="iconOf(result)" />
+                <span class="text">
+                  <span class="label">{{ result.label }}</span>
+                  <span class="detail">{{ result.detail }}</span>
+                </span>
+                @if (result.index === active()) {
+                  <app-icon class="enter" name="corner-down-left" />
+                }
+              </div>
+            }
+            @if (group.more > 0) {
+              <div class="more" aria-hidden="true">{{ group.more }} more, refine the search to see them</div>
+            }
+          </div>
+        }
+      </div>
+      @if (count() === 0) {
+        @if (searching()) {
+          <p class="empty">Nothing matches “{{ query().trim() }}”.</p>
+        } @else {
+          <p class="empty">Type to search the whole fleet.</p>
+        }
+      }
+      @if (!searching()) {
+        <p class="tip">
+          <kbd>*</kbd> <kbd>?</kbd> match any text · <kbd>-</kbd> excludes · <kbd>state:</kbd> <kbd>repo:</kbd> <kbd>machine:</kbd> narrow
+        </p>
+      }
+      <span class="visually-hidden" role="status">{{ status() }}</span>
+    </div>
+    <footer class="footer" aria-hidden="true">
+      <span><kbd>↑</kbd> <kbd>↓</kbd> move</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </footer>
+  </div>
+}

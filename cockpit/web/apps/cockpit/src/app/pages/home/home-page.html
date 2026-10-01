@@ -1,0 +1,62 @@
+<section class="tiles" aria-label="Totals">
+  @for (tile of tiles(); track tile.title) {
+    <div class="tile">
+      <span class="tile-title">{{ tile.title }}</span>
+      <a class="tile-count tnum" [routerLink]="tile.target" [queryParams]="tile.query" [attr.aria-label]="tile.count + ' ' + tile.label">{{ tile.count }}</a>
+    </div>
+  }
+</section>
+
+<h2 class="section-title">Machines</h2>
+<div class="table-scroll">
+  <table class="plain-table">
+    <thead>
+      <tr>
+        <th scope="col">Machine</th>
+        <th scope="col">Source</th>
+        <th scope="col">WB version</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (machine of store.document().machines; track machine.id) {
+        <tr>
+          <td>{{ machine.machine }}</td>
+          <td><app-route-label [entry]="machine" [now]="store.now()" /></td>
+          <td>{{ machine.wb_version ?? '—' }}</td>
+        </tr>
+      } @empty {
+        <tr>
+          <td colspan="3">No machines yet.</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>
+
+<h2 class="section-title">Recent worktrees</h2>
+<div class="table-scroll">
+  <table class="plain-table">
+    <thead>
+      <tr>
+        <th scope="col">Task</th>
+        <th scope="col">Repository</th>
+        <th scope="col">Machine</th>
+        <th scope="col">Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (worktree of recentWorktrees(); track worktree.id) {
+        <tr>
+          <td>{{ worktree.task }}</td>
+          <td>{{ store.repositoryName(worktree.repository) }}</td>
+          <td>{{ worktree.machine }}</td>
+          <td><app-route-label [entry]="worktree" [now]="store.now()" /></td>
+        </tr>
+      } @empty {
+        <tr>
+          <td colspan="4">No worktrees yet.</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>
