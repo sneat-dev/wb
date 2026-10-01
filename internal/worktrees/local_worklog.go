@@ -82,7 +82,7 @@ func readLocalEventsForInspection(worktree string, acceptHistorical func(LocalWo
 
 // historicalParkedCompletionShape identifies only the immutable event shape
 // produced by the affected receiver release. It is intentionally separate
-// from validateLocalEventForSequence: version 0 remains invalid evidence for
+// from worktreejournal.Store.ValidateLocalEventForSequence: version 0 remains invalid evidence for
 // every append, repair, and authoritative Work Log operation.
 func parseLocalEvents(content []byte) ([]LocalWorkLogEvent, error) {
 	return localJournalStore().ParseLocalEvents(content)
