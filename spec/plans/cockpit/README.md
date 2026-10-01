@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Executing
 ---
 # Plan: Cockpit shell
 
-**Status:** Approved
+**Status:** Executing
 **Source Feature:** cockpit
 **Date:** 2026-10-01
 **Owner:** alex
@@ -46,7 +46,7 @@ coverage. Every task keeps the code it adds at 100% coverage: Go through `wb cov
 **Id:** task-1
 **Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:dashboard-command-is-unchanged
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
 
 Add `cockpit.hosted_url`, `cockpit.code_browser_url`,
 `cockpit.anonymous_metadata` and `cockpit.refresh_interval` to

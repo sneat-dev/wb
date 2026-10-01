@@ -121,7 +121,8 @@ port. Any other host name is refused with status 421 before any handler runs.
 This is what stops a page that rebinds DNS to the loopback address. The port
 is not checked, so an SSH forward to a different local port works.
 
-The canonical origin is `http://127.0.0.1:<port>`, with the port the request
+The canonical origin is `http://127.0.0.1:<port>`, or `http://[::1]:<port>`
+when the daemon listens on the IPv6 loopback address, with the port the request
 arrived on. A request for a page under `/cockpit/` on another loopback name
 is redirected to the same path on the canonical origin, so the session
 cookie, which browsers scope by host, is always set and read on one host.

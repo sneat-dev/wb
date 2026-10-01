@@ -24,6 +24,7 @@ import (
 	"github.com/strongo/cli-helpers/daemonlifecycle"
 
 	"github.com/sneat-dev/wb/hub/narrate"
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/filewrite"
@@ -2511,7 +2512,7 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
-		Mounts: mount.handlers(), Hub: mount.hubHealth(), LogPath: logPath,
+		Mounts: cockpit.MountsWith(mount.handlers(), cockpit.CanonicalHost(address)), Hub: mount.hubHealth(), LogPath: logPath,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
