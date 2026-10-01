@@ -1,0 +1,99 @@
+@let entry = checkout().repository;
+<details class="machine" [id]="domId()" [open]="expanded()" (toggle)="expanded.set(details.open)" #details>
+  <summary>
+    @if (machine(); as known) {
+      <app-machine-chip [machine]="known" [stale]="checkout().stale" />
+    } @else {
+      <span class="name">{{ checkout().machine }}</span>
+    }
+    <span class="summary-counts muted">{{ worktrees().length }} {{ worktrees().length === 1 ? 'worktree' : 'worktrees' }}</span>
+  </summary>
+
+  <dl class="facts">
+    <dt>Source</dt>
+    <dd>{{ source() }}</dd>
+    <dt>Default branch</dt>
+    <dd>
+      @if (entry.default_branch) {
+        {{ entry.default_branch }}
+      } @else {
+        <span class="muted" title="Not reported by this machine">not reported</span>
+      }
+    </dd>
+    <dt>Branches</dt>
+    <dd>
+      @if (entry.local_branch_count === undefined && entry.remote_branch_count === undefined) {
+        <span class="muted" title="Not reported by this machine">not reported</span>
+      } @else {
+        {{ entry.local_branch_count ?? '—' }} local / {{ entry.remote_branch_count ?? '—' }} remote
+      }
+    </dd>
+    @if (entry.error) {
+      <dt>Scan</dt>
+      <dd class="bad">could not be read: {{ entry.error }}</dd>
+    }
+  </dl>
+
+  <section class="block" aria-label="Worktrees on this machine">
+    <h4>Worktrees</h4>
+    <ul class="worktrees">
+      @for (worktree of worktrees(); track worktree.id) {
+        <li>
+          <a class="task" [routerLink]="worktreeLink(worktree.id).path">{{ worktree.task }}</a>
+          @if (worktree.branch !== worktree.task) {
+            <span class="branch muted" [attr.title]="worktree.branch">{{ worktree.branch }}</span>
+          }
+          <app-state-badge kind="owner" size="small" [value]="worktree.owner_state" />
+          <app-age [at]="worktree.last_activity_at" />
+        </li>
+      } @empty {
+        <li class="muted">None on this machine</li>
+      }
+    </ul>
+  </section>
+
+  <app-code-index-panel [entry]="entry" [states]="entry.code_index" [provider]="store.codeIndexProvider()" [now]="store.now()" />
+
+  <section class="block" aria-label="Branches on this machine" [attr.aria-busy]="branches().kind === 'loading'">
+    <h4>Branches</h4>
+    @let state = branches();
+    @switch (state.kind) {
+      @case ('ready') {
+        @if (state.branches.length === 0) {
+          <p class="muted">{{ state.reason ?? 'No branches reported for this checkout.' }}</p>
+        } @else {
+          <ul class="branches">
+            @for (branch of listed(); track branch.id) {
+              <li>
+                <span class="branch-name" [attr.title]="branch.name">{{ branch.name }}</span>
+                <span class="scope muted">{{ branch.scope }}</span>
+                <app-sync-badges [ahead]="branch.ahead" [behind]="branch.behind" [upstreamGone]="branch.upstream_gone" [hasUpstream]="branch.scope === 'local' ? branch.upstream !== undefined : undefined" />
+                @if (branch.task) {
+                  <a [routerLink]="taskLink(branch.task).path" [queryParams]="taskLink(branch.task).query">{{ branch.task }}</a>
+                }
+                <app-age [at]="branch.last_activity_at" />
+              </li>
+            }
+          </ul>
+          @if (hidden() > 0) {
+            <button type="button" class="more" (click)="showAll()">Show all {{ state.branches.length }}</button>
+          }
+        }
+      }
+      @case ('failed') {
+        <p class="bad" role="alert">Branches could not be read. {{ state.text }}</p>
+        <button type="button" class="more" (click)="load()">Try again</button>
+      }
+      @case ('loading') {
+        <ul class="branches" aria-label="Loading branches">
+          @for (n of skeleton; track n) {
+            <li class="skeleton"><span class="bar"></span></li>
+          }
+        </ul>
+      }
+      @default {
+        <p class="muted">Branches are read when this section is opened.</p>
+      }
+    }
+  </section>
+</details>

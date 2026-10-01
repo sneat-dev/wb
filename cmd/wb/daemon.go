@@ -2544,7 +2544,10 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
 	cockpitServer := newCockpitServer(address, cockpitConfig)
-	fleetSnapshotter := registerCockpitFleet(cockpitServer, cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname))
+	fleetOptions := cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname)
+	fleetOptions.Remotes = withoutOwnAddress(fleetOptions.Remotes, address, fleetOptions.Logf)
+	fleetSnapshotter := registerCockpitFleet(cockpitServer, fleetOptions)
+	mount.serveExportOf(fleetSnapshotter, cockpitConfig)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,

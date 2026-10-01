@@ -30,7 +30,7 @@
   </ng-template>
   <ng-template appCell="time" let-a>
     <span class="time">
-      <span>{{ time(a) }}</span>
+      <span [class.quiet]="!running(a)">{{ time(a) }}</span>
       @if (a.exit_code !== undefined && a.state !== 'completed') {
         <span class="exit" [attr.title]="'Exit code ' + a.exit_code">exit {{ a.exit_code }}</span>
       }

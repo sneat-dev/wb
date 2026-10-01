@@ -40,9 +40,10 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	stderr := &lockedBuffer{} // the daemon's goroutines write to it together
 	command.SetOut(&stdout)
-	command.SetErr(&stderr)
+	command.SetErr(stderr)
 
 	served := make(chan error, 1)
 	go func() {

@@ -30,7 +30,7 @@ export const pageRoutes: Routes = [
   page('tasks', 'Tasks', () => import('./pages/tasks/tasks-page').then((m) => m.TasksPage)),
   page('tasks/new', 'New task', () => import('./pages/new-task/new-task-page').then((m) => m.NewTaskPage)),
   page('tasks/detail', 'Task', () => import('./pages/tasks/task-detail-page').then((m) => m.TaskDetailPage)),
-  prime('repositories', 'Repositories', () => import('./pages/repositories/repositories-page').then((m) => m.RepositoriesPage)),
+  page('repositories', 'Repositories', () => import('./pages/repositories/repositories-page').then((m) => m.RepositoriesPage)),
   page('repositories/:host/:owner/:name', 'Repository', () => import('./pages/repositories/repository-detail-page').then((m) => m.RepositoryDetailPage)),
   page('repositories/:id', 'Repository', () => import('./pages/repositories/repository-page').then((m) => m.RepositoryPage)),
   page('worktrees', 'Worktrees', () => import('./pages/worktrees/worktrees-page').then((m) => m.WorktreesPage)),

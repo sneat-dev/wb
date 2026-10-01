@@ -31,11 +31,12 @@ describe('agent text', () => {
   })
 
   it('says how long a running agent has run, when a run ended, when anything else started, and nothing without a time', () => {
-    expect(timeCell(run('r', 'running', { started_at: ago(125) }), NOW)).toBe('2 h')
-    expect(timeCell(run('r', 'running', { started_at: ago(-5) }), NOW)).toBe('under 1 min')
+    expect(timeCell(run('r', 'running', { started_at: ago(125) }), NOW)).toBe('running 2 h')
+    expect(timeCell(run('r', 'running', { started_at: ago(-5) }), NOW)).toBe('running under 1 min')
     expect(timeCell(run('r', 'running'), NOW)).toBe('')
-    expect(timeCell(run('r', 'failed', { started_at: ago(300), finished_at: ago(180) }), NOW)).toBe('3 h ago')
-    expect(timeCell(agent('s', undefined, 'parked', { started_at: ago(60 * 24 * 3) }), NOW)).toBe('started 3 d ago')
+    expect(timeCell(run('r', 'failed', { started_at: ago(300), finished_at: ago(180) }), NOW)).toBe('finished 3 h ago')
+    expect(timeCell(agent('s', undefined, 'parked', { started_at: ago(60 * 24 * 3) }), NOW)).toBe('parked, started 3 d ago')
+    expect(timeCell(run('r', 'completed', { started_at: ago(60 * 24 * 3) }), NOW)).toBe('started 3 d ago')
     expect(timeCell(run('r', 'completed'), NOW)).toBe('')
   })
 
@@ -58,7 +59,7 @@ describe('agent text', () => {
     expect(referenceOf({ route: 'local', observed_at: ago(600) }, NOW)).toBe(NOW)
     expect(referenceOf({ route: 'cached', observed_at: undefined as unknown as string }, NOW)).toBe(NOW)
     expect(referenceOf(cached, NOW)).toBe(NOW - 600 * 60_000)
-    expect(timeCell(run('r', 'running', cached), NOW)).toBe('2 h')
+    expect(timeCell(run('r', 'running', cached), NOW)).toBe('running 2 h')
     expect(agentHeadline(run('r', 'running', { ...cached, machine: 'beta' }), NOW)).toBe('Running for 2 h on beta (as of its snapshot, 10 h ago)')
     expect(agentHeadline(run('r', 'running', { route: 'cached', observed_at: ago(60), machine: 'beta' }), NOW)).toBe('Running on beta (as of its snapshot, 1 h ago)')
   })

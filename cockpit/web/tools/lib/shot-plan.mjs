@@ -42,7 +42,8 @@ export function routePlan(document) {
 // The shared list and its side panel, on the Worktrees page: what the operator does
 // (`steps`, run by tools/shots.mjs) before the picture is taken. `filter:<text>` types
 // in the filter, `chip:<label>` toggles a quick filter, `row:<n>` selects the nth row
-// and `raw` opens the "Raw data" block. A shot's `url` is its page; Worktrees by default.
+// and `raw` opens the "Raw data" block; `select:<n>` selects the nth row with the keyboard (for a list whose
+// last cell holds controls) and `radio:<label>` chooses a radio button. A shot's `url` is its page; Worktrees by default.
 export const LIST_SHOTS = [
   { name: 'worktrees-list', steps: [] },
   { name: 'worktrees-filter', steps: ['filter:fix'] },
@@ -50,6 +51,12 @@ export const LIST_SHOTS = [
   { name: 'worktrees-no-match', steps: ['filter:zzzzqq'] },
   { name: 'worktrees-panel', steps: ['row:2'] },
   { name: 'worktrees-panel-raw', steps: ['row:2', 'raw'] },
+  { name: 'repositories-list', url: '/repositories', steps: [] },
+  { name: 'repositories-sort', url: '/repositories', steps: ['radio:Most worktrees'] },
+  { name: 'repositories-chip', url: '/repositories', steps: ['chip:Index needs a look'] },
+  { name: 'repositories-no-match', url: '/repositories', steps: ['filter:zzzzqq'] },
+  { name: 'repositories-panel', url: '/repositories', steps: ['select:1'] },
+  { name: 'repositories-panel-raw', url: '/repositories', steps: ['select:1', 'raw'] },
   { name: 'tasks-list', url: '/tasks', steps: [] },
   { name: 'tasks-chip', url: '/tasks', steps: ['chip:Needs you'] },
   { name: 'tasks-no-match', url: '/tasks', steps: ['filter:zzzzqq'] },

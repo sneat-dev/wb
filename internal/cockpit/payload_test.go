@@ -35,6 +35,9 @@ func TestGzipRoundTripsAndPayloadCompressesOnce(t *testing.T) {
 	if compressed.Load() != 1 {
 		t.Errorf("the compressor ran %d times", compressed.Load())
 	}
+	if payload.Size() != len(body) {
+		t.Errorf("size = %d, want the identity body's %d", payload.Size(), len(body))
+	}
 	if payload.tag == "" || !strings.HasPrefix(payload.tag, `"`) || strings.Contains(payload.tag, "gzip") {
 		t.Errorf("tag %q", payload.tag)
 	}
@@ -57,6 +60,11 @@ func TestServePayloadChoosesTheEncodingAndMatchesEitherTag(t *testing.T) {
 	plain := do()
 	if plain.Header().Get("ETag") != identityTag || plain.Header().Get("Content-Encoding") != "" || plain.Header().Get("Vary") != "Origin, Accept-Encoding" || plain.Header().Get("Cache-Control") != "no-cache" || plain.Body.String() != `{"ok":true}`+"\n" {
 		t.Errorf("identity = %v", plain.Header())
+	}
+	private := httptest.NewRecorder()
+	ServePrivatePayload(private, httptest.NewRequest(http.MethodGet, "/", nil), payload)
+	if private.Header().Get("Cache-Control") != "no-store" || private.Header().Get("ETag") != identityTag || private.Body.String() != plain.Body.String() {
+		t.Errorf("a private payload = %v", private.Header())
 	}
 	zipped := do("Accept-Encoding", "gzip")
 	if zipped.Header().Get("ETag") != gzipTag || !strings.HasSuffix(gzipTag, `-gzip"`) || zipped.Header().Get("Content-Encoding") != "gzip" {

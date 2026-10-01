@@ -19,6 +19,7 @@ import (
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/hub/poller"
 	"github.com/sneat-dev/wb/hub/web"
+	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/hubstore"
@@ -65,9 +66,12 @@ type hubMount struct {
 	// /v0/workbench/peers route reads, so the two mounts answer identically.
 	// Nil unless a hub is mounted.
 	PeersSource peers.Source
-	closer      io.Closer
-	status      *hub.StatusService
-	viewer      hub.Viewer
+	// export backs the hub's machine export route with this daemon's fleet
+	// snapshotter, once serveExportOf has bound it.
+	export *machineExportSource
+	closer io.Closer
+	status *hub.StatusService
+	viewer hub.Viewer
 }
 
 // hubTuning overrides the two values a whole-journey end-to-end test cannot
@@ -92,6 +96,20 @@ func (mount *hubMount) Close() error {
 		return nil
 	}
 	return mount.closer.Close()
+}
+
+// serveExportOf makes the hub's export route serve snapshotter's envelope
+// (cockpit-views#req:hub-export-route), unless config refuses anonymous
+// metadata reads. A nil receiver is the no-hub case: a daemon with no hub
+// mounted has no such route.
+func (mount *hubMount) serveExportOf(snapshotter *cockpitfleet.Snapshotter, config wbconfig.CockpitConfig) {
+	if mount == nil {
+		return
+	}
+	// A machine that refuses anonymous metadata reads exports its metadata over
+	// no transport: the route says export_refused, as the CLI verb does.
+	mount.export.refused.Store(!config.AnonymousMetadata)
+	mount.export.snapshotter.Store(snapshotter)
 }
 
 // handlers returns the extra mounts, or nil when there is no hub. A nil
@@ -321,6 +339,8 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	peersSource := hubPeerReadSource{trust: peerTrust, queuedWork: hub.NewQueuedWorkStore(store)}
 	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
 
+	export := &machineExportSource{}
+
 	coverageStore := hub.NewRepositoryCoverageStore(store)
 	metricsStore := hub.NewRepositoryMetricsStore(store, coverageStore)
 
@@ -350,6 +370,11 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		// hosted instance (which never sets this) keeps serving the HTTP
 		// route behind its own OAuth viewer.
 		DisableSelfHostedEnrollment: true,
+		// The host owner of a daemon-hosted hub is localIdentityID: the one
+		// identity this hub knows, under which the daemon enrols itself and the
+		// owner RPC enrols every other machine. Only a machine credential of that
+		// identity with machine_snapshot:read may read this machine's export.
+		MachineExport: &hub.MachineExport{OwnerIdentityID: localIdentityID, Serve: export.serve, Now: tuningNow(tuning)},
 	})
 
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
@@ -388,6 +413,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		PeerAdmin:    peerAdmin,
 		Enrollment:   enrollment,
 		PeersSource:  peersSource,
+		export:       export,
 		Mounts: map[string]http.Handler{
 			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler, peersAPI),
 			web.MountPath:       web.Handler(),
@@ -565,6 +591,14 @@ func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots
 		Interval:     pollInterval(cfg, tuning),
 		Narrate:      writer.Write,
 	})
+}
+
+// tuningNow is the clock a test injects, or nil for the real one.
+func tuningNow(tuning *hubTuning) func() time.Time {
+	if tuning == nil {
+		return nil
+	}
+	return tuning.Now
 }
 
 // pollInterval is the configured interval, or the test override when one is

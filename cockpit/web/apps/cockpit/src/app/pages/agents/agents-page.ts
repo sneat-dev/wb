@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { Agent, FleetStore, selectionLink } from '@cockpit/fleet-data'
+import { Agent, FleetStore, isRunning, selectionLink } from '@cockpit/fleet-data'
 import { chipOf } from '@cockpit/fleet-data/list'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
 import { ALWAYS, ListCell, ListChip, ListColumn, ListPanelTemplate, ListView, MachineCell } from '@cockpit/ui/list'
@@ -42,6 +42,7 @@ export class AgentsPage {
   protected readonly panelLabel = (agent: Agent) => `Agent ${agentName(agent)}`
   protected readonly taskLink = (task: string) => selectionLink('tasks', task)
   protected readonly time = (agent: Agent): string => timeCell(agent, this.clock())
+  protected readonly running = isRunning
   protected readonly tasks = (agent: Agent): string[] => this.store.model().tasksOfAgent(agent)
   protected readonly repository = (agent: Agent): string | undefined => (agent.repository === undefined ? undefined : this.store.model().repositoryName(agent.repository))
   protected readonly fallback = (agent: Agent): string => agentFallback(agent, this.clock())
@@ -53,9 +54,9 @@ export class AgentsPage {
    * fleet is this machine alone, Kind while every row is of one kind, the time while no agent reports one.
    */
   protected readonly columns: ListColumn<Agent>[] = [
-    { id: 'agent', header: 'Agent', sort: 'label', width: 'fill', grow: 4, min: 170, priority: ALWAYS, value: (a) => `${agentName(a)} ${this.tasks(a)[0] ?? this.repository(a) ?? ''}`.trim() },
+    { id: 'agent', header: 'Agent', sort: 'label', width: 'fill', grow: 4, min: 300, priority: ALWAYS, value: (a) => `${agentName(a)} ${this.tasks(a)[0] ?? this.repository(a) ?? ''}`.trim() },
     { id: 'state', header: 'State', sort: 'activity', width: 220, min: 150, priority: ALWAYS, value: (a) => (a.activity ? `${a.state}, ${a.activity}` : a.state) },
-    { id: 'time', header: 'Running for', sort: 'started', width: 150, min: 120, priority: 3, value: (a) => timeCell(a, this.clock()) },
+    { id: 'time', header: 'Time', sort: 'started', width: 150, min: 120, priority: 3, value: (a) => timeCell(a, this.clock()) },
     { id: 'machine', header: 'Machine', sort: 'machine', width: 200, min: 150, priority: 2, value: (a) => a.machine, empty: (a) => a.route === 'local' && !this.manyMachines() },
     { id: 'kind', header: 'Kind', width: 90, min: 80, priority: 1, value: (a) => a.kind, empty: () => this.uniformKind() },
   ]

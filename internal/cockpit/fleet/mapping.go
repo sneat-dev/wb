@@ -517,12 +517,23 @@ func boundedIDs(ids []string) []string {
 	return ids
 }
 
-// remoteView is what the other machines' snapshots contribute, mapped.
+// remoteView is what the other machines' snapshots contribute, mapped. named
+// lists the machine entries by the machine name their snapshot was published
+// under, with the login, so that a configured machine's published entries can be
+// found by its configured key.
 type remoteView struct {
 	machines     []Machine
 	repositories []Repository
 	worktrees    []Worktree
 	pullRequests []PullRequest
+	named        map[string][]publishedMachine
+}
+
+// publishedMachine is a published-store machine entry's id and the login it was
+// published under.
+type publishedMachine struct {
+	id    string
+	login string
 }
 
 // mapRemote maps every machine entry but this machine's own last publication
@@ -591,6 +602,12 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 			repositories[index].WorktreeCount = countWhere(worktreeViews, func(item Worktree) bool { return item.Repository == repositories[index].ID })
 			open := countWhere(pullRequests, func(item PullRequest) bool { return item.Repository == repositories[index].ID })
 			repositories[index].OpenPullRequestCount = &open
+		}
+		if view.named == nil {
+			view.named = map[string][]publishedMachine{}
+		}
+		if !slices.ContainsFunc(view.named[snapshot.Machine], func(published publishedMachine) bool { return published.id == machineID }) {
+			view.named[snapshot.Machine] = append(view.named[snapshot.Machine], publishedMachine{id: machineID, login: snapshot.Login})
 		}
 		view.machines = append(view.machines, Machine{
 			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),

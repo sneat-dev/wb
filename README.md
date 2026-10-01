@@ -530,6 +530,28 @@ session_move:
 On the target, the validated `remote.machine` must be `hetzner-vm1`, and
 `tmux` plus the selected harness must be available on the remote `PATH`.
 
+A target may also carry an optional `http` section, which is not a courier:
+it is where this machine's daemon reads that machine's Cockpit export in the
+background, so its worktrees and agents appear live in the Cockpit.
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: hetzner-vm1
+      http:
+        url: https://vm1.example        # https, or http on a loopback host only
+        token_file: /Users/me/.config/wb/credentials/vm1.token
+```
+
+`url` is the origin of that machine's daemon-hosted hub and `token_file` a
+private file holding a machine credential enrolled with it (`wb remote enroll
+--url <hub-url> --token-stdin`). `token_file` may be omitted when `url` is the
+hub this machine is already enrolled with (`remote.url`). Set
+`cockpit.remote_http: false` to read no machine over HTTP.
+
 Run a same-harness move by omitting `--harness`, or explicitly move between
 the two supported harnesses, `codex` and `claude-code`:
 

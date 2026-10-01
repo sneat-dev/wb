@@ -40,15 +40,16 @@ export function referenceOf(agent: Pick<Agent, 'route' | 'observed_at'>, now: nu
 }
 
 /**
- * What the Running for column says: how long a running agent has run ("2 h"), when a finished run ended
- * ("3 h ago"), when anything else started ("started 3 d ago"); empty when the agent reports no time.
+ * What the Running for column says: how long a running agent has run ("running 2 h"), when a finished run ended
+ * ("finished 3 h ago"), when a session was parked or anything else started ("parked, started 3 d ago"); empty when the agent reports no time.
  */
 export function timeCell(agent: Agent, now: number): string {
   const at = referenceOf(agent, now)
   const started = timeOf(agent.started_at)
-  if (isRunning(agent)) return started === undefined ? '' : formatSpan(Math.max(0, at - started))
-  if (timeOf(agent.finished_at) !== undefined) return formatAge(agent.finished_at, now)
-  return started === undefined ? '' : `started ${formatAge(agent.started_at, now)}`
+  if (isRunning(agent)) return started === undefined ? '' : `running ${formatSpan(Math.max(0, at - started))}`
+  if (timeOf(agent.finished_at) !== undefined) return `finished ${formatAge(agent.finished_at, now)}`
+  if (started === undefined) return ''
+  return `${agent.state === 'parked' ? 'parked, started' : 'started'} ${formatAge(agent.started_at, now)}`
 }
 
 /** What is known, in plain words, for the header of the panel: "Running for 2 h on mac", "Finished 3 h ago, exit code 1". */

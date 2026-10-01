@@ -46,7 +46,7 @@ describe('AgentsPage', () => {
     expect(workOf(first)).toBe('fix-ci acme/r1')
     expect(text(cell(root, 0, 'State'))).toContain('running')
     expect(text(cell(root, 0, 'State'))).toContain('working')
-    expect(text(cell(root, 0, 'Running for'))).toBe('1 h')
+    expect(text(cell(root, 0, 'Time'))).toBe('running 1 h')
     expect(text(cell(root, 0, 'Machine'))).toBe('alpha')
     expect(text(first)).not.toContain('run-1')
     expect(root.querySelector('[role=row] app-copy-icon')).toBeNull()
@@ -66,11 +66,11 @@ describe('AgentsPage', () => {
     const { root } = await openPage('/agents', AgentsPage, agentsDocument())
     expect(text(cell(root, 5, 'State'))).toBe('Agent state: parkedAgent activity: idle')
     expect(text(cell(root, 4, 'State'))).toBe('Agent state: failed')
-    expect(text(cell(root, 4, 'Running for'))).toBe('3 h agoexit 1')
-    expect(cell(root, 4, 'Running for').querySelector('.exit')?.getAttribute('title')).toBe('Exit code 1')
+    expect(text(cell(root, 4, 'Time'))).toBe('finished 3 h agoexit 1')
+    expect(cell(root, 4, 'Time').querySelector('.exit')?.getAttribute('title')).toBe('Exit code 1')
     expect(text(cell(root, 6, 'State'))).toBe('Agent state: completed')
-    expect(text(cell(root, 6, 'Running for'))).toBe('')
-    expect(text(cell(root, 5, 'Running for'))).toBe('started 3 d ago')
+    expect(text(cell(root, 6, 'Time'))).toBe('')
+    expect(text(cell(root, 5, 'Time'))).toBe('parked, started 3 d ago')
   })
 
   it('names a session of several tasks by their count, and shows an exit code only for a run that did not complete', async () => {
@@ -78,7 +78,7 @@ describe('AgentsPage', () => {
     doc.agents[6] = { ...doc.agents[6], exit_code: 0 }
     const { root } = await openPage('/agents', AgentsPage, doc)
     expect(workOf(rowsOf(root)[1])).toBe('2 tasks acme/r1')
-    expect(cell(root, 6, 'Running for').querySelector('.exit')).toBeNull()
+    expect(cell(root, 6, 'Time').querySelector('.exit')).toBeNull()
   })
 
   it('marks an agent of another machine with its machine chip and the age of its snapshot', async () => {
@@ -111,11 +111,11 @@ describe('AgentsPage', () => {
 
   it('shows Kind only when both kinds are listed, and Machine only when the fleet has several machines or an agent is remote', async () => {
     const { root } = await openPage('/agents', AgentsPage, agentsDocument())
-    expect(headersOf(root)).toEqual(['Agent', 'State', 'Running for', 'Machine', 'Kind'])
+    expect(headersOf(root)).toEqual(['Agent', 'State', 'Time', 'Machine', 'Kind'])
     expect(text(cell(root, 0, 'Kind'))).toBe('run')
     const doc = agentsDocument()
     const single = await openPage('/agents', AgentsPage, { ...doc, machines: [doc.machines[0]], agents: [run('r1', 'running', { started_at: '2026-10-01T09:00:00Z' })] })
-    expect(headersOf(single.root)).toEqual(['Agent', 'State', 'Running for'])
+    expect(headersOf(single.root)).toEqual(['Agent', 'State', 'Time'])
   })
 
   it('has the chips of the vocabulary and one for each runtime, and each leaves exactly the agents that satisfy it', async () => {
