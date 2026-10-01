@@ -72,9 +72,6 @@ func parseDeadcodeFailureEvidence(output string) *DeadcodeFailureEvidence {
 	index := count + 1
 	if index < len(lines) && lines[index] == "" {
 		index++
-		if index >= len(lines) {
-			return evidence
-		}
 		fixed := deadcodeFixedPattern.FindStringSubmatch(lines[index])
 		if len(fixed) != 2 {
 			return evidence

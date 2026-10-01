@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -115,6 +116,10 @@ func (store *Store) EventLog(name string) *FileEventLog {
 // the verb's own work — callers log it — but it is reported rather than
 // swallowed here.
 func (log *FileEventLog) Append(event Event) error {
+	return log.appendInjected(event, nil, filewrite.OpenAppend)
+}
+
+func (log *FileEventLog) appendInjected(event Event, inj *filewrite.Injector, open func(string, os.FileMode, *filewrite.Injector) (*os.File, error)) error {
 	event.SchemaVersion = EventSchemaVersion
 	if event.Timestamp.IsZero() {
 		if log.Now != nil {
@@ -132,7 +137,7 @@ func (log *FileEventLog) Append(event Event) error {
 	if err := os.MkdirAll(filepath.Dir(log.Path), 0o700); err != nil {
 		return fmt.Errorf("create stream event directory: %w", err)
 	}
-	file, err := os.OpenFile(log.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := open(log.Path, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("open stream event log %s: %w", log.Path, err)
 	}
@@ -141,7 +146,7 @@ func (log *FileEventLog) Append(event Event) error {
 		return fmt.Errorf("lock stream event log: %w", err)
 	}
 	defer func() { _ = unix.Flock(int(file.Fd()), unix.LOCK_UN) }()
-	if _, err := file.Write(append(line, '\n')); err != nil {
+	if err := filewrite.Write(file, append(line, '\n'), log.Path, inj); err != nil {
 		return fmt.Errorf("append stream event: %w", err)
 	}
 	return nil

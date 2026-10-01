@@ -581,11 +581,11 @@ func TestExecGitCommitSubjectsAndPatchIDsHandleAnEmptyInput(t *testing.T) {
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
-	subjects, err := git.commitSubjects(ctx, root, nil)
+	subjects, err := git.commands().commitSubjects(ctx, root, nil)
 	if err != nil || len(subjects) != 0 {
 		t.Fatalf("commitSubjects(nil) = %v, %v; want no subjects", subjects, err)
 	}
-	identities, err := git.patchIDs(ctx, root, "main", "main")
+	identities, err := git.commands().patchIDs(ctx, root, "main", "main")
 	if err != nil || len(identities) != 0 {
 		t.Fatalf("patchIDs over an empty range = %v, %v; want no identities", identities, err)
 	}
@@ -630,10 +630,10 @@ func TestExecGitCommitSubjectsAndPatchIDsReportUnreadableInput(t *testing.T) {
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
-	if _, err := git.commitSubjects(ctx, root, []string{"0123456789012345678901234567890123456789"}); err == nil {
+	if _, err := git.commands().commitSubjects(ctx, root, []string{"0123456789012345678901234567890123456789"}); err == nil {
 		t.Fatal("commitSubjects reported success for a commit that does not exist")
 	}
-	if _, err := git.patchIDs(ctx, root, "no-such-base", "stream/fixture"); err == nil {
+	if _, err := git.commands().patchIDs(ctx, root, "no-such-base", "stream/fixture"); err == nil {
 		t.Fatal("patchIDs reported success for a range it could not read")
 	}
 }
@@ -641,7 +641,7 @@ func TestExecGitCommitSubjectsAndPatchIDsReportUnreadableInput(t *testing.T) {
 func TestRemoteHeadsOnOriginPushDestinationsFailsClosedWithoutOrigin(t *testing.T) {
 	t.Parallel()
 	root, git := gitFixture(t)
-	if _, err := git.remoteHeadsOnOriginPushDestinations(context.Background(), root, "stream/fixture"); err == nil {
+	if _, err := git.commands().remoteHeadsOnOriginPushDestinations(context.Background(), root, "stream/fixture"); err == nil {
 		t.Fatal("the push-destination reread reported success in a repository with no origin")
 	}
 }
@@ -767,7 +767,7 @@ func TestFastForwardBranchFailsClosedWhenStatusIsUnreadable(t *testing.T) {
 	t.Setenv("GIT_WORK_TREE", filepath.Join(t.TempDir(), "absent"))
 
 	git := ExecGit{Timeout: time.Minute}
-	err := git.fastForwardBranch(context.Background(), local, "stream/recovery", "remote-sha")
+	err := git.commands().fastForwardBranch(context.Background(), local, "stream/recovery", "remote-sha")
 	if err == nil || !strings.Contains(err.Error(), "status") {
 		t.Fatalf("error = %v, want the unreadable status reported", err)
 	}

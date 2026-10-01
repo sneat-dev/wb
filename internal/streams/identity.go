@@ -47,6 +47,10 @@ type Identity struct {
 //
 // Implements: dependency-streams#req:local-link-discovers-what-the-library-publishes.
 func DiscoverPublished(root string) ([]Identity, error) {
+	return discoverPublishedWithRead(root, os.ReadFile)
+}
+
+func discoverPublishedWithRead(root string, read func(string) ([]byte, error)) ([]Identity, error) {
 	var identities []Identity
 	goManifest := ""
 	if _, err := os.Stat(filepath.Join(root, "backend", "go.mod")); err == nil {
@@ -55,7 +59,7 @@ func DiscoverPublished(root string) ([]Identity, error) {
 		goManifest = "go.mod"
 	}
 	if goManifest != "" {
-		contents, err := os.ReadFile(filepath.Join(root, goManifest))
+		contents, err := read(filepath.Join(root, goManifest))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", goManifest, err)
 		}
@@ -68,7 +72,7 @@ func DiscoverPublished(root string) ([]Identity, error) {
 			})
 		}
 	}
-	manifests, err := npmPackageManifests(root)
+	manifests, err := npmPackageManifestsWithRead(root, read)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +83,7 @@ func DiscoverPublished(root string) ([]Identity, error) {
 		if manifest.Root {
 			continue
 		}
-		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifest.Path)))
+		contents, err := read(filepath.Join(root, filepath.FromSlash(manifest.Path)))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", manifest.Path, err)
 		}
@@ -134,17 +138,21 @@ var npmDependencySections = []string{"dependencies", "devDependencies", "peerDep
 // linkable, and reporting that is the point: it must be skipped rather than
 // linked to something it does not use.
 func DiscoverDeclarations(root string, identities []Identity) ([]Declaration, error) {
+	return discoverDeclarationsWithRead(root, identities, os.ReadFile)
+}
+
+func discoverDeclarationsWithRead(root string, identities []Identity, read func(string) ([]byte, error)) ([]Declaration, error) {
 	byName := map[string]Identity{}
 	for _, identity := range identities {
 		byName[identity.Ecosystem.key(identity.Name)] = identity
 	}
 	var declarations []Declaration
-	goManifests, err := GoModules(root)
+	goManifests, err := goModulesWithRead(root, read)
 	if err != nil {
 		return nil, err
 	}
 	for _, module := range goManifests {
-		contents, err := os.ReadFile(filepath.Join(root, module.Manifest))
+		contents, err := read(filepath.Join(root, module.Manifest))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", module.Manifest, err)
 		}
@@ -158,12 +166,12 @@ func DiscoverDeclarations(root string, identities []Identity) ([]Declaration, er
 			})
 		}
 	}
-	npmManifests, err := npmPackageManifests(root)
+	npmManifests, err := npmPackageManifestsWithRead(root, read)
 	if err != nil {
 		return nil, err
 	}
 	for _, manifest := range npmManifests {
-		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifest.Path)))
+		contents, err := read(filepath.Join(root, filepath.FromSlash(manifest.Path)))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", manifest.Path, err)
 		}
@@ -224,6 +232,10 @@ type GoModule struct {
 //
 // Implements: dependency-streams#req:go-consumers-link-through-an-untracked-go-work.
 func GoModules(root string) ([]GoModule, error) {
+	return goModulesWithRead(root, os.ReadFile)
+}
+
+func goModulesWithRead(root string, read func(string) ([]byte, error)) ([]GoModule, error) {
 	var modules []GoModule
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -241,11 +253,9 @@ func GoModules(root string) ([]GoModule, error) {
 		if entry.Name() != "go.mod" {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		contents, err := os.ReadFile(path)
+		// WalkDir derives every child from this root with filepath.Join.
+		relative, _ := filepath.Rel(root, path)
+		contents, err := read(path)
 		if err != nil {
 			return err
 		}

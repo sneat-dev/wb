@@ -198,8 +198,8 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":       "renames a queue job's state directory back to pending on recovery; not a file write",
 	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatchWithUnlock": "renames a queue job's state directory to claim it; not a file write",
 	"internal/streams/store.go:Store.archiveLocked":                    "renames a stream's directory into an archive location; not a file write",
-	"internal/locallink/execports.go:ExecNode.Unlink":                  "renames an existing backup directory back into place; not a temp-file write",
-	"internal/locallink/execports.go:ExecNode.linkInjected":            "renames/moves the previously-installed package aside and swaps in the staged replacement; task-9 PR-8 extracted its two content writes (the pending marker and the symlink backup) into writeLinkPendingMarker and writeLinkSymlinkBackup, which route through internal/filewrite -- linkInjected itself now only renames, removes, and symlinks",
+	"internal/locallink/execports.go:ExecNode.unlinkWithObservations":  "renames an existing backup directory back into place; not a temp-file write",
+	"internal/locallink/execports.go:renameInstalledPackageForLink":    "moves the existing installed package aside; not a temp-file write or content publication",
 	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":   "renames a request file into a quarantine directory; not a write publish",
 	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":       "moves a managed hook after an identity check, without writing new content; not a file write",
 
@@ -218,7 +218,6 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"internal/agentguard/gh.go:recordGhPrMergeOverride": "O_APPEND log write, not a create/publish sequence",
 	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
 	"internal/runlog/runlog.go:appendInjected":          "O_APPEND log write (flock-guarded), not a create/publish sequence",
-	"internal/streams/events.go:FileEventLog.Append":    "O_APPEND log write (flock-guarded), not a create/publish sequence",
 }
 
 // InlineWriteSequenceViolation names one function outside
