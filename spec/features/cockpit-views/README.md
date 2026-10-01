@@ -727,7 +727,9 @@ int and `landed_at` time. Local only.
 
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt.; `samples` list, at
-most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100), `load1` number (0
+most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100; absent where the
+platform has no cgo-free reader, which is macOS, and on the first sample of a platform that
+derives it from two readings), `load1` number (0
 or more), `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` ints
 (0 or more) and `sampled_at` time (not in the future).
 
@@ -916,7 +918,7 @@ for the single latest sample carried in that machine's published snapshot, with 
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
 `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`,
-`disk_total_bytes` and `sampled_at`, and nothing else. The fallback order for another
+`disk_total_bytes` and `sampled_at`, and nothing else (`cpu_percent` may be absent, never guessed). The fallback order for another
 machine is live remote, then cached, then none, and the response says which it is. An
 unknown machine id is answered with status 404. The route runs no request-time fetch.
 

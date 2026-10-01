@@ -7,6 +7,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -70,7 +71,8 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
 	return cockpitfleet.Options{
-		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
+		Sampler: machinemetrics.New(machinemetrics.Options{Source: machinemetrics.NewSource(projectsRoot), Logf: logf}), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
 		Logf: logf,
 	}
 }

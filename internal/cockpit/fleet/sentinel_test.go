@@ -1,12 +1,14 @@
 package fleet
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
@@ -75,10 +77,43 @@ func sentinelSources() *fakeSources {
 // fields do arrive (so the test is not vacuous).
 func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	t.Parallel()
-	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), nil)
+	// The projects root is a sentinel path: it is compared and statted, never
+	// emitted, and the metrics route must not carry it either.
+	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
+		options.ProjectsRoot = "/" + sentinel + "projects-root"
+		options.Sampler = filledSampler(t, &countingSource{}, 3)
+	})
 	refreshAndSettle(t, snapshotter)
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
+	// The metrics of every machine in the document are served by their own
+	// route (a local history, and none for the machines of snapshots), so the
+	// same checks cover it, and its payload is the fixed field set and nothing more.
+	for _, machine := range snapshotter.Document().Machines {
+		recorder := server.get(metricsURL+machine.ID, nil)
+		if recorder.Code != 200 {
+			t.Fatalf("metrics route = %d %s", recorder.Code, recorder.Body.String())
+		}
+		var decoded struct {
+			Samples []map[string]any `json:"samples"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, sample := range decoded.Samples {
+			keys := make([]string, 0, len(sample))
+			for key := range sample {
+				keys = append(keys, key)
+			}
+			if !sameSet(keys, []string{"load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"}) {
+				t.Errorf("a metrics sample carries %v", keys)
+			}
+		}
+		if machine.Route == RouteLocal && len(decoded.Samples) != 3 {
+			t.Errorf("the local machine has %d samples, want 3 (the test would be vacuous)", len(decoded.Samples))
+		}
+		body += recorder.Body.String()
+	}
 	// The branches are served by their own route, so the same checks cover it.
 	for _, repository := range snapshotter.Document().Repositories {
 		if repository.Route == RouteLocal {
@@ -123,12 +158,14 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"CodeIndex":        {"indexer", "state", "behind", "receipt_at", "statistics"},
 		"CodeStatistics":   {"indexed", "files", "symbols", "edges", "kinds", "error"},
 		"KindCount":        {"kind", "count"},
+		"MetricsResponse":  {"machine", "route", "fetched_at", "samples", "reason"},
+		"Sample":           {"cpu_percent", "load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"},
 		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
-		"BranchesResponse": jsonFields(BranchesResponse{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
+		"BranchesResponse": jsonFields(BranchesResponse{}), "MetricsResponse": jsonFields(MetricsResponse{}), "Sample": jsonFields(machinemetrics.Sample{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])
