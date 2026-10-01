@@ -213,7 +213,7 @@ func TestE2EAdoptionRegistrationRefusesRedirectsAndStorageFaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer operation.close()
+	t.Cleanup(operation.close)
 	worktree := filepath.Join(t.TempDir(), "external-checkout")
 	if err := os.Mkdir(worktree, 0o700); err != nil {
 		t.Fatal(err)
