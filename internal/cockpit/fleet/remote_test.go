@@ -1115,6 +1115,7 @@ func TestMapLiveKeepsOnlyWhatBelongsAndDropsDanglingReferences(t *testing.T) {
 		{Entry: Entry{ID: "pr-3", MachineID: "mach-third", Route: RouteLocal}, Repository: "repo-1", Number: 3},
 		{Entry: Entry{ID: "pr-4", MachineID: "mach-own", Route: RouteCached}, Repository: "repo-1", Number: 4},
 	}
+	document.Agents = []Agent{{Entry: Entry{ID: "ag-third", MachineID: "mach-third", Route: RouteLocal}, Kind: AgentRun, State: "running"}}
 	for index := range agentCap + 5 {
 		document.Agents = append(document.Agents, Agent{Entry: own(fmt.Sprintf("ag-%d", index)), Kind: AgentRun, State: "running", Repository: "repo-missing"})
 	}

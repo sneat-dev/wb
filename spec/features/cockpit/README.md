@@ -140,7 +140,9 @@ because arriving on the loopback listener is not proof of the local operator
 
 `cockpit.anonymous_metadata: false` turns the `anonymous-local` principal off
 altogether, for an operator whose proxy rewrites `Host` and strips those
-headers; WB cannot detect such a proxy.
+headers; WB cannot detect such a proxy. It also means this machine's metadata is
+exported to another machine by no transport
+([cockpit-views](../cockpit-views/README.md)#req:hub-export-route).
 
 #### REQ: anonymous-local-reads-metadata-only
 
@@ -155,8 +157,10 @@ is this closed set of fields:
   machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
   `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
   `export_refused`, `http_unavailable`, `http_auth_failed` or `bad_payload`), never the
-  remote's error text, and the transport that supplied a machine's live entries
-  (`transport`: `http` or `ssh`);
+  remote's error text, the transport that supplied a machine's live entries
+  (`transport`: `http` or `ssh`), the number of another machine's entries that were
+  left out of its export or cut at this daemon's caps (`export_dropped`) and whether
+  its agents were cut (`agents_truncated`);
 - a machine's resource samples, served only by the `machine-metrics` route and
   never in the fleet document, which are numbers and times only: CPU percent,
   one-minute load, memory used and total bytes, free and total bytes of the

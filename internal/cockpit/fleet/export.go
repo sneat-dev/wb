@@ -164,6 +164,12 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	dropped, hostOf := map[string]bool{}, map[string]string{}
 	own.Repositories = make([]Repository, 0, len(document.Repositories))
 	for _, repository := range keepLocal(document.Repositories, func(repository Repository) Entry { return repository.Entry }) {
+		if seen[repository.ID] {
+			// A repeated id is left out alone: the entry that has the id stays, and
+			// so does everything of it.
+			drops.Repositories++
+			continue
+		}
 		if !valid(repository.Entry, repository) || nullKinds(repository.CodeIndex) ||
 			(repository.RemoteURLWeb != "" && repository.RemoteURLWeb != webURL(repository.Host, repository.Name)) {
 			dropped[repository.ID] = true
@@ -258,7 +264,6 @@ type cachedExport struct {
 	built           bool
 	documentVersion int
 	metricsVersion  uint64
-	warming         bool
 	payload         cockpit.Payload
 	failure         string
 }

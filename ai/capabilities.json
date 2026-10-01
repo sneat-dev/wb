@@ -1393,7 +1393,7 @@
               "modes": [
                 "Prints one JSON envelope {schema_version, machine, exported_at, fleet, metrics} of this machine's own entries and its machine-metrics history, read from the running daemon over its loopback listener as the anonymous-local principal, within 8 MiB.",
                 "--metrics-only omits the fleet.",
-                "With no running daemon, one that refuses anonymous reads, or any other failure, prints {schema_version, error} with daemon_not_running, export_refused or export_failed and exits 1; the text is fixed.",
+                "With no running daemon, one that refuses anonymous reads, one whose first scan has not finished, or any other failure, prints {schema_version, error} with daemon_not_running, export_refused, warming_up or export_failed and exits 1; the text is fixed.",
                 "Never starts a daemon, opens a browser or mints a login code, and writes nothing (no heartbeat). On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running."
               ]
             }

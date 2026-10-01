@@ -521,6 +521,20 @@ func relink(pulls []PullRequest, repositories []Repository, localHosts map[strin
 	return linked
 }
 
+// locallyLinked is another machine's repositories with a web address only where
+// its host is the host of a repository of THIS machine: a link to a host that
+// only a remote names is not rendered. It returns new entries.
+func locallyLinked(repositories []Repository, localHosts map[string]bool) []Repository {
+	linked := make([]Repository, len(repositories))
+	for index, repository := range repositories {
+		if !localHosts[strings.ToLower(repository.Host)] {
+			repository.RemoteURLWeb = ""
+		}
+		linked[index] = repository
+	}
+	return linked
+}
+
 // cachedMachinesOf is the ids of the published-store machine entries that are
 // the machine configured as key: the ones published under that machine name,
 // and, when this machine's login is known, under that login.
@@ -583,7 +597,7 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bo
 			entry := machine.view.machine
 			entry.Transport, entry.RemoteError = machine.transport, machine.remoteError
 			document.Machines = append(document.Machines, entry)
-			document.Repositories = append(document.Repositories, machine.view.repositories...)
+			document.Repositories = append(document.Repositories, locallyLinked(machine.view.repositories, localHosts)...)
 			document.Worktrees = append(document.Worktrees, machine.view.worktrees...)
 			document.PullRequests = append(document.PullRequests, relink(machine.view.pullRequests, machine.view.repositories, localHosts)...)
 			document.Agents = append(document.Agents, machine.view.agents...)
