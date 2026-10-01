@@ -76,7 +76,7 @@ good" to the whole set without discussing that row on its own.
 | Cloud data | No cloud transit by default. Publishing allowlisted snapshots to the hosted hub is an explicit opt-in; the snapshot privacy allowlist is unchanged. |
 | Frontend | Angular with Material/CDK. No React. An open-source chart library is still to be chosen. |
 | Permissions | Every action declares a required capability from the first slice, and Cockpit discovers effective permissions. The MVP has three fixed principals: anonymous-local (metadata read), owner session (everything), peer (typed remote operations). Per-user grants and non-loopback binding wait for the OAuth2/OIDC feature in decision 0002. |
-| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URL whose fragment names the task, for example `https://example.com/spec/plan.md#task1`. The URL without its fragment identifies the plan; the hierarchy and any not-yet-started tasks live in whatever the URL points to. WB groups worktrees that reference the same plan. Without a reference a task is the worktree's name, as today. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
+| Unit of work | No new Goal entity and no task storage in WB. A worktree may carry one task reference: a URL whose fragment names the task, for example `https://example.com/spec/plan.md#task1`. The URL without its fragment identifies the plan; the hierarchy and any not-yet-started tasks live in whatever the URL points to. The reference is recorded in the Work Log creation manifest. WB groups worktrees that reference the same plan. Without a reference a task is the worktree's name, as today. Plans are read through a plans-provider adapter; SpecScore is the first provider and ships out of the box. Streams stay orthogonal. This replaces an earlier answer in the same discussion that WB would own a native task hierarchy. |
 | Dispatch | Every dispatched agent runs in a herdr pane. The detached headless mode is removed from `agent-dispatch`. |
 | Steer | Target: queued by default, with an explicit "send now" that interrupts. MVP: the simplest safe form — queue only, delivered when herdr reports the agent idle, blocked or done. If that status is not reliable enough to gate delivery, the MVP falls back to record-only through the existing read verb. |
 | Stop / Cancel / Kill | *Proposed.* Stop queues a wrap-up instruction through the Steer path. Cancel marks the task's assignment cancelled so no successor picks it up, then stops the agent. Kill terminates the pane's process tree after a work-loss check. None of the three touches files; discarding a worktree is a separate action. |
@@ -196,10 +196,13 @@ last slice, not the first.
 
 ## Open Questions
 
-- Where does the task reference live so that it survives worktree cleanup and
-  is visible from other machines? The Work Log creation manifest is the
-  natural home inside the worktree; whether the claim or the published
-  snapshot can carry it was not confirmed.
+- The task reference lives in the Work Log creation manifest, which is inside
+  the worktree. What carries it to other machines and keeps it after cleanup —
+  the claim, the published snapshot, or neither — was not confirmed.
+- Should task names allow several segments, such as `goal/task/subtask`? The
+  founder is undecided. Claims refuse a slash today
+  (`remotestate.ValidTaskName`), and the task name is also a branch name and a
+  directory level of the worktree store.
 - May the task reference enter an opt-in cloud snapshot? A plan URL names a
   repository and a plan, and the snapshot allowlist currently excludes
   anything of that kind.
