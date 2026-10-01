@@ -231,14 +231,16 @@ import "os/exec"
 
 func RunSecureHooksGitHelper() { exec.Command("git", "hook-run") }
 
+func runSecureStageGitHelperWithOps() { exec.Command("git", "stage") }
+
 func ordinary() { exec.Command("git", "status") }
 `)
 	matches, err := FindExecSiteMatches(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].Line != 7 {
-		t.Fatalf("matches = %+v, want only the ordinary() call (line 7), not RunSecureHooksGitHelper's", matches)
+	if len(matches) != 1 || matches[0].Line != 9 {
+		t.Fatalf("matches = %+v, want only the ordinary() call (line 9), not either secure helper's", matches)
 	}
 }
 

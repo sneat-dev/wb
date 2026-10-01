@@ -4684,19 +4684,19 @@ func securePushRepositoryArgument(gitArgs []string) (string, error) {
 // worktree. Both canonical descriptors and the optional parent/worktree pair
 // are reauthorized immediately before Git executes.
 func RunSecureCleanupGitHelper(args []string) int {
+	return runSecureCleanupGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureCleanupGitHelperWithOps(args []string, ops secureHelperOps) int {
 	if len(args) < 7 {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: missing worktree path or Git command")
 		return 1
 	}
 	canonical := os.NewFile(uintptr(3), "wb-cleanup-canonical")
 	common := os.NewFile(uintptr(4), "wb-cleanup-canonical-git")
-	if closeIncompleteInheritedFiles(canonical, common) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited canonical repository is unavailable")
-		return 1
-	}
 	defer func() { _ = canonical.Close() }()
 	defer func() { _ = common.Close() }()
-	if err := unix.Fchdir(int(canonical.Fd())); err != nil {
+	if err := ops.chdir(int(canonical.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: enter inherited canonical repository: %v\n", err)
 		return 1
 	}
@@ -4704,7 +4704,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: canonical repository path changed before Git operation")
 		return 1
 	}
-	if err := unix.Fchdir(int(common.Fd())); err != nil {
+	if err := ops.chdir(int(common.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: enter inherited canonical Git directory: %v\n", err)
 		return 1
 	}
@@ -4712,10 +4712,6 @@ func RunSecureCleanupGitHelper(args []string) int {
 	if args[1] != "" {
 		parent = os.NewFile(uintptr(5), "wb-cleanup-worktree-parent")
 		worktree := os.NewFile(uintptr(6), "wb-cleanup-worktree")
-		if closeIncompleteInheritedFiles(parent, worktree) {
-			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited worktree is unavailable")
-			return 1
-		}
 		defer func() { _ = parent.Close() }()
 		defer func() { _ = worktree.Close() }()
 		if !directoryStillMatches(args[2], parent) || !directoryStillMatches(args[1], worktree) {
@@ -4734,10 +4730,6 @@ func RunSecureCleanupGitHelper(args []string) int {
 			return 1
 		}
 		remote := os.NewFile(uintptr(remoteFD), "wb-cleanup-local-remote")
-		if remote == nil {
-			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited local remote is unavailable")
-			return 1
-		}
 		defer func() { _ = remote.Close() }()
 		if !directoryStillMatches(args[4], remote) {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: local remote path changed before Git operation")

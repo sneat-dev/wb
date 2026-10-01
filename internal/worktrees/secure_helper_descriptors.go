@@ -3,11 +3,21 @@ package worktrees
 import (
 	"os"
 
-	"github.com/sneat-dev/wb/internal/worktreesecure"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
-// closeIncompleteInheritedFiles releases a partially acquired descriptor set.
-// Complete sets remain owned by the caller until its successful-path defers.
-func closeIncompleteInheritedFiles(files ...*os.File) bool {
-	return worktreesecure.CloseIncompleteFiles(files...)
+// secureHelperOps varies only fallible operations between authorization phases.
+// Each helper still validates its own inherited descriptors and write roots.
+type secureHelperOps struct {
+	chdir  func(int) error
+	getwd  func() (string, error)
+	retain func(...*os.File) error
+}
+
+func defaultSecureHelperOps() secureHelperOps {
+	return secureHelperOps{
+		chdir:  unix.Fchdir,
+		getwd:  os.Getwd,
+		retain: retainDescriptorsAcrossGitExec,
+	}
 }

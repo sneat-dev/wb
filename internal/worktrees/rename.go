@@ -139,6 +139,10 @@ func runSecureRenameGitBytesWithHeldWorktree(
 // and GIT_WORK_TREE, so the already-authorized administrative paths are
 // protected by the same filesystem capability used for the mutation.
 func RunSecureRenameGitHelper(args []string) int {
+	return runSecureRenameGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureRenameGitHelperWithOps(args []string, ops secureHelperOps) int {
 	if len(args) < 6 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[1]) || !filepath.IsAbs(args[2]) || !validLinkedWorktreeAdminName(args[3]) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure rename helper: invalid arguments")
 		return 1
@@ -150,10 +154,6 @@ func RunSecureRenameGitHelper(args []string) int {
 	gitFile := os.NewFile(uintptr(7), "wb-rename-worktree-gitfile")
 	adminRoot := os.NewFile(uintptr(8), "wb-rename-linked-admin-root")
 	admin := os.NewFile(uintptr(9), "wb-rename-linked-admin")
-	if closeIncompleteInheritedFiles(canonical, common, parent, worktree, gitFile, adminRoot, admin) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure rename helper: inherited descriptors are unavailable")
-		return 1
-	}
 	defer func() { _ = canonical.Close() }()
 	defer func() { _ = common.Close() }()
 	defer func() { _ = parent.Close() }()
@@ -161,7 +161,7 @@ func RunSecureRenameGitHelper(args []string) int {
 	defer func() { _ = gitFile.Close() }()
 	defer func() { _ = adminRoot.Close() }()
 	defer func() { _ = admin.Close() }()
-	if err := unix.Fchdir(int(canonical.Fd())); err != nil || !directoryStillMatches(args[0], canonical) || !directoryEntryStillMatches(canonical, ".git", common) {
+	if err := ops.chdir(int(canonical.Fd())); err != nil || !directoryStillMatches(args[0], canonical) || !directoryEntryStillMatches(canonical, ".git", common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure rename helper: canonical repository changed before Git operation")
 		return 1
 	}
@@ -184,11 +184,11 @@ func RunSecureRenameGitHelper(args []string) int {
 	// this exact directory even if its public entry is replaced after
 	// authorization. Explicit GIT_DIR and GIT_COMMON_DIR below prevent Git from
 	// consuming the mutable worktree .git and admin commondir files.
-	if err := unix.Fchdir(int(worktree.Fd())); err != nil {
+	if err := ops.chdir(int(worktree.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: enter inherited worktree: %v\n", err)
 		return 1
 	}
-	if err := retainDescriptorsAcrossGitExec(common, admin); err != nil {
+	if err := ops.retain(common, admin); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure rename helper: retain descriptor paths for Git: %v\n", err)
 		return 1
 	}

@@ -2367,10 +2367,6 @@ func RunSecureCanonicalPolicyGitHelper(args []string) int {
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-policy-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-policy-git-directory")
-	if closeIncompleteInheritedFiles(root, common) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: inherited canonical descriptors are unavailable")
-		return 1
-	}
 	defer func() { _ = root.Close() }()
 	defer func() { _ = common.Close() }()
 	if err := unix.Fchdir(int(root.Fd())); err != nil || !directoryEntryStillMatches(root, ".git", common) {
@@ -2421,19 +2417,19 @@ func gitCanonicalPolicyEnvironment() []string {
 // directory descriptor. This prevents Git's own discovery from treating a
 // substituted `.git` pathname as authority.
 func RunSecureCanonicalGitHelper(args []string) int {
+	return runSecureCanonicalGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureCanonicalGitHelperWithOps(args []string, ops secureHelperOps) int {
 	if len(args) < 2 || !filepath.IsAbs(args[0]) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: missing Git executable")
 		return 1
 	}
 	root := os.NewFile(uintptr(3), "wb-canonical-root")
 	common := os.NewFile(uintptr(4), "wb-canonical-git-directory")
-	if closeIncompleteInheritedFiles(root, common) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: inherited canonical descriptors are unavailable")
-		return 1
-	}
 	defer func() { _ = root.Close() }()
 	defer func() { _ = common.Close() }()
-	if err := unix.Fchdir(int(root.Fd())); err != nil {
+	if err := ops.chdir(int(root.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: enter inherited canonical root: %v\n", err)
 		return 1
 	}
@@ -2441,7 +2437,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: canonical Git directory changed before Git operation")
 		return 1
 	}
-	if err := unix.Fchdir(int(common.Fd())); err != nil {
+	if err := ops.chdir(int(common.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: enter inherited Git directory: %v\n", err)
 		return 1
 	}
@@ -3093,13 +3089,13 @@ func secureDirectoryPath(ctx context.Context, directory *os.File) (string, error
 // parent. It returns an ordinary process exit code for cmd/wb's early main
 // dispatch and for the worktrees package's test helper.
 func RunSecureStageGitHelper(args []string) int {
+	return runSecureStageGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureStageGitHelperWithOps(args []string, ops secureHelperOps) int {
 	stageDirectory := os.NewFile(uintptr(3), "wb-worktree-stage")
-	if stageDirectory == nil {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: inherited stage directory is unavailable")
-		return 1
-	}
 	defer func() { _ = stageDirectory.Close() }()
-	if err := unix.Fchdir(int(stageDirectory.Fd())); err != nil {
+	if err := ops.chdir(int(stageDirectory.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: enter inherited stage directory: %v\n", err)
 		return 1
 	}
@@ -3113,7 +3109,7 @@ func RunSecureStageGitHelper(args []string) int {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid path arguments")
 			return 1
 		}
-		path, err := os.Getwd()
+		path, err := ops.getwd()
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: determine held directory: %v\n", err)
 			return 1
@@ -3157,6 +3153,10 @@ func RunSecureStageGitHelper(args []string) int {
 // inherited stage passes containment; Git itself receives the inherited `.git`
 // directory through GIT_DIR instead of resolving a lexical canonical path.
 func RunSecureStageCanonicalGitHelper(args []string) int {
+	return runSecureStageCanonicalGitHelperWithOps(args, defaultSecureHelperOps())
+}
+
+func runSecureStageCanonicalGitHelperWithOps(args []string, ops secureHelperOps) int {
 	if len(args) != 6 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[1]) || args[5] != "0" && args[5] != "1" {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: invalid arguments")
 		return 1
@@ -3164,26 +3164,22 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 	stage := os.NewFile(uintptr(3), "wb-worktree-stage")
 	canonical := os.NewFile(uintptr(4), "wb-canonical-root")
 	common := os.NewFile(uintptr(5), "wb-canonical-git-directory")
-	if closeIncompleteInheritedFiles(stage, canonical, common) {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: inherited descriptors are unavailable")
-		return 1
-	}
 	defer func() { _ = stage.Close() }()
 	defer func() { _ = canonical.Close() }()
 	defer func() { _ = common.Close() }()
-	if err := unix.Fchdir(int(stage.Fd())); err != nil {
+	if err := ops.chdir(int(stage.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: enter inherited stage: %v\n", err)
 		return 1
 	}
 	if code := verifySecureStageContainment(args[0]); code != 0 {
 		return code
 	}
-	stagePath, err := os.Getwd()
+	stagePath, err := ops.getwd()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: derive held stage path: %v\n", err)
 		return 1
 	}
-	if err := unix.Fchdir(int(canonical.Fd())); err != nil {
+	if err := ops.chdir(int(canonical.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: enter inherited canonical root: %v\n", err)
 		return 1
 	}
@@ -3191,7 +3187,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: canonical Git directory changed before Git operation")
 		return 1
 	}
-	if err := unix.Fchdir(int(common.Fd())); err != nil {
+	if err := ops.chdir(int(common.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: enter inherited Git directory: %v\n", err)
 		return 1
 	}
