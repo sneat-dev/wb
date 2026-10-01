@@ -1,4 +1,3 @@
-import { Type } from '@angular/core'
 import { Route, Routes } from '@angular/router'
 import { galleryRoutes } from './gallery/gallery-routes'
 
@@ -7,20 +6,12 @@ import { galleryRoutes } from './gallery/gallery-routes'
 // replaces the body of its file under pages/<name>/ without editing either.
 // A page keeps the exported class name its route imports.
 //
-// A page that still uses PrimeNG components is routed through `prime(...)`, which
-// loads pages/prime-theme.ts (PrimeNG and the Cockpit theme) only for that route:
-// the shell and every page without PrimeNG never fetch it. New pages use none.
+// No page uses PrimeNG: every route is a plain lazy `page(...)`.
 //
 // Titles are the page names: the document title and the visually hidden `h1`
 // of the shell. `/dashboard` is the old name of Home and shows it. A detail
 // route names its path parameter `id` where it has one: input binding would
 // otherwise hand it to the `repository` input of a list page.
-
-const prime = (path: string, title: string, load: () => Promise<Type<unknown>>): Route => ({
-  path,
-  title,
-  loadChildren: () => import('./pages/prime-theme').then((m) => m.primePage(load)),
-})
 
 const page = (path: string, title: string, loadComponent: Route['loadComponent']): Route => ({ path, title, loadComponent })
 
@@ -37,7 +28,7 @@ export const pageRoutes: Routes = [
   page('worktrees/:id', 'Worktree', () => import('./pages/worktrees/worktree-page').then((m) => m.WorktreePage)),
   page('agents', 'Agents', () => import('./pages/agents/agents-page').then((m) => m.AgentsPage)),
   page('agents/:id', 'Agent', () => import('./pages/agents/agent-detail-page').then((m) => m.AgentDetailPage)),
-  prime('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
+  page('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
   page('machines/:id', 'Machine', () => import('./pages/machines/machine-detail-page').then((m) => m.MachineDetailPage)),
   // Empty in the production build; the preview build's gallery (gallery/gallery-routes.ts).
   ...galleryRoutes,

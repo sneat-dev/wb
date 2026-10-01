@@ -67,6 +67,11 @@ export const LIST_SHOTS = [
   { name: 'agents-no-match', url: '/agents', steps: ['filter:zzzzqq'] },
   { name: 'agents-panel', url: '/agents', steps: ['row:3'] },
   { name: 'agents-panel-raw', url: '/agents', steps: ['row:3', 'raw'] },
+  { name: 'machines-list', url: '/machines', steps: [] },
+  { name: 'machines-chip', url: '/machines', steps: ['chip:Stale'] },
+  { name: 'machines-no-match', url: '/machines', steps: ['filter:zzzzqq'] },
+  { name: 'machines-panel', url: '/machines', steps: ['row:0'] },
+  { name: 'machines-panel-raw', url: '/machines', steps: ['row:0', 'raw'] },
 ]
 
 // Every shot: the route plan in each scheme and size, then the overlays on Home,
@@ -84,6 +89,15 @@ export function shotPlan(document) {
         shots.push({ name, url: '/', state: 'ok', keys, scheme, viewport, file: `${name}-${scheme}-${viewport.name}.png` })
       }
       for (const state of ['warming', 'daemon-older']) shots.push({ name: `state-${state}`, url: '/', state, scheme, viewport, file: `state-${state}-${scheme}-${viewport.name}.png` })
+    }
+  }
+  // Each machine's page whole, once its charts have drawn (the local machine has a history, the live one too, the old one a cached sample).
+  for (const machine of document.machines.slice(0, 3)) {
+    for (const scheme of SCHEMES) {
+      for (const viewport of LIST_VIEWPORTS) {
+        const name = `machine-full-${machine.machine.replace(/[^A-Za-z0-9-]/g, '-')}`
+        shots.push({ name, url: `/machines/${encodeURIComponent(machine.id)}`, state: 'ok', scheme, viewport, file: `${name}-${scheme}-${viewport.name}.png`, fullPage: true, scrollEnd: true })
+      }
     }
   }
   for (const list of LIST_SHOTS) {

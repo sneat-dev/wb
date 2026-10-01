@@ -1,4 +1,4 @@
-import { Type, signal } from '@angular/core'
+import { Provider, Type, signal } from '@angular/core'
 import { ComponentFixture, TestBed } from '@angular/core/testing'
 import { provideRouter, withComponentInputBinding } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
@@ -24,7 +24,7 @@ export const SESSION: Session = {
  * `document` and no network (a README read goes to `fetcher`, which a spec that
  * reads one must give), and returns the harness and the page component.
  */
-export async function openPage<T>(url: string, page: Type<T>, document: FleetDocument = fleetDocument(), session: Session | null = SESSION, fetcher?: typeof fetch) {
+export async function openPage<T>(url: string, page: Type<T>, document: FleetDocument = fleetDocument(), session: Session | null = SESSION, fetcher?: typeof fetch, extraProviders: Provider[] = []) {
   // A spec may open several pages; each gets its own injector.
   TestBed.resetTestingModule()
   TestBed.configureTestingModule({
@@ -33,6 +33,7 @@ export async function openPage<T>(url: string, page: Type<T>, document: FleetDoc
       { provide: LIST_SHORTCUTS, useExisting: Shortcuts },
       { provide: UiClock, useValue: { now: signal(NOW) } },
       ...(fetcher ? [{ provide: FETCH, useValue: fetcher }] : []),
+      ...extraProviders,
     ],
   })
   const store = TestBed.inject(FleetStore)
@@ -45,18 +46,6 @@ export async function openPage<T>(url: string, page: Type<T>, document: FleetDoc
   const component = await harness.navigateByUrl(url, page)
   await harness.fixture.whenStable()
   return { harness, component, store, root: harness.routeNativeElement as HTMLElement }
-}
-
-/** The text of each body row's cells; a count shows its number, not its hover card, and the phone-only machine line is left out. */
-export function bodyRows(root: HTMLElement): string[][] {
-  return [...root.querySelectorAll('tbody tr')].map((row) => [...row.querySelectorAll('td')].map((cell) => cellText(cell))
-  )
-}
-
-function cellText(cell: Element): string {
-  const copy = cell.cloneNode(true) as Element
-  copy.querySelectorAll('.count-card, .narrow-only').forEach((card) => card.remove())
-  return (copy.textContent as string).replace(/\s+/g, ' ').trim()
 }
 
 /** Waits, through change detection, until `until` holds: for what a stubbed fetch answers after the page opened. */

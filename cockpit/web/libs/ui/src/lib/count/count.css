@@ -3,14 +3,14 @@
 }
 
 .count-link {
-  color: var(--p-primary-color);
+  color: var(--accent);
   font-weight: 600;
   text-decoration: underline dotted;
   text-underline-offset: 0.2em;
 }
 
 .count-link:focus-visible {
-  outline: 2px solid var(--p-primary-color);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -22,10 +22,10 @@
   width: max-content;
   max-width: min(18rem, calc(100vw - 1rem));
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius, 6px);
-  background: var(--p-content-background);
-  color: var(--p-text-color);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text);
   box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
   font-size: 0.875rem;
   text-align: left;
@@ -47,5 +47,5 @@
 .count-more {
   display: block;
   margin-top: 0.25rem;
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }

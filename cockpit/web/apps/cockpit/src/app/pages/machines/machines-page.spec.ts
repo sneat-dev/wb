@@ -1,67 +1,174 @@
-import { By } from '@angular/platform-browser'
-import { Router, provideRouter } from '@angular/router'
 import { TestBed } from '@angular/core/testing'
+import { provideRouter } from '@angular/router'
+import { VOCABULARY } from '@cockpit/fleet-data/list'
 import { fleetDocument, machine } from '@cockpit/fleet-data/testing'
-import { FilterBar } from '@cockpit/ui'
+import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
+import { MetricsPoller } from '../../metrics/metrics-poller'
+import { openPage } from '../test-harness'
+import { machinesDocument, metricsAnswers, metricsFetch } from './machines-fixture'
 import { MachinesPage } from './machines-page'
-import { bodyRows, openPage } from '../test-harness'
+
+const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
+const rowsOf = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('[role=row][data-index]')]
+const namesOf = (root: HTMLElement) => rowsOf(root).map((row) => text(row.querySelector('.name')))
+const headersOf = (root: HTMLElement) => [...root.querySelectorAll('.head [role=columnheader]:not(.open-cell)')].map(text)
+const cell = (root: HTMLElement, row: number, header: string) => rowsOf(root)[row].querySelectorAll<HTMLElement>('[role=gridcell]')[headersOf(root).indexOf(header)]
+const open = async (url = '/machines', document = machinesDocument(), answers = metricsAnswers()) => {
+  const page = await openPage(url, MachinesPage, document, undefined, metricsFetch(answers))
+  // The first read of the metrics comes just after the page is created.
+  if (document.machines.length > 0) await vi.waitFor(() => expect(TestBed.inject(MetricsPoller).entries().size).toBeGreaterThan(0))
+  await page.harness.fixture.whenStable()
+  return page
+}
 
 describe('MachinesPage', () => {
-  it('lists every machine with its route and age, and counts that open their entities', async () => {
-    const { root } = await openPage('/machines', MachinesPage)
-    expect(bodyRows(root)).toEqual([
-      ['alpha', 'local', '1', '2', '—'],
-      ['beta', 'cached, 5 min ago', '1', '1', '—'],
-    ])
-    const counts = [...root.querySelectorAll<HTMLElement>('app-count')]
-    expect(counts[0].querySelector('a')?.getAttribute('href')).toBe('/repositories?machine=mach-alpha')
-    expect([...counts[0].querySelectorAll('li')].map((li) => li.textContent)).toEqual(['github.com/acme/r1'])
-    expect(counts[1].querySelector('a')?.getAttribute('href')).toBe('/worktrees?machine=mach-alpha')
-    expect(counts[1].querySelectorAll('li')).toHaveLength(2)
-    // A cached machine's card names exactly the rows its click opens.
-    expect([...counts[2].querySelectorAll('li')].map((li) => li.textContent)).toEqual(['acme/r2'])
-    expect([...counts[3].querySelectorAll('li')].map((li) => li.textContent)).toEqual(['task-w3 (branch-w3)'])
-    expect(counts[3].querySelector('strong')?.textContent).toBe('1 worktrees')
-  })
-
-  it('names nothing behind the counts of a machine that has no entries in the document', async () => {
-    const doc = fleetDocument({ machines: [machine('lonely')], repositories: [], worktrees: [] })
-    const { root } = await openPage('/machines', MachinesPage, doc)
-    expect(root.querySelectorAll('li')).toHaveLength(0)
-  })
-
-  it('shows the WB version when the machine reports one', async () => {
-    const doc = fleetDocument({ machines: [{ ...machine('alpha'), wb_version: '1.2.3' }] })
-    expect(bodyRows((await openPage('/machines', MachinesPage, doc)).root)[0][4]).toBe('1.2.3')
-  })
-
-  it('keeps only the machine named in the URL query, and says when nothing matches or exists', async () => {
-    const one = await openPage('/machines?machine=mach-beta', MachinesPage)
-    expect(bodyRows(one.root).map((row) => row[0])).toEqual(['beta'])
-    expect(one.component.machine()).toBe('mach-beta')
-    const none = await openPage('/machines?machine=mach-gamma', MachinesPage)
-    expect(bodyRows(none.root)).toEqual([['No machines match the filters.']])
-    const empty = await openPage('/machines', MachinesPage, fleetDocument({ machines: [] }))
-    expect(bodyRows(empty.root)).toEqual([['No machines yet.']])
-  })
-
-  it('offers a repository filter that keeps the machines holding that repository', async () => {
-    const { root } = await openPage('/machines?repository=r2', MachinesPage)
-    expect(bodyRows(root).map((row) => row[0])).toEqual(['beta'])
-  })
-
-  it('writes a changed filter into the URL query', async () => {
-    const { harness } = await openPage('/machines', MachinesPage)
-    harness.fixture.debugElement.query(By.directive(FilterBar)).componentInstance.changed.emit({ key: 'machine', value: 'mach-beta' })
-    await harness.fixture.whenStable()
-    expect(TestBed.inject(Router).url).toBe('/machines?machine=mach-beta')
-  })
-
-  it('renders on its own over an empty, warming-up fleet', async () => {
-    TestBed.configureTestingModule({ providers: [provideRouter([])] })
+  it('renders on its own over an empty, warming-up fleet, with placeholder rows', async () => {
+    TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: LIST_SHORTCUTS, useValue: { registerFilter: () => () => undefined, registerPanel: () => () => undefined } }] })
     const fixture = TestBed.createComponent(MachinesPage)
     await fixture.whenStable()
-    expect(fixture.nativeElement.querySelector('.page-title')).toBeNull()
-    expect(fixture.nativeElement.querySelectorAll('tbody tr').length).toBeGreaterThan(0)
+    expect(fixture.nativeElement.querySelectorAll('.skeleton').length).toBeGreaterThan(0)
+  })
+
+  // cockpit-views#ac:default-sorts
+  it('lists this machine first and then the others by name', async () => {
+    const { root } = await open()
+    expect(namesOf(root)).toEqual(['macbook', 'nas', 'oldmac', 'vm'])
+    expect(text(root.querySelector('.count'))).toBe('4 of 4')
+  })
+
+  it('says that nothing has been observed for a fleet with no machine', async () => {
+    const { root } = await open('/machines', fleetDocument({ machines: [], repositories: [], worktrees: [], agents: [] }))
+    expect(rowsOf(root)).toHaveLength(0)
+    expect(text(root)).toContain('Nothing has been observed')
+  })
+
+  // cockpit-views#ac:machines-table-title-and-links
+  it('has "Machines" as its first column header and no separate heading, and each name links to its page', async () => {
+    const { root } = await open()
+    expect(headersOf(root)).toEqual(['Machines', 'State', 'WB version', 'Repositories', 'Worktrees', 'Agents', 'Load'])
+    expect(root.querySelectorAll('h1, h2, h3, .page-title')).toHaveLength(0)
+    expect(rowsOf(root).map((row) => row.querySelector('a.name')?.getAttribute('href'))).toEqual(['/machines/mach-macbook', '/machines/mach-nas', '/machines/mach-oldmac', '/machines/mach-vm'])
+  })
+
+  // cockpit-views#ac:machines-table-title-and-links
+  it('says how each machine is reached, marks the stale ones with their age, and marks the older version', async () => {
+    const { root } = await open()
+    expect(text(cell(root, 0, 'State'))).toBe('local')
+    expect(text(cell(root, 3, 'State'))).toBe('live over http, just now')
+    expect(text(cell(root, 2, 'State'))).toContain('cached, 1 d ago')
+    expect(text(cell(root, 2, 'State'))).toContain('stale')
+    expect(text(cell(root, 1, 'State'))).toContain('cached, 2 d ago')
+    expect(text(cell(root, 1, 'State'))).toContain('stale')
+    expect(root.querySelectorAll('.mark.stale')).toHaveLength(2)
+    expect([...root.querySelectorAll('.version')].map(text)).toEqual(['1.2.0', '1.0.0 older', '1.2.0'])
+    expect(text(cell(root, 1, 'WB version'))).toBe('—')
+  })
+
+  it('shows a remote error as a quiet warning with its text, and nothing for a machine that has none', async () => {
+    const { root } = await open()
+    expect(text(cell(root, 2, 'State'))).toContain('warning: its daemon is not running')
+    expect(text(cell(root, 1, 'State'))).toContain('warning: is still warming up and has no export yet')
+    expect(cell(root, 0, 'State').querySelector('.warning')).toBeNull()
+    expect(cell(root, 2, 'State').querySelector('.warning')?.getAttribute('title')).toBe('oldmac: its daemon is not running')
+  })
+
+  it('counts repositories, worktrees and agents with links that open the lists those numbers count', async () => {
+    const { root } = await open()
+    const counts = (row: number) => ['Repositories', 'Worktrees', 'Agents'].map((header) => text(cell(root, row, header)))
+    expect(counts(0)).toEqual(['1', '2', '2'])
+    expect(counts(3)).toEqual(['1', '1', '1'])
+    expect(counts(1)).toEqual(['0', '0', '0'])
+    expect(cell(root, 0, 'Repositories').querySelector('a')?.getAttribute('href')).toBe('/repositories?machine=mach-macbook')
+    expect(cell(root, 0, 'Worktrees').querySelector('a')?.getAttribute('href')).toBe('/worktrees?machine=mach-macbook')
+    expect(cell(root, 0, 'Agents').querySelector('a')?.getAttribute('href')).toBe('/agents?machine=mach-macbook')
+    expect(cell(root, 1, 'Agents').querySelector('a')).toBeNull()
+    expect(cell(root, 1, 'Agents').querySelector('.quiet')?.getAttribute('title')).toBe('No agents')
+  })
+
+  // cockpit-views#ac:machines-table-title-and-links
+  it('shows the CPU and memory of the latest sample, a free or busy verdict, and nothing for a machine with no metrics', async () => {
+    const { root } = await open()
+    const meters = (row: number) => [...cell(root, row, 'Load').querySelectorAll('.meter')].map(text)
+    expect(text(cell(root, 0, 'Load'))).toContain('busy')
+    expect(meters(0)).toEqual(['CPU 88%', 'Mem 88%'])
+    expect(text(cell(root, 3, 'Load'))).toContain('free')
+    expect(meters(3)).toEqual(['CPU 10%', 'Mem 25%'])
+    expect(meters(2)).toEqual(['CPU 35%', 'Mem 38%'])
+    expect(cell(root, 2, 'Load').querySelector('.load')?.getAttribute('title')).toMatch(/^Latest sample: cached, /)
+    // No source: the load is unknown and there are no bars, and never a zero.
+    expect(text(cell(root, 1, 'Load'))).toContain('load unknown')
+    expect(meters(1)).toEqual([])
+    expect(text(cell(root, 1, 'Load'))).not.toContain('0%')
+    expect(cell(root, 1, 'Load').querySelector('.load')?.getAttribute('title')).toBe('Latest sample: no usable sample')
+  })
+
+  it('says load unknown for a machine the daemon has no metrics answer for', async () => {
+    const { root } = await open('/machines', machinesDocument(), { 'mach-vm': metricsAnswers()['mach-vm'] })
+    expect(text(cell(root, 0, 'Load'))).toContain('load unknown')
+    expect(text(cell(root, 3, 'Load'))).toContain('free')
+  })
+
+  it('says load unknown, with no bar, before the first read of the metrics', async () => {
+    const { root } = await openPage('/machines', MachinesPage, machinesDocument(), undefined, (async () => new Response('{}', { status: 500 })) as typeof fetch)
+    expect(text(cell(root, 0, 'Load'))).toContain('load unknown')
+    expect(root.querySelectorAll('.meter')).toHaveLength(0)
+  })
+
+  // cockpit-views#ac:machines-filter-and-stale-chip
+  it('has the chips stale and outdated, and each leaves exactly the machines that satisfy it', async () => {
+    const { root } = await open()
+    expect([...root.querySelectorAll('[aria-label="Quick filters"] button')].map(text)).toEqual(VOCABULARY.machines.chips.map((chip) => chip.label))
+    for (const [chip, names] of Object.entries({ stale: ['nas', 'oldmac'], outdated: ['oldmac'] })) {
+      expect(namesOf((await open(`/machines?chips=${chip}`)).root), chip).toEqual(names)
+    }
+  })
+
+  // cockpit-views#ac:machines-filter-and-stale-chip
+  it('narrows the rows by machine name with the filter box, and the chips toggle in turn', async () => {
+    const { root, harness } = await open()
+    const input = root.querySelector('input') as HTMLInputElement
+    input.value = 'mac'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(namesOf(root)).toEqual(['macbook', 'oldmac'])
+    })
+    const toggle = async (label: string) => {
+      ;([...root.querySelectorAll('[aria-label="Quick filters"] button')].find((button) => text(button) === label) as HTMLElement).click()
+      await harness.fixture.whenStable()
+    }
+    await toggle(VOCABULARY.machines.chips[0].label)
+    await vi.waitFor(() => expect(namesOf(root)).toEqual(['oldmac']))
+    await toggle(VOCABULARY.machines.chips[0].label)
+    await toggle(VOCABULARY.machines.chips[1].label)
+    await vi.waitFor(() => expect(namesOf(root)).toEqual(['oldmac']))
+  })
+
+  it('opens the side panel of the selected machine', async () => {
+    const { root } = await open('/machines?sel=mach-vm')
+    const panel = root.querySelector('app-side-panel') as HTMLElement
+    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Machine vm')
+    expect(text(panel.querySelector('h2'))).toBe('vm')
+  })
+
+  it('polls the machines it lists, and with a machine chip only that one', async () => {
+    const requested: string[] = []
+    const fetcher = (async (input: RequestInfo | URL) => {
+      requested.push(String(input))
+      return new Response(JSON.stringify({ machine: 'x', route: 'none', samples: [] }), { status: 200 })
+    }) as typeof fetch
+    await openPage('/machines', MachinesPage, machinesDocument(), undefined, fetcher)
+    await vi.waitFor(() => expect(requested.length).toBeGreaterThanOrEqual(4))
+    expect(requested.slice(0, 4).map((url) => decodeURIComponent(url.split('machine=')[1])).sort()).toEqual(['mach-macbook', 'mach-nas', 'mach-oldmac', 'mach-vm'])
+    requested.length = 0
+    await openPage('/machines?machine=mach-vm', MachinesPage, machinesDocument(), undefined, fetcher)
+    await vi.waitFor(() => expect(requested.length).toBeGreaterThanOrEqual(1))
+    expect(requested).toEqual(['/api/v1/cockpit/machine-metrics?machine=mach-vm'])
+  })
+
+  it('keeps a machine of the fleet with one alone: no stale, no older, no warning', async () => {
+    const { root } = await open('/machines', fleetDocument({ machines: [machine('alpha')], repositories: [], worktrees: [], agents: [] }))
+    expect(namesOf(root)).toEqual(['alpha'])
+    expect(text(cell(root, 0, 'State'))).toBe('local')
   })
 })
