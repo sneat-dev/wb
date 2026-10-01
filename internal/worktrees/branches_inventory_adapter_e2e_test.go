@@ -34,8 +34,8 @@ func TestE2EBranchInventoryFacadeAdaptersAndRealGit(t *testing.T) {
 	if rejection != "" || evidence == nil || evidence.Reviewer != "reviewer@example.test" || evidence.ReceiptID != "review-inventory" {
 		t.Fatalf("supersession adapter: %#v %q", evidence, rejection)
 	}
-	repos, err := discoverBranchRepositories(fixture.projectsRoot, "acme/")
-	if err != nil || len(repos) != 1 || repos[0].Slug() != "acme/app" {
+	repos, err := service.DiscoverBranchRepositories(fixture.projectsRoot, "acme/")
+	if err != nil || len(repos) != 1 || repos[0].Slug != "acme/app" {
 		t.Fatalf("filtered discovery: %#v %v", repos, err)
 	}
 	if _, err := BranchList(ctx, BranchListOptions{ProjectsRoot: fixture.projectsRoot, Repository: "acme/missing"}); err == nil || !strings.Contains(err.Error(), "not discovered") {

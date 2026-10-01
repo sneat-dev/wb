@@ -22,25 +22,25 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	if policy.Base != sweep.Base || policy.Scope != sweep.Scope || policy.Only != sweep.Only || policy.Branch != sweep.Branch || policy.Name != sweep.Name || policy.OlderThan != sweep.OlderThan || policy.Now != sweep.Now {
 		t.Fatalf("adapter lost selection fields: %+v", policy)
 	}
-	if !retiredNamespaceSelected(sweep) || !branchNameSelected(sweep, "retired/one") || branchNameSelected(sweep, "retired/two") || !isRetiredBranch("retired/one") {
+	if !retiredNamespaceSelected(sweep) || !worktreebranches.BranchNameSelected(policy, "retired/one") || worktreebranches.BranchNameSelected(policy, "retired/two") || !isRetiredBranch("retired/one") {
 		t.Fatal("facade retired selectors diverged")
 	}
 	ref := branchRef{Name: "retired/one", SHA: "1234567890123", CommitterDate: now.Add(-2 * time.Hour)}
-	if !retiredRefSelected(sweep, ref) || shortSHA(ref.SHA) != "123456789012" {
+	if !worktreebranches.RetiredRefSelected(policy, ref) || shortSHA(ref.SHA) != "123456789012" {
 		t.Fatal("facade ref selection or SHA shortening diverged")
 	}
 	repository := discover.Repo{Org: "org", Name: "repo"}
 	counts, names := map[string]int{}, map[string]bool{}
-	accumulateRetiredCounts(sweep, repository, []branchRef{ref}, BranchScopeLocal, counts, names)
+	worktreebranches.AccumulateRetiredCounts(policy, repository.Slug(), []branchRef{ref}, BranchScopeLocal, counts, names)
 	if counts[BranchScopeLocal] != 1 || !names[repository.Slug()+"|retired/one"] {
 		t.Fatalf("facade retired counts: %v %v", counts, names)
 	}
-	retired := retiredBranchEntry(repository, sweep, ref, BranchScopeLocal, "target")
+	retired := worktreebranches.RetiredBranchEntry(repository.Slug(), policy, ref, BranchScopeLocal, "target")
 	if retired.Disposition != BranchRetired || retired.ShortSHA != "123456789012" || retired.Repository != repository.Slug() {
 		t.Fatalf("facade retired entry: %+v", retired)
 	}
 	pr := &PullRequest{Number: 9, URL: "https://example.test/9"}
-	entry := receiptedBranch(BranchEntry{Base: "main", PullRequests: []BranchPullRequest{{Number: 9}}}, ref.SHA, pr, "")
+	entry := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main", PullRequests: []BranchPullRequest{{Number: 9}}}, ref.SHA, pr, "")
 	if entry.ReceiptPullRequest != pr || entry.Disposition != BranchReceipted || !strings.Contains(entry.Evidence, "#9") {
 		t.Fatalf("facade receipt identity: %+v", entry)
 	}
